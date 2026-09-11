@@ -756,6 +756,7 @@ pub enum ReasoningEffort {
     High,
     Xhigh,
     Max,
+    Ultra,
 }
 
 impl ReasoningEffort {
@@ -768,6 +769,9 @@ impl ReasoningEffort {
             Self::High => crate::rs::ReasoningEffort::High,
             Self::Xhigh => crate::rs::ReasoningEffort::Xhigh,
             Self::Max => crate::rs::ReasoningEffort::Max,
+            // Ultra maps to Max on the wire: the Responses API has no Ultra variant,
+            // but Ultra enables proactive multi-agent delegation (patched in the adapter).
+            Self::Ultra => crate::rs::ReasoningEffort::Max,
         }
     }
 
@@ -793,6 +797,7 @@ impl ReasoningEffort {
             Self::High => "high",
             Self::Xhigh => "xhigh",
             Self::Max => "max",
+            Self::Ultra => "ultra",
         }
     }
 
@@ -822,8 +827,9 @@ impl std::str::FromStr for ReasoningEffort {
             "high" => Ok(Self::High),
             "xhigh" => Ok(Self::Xhigh),
             "max" => Ok(Self::Max),
+            "ultra" => Ok(Self::Ultra),
             _ => Err(format!(
-                "invalid reasoning effort: {s:?} (expected one of: none, minimal, low, medium, high, xhigh, max)"
+                "invalid reasoning effort: {s:?} (expected one of: none, minimal, low, medium, high, xhigh, max, ultra)"
             )),
         }
     }
@@ -1212,6 +1218,15 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_effort_from_str_error_mentions_ultra() {
+        let err = "bogus".parse::<ReasoningEffort>().unwrap_err();
+        assert!(
+            err.contains("ultra"),
+            "error text must list ultra as an accepted value: {err}"
+        );
+    }
+
+    #[test]
     fn parse_canonical_effort_token_helper() {
         assert_eq!(
             parse_canonical_effort_token("max"),
@@ -1375,7 +1390,12 @@ mod tests {
         );
         let bad_type = as_map(serde_json::json!({"reasoningEffort": 3}));
         assert_eq!(parse_reasoning_effort_meta(Some(&bad_type)), None);
-        let unknown = as_map(serde_json::json!({"reasoningEffort": "ULTRA"}));
+        let ultra = as_map(serde_json::json!({"reasoningEffort": "ULTRA"}));
+        assert_eq!(
+            parse_reasoning_effort_meta(Some(&ultra)),
+            Some(ReasoningEffort::Ultra)
+        );
+        let unknown = as_map(serde_json::json!({"reasoningEffort": "ULTRAMAN"}));
         assert_eq!(parse_reasoning_effort_meta(Some(&unknown)), None);
     }
 

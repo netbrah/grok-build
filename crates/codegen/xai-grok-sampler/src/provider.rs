@@ -1,0 +1,388 @@
+//! Provider-specific request patches for the Responses API.
+//!
+//! This module ports the Codex provider adapter from open-grok and the
+//! content-type normalization from the codex fork (netbrah/codex) into
+//! grok-build. It applies provider-aware patches to the serialized Responses
+//! request body before it is sent, gated on `model_family` metadata — never
+//! on model slugs or URLs.
+//!
+//! ## What it does
+//!
+//! For `model_family = "codex"` (GPT-5.6 Sol/Terra/Luna on the llm-proxy):
+//! - Maps `Max` and `Ultra` reasoning efforts to the wire value `"max"`.
+//! - Injects the multi-agent v2 proactive/explicit developer policy item
+//!   (Ultra → proactive delegation, Max → explicit-request-only).
+//! - Grants `external_web_access: true` on hosted `web_search` tools.
+//!
+//! For non-OpenAI providers (`model_family = "glm"`, etc.):
+//! - Normalizes `input_text`/`output_text` content part types to `"text"`,
+//!   so Responses→ChatCompletions shims (vLLM/SGLang) accept the request.
+//!
+//! Patches are additive and idempotent: they only rewrite fields they own.
+
+use serde_json::Value;
+use xai_grok_sampling_types::ReasoningEffort;
+
+/// Compatibility policy for Responses API event decoding.
+///
+/// This is derived once from catalog provider-family metadata. It is not
+/// inferred from the model slug, endpoint URL, API backend, or credentials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResponsesWireDialect {
+    /// xAI Responses frames may omit `sequence_number`, but unknown semantic
+    /// events remain fatal until they are deliberately supported.
+    Xai,
+    /// Codex Responses permits sparse lifecycle envelopes and ignores future
+    /// top-level event types as liveness-only frames.
+    Codex,
+    /// No compatibility normalization beyond recognized auxiliary frames.
+    Strict,
+}
+
+pub(crate) fn responses_wire_dialect_for_model_family(
+    model_family: Option<&str>,
+) -> ResponsesWireDialect {
+    match model_family {
+        Some(family) if family.eq_ignore_ascii_case("codex") => ResponsesWireDialect::Codex,
+        Some(family) if family.eq_ignore_ascii_case("xai") => ResponsesWireDialect::Xai,
+        // Existing uncatalogued/default configurations are xAI-native.
+        None => ResponsesWireDialect::Xai,
+        Some(_) => ResponsesWireDialect::Strict,
+    }
+}
+
+/// Developer policy tags for multi-agent v2 mode.
+const MULTI_AGENT_MODE_OPEN_TAG: &str = "<multi_agent_mode>";
+const MULTI_AGENT_MODE_CLOSE_TAG: &str = "</multi_agent_mode>";
+const PROACTIVE_MULTI_AGENT_MODE_TEXT: &str = "proactive";
+const EXPLICIT_REQUEST_ONLY_MULTI_AGENT_MODE_TEXT: &str = "explicit_request_only";
+
+/// Apply provider-specific patches to a serialized Responses API request body.
+///
+/// `model_family` selects the provider dialect. `reasoning_effort` is the
+/// local (pre-wire) effort, needed for Max/Ultra mapping and v2 policy.
+/// `multi_agent_v2` enables the v2 developer policy injection.
+pub fn patch_responses_request(
+    request_body: &mut Value,
+    model_family: Option<&str>,
+    reasoning_effort: Option<ReasoningEffort>,
+    multi_agent_v2: bool,
+) {
+    let family = model_family.unwrap_or_default();
+
+    if family.eq_ignore_ascii_case("codex") {
+        patch_codex_responses_request(request_body, reasoning_effort, multi_agent_v2);
+    }
+
+    // Content-type normalization for non-OpenAI providers whose Responses
+    // shim expects "text" instead of "input_text"/"output_text".
+    if !is_openai_family(family) {
+        normalize_content_types(request_body);
+    }
+}
+
+/// Whether this provider family is OpenAI-native (no content-type normalization needed).
+fn is_openai_family(family: &str) -> bool {
+    family.eq_ignore_ascii_case("xai")
+        || family.eq_ignore_ascii_case("codex")
+        || family.eq_ignore_ascii_case("openai")
+        || family.is_empty()
+}
+
+/// Codex Responses dialect patches.
+fn patch_codex_responses_request(
+    request_body: &mut Value,
+    local_effort: Option<ReasoningEffort>,
+    multi_agent_v2: bool,
+) {
+    // Grant live sources on hosted web_search (Codex dialect behavior).
+    if let Some(tools) = request_body.get_mut("tools").and_then(Value::as_array_mut) {
+        for tool in tools.iter_mut() {
+            if tool.get("type").and_then(Value::as_str) == Some("web_search") {
+                if let Some(obj) = tool.as_object_mut() {
+                    if !obj.contains_key("external_web_access") {
+                        obj.insert("external_web_access".into(), true.into());
+                    }
+                }
+            }
+        }
+    }
+
+    // Map Max/Ultra → "max" on the wire. The Responses API has no Ultra variant;
+    // Ultra enables proactive delegation via the v2 policy item below.
+    if matches!(
+        local_effort,
+        Some(ReasoningEffort::Max | ReasoningEffort::Ultra)
+    ) {
+        ensure_reasoning_object(request_body);
+        request_body["reasoning"]["effort"] = Value::String("max".to_owned());
+    }
+
+    if !multi_agent_v2 {
+        return;
+    }
+
+    let mode_text = if local_effort == Some(ReasoningEffort::Ultra) {
+        PROACTIVE_MULTI_AGENT_MODE_TEXT
+    } else {
+        EXPLICIT_REQUEST_ONLY_MULTI_AGENT_MODE_TEXT
+    };
+    let rendered = format!("{MULTI_AGENT_MODE_OPEN_TAG}{mode_text}{MULTI_AGENT_MODE_CLOSE_TAG}");
+
+    let Some(input) = request_body.get_mut("input").and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    // Remove any stale multi_agent_mode item, then insert the fresh one
+    // just before the last user message (matching codex-rs placement).
+    input.retain(|item| !is_multi_agent_mode_item(item));
+    let mode_item = serde_json::json!({
+        "type": "message",
+        "role": "developer",
+        "content": [{ "type": "input_text", "text": rendered }],
+    });
+    let insert_at = input
+        .last()
+        .filter(|item| item.get("role").and_then(Value::as_str) == Some("user"))
+        .map_or(input.len(), |_| input.len() - 1);
+    input.insert(insert_at, mode_item);
+}
+
+/// Ensure a `reasoning` object exists on the request body.
+fn ensure_reasoning_object(request_body: &mut Value) {
+    if request_body.get("reasoning").is_none() {
+        request_body["reasoning"] = serde_json::json!({});
+    }
+}
+
+/// Whether a developer input item carries the multi_agent_mode marker.
+fn is_multi_agent_mode_item(item: &Value) -> bool {
+    let role = item.get("role").and_then(Value::as_str);
+    if role != Some("developer") {
+        return false;
+    }
+    let Some(content) = item.get("content").and_then(Value::as_array) else {
+        return false;
+    };
+    content.iter().any(|part| {
+        part.get("text")
+            .and_then(Value::as_str)
+            .is_some_and(|t| t.contains(MULTI_AGENT_MODE_OPEN_TAG))
+    })
+}
+
+/// Rewrite `input_text`/`output_text` content part types to `"text"`.
+///
+/// Ported from codex fork `content_type_compat.rs`. Providers such as vLLM
+/// and SGLang expose a `/v1/responses` endpoint backed by a
+/// Responses→ChatCompletions shim that passes content part types through
+/// unchanged, causing pydantic validation errors. This rewrites them so the
+/// shim accepts the request.
+pub fn normalize_content_types(value: &mut Value) {
+    let Some(input) = value.get_mut("input").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    for item in input.iter_mut() {
+        let Some(content) = item.get_mut("content").and_then(|v| v.as_array_mut()) else {
+            continue;
+        };
+        for part in content.iter_mut() {
+            if let Some(type_str) = part.get("type").and_then(|t| t.as_str()) {
+                if type_str == "input_text" || type_str == "output_text" {
+                    if let Some(obj) = part.as_object_mut() {
+                        obj.insert(
+                            "type".to_string(),
+                            serde_json::Value::String("text".to_string()),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn responses_wire_dialect_comes_from_provider_family_metadata() {
+        assert_eq!(
+            responses_wire_dialect_for_model_family(Some("codex")),
+            ResponsesWireDialect::Codex
+        );
+        assert_eq!(
+            responses_wire_dialect_for_model_family(Some("xai")),
+            ResponsesWireDialect::Xai
+        );
+        assert_eq!(
+            responses_wire_dialect_for_model_family(None),
+            ResponsesWireDialect::Xai
+        );
+        assert_eq!(
+            responses_wire_dialect_for_model_family(Some("glm")),
+            ResponsesWireDialect::Strict
+        );
+    }
+
+    #[test]
+    fn codex_ultra_maps_to_max_wire_effort() {
+        let mut body = serde_json::json!({"reasoning": {"effort": "medium"}});
+        patch_codex_responses_request(&mut body, Some(ReasoningEffort::Ultra), false);
+        assert_eq!(body["reasoning"]["effort"], "max");
+    }
+
+    #[test]
+    fn codex_max_maps_to_max_wire_effort() {
+        let mut body = serde_json::json!({"reasoning": {"effort": "medium"}});
+        patch_codex_responses_request(&mut body, Some(ReasoningEffort::Max), false);
+        assert_eq!(body["reasoning"]["effort"], "max");
+    }
+
+    #[test]
+    fn codex_high_leaves_effort_unchanged() {
+        let mut body = serde_json::json!({"reasoning": {"effort": "high"}});
+        patch_codex_responses_request(&mut body, Some(ReasoningEffort::High), false);
+        assert_eq!(body["reasoning"]["effort"], "high");
+    }
+
+    #[test]
+    fn codex_ultra_v2_injects_proactive_developer_item() {
+        let mut body = serde_json::json!({
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+            ]
+        });
+        patch_codex_responses_request(&mut body, Some(ReasoningEffort::Ultra), true);
+        let input = body["input"].as_array().unwrap();
+        // developer item inserted before the user message
+        assert_eq!(input.len(), 2);
+        assert_eq!(input[0]["role"], "developer");
+        assert!(
+            input[0]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("proactive")
+        );
+    }
+
+    #[test]
+    fn codex_max_v2_injects_explicit_request_only_item() {
+        let mut body = serde_json::json!({
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+            ]
+        });
+        patch_codex_responses_request(&mut body, Some(ReasoningEffort::Max), true);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input[0]["role"], "developer");
+        assert!(
+            input[0]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("explicit_request_only")
+        );
+    }
+
+    #[test]
+    fn codex_v2_replaces_stale_mode_item() {
+        let mut body = serde_json::json!({
+            "input": [
+                {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "<multi_agent_mode>stale</multi_agent_mode>"}]},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+            ]
+        });
+        patch_codex_responses_request(&mut body, Some(ReasoningEffort::Ultra), true);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 2);
+        assert!(
+            input[0]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("proactive")
+        );
+    }
+
+    #[test]
+    fn codex_web_search_gets_external_web_access() {
+        let mut body = serde_json::json!({
+            "tools": [{"type": "web_search"}]
+        });
+        patch_codex_responses_request(&mut body, None, false);
+        assert_eq!(body["tools"][0]["external_web_access"], true);
+    }
+
+    #[test]
+    fn normalize_content_types_rewrites_input_text() {
+        let mut body = serde_json::json!({
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hi"}]
+            }]
+        });
+        normalize_content_types(&mut body);
+        assert_eq!(body["input"][0]["content"][0]["type"], "text");
+    }
+
+    #[test]
+    fn normalize_content_types_rewrites_output_text() {
+        let mut body = serde_json::json!({
+            "input": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "hello"}]
+            }]
+        });
+        normalize_content_types(&mut body);
+        assert_eq!(body["input"][0]["content"][0]["type"], "text");
+    }
+
+    #[test]
+    fn normalize_content_types_leaves_text_unchanged() {
+        let mut body = serde_json::json!({
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "text", "text": "hi"}]
+            }]
+        });
+        normalize_content_types(&mut body);
+        assert_eq!(body["input"][0]["content"][0]["type"], "text");
+    }
+
+    #[test]
+    fn patch_responses_request_dispatches_codex() {
+        let mut body = serde_json::json!({
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "tools": [{"type": "web_search"}]
+        });
+        patch_responses_request(&mut body, Some("codex"), Some(ReasoningEffort::Ultra), true);
+        // codex gets web_search access + ultra→max + v2 policy
+        assert_eq!(body["tools"][0]["external_web_access"], true);
+        assert_eq!(body["reasoning"]["effort"], "max");
+        assert_eq!(body["input"].as_array().unwrap().len(), 2);
+        // codex is OpenAI-family, so no content-type normalization
+        assert_eq!(body["input"][1]["content"][0]["type"], "input_text");
+    }
+
+    #[test]
+    fn patch_responses_request_dispatches_glm() {
+        let mut body = serde_json::json!({
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
+        });
+        patch_responses_request(&mut body, Some("glm"), None, false);
+        // glm gets content-type normalization but no codex patches
+        assert_eq!(body["input"][0]["content"][0]["type"], "text");
+    }
+
+    #[test]
+    fn patch_responses_request_xai_no_op() {
+        let mut body = serde_json::json!({
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
+        });
+        let original = body.clone();
+        patch_responses_request(&mut body, Some("xai"), None, false);
+        assert_eq!(body, original);
+    }
+}

@@ -1,6 +1,23 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use xai_grok_sampling_types::rs;
+
+/// One item received from a Responses API SSE stream.
+///
+/// Auxiliary transport frames carry liveness but no semantic model output.
+#[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
+pub enum ResponsesStreamItem {
+    Event(rs::ResponseStreamEvent),
+    Heartbeat,
+}
+
+impl From<rs::ResponseStreamEvent> for ResponsesStreamItem {
+    fn from(event: rs::ResponseStreamEvent) -> Self {
+        Self::Event(event)
+    }
+}
 
 /// Wraps a `String` so callers can pass an externally-assigned ID (e.g., a session-assigned UUID) or generate a fresh one via [`RequestId::random`].
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]

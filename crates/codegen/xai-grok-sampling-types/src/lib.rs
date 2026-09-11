@@ -4,6 +4,7 @@
 //! It contains no I/O: no HTTP clients, no file system access.
 //! Downstream crates like `xai-chat-state` can depend on it without pulling in the full `xai-grok-shell`.
 
+pub mod catalog_wire;
 pub mod conversation;
 pub mod doom_loop;
 pub mod error;
@@ -13,6 +14,9 @@ pub mod serde_helpers;
 pub mod tool_overrides;
 pub mod types;
 
+pub use self::catalog_wire::{
+    CatalogFamily, catalog_family, infer_api_backend, infer_reasoning_efforts,
+};
 pub use self::conversation::*;
 pub use self::doom_loop::{
     DEFAULT_EXACT_REPETITION_MIN_TOKENS, DOOM_LOOP_CHECK_EVENT_TYPE, DOOM_LOOP_CHECK_HEADER,

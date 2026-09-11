@@ -66,6 +66,12 @@ pub struct SamplerConfig {
     // Reasoning effort
     pub reasoning_effort: Option<ReasoningEffort>,
 
+    /// Provider family for this model (e.g. "xai", "codex"). Gates provider-specific
+    /// request patches (Codex instruction roles, max/ultra wire mapping, multi-agent v2).
+    /// `None` means xAI-default behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_family: Option<String>,
+
     // Client identity
     pub origin_client: Option<OriginClientInfo>,
     pub client_identifier: Option<String>,
@@ -143,6 +149,7 @@ impl Default for SamplerConfig {
             compaction_at_tokens: None,
             doom_loop_recovery: None,
             header_injector: None,
+            model_family: None,
         }
     }
 }

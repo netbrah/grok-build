@@ -20,6 +20,7 @@ pub mod events;
 pub mod handle;
 pub mod metrics;
 mod prewarm;
+pub mod provider;
 pub mod retry;
 pub mod sampling_log;
 mod shared_http;
@@ -53,4 +54,4 @@ pub use retry::{
 };
 pub use sampling_log::AuthInfo;
 pub use stream::{collect_response, stream_chat_completions, stream_messages, stream_responses};
-pub use types::RequestId;
+pub use types::{RequestId, ResponsesStreamItem};

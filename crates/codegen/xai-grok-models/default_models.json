@@ -75,6 +75,55 @@
           "description": "Quick, fast implementations"
         }
       ]
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "model": "gpt-5.6-sol",
+      "model_family": "codex",
+      "name": "GPT-5.6 Sol",
+      "description": "Latest frontier agentic coding model",
+      "context_window": 353000,
+      "api_backend": "responses",
+      "supports_backend_search": true,
+      "system_prompt_label": "GPT-5.6 Sol",
+      "supports_reasoning_effort": true,
+      "reasoning_effort": "low",
+      "auto_compact_threshold_percent": 80,
+      "compaction_at_tokens": true,
+      "compactions_remaining": 1,
+      "reasoning_efforts": [
+        {
+          "value": "low",
+          "label": "Low Effort",
+          "description": "Fast responses with lighter reasoning",
+          "default": true
+        },
+        {
+          "value": "medium",
+          "label": "Medium Effort",
+          "description": "Balances speed and reasoning depth for everyday tasks"
+        },
+        {
+          "value": "high",
+          "label": "High Effort",
+          "description": "Greater reasoning depth for complex problems"
+        },
+        {
+          "value": "xhigh",
+          "label": "Extra High Effort",
+          "description": "Extra high reasoning depth for complex problems"
+        },
+        {
+          "value": "max",
+          "label": "Max Effort",
+          "description": "Maximum reasoning depth for the hardest problems"
+        },
+        {
+          "value": "ultra",
+          "label": "Ultra Effort",
+          "description": "Maximum reasoning with automatic task delegation"
+        }
+      ]
     }
   ]
 }

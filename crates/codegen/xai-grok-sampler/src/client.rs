@@ -29,7 +29,7 @@ use xai_grok_sampling_types::error::{
 use xai_grok_sampling_types::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ConversationRequest,
     ConversationResponse, CreateResponseWrapper, DEFAULT_EXACT_REPETITION_MIN_TOKENS,
-    DOOM_LOOP_CHECK_HEADER, EXACT_REPETITION_CHECK_HEADER, MessagesRequestWrapper,
+    DOOM_LOOP_CHECK_HEADER, EXACT_REPETITION_CHECK_HEADER, MessagesRequestWrapper, ReasoningEffort,
     ResponseModelMetadata, Result, SamplingError, SentCredential, build_messages_request,
     is_check_event, messages, rs,
 };
@@ -347,6 +347,10 @@ struct ClientDefaults {
     stream_tool_calls: bool,
     extra_response_includes: Vec<String>,
     doom_loop_recovery: Option<xai_grok_sampling_types::DoomLoopRecoveryPolicy>,
+    /// Provider family ("xai", "codex", "glm", etc.). Gates provider-specific request patches.
+    model_family: Option<String>,
+    /// Local reasoning effort for Max/Ultra wire mapping and multi-agent v2 policy.
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// Endpoint URL builder, resolved once at client construction so each request only appends its path.
@@ -641,6 +645,8 @@ impl SamplingClient {
             stream_tool_calls: config.stream_tool_calls,
             extra_response_includes: config.extra_response_includes,
             doom_loop_recovery: config.doom_loop_recovery,
+            model_family: config.model_family.clone(),
+            reasoning_effort: config.reasoning_effort,
         };
 
         let endpoint = EndpointTemplate::new(&config.base_url, &config.query_params);
@@ -1212,6 +1218,17 @@ impl SamplingClient {
         // async-openai's ReasoningTextContent struct omits the `type` discriminator that the Responses API requires on input
         // Patch it in after serializing
         xai_grok_sampling_types::patch_reasoning_text_types(&mut request_body);
+        // Provider-specific patches (Codex Max/Ultra wire mapping, v2 policy,
+        // content-type normalization for non-OpenAI shims).
+        crate::provider::patch_responses_request(
+            &mut request_body,
+            self.defaults.model_family.as_deref(),
+            self.defaults.reasoning_effort,
+            self.defaults
+                .model_family
+                .as_deref()
+                .is_some_and(|f| f.eq_ignore_ascii_case("codex")),
+        );
         let SentRequest {
             builder,
             sent_bearer,
@@ -1351,6 +1368,17 @@ impl SamplingClient {
         splice_extra_tool_entries(&mut request_body, extra_tool_entries);
         append_response_includes(&mut request_body, &self.defaults.extra_response_includes);
         xai_grok_sampling_types::patch_reasoning_text_types(&mut request_body);
+        // Provider-specific patches (Codex Max/Ultra wire mapping, v2 policy,
+        // content-type normalization for non-OpenAI shims).
+        crate::provider::patch_responses_request(
+            &mut request_body,
+            self.defaults.model_family.as_deref(),
+            self.defaults.reasoning_effort,
+            self.defaults
+                .model_family
+                .as_deref()
+                .is_some_and(|f| f.eq_ignore_ascii_case("codex")),
+        );
         // Fresh per attempt so signals never leak across retries; `None` (check disabled) sends no header and does no peek work per event
         let doom_loop = self
             .defaults
@@ -2235,6 +2263,7 @@ mod tests {
             compaction_at_tokens: None,
             doom_loop_recovery: None,
             header_injector: None,
+            model_family: None,
         }
     }
 
