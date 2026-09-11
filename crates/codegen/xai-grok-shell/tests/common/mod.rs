@@ -395,6 +395,7 @@ pub fn test_sampler_config(
         env_http_headers: Default::default(),
         context_window: 256_000,
         client_version: None,
+        model_family: None,
         force_http1: false,
         max_retries: None,
         rate_limit_retry_threshold: None,
