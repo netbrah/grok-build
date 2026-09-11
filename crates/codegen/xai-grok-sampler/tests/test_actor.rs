@@ -134,6 +134,73 @@ fn sse_events_to_axum(events: Vec<SseEvent>) -> Vec<Event> {
         .collect()
 }
 
+/// Reshape events the way an OpenAI-compatible gateway (LiteLLM) emits them: no `sequence_number`,
+/// and output items missing the fields `async_openai` marks required but that gateways omit.
+fn as_gateway_payload(events: Vec<SseEvent>) -> Vec<SseEvent> {
+    fn strip_item(item: &mut serde_json::Value) {
+        let Some(obj) = item.as_object_mut() else {
+            return;
+        };
+        obj.remove("status");
+        match obj.get("type").and_then(|v| v.as_str()) {
+            Some("reasoning") => {
+                obj.remove("summary");
+            }
+            Some("message") => {
+                if let Some(content) = obj.get_mut("content").and_then(|v| v.as_array_mut()) {
+                    for part in content {
+                        if let Some(part) = part.as_object_mut() {
+                            part.remove("annotations");
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    events
+        .into_iter()
+        .map(|mut e| {
+            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&e.data) {
+                if let Some(obj) = v.as_object_mut() {
+                    obj.remove("sequence_number");
+                }
+                if let Some(item) = v.pointer_mut("/item") {
+                    strip_item(item);
+                }
+                if let Some(output) = v
+                    .pointer_mut("/response/output")
+                    .and_then(|v| v.as_array_mut())
+                {
+                    for item in output {
+                        strip_item(item);
+                    }
+                }
+                e.data = v.to_string();
+            }
+            e
+        })
+        .collect()
+}
+
+/// Drop `sequence_number` from every event payload, reproducing what OpenAI-compatible
+/// gateways such as LiteLLM emit on the Responses wire.
+fn strip_sequence_numbers(events: Vec<SseEvent>) -> Vec<SseEvent> {
+    events
+        .into_iter()
+        .map(|mut e| {
+            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&e.data) {
+                if let Some(obj) = v.as_object_mut() {
+                    obj.remove("sequence_number");
+                }
+                e.data = v.to_string();
+            }
+            e
+        })
+        .collect()
+}
+
 fn text_chunk_event(content: &str, finish: bool) -> Event {
     let chunk = json!({
         "id": "chatcmpl-test",
@@ -1251,6 +1318,83 @@ async fn responses_doom_loop_signals_reach_completed_response() {
         "tail_repetition:4@response"
     );
     assert_eq!(response.assistant_text(), "an answer");
+}
+
+/// A gateway that omits `sequence_number` (LiteLLM / Vertex passthrough) still drives a full turn.
+/// `async_openai` declares the field as required on every Responses event struct, so without the
+/// sanitize-path default the first event fails to deserialize and the whole turn dies with
+/// `serialization error: missing field 'sequence_number'`. This exercises the real SSE path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_stream_without_sequence_numbers_completes_turn() {
+    let app = Router::new().route(
+        "/v1/responses",
+        post(move || async move {
+            let events = strip_sequence_numbers(sse::responses_api_reasoning_and_text_events(
+                "a thought",
+                "an answer",
+                "test-model",
+            ));
+            let events = sse_events_to_axum(events);
+            Sse::new(stream::iter(
+                events.into_iter().map(Ok::<_, std::convert::Infallible>),
+            ))
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let handle = SamplerActor::spawn(
+        responses_config(server.base_url(), None),
+        RetryPolicy::default(),
+        event_tx,
+    );
+
+    let result = handle
+        .submit_and_collect(RequestId::from("req-no-seq"), user_request("hi"))
+        .await;
+    server.shutdown();
+
+    let (response, _metrics) = result.expect("turn completes without sequence_number");
+    assert_eq!(response.assistant_text(), "an answer");
+}
+
+/// The agent loop over a gateway: a reasoning item plus a tool call, with every gateway-omitted
+/// field absent. If any event fails to deserialize the turn dies and the agent silently stops
+/// taking actions, so this asserts the tool call survives the repair path intact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_gateway_shaped_tool_call_survives() {
+    let app = Router::new().route(
+        "/v1/responses",
+        post(move || async move {
+            let events = as_gateway_payload(sse::responses_api_reasoning_then_tool_call_events(
+                "a thought",
+                "call_1",
+                "read_file",
+                r#"{"path":"a.txt"}"#,
+                "test-model",
+            ));
+            let events = sse_events_to_axum(events);
+            Sse::new(stream::iter(
+                events.into_iter().map(Ok::<_, std::convert::Infallible>),
+            ))
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let handle = SamplerActor::spawn(
+        responses_config(server.base_url(), None),
+        RetryPolicy::default(),
+        event_tx,
+    );
+
+    let result = handle
+        .submit_and_collect(RequestId::from("req-gateway-tool"), user_request("hi"))
+        .await;
+    server.shutdown();
+
+    let (response, _metrics) = result.expect("gateway-shaped tool call turn completes");
+    let calls = response.tool_calls();
+    assert_eq!(calls.len(), 1, "the tool call reached the agent loop");
+    assert_eq!(calls[0].name, "read_file");
 }
 
 /// Acceptance spec for the recovery rung: a confident tail signal is resampled once while its detector label remains observable.
