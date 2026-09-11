@@ -60,6 +60,54 @@ fn find_rules_files(dir: &Path, rules_subdirs: &[&str]) -> Vec<PathBuf> {
     results
 }
 
+/// Find direct `*.md` children of a rules directory, sorted alphabetically.
+fn find_markdown_files(rules_dir: &Path) -> Vec<PathBuf> {
+    if !rules_dir.is_dir() {
+        return Vec::new();
+    }
+    let mut entries: Vec<PathBuf> = match std::fs::read_dir(rules_dir) {
+        Ok(iter) => iter
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+            })
+            .collect(),
+        Err(_) => return Vec::new(),
+    };
+    entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    entries
+}
+
+fn configured_extra_rule_dirs() -> Vec<String> {
+    let Ok(config) = xai_grok_config::load_effective_config_disk_only() else {
+        return Vec::new();
+    };
+    config
+        .get("paths")
+        .and_then(|paths| paths.get("extra_rule_dirs"))
+        .and_then(|value| value.as_array())
+        .map(|dirs| {
+            dirs.iter()
+                .filter_map(|value| value.as_str())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn expand_tilde_with_home(raw: &str, home_dir: Option<&Path>) -> PathBuf {
+    if raw == "~" {
+        return home_dir.map_or_else(|| PathBuf::from(raw), Path::to_path_buf);
+    }
+    if let (Some(rest), Some(home)) = (raw.strip_prefix("~/"), home_dir) {
+        return home.join(rest);
+    }
+    PathBuf::from(raw)
+}
+
 fn canonical_for_dedup(path: &Path) -> PathBuf {
     dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
@@ -134,15 +182,21 @@ fn add_discovered_candidate(
 }
 
 /// Read Agents.md from ~/.grok/, git repo root, and session cwd.
-///
-/// `compat` gates which vendor (`.claude`/`.cursor`) directories are scanned for rules and project-instruction files.
-/// Pass `CompatConfig::default()` to preserve the historical all-vendors behavior.
+/// `compat` gates which vendor directories are scanned. `CompatConfig::default()` preserves all-vendors behavior.
+/// `project_trusted` omits project-scope files when false.
 pub async fn read_agents_config_with_paths(
     working_directory: &str,
     compat: CompatConfig,
+    project_trusted: bool,
 ) -> Vec<AgentConfigFile> {
     let workspace_user_dir = crate::prompt::workspace_user::optional_workspace_user_dir();
-    read_agents_config_with_options(working_directory, workspace_user_dir.as_deref(), compat).await
+    read_agents_config_with_options(
+        working_directory,
+        workspace_user_dir.as_deref(),
+        compat,
+        project_trusted,
+    )
+    .await
 }
 
 /// Inner implementation that accepts an optional workspace user dir as a parameter, making it testable without environment variable mutation.
@@ -150,18 +204,35 @@ async fn read_agents_config_with_options(
     working_directory: &str,
     workspace_user_dir: Option<&Path>,
     compat: CompatConfig,
+    project_trusted: bool,
 ) -> Vec<AgentConfigFile> {
+    let extra_rule_dirs = configured_extra_rule_dirs();
     read_agents_config_with_roots(
         working_directory,
         workspace_user_dir,
         compat,
         xai_grok_tools::util::grok_home::grok_home(),
         xai_dirs::home_dir(),
+        project_trusted,
+        &extra_rule_dirs,
     )
     .await
 }
 
 const HOME_RULES_DIRS: &[&str] = &["rules"];
+
+/// Project instruction markers on the supplied roots, including gitignored files and empty rules directories.
+pub fn has_project_instruction_markers_in<'a>(
+    chain_dirs: impl IntoIterator<Item = &'a Path>,
+) -> bool {
+    let compat = CompatConfig::default();
+    let filenames = compat.agent_filenames();
+    let rules_dirs = compat.rules_dirs();
+    chain_dirs.into_iter().any(|dir| {
+        filenames.iter().any(|name| dir.join(name).exists())
+            || rules_dirs.iter().any(|subdir| dir.join(subdir).is_dir())
+    })
+}
 
 async fn read_agents_config_with_roots(
     working_directory: &str,
@@ -169,18 +240,22 @@ async fn read_agents_config_with_roots(
     compat: CompatConfig,
     grok_home: PathBuf,
     home_dir: Option<PathBuf>,
+    project_trusted: bool,
+    extra_rule_dirs: &[String],
 ) -> Vec<AgentConfigFile> {
     let cwd = PathBuf::from(working_directory);
-    let git_root = git2::Repository::discover(&cwd)
-        .ok()
-        .and_then(|repo| repo.workdir().map(Path::to_path_buf));
+    let project_sources = crate::repo::StartupProjectSources::with_workspace_user(
+        &cwd,
+        workspace_user_dir.map(Path::to_path_buf),
+    );
+    let git_root = project_sources.chain.git_root.clone();
     let gitignore = build_gitignore(git_root.as_deref());
     let agent_filenames = compat.agent_filenames();
     let project_rules_dirs = compat.rules_dirs();
 
     let mut home_roots = Vec::new();
     add_discovery_root(&mut home_roots, grok_home, true, HOME_RULES_DIRS);
-    if let Some(home) = home_dir {
+    if let Some(home) = home_dir.as_ref() {
         if compat.claude.agents || compat.claude.rules {
             add_discovery_root(
                 &mut home_roots,
@@ -208,44 +283,38 @@ async fn read_agents_config_with_roots(
     }
 
     let mut project_roots = Vec::new();
-    if let Some(ref root) = git_root {
-        let mut current = Some(cwd.as_path());
-        let mut chain = Vec::new();
-        while let Some(dir) = current {
-            if !chain.iter().any(|existing| existing == dir) {
-                chain.push(dir.to_path_buf());
-            }
-            if dir == root.as_path() {
-                break;
-            }
-            current = dir.parent();
-        }
-        chain.reverse();
+    for dir in project_sources.instruction_dirs() {
+        add_discovery_root(
+            &mut project_roots,
+            dir.to_path_buf(),
+            true,
+            &project_rules_dirs,
+        );
+    }
 
-        if let Some(user_dir) = workspace_user_dir {
-            let user_dir_canonical = canonical_for_dedup(user_dir);
-            if !chain
-                .iter()
-                .any(|dir| canonical_for_dedup(dir) == user_dir_canonical)
-            {
-                chain.insert(1.min(chain.len()), user_dir.to_path_buf());
+    let mut candidates = Vec::new();
+    let mut seen_candidates = std::collections::HashMap::new();
+
+    // Configured fleet/vendor directories are direct rules directories. They
+    // sit after home rules and before project rules, so project-local guidance
+    // remains the final (highest-precedence) instruction source.
+    for raw in extra_rule_dirs {
+        let dir = expand_tilde_with_home(raw, home_dir.as_deref());
+        for path in find_markdown_files(&dir) {
+            if !is_ignored(&path, gitignore.as_ref(), git_root.as_deref()) {
+                add_discovered_candidate(&mut candidates, &mut seen_candidates, path, true, false);
             }
         }
-
-        for dir in chain {
-            add_discovery_root(&mut project_roots, dir, true, &project_rules_dirs);
-        }
-    } else {
-        add_discovery_root(&mut project_roots, cwd, true, &project_rules_dirs);
     }
 
     let roots = home_roots
         .into_iter()
         .map(|root| (root, false))
         .chain(project_roots.into_iter().map(|root| (root, true)));
-    let mut candidates = Vec::new();
-    let mut seen_candidates = std::collections::HashMap::new();
     for (root, is_project) in roots {
+        if is_project && !project_trusted {
+            continue;
+        }
         if root.scan_named_files {
             for path in find_agent_files(&root.path, &agent_filenames) {
                 if !is_ignored(&path, gitignore.as_ref(), git_root.as_deref()) {
@@ -509,6 +578,7 @@ mod tests {
             repo_root.to_str().unwrap(),
             Some(&user_dir),
             CompatConfig::default(),
+            /*project_trusted*/ true,
         )
         .await;
 
@@ -536,6 +606,7 @@ mod tests {
             user_dir.to_str().unwrap(),
             Some(&user_dir),
             CompatConfig::default(),
+            /*project_trusted*/ true,
         )
         .await;
 
@@ -566,6 +637,7 @@ mod tests {
             repo_root.to_str().unwrap(),
             None,
             CompatConfig::default(),
+            /*project_trusted*/ true,
         )
         .await;
 
@@ -586,9 +658,13 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("AGENTS.md"), "# outside git").unwrap();
 
-        let configs =
-            read_agents_config_with_options(dir.to_str().unwrap(), None, CompatConfig::default())
-                .await;
+        let configs = read_agents_config_with_options(
+            dir.to_str().unwrap(),
+            None,
+            CompatConfig::default(),
+            /*project_trusted*/ true,
+        )
+        .await;
         assert!(configs.iter().any(|c| c.content.contains("outside git")));
     }
 
@@ -633,6 +709,7 @@ mod tests {
             CompatConfig::default(),
             grok_home,
             Some(home),
+            /*project_trusted*/ true,
         )
         .await;
         let contents: Vec<&str> = configs
@@ -683,6 +760,7 @@ mod tests {
             rules_only,
             grok_home.clone(),
             Some(home.clone()),
+            /*project_trusted*/ true,
         )
         .await;
         for vendor in [".claude", ".cursor"] {
@@ -707,6 +785,7 @@ mod tests {
             agents_only,
             grok_home,
             Some(home),
+            /*project_trusted*/ true,
         )
         .await;
         for vendor in [".claude", ".cursor"] {
@@ -742,6 +821,7 @@ mod tests {
             CompatConfig::default(),
             nested.clone(),
             None,
+            /*project_trusted*/ true,
         )
         .await;
         assert_eq!(
@@ -778,6 +858,7 @@ mod tests {
             CompatConfig::default(),
             repo.clone(),
             None,
+            /*project_trusted*/ true,
         )
         .await;
         for expected in ["home-rule", "project-grok-rule", "project-claude-rule"] {
@@ -815,6 +896,7 @@ mod tests {
             compat,
             grok_home,
             Some(home),
+            /*project_trusted*/ true,
         )
         .await;
         assert_eq!(
@@ -846,6 +928,7 @@ mod tests {
             CompatConfig::default(),
             repo.clone(),
             None,
+            /*project_trusted*/ true,
         )
         .await;
         assert_eq!(configs.len(), 1);
@@ -890,6 +973,7 @@ mod tests {
             CompatConfig::default(),
             grok_home,
             Some(home),
+            /*project_trusted*/ true,
         )
         .await;
         for body in [
@@ -933,6 +1017,7 @@ mod tests {
             repo_root.to_str().unwrap(),
             Some(&user_dir),
             CompatConfig::default(),
+            /*project_trusted*/ true,
         )
         .await;
 
@@ -1049,6 +1134,7 @@ mod tests {
             repo_root.to_str().unwrap(),
             None,
             CompatConfig::default(),
+            /*project_trusted*/ true,
         )
         .await;
 
@@ -1082,6 +1168,7 @@ mod tests {
             repo_root.to_str().unwrap(),
             None,
             CompatConfig::default(),
+            /*project_trusted*/ true,
         )
         .await;
 
@@ -1094,5 +1181,57 @@ mod tests {
 
         assert!(has_direct, "Direct CLAUDE.md should be found");
         assert!(has_subdir, ".claude/CLAUDE.md should be found");
+    }
+
+    async fn configured_rule_dirs_load_between_home_and_project_and_deduplicate_aliases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let grok_home = tmp.path().join("grok-home");
+        let home = tmp.path().join("home");
+        let fleet_rules = home.join("fleet-rules");
+        let fleet_alias = home.join("fleet-rules-alias");
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(grok_home.join("rules")).unwrap();
+        fs::create_dir_all(&fleet_rules).unwrap();
+        fs::create_dir_all(&repo).unwrap();
+        init_git_repo(&repo);
+
+        fs::write(grok_home.join("rules/home.md"), "home-rule").unwrap();
+        fs::write(fleet_rules.join("b.md"), "fleet-b").unwrap();
+        fs::write(fleet_rules.join("a.md"), "fleet-a").unwrap();
+        fs::write(fleet_rules.join("ignore.txt"), "not-a-rule").unwrap();
+        fs::write(repo.join("AGENTS.md"), "project-rule").unwrap();
+        std::os::unix::fs::symlink(&fleet_rules, &fleet_alias).unwrap();
+
+        let configured = vec![
+            "~/fleet-rules".to_string(),
+            fleet_alias.display().to_string(),
+            home.join("missing-rules").display().to_string(),
+        ];
+        let configs = read_agents_config_with_roots(
+            repo.to_str().unwrap(),
+            None,
+            CompatConfig::default(),
+            grok_home,
+            Some(home),
+            true,
+            &configured,
+        )
+        .await;
+
+        assert_eq!(
+            configs
+                .iter()
+                .map(|config| config.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["home-rule", "fleet-a", "fleet-b", "project-rule"]
+        );
+        assert_eq!(
+            configs
+                .iter()
+                .filter(|config| config.content.starts_with("fleet-"))
+                .count(),
+            2,
+            "canonical aliases must not load the same rule twice"
+        );
     }
 }

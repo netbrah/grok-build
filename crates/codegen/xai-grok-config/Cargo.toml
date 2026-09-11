@@ -16,12 +16,14 @@ semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 shellexpand = "3.1"
+strum = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
 urlencoding = { workspace = true }
 which = { workspace = true }
 xai-dirs = { workspace = true }
+xai-grok-env = { workspace = true }
 xai-tty-utils = { workspace = true }
 xai-grok-version = { workspace = true }
 
@@ -31,6 +33,7 @@ xai-grok-version = { workspace = true }
 core-foundation = { workspace = true }
 
 [dev-dependencies]
+serial_test = { workspace = true }
 tempfile = { workspace = true }
 
 [features]

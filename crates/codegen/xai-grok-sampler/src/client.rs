@@ -294,14 +294,14 @@ fn deserialize_response_event_for_dialect(
         }
         Err(error) => error,
     };
-
+    let mut last_err = first_err;
     let Some(mut value) = serde_json::from_str::<serde_json::Value>(data).ok() else {
         tracing::error!(
-            error = %first_err,
+            error = %last_err,
             raw_data = %data,
             "Failed to deserialize ResponseStreamEvent from stream"
         );
-        return Err(SamplingError::Serialization(first_err));
+        return Err(SamplingError::Serialization(last_err));
     };
     let event_type = value
         .get("type")
@@ -328,6 +328,28 @@ fn deserialize_response_event_for_dialect(
     {
         tools.retain(|tool| serde_json::from_value::<rs::Tool>(tool.clone()).is_ok());
     }
+    match serde_json::from_value::<rs::ResponseStreamEvent>(value.clone()) {
+        Ok(mut event) => {
+            apply_terminal_event_overrides(&mut event, data);
+            return Ok(Some(event));
+        }
+        Err(error) => last_err = error,
+    }
+
+    // Third-party OpenAI-compatible gateways (LiteLLM, Vertex passthrough) emit
+    // payloads looser than async_openai's strict structs; backfill the required
+    // usage buckets and output-item fields, then retry.
+    repair_gateway_event(&mut value);
+    match serde_json::from_value::<rs::ResponseStreamEvent>(value.clone()) {
+        Ok(mut event) => {
+            apply_terminal_event_overrides(&mut event, data);
+            return Ok(Some(event));
+        }
+        Err(error) => last_err = error,
+    }
+
+    // Last resort: drop echoed request config the client never reads.
+    drop_echoed_request_config(&mut value);
     match serde_json::from_value::<rs::ResponseStreamEvent>(value) {
         Ok(mut event) => {
             apply_terminal_event_overrides(&mut event, data);
@@ -335,11 +357,11 @@ fn deserialize_response_event_for_dialect(
         }
         Err(_) => {
             tracing::error!(
-                error = %first_err,
+                error = %last_err,
                 raw_data = %data,
                 "Failed to deserialize ResponseStreamEvent from stream"
             );
-            Err(SamplingError::Serialization(first_err))
+            Err(SamplingError::Serialization(last_err))
         }
     }
 }
@@ -379,9 +401,153 @@ fn decode_responses_sse_frame_for_model(
     }
 }
 
+/// Fields on a terminal `Response` that only echo back the request configuration.
+/// The Responses stream transform reads `output`, `usage`, `status`, and `incomplete_details`
+/// (plus `id`/`model`/`metadata` here), never these, so dropping one loses nothing the client uses.
+const ECHOED_REQUEST_CONFIG_FIELDS: &[&str] = &[
+    "text",
+    "tools",
+    "tool_choice",
+    "reasoning",
+    "truncation",
+    "prompt",
+];
+
+/// In-place repairs for Responses events emitted by third-party OpenAI-compatible gateways
+/// (LiteLLM, Vertex passthrough) whose payloads are looser than `async_openai`'s strict structs.
+/// Only ever invoked after a strict parse has already failed, so the xAI path is unaffected.
+fn repair_gateway_event(value: &mut serde_json::Value) {
+    // Strip tools that async_openai's rs::Tool can't deserialize (e.g., xAI-specific "x_search").
+    // Instead of maintaining a hardcoded allowlist, try deserializing each tool entry; if it fails, drop it.
+    if let Some(tools) = value
+        .pointer_mut("/response/tools")
+        .and_then(|v| v.as_array_mut())
+    {
+        tools.retain(|t| serde_json::from_value::<rs::Tool>(t.clone()).is_ok());
+    }
+    // `sequence_number` is required on every async_openai event struct, but gateways omit it.
+    // It is only an ordering hint the client never validates, so synthesize one rather than drop the event.
+    if let Some(obj) = value.as_object_mut() {
+        obj.entry("sequence_number")
+            .or_insert_with(|| serde_json::Value::from(0u64));
+    }
+    // `text.format` is required by `rs::ResponseTextParam`, but gateways echo a bare `text: {}`.
+    // The Responses API documents the default as `{"type": "text"}`; restore it instead of failing.
+    if let Some(text) = value
+        .pointer_mut("/response/text")
+        .and_then(|v| v.as_object_mut())
+        && !text.contains_key("format")
+    {
+        text.insert("format".to_owned(), serde_json::json!({ "type": "text" }));
+    }
+    // `rs::ResponseUsage` requires both token-detail breakdowns and all three counts, but gateways
+    // send only the top-level totals. They are additive diagnostics, so synthesize zeroed details
+    // rather than lose the terminal event (and with it the whole turn).
+    for pointer in ["/response/usage", "/usage"] {
+        if let Some(usage) = value.pointer_mut(pointer).and_then(|v| v.as_object_mut()) {
+            repair_usage(usage);
+        }
+    }
+    // Output items carry the turn's actual content (assistant text, reasoning, tool calls), so they
+    // can never be dropped like echoed config. Backfill the fields async_openai marks required that
+    // gateways routinely omit. Streaming item events carry the item at `/item`; the terminal event
+    // carries the whole list at `/response/output`.
+    if let Some(item) = value.pointer_mut("/item") {
+        repair_output_item(item);
+    }
+    if let Some(output) = value
+        .pointer_mut("/response/output")
+        .and_then(|v| v.as_array_mut())
+    {
+        for item in output {
+            repair_output_item(item);
+        }
+    }
+}
+
+/// Backfill `rs::ResponseUsage`'s required counts and token-detail breakdowns.
+/// LiteLLM/Vertex emit only `input_tokens`/`output_tokens`/`total_tokens`, omitting
+/// `input_tokens_details` entirely, which fails the whole terminal event.
+fn repair_usage(usage: &mut serde_json::Map<String, serde_json::Value>) {
+    let zero = || serde_json::Value::from(0u32);
+    for count in ["input_tokens", "output_tokens", "total_tokens"] {
+        usage.entry(count).or_insert_with(zero);
+    }
+    usage
+        .entry("input_tokens_details")
+        .or_insert_with(|| serde_json::json!({ "cached_tokens": 0 }));
+    usage
+        .entry("output_tokens_details")
+        .or_insert_with(|| serde_json::json!({ "reasoning_tokens": 0 }));
+    // The nested breakdowns can also arrive present but partially populated.
+    if let Some(details) = usage
+        .get_mut("input_tokens_details")
+        .and_then(|v| v.as_object_mut())
+    {
+        details.entry("cached_tokens").or_insert_with(zero);
+    }
+    if let Some(details) = usage
+        .get_mut("output_tokens_details")
+        .and_then(|v| v.as_object_mut())
+    {
+        details.entry("reasoning_tokens").or_insert_with(zero);
+    }
+}
+
+/// Backfill required-but-commonly-omitted fields on a single Responses output item.
+/// Only non-`Option` fields need this: serde already defaults a bare `Option` to `None`.
+fn repair_output_item(item: &mut serde_json::Value) {
+    let Some(obj) = item.as_object_mut() else {
+        return;
+    };
+    let str_value = |s: &str| serde_json::Value::String(s.to_owned());
+    match obj.get("type").and_then(|v| v.as_str()) {
+        // `rs::OutputMessage` requires id, role, status, and content.
+        Some("message") => {
+            obj.entry("id").or_insert_with(|| str_value(""));
+            obj.entry("role").or_insert_with(|| str_value("assistant"));
+            obj.entry("status")
+                .or_insert_with(|| str_value("completed"));
+            obj.entry("content")
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            // `rs::OutputTextContent` requires `annotations`, which gateways omit when there are none.
+            if let Some(content) = obj.get_mut("content").and_then(|v| v.as_array_mut()) {
+                for part in content {
+                    if let Some(part) = part.as_object_mut()
+                        && part.get("type").and_then(|v| v.as_str()) == Some("output_text")
+                    {
+                        part.entry("annotations")
+                            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                    }
+                }
+            }
+        }
+        // `rs::ReasoningItem` requires id and summary; summary is absent unless explicitly requested.
+        Some("reasoning") => {
+            obj.entry("id").or_insert_with(|| str_value(""));
+            obj.entry("summary")
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+        }
+        _ => {}
+    }
+}
+
+/// Remove echoed request-configuration fields from a terminal event's `response` object.
+/// The escape hatch for a gateway whose echo of the request is shaped differently than
+/// `async_openai` expects: the turn's actual content survives instead of the response being lost.
+fn drop_echoed_request_config(value: &mut serde_json::Value) {
+    let Some(response) = value
+        .pointer_mut("/response")
+        .and_then(|v| v.as_object_mut())
+    else {
+        return;
+    };
+    for field in ECHOED_REQUEST_CONFIG_FIELDS {
+        response.remove(*field);
+    }
+}
+
 /// On `response.completed` / `response.incomplete`, rewrite `usage.total_tokens` to the live context length from `context_details`.
-/// `total_tokens` drives the CLI's `/context` bar, the auto-compact threshold, and `meta.totalTokens` on persisted sessions.
-/// Under server-side loops (`web_search`, `x_search`) the cumulative total inflates; `context_details` holds the final turn's real context.
 /// Billing fields stay on the cumulative wire values, so telemetry is unaffected.
 fn apply_terminal_event_overrides(event: &mut rs::ResponseStreamEvent, data: &str) {
     let response = match event {
@@ -428,7 +594,6 @@ fn extract_context_total(value: &serde_json::Value) -> Option<u32> {
 /// Splice the raw-JSON hosted-tool entries for `web_search` and `x_search` into a serialized Responses request body's `tools` array.
 /// `x_search` has no `rs::Tool` variant, and `web_search`'s typed filters cannot carry `excluded_domains`, so both travel as raw JSON.
 /// Neither may also be emitted as a typed `rs::Tool`; the API rejects the duplicate.
-/// Shared by the streaming (`create_response_stream`) and non-streaming (`create_response`) paths so neither can silently drop these tools.
 fn splice_extra_tool_entries(
     request_body: &mut serde_json::Value,
     entries: Vec<serde_json::Value>,
@@ -713,13 +878,18 @@ fn agent_version() -> String {
 }
 
 /// Render a User-Agent string for the given origin client.
-///
 /// Mirrors the shell's `user_agent_string_for` but uses sampler-local constants.
 /// The session typically owns the canonical User-Agent rendering for process-wide HTTP clients.
-/// This helper is for per-session sampling clients that want to override it.
 pub fn user_agent_string_for(origin: &OriginClientInfo) -> String {
     let agent_version = agent_version();
     let platform = PlatformInfo::current();
+
+    if std::env::var("APEX_UA").as_deref() == Ok("true") {
+        return format!(
+            "Apex/apexai-{} ({}; {})",
+            agent_version, platform.os, platform.arch
+        );
+    }
 
     if origin.product == AGENT_PRODUCT && origin.version.as_deref() == Some(agent_version.as_str())
     {
@@ -768,8 +938,7 @@ fn auth_rejected(message: String, sent_bearer: Option<&str>) -> SamplingError {
 // =============================================================================
 
 impl SamplingClient {
-    /// Grabs the process-wide shared `reqwest::Client` (HTTP/2 by default, HTTP/1.1 when `config.force_http1` is set).
-    /// Pre-computes the default request headers.
+    /// Uses an identity-specific client for configured mTLS; otherwise grabs the process-wide shared client.
     /// This does not perform any network I/O.
     pub fn new(config: SamplerConfig) -> Result<Self> {
         let mut headers = HeaderMap::new();
@@ -846,6 +1015,15 @@ impl SamplingClient {
             headers.insert(HeaderName::from_static("x-grok-user-id"), header_value);
         }
 
+        if let Some(conversation_group_id) = config.conversation_group_id.as_ref()
+            && let Ok(header_value) = HeaderValue::from_str(conversation_group_id.as_ref())
+        {
+            headers.insert(
+                HeaderName::from_static("x-grok-conv-group-id"),
+                header_value,
+            );
+        }
+
         {
             let client_id = config
                 .client_identifier
@@ -873,8 +1051,12 @@ impl SamplingClient {
             }
         }
 
-        let http = if config.force_http1 {
+        if config.force_http1 {
             tracing::info!("Using HTTP/1.1 for sampling client (force_http1=true)");
+        }
+        let http = if let Some(cert_dir) = config.mtls_cert_dir.as_deref() {
+            crate::shared_http::mtls_client(cert_dir, config.force_http1)?
+        } else if config.force_http1 {
             crate::shared_http::client_http1().map_err(SamplingError::Http)?
         } else {
             crate::shared_http::client().map_err(SamplingError::Http)?
@@ -888,7 +1070,7 @@ impl SamplingClient {
             api_backend = ?config.api_backend,
             auth_scheme = ?config.auth_scheme,
             // "unset" (not "none"): `ReasoningEffort::None` is a real wire value; logging the absent Option as "none" looked like we were sending it
-            reasoning_effort = config.reasoning_effort.map_or("unset", |e| e.as_str()),
+            reasoning_effort = config.reasoning_effort.map_or("unset", |e| e.into()),
             has_api_key = config.api_key.is_some(),
             has_bearer_resolver = config.bearer_resolver.is_some(),
             has_authorization_header = headers.get(AUTHORIZATION).is_some(),
@@ -926,6 +1108,14 @@ impl SamplingClient {
 
     pub fn api_backend(&self) -> ApiBackend {
         self.defaults.api_backend.clone()
+    }
+
+    /// Give the bearer resolver its pre-send hook before [`Self::post`] reads it.
+    /// Awaited separately because `post` is sync (its callers hand the builder straight to `send()`).
+    async fn prepare_bearer(&self) {
+        if let Some(resolver) = &self.bearer_resolver {
+            resolver.prepare_for_send().await;
+        }
     }
 
     /// The credential tail is captured at build time — see [`SentRequest`] for
@@ -1019,11 +1209,8 @@ impl SamplingClient {
     }
 
     /// Invoke the optional 401 attribution callback for one logical 401 response.
-    /// Each of the six UNAUTHORIZED arms in this file calls this helper immediately before returning `SamplingError::Auth(...)`.
     /// The emit happens at the lowest layer that saw the status, so higher layers that react to a 401 must not emit a duplicate event.
-    ///
     /// `sent_suffix` is the fragment [`Self::post`] captured for the rejected request.
-    /// It is already tail-truncated; the full bearer never crosses this boundary.
     fn record_401_attribution(
         &self,
         consumer: crate::attribution::SamplingConsumer,
@@ -1162,6 +1349,13 @@ impl SamplingClient {
         let x_grok_req_id = &payload.x_grok_req_id.clone().unwrap_or_default();
         let model_id = payload.model.clone().unwrap_or_default();
 
+        let request_region = crate::span_timing::Region::from_span(tracing::info_span!(
+            "sampling.nonstream_request",
+            model = %model_id,
+            status_code = tracing::field::Empty,
+            success = tracing::field::Empty,
+        ));
+
         tracing::debug!(
             base_url = %self.base_url,
             model_id = %model_id,
@@ -1179,6 +1373,7 @@ impl SamplingClient {
             deployment_id: payload.x_grok_deployment_id.as_deref(),
             user_id: payload.x_grok_user_id.as_deref(),
         };
+        self.prepare_bearer().await;
         let SentRequest {
             builder,
             sent_bearer,
@@ -1190,6 +1385,12 @@ impl SamplingClient {
             tracing::debug!("HTTP request failed: {}", e);
             e
         })?;
+
+        let status = response.status();
+        request_region
+            .span()
+            .record("status_code", status.as_u16() as i64);
+        request_region.span().record("success", status.is_success());
 
         self.handle_response(response, sent_bearer.as_deref()).await
     }
@@ -1266,6 +1467,7 @@ impl SamplingClient {
             deployment_id: payload.x_grok_deployment_id.as_deref(),
             user_id: payload.x_grok_user_id.as_deref(),
         };
+        self.prepare_bearer().await;
         let SentRequest {
             builder,
             sent_bearer,
@@ -1354,7 +1556,6 @@ impl SamplingClient {
         // Map SSE events into ChatCompletionChunk.
         // Uses `scan` so that `[DONE]` and transport errors both terminate the stream (`None`)
         // The first transport error is emitted to the consumer, then subsequent polls return `None`
-        // This prevents an infinite busy-loop when the HTTP/2 connection drops and h2 keeps producing errors
         let chunks = event_stream
             .scan(false, |had_transport_error, event_res| {
                 if *had_transport_error {
@@ -1450,6 +1651,13 @@ impl SamplingClient {
         let x_grok_req_id = request.x_grok_req_id.as_deref().unwrap_or_default();
         let model_id = request.inner.model.clone().unwrap_or_default();
 
+        let request_region = crate::span_timing::Region::from_span(tracing::info_span!(
+            "sampling.nonstream_request",
+            model = %model_id,
+            status_code = tracing::field::Empty,
+            success = tracing::field::Empty,
+        ));
+
         // The trace field is process-local: upstream session code consumes it (and may upload a payload artifact); the sampler never forwards it
         // Drop it before we send
         request.trace.take();
@@ -1489,6 +1697,7 @@ impl SamplingClient {
                 .as_deref()
                 .is_some_and(|f| f.eq_ignore_ascii_case("codex")),
         );
+        self.prepare_bearer().await;
         let SentRequest {
             builder,
             sent_bearer,
@@ -1501,6 +1710,10 @@ impl SamplingClient {
         })?;
 
         let status = response.status();
+        request_region
+            .span()
+            .record("status_code", status.as_u16() as i64);
+        request_region.span().record("success", status.is_success());
         let model_metadata = extract_model_metadata(response.headers());
         let retry_after_secs = extract_retry_after(response.headers());
         let should_retry = extract_should_retry(response.headers());
@@ -1644,6 +1857,7 @@ impl SamplingClient {
             .defaults
             .doom_loop_recovery
             .map(crate::doom_loop::DoomLoopSignalCollector::new);
+        self.prepare_bearer().await;
         let SentRequest {
             builder,
             sent_bearer,
@@ -1837,6 +2051,13 @@ impl SamplingClient {
         let x_grok_req_id = request.x_grok_req_id.as_deref().unwrap_or_default();
         let model_id = request.inner.model.clone();
 
+        let request_region = crate::span_timing::Region::from_span(tracing::info_span!(
+            "sampling.nonstream_request",
+            model = %model_id,
+            status_code = tracing::field::Empty,
+            success = tracing::field::Empty,
+        ));
+
         // Drop process-local trace data.
         request.trace.take();
 
@@ -1854,6 +2075,7 @@ impl SamplingClient {
             deployment_id: request.x_grok_deployment_id.as_deref(),
             user_id: request.x_grok_user_id.as_deref(),
         };
+        self.prepare_bearer().await;
         let SentRequest {
             builder,
             sent_bearer,
@@ -1866,6 +2088,10 @@ impl SamplingClient {
         })?;
 
         let status = response.status();
+        request_region
+            .span()
+            .record("status_code", status.as_u16() as i64);
+        request_region.span().record("success", status.is_success());
         let model_metadata = extract_model_metadata(response.headers());
         let retry_after_secs = extract_retry_after(response.headers());
         let should_retry = extract_should_retry(response.headers());
@@ -1976,6 +2202,7 @@ impl SamplingClient {
             deployment_id: request.x_grok_deployment_id.as_deref(),
             user_id: request.x_grok_user_id.as_deref(),
         };
+        self.prepare_bearer().await;
         let SentRequest {
             builder,
             sent_bearer,
@@ -2175,7 +2402,6 @@ impl SamplingClient {
     }
 
     /// Send a conversation request using the Responses API (streaming).
-    ///
     /// The third tuple element is the per-request doom-loop signal collector (see [`Self::create_response_stream`]).
     /// Callers that don't consume the signals can ignore it.
     #[allow(clippy::type_complexity)]
@@ -2322,7 +2548,6 @@ impl SamplingClient {
     }
 
     /// Backend-aware streaming call that collects the full response.
-    ///
     /// Honors the request's [`LengthPolicy`](xai_grok_sampling_types::LengthPolicy) like the actor path.
     /// The default still fails a text-only or empty `Length` stop, so side callers never persist a silently truncated result.
     pub async fn conversation_collect(
@@ -2501,6 +2726,7 @@ mod tests {
         SamplerConfig {
             api_key: Some("test-key".to_string()),
             base_url: "https://example.test".to_string(),
+            mtls_cert_dir: None,
             model: "test-model".to_string(),
             max_completion_tokens: None,
             temperature: None,
@@ -2514,6 +2740,7 @@ mod tests {
             context_window: 8192,
             force_http1: false,
             max_retries: None,
+            rate_limit_retry_threshold: None,
             stream_tool_calls: false,
             idle_timeout_secs: None,
             reasoning_effort: None,
@@ -2521,6 +2748,7 @@ mod tests {
             client_identifier: None,
             deployment_id: None,
             user_id: None,
+            conversation_group_id: None,
             client_version: None,
             attribution_callback: None,
             bearer_resolver: None,
@@ -3072,7 +3300,7 @@ mod tests {
             Some("ken-oldtail1"),
             "attribution must describe the bearer the rejected request carried"
         );
-        // A record-time re-read would report the rotated token instead:
+        // A record-time re-read would report the rotated token, not the build-time capture.
         assert_eq!(
             client.current_sent_bearer_suffix().as_deref(),
             Some("en-newtail99"),
@@ -3277,6 +3505,257 @@ mod tests {
         assert_eq!(usage.output_tokens_details.reasoning_tokens, 388);
         // total_tokens is rewritten to ctx.input + ctx.output (5022 + 571), not the wire's cumulative total (6714)
         assert_eq!(usage.total_tokens, 5_593);
+    }
+
+    /// Third-party OpenAI-compatible gateways (LiteLLM, Vertex passthrough) omit `sequence_number`,
+    /// which async_openai declares as a required field. The sanitize path synthesizes one so the
+    /// event still reaches the stream transform instead of failing the turn.
+    #[test]
+    fn deserialize_response_event_defaults_missing_sequence_number() {
+        let sse = r#"{
+            "type": "response.output_text.delta",
+            "item_id": "msg_1",
+            "output_index": 0,
+            "content_index": 0,
+            "delta": "hello"
+        }"#;
+        let event = deserialize_response_event(sse).expect("parse without sequence_number");
+        let rs::ResponseStreamEvent::ResponseOutputTextDelta(e) = event else {
+            panic!("expected ResponseOutputTextDelta");
+        };
+        assert_eq!(e.sequence_number, 0);
+        assert_eq!(e.delta, "hello");
+        assert_eq!(e.item_id, "msg_1");
+    }
+
+    /// A terminal event missing `sequence_number` is repaired *and* still gets the
+    /// `context_details` -> `total_tokens` rewrite; the sanitize retry must not skip the overrides.
+    #[test]
+    fn deserialize_response_event_defaults_sequence_number_on_terminal_event() {
+        let sse = r#"{
+            "type": "response.completed",
+            "response": {
+                "id": "resp_1",
+                "object": "response",
+                "created_at": 0,
+                "model": "grok-build",
+                "status": "completed",
+                "output": [],
+                "usage": {
+                    "input_tokens": 6003,
+                    "input_tokens_details": { "cached_tokens": 1984 },
+                    "output_tokens": 711,
+                    "output_tokens_details": { "reasoning_tokens": 388 },
+                    "total_tokens": 6714,
+                    "context_details": {
+                        "input_tokens": 5022,
+                        "output_tokens": 571
+                    }
+                }
+            }
+        }"#;
+        let event = deserialize_response_event(sse).expect("parse without sequence_number");
+        let rs::ResponseStreamEvent::ResponseCompleted(e) = event else {
+            panic!("expected ResponseCompleted");
+        };
+        assert_eq!(e.sequence_number, 0);
+        let usage = e.response.usage.expect("usage present");
+        assert_eq!(usage.total_tokens, 5_593);
+    }
+
+    /// A present `sequence_number` is never clobbered by the default.
+    #[test]
+    fn deserialize_response_event_preserves_present_sequence_number() {
+        let sse = r#"{
+            "type": "response.output_text.delta",
+            "sequence_number": 42,
+            "item_id": "msg_1",
+            "output_index": 0,
+            "content_index": 0,
+            "delta": "hi"
+        }"#;
+        let event = deserialize_response_event(sse).expect("parse");
+        let rs::ResponseStreamEvent::ResponseOutputTextDelta(e) = event else {
+            panic!("expected ResponseOutputTextDelta");
+        };
+        assert_eq!(e.sequence_number, 42);
+    }
+
+    /// A gateway that echoes `text: {}` without the required `format` still parses; the Responses
+    /// API documents `{"type": "text"}` as the default, so the sanitize path restores it.
+    #[test]
+    fn deserialize_response_event_defaults_missing_text_format() {
+        let sse = r#"{
+            "type": "response.completed",
+            "sequence_number": 0,
+            "response": {
+                "id": "resp_1",
+                "object": "response",
+                "created_at": 0,
+                "model": "grok-build",
+                "status": "completed",
+                "text": {},
+                "output": []
+            }
+        }"#;
+        let event = deserialize_response_event(sse).expect("parse with bare text object");
+        let rs::ResponseStreamEvent::ResponseCompleted(e) = event else {
+            panic!("expected ResponseCompleted");
+        };
+        assert!(matches!(
+            e.response.text.expect("text present").format,
+            rs::TextResponseFormatConfiguration::Text
+        ));
+    }
+
+    /// Regression for a live NetApp LiteLLM gateway (xai/grok-4.6 routed via Vertex) capture.
+    /// Its terminal event fails strict parsing on *two* fields at once: a bare `text: {}` and a
+    /// `usage` block with no `input_tokens_details`. Repairing only the first left the second to
+    /// fail, which killed every turn on that gateway.
+    #[test]
+    fn deserialize_response_event_repairs_litellm_terminal_event() {
+        // Captured verbatim off the wire; only the opaque `id` is abbreviated.
+        let sse = r#"{
+            "type": "response.completed",
+            "response": {
+                "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxt",
+                "created_at": 1788312531,
+                "metadata": {},
+                "model": "xai/grok-4.6",
+                "object": "response",
+                "output": [{
+                    "type": "message",
+                    "id": "chatcmpl-46f4d709",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Hi!", "annotations": []}]
+                }],
+                "parallel_tool_calls": false,
+                "temperature": 0.0,
+                "tool_choice": "auto",
+                "tools": [],
+                "status": "completed",
+                "text": {},
+                "usage": {
+                    "input_tokens": 9,
+                    "output_tokens": 10,
+                    "output_tokens_details": {"reasoning_tokens": 0},
+                    "total_tokens": 19
+                }
+            },
+            "model": "grok-4.6"
+        }"#;
+        let event =
+            deserialize_response_event(sse).expect("live gateway terminal event must parse");
+        let rs::ResponseStreamEvent::ResponseCompleted(e) = event else {
+            panic!("expected ResponseCompleted");
+        };
+        let usage = e.response.usage.expect("usage preserved");
+        assert_eq!(usage.input_tokens, 9);
+        assert_eq!(usage.output_tokens, 10);
+        // The omitted breakdown is synthesized rather than dropping the whole turn.
+        assert_eq!(usage.input_tokens_details.cached_tokens, 0);
+        assert_eq!(usage.output_tokens_details.reasoning_tokens, 0);
+        assert_eq!(e.response.output.len(), 1, "assistant message must survive");
+    }
+
+    /// A `text` object the client cannot repair (unknown `format` shape) falls through to the
+    /// echo-drop tier: the field is discarded and the turn's real content still arrives.
+    #[test]
+    fn deserialize_response_event_drops_unparseable_echoed_config() {
+        let sse = r#"{
+            "type": "response.completed",
+            "sequence_number": 0,
+            "response": {
+                "id": "resp_1",
+                "object": "response",
+                "created_at": 0,
+                "model": "grok-build",
+                "status": "completed",
+                "text": { "format": { "type": "not_a_real_format" } },
+                "output": [],
+                "usage": {
+                    "input_tokens": 10,
+                    "input_tokens_details": { "cached_tokens": 0 },
+                    "output_tokens": 5,
+                    "output_tokens_details": { "reasoning_tokens": 0 },
+                    "total_tokens": 15
+                }
+            }
+        }"#;
+        let event = deserialize_response_event(sse).expect("parse via echo-drop tier");
+        let rs::ResponseStreamEvent::ResponseCompleted(e) = event else {
+            panic!("expected ResponseCompleted");
+        };
+        assert!(e.response.text.is_none(), "unparseable echo dropped");
+        // The fields the client actually reads survive.
+        assert_eq!(e.response.usage.expect("usage").total_tokens, 15);
+    }
+
+    /// Reasoning and message output items missing the fields async_openai marks required
+    /// (`summary`, `status`, `annotations`) still parse. These carry the turn's real content,
+    /// so failing here is what silently kills the agent loop rather than just the text.
+    #[test]
+    fn deserialize_response_event_repairs_output_items() {
+        let sse = r#"{
+            "type": "response.completed",
+            "response": {
+                "id": "resp_1",
+                "object": "response",
+                "created_at": 0,
+                "model": "grok-build",
+                "status": "completed",
+                "output": [
+                    { "type": "reasoning", "id": "rs_1" },
+                    {
+                        "type": "message",
+                        "id": "msg_1",
+                        "content": [ { "type": "output_text", "text": "an answer" } ]
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "read_file",
+                        "arguments": "{\"path\":\"a.txt\"}"
+                    }
+                ]
+            }
+        }"#;
+        let event = deserialize_response_event(sse).expect("parse gateway-shaped output items");
+        let rs::ResponseStreamEvent::ResponseCompleted(e) = event else {
+            panic!("expected ResponseCompleted");
+        };
+        assert_eq!(e.response.output.len(), 3, "no output item was dropped");
+        // The tool call survives intact -- this is what keeps the agent loop alive.
+        let rs::OutputItem::FunctionCall(call) = &e.response.output[2] else {
+            panic!("expected FunctionCall");
+        };
+        assert_eq!(call.name, "read_file");
+        assert_eq!(call.call_id, "call_1");
+    }
+
+    /// The same repair applies to streaming `response.output_item.done`, where the item
+    /// arrives at `/item` rather than inside `/response/output`.
+    #[test]
+    fn deserialize_response_event_repairs_streamed_output_item() {
+        let sse = r#"{
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "type": "function_call",
+                "call_id": "call_9",
+                "name": "run_shell",
+                "arguments": "{}"
+            }
+        }"#;
+        let event = deserialize_response_event(sse).expect("parse streamed item");
+        let rs::ResponseStreamEvent::ResponseOutputItemDone(e) = event else {
+            panic!("expected ResponseOutputItemDone");
+        };
+        let rs::OutputItem::FunctionCall(call) = &e.item else {
+            panic!("expected FunctionCall");
+        };
+        assert_eq!(call.name, "run_shell");
     }
 
     #[test]

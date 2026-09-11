@@ -2,7 +2,8 @@
 //!
 //! The merged result is the **default** config; requirements layers sit on top via [`crate::validation`].
 
-use std::path::Path;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 
 use crate::paths::{system_config_dir, user_grok_home};
 use crate::version_overrides::{self, apply_version_overrides};
@@ -91,6 +92,46 @@ pub const USER_CONFIG_FILENAME: &str = "config.toml";
 /// Managed config filename, shared by the loaders in this module.
 pub const MANAGED_CONFIG_FILENAME: &str = "managed_config.toml";
 
+/// Optional launcher-selected path that replaces the system managed-config file.
+pub const GROK_MANAGED_CONFIG_PATH_ENV: &str = "GROK_MANAGED_CONFIG_PATH";
+
+/// The file feeding the lowest-priority managed-config merge slot.
+///
+/// `is_system` is deliberately false for an env-selected path: choosing a
+/// file through process environment does not prove root ownership and must
+/// not grant policy or hook exemptions reserved for `/etc/grok`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemManagedConfigSource {
+    pub path: PathBuf,
+    pub is_system: bool,
+}
+
+fn resolve_system_managed_config_source(
+    env_path: Option<&OsStr>,
+    system_dir: Option<&Path>,
+) -> Option<SystemManagedConfigSource> {
+    if let Some(path) = env_path.filter(|path| !path.is_empty()) {
+        return Some(SystemManagedConfigSource {
+            path: PathBuf::from(path),
+            is_system: false,
+        });
+    }
+    system_dir.map(|dir| SystemManagedConfigSource {
+        path: dir.join(MANAGED_CONFIG_FILENAME),
+        is_system: true,
+    })
+}
+
+/// Resolve the file selected for the system-managed merge slot.
+///
+/// A non-empty `GROK_MANAGED_CONFIG_PATH` replaces the platform default;
+/// otherwise this returns `/etc/grok/managed_config.toml` on Unix.
+pub fn system_managed_config_source() -> Option<SystemManagedConfigSource> {
+    let env_path = std::env::var_os(GROK_MANAGED_CONFIG_PATH_ENV);
+    let system_dir = system_config_dir();
+    resolve_system_managed_config_source(env_path.as_deref(), system_dir.as_deref())
+}
+
 /// Requirements (cloud-cache) filename, synced from the server alongside the managed config.
 pub const REQUIREMENTS_FILENAME: &str = "requirements.toml";
 
@@ -122,8 +163,8 @@ fn load_user_config_layer(home: Option<&Path>, filename: &str) -> std::io::Resul
 }
 
 pub fn load_system_managed_config() -> std::io::Result<toml::Value> {
-    let mut v = match system_config_dir() {
-        Some(dir) => load_toml_file(&dir.join(MANAGED_CONFIG_FILENAME))?,
+    let mut v = match system_managed_config_source() {
+        Some(source) => load_toml_file(&source.path)?,
         None => toml::Value::Table(toml::map::Map::new()),
     };
     apply_version_overrides_with_registered(&mut v)?;
@@ -135,7 +176,8 @@ pub fn load_system_managed_config() -> std::io::Result<toml::Value> {
 pub struct ManagedConfigLayer {
     pub value: toml::Value,
     pub path: std::path::PathBuf,
-    /// `true` for the root-owned system layer (`/etc/grok`), derived from the load directory.
+    /// `true` only for the platform system layer (`/etc/grok`). An
+    /// env-selected replacement deliberately remains non-system provenance.
     pub is_system: bool,
 }
 
@@ -143,7 +185,8 @@ pub struct ManagedConfigLayer {
 /// Absent layers are skipped; unparsable layers are skipped with a warning.
 /// One bad layer never drops the others.
 pub fn managed_config_layers() -> Vec<ManagedConfigLayer> {
-    managed_config_layers_at(system_config_dir().as_deref(), user_grok_home().as_deref())
+    let system_source = system_managed_config_source();
+    managed_config_layers_with_source(system_source.as_ref(), user_grok_home().as_deref())
 }
 
 /// [`managed_config_layers`] with explicit directories.
@@ -151,9 +194,21 @@ pub fn managed_config_layers_at(
     system_dir: Option<&Path>,
     user_home: Option<&Path>,
 ) -> Vec<ManagedConfigLayer> {
+    let system_source = resolve_system_managed_config_source(None, system_dir);
+    managed_config_layers_with_source(system_source.as_ref(), user_home)
+}
+
+fn managed_config_layers_with_source(
+    system_source: Option<&SystemManagedConfigSource>,
+    user_home: Option<&Path>,
+) -> Vec<ManagedConfigLayer> {
     let mut layers = Vec::new();
-    for (dir, is_system) in [(system_dir, true), (user_home, false)] {
-        let Some(path) = dir.map(|d| d.join(MANAGED_CONFIG_FILENAME)) else {
+    let candidates = [
+        system_source.map(|source| (source.path.clone(), source.is_system)),
+        user_home.map(|dir| (dir.join(MANAGED_CONFIG_FILENAME), false)),
+    ];
+    for candidate in candidates {
+        let Some((path, is_system)) = candidate else {
             continue;
         };
         if !path.is_file() {
@@ -176,8 +231,19 @@ pub fn managed_config_layers_at(
 /// A hook's origin (held by `xai_grok_hooks::HookSpec::layer`).
 /// Defined here, not in `xai-grok-hooks`, since the dep direction is `xai-grok-hooks -> xai-grok-config`.
 /// This crate sets the config tiers; `File`/`Plugin` are set downstream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::AsRefStr,
+    strum::IntoStaticStr,
+)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum HookProvenance {
     /// `/etc/grok/managed_config.toml` (root-owned).
     SystemManaged,
@@ -210,13 +276,11 @@ impl HookProvenance {
     /// Root-owned admin policy tiers; the user cannot disable or skip their hooks.
     /// Every disable path must consult this predicate rather than re-derive the rule from names or paths.
     /// `$GROK_HOME` tiers (`Managed`, `UserRequirements`) never qualify: the user owns that directory and can rewrite or repoint it.
-    /// Exempting them would let any file the user edits grant itself the exemption.
     pub fn is_managed_policy(self) -> bool {
         matches!(self, Self::SystemManaged | Self::Requirements)
     }
 
     /// Authority rank for duplicate resolution: when byte-identical hooks arrive from several tiers, the highest-ranked copy keeps its provenance.
-    /// The provenance carries the no-disable rule and the pinned timeout/env; root-owned tiers outrank `$GROK_HOME` tiers.
     /// Deliberately NOT the config-merge precedence (where user overrides managed).
     /// Merge precedence answers "whose VALUE wins"; this answers "whose copy of one identical hook is authoritative": ownership, not recency.
     pub fn authority_rank(self) -> u8 {
@@ -230,26 +294,12 @@ impl HookProvenance {
             Self::Unknown => 0,
         }
     }
-
-    /// The snake_case wire string (matches the derived serde representation).
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::SystemManaged => "system_managed",
-            Self::Managed => "managed",
-            Self::Requirements => "requirements",
-            Self::UserRequirements => "user_requirements",
-            Self::User => "user",
-            Self::File => "file",
-            Self::Plugin => "plugin",
-            Self::Unknown => "unknown",
-        }
-    }
 }
 
 impl std::str::FromStr for HookProvenance {
     type Err = std::convert::Infallible;
 
-    /// Inverse of [`HookProvenance::as_str`].
+    /// Inverse of [`HookProvenance`]'s strum string.
     /// Unrecognized strings map to [`HookProvenance::Unknown`] (forward-tolerant), so this never fails.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
@@ -315,9 +365,14 @@ impl HookConfigLayer {
 /// All config-layer `hooks` blocks, highest authority first (matching [`effective_config_base`]).
 /// Read WITHOUT env-expansion and never merged (hooks combine additively downstream).
 /// Absent or unparsable layers are skipped with a warning so one bad layer can't drop the others.
-/// macOS MDM is excluded (not a TOML file).
 pub fn hook_config_layers() -> Vec<HookConfigLayer> {
-    hook_config_layers_at(system_config_dir().as_deref(), user_grok_home().as_deref())
+    let system_dir = system_config_dir();
+    let system_source = system_managed_config_source();
+    hook_config_layers_with_source(
+        system_dir.as_deref(),
+        user_grok_home().as_deref(),
+        system_source.as_ref(),
+    )
 }
 
 /// Warn when a policy-tier hooks file is a symlink or not root-owned; the no-disable exemption assumes admin ownership of the system dir.
@@ -352,12 +407,20 @@ pub fn hook_config_layers_at(
     system_dir: Option<&Path>,
     user_home: Option<&Path>,
 ) -> Vec<HookConfigLayer> {
+    let system_source = resolve_system_managed_config_source(None, system_dir);
+    hook_config_layers_with_source(system_dir, user_home, system_source.as_ref())
+}
+
+fn hook_config_layers_with_source(
+    system_dir: Option<&Path>,
+    user_home: Option<&Path>,
+    system_managed_source: Option<&SystemManagedConfigSource>,
+) -> Vec<HookConfigLayer> {
     /// One candidate config-hook layer: which directory and filename to read, and the provenance/label to stamp on hooks found there.
-    struct LayerSpec<'a> {
-        dir: Option<&'a Path>,
-        filename: &'a str,
+    struct LayerSpec {
+        path: Option<PathBuf>,
         provenance: HookProvenance,
-        source_name: &'a str,
+        source_name: &'static str,
     }
 
     // Highest config authority first, matching `effective_config_base` precedence (requirements > user > managed > system_managed)
@@ -365,46 +428,48 @@ pub fn hook_config_layers_at(
     // Byte-identical duplicates resolve by `HookProvenance::authority_rank` regardless of this order; every distinct hook runs regardless
     let specs = [
         LayerSpec {
-            dir: system_dir,
-            filename: REQUIREMENTS_FILENAME,
+            path: system_dir.map(|dir| dir.join(REQUIREMENTS_FILENAME)),
             provenance: HookProvenance::Requirements,
             source_name: "requirements/system",
         },
         LayerSpec {
-            dir: user_home,
-            filename: REQUIREMENTS_FILENAME,
+            path: user_home.map(|dir| dir.join(REQUIREMENTS_FILENAME)),
             provenance: HookProvenance::UserRequirements,
             source_name: "requirements/user",
         },
         LayerSpec {
-            dir: user_home,
-            filename: USER_CONFIG_FILENAME,
+            path: user_home.map(|dir| dir.join(USER_CONFIG_FILENAME)),
             provenance: HookProvenance::User,
             source_name: "user",
         },
         LayerSpec {
-            dir: user_home,
-            filename: MANAGED_CONFIG_FILENAME,
+            path: user_home.map(|dir| dir.join(MANAGED_CONFIG_FILENAME)),
             provenance: HookProvenance::Managed,
             source_name: "managed",
         },
         LayerSpec {
-            dir: system_dir,
-            filename: MANAGED_CONFIG_FILENAME,
-            provenance: HookProvenance::SystemManaged,
-            source_name: "system_managed",
+            path: system_managed_source.map(|source| source.path.clone()),
+            provenance: if system_managed_source.is_some_and(|source| source.is_system) {
+                HookProvenance::SystemManaged
+            } else {
+                HookProvenance::Managed
+            },
+            source_name: if system_managed_source.is_some_and(|source| source.is_system) {
+                "system_managed"
+            } else {
+                "managed/environment"
+            },
         },
     ];
 
     let mut layers = Vec::new();
     for LayerSpec {
-        dir,
-        filename,
+        path,
         provenance,
         source_name,
     } in specs
     {
-        let Some(path) = dir.map(|d| d.join(filename)) else {
+        let Some(path) = path else {
             continue;
         };
         if !path.is_file() {
@@ -461,14 +526,8 @@ pub fn apply_version_overrides_with_registered(value: &mut toml::Value) -> std::
 }
 
 /// Normalize a single config layer in place, before it is merged with the others.
-///
-/// Currently: couple `[toolset.web_search]`'s mutually-exclusive `allowed_domains` and `excluded_domains`.
-/// If exactly one is set (non-empty), clear the other to `[]`, so the two keys travel together.
 /// `deep_merge_toml` then replaces the whole policy from the winning layer instead of mixing keys across layers.
-/// Both-set (a user error) and both-unset are left alone; the both-set case is handled downstream where the section is read.
-///
 /// This runs on every input of the merge, not only the disk layers.
-/// Campaign and version-override patches overlay *after* the layer merge, so they are normalized too, in `apply_patches`.
 pub(crate) fn normalize_config_layer(layer: &mut toml::Value) {
     let Some(web_search) = layer
         .as_table_mut()
@@ -550,8 +609,94 @@ pub fn expand_env_vars_in_string(input: &str) -> String {
 mod tests {
     use super::*;
 
+    struct EnvRestore {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvRestore {
+        fn set(key: &'static str, value: &Path) -> Self {
+            let previous = std::env::var_os(key);
+            // SAFETY: this test is serialized and no other test reads this new env key.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                // SAFETY: paired with the serialized mutation in `set`.
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                // SAFETY: paired with the serialized mutation in `set`.
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
     fn write(dir: &Path, name: &str, contents: &str) {
         std::fs::write(dir.join(name), contents).unwrap();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn env_selected_managed_config_uses_system_slot_without_system_provenance() {
+        let selected_dir = tempfile::tempdir().unwrap();
+        let selected_path = selected_dir.path().join("fleet.toml");
+        std::fs::write(
+            &selected_path,
+            "[models]\ndefault = \"fleet\"\n[[hooks.PreToolUse]]\n[[hooks.PreToolUse.hooks]]\ntype = \"command\"\ncommand = \"fleet-hook\"\n",
+        )
+        .unwrap();
+        let _env = EnvRestore::set(GROK_MANAGED_CONFIG_PATH_ENV, &selected_path);
+
+        let loaded = load_system_managed_config().unwrap();
+        assert_eq!(loaded["models"]["default"].as_str(), Some("fleet"));
+
+        let layers = managed_config_layers();
+        let selected = layers
+            .iter()
+            .find(|layer| layer.path == selected_path)
+            .expect("env-selected managed layer is enumerated");
+        assert!(
+            !selected.is_system,
+            "an env path is not root-policy provenance"
+        );
+
+        let hook_layers = hook_config_layers();
+        let selected_hooks = hook_layers
+            .iter()
+            .find(|layer| layer.path() == selected_path)
+            .expect("env-selected managed hooks are discovered");
+        assert_eq!(selected_hooks.provenance(), HookProvenance::Managed);
+        assert!(!selected_hooks.provenance().is_managed_policy());
+
+        let layers = crate::ConfigLayers {
+            system_managed: loaded,
+            managed: toml::from_str("[models]\ndefault = \"home-managed\"\n").unwrap(),
+            user: toml::from_str("[models]\ndefault = \"user\"\n").unwrap(),
+            ..Default::default()
+        };
+        assert_eq!(
+            layers.effective_config_base()["models"]["default"].as_str(),
+            Some("user"),
+            "the selected file keeps the existing lowest managed merge position"
+        );
+    }
+
+    #[test]
+    fn explicit_system_managed_directory_keeps_system_provenance() {
+        let system = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        write(system.path(), MANAGED_CONFIG_FILENAME, "system = true\n");
+        write(user.path(), MANAGED_CONFIG_FILENAME, "user = true\n");
+
+        let layers = managed_config_layers_at(Some(system.path()), Some(user.path()));
+        assert_eq!(layers.len(), 2);
+        assert_eq!(layers[0].path, system.path().join(MANAGED_CONFIG_FILENAME));
+        assert!(layers[0].is_system);
+        assert_eq!(layers[1].path, user.path().join(MANAGED_CONFIG_FILENAME));
+        assert!(!layers[1].is_system);
     }
 
     #[test]
