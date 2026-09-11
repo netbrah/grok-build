@@ -7,7 +7,7 @@ use agent_client_protocol as acp;
 use async_openai::types::responses::ResponseStreamEvent;
 use futures_util::StreamExt;
 use reqwest::StatusCode;
-use xai_grok_sampler::SamplerConfig as SamplingConfig;
+use xai_grok_sampler::{ResponsesStreamItem, SamplerConfig as SamplingConfig};
 
 // Re-export compaction utilities from xai-chat-state so existing callers that import from this module continue to work
 pub use xai_chat_state::compaction_utils::{
@@ -647,7 +647,10 @@ pub(crate) async fn generate_session_compact(
                     ));
                 }
                 match chunk_result {
-                    Ok(chunk) => {
+                    Ok(ResponsesStreamItem::Heartbeat) => {
+                        last_progress_at = std::time::Instant::now();
+                    }
+                    Ok(ResponsesStreamItem::Event(chunk)) => {
                         if !matches!(
                             &chunk,
                             ResponseStreamEvent::ResponseCreated(_)

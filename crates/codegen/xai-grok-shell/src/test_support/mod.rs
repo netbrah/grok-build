@@ -24,6 +24,16 @@ fn redirect_unified_log_for_tests() {
     xai_grok_telemetry::unified_log::redirect_to_temp_for_tests();
 }
 
+/// Install jsonwebtoken's process-level CryptoProvider pre-main. This crate's test
+/// builds enable both `rust_crypto` and `aws_lc_rs`, so the crate-feature fallback
+/// panics and `OnceLock::get_or_init` caches it: whichever test touches JWT crypto
+/// before any `install_default` permanently poisons the binary, and later installs
+/// silently fail. Installing once here makes every test's first JWT operation safe.
+#[ctor::ctor]
+fn install_jwt_crypto_provider_for_tests() {
+    let _ = jsonwebtoken::crypto::rust_crypto::DEFAULT_PROVIDER.install_default();
+}
+
 /// Prepend the hermetic git binary (via `GIT_BIN_PATH`) to `PATH`.
 /// `Command::new("git")` in test helpers then resolves to the Bazel-provided static binary instead of system-installed git.
 ///

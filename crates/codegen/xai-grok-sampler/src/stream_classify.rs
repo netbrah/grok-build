@@ -3,6 +3,7 @@
 use xai_grok_sampling_types::{ChatCompletionChunk, messages, rs};
 
 use crate::span_timing::ItemClass;
+use crate::types::ResponsesStreamItem;
 
 fn chat_chunk_has_content(chunk: &ChatCompletionChunk) -> bool {
     use xai_grok_sampling_types::ChatChunkDelta;
@@ -176,6 +177,13 @@ pub(crate) fn responses_event_class(event: &rs::ResponseStreamEvent) -> ItemClas
         ItemClass::End
     } else {
         ItemClass::Other
+    }
+}
+
+pub(crate) fn responses_stream_item_class(item: &ResponsesStreamItem) -> ItemClass {
+    match item {
+        ResponsesStreamItem::Event(event) => responses_event_class(event),
+        ResponsesStreamItem::Heartbeat => ItemClass::Other,
     }
 }
 

@@ -36,8 +36,10 @@ use xai_grok_sampling_types::{
 
 use crate::config::{AuthScheme, OriginClientInfo, SamplerConfig};
 use crate::events::SamplingErrorInfo;
+use crate::provider::{ResponsesWireDialect, responses_wire_dialect_for_model_family};
 use crate::span_timing::{ERROR, STATUS_CODE, SUCCESS, StreamSpanTiming};
-use crate::stream_classify::{chat_chunk_class, message_event_class, responses_event_class};
+use crate::stream_classify::{chat_chunk_class, message_event_class, responses_stream_item_class};
+use crate::types::ResponsesStreamItem;
 use xai_grok_auth::bearer_suffix;
 
 pub use xai_grok_sampling_types::ApiBackend;
@@ -48,6 +50,62 @@ const DEFAULT_CLIENT_IDENTIFIER: &str = "grok-shell";
 /// Product identifier baked into User-Agent strings.
 const AGENT_PRODUCT: &str = "grok-shell";
 const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 128_000;
+const RESPONSES_AUXILIARY_EVENT_TYPES: [&str; 2] = ["keepalive", "response.metadata"];
+
+/// Every top-level event discriminator modeled by this async-openai build.
+/// Only dialects with an explicit forward-compatibility policy may ignore a
+/// type outside this list; malformed instances of a listed type stay fatal.
+const RESPONSES_KNOWN_EVENT_TYPES: [&str; 49] = [
+    "response.created",
+    "response.in_progress",
+    "response.completed",
+    "response.failed",
+    "response.incomplete",
+    "response.output_item.added",
+    "response.output_item.done",
+    "response.content_part.added",
+    "response.content_part.done",
+    "response.output_text.delta",
+    "response.output_text.done",
+    "response.refusal.delta",
+    "response.refusal.done",
+    "response.function_call_arguments.delta",
+    "response.function_call_arguments.done",
+    "response.file_search_call.in_progress",
+    "response.file_search_call.searching",
+    "response.file_search_call.completed",
+    "response.web_search_call.in_progress",
+    "response.web_search_call.searching",
+    "response.web_search_call.completed",
+    "response.reasoning_summary_part.added",
+    "response.reasoning_summary_part.done",
+    "response.reasoning_summary_text.delta",
+    "response.reasoning_summary_text.done",
+    "response.reasoning_text.delta",
+    "response.reasoning_text.done",
+    "response.image_generation_call.completed",
+    "response.image_generation_call.generating",
+    "response.image_generation_call.in_progress",
+    "response.image_generation_call.partial_image",
+    "response.mcp_call_arguments.delta",
+    "response.mcp_call_arguments.done",
+    "response.mcp_call.completed",
+    "response.mcp_call.failed",
+    "response.mcp_call.in_progress",
+    "response.mcp_list_tools.completed",
+    "response.mcp_list_tools.failed",
+    "response.mcp_list_tools.in_progress",
+    "response.code_interpreter_call.in_progress",
+    "response.code_interpreter_call.interpreting",
+    "response.code_interpreter_call.completed",
+    "response.code_interpreter_call_code.delta",
+    "response.code_interpreter_call_code.done",
+    "response.output_text.annotation.added",
+    "response.queued",
+    "response.custom_tool_call_input.delta",
+    "response.custom_tool_call_input.done",
+    "error",
+];
 
 /// Per-request `x-grok-*` headers. Optional fields are skipped when empty/`None`.
 struct GrokRequestHeaders<'a> {
@@ -87,36 +145,238 @@ impl GrokRequestHeaders<'_> {
     }
 }
 
-/// Deserialize a Responses SSE event, stripping unknown tools and rewriting terminal `total_tokens` from `context_details`.
-pub(crate) fn deserialize_response_event(data: &str) -> Result<rs::ResponseStreamEvent> {
-    let mut event = match serde_json::from_str::<rs::ResponseStreamEvent>(data) {
-        Ok(event) => event,
-        Err(first_err) => {
-            // Try sanitizing: parse as Value, strip unknown tools, retry.
-            if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(data) {
-                // Strip tools that async_openai's rs::Tool can't deserialize (e.g., xAI-specific "x_search")
-                // Instead of maintaining a hardcoded allowlist, try deserializing each tool entry; if it fails, drop it
-                if let Some(tools) = value
-                    .pointer_mut("/response/tools")
-                    .and_then(|v| v.as_array_mut())
-                {
-                    tools.retain(|t| serde_json::from_value::<rs::Tool>(t.clone()).is_ok());
-                }
-                if let Ok(mut event) = serde_json::from_value::<rs::ResponseStreamEvent>(value) {
-                    apply_terminal_event_overrides(&mut event, data);
-                    return Ok(event);
-                }
-            }
+fn is_responses_auxiliary_event(event_name: &str, data: &str) -> bool {
+    if RESPONSES_AUXILIARY_EVENT_TYPES.contains(&event_name) {
+        return true;
+    }
+    if !RESPONSES_AUXILIARY_EVENT_TYPES
+        .iter()
+        .any(|event_type| data.contains(event_type))
+    {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(data)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .map(|event_type| RESPONSES_AUXILIARY_EVENT_TYPES.contains(&event_type))
+        })
+        .unwrap_or(false)
+}
+
+fn normalize_response_event_for_dialect(
+    value: &mut serde_json::Value,
+    dialect: ResponsesWireDialect,
+    requested_model: &str,
+) {
+    let Some(mut event_type) = value
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+    else {
+        return;
+    };
+    // xAI accepts `response.done` as its terminal spelling. Keep this alias
+    // provider-scoped and translate it only at the typed SDK boundary.
+    if dialect == ResponsesWireDialect::Xai && event_type == "response.done" {
+        value["type"] = serde_json::Value::String("response.completed".to_owned());
+        event_type = "response.completed".to_owned();
+    }
+    if !event_type.starts_with("response.")
+        || !matches!(
+            dialect,
+            ResponsesWireDialect::Xai | ResponsesWireDialect::Codex
+        )
+    {
+        return;
+    }
+
+    let Some(event) = value.as_object_mut() else {
+        return;
+    };
+    event
+        .entry("sequence_number")
+        .or_insert(serde_json::Value::from(0));
+
+    let status = match event_type.as_str() {
+        "response.created" | "response.in_progress" => Some("in_progress"),
+        "response.completed" => Some("completed"),
+        "response.failed" => Some("failed"),
+        "response.incomplete" => Some("incomplete"),
+        "response.queued" => Some("queued"),
+        _ => None,
+    };
+    let Some(status) = status else {
+        return;
+    };
+    let Some(response) = event
+        .get_mut("response")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+
+    // xAI may echo the default text configuration as an empty object. The
+    // SDK requires the otherwise implicit default format to be explicit.
+    if let Some(text) = response
+        .get_mut("text")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        text.entry("format")
+            .or_insert_with(|| serde_json::json!({"type": "text"}));
+    }
+
+    // Both compatible dialects may omit token-detail buckets from otherwise
+    // complete usage. Populate only missing fields; supplied values (including
+    // invalid nulls) remain untouched and therefore fail typed decoding.
+    if let Some(usage) = response
+        .get_mut("usage")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        usage
+            .entry("input_tokens")
+            .or_insert(serde_json::Value::from(0));
+        usage
+            .entry("output_tokens")
+            .or_insert(serde_json::Value::from(0));
+        usage
+            .entry("total_tokens")
+            .or_insert(serde_json::Value::from(0));
+        let input_details = usage
+            .entry("input_tokens_details")
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(input_details) = input_details.as_object_mut() {
+            input_details
+                .entry("cached_tokens")
+                .or_insert(serde_json::Value::from(0));
+        }
+        let output_details = usage
+            .entry("output_tokens_details")
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(output_details) = output_details.as_object_mut() {
+            output_details
+                .entry("reasoning_tokens")
+                .or_insert(serde_json::Value::from(0));
+        }
+    }
+
+    if dialect != ResponsesWireDialect::Codex {
+        return;
+    }
+    response
+        .entry("created_at")
+        .or_insert(serde_json::Value::from(0));
+    response
+        .entry("model")
+        .or_insert_with(|| serde_json::Value::String(requested_model.to_owned()));
+    response
+        .entry("object")
+        .or_insert_with(|| serde_json::Value::String("response".to_owned()));
+    response
+        .entry("output")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    response
+        .entry("status")
+        .or_insert_with(|| serde_json::Value::String(status.to_owned()));
+}
+
+fn deserialize_response_event_for_dialect(
+    data: &str,
+    dialect: ResponsesWireDialect,
+    requested_model: &str,
+) -> Result<Option<rs::ResponseStreamEvent>> {
+    let first_err = match serde_json::from_str::<rs::ResponseStreamEvent>(data) {
+        Ok(mut event) => {
+            apply_terminal_event_overrides(&mut event, data);
+            return Ok(Some(event));
+        }
+        Err(error) => error,
+    };
+
+    let Some(mut value) = serde_json::from_str::<serde_json::Value>(data).ok() else {
+        tracing::error!(
+            error = %first_err,
+            raw_data = %data,
+            "Failed to deserialize ResponseStreamEvent from stream"
+        );
+        return Err(SamplingError::Serialization(first_err));
+    };
+    let event_type = value
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    if let Some(event_type) = event_type.as_deref()
+        && !RESPONSES_KNOWN_EVENT_TYPES.contains(&event_type)
+        && dialect == ResponsesWireDialect::Codex
+    {
+        tracing::debug!(
+            event_type,
+            "skipping unknown Codex Responses event as a liveness-only frame"
+        );
+        return Ok(None);
+    }
+
+    normalize_response_event_for_dialect(&mut value, dialect, requested_model);
+
+    // Strip tools that async_openai's rs::Tool can't deserialize (e.g., xAI-specific "x_search").
+    // Instead of maintaining a hardcoded allowlist, try deserializing each tool entry; if it fails, drop it.
+    if let Some(tools) = value
+        .pointer_mut("/response/tools")
+        .and_then(|v| v.as_array_mut())
+    {
+        tools.retain(|tool| serde_json::from_value::<rs::Tool>(tool.clone()).is_ok());
+    }
+    match serde_json::from_value::<rs::ResponseStreamEvent>(value) {
+        Ok(mut event) => {
+            apply_terminal_event_overrides(&mut event, data);
+            Ok(Some(event))
+        }
+        Err(_) => {
             tracing::error!(
                 error = %first_err,
                 raw_data = %data,
                 "Failed to deserialize ResponseStreamEvent from stream"
             );
-            return Err(SamplingError::Serialization(first_err));
+            Err(SamplingError::Serialization(first_err))
         }
-    };
-    apply_terminal_event_overrides(&mut event, data);
-    Ok(event)
+    }
+}
+
+/// Deserialize an xAI Responses SSE event for existing direct callers.
+#[cfg(test)]
+pub(crate) fn deserialize_response_event(data: &str) -> Result<rs::ResponseStreamEvent> {
+    deserialize_response_event_for_dialect(data, ResponsesWireDialect::Xai, "")
+        .map(|event| event.expect("xAI dialect never skips unknown event types"))
+}
+
+#[cfg(test)]
+fn decode_responses_sse_frame(
+    event_name: &str,
+    data: &str,
+    dialect: ResponsesWireDialect,
+) -> Result<ResponsesStreamItem> {
+    decode_responses_sse_frame_for_model(event_name, data, dialect, "")
+}
+
+fn decode_responses_sse_frame_for_model(
+    event_name: &str,
+    data: &str,
+    dialect: ResponsesWireDialect,
+    requested_model: &str,
+) -> Result<ResponsesStreamItem> {
+    if is_responses_auxiliary_event(event_name, data) {
+        return Ok(ResponsesStreamItem::Heartbeat);
+    }
+    if let Some(stream_error) = try_parse_stream_error(data) {
+        return Err(stream_error);
+    }
+    match deserialize_response_event_for_dialect(data, dialect, requested_model) {
+        Ok(Some(event)) => Ok(ResponsesStreamItem::Event(event)),
+        Ok(None) => Ok(ResponsesStreamItem::Heartbeat),
+        Err(error) => Err(error),
+    }
 }
 
 /// On `response.completed` / `response.incomplete`, rewrite `usage.total_tokens` to the live context length from `context_details`.
@@ -1298,7 +1558,7 @@ impl SamplingClient {
         &self,
         request: CreateResponseWrapper,
     ) -> Result<(
-        BoxStream<'static, Result<rs::ResponseStreamEvent>>,
+        BoxStream<'static, Result<ResponsesStreamItem>>,
         Option<ResponseModelMetadata>,
         Option<crate::doom_loop::DoomLoopSignalCollector>,
     )> {
@@ -1323,7 +1583,7 @@ impl SamplingClient {
         mut request: CreateResponseWrapper,
         region: crate::span_timing::Region,
     ) -> Result<(
-        BoxStream<'static, Result<rs::ResponseStreamEvent>>,
+        BoxStream<'static, Result<ResponsesStreamItem>>,
         Option<ResponseModelMetadata>,
         Option<crate::doom_loop::DoomLoopSignalCollector>,
     )> {
@@ -1479,9 +1739,13 @@ impl SamplingClient {
         let event_stream = byte_stream.eventsource();
 
         let doom_loop_for_stream = doom_loop.clone();
+        let responses_wire_dialect =
+            responses_wire_dialect_for_model_family(self.defaults.model_family.as_deref());
+        let requested_model = model_id.clone();
 
-        // The scan item is an `Option`: `Some(None)` skips an absorbed doom-loop event without terminating the stream (`filter_map` below)
-        // An outer `None` still ends the stream
+        // Every non-terminal wire frame reaches layer 2. Frames without model
+        // output become explicit heartbeats so idle accounting still sees
+        // transport liveness.
         let events = event_stream
             .scan(false, move |had_transport_error, event_res| {
                 if *had_transport_error {
@@ -1509,25 +1773,27 @@ impl SamplingClient {
                             None => is_check_event(&event.event, data),
                         };
                         if swallow {
-                            Some(None)
-                        } else if let Some(stream_error) = try_parse_stream_error(data) {
-                            Some(Some(Err(stream_error)))
+                            Some(Ok(ResponsesStreamItem::Heartbeat))
                         } else {
-                            Some(Some(deserialize_response_event(data)))
+                            Some(decode_responses_sse_frame_for_model(
+                                &event.event,
+                                data,
+                                responses_wire_dialect,
+                                &requested_model,
+                            ))
                         }
                     }
                     Err(e) => {
                         *had_transport_error = true;
-                        Some(Some(Err(SamplingError::EventStreamError(e.to_string()))))
+                        Some(Err(SamplingError::EventStreamError(e.to_string())))
                     }
                 };
                 std::future::ready(item)
             })
-            .filter_map(std::future::ready)
             .boxed();
 
         Ok((
-            span_timing.hold_until_first_content(events, responses_event_class),
+            span_timing.hold_until_first_content(events, responses_stream_item_class),
             model_metadata,
             doom_loop,
         ))
@@ -1917,7 +2183,7 @@ impl SamplingClient {
         &self,
         mut request: ConversationRequest,
     ) -> Result<(
-        BoxStream<'static, Result<rs::ResponseStreamEvent>>,
+        BoxStream<'static, Result<ResponsesStreamItem>>,
         Option<ResponseModelMetadata>,
         Option<crate::doom_loop::DoomLoopSignalCollector>,
     )> {
@@ -3139,5 +3405,315 @@ mod tests {
             event,
             rs::ResponseStreamEvent::ResponseOutputTextDelta(_)
         ));
+    }
+
+    #[test]
+    fn responses_decoder_maps_named_and_data_only_keepalive_to_heartbeat() {
+        let named = decode_responses_sse_frame(
+            "keepalive",
+            r#"{"type":"keepalive"}"#,
+            ResponsesWireDialect::Codex,
+        );
+        assert!(matches!(named, Ok(ResponsesStreamItem::Heartbeat)));
+
+        let data_only = decode_responses_sse_frame(
+            "",
+            r#"{"type":"keepalive","sequence_number":1}"#,
+            ResponsesWireDialect::Xai,
+        );
+        assert!(matches!(data_only, Ok(ResponsesStreamItem::Heartbeat)));
+    }
+
+    #[test]
+    fn responses_decoder_maps_named_and_data_only_metadata_to_heartbeat() {
+        let named = decode_responses_sse_frame(
+            "response.metadata",
+            r#"{"type":"response.metadata"}"#,
+            ResponsesWireDialect::Xai,
+        );
+        assert!(matches!(named, Ok(ResponsesStreamItem::Heartbeat)));
+
+        let data_only = decode_responses_sse_frame(
+            "",
+            r#"{"type":"response.metadata","sequence_number":2,"metadata":{"request_id":"req_test"}}"#,
+            ResponsesWireDialect::Codex,
+        );
+        assert!(matches!(data_only, Ok(ResponsesStreamItem::Heartbeat)));
+    }
+
+    #[test]
+    fn codex_decoder_defaults_missing_sequence_number_on_output_delta() {
+        let decoded = decode_responses_sse_frame(
+            "",
+            r#"{"type":"response.output_text.delta","item_id":"item_test","output_index":0,"content_index":0,"delta":"OK","logprobs":[]}"#,
+            ResponsesWireDialect::Codex,
+        )
+        .expect("Codex output delta without sequence_number should parse");
+
+        let ResponsesStreamItem::Event(rs::ResponseStreamEvent::ResponseOutputTextDelta(event)) =
+            decoded
+        else {
+            panic!("expected a text-delta event");
+        };
+        assert_eq!(event.sequence_number, 0);
+        assert_eq!(event.delta, "OK");
+    }
+
+    #[test]
+    fn xai_decoder_defaults_missing_sequence_number_on_output_delta() {
+        let decoded = decode_responses_sse_frame(
+            "",
+            r#"{"type":"response.output_text.delta","item_id":"item_test","output_index":0,"content_index":0,"delta":"OK","logprobs":[]}"#,
+            ResponsesWireDialect::Xai,
+        )
+        .expect("xAI output delta without sequence_number should parse");
+
+        let ResponsesStreamItem::Event(rs::ResponseStreamEvent::ResponseOutputTextDelta(event)) =
+            decoded
+        else {
+            panic!("expected a text-delta event");
+        };
+        assert_eq!(event.sequence_number, 0);
+        assert_eq!(event.delta, "OK");
+    }
+
+    #[test]
+    fn all_decoders_reject_missing_or_invalid_sequence_number_on_error_events() {
+        for dialect in [
+            ResponsesWireDialect::Xai,
+            ResponsesWireDialect::Codex,
+            ResponsesWireDialect::Strict,
+        ] {
+            for data in [
+                r#"{"type":"error","code":"server_error","message":"boom","param":null}"#,
+                r#"{"type":"error","sequence_number":null,"code":"server_error","message":"boom","param":null}"#,
+                r#"{"type":"error","sequence_number":"0","code":"server_error","message":"boom","param":null}"#,
+            ] {
+                let decoded = decode_responses_sse_frame("", data, dialect);
+                assert!(
+                    matches!(decoded, Err(SamplingError::Serialization(_))),
+                    "{dialect:?} must reject a malformed known error event"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn all_decoders_preserve_well_formed_error_events() {
+        for dialect in [
+            ResponsesWireDialect::Xai,
+            ResponsesWireDialect::Codex,
+            ResponsesWireDialect::Strict,
+        ] {
+            let decoded = decode_responses_sse_frame(
+                "",
+                r#"{"type":"error","sequence_number":7,"code":"server_error","message":"boom","param":null}"#,
+                dialect,
+            )
+            .expect("well-formed Responses error should parse");
+
+            let ResponsesStreamItem::Event(rs::ResponseStreamEvent::ResponseError(event)) = decoded
+            else {
+                panic!("expected a typed Responses error event");
+            };
+            assert_eq!(event.sequence_number, 7);
+            assert_eq!(event.message, "boom");
+        }
+    }
+
+    #[test]
+    fn codex_decoder_defaults_missing_sequence_number_on_sparse_completed_event() {
+        let decoded = decode_responses_sse_frame(
+            "",
+            r#"{"type":"response.completed","response":{"id":"resp_test"}}"#,
+            ResponsesWireDialect::Codex,
+        )
+        .expect("Codex sparse completion without sequence_number should parse");
+
+        let ResponsesStreamItem::Event(rs::ResponseStreamEvent::ResponseCompleted(event)) = decoded
+        else {
+            panic!("expected a completed event");
+        };
+        assert_eq!(event.sequence_number, 0);
+        assert_eq!(event.response.id, "resp_test");
+
+        let xai = decode_responses_sse_frame(
+            "",
+            r#"{"type":"response.completed","response":{"id":"resp_test"}}"#,
+            ResponsesWireDialect::Xai,
+        );
+        assert!(matches!(xai, Err(SamplingError::Serialization(_))));
+    }
+
+    #[test]
+    fn xai_decoder_accepts_live_completed_shape_with_empty_text_config() {
+        let decoded = decode_responses_sse_frame(
+            "",
+            r#"{
+                "type":"response.completed",
+                "response":{
+                    "id":"resp_test",
+                    "created_at":1788950451,
+                    "metadata":{},
+                    "model":"xai/grok-4.6",
+                    "object":"response",
+                    "output":[{
+                        "type":"message",
+                        "id":"msg_test",
+                        "status":"completed",
+                        "role":"assistant",
+                        "content":[{"type":"output_text","text":"CHILD_OK","annotations":[]}]
+                    }],
+                    "parallel_tool_calls":false,
+                    "temperature":0.0,
+                    "tool_choice":"auto",
+                    "tools":[],
+                    "status":"completed",
+                    "text":{},
+                    "usage":{
+                        "input_tokens":1020,
+                        "output_tokens":2,
+                        "output_tokens_details":{"reasoning_tokens":0},
+                        "total_tokens":1022
+                    }
+                },
+                "model":"grok-4.6"
+            }"#,
+            ResponsesWireDialect::Xai,
+        )
+        .expect("the observed xAI terminal lifecycle shape should parse");
+
+        let ResponsesStreamItem::Event(rs::ResponseStreamEvent::ResponseCompleted(event)) = decoded
+        else {
+            panic!("expected a completed event");
+        };
+        assert_eq!(event.sequence_number, 0);
+        assert_eq!(event.response.id, "resp_test");
+        assert_eq!(event.response.usage.expect("usage").total_tokens, 1022);
+    }
+
+    #[test]
+    fn xai_decoder_normalizes_response_done_terminal_alias() {
+        let data = r#"{
+            "type":"response.done",
+            "response":{
+                "id":"resp_done",
+                "created_at":1788950451,
+                "metadata":{},
+                "model":"xai/grok-4.6",
+                "object":"response",
+                "output":[],
+                "status":"completed",
+                "text":{},
+                "usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}
+            }
+        }"#;
+
+        let decoded = decode_responses_sse_frame("", data, ResponsesWireDialect::Xai)
+            .expect("xAI response.done should normalize to response.completed");
+        let ResponsesStreamItem::Event(rs::ResponseStreamEvent::ResponseCompleted(event)) = decoded
+        else {
+            panic!("expected a completed event");
+        };
+        assert_eq!(event.sequence_number, 0);
+        assert_eq!(event.response.id, "resp_done");
+
+        assert!(matches!(
+            decode_responses_sse_frame("", data, ResponsesWireDialect::Codex),
+            Ok(ResponsesStreamItem::Heartbeat)
+        ));
+        assert!(matches!(
+            decode_responses_sse_frame("", data, ResponsesWireDialect::Strict),
+            Err(SamplingError::Serialization(_))
+        ));
+    }
+
+    #[test]
+    fn responses_decoder_preserves_literal_auxiliary_names_in_output_text() {
+        let decoded = decode_responses_sse_frame(
+            "",
+            r#"{"type":"response.output_text.delta","sequence_number":8,"item_id":"item_test","output_index":0,"content_index":0,"delta":"keepalive response.metadata","logprobs":[]}"#,
+            ResponsesWireDialect::Strict,
+        )
+        .expect("ordinary output text should parse");
+
+        let ResponsesStreamItem::Event(rs::ResponseStreamEvent::ResponseOutputTextDelta(event)) =
+            decoded
+        else {
+            panic!("expected a text-delta event");
+        };
+        assert_eq!(event.delta, "keepalive response.metadata");
+    }
+
+    #[test]
+    fn responses_decoder_keeps_malformed_known_events_as_serialization_errors() {
+        for dialect in [
+            ResponsesWireDialect::Xai,
+            ResponsesWireDialect::Codex,
+            ResponsesWireDialect::Strict,
+        ] {
+            let decoded = decode_responses_sse_frame(
+                "",
+                r#"{"type":"response.output_text.delta","sequence_number":9}"#,
+                dialect,
+            );
+            assert!(
+                matches!(decoded, Err(SamplingError::Serialization(_))),
+                "{dialect:?} must not swallow a malformed known event"
+            );
+        }
+    }
+
+    #[test]
+    fn decoder_preserves_supplied_sequence_number_for_compatible_dialects() {
+        for dialect in [ResponsesWireDialect::Xai, ResponsesWireDialect::Codex] {
+            let decoded = decode_responses_sse_frame(
+                "",
+                r#"{"type":"response.output_text.delta","sequence_number":42,"item_id":"item_test","output_index":0,"content_index":0,"delta":"OK","logprobs":[]}"#,
+                dialect,
+            )
+            .expect("output delta with sequence_number should parse");
+
+            let ResponsesStreamItem::Event(rs::ResponseStreamEvent::ResponseOutputTextDelta(event)) =
+                decoded
+            else {
+                panic!("expected a text-delta event");
+            };
+            assert_eq!(event.sequence_number, 42);
+        }
+    }
+
+    #[test]
+    fn strict_decoder_does_not_synthesize_a_missing_sequence_number() {
+        let decoded = decode_responses_sse_frame(
+            "",
+            r#"{"type":"response.output_text.delta","item_id":"item_test","output_index":0,"content_index":0,"delta":"OK","logprobs":[]}"#,
+            ResponsesWireDialect::Strict,
+        );
+        assert!(matches!(decoded, Err(SamplingError::Serialization(_))));
+    }
+
+    #[test]
+    fn unknown_future_event_policy_is_dialect_scoped() {
+        let codex = decode_responses_sse_frame(
+            "",
+            r#"{"type":"response.future_semantic_event","sequence_number":9}"#,
+            ResponsesWireDialect::Codex,
+        );
+        assert!(matches!(codex, Ok(ResponsesStreamItem::Heartbeat)));
+
+        let xai = decode_responses_sse_frame(
+            "",
+            r#"{"type":"response.future_semantic_event","sequence_number":9}"#,
+            ResponsesWireDialect::Xai,
+        );
+        assert!(matches!(xai, Err(SamplingError::Serialization(_))));
+
+        let strict = decode_responses_sse_frame(
+            "",
+            r#"{"type":"response.future_semantic_event","sequence_number":9}"#,
+            ResponsesWireDialect::Strict,
+        );
+        assert!(matches!(strict, Err(SamplingError::Serialization(_))));
     }
 }

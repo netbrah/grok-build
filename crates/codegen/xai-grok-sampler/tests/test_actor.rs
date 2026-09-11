@@ -1207,6 +1207,76 @@ fn responses_config(base_url: String, doom_loop: Option<DoomLoopRecoveryPolicy>)
     cfg
 }
 
+/// Named keepalive, data-only keepalive, and Responses metadata are transport
+/// liveness frames. A valid turn containing all three must preserve its real
+/// reasoning and assistant output, complete successfully, and avoid retries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_auxiliary_sse_frames_preserve_reasoning_and_text_without_retry() {
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_handler = Arc::clone(&counter);
+    let app = Router::new().route(
+        "/v1/responses",
+        post(move || {
+            let counter = Arc::clone(&counter_handler);
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let mut events = sse::responses_api_reasoning_and_text_events(
+                    "reasoning survives",
+                    "visible answer survives",
+                    "test-model",
+                );
+                events.insert(
+                    1,
+                    SseEvent::with_event("keepalive", json!({"type": "keepalive"}).to_string()),
+                );
+                events.insert(3, SseEvent::data(json!({"type": "keepalive"}).to_string()));
+                events.insert(
+                    5,
+                    SseEvent::with_event(
+                        "response.metadata",
+                        json!({
+                            "type": "response.metadata",
+                            "response_id": "resp_auxiliary_test"
+                        })
+                        .to_string(),
+                    ),
+                );
+                Sse::new(stream::iter(
+                    sse_events_to_axum(events)
+                        .into_iter()
+                        .map(Ok::<_, std::convert::Infallible>),
+                ))
+            }
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let mut config = responses_config(server.base_url(), None);
+    config.max_retries = Some(0);
+    let handle = SamplerActor::spawn(config, RetryPolicy::default(), event_tx);
+
+    let result = handle
+        .submit_and_collect(
+            RequestId::from("req-responses-auxiliary"),
+            user_request("hi"),
+        )
+        .await;
+    server.shutdown();
+
+    let (response, _metrics) = result.expect("auxiliary SSE frames must not fail a valid turn");
+    assert_eq!(
+        response.reasoning_items().count(),
+        1,
+        "reasoning survives auxiliary frames"
+    );
+    assert_eq!(response.assistant_text(), "visible answer survives");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "exactly one HTTP request"
+    );
+}
+
 /// Server-reported doom-loop triggers flow through the actor rung onto the completed response, without retries.
 /// The trigger is non-confident (`@response` channel), so the recovery, which resamples only confident signals, leaves it alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

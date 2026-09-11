@@ -1,6 +1,6 @@
 //! Layer-2 stream transform for the OpenAI Responses API.
 //!
-//! Consumes a raw `rs::ResponseStreamEvent` stream and produces [`SamplingEvent`]s.
+//! Consumes a raw Responses stream and produces [`SamplingEvent`]s.
 //! Pure: no I/O, no shell coupling.
 
 use std::collections::BTreeMap;
@@ -21,7 +21,7 @@ use xai_grok_sampling_types::{
 use crate::doom_loop_recovery::FailedResponseCapture;
 use crate::events::{SamplingChannel, SamplingErrorInfo, SamplingEvent};
 use crate::metrics::InferenceLatencyStats;
-use crate::types::RequestId;
+use crate::types::{RequestId, ResponsesStreamItem};
 
 /// Wire values of `incomplete_details.reason` on an `Incomplete` response.
 /// The xAI server emits the three `max_*` values; `content_filter` is OpenAI vocabulary, kept for spec compatibility.
@@ -200,13 +200,16 @@ fn observe_for_recovery(capture: &FailedResponseCapture, event: &rs::ResponseStr
 /// `doom_loop` is the collector returned alongside `raw_stream` by `SamplingClient::conversation_stream_responses`.
 /// Any signals the SSE decoder recorded are drained onto the final `ConversationResponse`.
 /// `None` (check disabled) leaves the response untouched.
-pub fn stream_responses<'a>(
-    raw_stream: BoxStream<'a, Result<rs::ResponseStreamEvent, SamplingError>>,
+pub fn stream_responses<'a, T>(
+    raw_stream: BoxStream<'a, Result<T, SamplingError>>,
     model_metadata: Option<ResponseModelMetadata>,
     request_id: RequestId,
     idle_timeout: Duration,
     doom_loop: Option<crate::doom_loop::DoomLoopSignalCollector>,
-) -> impl Stream<Item = SamplingEvent> + Send + 'a {
+) -> impl Stream<Item = SamplingEvent> + Send + 'a
+where
+    T: Into<ResponsesStreamItem> + Send + 'a,
+{
     stream_responses_tracked(
         raw_stream,
         model_metadata,
@@ -218,15 +221,18 @@ pub fn stream_responses<'a>(
     )
 }
 
-pub(crate) fn stream_responses_tracked<'a>(
-    raw_stream: BoxStream<'a, Result<rs::ResponseStreamEvent, SamplingError>>,
+pub(crate) fn stream_responses_tracked<'a, T>(
+    raw_stream: BoxStream<'a, Result<T, SamplingError>>,
     model_metadata: Option<ResponseModelMetadata>,
     request_id: RequestId,
     idle_timeout: Duration,
     doom_loop: Option<crate::doom_loop::DoomLoopSignalCollector>,
     output_observed: Arc<AtomicBool>,
     failed_response: FailedResponseCapture,
-) -> impl Stream<Item = SamplingEvent> + Send + 'a {
+) -> impl Stream<Item = SamplingEvent> + Send + 'a
+where
+    T: Into<ResponsesStreamItem> + Send + 'a,
+{
     async_stream::stream! {
         use rs::{ResponseStreamEvent, Status};
 
@@ -275,14 +281,22 @@ pub(crate) fn stream_responses_tracked<'a>(
                 }
             };
 
-            let event = match event_result {
-                Ok(event) => event,
+            let item = match event_result {
+                Ok(item) => item.into(),
                 Err(err) => {
                     yield SamplingEvent::Failed {
                         request_id: request_id.clone(),
                         error: SamplingErrorInfo::from(&err),
                     };
                     return;
+                }
+            };
+
+            let event = match item {
+                ResponsesStreamItem::Event(event) => event,
+                ResponsesStreamItem::Heartbeat => {
+                    last_content_chunk_at = Instant::now();
+                    continue;
                 }
             };
 
@@ -764,6 +778,7 @@ pub(crate) fn stream_responses_tracked<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ResponsesStreamItem;
     use async_openai::types::responses as rs_types;
     use futures_util::stream;
     use std::pin::pin;
@@ -1234,6 +1249,103 @@ mod tests {
 
         match events.last().unwrap() {
             SamplingEvent::Failed { error, .. } => {
+                assert_eq!(error.kind, crate::events::SamplingErrorKind::IdleTimeout);
+            }
+            other => panic!("expected Failed(IdleTimeout), got {other:?}"),
+        }
+    }
+
+    /// Status-only Responses frames prove that the transport is alive, but must
+    /// never become model output. They refresh the liveness deadline between
+    /// real deltas; otherwise a long, healthy stream made of auxiliary frames
+    /// is incorrectly failed before its next text arrives.
+    #[tokio::test(start_paused = true)]
+    async fn auxiliary_status_frames_refresh_liveness_without_emitting_model_output() {
+        let raw = stream::iter(vec![
+            (
+                Duration::ZERO,
+                ResponsesStreamItem::Event(text_delta_event("before")),
+            ),
+            (Duration::from_millis(90), ResponsesStreamItem::Heartbeat),
+            (Duration::from_millis(90), ResponsesStreamItem::Heartbeat),
+            (
+                Duration::ZERO,
+                ResponsesStreamItem::Event(text_delta_event("after")),
+            ),
+            (
+                Duration::ZERO,
+                ResponsesStreamItem::Event(completed_event()),
+            ),
+        ])
+        .then(|(delay, event)| async move {
+            tokio::time::sleep(delay).await;
+            Ok(event)
+        })
+        .boxed();
+
+        let events = collect(stream_responses(
+            raw,
+            None,
+            rid(),
+            Duration::from_millis(100),
+            None,
+        ))
+        .await;
+
+        let text: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                SamplingEvent::ChannelToken {
+                    channel: SamplingChannel::Text,
+                    text,
+                    ..
+                } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, ["before", "after"]);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, SamplingEvent::Failed { .. })),
+            "auxiliary frames are liveness-only and must not cause an idle failure"
+        );
+        assert!(matches!(
+            events.last(),
+            Some(SamplingEvent::Completed { .. })
+        ));
+    }
+
+    /// A heartbeat extends the deadline once, not forever: if the transport
+    /// then goes silent for longer than the configured timeout, the turn still
+    /// fails as idle.
+    #[tokio::test(start_paused = true)]
+    async fn auxiliary_status_frame_does_not_mask_a_later_idle_gap() {
+        let raw = stream::iter(vec![
+            (
+                Duration::ZERO,
+                ResponsesStreamItem::Event(text_delta_event("before")),
+            ),
+            (Duration::from_millis(90), ResponsesStreamItem::Heartbeat),
+        ])
+        .then(|(delay, event)| async move {
+            tokio::time::sleep(delay).await;
+            Ok(event)
+        })
+        .chain(stream::pending())
+        .boxed();
+
+        let events = collect(stream_responses(
+            raw,
+            None,
+            rid(),
+            Duration::from_millis(100),
+            None,
+        ))
+        .await;
+
+        match events.last() {
+            Some(SamplingEvent::Failed { error, .. }) => {
                 assert_eq!(error.kind, crate::events::SamplingErrorKind::IdleTimeout);
             }
             other => panic!("expected Failed(IdleTimeout), got {other:?}"),
