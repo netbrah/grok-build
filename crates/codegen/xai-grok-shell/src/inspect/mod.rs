@@ -548,14 +548,8 @@ async fn list_instructions(cwd: &Path) -> Vec<InstructionFile> {
     // can use a clean prefix check. Empty/invalid paths fall
     // through to a no-op match.
     //
-    // TODO(phase-3): `extra_rule_dirs` only re-classifies files that
-    // `xai_grok_agent::prompt::agents_md::read_agents_config_with_paths`
-    // has already discovered. Plumbing `extra_rule_dirs` through to that
-    // discovery (so files in arbitrary user-configured dirs are surfaced as
-    // rules instead of being missed entirely) is out of scope for this stack
-    // (intentional wontfix for now).
-    // Skills (`extensions/skills.rs`) take the typed-scan path so they don't
-    // have this limitation; rules need the same treatment in a follow-up.
+    // Discovery itself happens centrally in `read_agents_config_with_paths`;
+    // these prefixes only classify the returned entries for inspect output.
     let extra_rule_prefixes: Vec<std::path::PathBuf> = extra_rule_dirs
         .iter()
         .map(|d| crate::util::expand_home(d))
@@ -1098,12 +1092,16 @@ fn list_lsp_servers(
 fn list_config_sources(cwd: &Path) -> ConfigSources {
     let mut layers: Vec<ConfigLayer> = vec![];
 
-    // System managed (comes first in merge precedence)
-    if let Some(dir) = crate::config::system_config_dir() {
-        let p = dir.join("managed_config.toml");
+    // Lowest managed slot: either the platform system file or a launcher-selected path.
+    if let Some(source) = crate::config::system_managed_config_source() {
+        let p = source.path;
         if let Some((path_s, note)) = describe_config_file(&p) {
             layers.push(ConfigLayer {
-                role: "system-managed".to_string(),
+                role: if source.is_system {
+                    "system-managed".to_string()
+                } else {
+                    "managed-path".to_string()
+                },
                 path: path_s,
                 note,
             });
@@ -1676,6 +1674,7 @@ fn print_human(r: &InspectReport, out: &mut impl Write) -> std::io::Result<()> {
         };
         let label = match layer.role.as_str() {
             "system-managed" => "System Managed",
+            "managed-path" => "Managed Path",
             "managed" => "Managed",
             "system-requirements" => "System Requirements",
             "requirements" => "Requirements",
@@ -1937,6 +1936,38 @@ mod tests {
         std::fs::write(&bad, "[[[ this is not valid toml").unwrap();
         let (_, note) = describe_config_file(&bad).unwrap();
         assert_eq!(note.as_deref(), Some("parse error"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn config_sources_report_env_selected_managed_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let selected = dir.path().join("fleet-managed.toml");
+        std::fs::write(&selected, "[models]\ndefault = \"grok-4.6\"\n").unwrap();
+        let previous = std::env::var_os(crate::config::GROK_MANAGED_CONFIG_PATH_ENV);
+        // SAFETY: this test is serialized and no other test reads this new env key.
+        unsafe {
+            std::env::set_var(crate::config::GROK_MANAGED_CONFIG_PATH_ENV, &selected);
+        }
+
+        let sources = list_config_sources(dir.path());
+
+        match previous {
+            // SAFETY: restore the process environment before returning from the serialized test.
+            Some(value) => unsafe {
+                std::env::set_var(crate::config::GROK_MANAGED_CONFIG_PATH_ENV, value)
+            },
+            // SAFETY: restore the process environment before returning from the serialized test.
+            None => unsafe { std::env::remove_var(crate::config::GROK_MANAGED_CONFIG_PATH_ENV) },
+        }
+
+        let layer = sources
+            .layers
+            .iter()
+            .find(|layer| layer.path == selected.display().to_string())
+            .expect("selected managed path appears in inspect output");
+        assert_eq!(layer.role, "managed-path");
+        assert!(layer.note.is_none());
     }
 
     #[test]

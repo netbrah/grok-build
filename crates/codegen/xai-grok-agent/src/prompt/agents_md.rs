@@ -33,31 +33,61 @@ fn find_agent_files(dir: &Path, filenames: &[&str]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Find direct `*.md` children of a rules directory, sorted alphabetically.
+fn find_markdown_files(rules_dir: &Path) -> Vec<PathBuf> {
+    if !rules_dir.is_dir() {
+        return Vec::new();
+    }
+    let mut entries: Vec<PathBuf> = match std::fs::read_dir(rules_dir) {
+        Ok(iter) => iter
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+            })
+            .collect(),
+        Err(_) => return Vec::new(),
+    };
+    entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    entries
+}
+
 /// Find `*.md` files in `.grok/rules/`, `.claude/rules/`, and `.cursor/rules/`, sorted alphabetically.
 /// `rules_subdirs` is the (compat-gated) list, precomputed once by the caller so the walk doesn't re-allocate it per directory.
 fn find_rules_files(dir: &Path, rules_subdirs: &[&str]) -> Vec<PathBuf> {
-    let mut results = Vec::new();
-    for rules_subdir in rules_subdirs {
-        let rules_dir = dir.join(rules_subdir);
-        if !rules_dir.is_dir() {
-            continue;
-        }
-        let mut entries: Vec<PathBuf> = match std::fs::read_dir(&rules_dir) {
-            Ok(iter) => iter
-                .filter_map(|entry| entry.ok())
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.extension()
-                        .and_then(|ext| ext.to_str())
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-                })
-                .collect(),
-            Err(_) => continue,
-        };
-        entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
-        results.extend(entries);
+    rules_subdirs
+        .iter()
+        .flat_map(|rules_subdir| find_markdown_files(&dir.join(rules_subdir)))
+        .collect()
+}
+
+fn configured_extra_rule_dirs() -> Vec<String> {
+    let Ok(config) = xai_grok_config::load_effective_config_disk_only() else {
+        return Vec::new();
+    };
+    config
+        .get("paths")
+        .and_then(|paths| paths.get("extra_rule_dirs"))
+        .and_then(|value| value.as_array())
+        .map(|dirs| {
+            dirs.iter()
+                .filter_map(|value| value.as_str())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn expand_tilde_with_home(raw: &str, home_dir: Option<&Path>) -> PathBuf {
+    if raw == "~" {
+        return home_dir.map_or_else(|| PathBuf::from(raw), Path::to_path_buf);
     }
-    results
+    if let (Some(rest), Some(home)) = (raw.strip_prefix("~/"), home_dir) {
+        return home.join(rest);
+    }
+    PathBuf::from(raw)
 }
 
 fn canonical_for_dedup(path: &Path) -> PathBuf {
@@ -133,6 +163,29 @@ fn add_discovered_candidate(
     });
 }
 
+fn collect_discovery_root(
+    root: DiscoveryRoot,
+    is_project: bool,
+    agent_filenames: &[&str],
+    gitignore: Option<&ignore::gitignore::Gitignore>,
+    git_root: Option<&Path>,
+    candidates: &mut Vec<DiscoveredCandidate>,
+    seen_candidates: &mut std::collections::HashMap<PathBuf, usize>,
+) {
+    if root.scan_named_files {
+        for path in find_agent_files(&root.path, agent_filenames) {
+            if !is_ignored(&path, gitignore, git_root) {
+                add_discovered_candidate(candidates, seen_candidates, path, false, is_project);
+            }
+        }
+    }
+    for path in find_rules_files(&root.path, &root.rules_subdirs) {
+        if !is_ignored(&path, gitignore, git_root) {
+            add_discovered_candidate(candidates, seen_candidates, path, true, is_project);
+        }
+    }
+}
+
 /// Read Agents.md from ~/.grok/, git repo root, and session cwd.
 ///
 /// `compat` gates which vendor (`.claude`/`.cursor`) directories are scanned for rules and project-instruction files.
@@ -151,24 +204,46 @@ async fn read_agents_config_with_options(
     workspace_user_dir: Option<&Path>,
     compat: CompatConfig,
 ) -> Vec<AgentConfigFile> {
-    read_agents_config_with_roots(
+    let extra_rule_dirs = configured_extra_rule_dirs();
+    read_agents_config_with_roots_and_extra(
         working_directory,
         workspace_user_dir,
         compat,
         xai_grok_tools::util::grok_home::grok_home(),
         xai_dirs::home_dir(),
+        &extra_rule_dirs,
     )
     .await
 }
 
 const HOME_RULES_DIRS: &[&str] = &["rules"];
 
+#[cfg(test)]
 async fn read_agents_config_with_roots(
     working_directory: &str,
     workspace_user_dir: Option<&Path>,
     compat: CompatConfig,
     grok_home: PathBuf,
     home_dir: Option<PathBuf>,
+) -> Vec<AgentConfigFile> {
+    read_agents_config_with_roots_and_extra(
+        working_directory,
+        workspace_user_dir,
+        compat,
+        grok_home,
+        home_dir,
+        &[],
+    )
+    .await
+}
+
+async fn read_agents_config_with_roots_and_extra(
+    working_directory: &str,
+    workspace_user_dir: Option<&Path>,
+    compat: CompatConfig,
+    grok_home: PathBuf,
+    home_dir: Option<PathBuf>,
+    extra_rule_dirs: &[String],
 ) -> Vec<AgentConfigFile> {
     let cwd = PathBuf::from(working_directory);
     let git_root = git2::Repository::discover(&cwd)
@@ -180,7 +255,7 @@ async fn read_agents_config_with_roots(
 
     let mut home_roots = Vec::new();
     add_discovery_root(&mut home_roots, grok_home, true, HOME_RULES_DIRS);
-    if let Some(home) = home_dir {
+    if let Some(home) = home_dir.as_ref() {
         if compat.claude.agents || compat.claude.rules {
             add_discovery_root(
                 &mut home_roots,
@@ -239,37 +314,42 @@ async fn read_agents_config_with_roots(
         add_discovery_root(&mut project_roots, cwd, true, &project_rules_dirs);
     }
 
-    let roots = home_roots
-        .into_iter()
-        .map(|root| (root, false))
-        .chain(project_roots.into_iter().map(|root| (root, true)));
     let mut candidates = Vec::new();
     let mut seen_candidates = std::collections::HashMap::new();
-    for (root, is_project) in roots {
-        if root.scan_named_files {
-            for path in find_agent_files(&root.path, &agent_filenames) {
-                if !is_ignored(&path, gitignore.as_ref(), git_root.as_deref()) {
-                    add_discovered_candidate(
-                        &mut candidates,
-                        &mut seen_candidates,
-                        path,
-                        false,
-                        is_project,
-                    );
-                }
-            }
-        }
-        for path in find_rules_files(&root.path, &root.rules_subdirs) {
+    for root in home_roots {
+        collect_discovery_root(
+            root,
+            false,
+            &agent_filenames,
+            gitignore.as_ref(),
+            git_root.as_deref(),
+            &mut candidates,
+            &mut seen_candidates,
+        );
+    }
+
+    // Configured fleet/vendor directories are direct rules directories. They
+    // sit after home rules and before project rules, so project-local guidance
+    // remains the final (highest-precedence) instruction source.
+    for raw in extra_rule_dirs {
+        let dir = expand_tilde_with_home(raw, home_dir.as_deref());
+        for path in find_markdown_files(&dir) {
             if !is_ignored(&path, gitignore.as_ref(), git_root.as_deref()) {
-                add_discovered_candidate(
-                    &mut candidates,
-                    &mut seen_candidates,
-                    path,
-                    true,
-                    is_project,
-                );
+                add_discovered_candidate(&mut candidates, &mut seen_candidates, path, true, false);
             }
         }
+    }
+
+    for root in project_roots {
+        collect_discovery_root(
+            root,
+            true,
+            &agent_filenames,
+            gitignore.as_ref(),
+            git_root.as_deref(),
+            &mut candidates,
+            &mut seen_candidates,
+        );
     }
 
     candidates
@@ -656,6 +736,59 @@ mod tests {
             configs
                 .iter()
                 .all(|config| !config.file_path.contains("doubled"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn configured_rule_dirs_load_between_home_and_project_and_deduplicate_aliases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let grok_home = tmp.path().join("grok-home");
+        let home = tmp.path().join("home");
+        let fleet_rules = home.join("fleet-rules");
+        let fleet_alias = home.join("fleet-rules-alias");
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(grok_home.join("rules")).unwrap();
+        fs::create_dir_all(&fleet_rules).unwrap();
+        fs::create_dir_all(&repo).unwrap();
+        init_git_repo(&repo);
+
+        fs::write(grok_home.join("rules/home.md"), "home-rule").unwrap();
+        fs::write(fleet_rules.join("b.md"), "fleet-b").unwrap();
+        fs::write(fleet_rules.join("a.md"), "fleet-a").unwrap();
+        fs::write(fleet_rules.join("ignore.txt"), "not-a-rule").unwrap();
+        fs::write(repo.join("AGENTS.md"), "project-rule").unwrap();
+        std::os::unix::fs::symlink(&fleet_rules, &fleet_alias).unwrap();
+
+        let configured = vec![
+            "~/fleet-rules".to_string(),
+            fleet_alias.display().to_string(),
+            home.join("missing-rules").display().to_string(),
+        ];
+        let configs = read_agents_config_with_roots_and_extra(
+            repo.to_str().unwrap(),
+            None,
+            CompatConfig::default(),
+            grok_home,
+            Some(home),
+            &configured,
+        )
+        .await;
+
+        assert_eq!(
+            configs
+                .iter()
+                .map(|config| config.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["home-rule", "fleet-a", "fleet-b", "project-rule"]
+        );
+        assert_eq!(
+            configs
+                .iter()
+                .filter(|config| config.content.starts_with("fleet-"))
+                .count(),
+            2,
+            "canonical aliases must not load the same rule twice"
         );
     }
 
