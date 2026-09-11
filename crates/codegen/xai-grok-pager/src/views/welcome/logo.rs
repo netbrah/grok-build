@@ -256,6 +256,39 @@ mod tests {
     }
 
     #[test]
+    fn xli_feather_assets_preserve_the_existing_layout_envelopes() {
+        let full = non_empty_lines(LOGO).collect::<Vec<_>>();
+        assert_eq!(
+            full,
+            vec![
+                "⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣤⢤⠄⠀",
+                "⠀⠀⠀⠀⠀⠀⢀⣴⢾⣋⡶⠋⠀⠀",
+                "⠀⠀⠀⢀⣠⣿⣿⣧⠾⠟⠀⠀⠀⠀",
+                "⠀⢀⣠⣿⠿⣭⣾⠟⠃⠀⠀⠀⠀⠀",
+                "⠀⢸⣿⣯⣿⣛⠋⠀⠀⠀⠀⠀⠀⠀",
+                "⠀⠈⣻⢿⠟⠉⠀⠀⠀⠀⠀⠀⠀⠀",
+                "⠀⠠⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
+            ]
+        );
+        assert_eq!(count_lines(LOGO), 7);
+        assert_eq!(visual_width(LOGO), 14);
+
+        let compact = non_empty_lines(LOGO_SMALL).collect::<Vec<_>>();
+        assert_eq!(
+            compact,
+            vec![
+                "⠀⠀⠀⠀⠀⠀⣠⣴⡄⠀",
+                "⠀⠀⠀⣠⣴⣏⡷⠋⠀⠀",
+                "⠀⣠⣾⣿⣿⠟⠀⠀⠀⠀",
+                "⠀⢿⣿⡿⠅⠀⠀⠀⠀⠀",
+                "⠀⠘⠉⠀⠀⠀⠀⠀⠀⠀",
+            ]
+        );
+        assert_eq!(count_lines(LOGO_SMALL), 5);
+        assert_eq!(visual_width(LOGO_SMALL), 10);
+    }
+
+    #[test]
     fn shine_opacity_stays_in_unit_range() {
         let mut secs = 0.0;
         while secs < 10.0 {

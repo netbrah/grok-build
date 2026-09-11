@@ -1,0 +1,234 @@
+[model."grok-4.6"]
+base_url = "https://llm-proxy-api.ai.eng.netapp.com/v1"
+api_backend = "responses"
+env_key = "APEX_LLM_PROXY_KEY"
+context_window = 500000
+supports_backend_search = false
+
+[models]
+default = "grok-4.6"
+default_reasoning_effort = "xhigh"
+
+[skills]
+paths = ["/x/eng/apex/apexai/bundled"]
+
+[paths]
+extra_rule_dirs = ["/x/eng/apex/apexai/rules"]
+
+[hints]
+new_session_worktree_mode = "never"
+fork_worktree_mode = "never"
+
+[mcp_servers.ghe]
+command = "${GHE_MCP_BIN}"
+startup_timeout_sec = 300
+tool_timeout_sec = 300
+
+[mcp_servers.ghe.env]
+RUST_LOG = "warn"
+GH_TOKEN = "${GHE_TOKEN}"
+GHE_MCP_GH_HOST = "github.eng.netapp.com"
+DOT_PREPUSH = "check:skip"
+
+[mcp_servers.ontap-cluster]
+command = "/u/palanisd/tools/apex/bin/ontap-cluster-mcp"
+startup_timeout_sec = 300
+tool_timeout_sec = 300
+
+[mcp_servers.ontap-cluster.env]
+RUST_LOG = "warn"
+
+[mcp_servers.presubmit-validate]
+command = "${PRESUBMIT_VALIDATE_MCP_BIN}"
+startup_timeout_sec = 120
+tool_timeout_sec = 120
+
+[mcp_servers.ontap-dev]
+command = "${ONTAP_DEV_BIN}"
+startup_timeout_sec = 1800
+tool_timeout_sec = 1800
+
+[mcp_servers.coretool]
+command = "${CORETOOL_BIN}"
+startup_timeout_sec = 600
+tool_timeout_sec = 600
+
+[mcp_servers.coretool.env]
+CORETOOL_GDB_HOST = "gdblrtp.rtp.eng.netapp.com"
+RUST_LOG = "warn"
+
+[mcp_servers.ontap-sdk]
+command = "/u/palanisd/tools/apex/python-mcps/ontap-sdk-mcp/.venv/bin/ontap-sdk-mcp"
+startup_timeout_sec = 60
+tool_timeout_sec = 60
+
+[mcp_servers.ontap-sdk.env]
+PYTHONUNBUFFERED = "1"
+
+[mcp_servers.pyrefly]
+command = "${PYREFLY_INDEX_BIN}"
+startup_timeout_sec = 60
+tool_timeout_sec = 60
+
+[mcp_servers.pyrefly.env]
+RUST_LOG = "warn"
+PYREFLY_INDEX_ADDR = "${PYREFLY_INDEX_ADDR}"
+
+[mcp_servers.brewbot]
+command = "python3"
+args = ["/u/palanisd/tools/apex/python-mcps/brewbot-mcp/brewbot_mcp.py"]
+startup_timeout_sec = 300
+tool_timeout_sec = 300
+
+[mcp_servers.brewbot.env]
+BREWBOT_API_KEY = "${BREWBOT_API_KEY}"
+
+[mcp_servers.coverage-rs]
+command = "${COVERAGE_BIN}"
+args = []
+startup_timeout_sec = 60
+tool_timeout_sec = 60
+
+[mcp_servers.coverage-rs.env]
+COVERAGE_CIT_INDEX = "/x/eng/baero-gcov/gcov/cit-index/latest"
+RUST_LOG = "warn"
+COVERAGE_MTGR_INDEX = "/x/eng/baero-gcov/gcov/mtgr-coverage/latest"
+
+[mcp_servers.reviewboard]
+command = "${REVIEWBOARD_MCP_BIN}"
+startup_timeout_sec = 30
+tool_timeout_sec = 30
+
+[mcp_servers.reviewboard.env]
+REVIEWBOARD_API_TOKEN = "${REVIEWBOARD_API_TOKEN}"
+REVIEWBOARD_BASE_URL = "https://reviewboard.netapp.com"
+RUST_LOG = "warn"
+REVIEWBOARD_ALLOW_INSECURE_TLS = "true"
+
+[mcp_servers.jira-ngage]
+command = "${JIRA_NGAGE_MCP_BIN}"
+startup_timeout_sec = 30
+tool_timeout_sec = 30
+
+[mcp_servers.jira-ngage.env]
+JIRA_ALLOW_INSECURE_TLS = "true"
+RUST_LOG = "warn"
+HTTPS_PROXY = "http://svc-proxy.cls.eng.netapp.com:3128/"
+JIRA_TOKEN = "${JIRA_TOKEN}"
+SSL_CERT_FILE = "/etc/pki/tls/certs/ca-bundle.crt"
+JIRA_BASE_URL = "https://jira.ngage.netapp.com"
+
+[mcp_servers.mastra-search]
+url = "${MASTRA_HTTP_URL}"
+startup_timeout_sec = 300
+tool_timeout_sec = 300
+
+[mcp_servers.mastra-search.headers]
+X-Mastra-Auth-Token = "${MASTRA_CREDENTIAL}"
+
+[mcp_servers.clangd-rs]
+command = "${CLANGD_BIN}"
+startup_timeout_sec = 180
+tool_timeout_sec = 180
+
+[mcp_servers.clangd-rs.env]
+CLANGD_LIVE_IDLE_SECS = "120"
+RUST_LOG = "warn"
+CLANGD_MEMORY_LIMIT_MB = "2048"
+CLANGD_COMPILE_COMMANDS_DIR = "/x/eng/rlse/DOT/devN"
+CLANGD_INDEX_ADDR = "http://clangd.rtp.eng.netapp.com:50051"
+CLANGD_REQUEST_TIMEOUT_SECS = "30"
+CLANGD_INITIALIZE_TIMEOUT_SECS = "300"
+CLANGD_PROJECT_ROOT = "/x/eng/rlse/DOT/devN"
+SOMAP_DIR = "/u/palanisd/somap-db"
+CLANGD_EXECUTABLE = "/x/eng/rlse/DOT/devN/third_party/open_source/clangd/bedrock/export/common/btool/clangd"
+
+[mcp_servers.confluence]
+command = "${CONFLUENCE_MCP_BIN}"
+startup_timeout_sec = 30
+tool_timeout_sec = 30
+
+[mcp_servers.confluence.env]
+RUST_LOG = "warn"
+CONFLUENCE_USERNAME = "${CONFLUENCE_USERNAME}"
+HTTPS_PROXY = "http://svc-proxy.cls.eng.netapp.com:3128/"
+SSL_CERT_FILE = "/etc/pki/tls/certs/ca-bundle.crt"
+CONFLUENCE_BASE_URL = "https://netapp.atlassian.net/"
+CONFLUENCE_API_TOKEN = "${CONFLUENCE_TOKEN}"
+
+[mcp_servers.smartsolve]
+command = "${SMARTSOLVE_FLEET_BIN}"
+startup_timeout_sec = 60
+tool_timeout_sec = 60
+
+[mcp_servers.smartsolve.env]
+SMARTSOLVE_COOKIE_PATH = "/u/palanisd/tools/apex/.smart-solve-fleet-key"
+SSL_CERT_FILE = "/etc/pki/tls/certs/ca-bundle.crt"
+NODE_EXTRA_CA_CERTS = "/etc/pki/tls/certs/ca-bundle.crt"
+HTTPS_PROXY = "http://svc-proxy.cls.eng.netapp.com:3128/"
+
+[mcp_servers.activeiq]
+command = "/x/eng/apex/activeiq_mcp_proxy/activeiq-mcp-proxy"
+startup_timeout_sec = 90
+tool_timeout_sec = 90
+
+[mcp_servers.activeiq.env]
+AIQ_REMOTE_MCP_URL = "https://gql.aiq.netapp.com/mcp"
+AIQ_TOKEN_COMMAND = "/x/eng/apex/apex-cse/refresh-aiq-token.sh"
+AIQ_CA_BUNDLE = "/x/eng/apex/activeiq_mcp_proxy/ca-bundle.pem"
+AIQ_HTTPS_PROXY = "http://svc-proxy.cls.eng.netapp.com:3128/"
+
+[mcp_servers.cit]
+command = "${CIT_MCP_BIN}"
+startup_timeout_sec = 30
+tool_timeout_sec = 30
+
+[mcp_servers.cit.env]
+JENKINS_STREAMLINE_USER = "${JENKINS_STREAMLINE_USER}"
+JENKINS_STREAMLINE_TOKEN = "${JENKINS_STREAMLINE_TOKEN}"
+
+[mcp_servers.asup]
+command = "/x/eng/apex/asup_mcp/.venv/bin/python"
+args = ["/x/eng/apex/asup_mcp/server.py"]
+startup_timeout_sec = 60
+tool_timeout_sec = 60
+
+[mcp_servers.asup.env]
+ASUP_ACCESS_TOKEN = "${AIQ_ACCESS_TOKEN}"
+ASUP_MCP_ENV = "prd"
+ASUP_MCP_DOWNLOAD_DIR = "~/.asup"
+SSL_CERT_FILE = "/etc/pki/tls/certs/ca-bundle.crt"
+CURL_CA_BUNDLE = "/etc/pki/tls/certs/ca-bundle.crt"
+
+[mcp_servers.lore]
+url = "${LORE_HTTP_URL}"
+startup_timeout_sec = 300
+tool_timeout_sec = 300
+
+[disabled_mcp_tools]
+ghe = [
+    "gh_cli_raw",
+    "gh_git_restore",
+    "gh_git_stash",
+    "gh_git_switch",
+    "gh_git_sync",
+    "gh_ws_diff",
+    "gh_ws_find",
+    "gh_ws_info",
+    "gh_ws_list",
+    "gh_ws_stats",
+    "gh_ws_tree",
+]
+coretool = ["coretool_validate"]
+reviewboard = [
+    "get_reviews",
+    "get_diff_revisions",
+    "get_revision_summary",
+    "get_file_revision_history",
+]
+cit = [
+    "cit_triage_runbook",
+    "testbed_investigation_runbook",
+    "pr_gate_runbook",
+    "cross_release_regression_runbook",
+]

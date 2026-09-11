@@ -135,6 +135,13 @@ impl PlatformInfo {
 
 impl UserAgent {
     fn render(&self) -> String {
+        if std::env::var("APEX_UA").as_deref() == Ok("true") {
+            return format!(
+                "Apex/apexai-{} ({}; {})",
+                self.agent_version, self.platform.os, self.platform.arch,
+            );
+        }
+
         if self.origin.product == self.agent_product
             && self.origin.version.as_deref() == Some(self.agent_version.as_str())
         {

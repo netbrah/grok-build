@@ -3955,7 +3955,7 @@ impl McpClient {
         }
     }
 
-    fn make_client_info(server_name: &str, advertise_elicitation: bool) -> ClientInfo {
+    fn make_client_info(_server_name: &str, advertise_elicitation: bool) -> ClientInfo {
         use rmcp::model::{
             ElicitationCapability, FormElicitationCapability, UrlElicitationCapability,
         };
@@ -3979,10 +3979,7 @@ impl McpClient {
         }
         ClientInfo::new(
             capabilities,
-            Implementation::new(
-                format!("grok-shell-{server_name}"),
-                xai_grok_version::VERSION.to_string(),
-            ),
+            Implementation::new("apex-mcp-client", xai_grok_version::VERSION.to_string()),
         )
         // This pin currently equals rmcp 3.2 LATEST
         // The explicit setter must remain so a future rmcp bump cannot silently move the wire

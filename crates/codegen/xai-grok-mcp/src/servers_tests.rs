@@ -3253,6 +3253,13 @@ fn make_client_info_pins_protocol_version() {
 }
 
 #[test]
+fn make_client_info_uses_strict_apex_gate_identity() {
+    let info = McpClient::make_client_info("server-name-must-not-leak", true);
+
+    assert_eq!(info.client_info.name, "apex-mcp-client");
+}
+
+#[test]
 fn make_client_info_advertises_form_and_url_elicitation() {
     let info = McpClient::make_client_info("test-srv", /* advertise_elicitation */ true);
     let elicitation = info
