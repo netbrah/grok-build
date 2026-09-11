@@ -2197,6 +2197,68 @@ async fn read_parent_sampling_config_keeps_auto_when_catalog_has_slug_key_only()
     assert!(config.supports_backend_search);
     assert_eq!(config.extra_response_includes, ["no_inline_citations"]);
 }
+/// A child inheriting a live Grok selection must retain Grok's route metadata,
+/// even when the spawn context was built while its parent used Codex.
+///
+/// Regression target: copying `ctx.sampling_config.model_family` here makes
+/// the child send Codex-specific request patches to the Grok endpoint.
+#[tokio::test]
+async fn subagent_inherits_live_grok_route_metadata_over_codex_spawn_baseline() {
+    use xai_grok_agent::config::ModelOverride;
+
+    let mut sol = test_model_entry("gpt-5.6-sol");
+    sol.info.model_family = Some("codex".to_string());
+    sol.info.api_backend = crate::sampling::ApiBackend::Responses;
+    sol.info.base_url = "https://sol-parent.test/v1".to_string();
+
+    let mut grok = test_model_entry("grok-4.6");
+    grok.info.model_family = Some("xai".to_string());
+    grok.info.api_backend = crate::sampling::ApiBackend::Responses;
+    grok.info.base_url = "https://grok-child.test/v1".to_string();
+
+    let mut models = indexmap::IndexMap::new();
+    models.insert("gpt-5.6-sol".to_string(), sol);
+    models.insert("grok-4.6".to_string(), grok);
+    let mut ctx = ctx_with_parent_chat_state(
+        "grok-4.6",
+        "grok-4.6",
+        "gpt-5.6-sol",
+        models,
+    );
+    ctx.sampling_config.model = "gpt-5.6-sol".to_string();
+    ctx.sampling_config.base_url = "https://sol-parent.test/v1".to_string();
+    ctx.sampling_config.api_backend = crate::sampling::ApiBackend::Responses;
+    ctx.sampling_config.model_family = Some("codex".to_string());
+    ctx.sampling_config.api_key = Some("fake-sol-parent-key".to_string());
+
+    let chat = ctx.parent_chat_state.as_ref().expect("live parent chat state");
+    chat.update_sampling_config(xai_grok_sampling_types::SamplingConfig {
+        base_url: "https://grok-child.test/v1".to_string(),
+        model: "grok-4.6".to_string(),
+        api_backend: crate::sampling::ApiBackend::Responses,
+        ..test_sampling_config("grok-4.6")
+    });
+    chat.update_credentials(xai_chat_state::Credentials {
+        api_key: Some("fake-grok-child-env-key".to_string()),
+        auth_type: xai_chat_state::AuthType::ApiKey,
+        alpha_test_key: None,
+        client_version: None,
+    });
+
+    let (child, child_model_id) = resolve_subagent_sampling_config(
+        "explore",
+        &ModelOverride::Inherit,
+        &ctx,
+    )
+    .await;
+
+    assert_eq!(child_model_id.0.as_ref(), "grok-4.6");
+    assert_eq!(child.model, "grok-4.6");
+    assert_eq!(child.api_backend, crate::sampling::ApiBackend::Responses);
+    assert_eq!(child.base_url, "https://grok-child.test/v1");
+    assert_eq!(child.api_key.as_deref(), Some("fake-grok-child-env-key"));
+    assert_eq!(child.model_family.as_deref(), Some("xai"));
+}
 #[tokio::test]
 async fn read_parent_sampling_config_fallback_uses_session_model_id() {
     let mut models = indexmap::IndexMap::new();
@@ -2606,6 +2668,45 @@ async fn resolve_subagent_config_override_pin_applies_for_any_parent() {
             );
         assert_eq!(model_id.0.as_ref(), "pinned-model");
     }
+}
+
+/// A model override is an atomic route selection: none of the Codex parent's
+/// family, endpoint, wire model, backend, or credentials may leak into the
+/// explicitly selected Grok child.
+#[tokio::test]
+async fn cross_family_grok_child_uses_one_coherent_route_under_codex_parent() {
+    use xai_grok_agent::config::ModelOverride;
+
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    ctx.sampling_config.model = "gpt-5.6-sol".to_string();
+    ctx.sampling_config.base_url = "https://sol-parent.test/v1".to_string();
+    ctx.sampling_config.api_backend = crate::sampling::ApiBackend::Responses;
+    ctx.sampling_config.model_family = Some("codex".to_string());
+    ctx.sampling_config.api_key = Some("fake-sol-parent-key".to_string());
+    ctx.model_id = acp::ModelId::new("gpt-5.6-sol");
+
+    let mut grok = test_model_entry("grok-4.6");
+    grok.info.model_family = Some("xai".to_string());
+    grok.info.api_backend = crate::sampling::ApiBackend::Responses;
+    grok.info.base_url = "https://grok-child.test/v1".to_string();
+    grok.api_key = Some("fake-grok-child-key".to_string());
+    ctx.available_models.insert("grok-4.6".to_string(), grok);
+    ctx.subagent_model_overrides
+        .insert("grok".to_string(), "grok-4.6".to_string());
+
+    let (child, child_model_id) = resolve_subagent_sampling_config(
+        "grok",
+        &ModelOverride::Inherit,
+        &ctx,
+    )
+    .await;
+
+    assert_eq!(child_model_id.0.as_ref(), "grok-4.6");
+    assert_eq!(child.model, "grok-4.6");
+    assert_eq!(child.api_backend, crate::sampling::ApiBackend::Responses);
+    assert_eq!(child.base_url, "https://grok-child.test/v1");
+    assert_eq!(child.api_key.as_deref(), Some("fake-grok-child-key"));
+    assert_eq!(child.model_family.as_deref(), Some("xai"));
 }
 /// An explicit `AgentDefinition.model = Override(id)` pin routes the subagent to that model even when the parent runs a light model.
 #[tokio::test]

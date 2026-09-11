@@ -925,6 +925,53 @@ async fn reconstruct_full_config_no_bearer_resolver_for_api_key_method() {
         .await;
 }
 
+/// Main-turn sampler reconstruction must preserve the selected catalog's
+/// provider family. Otherwise a Codex Responses route silently falls back to
+/// the xAI wire dialect before every turn.
+#[tokio::test(flavor = "current_thread")]
+async fn reconstruct_full_config_uses_selected_catalog_model_family() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = create_test_actor(0, 353_000, 85, gateway_tx, persistence_tx).await;
+
+            let mut entry = crate::agent::config::ModelEntry::fallback(
+                "gpt-5.6-sol",
+                &crate::agent::config::EndpointsConfig::default(),
+            );
+            entry.info.model_family = Some("codex".to_string());
+            entry.info.api_backend = crate::sampling::ApiBackend::Responses;
+            actor
+                .models_manager
+                .insert_test_entry("codex-sol-catalog", entry);
+            actor
+                .models_manager
+                .set_current_model_id(acp::ModelId::new("codex-sol-catalog"));
+
+            let mut live = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("test actor has live sampling config");
+            live.model = "gpt-5.6-sol".to_string();
+            live.api_backend = crate::sampling::ApiBackend::Responses;
+            actor.chat_state_handle.update_sampling_config(live);
+
+            let reconstructed = actor.reconstruct_full_config().await;
+
+            assert_eq!(reconstructed.model, "gpt-5.6-sol");
+            assert_eq!(
+                reconstructed.api_backend,
+                crate::sampling::ApiBackend::Responses
+            );
+            assert_eq!(reconstructed.model_family.as_deref(), Some("codex"));
+        })
+        .await;
+}
+
 /// The pre-flight refresh heals a transiently-`ApiKey` session by writing the fresh session token back into `creds.api_key`.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial(attribution_emit_count)]
@@ -1155,6 +1202,7 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                 idle_timeout_secs: None,
                 client_identifier: None,
                 reasoning_effort: None,
+                model_family: None,
                 deployment_id: None,
                 user_id: None,
                 origin_client: None,
@@ -1247,6 +1295,7 @@ async fn switch_to_first_party_model_drops_minted_provider_token() {
                 idle_timeout_secs: None,
                 client_identifier: None,
                 reasoning_effort: None,
+                model_family: None,
                 deployment_id: None,
                 user_id: None,
                 origin_client: None,

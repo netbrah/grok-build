@@ -685,6 +685,12 @@ async fn read_parent_sampling_config(
             let inherited_base_url = cfg.base_url.clone();
             let strip_guard = ctx.would_strip_fallback_key(creds.api_key.as_deref());
             let catalog_model_id = parent_catalog_model_id(ctx, &cfg.model);
+            let model_family = ctx
+                .models_manager
+                .models()
+                .get(catalog_model_id.0.as_ref())
+                .map(|entry| entry.info.model_family.clone())
+                .unwrap_or_else(|| ctx.sampling_config.model_family.clone());
             let supports_backend_search = ctx
                 .models_manager
                 .model_supports_backend_search(catalog_model_id.0.as_ref());
@@ -732,6 +738,7 @@ async fn read_parent_sampling_config(
                     .model_compaction_at_tokens(catalog_model_id.0.as_ref()),
                 doom_loop_recovery: ctx.sampling_config.doom_loop_recovery,
                 header_injector: ctx.sampling_config.header_injector.clone(),
+                model_family,
             };
             let model_id = ctx.model_id.clone();
             let global_model_id = ctx.models_manager.current_model_id();

@@ -638,6 +638,18 @@ impl SessionActor {
                 reasoning_effort: None,
                 stream_tool_calls: None,
             });
+        let model_family = {
+            let models = self.models_manager.models();
+            crate::agent::models::resolve_catalog_key(
+                &models,
+                &acp::ModelId::new(cfg.model.clone()),
+            )
+            .and_then(|catalog_id| {
+                models
+                    .get(catalog_id.0.as_ref())
+                    .and_then(|entry| entry.info.model_family.clone())
+            })
+        };
         let creds = self.chat_state_handle.get_credentials().await;
         let model_facts = self.model_auth_facts(cfg.model.as_str());
         // Gate on the stable session classifier, not `creds.auth_type`; see `crate::agent::auth_method::session_token_auth_gate`
@@ -750,6 +762,7 @@ impl SessionActor {
             // The sampler sends the opt-in header itself when this is set.
             doom_loop_recovery: self.doom_loop_recovery,
             header_injector: Some(std::sync::Arc::new(TraceContextInjector)),
+            model_family,
         }
     }
 

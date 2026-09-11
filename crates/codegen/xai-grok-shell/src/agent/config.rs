@@ -5137,6 +5137,7 @@ pub(crate) fn sampling_config_for_model(
         compaction_at_tokens: info.compaction_at_tokens,
         doom_loop_recovery: None,
         header_injector: None,
+        model_family: info.model_family.clone(),
     }
 }
 /// Fold URL-derived headers into `extra_headers`.
