@@ -416,6 +416,11 @@ const ECHOED_REQUEST_CONFIG_FIELDS: &[&str] = &[
 /// In-place repairs for Responses events emitted by third-party OpenAI-compatible gateways
 /// (LiteLLM, Vertex passthrough) whose payloads are looser than `async_openai`'s strict structs.
 /// Only ever invoked after a strict parse has already failed, so the xAI path is unaffected.
+///
+/// Deliberately does NOT synthesize `sequence_number`: that is the dialect layer's job
+/// (`normalize_response_event_for_dialect` for the lenient dialects). Synthesizing it here
+/// would paper over malformed top-level `error` frames and the Strict dialect's no-synthesis
+/// contract, which the decoder tests pin as fatal.
 fn repair_gateway_event(value: &mut serde_json::Value) {
     // Strip tools that async_openai's rs::Tool can't deserialize (e.g., xAI-specific "x_search").
     // Instead of maintaining a hardcoded allowlist, try deserializing each tool entry; if it fails, drop it.
@@ -424,12 +429,6 @@ fn repair_gateway_event(value: &mut serde_json::Value) {
         .and_then(|v| v.as_array_mut())
     {
         tools.retain(|t| serde_json::from_value::<rs::Tool>(t.clone()).is_ok());
-    }
-    // `sequence_number` is required on every async_openai event struct, but gateways omit it.
-    // It is only an ordering hint the client never validates, so synthesize one rather than drop the event.
-    if let Some(obj) = value.as_object_mut() {
-        obj.entry("sequence_number")
-            .or_insert_with(|| serde_json::Value::from(0u64));
     }
     // `text.format` is required by `rs::ResponseTextParam`, but gateways echo a bare `text: {}`.
     // The Responses API documents the default as `{"type": "text"}`; restore it instead of failing.
