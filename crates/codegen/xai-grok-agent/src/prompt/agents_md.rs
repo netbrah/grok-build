@@ -710,6 +710,7 @@ mod tests {
             grok_home,
             Some(home),
             /*project_trusted*/ true,
+            /*extra_rule_dirs*/ &[],
         )
         .await;
         let contents: Vec<&str> = configs
@@ -761,6 +762,7 @@ mod tests {
             grok_home.clone(),
             Some(home.clone()),
             /*project_trusted*/ true,
+            /*extra_rule_dirs*/ &[],
         )
         .await;
         for vendor in [".claude", ".cursor"] {
@@ -786,6 +788,7 @@ mod tests {
             grok_home,
             Some(home),
             /*project_trusted*/ true,
+            /*extra_rule_dirs*/ &[],
         )
         .await;
         for vendor in [".claude", ".cursor"] {
@@ -822,6 +825,7 @@ mod tests {
             nested.clone(),
             None,
             /*project_trusted*/ true,
+            /*extra_rule_dirs*/ &[],
         )
         .await;
         assert_eq!(
@@ -859,6 +863,7 @@ mod tests {
             repo.clone(),
             None,
             /*project_trusted*/ true,
+            /*extra_rule_dirs*/ &[],
         )
         .await;
         for expected in ["home-rule", "project-grok-rule", "project-claude-rule"] {
@@ -897,6 +902,7 @@ mod tests {
             grok_home,
             Some(home),
             /*project_trusted*/ true,
+            /*extra_rule_dirs*/ &[],
         )
         .await;
         assert_eq!(
@@ -929,6 +935,7 @@ mod tests {
             repo.clone(),
             None,
             /*project_trusted*/ true,
+            /*extra_rule_dirs*/ &[],
         )
         .await;
         assert_eq!(configs.len(), 1);
@@ -974,6 +981,7 @@ mod tests {
             grok_home,
             Some(home),
             /*project_trusted*/ true,
+            /*extra_rule_dirs*/ &[],
         )
         .await;
         for body in [

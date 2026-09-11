@@ -650,7 +650,7 @@ impl SessionActor {
             });
         let model_family = {
             let models = self.models_manager.models();
-            crate::agent::models::resolve_catalog_key(
+            crate::agent::remote_config::resolve_catalog_key(
                 &models,
                 &acp::ModelId::new(cfg.model.clone()),
             )

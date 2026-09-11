@@ -201,6 +201,9 @@ xai-grok-status-line = { workspace = true, features = ["test-support"] }
 criterion = { workspace = true }
 # Pre-main unified-log redirect (`test_support::redirect_unified_log_for_tests`).
 ctor = { workspace = true }
+# Pre-main jsonwebtoken crypto-provider install (`test_support::install_jwt_crypto_provider_for_tests`).
+# Feature set mirrors xai-grok-login's jsonwebtoken dependency.
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 filetime = { workspace = true }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
