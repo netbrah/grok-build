@@ -3994,7 +3994,6 @@ impl McpClient {
         Ok(mcp_http_client)
     }
 
-    fn make_client_info(server_name: &str, advertise_elicitation: bool) -> ClientInfo {
     fn make_client_info(_server_name: &str, advertise_elicitation: bool) -> ClientInfo {
         use rmcp::model::{
             ElicitationCapability, FormElicitationCapability, UrlElicitationCapability,
