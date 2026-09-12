@@ -512,13 +512,86 @@ pub fn run_agent_test_with_models<F, Fut>(
 /// the `set_test_env` hygiene minus the mock base-URL/`XAI_API_KEY` pair, plus the ambient
 /// provider-key removals and the login-refresh decline. The credential itself is read from
 /// process env (`CODEX_LLM_PROXY_KEY`) and never written to disk.
-fn set_live_proxy_env(grok_home: &std::path::Path) {
+/// Minimal local HTTP responder that answers every request with `404`; it
+/// contains the first-party env-key probe (`GET {GROK_XAI_API_BASE_URL}/api-key`)
+/// the agent runs at `initialize`.
+///
+/// The live runner points `GROK_XAI_API_BASE_URL` at it — the live analog of
+/// `set_test_env`, which points the probe at the mock server. `404` is the
+/// `Unknown` probe verdict, which fails OPEN, so the `xai.api_key` advertisement
+/// becomes deterministic instead of depending on the ambient first-party
+/// endpoint (api.x.ai answers `403` for the proxy credential, a fail-CLOSED
+/// `Unusable`). The credential's real validity stays fully guarded: every turn
+/// carries it, and any auth failure surfaces as an `auth_error`-class ACP
+/// update, which the scenarios assert on. `xai_api_base_url` is probe-only in
+/// the custom-endpoint topology — `ModelFetchAuth::resolve` picks
+/// `CustomEndpoint` (models_base_url set) for the catalog fetch and the turns.
+pub struct ProbeSink {
+    url: String,
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ProbeSink {
+    fn spawn() -> Self {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe sink");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking probe sink");
+        let url = format!(
+            "http://{}/v1",
+            listener.local_addr().expect("probe sink addr")
+        );
+        let shutdown = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = shutdown.clone();
+        let thread = std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                if flag.load(Ordering::SeqCst) {
+                    break;
+                }
+                match listener.accept() {
+                    Ok((mut sock, _)) => {
+                        let _ = sock.set_read_timeout(Some(Duration::from_millis(100)));
+                        let _ = sock.read(&mut buf);
+                        let _ = sock
+                            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(20)),
+                }
+            }
+        });
+        Self {
+            url,
+            shutdown,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for ProbeSink {
+    fn drop(&mut self) {
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn set_live_proxy_env(grok_home: &std::path::Path, probe_sink_url: &str) {
     // SAFETY: the harness ENV_LOCK serializes the whole live body (agent included), so
     // no other agent in this process reads env concurrently; same single-writer
     // contract as `set_test_env`.
     let proxy_key = std::env::var("CODEX_LLM_PROXY_KEY").expect("checked by the caller");
     unsafe {
         std::env::set_var("GROK_HOME", grok_home);
+        // Probe containment (see `ProbeSink`): deterministic advertise, hermetic
+        // initialize — the live path's answer to the mock path's
+        // `GROK_XAI_API_BASE_URL = <mock server>`.
+        std::env::set_var("GROK_XAI_API_BASE_URL", probe_sink_url);
         for var in [
             "OPENAI_API_KEY",
             "OPENAI_BASE_URL",
@@ -593,7 +666,8 @@ where
         ),
     )
     .expect("write live-proxy [endpoints] config.toml");
-    set_live_proxy_env(grok_home.path());
+    let probe_sink = ProbeSink::spawn();
+    set_live_proxy_env(grok_home.path(), &probe_sink.url);
     // After GROK_HOME is the temp dir, so teardown cannot OnceLock ~/.grok.
     let _globals = RestoreProcessGlobals::enter();
 
