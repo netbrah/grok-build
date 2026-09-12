@@ -3437,3 +3437,52 @@ async fn progress_publisher_delivers_ticks_to_parent_cmd_channel() {
         })
         .await;
 }
+/// A subagent pinned to a custom-endpoint model with no resolvable credential must
+/// not fall to the ambient `XAI_API_KEY` (spec P1 fail-closed posture, extended to
+/// the subagent override route): the override is rejected and the child inherits
+/// the parent's working route.
+#[tokio::test]
+async fn subagent_override_rejects_credentialless_custom_endpoint_model() {
+    use xai_grok_agent::config::ModelOverride;
+
+    let _env_guard = xai_grok_test_support::EnvGuard::unset("XAI_API_KEY");
+
+    let mut models = indexmap::IndexMap::new();
+    let mut parent = test_model_entry("gpt-5.6-sol");
+    parent.api_key = Some("parent-env-key".to_string());
+    parent.info.base_url = "https://llm-proxy.test/v1".to_string();
+    models.insert("gpt-5.6-sol".to_string(), parent);
+    let mut orphan = test_model_entry("orphan-27b");
+    orphan.info.base_url = "https://llm-proxy.test/v1".to_string();
+    models.insert("orphan-27b".to_string(), orphan);
+
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    ctx.model_id = acp::ModelId::new("gpt-5.6-sol");
+    ctx.parent_chat_state = None;
+    ctx.sampling_config.model = "gpt-5.6-sol".to_string();
+    ctx.sampling_config.base_url = "https://llm-proxy.test/v1".to_string();
+    ctx.sampling_config.api_key = Some("parent-env-key".to_string());
+    ctx.available_models = models;
+    ctx.models_manager = crate::agent::remote_config::ModelsManager::new(
+        None,
+        indexmap::IndexMap::new(),
+        acp::ModelId::new("gpt-5.6-sol"),
+        ctx.auth_manager.clone(),
+        crate::agent::config::Config::default(),
+    );
+
+    let (child, model_id) = resolve_subagent_sampling_config(
+        "echo",
+        &ModelOverride::Override("orphan-27b".into()),
+        &ctx,
+)
+    .await;
+
+    assert_eq!(
+        model_id.0.as_ref(),
+        "gpt-5.6-sol",
+        "credentialless custom-endpoint override must fall through to the parent route"
+    );
+    assert_eq!(child.model, "gpt-5.6-sol");
+    assert_eq!(child.api_key.as_deref(), Some("parent-env-key"));
+}

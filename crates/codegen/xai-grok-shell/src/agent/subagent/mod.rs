@@ -912,6 +912,17 @@ fn resolve_model_override_to_config(
     } else {
         acp::ModelId::new(entry.info().model.clone())
     };
+    // Fail-closed credential guard (spec P1 posture, extended to the subagent
+    // override route): a custom-endpoint model with no resolvable credential must
+    // not fall to the ambient XAI_API_KEY. The override is rejected and the child
+    // inherits the parent's working route (this function's existing None contract).
+    if let Some(message) = crate::agent::config::custom_endpoint_credential_error(&entry) {
+        tracing::warn!(
+            model = entry.info().model.as_str(),
+            "subagent model override rejected by the fail-closed credential guard: {message}; falling through to the parent route"
+        );
+        return None;
+    }
     let session_key = ctx.auth.as_ref().map(|a| a.key.as_str());
     let has_session_key = session_key.is_some();
     let mut credentials = resolve_credentials(&entry, session_key);
