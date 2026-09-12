@@ -162,7 +162,10 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
         // Backend tool calls have no Chat Completions equivalent.
         // Emit a synthetic assistant message so the model sees context about what was searched, without breaking the message sequence
         ConversationItem::BackendToolCall(b) => ChatRequestMessage {
-            role: Role::Assistant,
+            role: match &b.kind {
+                BackendToolKind::CodexRawInput(raw) => raw.placeholder_role(),
+                _ => Role::Assistant,
+            },
             content: MessageContent::Text(b.text_summary()),
             name: None,
             tool_calls: Vec::new(),

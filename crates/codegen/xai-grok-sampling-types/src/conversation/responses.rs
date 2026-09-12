@@ -44,6 +44,42 @@ pub fn response_to_conversation_items(response: rs::Response) -> Vec<Conversatio
             rs::OutputItem::Reasoning(r) => {
                 items.push(ConversationItem::Reasoning(r));
             }
+            rs::OutputItem::Compaction(compaction) => {
+                // Remote compaction v2 emits its encrypted replacement as a
+                // normal Responses output item. Keep the provider payload
+                // opaque and in-order so it can be replayed exactly on the
+                // next Codex turn. async-openai requires an `id` even though
+                // the wire permits it to be absent; an empty typed-boundary
+                // sentinel must never become a fabricated provider ID.
+                let rs::CompactionBody {
+                    id,
+                    encrypted_content,
+                    created_by,
+                } = compaction;
+                let local_id = if id.is_empty() {
+                    format!("codex_compaction_{}", items.len())
+                } else {
+                    id.clone()
+                };
+                let mut raw = serde_json::json!({
+                    "type": "compaction",
+                    "encrypted_content": encrypted_content,
+                });
+                if !id.is_empty() {
+                    raw["id"] = serde_json::Value::String(id);
+                }
+                if let Some(created_by) = created_by {
+                    raw["created_by"] = serde_json::Value::String(created_by);
+                }
+                backend_tool_count += 1;
+                items.push(ConversationItem::BackendToolCall(BackendToolCallItem {
+                    kind: BackendToolKind::CodexRawInput(CodexRawInputItem {
+                        id: local_id,
+                        raw,
+                        cross_provider_fallback: None,
+                    }),
+                }));
+            }
             // These calls already ran server-side; they are kept so later turns replay the same context
             rs::OutputItem::WebSearchCall(ws) => {
                 backend_tool_count += 1;
@@ -191,7 +227,7 @@ pub fn patch_reasoning_text_types(body: &mut serde_json::Value) {
     }
 }
 
-fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<rs::InputItem> {
+pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<rs::InputItem> {
     match item {
         ConversationItem::System(s) => {
             vec![rs::InputItem::EasyMessage(rs::EasyInputMessage {
@@ -278,6 +314,22 @@ fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<rs::InputIte
                 }
                 BackendToolKind::CodeInterpreter(ci) => {
                     rs::InputItem::Item(rs::Item::CodeInterpreterCall(ci.clone()))
+                }
+                // async-openai does not model the `compaction` input item (or
+                // future replacement-history variants). Emit one typed,
+                // harmless placeholder here; the sampler replaces this exact
+                // flattened input position with `item.raw` immediately after
+                // request serialization and only for the Codex wire dialect.
+                BackendToolKind::CodexRawInput(raw) => {
+                    rs::InputItem::EasyMessage(rs::EasyInputMessage {
+                        r#type: rs::MessageType::Message,
+                        role: raw.responses_placeholder_role(),
+                        // A non-Codex request deliberately does not receive
+                        // the opaque provider item. Give cross-provider model
+                        // switches the safe retained-message summary instead
+                        // of leaking encrypted JSON or losing all context.
+                        content: rs::EasyInputContent::Text(raw.text_summary()),
+                    })
                 }
             }]
         }

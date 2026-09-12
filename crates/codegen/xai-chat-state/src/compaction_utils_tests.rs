@@ -2952,6 +2952,177 @@ fn fit_counts_user_images_against_budget() {
         "recent turn must survive"
     );
 }
+
+// ============================================================================
+// Codex remote compaction v2 — retained user tail + carrier shaping
+// ============================================================================
+
+fn raw_compaction_item(encrypted_content: &str) -> ConversationItem {
+    xai_grok_sampling_types::codex_compact_output_to_conversation_items(vec![serde_json::json!({
+        "type": "compaction",
+        "encrypted_content": encrypted_content,
+    })])
+    .expect("valid compaction item")
+    .pop()
+    .expect("one compaction item")
+}
+
+/// Provenance: open-grok@240c99c9 xai-chat-state/src/compaction_utils.rs:1730 :: remote_compaction_v2_keeps_newest_real_user_tail_and_raw_item (verbatim)
+#[test]
+fn remote_compaction_v2_keeps_newest_real_user_tail_and_raw_item() {
+    let old = format!("old:{}", "a".repeat(200_000));
+    let latest = format!("latest:{}", "b".repeat(200_000));
+    let input = vec![
+        ConversationItem::system("base"),
+        ConversationItem::user(old),
+        ConversationItem::assistant("assistant output is not retained"),
+        ConversationItem::system_reminder("synthetic reminder"),
+        ConversationItem::user(latest.clone()),
+    ];
+
+    let history =
+        build_codex_remote_compaction_v2_history(&input, raw_compaction_item("opaque-summary"));
+
+    assert_eq!(
+        history.len(),
+        3,
+        "the boundary turn is retained in truncated form"
+    );
+    assert!(history[0].text_content().starts_with("old:"));
+    assert!(history[0].text_content().contains("truncated"));
+    assert_eq!(history[1].text_content(), latest);
+    let ConversationItem::BackendToolCall(item) = &history[2] else {
+        panic!("the final item must remain provider-native");
+    };
+    let xai_grok_sampling_types::BackendToolKind::CodexRawInput(raw) = &item.kind else {
+        panic!("the final item must remain a Codex raw input");
+    };
+    assert_eq!(raw.raw["type"], "compaction");
+    assert_eq!(raw.raw["encrypted_content"], "opaque-summary");
+    assert!(raw.raw.get("id").is_none());
+}
+
+/// Provenance: open-grok@240c99c9 xai-chat-state/src/compaction_utils.rs:1764 :: remote_compaction_v2_fits_multipart_user_tail_and_strips_wrappers (verbatim)
+#[test]
+fn remote_compaction_v2_fits_multipart_user_tail_and_strips_wrappers() {
+    let boundary = ConversationItem::User(xai_grok_sampling_types::UserItem {
+        content: vec![
+            ContentPart::Text {
+                text: std::sync::Arc::<str>::from(format!(
+                    "<user_info>private metadata</user_info><user_query>{}</user_query>",
+                    "a".repeat(300_000)
+                )),
+            },
+            ContentPart::Image {
+                url: std::sync::Arc::<str>::from("data:image/png;base64,AAAA"),
+            },
+            ContentPart::Text {
+                text: std::sync::Arc::<str>::from("b".repeat(300_000)),
+            },
+        ],
+        ..Default::default()
+    });
+    let input = vec![boundary, ConversationItem::user("latest intent")];
+
+    let history =
+        build_codex_remote_compaction_v2_history(&input, raw_compaction_item("opaque-summary"));
+    let retained = &history[..history.len() - 1];
+    assert!(
+        retained
+            .iter()
+            .map(codex_remote_compaction_v2_user_text_tokens)
+            .sum::<u64>()
+            <= CODEX_REMOTE_COMPACTION_V2_RETAINED_USER_TOKENS,
+        "the multipart retained tail must stay within the hard 64k budget"
+    );
+    assert_eq!(retained.last().unwrap().text_content(), "latest intent");
+    let ConversationItem::User(boundary) = &retained[0] else {
+        panic!("boundary item must stay a user message");
+    };
+    assert!(
+        boundary
+            .content
+            .iter()
+            .any(|part| matches!(part, ContentPart::Image { .. }))
+    );
+    let boundary_text = retained[0].text_content();
+    assert!(!boundary_text.contains("private metadata"));
+    assert!(!boundary_text.contains("<user_query>"));
+    assert!(boundary_text.contains("truncated"));
+}
+
+/// Provenance: open-grok@240c99c9 xai-chat-state/src/compaction_utils.rs:1812 :: remote_compaction_v2_rounds_each_text_part_independently (verbatim)
+#[test]
+fn remote_compaction_v2_rounds_each_text_part_independently() {
+    let item = ConversationItem::User(xai_grok_sampling_types::UserItem {
+        content: vec![
+            ContentPart::Text {
+                text: std::sync::Arc::<str>::from("a"),
+            },
+            ContentPart::Image {
+                url: std::sync::Arc::<str>::from("data:image/png;base64,AAAA"),
+            },
+            ContentPart::Text {
+                text: std::sync::Arc::<str>::from("b"),
+            },
+        ],
+        ..Default::default()
+    });
+
+    assert_eq!(
+        codex_remote_compaction_v2_user_text_tokens(&item),
+        2,
+        "each text content item uses ceil(bytes / 4), while images cost zero"
+    );
+}
+
+/// Provenance: open-grok@240c99c9 xai-chat-state/src/compaction_utils.rs:1836 :: remote_compaction_v2_preserves_append_only_user_interjections (verbatim)
+#[test]
+fn remote_compaction_v2_preserves_append_only_user_interjections() {
+    let snapshot = vec![
+        ConversationItem::system("base"),
+        ConversationItem::user("initial task"),
+    ];
+    let mut current = snapshot.clone();
+    current.push(ConversationItem::system_reminder("internal update"));
+    current.push(ConversationItem::interjection("new user steer"));
+
+    let interjections = codex_remote_compaction_v2_interjections(&snapshot, &current)
+        .expect("append-only history should be safe");
+    assert_eq!(interjections.len(), 1);
+    assert_eq!(interjections[0].text_content(), "new user steer");
+    let ConversationItem::User(interjection) = &interjections[0] else {
+        panic!("interjection must stay a user item");
+    };
+    assert_eq!(
+        interjection.synthetic_reason,
+        Some(SyntheticReason::Interjection)
+    );
+
+    let mut edited = current;
+    edited[1] = ConversationItem::user("edited task");
+    assert!(
+        codex_remote_compaction_v2_interjections(&snapshot, &edited).is_none(),
+        "an edited prefix must reject the stale compaction result"
+    );
+}
+
+/// Provenance: open-grok@240c99c9 xai-chat-state/src/compaction_utils.rs:1866 :: remote_compaction_v2_rejects_legacy_plain_synthetic_user_prompts (verbatim)
+#[test]
+fn remote_compaction_v2_rejects_legacy_plain_synthetic_user_prompts() {
+    let input = vec![
+        ConversationItem::user("real task"),
+        ConversationItem::user(AUTO_CONTINUE_PROMPT),
+        ConversationItem::user("<user_query>__auto_continue__</user_query>"),
+        ConversationItem::interjection("human steer"),
+    ];
+
+    let history = build_codex_remote_compaction_v2_history(&input, raw_compaction_item("opaque"));
+    assert_eq!(history.len(), 3);
+    assert_eq!(history[0].text_content(), "real task");
+    assert_eq!(history[1].text_content(), "human steer");
+    assert!(matches!(history[2], ConversationItem::BackendToolCall(_)));
+}
 /// Incompactable-state regression: `fit` must charge encrypted-reasoning bytes (enc/4), so the old turn is trimmed.
 #[test]
 fn fit_counts_encrypted_reasoning_against_budget() {

@@ -271,6 +271,7 @@ impl BackendToolCallItem {
             BackendToolKind::WebSearch(ws) => ws.id.as_str(),
             BackendToolKind::XSearch(ct) => ct.id.as_str(),
             BackendToolKind::CodeInterpreter(ci) => ci.id.as_str(),
+            BackendToolKind::CodexRawInput(item) => item.id.as_str(),
         }
     }
 
@@ -307,7 +308,195 @@ impl BackendToolCallItem {
                     .unwrap_or_default();
                 format!("[backend code_interpreter] {code_preview}")
             }
+            BackendToolKind::CodexRawInput(item) => item.text_summary(),
         }
+    }
+
+    /// Model-visible length used for token accounting of the opaque payload.
+    /// The raw provider item (or its bounded plaintext fallback) can be far
+    /// larger than the one-line placeholder summary shown to the pager.
+    pub fn estimated_content_len(&self) -> usize {
+        match &self.kind {
+            BackendToolKind::CodexRawInput(item) => item.estimated_model_visible_len().max(
+                item.cross_provider_fallback
+                    .as_deref()
+                    .map(str::len)
+                    .unwrap_or(0),
+            ),
+            _ => self.text_summary().len(),
+        }
+    }
+}
+
+/// One opaque response item returned by OpenAI's compaction flow over the
+/// streaming `/responses` endpoint (remote compaction v2).
+///
+/// The endpoint owns this wire format and may add item variants before the
+/// local async-openai dependency learns about them. Persisting the raw JSON
+/// lets Codex sessions replay the exact replacement history without exposing
+/// it as visible assistant output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodexRawInputItem {
+    /// Stable local identity used by replay/dedup helpers. The provider does
+    /// not require an `id` on every compact item.
+    pub id: String,
+    /// Exact provider item to splice into the next Responses request.
+    pub raw: serde_json::Value,
+    /// Plaintext recent-history tail used only if this session later switches
+    /// away from Codex. It is never spliced into a Codex request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_provider_fallback: Option<String>,
+}
+
+impl CodexRawInputItem {
+    fn estimated_model_visible_len(&self) -> usize {
+        let item_type = self.raw.get("type").and_then(serde_json::Value::as_str);
+        if matches!(
+            item_type,
+            Some("compaction" | "context_compaction" | "reasoning")
+        ) && let Some(encoded) = self
+            .raw
+            .get("encrypted_content")
+            .and_then(serde_json::Value::as_str)
+        {
+            // Mirror codex-rs's estimate_reasoning_length: base64-decoded
+            // bytes minus the fixed encrypted-envelope overhead.
+            return (encoded.len().saturating_mul(3) / 4).saturating_sub(650);
+        }
+        self.raw.to_string().len()
+    }
+
+    fn placeholder_role(&self) -> Role {
+        match self.raw.get("role").and_then(serde_json::Value::as_str) {
+            Some("user") => Role::User,
+            Some("system" | "developer") => Role::System,
+            _ => Role::Assistant,
+        }
+    }
+
+    fn responses_placeholder_role(&self) -> rs::Role {
+        match self.placeholder_role() {
+            Role::User => rs::Role::User,
+            Role::System => rs::Role::System,
+            _ => rs::Role::Assistant,
+        }
+    }
+
+    fn text_summary(&self) -> String {
+        let item_type = self
+            .raw
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("item");
+        if item_type == "message" {
+            let role = self
+                .raw
+                .get("role")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("context");
+            let text = compact_message_text(&self.raw);
+            if !text.is_empty() {
+                return format!("[OpenAI retained {role} context] {text}");
+            }
+        }
+        if item_type == "agent_message" {
+            let text = compact_message_text(&self.raw);
+            if !text.is_empty() {
+                return format!("[Untrusted agent message] {text}");
+            }
+        }
+        if item_type == "compaction" {
+            self.cross_provider_fallback
+                .clone()
+                .unwrap_or_else(|| "[OpenAI compacted context]".to_owned())
+        } else {
+            format!("[OpenAI retained {item_type} context]")
+        }
+    }
+}
+
+fn compact_message_text(value: &serde_json::Value) -> String {
+    match value.get("content") {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(serde_json::Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| part.as_str())
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// Build a bounded plaintext tail for a later provider switch.
+///
+/// OpenAI's compact item is encrypted provider state and cannot be consumed by
+/// xAI. Keep a recent, role-labelled transcript alongside it locally so a
+/// switch does not silently reduce the entire prior conversation to a marker.
+/// Hidden reasoning and provider tool plumbing are omitted.
+pub fn codex_cross_provider_fallback(items: &[ConversationItem], max_chars: usize) -> String {
+    const HEADER: &str = "[Provider-neutral context from before OpenAI compaction. Older details may have been condensed; recent transcript follows.]";
+    if max_chars == 0 {
+        return String::new();
+    }
+    let take_prefix = |value: &str, limit: usize| -> String { value.chars().take(limit).collect() };
+    let take_suffix = |value: &str, limit: usize| -> String {
+        let count = value.chars().count();
+        if count <= limit {
+            value.to_owned()
+        } else {
+            value.chars().skip(count.saturating_sub(limit)).collect()
+        }
+    };
+
+    let header = take_prefix(HEADER, max_chars);
+    let mut remaining = max_chars.saturating_sub(header.chars().count());
+    let mut recent_blocks = Vec::new();
+    for item in items.iter().rev() {
+        let label = match item {
+            ConversationItem::System(_) | ConversationItem::Reasoning(_) => continue,
+            ConversationItem::User(_) => "User",
+            ConversationItem::Assistant(_) => "Assistant",
+            ConversationItem::ToolResult(_) => "Tool",
+            ConversationItem::BackendToolCall(BackendToolCallItem {
+                kind: BackendToolKind::CodexRawInput(raw),
+            }) if raw.cross_provider_fallback.is_some() => "Prior compacted context",
+            ConversationItem::BackendToolCall(_) => continue,
+        };
+        let text = item.text_content();
+        if text.trim().is_empty() {
+            continue;
+        }
+        let block = format!("{label}:\n{text}");
+        // Account for the blank line inserted between the header/blocks.
+        let separator_cost = 2usize;
+        if remaining <= separator_cost {
+            break;
+        }
+        remaining = remaining.saturating_sub(separator_cost);
+        let block_chars = block.chars().count();
+        if block_chars <= remaining {
+            recent_blocks.push(block);
+            remaining = remaining.saturating_sub(block_chars);
+        } else {
+            recent_blocks.push(format!(
+                "[Earlier text truncated]\n{}",
+                take_suffix(&block, remaining.saturating_sub(25))
+            ));
+            break;
+        }
+    }
+    recent_blocks.reverse();
+    if recent_blocks.is_empty() {
+        header
+    } else {
+        format!("{header}\n\n{}", recent_blocks.join("\n\n"))
+            .chars()
+            .take(max_chars)
+            .collect()
     }
 }
 
@@ -323,6 +512,11 @@ pub enum BackendToolKind {
     XSearch(rs::CustomToolCall),
     /// Server-side code interpreter execution.
     CodeInterpreter(rs::CodeInterpreterToolCall),
+    /// Opaque replacement-history item returned by OpenAI Codex compaction.
+    /// This is not rendered as a tool call; the existing backend-item carrier
+    /// is used because it already persists invisible provider-native Responses
+    /// items in exact conversation order.
+    CodexRawInput(CodexRawInputItem),
 }
 
 // ============================================================================
@@ -622,6 +816,71 @@ impl ConversationRequest {
     pub fn strip_images(&mut self) -> Vec<Arc<str>> {
         strip_images_where(&mut self.items, |_| true)
     }
+}
+
+/// Exact Responses input item that replaces the typed placeholder at
+/// `input_item_index` after request serialization.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawInputItemReplacement {
+    pub input_item_index: usize,
+    pub value: serde_json::Value,
+}
+
+/// Preserve the exact replacement history returned by Codex remote
+/// compaction (the `compaction` output item over the streaming `/responses`
+/// endpoint).
+///
+/// Compact output is not a normal `Response`: it is an array of input-ready
+/// `ResponseItem`s and can contain the provider-only `compaction` variant.
+/// Treat each element as opaque, ordered context so a later Codex turn sends
+/// it back byte-for-byte even when the local typed API dependency is older
+/// than the server contract.
+pub fn codex_compact_output_to_conversation_items(
+    output: Vec<serde_json::Value>,
+) -> std::result::Result<Vec<ConversationItem>, String> {
+    let mut retained = Vec::new();
+    for (index, raw) in output.into_iter().enumerate() {
+        let object = raw
+            .as_object()
+            .ok_or_else(|| format!("compact output item {index} is not an object"))?;
+        let item_type = object
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("compact output item {index} has no type"))?;
+        // Match codex-rs's post-endpoint retention boundary. Base developer
+        // instructions are reattached locally, while transient reasoning and
+        // tool plumbing from the compaction operation must not become live
+        // conversation history.
+        let keep = match item_type {
+            "message" => matches!(
+                object.get("role").and_then(serde_json::Value::as_str),
+                Some("user" | "assistant")
+            ),
+            "agent_message" | "compaction" | "context_compaction" => true,
+            _ => false,
+        };
+        if !keep {
+            continue;
+        }
+        let provider_id = object
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("codex_compact_{index}_{item_type}"));
+        retained.push(ConversationItem::BackendToolCall(BackendToolCallItem {
+            kind: BackendToolKind::CodexRawInput(CodexRawInputItem {
+                id: provider_id,
+                raw,
+                cross_provider_fallback: None,
+            }),
+        }));
+    }
+    if retained.is_empty() {
+        return Err("compact output contained no supported replacement history".to_owned());
+    }
+    Ok(retained)
 }
 
 /// Strip only `urls`.
@@ -1249,7 +1508,10 @@ impl ConversationItem {
             Self::User(_) => Role::User,
             Self::Assistant(_) => Role::Assistant,
             Self::ToolResult(_) => Role::Tool,
-            Self::BackendToolCall(_) => Role::Assistant,
+            Self::BackendToolCall(item) => match &item.kind {
+                BackendToolKind::CodexRawInput(raw) => raw.placeholder_role(),
+                _ => Role::Assistant,
+            },
             // Reasoning is part of the assistant's turn
             Self::Reasoning(_) => Role::Assistant,
         }
@@ -1590,6 +1852,28 @@ impl ConversationRequest {
             items,
             ..Default::default()
         }
+    }
+
+    /// Ordered `(flattened input position, exact provider item)` splices for
+    /// the next Codex turn. The sampler replaces the typed placeholders at
+    /// these positions after request serialization — only for the Codex wire
+    /// dialect, so non-Codex clients never receive the opaque items
+    /// (fail-closed cross-provider behavior).
+    pub fn raw_codex_input_replacements(&self) -> Vec<RawInputItemReplacement> {
+        let mut replacements = Vec::new();
+        let mut input_item_index = 0usize;
+        for item in &self.items {
+            if let ConversationItem::BackendToolCall(backend) = item
+                && let BackendToolKind::CodexRawInput(raw) = &backend.kind
+            {
+                replacements.push(RawInputItemReplacement {
+                    input_item_index,
+                    value: raw.raw.clone(),
+                });
+            }
+            input_item_index += responses::conversation_item_to_input_items(item).len();
+        }
+        replacements
     }
 
     /// Add an item to the conversation
@@ -4742,5 +5026,257 @@ mod tests {
         // The legacy placeholder sentinel must not appear
         let body_str = serde_json::to_string(&input).unwrap();
         assert!(!body_str.contains("__RAW_OUTPUT_PLACEHOLDER_"));
+    }
+
+    // ========================================================================
+    // Codex remote compaction v2 — opaque carrier + wire replay
+    // ========================================================================
+
+    /// Provenance: open-grok@240c99c9 xai-grok-sampling-types/src/conversation.rs:14088 :: codex_compact_output_is_preserved_as_ordered_raw_input (adapted)
+    #[test]
+    fn codex_compact_output_is_preserved_as_ordered_raw_input() {
+        let output = vec![
+            serde_json::json!({
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "keep this"}]
+            }),
+            serde_json::json!({
+                "type": "compaction",
+                "encrypted_content": format!(
+                    "opaque-server-summary{}",
+                    "x".repeat(2_000)
+                )
+            }),
+        ];
+        let items = codex_compact_output_to_conversation_items(output.clone()).unwrap();
+        let request = ConversationRequest::from_items(items);
+        assert_eq!(
+            request.items[0].role(),
+            Role::User,
+            "a cross-provider fallback must preserve retained message roles"
+        );
+        let safe_placeholders = input_items_json(&request);
+        assert_eq!(safe_placeholders[0]["role"], "user");
+        assert!(
+            !serde_json::to_string(&safe_placeholders)
+                .unwrap()
+                .contains("opaque-server-summary"),
+            "typed fallback input must never expose encrypted compact JSON"
+        );
+        let replacements = request.raw_codex_input_replacements();
+        assert_eq!(replacements.len(), 2);
+        assert_eq!(replacements[0].input_item_index, 0);
+        assert_eq!(replacements[0].value, output[0]);
+        assert_eq!(replacements[1].input_item_index, 1);
+        assert_eq!(replacements[1].value, output[1]);
+
+        let ConversationItem::BackendToolCall(compaction) = &request.items[1] else {
+            panic!("compact item should use the invisible provider-item carrier");
+        };
+        assert_eq!(compaction.text_summary(), "[OpenAI compacted context]");
+        assert!(!compaction.text_summary().contains("opaque-server-summary"));
+        assert!(
+            compaction.estimated_content_len() > compaction.text_summary().len(),
+            "context accounting must include the hidden encrypted payload"
+        );
+    }
+
+    /// Provenance: open-grok@240c99c9 xai-grok-sampling-types/src/conversation.rs:14137 :: typed_compaction_output_replays_without_fabricated_provider_id (verbatim)
+    #[test]
+    fn typed_compaction_output_replays_without_fabricated_provider_id() {
+        let response = rs::Response {
+            background: None,
+            billing: None,
+            conversation: None,
+            created_at: 0,
+            completed_at: None,
+            error: None,
+            id: "resp_compact".into(),
+            incomplete_details: None,
+            instructions: None,
+            max_output_tokens: None,
+            metadata: None,
+            model: "gpt-5.6-sol".into(),
+            object: "response".into(),
+            output: vec![rs::OutputItem::Compaction(rs::CompactionBody {
+                id: String::new(),
+                encrypted_content: "opaque-v2-summary".into(),
+                created_by: Some("server".into()),
+            })],
+            parallel_tool_calls: None,
+            previous_response_id: None,
+            prompt: None,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            reasoning: None,
+            safety_identifier: None,
+            service_tier: None,
+            status: rs::Status::Completed,
+            temperature: None,
+            text: None,
+            tool_choice: None,
+            tools: None,
+            top_logprobs: None,
+            top_p: None,
+            truncation: None,
+            usage: None,
+        };
+
+        let items = response_to_conversation_items(response);
+        let ConversationItem::BackendToolCall(compaction) = &items[0] else {
+            panic!("compaction output must remain a raw provider item");
+        };
+        let BackendToolKind::CodexRawInput(raw) = &compaction.kind else {
+            panic!("compaction output must remain a Codex raw input");
+        };
+        assert_eq!(raw.raw["type"], "compaction");
+        assert_eq!(raw.raw["encrypted_content"], "opaque-v2-summary");
+        assert_eq!(raw.raw["created_by"], "server");
+        assert!(raw.raw.get("id").is_none());
+
+        let request = ConversationRequest::from_items(items);
+        let replay = request.raw_codex_input_replacements();
+        assert_eq!(replay.len(), 1);
+        assert!(replay[0].value.get("id").is_none());
+    }
+
+    /// Provenance: open-grok@240c99c9 xai-grok-sampling-types/src/conversation.rs:14195 :: codex_raw_replacement_indexes_follow_flattened_assistant_items (verbatim)
+    #[test]
+    fn codex_raw_replacement_indexes_follow_flattened_assistant_items() {
+        let assistant = ConversationItem::assistant_tool_calls(vec![ToolCall {
+            id: Arc::<str>::from("call_1"),
+            name: "exec".to_owned(),
+            arguments: Arc::<str>::from("{}"),
+        }]);
+        let raw = serde_json::json!({
+            "type": "compaction",
+            "encrypted_content": "opaque"
+        });
+        let compact = codex_compact_output_to_conversation_items(vec![raw.clone()])
+            .unwrap()
+            .remove(0);
+        let request = ConversationRequest::from_items(vec![
+            ConversationItem::assistant("visible"),
+            assistant,
+            compact,
+        ]);
+        let replacements = request.raw_codex_input_replacements();
+        // One assistant message + one function call precede the raw item.
+        assert_eq!(replacements[0].input_item_index, 2);
+        assert_eq!(replacements[0].value, raw);
+    }
+
+    /// Provenance: open-grok@240c99c9 xai-grok-sampling-types/src/conversation.rs:14363 :: codex_compact_output_filters_transient_and_stale_items (verbatim)
+    #[test]
+    fn codex_compact_output_filters_transient_and_stale_items() {
+        let compaction = serde_json::json!({
+            "type": "compaction",
+            "encrypted_content": "opaque"
+        });
+        let items = codex_compact_output_to_conversation_items(vec![
+            serde_json::json!({
+                "type": "message",
+                "role": "developer",
+                "content": [{"type": "input_text", "text": "stale instructions"}]
+            }),
+            serde_json::json!({"type": "reasoning", "encrypted_content": "transient"}),
+            serde_json::json!({"type": "function_call", "call_id": "orphan"}),
+            compaction.clone(),
+        ])
+        .unwrap();
+        let replacements = ConversationRequest::from_items(items).raw_codex_input_replacements();
+        assert_eq!(replacements.len(), 1);
+        assert_eq!(replacements[0].value, compaction);
+    }
+
+    /// Provenance: open-grok@240c99c9 xai-grok-sampling-types/src/conversation.rs:14385 :: codex_compaction_persists_safe_cross_provider_fallback (verbatim)
+    #[test]
+    fn codex_compaction_persists_safe_cross_provider_fallback() {
+        let fallback = codex_cross_provider_fallback(
+            &[
+                ConversationItem::system("do not copy base policy"),
+                ConversationItem::user("older request"),
+                ConversationItem::assistant("older response"),
+                ConversationItem::user("latest request"),
+            ],
+            220,
+        );
+        assert!(fallback.contains("latest request"));
+        assert!(!fallback.contains("do not copy base policy"));
+        assert!(fallback.chars().count() <= 220);
+
+        let raw = serde_json::json!({
+            "type": "compaction",
+            "encrypted_content": "opaque-server-summary"
+        });
+        let mut item = codex_compact_output_to_conversation_items(vec![raw.clone()])
+            .unwrap()
+            .remove(0);
+        let ConversationItem::BackendToolCall(compaction) = &mut item else {
+            panic!("compact item should use the provider-item carrier");
+        };
+        let BackendToolKind::CodexRawInput(compaction) = &mut compaction.kind else {
+            panic!("expected Codex raw input");
+        };
+        compaction.cross_provider_fallback = Some(fallback.clone());
+
+        let persisted = serde_json::to_value(&item).unwrap();
+        let restored: ConversationItem = serde_json::from_value(persisted).unwrap();
+        let request = ConversationRequest::from_items(vec![restored]);
+        let safe_input = input_items_json(&request);
+        assert!(safe_input[0].to_string().contains("latest request"));
+        assert!(!safe_input[0].to_string().contains("opaque-server-summary"));
+        assert_eq!(request.raw_codex_input_replacements()[0].value, raw);
+    }
+
+    /// Provenance: hyper-grok-build@45e984f3 packages/ai/xai-grok-sampling-types/src/conversation.rs:4734 :: codex_compaction_item_persists_and_replays_only_on_its_route (adapted)
+    ///
+    /// The HY test pins "replays only on its route" via its typed
+    /// `ReasoningModelIdentity` route key. The worktree has no route identity:
+    /// the route IS the wire dialect, so the adapted contract is
+    /// (1) the carrier persists byte-for-byte through serde,
+    /// (2) a Codex-dialect request splices the exact raw item (an idless raw
+    ///     stays idless — no fabricated provider id),
+    /// (3) a non-Codex request gets the bounded typed placeholder, never the
+    ///     opaque JSON, and no raw splice exists for that route at all.
+    #[test]
+    fn codex_compaction_item_persists_and_replays_only_on_its_route() {
+        let raw = serde_json::json!({
+            "type": "compaction",
+            "encrypted_content": "opaque-state"
+        });
+        let item = ConversationItem::BackendToolCall(BackendToolCallItem {
+            kind: BackendToolKind::CodexRawInput(CodexRawInputItem {
+                id: "codex_compact_0_compaction".to_string(),
+                raw: raw.clone(),
+                cross_provider_fallback: Some("recent transcript".to_string()),
+            }),
+        });
+        let restored: ConversationItem =
+            serde_json::from_str(&serde_json::to_string(&item).unwrap()).unwrap();
+        let request = ConversationRequest::from_items(vec![restored]);
+
+        // Same route (Codex dialect): exact ordered raw replay, id intact.
+        let replay = request.raw_codex_input_replacements();
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].value, raw);
+        assert_eq!(
+            replay[0].value["encrypted_content"], "opaque-state",
+            "the codex route must receive the exact opaque item"
+        );
+
+        // Switched route (non-Codex): typed placeholder only, no splice.
+        let placeholders = input_items_json(&request);
+        assert_eq!(placeholders.len(), 1);
+        assert_eq!(placeholders[0]["type"], "message");
+        assert!(
+            placeholders[0].to_string().contains("recent transcript"),
+            "the cross-provider placeholder carries the retained transcript summary"
+        );
+        assert!(
+            !placeholders[0].to_string().contains("opaque-state"),
+            "the foreign route must never see the encrypted provider payload"
+        );
     }
 }
