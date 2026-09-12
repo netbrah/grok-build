@@ -1,27 +1,49 @@
 //! Wire builder for the Anthropic `/v1/messages` request.
 //!
-//! The builder pipeline (MW-1 spec D5, in order) repairs the translated
-//! history before it is serialized:
+//! The builder pipeline (binding order) repairs the translated history
+//! before it is serialized:
 //!
-//! 1. **item-level orphan cleanup** ([`clean_orphaned_items`]) — tool calls
-//!    with no result and results with no call are removed pre-translation;
-//! 2. **translate** — items become `Message`s (this file's mapping loop);
-//! 3. **message-level adjacency cleanup** ([`clean_orphaned_blocks_by_adjacency`])
-//!    — a `tool_use` survives only if the immediately following user message
-//!    carries its `tool_result`, and vice versa; emptied messages are removed;
-//! 4. **tool_result hoist** ([`hoist_tool_results_to_front`]) — within a user
-//!    message, `tool_result` blocks are stable-partitioned to the front
-//!    (Vertex-backed endpoints reject the other ordering);
-//! 5. **three-part thinking strip** ([`strip_thinking_blocks`]) — non-latest
-//!    assistant messages lose all thinking blocks; the latest keeps a block
-//!    only as a verbatim (text, signature) pair; signature-only blocks are
-//!    dropped; emptied assistant messages are removed;
-//! 6. **trailing-assistant repair** ([`repair_trailing_assistant`]) — a
-//!    history ending on an assistant message gets a synthetic user sentinel
-//!    (`[Awaiting tool result]` / `[Continue]`), because the proxy-routed
-//!    endpoints reject assistant prefill;
-//! 7. **cache-control window** ([`apply_cache_breakpoints`]) — runs last, so
-//!    its tip can land on the synthetic sentinel user.
+//! 1. **item-level orphan cleanup** ([`clean_orphaned_items`], MW-1 D5
+//!    stage 1) — tool calls with no result and results with no call are
+//!    removed pre-translation;
+//! 2. **translate** (MW-1 D5 stage 2) — items become `Message`s (this
+//!    file's mapping loop). Two MW-2 rules run inside the translation:
+//!    **R1 same-role merge** — consecutive user-role content (user text
+//!    blocks AND tool_result blocks) accumulates into ONE user message
+//!    (xli `append_to_role`, wire.rs:1071; Vertex/proxy-class shape
+//!    determinism), and **R8 model-identity suppression** — an assistant
+//!    item whose `model_id` mismatches the request model slug suppresses
+//!    its sibling `Reasoning` items' Thinking blocks until the next
+//!    Assistant/System flush (no-op for a None/empty request model);
+//! 3. **message-level adjacency cleanup** (MW-1 D5 stage 3,
+//!    [`clean_orphaned_blocks_by_adjacency`]) — a `tool_use` survives only
+//!    if the immediately following user message carries its `tool_result`,
+//!    and vice versa; emptied messages are removed (user and assistant);
+//! 4. **leading-assistant repair** (MW-2 D2) — a message list beginning on
+//!    an assistant message gets a synthetic leading user turn
+//!    `[Continue]` (unconditional — a head has no result awaiting). Runs
+//!    after the adjacency cleanup (so a stripped leading assistant cannot
+//!    leave two consecutive user messages) and before the hoist/strip/
+//!    trailing-repair;
+//! 5. **tool_result hoist** (MW-1 D5 stage 4,
+//!    [`hoist_tool_results_to_front`]) — within a user message,
+//!    `tool_result` blocks are stable-partitioned to the front (Vertex
+//!    backed endpoints reject the other ordering); live since R1 produces
+//!    merged messages mixing tool_result and text blocks;
+//! 6. **three-part thinking strip** (MW-1 D5 stage 5,
+//!    [`strip_thinking_blocks`]) — non-latest assistant messages lose all
+//!    thinking blocks; the latest keeps a block only as a verbatim (text,
+//!    signature) pair; signature-only blocks are dropped; emptied assistant
+//!    messages are removed. R8's suppression runs BEFORE this strip (the
+//!    strip is a superset gate over what R8 leaves behind);
+//! 7. **trailing-assistant repair** (MW-1 D5 stage 6,
+//!    [`repair_trailing_assistant`]) — a history ending on an assistant
+//!    message gets a synthetic user sentinel (`[Awaiting tool result]` /
+//!    `[Continue]`), because the proxy-routed endpoints reject assistant
+//!    prefill;
+//! 8. **cache-control window** (MW-1 D5 stage 7,
+//!    [`apply_cache_breakpoints`]) — runs last, so its tip can land on the
+//!    synthetic sentinel user.
 
 use super::*;
 
@@ -275,10 +297,10 @@ pub(crate) fn strip_thinking_blocks(messages: &mut Vec<crate::messages::Message>
 /// ordering. Runs after the adjacency stage, so every `tool_result` here
 /// already pairs with the preceding assistant message.
 ///
-/// Defensive in V1: the translation loop never emits a user message mixing
-/// text and tool_result blocks (user items become text/image-only messages;
-/// consecutive tool results batch into their own message). The stage becomes
-/// live when a user-merging seam lands (MW-2).
+/// Live since MW-2 R1: the same-role merge produces user messages mixing
+/// tool_result and text blocks, so the stable partition (tool_result blocks
+/// first, everything else after, relative order preserved) is what keeps the
+/// merged shape in the Vertex-required ordering.
 pub(crate) fn hoist_tool_results_to_front(messages: &mut [crate::messages::Message]) {
     use crate::messages::{ContentBlock, MessageContent, MessageRole};
 
@@ -406,8 +428,11 @@ fn apply_cache_breakpoints(
         .rev()
         .find(|&i| mark_message_cache_breakpoint(&mut messages[i]));
 
-    // Where the previous request ended
-    // A turn can append several user messages in a row, so skip the whole trailing run rather than a neighbour of the tip
+    // Where the previous request ended. R1's same-role merge keeps one user
+    // message per user-role run, so the previous tip is the last user
+    // message before the last assistant (pre-merge, a turn could append
+    // several user messages in a row and the lookup had to skip the whole
+    // trailing run).
     if let Some(tip) = tip
         && let Some(prev) = messages[..tip]
             .iter()
@@ -422,6 +447,76 @@ fn apply_cache_breakpoints(
     }
 }
 
+/// Tool-call arguments must serialize as a JSON object (MW-2 R2).
+///
+/// Parseable non-object values and unparseable strings both coerce to `{}`:
+/// grok's own tool calls are always object-shaped, so a non-object replayed
+/// argument is a local artifact, and `{}` is the safe form that keeps the
+/// `tool_use` block serializable. The unparseable case carries a
+/// `tracing::warn!` (xli parity, wire.rs:173); the non-object arm is
+/// hardening beyond xli (which guards only the unparseable case) and beyond
+/// the pin, which types `ToolUseBlockParam.input` as `unknown`
+/// (wirejig/refs/anthropic@d3d5028 messages.ts:2355).
+fn tool_call_input(arguments: &str, tool_name: &str) -> serde_json::Value {
+    match serde_json::from_str::<serde_json::Value>(arguments) {
+        Ok(value) if value.is_object() => value,
+        Ok(value) => {
+            tracing::warn!(
+                tool = %tool_name,
+                %value,
+                "tool_call arguments parsed to a non-object JSON value; substituting an empty object"
+            );
+            serde_json::json!({})
+        }
+        Err(err) => {
+            tracing::warn!(
+                tool = %tool_name,
+                "unparseable tool_call arguments; substituting an empty object: {err}"
+            );
+            serde_json::json!({})
+        }
+    }
+}
+
+/// Parse an image reference into an Anthropic image source, or a labeled
+/// text fallback (MW-2 R3).
+///
+/// One helper serves both the user-content and the tool-result image paths
+/// (they diverged pre-MW-2: the tool-result path misclassified non-base64
+/// `data:` URIs as Url sources). A well-formed
+/// `data:<media_type>;base64,<data>` URI whose media type is in the pinned
+/// closed union (wirejig/refs/anthropic@d3d5028
+/// spec/src/resources/messages/messages.ts:204) becomes a `Base64` source
+/// with the media type extracted exactly — no silent default. `http(s)://`
+/// URLs become `Url` sources (the API accepts them). Everything else —
+/// malformed data URIs, out-of-union media types, unknown schemes — degrades
+/// to the `[invalid image: {url}]` text fallback so a broken reference never
+/// fails the request.
+fn image_source_or_fallback(url: &str) -> Result<crate::messages::ImageSource, String> {
+    use crate::messages::ImageSource;
+
+    if let Some(rest) = url.strip_prefix("data:") {
+        if let Some((media_type, data)) = rest.split_once(";base64,") {
+            return match media_type {
+                "image/jpeg" | "image/png" | "image/gif" | "image/webp" => {
+                    Ok(ImageSource::Base64 {
+                        media_type: media_type.to_string(),
+                        data: data.to_string(),
+                    })
+                }
+                _ => Err(format!("[invalid image: {url}]")),
+            };
+        }
+        return Err(format!("[invalid image: {url}]"));
+    }
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return Ok(ImageSource::Url {
+            url: url.to_string(),
+        });
+    }
+    Err(format!("[invalid image: {url}]"))
+}
+
 pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::MessagesRequest {
     use crate::messages::{
         ContentBlock, ImageSource, Message, MessageContent, MessageRole, MessagesRequest,
@@ -434,7 +529,20 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     let mut system_blocks: Vec<TextBlock> = Vec::new();
     let mut messages: Vec<Message> = Vec::new();
     let mut pending_assistant: Vec<ContentBlock> = Vec::new();
-    let mut pending_tool_results: Vec<ContentBlock> = Vec::new();
+    // R1: ONE user-role buffer — consecutive user text and tool_result
+    // content merges into a single user message, flushed on an assistant
+    // role change (or a System boundary).
+    let mut pending_user: Vec<ContentBlock> = Vec::new();
+
+    // R8: model-identity thinking suppression. Set when an Assistant item
+    // with model_id Some(m) and m != model_slug is translated; Reasoning
+    // items translated while set emit no Thinking block; cleared on the next
+    // Assistant or System flush. A None/empty request model makes the rule a
+    // no-op (a None-model request is invalid anyway; the guard must not
+    // silently strip signed thinking).
+    let model_slug = req.model.as_deref().unwrap_or_default();
+    let r8_active = !model_slug.is_empty();
+    let mut r8_suppress_thinking = false;
 
     let sanitize_tool_call_id = |id: &str| -> String {
         id.chars()
@@ -456,43 +564,18 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                     text: text.as_ref().to_owned(),
                     cache_control: None,
                 },
-                ContentPart::Image { url } => {
-                    if url.starts_with("data:") {
-                        if let Some((header, data)) = url.split_once(',') {
-                            let media_type = header
-                                .strip_prefix("data:")
-                                .and_then(|h| h.strip_suffix(";base64"))
-                                .unwrap_or("image/png")
-                                .to_string();
-                            ContentBlock::Image {
-                                source: ImageSource::Base64 {
-                                    media_type,
-                                    data: data.to_string(),
-                                },
-                                cache_control: None,
-                            }
-                        } else {
-                            // Malformed data URI, treat as text
-                            ContentBlock::Text {
-                                text: format!("[invalid image: {}]", url),
-                                cache_control: None,
-                            }
-                        }
-                    } else if url.starts_with("http://") || url.starts_with("https://") {
-                        ContentBlock::Image {
-                            source: ImageSource::Url {
-                                url: url.as_ref().to_owned(),
-                            },
-                            cache_control: None,
-                        }
-                    } else {
-                        // Unknown format, treat as text
-                        ContentBlock::Text {
-                            text: format!("[image: {}]", url),
-                            cache_control: None,
-                        }
-                    }
-                }
+                // R3: the unified source parse (same helper as the
+                // tool-result image path).
+                ContentPart::Image { url } => match image_source_or_fallback(url) {
+                    Ok(source) => ContentBlock::Image {
+                        source,
+                        cache_control: None,
+                    },
+                    Err(text) => ContentBlock::Text {
+                        text,
+                        cache_control: None,
+                    },
+                },
             })
             .collect()
     };
@@ -507,7 +590,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         }
     };
 
-    let flush_tool_results = |pending: &mut Vec<ContentBlock>, msgs: &mut Vec<Message>| {
+    let flush_user = |pending: &mut Vec<ContentBlock>, msgs: &mut Vec<Message>| {
         if !pending.is_empty() {
             msgs.push(Message {
                 role: MessageRole::User,
@@ -521,7 +604,10 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         match item {
             ConversationItem::System(s) => {
                 flush_assistant(&mut pending_assistant, &mut messages);
-                flush_tool_results(&mut pending_tool_results, &mut messages);
+                // R1 edge: System flushes the pending user run (no message is
+                // produced) and clears the R8 flag.
+                flush_user(&mut pending_user, &mut messages);
+                r8_suppress_thinking = false;
                 system_blocks.push(TextBlock {
                     r#type: "text".to_string(),
                     text: s.content.as_ref().to_owned(),
@@ -530,15 +616,17 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             }
             ConversationItem::User(u) => {
                 flush_assistant(&mut pending_assistant, &mut messages);
-                flush_tool_results(&mut pending_tool_results, &mut messages);
-                let blocks = content_parts_to_anthropic_blocks(&u.content);
-                messages.push(Message {
-                    role: MessageRole::User,
-                    content: MessageContent::Blocks(blocks),
-                });
+                // R1: accumulate instead of pushing a fresh user message per
+                // item (xli append_to_role merge, wire.rs:1071) — consecutive
+                // user-role content becomes ONE user message.
+                pending_user.extend(content_parts_to_anthropic_blocks(&u.content));
             }
             ConversationItem::Assistant(a) => {
-                flush_tool_results(&mut pending_tool_results, &mut messages);
+                flush_user(&mut pending_user, &mut messages);
+                // R8: every Assistant item sets or clears the suppression
+                // flag (mismatched model_id sets it; matched/None clears it).
+                r8_suppress_thinking =
+                    r8_active && a.model_id.as_deref().is_some_and(|m| m != model_slug);
 
                 if !a.content.is_empty() {
                     pending_assistant.push(ContentBlock::Text {
@@ -548,8 +636,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 }
 
                 for tc in &a.tool_calls {
-                    let input =
-                        serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
+                    let input = tool_call_input(&tc.arguments, &tc.name);
                     pending_assistant.push(ContentBlock::ToolUse {
                         id: sanitize_tool_call_id(&tc.id),
                         name: tc.name.clone(),
@@ -569,31 +656,29 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                     }];
                     for img in &t.images {
                         if let ContentPart::Image { url } = img {
-                            let source = if let Some(rest) = url.strip_prefix("data:") {
-                                if let Some((media_type, data)) = rest.split_once(";base64,") {
-                                    ImageSource::Base64 {
-                                        media_type: media_type.to_string(),
-                                        data: data.to_string(),
-                                    }
-                                } else {
-                                    ImageSource::Url {
-                                        url: url.as_ref().to_owned(),
-                                    }
+                            // R3: the unified source parse — a degraded
+                            // reference becomes a labeled text block instead
+                            // of a misclassified image source.
+                            match image_source_or_fallback(url) {
+                                Ok(source) => {
+                                    blocks.push(ContentBlock::Image {
+                                        source,
+                                        cache_control: None,
+                                    });
                                 }
-                            } else {
-                                ImageSource::Url {
-                                    url: url.as_ref().to_owned(),
+                                Err(text) => {
+                                    blocks.push(ContentBlock::Text {
+                                        text,
+                                        cache_control: None,
+                                    });
                                 }
-                            };
-                            blocks.push(ContentBlock::Image {
-                                source,
-                                cache_control: None,
-                            });
+                            }
                         }
                     }
                     ToolResultContent::Blocks(blocks)
                 };
-                pending_tool_results.push(ContentBlock::ToolResult {
+                // R1: tool results accumulate in the shared user buffer.
+                pending_user.push(ContentBlock::ToolResult {
                     tool_use_id: sanitize_tool_call_id(&t.tool_call_id),
                     content,
                     cache_control: None,
@@ -601,7 +686,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             }
             // No native equivalent, so emit synthetic text to retain context.
             ConversationItem::BackendToolCall(b) => {
-                flush_tool_results(&mut pending_tool_results, &mut messages);
+                flush_user(&mut pending_user, &mut messages);
                 pending_assistant.push(ContentBlock::Text {
                     text: b.text_summary(),
                     cache_control: None,
@@ -609,14 +694,17 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             }
             // `tco_*` blobs carry only `signature`; real reasoning sets `thinking`
             ConversationItem::Reasoning(r) => {
-                flush_tool_results(&mut pending_tool_results, &mut messages);
+                flush_user(&mut pending_user, &mut messages);
                 let thinking = reasoning_item_text(r);
                 let signature = r
                     .encrypted_content
                     .as_deref()
                     .map(str::to_owned)
                     .unwrap_or_default();
-                if !thinking.is_empty() || !signature.is_empty() {
+                // R8: while the suppression flag is set (mismatched model_id
+                // on the owning assistant), the sibling reasoning emits no
+                // Thinking block — the assistant's text + tool_use stand.
+                if !r8_suppress_thinking && (!thinking.is_empty() || !signature.is_empty()) {
                     pending_assistant.push(ContentBlock::Thinking {
                         thinking,
                         signature,
@@ -627,11 +715,39 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     }
 
     flush_assistant(&mut pending_assistant, &mut messages);
-    flush_tool_results(&mut pending_tool_results, &mut messages);
+    flush_user(&mut pending_user, &mut messages);
 
-    // D5 stages 3-6: adjacency cleanup, tool_result hoist, the three-part
-    // thinking strip, then the trailing-assistant repair.
+    // MW-1 D5 stage 3: adjacency cleanup (emptied user and assistant
+    // messages are removed).
     clean_orphaned_blocks_by_adjacency(&mut messages);
+
+    // MW-2 D2 (leading-assistant repair): post-merge, pre-strip,
+    // pre-trailing-repair — run AFTER the adjacency cleanup so a leading
+    // assistant removed by the strip cannot leave two consecutive user
+    // messages, and BEFORE the hoist/strip/repair so the synthetic head is
+    // part of the shape those stages see. A leading assistant is never the
+    // *latest* in a shape that also trails with assistant, so this stage
+    // does not interact with the thinking strip. The sentinel is
+    // unconditional `[Continue]` — a head has no tool result awaiting, so
+    // S-014's label would misdescribe it.
+    if messages
+        .first()
+        .is_some_and(|m| matches!(m.role, MessageRole::Assistant))
+    {
+        messages.insert(
+            0,
+            Message {
+                role: MessageRole::User,
+                content: MessageContent::Blocks(vec![ContentBlock::Text {
+                    text: "[Continue]".to_string(),
+                    cache_control: None,
+                }]),
+            },
+        );
+    }
+
+    // MW-1 D5 stages 4-6: tool_result hoist, the three-part thinking strip,
+    // then the trailing-assistant repair.
     hoist_tool_results_to_front(&mut messages);
     strip_thinking_blocks(&mut messages);
     repair_trailing_assistant(&mut messages);

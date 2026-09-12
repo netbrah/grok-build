@@ -602,13 +602,6 @@ fn m_text(text: &str) -> crate::messages::ContentBlock {
     }
 }
 
-fn m_thinking(thinking: &str, signature: &str) -> crate::messages::ContentBlock {
-    crate::messages::ContentBlock::Thinking {
-        thinking: thinking.to_string(),
-        signature: signature.to_string(),
-    }
-}
-
 fn m_tool_use(id: &str) -> crate::messages::ContentBlock {
     crate::messages::ContentBlock::ToolUse {
         id: id.to_string(),
@@ -1568,22 +1561,25 @@ fn s022_e2e_warning_injected_between_tool_use_and_result() {
     ])
     .with_model("messages-compatible-model");
     let msgs = build_messages_request(&req);
-    // grok does not merge the warning into the tool_result message: the
-    // split pair is non-adjacent, so no tool block may survive at all.
-    for (i, msg) in msgs.messages.iter().enumerate() {
-        for (j, block) in blocks_of(msg).iter().enumerate() {
-            assert!(
-                !matches!(
-                    block,
-                    crate::messages::ContentBlock::ToolUse { .. }
-                        | crate::messages::ContentBlock::ToolResult { .. }
-                ),
-                "messages[{i}][{j}]: the non-adjacent pair must be stripped on both sides"
-            );
-        }
-    }
-    // And whatever the pipeline emits, any tool_result-bearing message must
-    // lead with its tool_result.
+    // MW-2 R1 ripple (disclosed in the MW-2 R1 commit): the warning and its
+    // tool_result are consecutive user-role items, so the same-role merge
+    // puts them in ONE user message directly following the assistant. The
+    // pair is message-adjacent and SURVIVES (pre-MW-2 the warning sat in
+    // its own message, split the pair, and the message-level strip removed
+    // both sides) — this is exactly the S-022 shape the hoist was written
+    // for.
+    assert_eq!(msgs.messages.len(), 3, "{:?}", msgs.messages);
+    assert!(
+        blocks_of(&msgs.messages[1])
+            .iter()
+            .any(|b| matches!(b, crate::messages::ContentBlock::ToolUse { .. })),
+        "the now-adjacent tool_use must survive: {:?}",
+        msgs.messages
+    );
+    // The load-bearing wire invariant (S-022) is unchanged: any
+    // tool_result-bearing message must lead with its tool_result — the
+    // hoist puts the result ahead of the warning text inside the merged
+    // message.
     for (i, msg) in msgs.messages.iter().enumerate() {
         let blocks = blocks_of(msg);
         if blocks
@@ -1599,6 +1595,19 @@ fn s022_e2e_warning_injected_between_tool_use_and_result() {
             );
         }
     }
+    let merged = &msgs.messages[2];
+    assert!(
+        blocks_of(merged)
+            .first()
+            .is_some_and(|b| { matches!(b, crate::messages::ContentBlock::ToolResult { .. }) })
+            && blocks_of(merged).iter().any(|b| matches!(
+                b,
+                crate::messages::ContentBlock::Text {
+                    text, ..
+                } if text == "Warning: too many processes"
+            )),
+        "the merged user message is [tool_result, warning text]: {merged:?}"
+    );
     assert_adjacency_invariant(&msgs.messages);
 }
 
@@ -1690,4 +1699,718 @@ fn regression_pin_system_items_land_in_system_param_not_messages() {
             "system text must never appear inside messages: {json:#}"
         );
     }
+}
+// ============================================================================
+// (f) R1 — same-role merge (MW-2)
+// ============================================================================
+
+/// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/bedrock.rs :: request_merges_consecutive_tool_results (re-expressed; Bedrock wire evidence — assertion tightened for the xli merge rule + Vertex/proxy class, per MW-2 spec R1/gap 8)
+/// The source pins TR-item merge only: its builder still emits the user text
+/// as a second user message (Converse tolerates consecutive users; it asserts
+/// 2 messages / 2 blocks). This re-expression asserts the full merge:
+/// `[tool_result, tool_result, user_text]` → ONE user message, 3 blocks,
+/// pre-hoist order preserved. grok additionally needs the paired assistant
+/// tool calls — item-level orphan cleanup (MW-1 stage 1) drops unpaired
+/// results, which the source wire does not have.
+#[test]
+fn request_merges_consecutive_tool_results() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::system("sys"),
+        assistant_with_calls(&[("tool_use_1", "read_file"), ("tool_use_2", "read_file")]),
+        ConversationItem::tool_result("tool_use_1", "a"),
+        ConversationItem::tool_result("tool_use_2", "b"),
+        ConversationItem::user("hi"),
+    ])
+    .with_model("claude-sonnet-5");
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    assert_eq!(json["system"].as_array().unwrap().len(), 1, "{json:#}");
+
+    let messages = json["messages"].as_array().unwrap();
+    assert_eq!(
+        messages.len(),
+        3,
+        "leading sentinel (D2) + one assistant + ONE merged user message: {json:#}"
+    );
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[0]["content"][0]["text"], "[Continue]");
+    assert_eq!(messages[1]["role"], "assistant");
+
+    let blocks = messages[2]["content"].as_array().unwrap();
+    assert_eq!(
+        blocks.len(),
+        3,
+        "merged user message: [tool_result, tool_result, text]: {json:#}"
+    );
+    assert_eq!(blocks[0]["type"], "tool_result");
+    assert_eq!(blocks[0]["tool_use_id"], "tool_use_1");
+    assert_eq!(blocks[1]["type"], "tool_result");
+    assert_eq!(blocks[1]["tool_use_id"], "tool_use_2");
+    assert_eq!(blocks[2]["type"], "text");
+    assert_eq!(blocks[2]["text"], "hi");
+}
+
+/// Fresh-written: MW-2 spec D2 (gap 10) double-sentinel pin. A history whose
+/// only content is a single assistant item begins AND ends on assistant, so
+/// BOTH sentinels fire: the leading `[Continue]` (D2 — unconditional, since a
+/// head has no result pending) and the trailing `[Continue]` (S-014, no
+/// tool_use at the tail). The cache window tip lands on the trailing sentinel.
+#[test]
+fn leading_assistant_only_history_gets_double_sentinel() {
+    let req =
+        ConversationRequest::from_items(vec![ConversationItem::assistant("lone assistant reply")])
+            .with_model("claude-sonnet-5");
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    let messages = json["messages"].as_array().unwrap();
+    assert_eq!(
+        messages.len(),
+        3,
+        "[U(\"[Continue]\"), A, U(\"[Continue]\")]: {json:#}"
+    );
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[0]["content"][0]["text"], "[Continue]");
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[1]["content"][0]["text"], "lone assistant reply");
+    assert_eq!(messages[2]["role"], "user");
+    assert_eq!(messages[2]["content"][0]["text"], "[Continue]");
+    assert_eq!(
+        marker_on_last_block(&messages[2]),
+        Some("ephemeral"),
+        "the cache window tip lands on the trailing sentinel: {json:#}"
+    );
+}
+
+/// Fresh-written: D2's sentinel is unconditional `[Continue]` — even when the
+/// leading assistant carries a `tool_use` whose result follows in history
+/// (S-014's `[Awaiting tool result]` would misdescribe a head where the
+/// result is already in the transcript).
+#[test]
+fn leading_assistant_with_tool_use_gets_continue_not_awaiting() {
+    let req = ConversationRequest::from_items(vec![
+        assistant_with_calls(&[("dx_1", "read_file")]),
+        ConversationItem::tool_result("dx_1", "ok"),
+    ])
+    .with_model("claude-sonnet-5");
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    let messages = json["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3, "{json:#}");
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(
+        messages[0]["content"][0]["text"], "[Continue]",
+        "the leading sentinel is unconditional: {json:#}"
+    );
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[2]["role"], "user");
+}
+
+/// Fresh-written: R1 edge (spec gap 9b) — `System` items flush the pending
+/// user run without producing a message, so user content on either side of a
+/// system item stays in separate user messages.
+#[test]
+fn r1_system_item_flushes_pending_user_run() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::user("before the system change"),
+        ConversationItem::system("new instructions"),
+        ConversationItem::user("after the system change"),
+    ])
+    .with_model("claude-sonnet-5");
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    let messages = json["messages"].as_array().unwrap();
+    assert_eq!(
+        messages.len(),
+        2,
+        "the system boundary must not merge the two user runs: {json:#}"
+    );
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(
+        messages[0]["content"][0]["text"],
+        "before the system change"
+    );
+    assert_eq!(messages[1]["role"], "user");
+    assert_eq!(messages[1]["content"][0]["text"], "after the system change");
+}
+
+/// Fresh-written: R1 edge (spec gap 9i) — a user message left with EMPTY
+/// content by the post-translation adjacency cleanup is removed (mirrors the
+/// assistant half of MW-1 rule 2c); the pin's MessageParam.content is
+/// non-empty (messages.ts:1207-1210), so `"content": []` must never serialize.
+#[test]
+fn r1_emptied_user_message_removed_after_adjacency_strip() {
+    // A1's only call (pd_1) is non-adjacent — split by the user text, the
+    // second assistant turn, and a system boundary — so the message-level
+    // strip removes the call; the tool-result-only user message TR(pd_1)
+    // sat in is then emptied by the same strip and removed.
+    let req = ConversationRequest::from_items(vec![
+        assistant_with_calls(&[("pd_1", "t")]),
+        ConversationItem::user("in between"),
+        assistant_with_calls(&[("pd_2", "t")]),
+        ConversationItem::tool_result("pd_2", "late"),
+        ConversationItem::system("system boundary"),
+        ConversationItem::tool_result("pd_1", "early"),
+    ])
+    .with_model("claude-sonnet-5");
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    let messages = json["messages"].as_array().unwrap();
+    for (i, msg) in messages.iter().enumerate() {
+        assert!(
+            !msg["content"].as_array().is_some_and(Vec::is_empty),
+            "messages[{i}] serialized with empty content: {json:#}"
+        );
+    }
+    // The surviving shape: the non-adjacent pair is gone on both sides (no
+    // pd_1 anywhere), the emptied user message is removed, and the adjacent
+    // pd_2 pair survives.
+    assert_eq!(messages.len(), 3, "{json:#}");
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[0]["content"][0]["text"], "in between");
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[2]["role"], "user");
+    assert_eq!(messages[2]["content"][0]["type"], "tool_result");
+    assert_eq!(messages[2]["content"][0]["tool_use_id"], "pd_2");
+}
+
+/// Fresh-written: MW-2 spec D6 alternation PROPERTY test. For the six focus
+/// sequences (a)-(f) — including the D2 double-sentinel `[A]` case — the
+/// post-build message list never contains two consecutive same-role messages.
+#[test]
+fn post_build_messages_never_contain_consecutive_same_role() {
+    fn assert_alternates(messages: &[crate::messages::Message], label: &str) {
+        for (i, (a, b)) in messages.iter().zip(messages.iter().skip(1)).enumerate() {
+            assert_ne!(
+                a.role, b.role,
+                "{label}: consecutive same-role messages at {i}: {messages:?}"
+            );
+        }
+    }
+
+    // (a) [A(tool_use), TR, U(text)]
+    let a = build_messages_request(
+        &ConversationRequest::from_items(vec![
+            assistant_with_calls(&[("pa_1", "read_file")]),
+            ConversationItem::tool_result("pa_1", "ok"),
+            ConversationItem::user("after the result"),
+        ])
+        .with_model("claude-sonnet-5"),
+    );
+    assert_alternates(&a.messages, "(a)");
+
+    // (b) [U(text), A(tool_use x2), TR, TR]
+    let b = build_messages_request(
+        &ConversationRequest::from_items(vec![
+            ConversationItem::user("before"),
+            assistant_with_calls(&[("pb_1", "t"), ("pb_2", "t")]),
+            ConversationItem::tool_result("pb_1", "r1"),
+            ConversationItem::tool_result("pb_2", "r2"),
+        ])
+        .with_model("claude-sonnet-5"),
+    );
+    assert_alternates(&b.messages, "(b)");
+
+    // (c) [A(text), A(tool_use)] — the orphaned call is cleaned pre-translation
+    let c = build_messages_request(
+        &ConversationRequest::from_items(vec![
+            ConversationItem::assistant("first assistant"),
+            assistant_with_calls(&[("pc_1", "t")]),
+        ])
+        .with_model("claude-sonnet-5"),
+    );
+    assert_alternates(&c.messages, "(c)");
+
+    // (d) [TR, U, A, TR]
+    let d = build_messages_request(
+        &ConversationRequest::from_items(vec![
+            ConversationItem::tool_result("pd_1", "early result"),
+            ConversationItem::user("mid"),
+            assistant_with_calls(&[("pd_1", "t"), ("pd_2", "t")]),
+            ConversationItem::tool_result("pd_2", "late result"),
+        ])
+        .with_model("claude-sonnet-5"),
+    );
+    assert_alternates(&d.messages, "(d)");
+
+    // (e) system-only prefix
+    let e = build_messages_request(
+        &ConversationRequest::from_items(vec![
+            ConversationItem::system("one"),
+            ConversationItem::system("two"),
+            ConversationItem::user("after systems"),
+        ])
+        .with_model("claude-sonnet-5"),
+    );
+    assert_alternates(&e.messages, "(e)");
+
+    // (f) the D2 double-sentinel [A] case
+    let f = build_messages_request(
+        &ConversationRequest::from_items(vec![ConversationItem::assistant("lone assistant")])
+            .with_model("claude-sonnet-5"),
+    );
+    assert_alternates(&f.messages, "(f)");
+}
+
+// ============================================================================
+// (g) R2 — tool-argument strictness; R3 — unified image-source parse (MW-2)
+// ============================================================================
+
+/// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/pi_messages.rs :: request_rejects_non_data_images_and_non_object_tool_arguments (re-expressed; Pi wire evidence — softened from reject to degrade, per R2/R3)
+/// The source hard-rejects (Err(InvalidConfiguration)) non-data images and
+/// non-object tool arguments. grok's messages builder degrades instead: an
+/// out-of-union / malformed image reference becomes a labeled text fallback
+/// (R3) and parseable non-object arguments coerce to `{}` (R2).
+#[test]
+fn request_rejects_non_data_images_and_non_object_tool_arguments() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::User(UserItem {
+            content: vec![
+                ContentPart::Text {
+                    text: "look at this".into(),
+                },
+                ContentPart::Image {
+                    url: "not-a-data-uri".into(),
+                },
+            ],
+            ..Default::default()
+        }),
+        ConversationItem::Assistant(AssistantItem {
+            content: String::new().into(),
+            tool_calls: vec![ToolCall {
+                id: "rg_1".into(),
+                name: "t".into(),
+                arguments: "[]".into(),
+            }],
+            model_id: None,
+            model_fingerprint: None,
+            reasoning_effort: None,
+        }),
+        ConversationItem::tool_result("rg_1", "done"),
+    ])
+    .with_model("claude-sonnet-5");
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    let messages = json["messages"].as_array().unwrap();
+
+    // (R3) the unknown-scheme image degrades to the labeled text fallback,
+    // never an image source.
+    let user_blocks = messages[0]["content"].as_array().unwrap();
+    assert_eq!(user_blocks[1]["type"], "text", "{json:#}");
+    assert_eq!(user_blocks[1]["text"], "[invalid image: not-a-data-uri]");
+
+    // (R2) parseable non-object arguments coerce to an empty object.
+    let assistant_blocks = messages[1]["content"].as_array().unwrap();
+    let tool_use = assistant_blocks
+        .iter()
+        .find(|b| b["type"] == "tool_use")
+        .expect("tool_use block present: {json:#}");
+    assert_eq!(tool_use["input"], serde_json::json!({}));
+}
+
+/// Fresh-written: R2 hardening — parseable NON-object arguments coerce to
+/// `{}` (grok's own tool calls are always object-shaped; a non-object replayed
+/// argument is a local artifact, and `{}` is the safe form). The pinned
+/// contract types `ToolUseBlockParam.input` as `unknown`
+/// (wirejig/refs/anthropic@d3d5028 messages.ts:2355) — this cites the pin for
+/// the `unknown` typing, NOT for any object requirement; the coercion is
+/// hardening beyond the pin and beyond xli (which guards only the unparseable
+/// case, wire.rs:173/211).
+#[test]
+fn tool_arguments_parseable_non_object_coerced_to_empty_object() {
+    fn tool_use_input(arguments: &str) -> serde_json::Value {
+        let req = ConversationRequest::from_items(vec![
+            ConversationItem::Assistant(AssistantItem {
+                content: String::new().into(),
+                tool_calls: vec![ToolCall {
+                    id: "rn_1".into(),
+                    name: "t".into(),
+                    arguments: arguments.into(),
+                }],
+                model_id: None,
+                model_fingerprint: None,
+                reasoning_effort: None,
+            }),
+            ConversationItem::tool_result("rn_1", "ok"),
+        ])
+        .with_model("claude-sonnet-5");
+        let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+        let assistant = json["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .expect("assistant message: {json:#}");
+        assistant["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["type"] == "tool_use")
+            .expect("tool_use block: {json:#}")["input"]
+            .clone()
+    }
+
+    assert_eq!(tool_use_input("[]"), serde_json::json!({}));
+    assert_eq!(tool_use_input("\"str\""), serde_json::json!({}));
+    assert_eq!(tool_use_input("123"), serde_json::json!({}));
+    // The pre-existing unparseable arm keeps its `{}` degradation
+    // (xli parity, wire.rs:173 — a warn now accompanies it).
+    assert_eq!(tool_use_input("{not json"), serde_json::json!({}));
+    // Object-shaped arguments pass through untouched.
+    assert_eq!(tool_use_input(r#"{"a":1}"#), serde_json::json!({"a": 1}));
+}
+
+/// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/bedrock.rs :: image_data_uri_is_required_and_preserved (re-expressed; Bedrock wire evidence — softened: the source's hard reject is transport-specific, Anthropic accepts URL sources, so invalid references degrade to a labeled text fallback)
+/// A well-formed `data:<media_type>;base64,<data>` URI with a union media
+/// type (pin Base64ImageSource.media_type,
+/// wirejig/refs/anthropic@d3d5028 messages.ts:204) is preserved exactly —
+/// media type extracted, no silent default; http(s) URLs pass through as Url
+/// sources; everything else degrades to the text fallback.
+#[test]
+fn image_data_uri_is_required_and_preserved() {
+    fn image_block(url: &str) -> serde_json::Value {
+        let req = ConversationRequest::from_items(vec![ConversationItem::User(UserItem {
+            content: vec![ContentPart::Image { url: url.into() }],
+            ..Default::default()
+        })])
+        .with_model("claude-sonnet-5");
+        serde_json::to_value(build_messages_request(&req)).unwrap()["messages"][0]["content"][0]
+            .clone()
+    }
+
+    // The source's positive arm: a valid png data URI is preserved.
+    let good = image_block("data:image/png;base64,iVBORw0KGgo=");
+    assert_eq!(good["type"], "image");
+    assert_eq!(good["source"]["type"], "base64");
+    assert_eq!(good["source"]["media_type"], "image/png");
+    assert_eq!(good["source"]["data"], "iVBORw0KGgo=");
+
+    // Every union media type parses, extracted exactly (no silent default).
+    for media_type in ["image/jpeg", "image/png", "image/gif", "image/webp"] {
+        let block = image_block(&format!("data:{media_type};base64,AAA="));
+        assert_eq!(block["type"], "image", "{media_type}: {block:#}");
+        assert_eq!(block["source"]["media_type"], media_type);
+        assert_eq!(block["source"]["data"], "AAA=");
+    }
+
+    // http(s) URLs pass through (Anthropic accepts URL sources).
+    let url = image_block("https://example.com/a.png");
+    assert_eq!(url["type"], "image");
+    assert_eq!(url["source"]["type"], "url");
+    assert_eq!(url["source"]["url"], "https://example.com/a.png");
+
+    // Out-of-union media type degrades to the text fallback (gap 11).
+    let out_of_union = image_block("data:image/svg+xml;base64,PHN2Zz4=");
+    assert_eq!(out_of_union["type"], "text");
+    assert_eq!(
+        out_of_union["text"],
+        "[invalid image: data:image/svg+xml;base64,PHN2Zz4=]"
+    );
+
+    // Malformed data URI (no `;base64,` marker) degrades to the text fallback.
+    let malformed = image_block("data:image/png");
+    assert_eq!(malformed["type"], "text");
+    assert_eq!(malformed["text"], "[invalid image: data:image/png]");
+}
+
+/// Fresh-written: R3 unified parse on the tool-result image path (spec §4
+/// fresh list). The two pre-MW-2 paths diverged — the tool-result path
+/// misclassified non-base64 `data:` URIs as Url sources and accepted
+/// out-of-union media types; one helper now serves both user content and
+/// tool-result images.
+#[test]
+fn tool_result_images_use_unified_source_parse() {
+    let req = ConversationRequest::from_items(vec![
+        assistant_with_calls(&[("tr_1", "t")]),
+        ConversationItem::ToolResult(ToolResultItem {
+            tool_call_id: "tr_1".to_string(),
+            content: "output".into(),
+            images: vec![
+                ContentPart::Image {
+                    url: "data:image/jpeg;base64,AAA=".into(),
+                },
+                ContentPart::Image {
+                    url: "data:image/svg+xml;base64,PHN2Zz4=".into(),
+                },
+                ContentPart::Image {
+                    url: "https://example.com/pic.png".into(),
+                },
+            ],
+        }),
+    ])
+    .with_model("claude-sonnet-5");
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    let tr_block = &json["messages"][2]["content"][0];
+    assert_eq!(tr_block["type"], "tool_result");
+    let inner = tr_block["content"].as_array().unwrap();
+    assert_eq!(inner[0]["type"], "text");
+    assert_eq!(inner[1]["type"], "image");
+    assert_eq!(inner[1]["source"]["type"], "base64");
+    assert_eq!(inner[1]["source"]["media_type"], "image/jpeg");
+    assert_eq!(inner[2]["type"], "text");
+    assert_eq!(
+        inner[2]["text"],
+        "[invalid image: data:image/svg+xml;base64,PHN2Zz4=]"
+    );
+    assert_eq!(inner[3]["type"], "image");
+    assert_eq!(inner[3]["source"]["type"], "url");
+    assert_eq!(inner[3]["source"]["url"], "https://example.com/pic.png");
+}
+
+/// Fresh-written: R3 gap-11 recorded note — the unknown-scheme fallback text
+/// changes from `"[image: …]"` to `"[invalid image: …]"` so every degraded
+/// image reference carries the same invalid label.
+#[test]
+fn unknown_scheme_image_fallback_text_is_invalid_label() {
+    let req = ConversationRequest::from_items(vec![ConversationItem::User(UserItem {
+        content: vec![ContentPart::Image {
+            url: "ftp://example.com/x.png".into(),
+        }],
+        ..Default::default()
+    })])
+    .with_model("claude-sonnet-5");
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    let block = &json["messages"][0]["content"][0];
+    assert_eq!(block["type"], "text");
+    assert_eq!(block["text"], "[invalid image: ftp://example.com/x.png]");
+}
+
+// ============================================================================
+// (h) R8 — model-identity thinking invalidation (MW-2)
+// ============================================================================
+
+fn r8_fixture(model_id: Option<&str>, request_model: Option<&str>) -> ConversationRequest {
+    let mut req = ConversationRequest::from_items(vec![
+        ConversationItem::user("read the file"),
+        ConversationItem::Assistant(AssistantItem {
+            content: "portable answer".into(),
+            tool_calls: vec![ToolCall {
+                id: "rt_1".into(),
+                name: "read_file".into(),
+                arguments: r#"{"path":"x"}"#.into(),
+            }],
+            model_id: model_id.map(str::to_string),
+            model_fingerprint: None,
+            reasoning_effort: None,
+        }),
+        reasoning_sibling("rs_1", "thinking text", Some("sig_rt_1")),
+        ConversationItem::tool_result("rt_1", "file contents"),
+    ]);
+    req.model = request_model.map(str::to_string);
+    req
+}
+
+fn r8_assistant_blocks(req: &ConversationRequest) -> Vec<serde_json::Value> {
+    let json = serde_json::to_value(build_messages_request(req)).unwrap();
+    let messages = json["messages"].as_array().unwrap();
+    let assistant = messages
+        .iter()
+        .find(|m| m["role"] == "assistant")
+        .expect("assistant message: {json:#}");
+    assistant["content"].as_array().unwrap().clone()
+}
+
+/// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/pi_messages.rs :: identity_mismatch_falls_back_to_portable_text_and_tool_calls (re-expressed; Pi wire evidence — endpoint identity mapped to model-id identity: grok has no endpoint-identity field, and every messages row resolves to the single proxy endpoint, so the catalog slug IS the identity)
+/// An assistant item stamped with a model_id different from the request's
+/// model slug replays its portable text + tool calls but NOT its signed
+/// thinking: the sibling Reasoning item's Thinking block is suppressed at
+/// translation time (R8's flag). Without R8 the signed pair would survive
+/// the MW-1 latest-assistant strip (verbatim pair) and serialize.
+#[test]
+fn identity_mismatch_falls_back_to_portable_text_and_tool_calls() {
+    let req = r8_fixture(Some("claude-opus-9"), Some("claude-sonnet-5"));
+    let blocks = r8_assistant_blocks(&req);
+    assert!(
+        blocks
+            .iter()
+            .any(|b| b["type"] == "text" && b["text"] == "portable answer"),
+        "portable text is retained: {blocks:?}"
+    );
+    assert!(
+        blocks.iter().any(|b| b["type"] == "tool_use"),
+        "tool calls are retained: {blocks:?}"
+    );
+    assert!(
+        blocks.iter().all(|b| b["type"] != "thinking"),
+        "mismatched-model thinking is suppressed: {blocks:?}"
+    );
+}
+
+/// Fresh-written: R8 negative arm — a MATCHED model_id (or the request's own
+/// slug) leaves MW-1's rules unchanged: the signed sibling Reasoning still
+/// survives the latest-assistant strip as the verbatim (text, signature)
+/// pair.
+#[test]
+fn r8_matched_model_thinking_unaffected() {
+    let req = r8_fixture(Some("claude-sonnet-5"), Some("claude-sonnet-5"));
+    let blocks = r8_assistant_blocks(&req);
+    let thinking = blocks
+        .iter()
+        .find(|b| b["type"] == "thinking")
+        .expect("matched-model thinking survives: {blocks:?}");
+    assert_eq!(thinking["thinking"], "thinking text");
+    assert_eq!(thinking["signature"], "sig_rt_1");
+}
+
+/// Fresh-written: R8 negative arm — `model_id: None` items are untouched by
+/// the identity rule (no identity to compare).
+#[test]
+fn r8_none_model_id_unaffected() {
+    let req = r8_fixture(None, Some("claude-sonnet-5"));
+    let blocks = r8_assistant_blocks(&req);
+    assert!(
+        blocks.iter().any(|b| b["type"] == "thinking"),
+        "None model_id: signed thinking survives: {blocks:?}"
+    );
+}
+
+/// Fresh-written: R8 no-op guard — a None/empty request model makes the whole
+/// rule a no-op: even a mismatched-looking model_id must NOT strip signed
+/// thinking (a None-model request is invalid anyway, and the guard must not
+/// silently destroy verbatim reasoning).
+#[test]
+fn r8_none_request_model_is_noop() {
+    let req = r8_fixture(Some("claude-opus-9"), None);
+    let blocks = r8_assistant_blocks(&req);
+    assert!(
+        blocks.iter().any(|b| b["type"] == "thinking"),
+        "None request model: the suppression flag must be inert: {blocks:?}"
+    );
+}
+
+// ============================================================================
+// (i) MW-2 D6 — golden G
+// ============================================================================
+
+/// The MW-2 D6 fixture (spec D6, revised per gap 7): exercises R1+R2+R3+R7+R8
+/// in one body (R4 is response-side — its own deserialize tests, not this
+/// golden). user(image) → mismatched-model assistant + tool_call with
+/// parseable non-object arguments `[]` → signed sibling Reasoning (suppressed)
+/// → compaction carrier (raw sentinel never surfaces) → tool_result → user.
+/// claude-sonnet-5; effort=None; max_tokens SET.
+fn fixture_g() -> ConversationRequest {
+    ConversationRequest {
+        items: vec![
+            ConversationItem::User(UserItem {
+                content: vec![
+                    ContentPart::Text {
+                        text: "what's in the file?".into(),
+                    },
+                    ContentPart::Image {
+                        url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==".into(),
+                    },
+                ],
+                ..Default::default()
+            }),
+            ConversationItem::Assistant(AssistantItem {
+                content: "let me check".into(),
+                tool_calls: vec![ToolCall {
+                    id: "call_g1".into(),
+                    name: "read_file".into(),
+                    arguments: "[]".into(), // parseable NON-object: R2's {} coercion is in the bytes
+                }],
+                model_id: Some("claude-opus-9".into()), // mismatched: R8 suppresses the sibling thinking
+                model_fingerprint: None,
+                reasoning_effort: None,
+            }),
+            reasoning_sibling("rs_g1", "weighing how to read it", Some("sig_g1")),
+            ConversationItem::BackendToolCall(BackendToolCallItem {
+                kind: BackendToolKind::CodexRawInput(CodexRawInputItem {
+                    id: "cmp_g1".to_string(),
+                    raw: serde_json::json!({
+                        "type": "compaction",
+                        "id": "cmp_g1",
+                        "encrypted_content": "RAW-SENTINEL-BLOB-000"
+                    }),
+                    cross_provider_fallback: None,
+                }),
+            }),
+            ConversationItem::tool_result("call_g1", "fn main() {}"),
+            ConversationItem::user("summarize it"),
+        ],
+        model: Some("claude-sonnet-5".to_string()),
+        reasoning_effort: None,
+        max_output_tokens: Some(4096),
+        ..Default::default()
+    }
+}
+
+/// Fresh-written: MW-2 spec D6 (gap 7) — checked-in golden of
+/// `serde_json::to_string(&MessagesRequest)` for fixture G (R1+R2+R3+R7+R8 in
+/// one body; R4 is response-side and out of this golden). Re-baselining is
+/// allowed only on a pipeline-stage change, disclosed in the commit body.
+#[test]
+fn d6_golden_g_serialization_holds() {
+    let json = serde_json::to_string(&build_messages_request(&fixture_g())).unwrap();
+    let golden = include_str!("../../testdata/messages_golden_g.json");
+    assert_eq!(
+        json, golden,
+        "MW-2 D6 golden G drifted. Re-baselining is allowed only when a
+         pipeline stage changes (spec D6); every such change must be
+         disclosed in the commit body."
+    );
+}
+
+/// Fresh-written: MW-2 spec D6 (gap 7) + A4 — fixture-G invariants: the SET
+/// max_tokens carries the request value (D4 ruling: explicit budget), R1 merge
+/// → 3 messages, R7 sentinel absent + safe label present, R8 thinking absent,
+/// R2 parseable non-object args in the bytes, R3 base64 preserved, MW-1 rules
+/// 2/3 + the hoist invariant.
+#[test]
+fn d6_golden_g_invariants() {
+    let req = fixture_g();
+    // D6 invariants
+    assert_eq!(req.model.as_deref(), Some("claude-sonnet-5"));
+    assert!(req.reasoning_effort.is_none());
+    assert_eq!(req.max_output_tokens, Some(4096), "G has max_tokens SET");
+
+    let req_built = build_messages_request(&req);
+    let json = serde_json::to_string(&req_built).unwrap();
+
+    assert_eq!(
+        req_built.max_tokens, 4096,
+        "max_tokens carries the request value"
+    );
+    assert_eq!(
+        req_built.messages.len(),
+        3,
+        "R1 merge: user / assistant / merged user — {req_built:?}"
+    );
+    assert!(
+        !json.contains("RAW-SENTINEL-BLOB-000"),
+        "R7: the carrier's raw payload must never surface in the body"
+    );
+    assert!(
+        json.contains("[OpenAI compacted context]"),
+        "R7: the compaction carrier renders its safe fallback label"
+    );
+    assert!(
+        !json.contains("\"thinking\""),
+        "R8: the mismatched-model sibling thinking must be absent"
+    );
+    assert!(
+        json.contains("\"input\":{}"),
+        "R2: the parseable non-object arguments [] must serialize as {{}}"
+    );
+    assert!(
+        json.contains("iVBORw0KGgoAAAANSUhEUg=="),
+        "R3: the base64 image data is preserved in the bytes"
+    );
+    assert_adjacency_invariant(&req_built.messages);
+    // MW-1 invariants (A4): no thinking (rule 2), not ending on assistant
+    // (rule 3), tool_result hoisted to the front of the merged user message.
+    let last = req_built.messages.last().unwrap();
+    assert!(
+        matches!(last.role, crate::messages::MessageRole::User),
+        "G does not end on assistant"
+    );
+    let merged = blocks_of(last);
+    assert!(
+        matches!(
+            merged.first(),
+            Some(crate::messages::ContentBlock::ToolResult { .. })
+        ),
+        "hoist: the merged user message leads with the tool_result: {merged:?}"
+    );
 }
