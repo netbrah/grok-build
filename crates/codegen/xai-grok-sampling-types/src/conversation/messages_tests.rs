@@ -526,7 +526,9 @@ fn d6_golden_f_serialization_holds() {
     let golden = include_str!("../../testdata/messages_golden_f.json");
     assert_eq!(
         json, golden,
-        "D6 golden F drifted. Re-baselining is allowed only when the D4 table lands a          claude-sonnet-5 row that must reproduce these exact bytes (spec D6)."
+        "MW-2 D6 golden F drifted. Re-baselining is allowed only when a
+         pipeline stage changes (spec D6); every such change must be
+         disclosed in the commit body."
     );
 }
 
@@ -1539,16 +1541,16 @@ fn s022_does_not_touch_assistant_messages() {
 }
 
 /// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/src/wire.rs :: s022_e2e_warning_injected_between_tool_use_and_result (re-derived)
-/// Re-derived for grok: the port source merges consecutive user-role items
-/// into one message, so an out-of-band warning injected between a tool call
-/// and its result lands in the SAME user message as the tool_result and the
-/// hoist reorders it to [tool_result, text]. grok's builder does not merge
-/// consecutive user messages in V1, so the warning message sits between the
-/// assistant tool_use and the tool_result user message: the pair is
-/// non-adjacent and both sides are stripped by the S-021 stage instead. The
-/// hoist stays defensive in V1 (the builder never emits a mixed
-/// text+tool_result user message) and becomes live when a user-merging seam
-/// lands (MW-2); this test pins the invariant side of the scenario.
+/// Re-derived for grok, post-MW-2 (MW-2 R1 ripple, disclosed in the MW-2 R1
+/// commit): the same-role merge now puts the out-of-band warning and its
+/// tool_result into ONE user message directly following the assistant
+/// tool_use, so the pair is message-adjacent and SURVIVES (pre-MW-2 the
+/// warning sat in its own message, split the pair, and the message-level
+/// S-021 strip removed both sides). This is exactly the S-022 shape the
+/// tool_result hoist was written for — the hoist is LIVE in this scenario
+/// and reorders the merged message to [tool_result, warning text]. The
+/// load-bearing wire invariant (a tool_result-bearing message leads with
+/// its tool_result) is what this test pins.
 #[test]
 fn s022_e2e_warning_injected_between_tool_use_and_result() {
     let req = ConversationRequest::from_items(vec![
@@ -1617,9 +1619,10 @@ fn s022_e2e_warning_injected_between_tool_use_and_result() {
 
 /// New grok-shape test (MW-1 spec D4, re-adjudicated ledger 2026-09-12): an
 /// explicit request budget wins over the per-model cap and is floored at 1
-/// (never serialized below the floor); a no-budget request with an empty
-/// table serializes 0 — the live proxy tolerates 0 (pre-MW-1 wire parity;
-/// a floor-1 fallback guaranteed truncation, L2 l2_messages_wire).
+/// (never serialized below the floor); a no-budget request falls back to
+/// the R5 pin-sourced table row (MW-3, disclosed amendment below), else 0 —
+/// the live proxy tolerates 0 (pre-MW-1 wire parity; a floor-1 fallback
+/// guaranteed truncation, L2 l2_messages_wire).
 #[test]
 fn d4_max_tokens_combination_arms() {
     fn built_max(model: &str, max_output_tokens: Option<u32>) -> u32 {
@@ -1647,10 +1650,19 @@ fn d4_max_tokens_combination_arms() {
         crate::messages_model::MESSAGES_MAX_OUTPUT_TOKENS_FLOOR,
         "explicit budget is floored: Some(0) never serializes 0"
     );
+    // MW-3 R5 (disclosed amendment of the MW-1 empty-table arm): an
+    // endpoint-agreement slug now falls back to its pinned row.
     assert_eq!(
         built_max("claude-sonnet-5", None),
+        128_000,
+        "unset + agreement slug: the pin-sourced table row wins"
+    );
+    // R5: a DIVERGENT slug is withheld (no row) and takes the 0 fallback;
+    // so does an unknown slug — the pre-MW-3 wire parity for both.
+    assert_eq!(
+        built_max("claude-opus-4.8", None),
         0,
-        "unset + known slug (empty table): proxy-tolerated 0, pre-MW-1 wire parity"
+        "unset + divergent slug (withheld row): proxy-tolerated 0"
     );
     assert_eq!(
         built_max("some-unknown-slug", None),
