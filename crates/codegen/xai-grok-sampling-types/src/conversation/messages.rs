@@ -762,6 +762,17 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         Some(SystemParam::Blocks(system_blocks))
     };
 
+    // MW-2 R6 (delta row 6) — namespace flattening: N/A in V1. This crate's
+    // `ToolSpec` is flat (name/description/parameters — zero `namespace` hits
+    // in the crate), so there is nothing to flatten here. xli's actual
+    // behavior, if a namespaced spec ever reaches the MCP seam (cite the
+    // CODE, gap 15 — the `ToolSpec::Namespace` arm's comment claims a
+    // single-dot `<namespace>.<name>` convention and is self-contradictory;
+    // the code wins): wire.rs:967 `format!("{}__{}", ns.name, f.name)` +
+    // `flat_mcp_tool_name` (codex-wire-extensions/src/tool_name.rs:68,
+    // `FLAT_MCP_TOOL_NAME_DELIMITER = "__"` :54) — double-underscore flat
+    // names, round-tripped by the decoder. RE-AUDIT TRIGGER: any MCP seam
+    // change introducing a namespaced tool spec re-opens delta row 6.
     let tools: Option<Vec<ToolParam>> = if req.tools.is_empty() {
         None
     } else {

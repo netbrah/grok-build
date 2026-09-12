@@ -2414,3 +2414,124 @@ fn d6_golden_g_invariants() {
         "hoist: the merged user message leads with the tool_result: {merged:?}"
     );
 }
+
+// ============================================================================
+// (j) MW-2 R5-R7 — item-kind audit + carrier guards
+// ============================================================================
+
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/src/wire.rs :: tools_to_anthropic_format (fresh pin, no xli test of this exact shape: the drop IS the xli parity — the catch-all `_ => Vec::new()` at :974, NOT the doc at :885-894 which names web_search; parity basis is the code, gap 12). Pins CURRENT grok behavior per spec R5/D5: hosted tools are dropped from the messages body, silently (pure builder — no error/notice channel).
+#[test]
+fn hosted_tools_dropped_from_messages_body() {
+    let hosted = vec![HostedTool::WebSearch { options: None }];
+    let plain = ToolSpec {
+        name: "read_file".into(),
+        description: Some("read a file".into()),
+        parameters: serde_json::json!({ "type": "object" }),
+    };
+
+    // Hosted-only request: the `tools` field is absent from the body entirely.
+    let hosted_only = ConversationRequest {
+        items: vec![ConversationItem::user("find me stuff")],
+        model: Some("claude-sonnet-5".to_string()),
+        hosted_tools: hosted.clone(),
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&build_messages_request(&hosted_only)).unwrap();
+    assert!(
+        !json.contains("\"tools\""),
+        "R5: hosted-only request carries no tools field: {json}"
+    );
+    assert!(
+        !json.contains("web_search"),
+        "R5: the hosted web_search must be absent from the body: {json}"
+    );
+
+    // Hosted + plain: the plain tool maps, the hosted one does not.
+    let mixed = ConversationRequest {
+        items: vec![ConversationItem::user("find me stuff")],
+        model: Some("claude-sonnet-5".to_string()),
+        hosted_tools: hosted,
+        tools: vec![plain],
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&build_messages_request(&mixed)).unwrap();
+    assert!(
+        json.contains("read_file"),
+        "R5: ordinary tools still map 1:1: {json}"
+    );
+    assert!(
+        !json.contains("web_search"),
+        "R5: the hosted web_search is dropped beside plain tools: {json}"
+    );
+}
+
+/// Fresh-written: MW-2 spec R7 carrier guard (P2.1 is our own port — no source
+/// equivalent). A `BackendToolCall(CodexRawInput{type: compaction})` item maps
+/// to assistant text via `text_summary()`, which returns ONLY the
+/// cross-provider fallback or the safe "[OpenAI compacted context]" label — a
+/// sentinel embedded in the raw provider payload must never reach the
+/// serialized messages body.
+#[test]
+fn backend_toolcall_compaction_carrier_never_surfaces_raw_sentinel() {
+    let req = ConversationRequest {
+        items: vec![
+            ConversationItem::user("what did we compact?"),
+            ConversationItem::BackendToolCall(BackendToolCallItem {
+                kind: BackendToolKind::CodexRawInput(CodexRawInputItem {
+                    id: "cmp_guard_1".to_string(),
+                    raw: serde_json::json!({
+                        "type": "compaction",
+                        "id": "cmp_guard_1",
+                        "encrypted_content": "CARRIER-SENTINEL-BLOB-DEADBEEF"
+                    }),
+                    cross_provider_fallback: None,
+                }),
+            }),
+        ],
+        model: Some("claude-sonnet-5".to_string()),
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&build_messages_request(&req)).unwrap();
+    assert!(
+        !json.contains("CARRIER-SENTINEL-BLOB-DEADBEEF"),
+        "R7: the carrier's raw payload must never surface in the body: {json}"
+    );
+    assert!(
+        json.contains("[OpenAI compacted context]"),
+        "R7: the compaction carrier renders its safe fallback label: {json}"
+    );
+}
+
+/// Fresh-written: MW-2 spec R7 carrier guard (2) — a message-type carrier
+/// (`raw.type == "message"`) renders as LABELED plaintext: the retained
+/// context text is inlined under the role label, never as raw provider shape.
+#[test]
+fn backend_toolcall_message_carrier_renders_labeled_plaintext() {
+    let req = ConversationRequest {
+        items: vec![
+            ConversationItem::user("remember that note"),
+            ConversationItem::BackendToolCall(BackendToolCallItem {
+                kind: BackendToolKind::CodexRawInput(CodexRawInputItem {
+                    id: "msg_guard_1".to_string(),
+                    raw: serde_json::json!({
+                        "type": "message",
+                        "role": "user",
+                        "content": "deploy freeze on friday"
+                    }),
+                    cross_provider_fallback: None,
+                }),
+            }),
+        ],
+        model: Some("claude-sonnet-5".to_string()),
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&build_messages_request(&req)).unwrap();
+    assert!(
+        json.contains("[OpenAI retained user context] deploy freeze on friday"),
+        "R7: the message carrier renders labeled plaintext: {json}"
+    );
+    assert!(
+        !json.contains("msg_guard_1"),
+        "R7: the raw carrier item (id) must not leak into the body: {json}"
+    );
+}
