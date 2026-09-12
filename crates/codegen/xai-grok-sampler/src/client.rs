@@ -1957,6 +1957,9 @@ impl SamplingClient {
         // Restore Codex compaction carriers (opaque provider items) at their
         // typed placeholder positions. Empty for every non-Codex request.
         patch_raw_input_replacements(&mut request_body, &request.raw_input_replacements)?;
+        // Transport seam: carrier ciphertext cannot round-trip the proxy's
+        // cross-deployment load balancing; strip it after the splice.
+        crate::provider::strip_encrypted_content_input(&mut request_body);
         self.prepare_bearer().await;
         let SentRequest {
             builder,
@@ -2115,6 +2118,9 @@ impl SamplingClient {
         // Restore Codex compaction carriers (opaque provider items) at their
         // typed placeholder positions. Empty for every non-Codex request.
         patch_raw_input_replacements(&mut request_body, &request.raw_input_replacements)?;
+        // Transport seam: carrier ciphertext cannot round-trip the proxy's
+        // cross-deployment load balancing; strip it after the splice.
+        crate::provider::strip_encrypted_content_input(&mut request_body);
         // Fresh per attempt so signals never leak across retries; `None` (check disabled) sends no header and does no peek work per event
         let doom_loop = self
             .defaults
@@ -2364,6 +2370,9 @@ impl SamplingClient {
                 .as_deref()
                 .is_some_and(|f| f.eq_ignore_ascii_case("codex")),
         );
+        // Transport seam: carrier ciphertext cannot round-trip the proxy's
+        // cross-deployment load balancing; strip it after patching.
+        crate::provider::strip_encrypted_content_input(&mut request_body);
         if request_body
             .get("tool_choice")
             .is_none_or(serde_json::Value::is_null)

@@ -148,6 +148,43 @@ fn patch_codex_responses_request(
     input.insert(insert_at, mode_item);
 }
 
+/// Strip `encrypted_content` from replayed `reasoning` input items.
+///
+/// The LLM proxy load-balances the Responses API across Azure deployments
+/// with different API keys, and `encrypted_content` is only decryptable by
+/// the deployment that produced it:
+/// - `reasoning` items carry it as OPTIONAL on replay (it only preserves
+///   provider-side reasoning continuity). Replayed across deployments it
+///   400s with `invalid_encrypted_content`, so strip it: multi-call
+///   (tool-loop) turns keep working.
+/// - `compaction` / `context_compaction` carrier items carry it as
+///   REQUIRED. They are left untouched on purpose: with a proxy that
+///   session-pins /responses to one deployment the ciphertext round-trips,
+///   and stripping it would make carrier replay unrecoverably impossible
+///   (`missing_required_parameter`).
+fn strip_encrypted_content(input: &mut [Value]) {
+    for item in input.iter_mut() {
+        let Some(obj) = item.as_object_mut() else {
+            continue;
+        };
+        if obj.get("type").and_then(Value::as_str) == Some("reasoning") {
+            obj.remove("encrypted_content");
+        }
+    }
+}
+
+/// Strip `encrypted_content` from `reasoning` input items of a final
+/// Responses request body (see [`strip_encrypted_content`]).
+///
+/// Transport seam: call this after dialect patching AND after the raw Codex
+/// compaction-carrier splice, so typed reasoning items never reach the
+/// proxy carrying deployment-bound ciphertext.
+pub fn strip_encrypted_content_input(body: &mut Value) {
+    if let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) {
+        strip_encrypted_content(input);
+    }
+}
+
 /// Ensure a `reasoning` object exists on the request body.
 fn ensure_reasoning_object(request_body: &mut Value) {
     if request_body.get("reasoning").is_none() {
@@ -364,6 +401,51 @@ mod tests {
         assert_eq!(body["input"].as_array().unwrap().len(), 2);
         // codex is OpenAI-family, so no content-type normalization
         assert_eq!(body["input"][1]["content"][0]["type"], "input_text");
+    }
+
+    #[test]
+    fn strip_encrypted_content_input_strips_reasoning_but_keeps_carriers() {
+        let mut body = serde_json::json!({
+            "input": [
+                {
+                    "id": "rs_01",
+                    "type": "reasoning",
+                    "content": [],
+                    "summary": [{"type": "summary_text", "text": "thinking..."}],
+                    "encrypted_content": "gAAAAA-reasoning"
+                },
+                {
+                    "id": "cmp_01",
+                    "type": "compaction",
+                    "summary": "opaque summary",
+                    "encrypted_content": "gAAAAA-compaction"
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hi"}]
+                }
+            ]
+        });
+        strip_encrypted_content_input(&mut body);
+        let input = body["input"].as_array().unwrap();
+        // Reasoning ciphertext is optional on replay -> stripped.
+        assert!(input[0].get("encrypted_content").is_none());
+        assert_eq!(input[0]["id"], "rs_01");
+        assert_eq!(input[0]["summary"][0]["text"], "thinking...");
+        // Compaction carriers REQUIRE their ciphertext (server-side context)
+        // -> kept intact for session-pinned proxies.
+        assert_eq!(input[1]["encrypted_content"], "gAAAAA-compaction");
+        assert_eq!(input[1]["id"], "cmp_01");
+        // Other items untouched.
+        assert_eq!(input[2]["content"][0]["type"], "input_text");
+    }
+
+    #[test]
+    fn strip_encrypted_content_input_noop_without_input_array() {
+        let mut body = serde_json::json!({"model": "gpt-5.6-sol"});
+        strip_encrypted_content_input(&mut body);
+        assert_eq!(body["model"], "gpt-5.6-sol");
     }
 
     #[test]
