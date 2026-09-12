@@ -8512,6 +8512,9 @@ fn p1_route_matrix_config_override_wins_defaults_fill_the_rest() {
 }
 /// Route matrix #4: donor (baked) inheritance still wins over endpoint defaults for
 /// the fields the donor covers; defaults fill only what the donor left at built-in.
+/// P2.0 inserted the inference rung between donor and endpoint defaults (spec §7):
+/// the grok slug now infers family "xai" before the "openai" endpoint default
+/// can apply — the pre-P2.0 expectation (endpoint default fills family) is gone.
 #[test]
 fn p1_route_matrix_donor_wins_over_endpoint_defaults() {
     let raw: toml::Value = toml::from_str(
@@ -8547,8 +8550,8 @@ fn p1_route_matrix_donor_wins_over_endpoint_defaults() {
     );
     assert_eq!(
         entry.info.model_family.as_deref(),
-        Some("openai"),
-        "donor does not cover model_family; endpoint default fills it"
+        Some("xai"),
+        "donor does not cover model_family; P2.0 catalog inference (grok slug) fills it before the endpoint default"
     );
     assert_eq!(
         entry.env_key.as_ref().map(|k| k.names()),
@@ -8816,4 +8819,153 @@ fn p1_route_matrix_fail_closed_custom_endpoint_without_credentials() {
     let creds = resolve_credentials(&xai, None);
     assert_eq!(creds.auth_type, AuthType::ApiKey);
     assert_eq!(creds.api_key.as_deref(), Some("fail-closed-ambient-key"));
+}
+
+// ==================== P2.0: catalog inference — resolution ladder ====================
+// Priority (highest wins): `[model.<id>]` config > donor (baked keys) > explicit
+// catalog-row field > catalog inference (slug-keyed fallback) > `[endpoints]`
+// defaults > built-in defaults. All fixtures run in custom-endpoint mode
+// (models_base_url set) so no baked donor can mask the inference rung.
+
+/// Ladder (a): row field > inference — a hydrated grok slug with an explicit
+/// `api_backend` keeps it even though the slug inference would say Responses.
+#[test]
+fn p20_ladder_row_field_wins_over_inference() {
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [endpoints]
+            models_base_url = "https://llm-proxy.example.com/v1"
+        "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(
+        "grok-4.6".to_owned(),
+        prefetch_model_entry("grok-4.6", DEFAULT_CONTEXT_WINDOW, ApiBackend::Messages),
+    );
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    let entry = resolved
+        .get("grok-4.6")
+        .expect("prefetched model must exist");
+    assert_eq!(
+        entry.info.api_backend,
+        ApiBackend::Messages,
+        "explicit row api_backend wins over slug inference (grok -> Responses)"
+    );
+    assert_eq!(
+        entry.info.model_family.as_deref(),
+        Some("xai"),
+        "inference still fills the fields the row leaves unset"
+    );
+}
+/// Ladder (b): inference > endpoint default — a hydrated grok slug with no row
+/// fields resolves Responses by inference, even though the endpoint default is
+/// ChatCompletions.
+#[test]
+fn p20_ladder_inference_wins_over_endpoint_default() {
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [endpoints]
+            models_base_url = "https://llm-proxy.example.com/v1"
+            default_api_backend = "chat_completions"
+        "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(
+        "grok-4.6".to_owned(),
+        prefetch_model_entry("grok-4.6", DEFAULT_CONTEXT_WINDOW, ApiBackend::default()),
+    );
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    let entry = resolved
+        .get("grok-4.6")
+        .expect("prefetched model must exist");
+    assert_eq!(
+        entry.info.api_backend,
+        ApiBackend::Responses,
+        "catalog inference fills before the endpoint-default fill, so the ChatCompletions default never applies"
+    );
+    assert_eq!(
+        entry.info.model_family.as_deref(),
+        Some("xai"),
+        "xai rows carry the xai family string"
+    );
+}
+/// Ladder (c): no-inference case — a `qwen3.8-27b`-shape slug (Other family)
+/// gets nothing from inference; the P1 endpoint-default fill applies instead.
+#[test]
+fn p20_ladder_inference_stays_out_for_other_family() {
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [endpoints]
+            models_base_url = "https://llm-proxy.example.com/v1"
+            default_api_backend = "responses"
+        "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(
+        "qwen3.8-27b".to_owned(),
+        prefetch_model_entry("qwen3.8-27b", DEFAULT_CONTEXT_WINDOW, ApiBackend::default()),
+    );
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    let entry = resolved
+        .get("qwen3.8-27b")
+        .expect("prefetched model must exist");
+    assert_eq!(
+        entry.info.api_backend,
+        ApiBackend::Responses,
+        "endpoint-default fill still reaches Other-family rows (inference stayed out)"
+    );
+    assert!(
+        entry.info.model_family.is_none(),
+        "Other family has no slug inference to a family string"
+    );
+    assert!(
+        entry.info.reasoning_efforts.is_empty(),
+        "Other family advertises no reasoning menu"
+    );
+}
+/// Ladder (d): an Anthropic slug gets no inference (family is pinned per row,
+/// the backend must stay at its built-in default) so the endpoint fill applies.
+#[test]
+fn p20_ladder_inference_stays_out_for_anthropic() {
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [endpoints]
+            models_base_url = "https://llm-proxy.example.com/v1"
+            default_api_backend = "messages"
+        "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(
+        "claude-sonnet-5".to_owned(),
+        prefetch_model_entry(
+            "claude-sonnet-5",
+            DEFAULT_CONTEXT_WINDOW,
+            ApiBackend::default(),
+        ),
+    );
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    let entry = resolved
+        .get("claude-sonnet-5")
+        .expect("prefetched model must exist");
+    assert_eq!(
+        entry.info.api_backend,
+        ApiBackend::Messages,
+        "endpoint-default fill applies to Anthropic rows (inference stayed out)"
+    );
+    assert!(
+        entry.info.model_family.is_none(),
+        "family is pinned per row; no slug inference to a family string"
+    );
+    assert!(
+        entry.info.reasoning_efforts.is_empty(),
+        "Claude advertises no menu until Messages lands"
+    );
 }

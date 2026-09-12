@@ -15,9 +15,10 @@ use xai_grok_agent::prompt::skills::SkillsConfig;
 use xai_grok_login::{AuthManager, GrokComConfig, OidcAuthConfig};
 use xai_grok_sampler::{AuthScheme, SamplerConfig};
 use xai_grok_sampling_types::{
-    CompactionAtTokens, CompactionsRemaining, REASONING_EFFORT_META_KEY,
+    CatalogFamily, CompactionAtTokens, CompactionsRemaining, REASONING_EFFORT_META_KEY,
     REASONING_EFFORTS_META_KEY, ReasoningEffort, ReasoningEffortOption,
-    reasoning_effort_meta_value, reasoning_efforts_meta_value,
+    reasoning_effort_meta_value, reasoning_efforts_meta_value, resolve_api_backend, resolve_family,
+    resolve_reasoning_efforts,
 };
 use xai_grok_tools::types::compat::{
     COMPAT_CELLS, CompatConfig, CompatConfigToml, CompatRemoteKey, CompatSurface, CompatVendor,
@@ -3313,6 +3314,82 @@ fn managed_settings_env_flag(key: &str) -> Option<bool> {
     let json: serde_json::Value = serde_json::from_str(&content).ok()?;
     xai_grok_workspace::permission::resolution::json_env_flag(json.get("env"), key)
 }
+/// P2.0 catalog inference seam: fill routing metadata the catalog row omitted
+/// (LiteLLM-style `{id, object, owned_by}` rows) using the row-aware
+/// `catalog_wire` resolvers — the row's explicit field first, then the
+/// slug-keyed fallback. Runs after donor inheritance and before the P1
+/// endpoint-default fill, so the effective priority is: config > donor >
+/// explicit row field > catalog inference > endpoint defaults > built-in.
+///
+/// Strict: never touches a value that moved off its built-in default (row
+/// fields always win, same gate style as the P1 fill). Anthropic and Other
+/// rows get no backend or family fill — they must stay at their built-in
+/// defaults so the endpoint-default fill can still apply (e.g. a
+/// `qwen3.8-27b`-shape row on a proxy with
+/// `[endpoints] default_api_backend = "responses"`). `model_family` is filled
+/// with "xai" for Xai rows and "codex" for OpenAi rows — "codex" is the
+/// provider-family string that gates the Codex Responses wire dialect in
+/// `xai-grok-sampler::provider` and matches the live gpt rows; a deliberate
+/// convention, not a generic "openai" label.
+fn fill_from_catalog_inference(entry: &mut ModelEntry) {
+    let info = &mut entry.info;
+    // Row-aware: the row's explicit `model_family` is consulted before any
+    // slug inference; `None` or an unmappable string defers to the slug.
+    let family = resolve_family(info.model_family.as_deref(), &info.model);
+    if info.model_family.is_none() {
+        let inferred = match family {
+            CatalogFamily::Xai => Some("xai"),
+            CatalogFamily::OpenAi => Some("codex"),
+            // Anthropic: family is pinned per row; there is no slug
+            // inference to a family string. Other: nothing to infer.
+            CatalogFamily::Anthropic | CatalogFamily::Other => None,
+        };
+        if let Some(model_family) = inferred {
+            tracing::debug!(
+                model = %info.model,
+                inferred = model_family,
+                source = "catalog-inference",
+                "hydrated model without model_family, inferring provider family"
+            );
+            info.model_family = Some(model_family.to_owned());
+        }
+    }
+    if info.api_backend == ApiBackend::default()
+        && matches!(family, CatalogFamily::Xai | CatalogFamily::OpenAi)
+    {
+        // The row's field is at its built-in default, i.e. not explicit at
+        // this seam, so the resolver's explicit input is `None` and the
+        // slug-keyed fallback decides. Legacy OpenAI slugs map to
+        // ChatCompletions — the built-in default — a no-op that is skipped
+        // (no fill, no log) rather than recorded as an inference.
+        let inferred = resolve_api_backend(None, &info.model);
+        if inferred != info.api_backend {
+            tracing::debug!(
+                model = %info.model,
+                inferred = ?inferred,
+                source = "catalog-inference",
+                "hydrated model at built-in api_backend, inferring from catalog row/slug"
+            );
+            info.api_backend.clone_from(&inferred);
+        }
+    }
+    if info.reasoning_efforts.is_empty() {
+        let inferred = resolve_reasoning_efforts(None, &info.model);
+        if !inferred.is_empty() {
+            tracing::debug!(
+                model = %info.model,
+                menu = ?inferred.iter().map(|option| option.value).collect::<Vec<_>>(),
+                source = "catalog-inference",
+                "hydrated model without a reasoning menu, inferring from catalog row/slug"
+            );
+            info.reasoning_efforts = inferred;
+            // Keep the legacy effort gate/default consistent with the filled
+            // menu; idempotent, and the resolve_model_list derive pass
+            // re-running later is a no-op.
+            info.derive_reasoning_effort_fields();
+        }
+    }
+}
 /// P1 provider-default seam: fill a hydrated entry's fields that are still at their
 /// built-in defaults from the `[endpoints]` provider defaults.
 /// Runs after donor inheritance and before `[model.<id>]` config overrides, so the
@@ -3435,6 +3512,10 @@ pub(crate) fn resolve_model_list(
             if resolved.contains_key(key) {
                 tracing::debug!(model_key = %key, "prefetched model overriding default");
             }
+            // P2.0 catalog inference seam: row-aware resolvers fill what the
+            // row omitted (explicit field > slug fallback), still before the
+            // P1 endpoint-default fill.
+            fill_from_catalog_inference(entry);
             // P1 provider-default seam: donor inheritance ran first, so this only
             // touches fields still at their built-in defaults.
             fill_from_endpoint_defaults(entry, &cfg.endpoints);
@@ -4315,6 +4396,7 @@ impl ModelEntry {
             auth_provider: None,
             api_base_url: None,
         };
+        fill_from_catalog_inference(&mut entry);
         fill_from_endpoint_defaults(&mut entry, endpoints);
         entry
     }
