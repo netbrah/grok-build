@@ -363,7 +363,11 @@ impl SamplingError {
         }
     }
 
-    /// The server rejected the request: the conversation history contains `encrypted_content` from a model family the current model cannot decrypt.
+    /// The server rejected the request: the conversation history carries deployment-bound
+    /// reasoning/compaction ciphertext the current model (or deployment) cannot decrypt.
+    /// Matched on both wire phrasings: the parameterized field name (`encrypted_content`,
+    /// e.g. `Missing required parameter: 'input[2].encrypted_content'`) and Azure's
+    /// human-facing text ("The encrypted content for item ... could not be verified").
     /// Never retryable: the user must start a new session.
     pub fn is_encrypted_content_error(&self) -> bool {
         matches!(
@@ -372,7 +376,7 @@ impl SamplingError {
                 status: StatusCode::BAD_REQUEST,
                 message,
                 ..
-            } if message.contains("encrypted_content")
+            } if message.contains("encrypted_content") || message.contains("encrypted content")
         )
     }
 
@@ -1484,6 +1488,23 @@ mod tests {
         assert!(
             !err.is_retryable(),
             "encrypted_content errors must not be retried"
+        );
+    }
+
+    #[test]
+    fn encrypted_content_azure_phrasing_400_is_detected() {
+        let err = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: "The encrypted content for item cmp_0123 could not be verified. Reason: Encrypted content could not be decrypted or parsed.".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: Some(ApiErrorCode::Other("invalid_encrypted_content".to_string())),
+        };
+        assert!(err.is_encrypted_content_error());
+        assert!(
+            !err.is_retryable(),
+            "Azure-phrasing encrypted-content 400s must not be retried"
         );
     }
 

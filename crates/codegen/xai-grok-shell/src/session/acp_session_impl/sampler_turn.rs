@@ -1180,7 +1180,8 @@ impl SessionActor {
         // The request's usage never arrived; account for it fail-closed.
         let encrypted_content_mismatch = matches!(error.kind, SamplingErrorKind::Api)
             && error.status_code == Some(400)
-            && error.message.contains("encrypted_content");
+            && (error.message.contains("encrypted_content")
+                || error.message.contains("encrypted content"));
         let quiet_mid_salvage = mid_salvage_continuation
             && (error.kind == SamplingErrorKind::MaxTokensTruncation
                 || xai_grok_sampling_types::is_context_length_error(&error.message)
