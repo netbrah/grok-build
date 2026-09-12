@@ -1,0 +1,16 @@
+{
+  "fixture_id": "EQ-17",
+  "hi_rows": [
+    "HI-C5-009"
+  ],
+  "ri_rows": [],
+  "wires": [
+    "anthropic"
+  ],
+  "spokes": [
+    "apex"
+  ],
+  "fidelity": "semantic-mask",
+  "source": "wireInvariance TEXT_PART via Anthropic stream\u2261non-stream",
+  "hce05_seed": null
+}

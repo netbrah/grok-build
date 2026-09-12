@@ -1,0 +1,25 @@
+{
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "Let me check"
+    },
+    {
+      "type": "tool_use",
+      "id": "toolu_a",
+      "name": "read_file",
+      "input": {
+        "path": "main.rs"
+      }
+    },
+    {
+      "type": "tool_use",
+      "id": "toolu_b",
+      "name": "shell",
+      "input": {
+        "command": "ls"
+      }
+    }
+  ]
+}

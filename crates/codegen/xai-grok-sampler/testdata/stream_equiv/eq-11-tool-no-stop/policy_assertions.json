@@ -1,0 +1,11 @@
+{
+  "fixture_id": "EQ-11",
+  "hi_rows": [
+    "HI-C5-007"
+  ],
+  "expected": {
+    "stop_reason": "max_tokens",
+    "no_throw": true
+  },
+  "rationale": "S-004-T5 in-flight truncation"
+}

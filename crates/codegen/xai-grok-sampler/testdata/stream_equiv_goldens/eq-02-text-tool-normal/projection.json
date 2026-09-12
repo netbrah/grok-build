@@ -1,0 +1,24 @@
+{
+  "message_id": "msg_equiv_tool",
+  "model": "claude-sonnet-4.6",
+  "stop_reason": "tool_calls",
+  "text": "",
+  "reasoning": null,
+  "tool_calls": [
+    {
+      "id": "equiv_call_1",
+      "name": "shell",
+      "arguments": {
+        "command": "ls"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 20,
+    "completion_tokens": 15,
+    "total_tokens": 35,
+    "reasoning_tokens": 0,
+    "cached_prompt_tokens": 0,
+    "cache_creation_prompt_tokens": 0
+  }
+}

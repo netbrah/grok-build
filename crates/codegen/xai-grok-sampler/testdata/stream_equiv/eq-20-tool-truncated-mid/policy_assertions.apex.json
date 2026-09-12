@@ -1,0 +1,10 @@
+{
+  "fixture_id": "EQ-20",
+  "hi_rows": [
+    "HI-C5-007"
+  ],
+  "expected": {
+    "tool_args_state": "json_repair_salvaged",
+    "no_throw": true
+  }
+}

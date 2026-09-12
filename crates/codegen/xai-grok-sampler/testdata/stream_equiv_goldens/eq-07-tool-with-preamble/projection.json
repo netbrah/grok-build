@@ -1,0 +1,24 @@
+{
+  "message_id": "msg_019Q1hrJbZG26Fb9BQhrkHEr",
+  "model": "claude-sonnet-4-20250514",
+  "stop_reason": "tool_calls",
+  "text": "I'll check the current weather in Paris for you.",
+  "reasoning": null,
+  "tool_calls": [
+    {
+      "id": "toolu_01NRLabsLyVHZPKxbKvkfSMn",
+      "name": "get_weather",
+      "arguments": {
+        "location": "Paris"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 377,
+    "completion_tokens": 65,
+    "total_tokens": 442,
+    "reasoning_tokens": 0,
+    "cached_prompt_tokens": 0,
+    "cache_creation_prompt_tokens": 0
+  }
+}

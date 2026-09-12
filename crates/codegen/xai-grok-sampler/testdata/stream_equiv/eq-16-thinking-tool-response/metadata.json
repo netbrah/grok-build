@@ -1,0 +1,17 @@
+{
+  "fixture_id": "EQ-16",
+  "hi_rows": [
+    "HI-C5-009"
+  ],
+  "ri_rows": [],
+  "wires": [
+    "anthropic"
+  ],
+  "spokes": [
+    "apex",
+    "xli"
+  ],
+  "fidelity": "semantic-mask",
+  "source": "EQ-04 mirror on /responses (messages leg)",
+  "hce05_seed": null
+}

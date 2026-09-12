@@ -1,0 +1,10 @@
+{
+  "fixture_id": "eq-12-parallel-one-bad",
+  "hi_rows": [
+    "HI-C5-007"
+  ],
+  "expected": {
+    "tool_args_state": "json_repair_salvaged",
+    "no_throw": true
+  }
+}

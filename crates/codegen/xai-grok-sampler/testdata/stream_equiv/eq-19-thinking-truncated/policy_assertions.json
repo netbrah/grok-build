@@ -1,0 +1,13 @@
+{
+  "fixture_id": "EQ-19",
+  "hi_rows": [
+    "HI-C5-009"
+  ],
+  "expected": {
+    "thinking_salvage": true,
+    "thinking_text": "Deep thought",
+    "partial_signature": "partial-sig-abc",
+    "no_throw": true
+  },
+  "rationale": "anthropicContentGenerator.ts truncated thinking salvage"
+}

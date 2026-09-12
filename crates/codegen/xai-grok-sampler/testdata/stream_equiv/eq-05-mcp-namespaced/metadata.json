@@ -1,0 +1,19 @@
+{
+  "fixture_id": "EQ-05",
+  "hi_rows": [
+    "HI-C5-009"
+  ],
+  "ri_rows": [
+    "RI-007"
+  ],
+  "wires": [
+    "anthropic"
+  ],
+  "spokes": [
+    "apex",
+    "xli"
+  ],
+  "fidelity": "byte-equal",
+  "source": "response_item_equiv/mcp_namespace_roundtrip",
+  "hce05_seed": null
+}

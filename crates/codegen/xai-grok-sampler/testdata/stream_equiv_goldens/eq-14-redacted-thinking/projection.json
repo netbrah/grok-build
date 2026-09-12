@@ -1,0 +1,16 @@
+{
+  "message_id": "msg_red",
+  "model": "claude-sonnet-4.6",
+  "stop_reason": "stop",
+  "text": "done",
+  "reasoning": null,
+  "tool_calls": [],
+  "usage": {
+    "prompt_tokens": 5,
+    "completion_tokens": 4,
+    "total_tokens": 9,
+    "reasoning_tokens": 0,
+    "cached_prompt_tokens": 0,
+    "cache_creation_prompt_tokens": 0
+  }
+}

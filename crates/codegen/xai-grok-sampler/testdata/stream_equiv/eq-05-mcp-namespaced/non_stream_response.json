@@ -1,0 +1,11 @@
+{
+  "output": [
+    {
+      "type": "function_call",
+      "call_id": "mcp_ns_call_1",
+      "name": "analyze_symbol",
+      "namespace": "mcp__clangd_rs",
+      "arguments": "{\"path\": \"main.rs\"}"
+    }
+  ]
+}

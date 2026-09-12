@@ -1,0 +1,18 @@
+{
+  "fixture_id": "EQ-18",
+  "hi_rows": [
+    "HI-C5-009"
+  ],
+  "ri_rows": [
+    "RI-016"
+  ],
+  "wires": [
+    "anthropic"
+  ],
+  "spokes": [
+    "apex"
+  ],
+  "fidelity": "byte-equal",
+  "source": "wireInvariance FUNCTION_CALL_PART via Anthropic stream\u2261non-stream",
+  "hce05_seed": null
+}

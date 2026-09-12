@@ -1,0 +1,13 @@
+{
+  "role": "assistant",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "mcp_ns_call_1",
+      "name": "mcp__clangd_rs__analyze_symbol",
+      "input": {
+        "path": "main.rs"
+      }
+    }
+  ]
+}

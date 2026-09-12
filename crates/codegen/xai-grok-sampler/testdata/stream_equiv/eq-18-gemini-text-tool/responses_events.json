@@ -1,0 +1,46 @@
+[
+  {
+    "type": "response.created",
+    "response": { "id": "resp_equiv_tool" }
+  },
+  {
+    "type": "response.output_item.added",
+    "item": {
+      "type": "function_call",
+      "call_id": "equiv_call_1",
+      "name": "shell",
+      "arguments": ""
+    }
+  },
+  {
+    "type": "response.function_call_arguments.delta",
+    "item_id": "fc_equiv_1",
+    "call_id": "equiv_call_1",
+    "delta": "{\"command\": \""
+  },
+  {
+    "type": "response.function_call_arguments.delta",
+    "item_id": "fc_equiv_1",
+    "call_id": "equiv_call_1",
+    "delta": "ls\"}"
+  },
+  {
+    "type": "response.function_call_arguments.done",
+    "item_id": "fc_equiv_1",
+    "call_id": "equiv_call_1",
+    "arguments": "{\"command\": \"ls\"}"
+  },
+  {
+    "type": "response.output_item.done",
+    "item": {
+      "type": "function_call",
+      "call_id": "equiv_call_1",
+      "name": "shell",
+      "arguments": "{\"command\": \"ls\"}"
+    }
+  },
+  {
+    "type": "response.completed",
+    "response": { "id": "resp_equiv_tool" }
+  }
+]

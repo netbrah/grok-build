@@ -1,0 +1,8 @@
+[
+  {
+    "type": "function_call",
+    "call_id": "equiv_call_1",
+    "name": "shell",
+    "arguments": "{\"command\": \"ls\"}"
+  }
+]

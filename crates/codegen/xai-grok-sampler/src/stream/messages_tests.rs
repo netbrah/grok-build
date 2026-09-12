@@ -1366,3 +1366,73 @@ async fn zero_arg_tool_call_empty_string_is_not_invalid() {
         other => panic!("expected Completed (empty args excluded), got {other:?}"),
     }
 }
+
+/// R6 (row 16): tool-call ORDER is pinned to wire arrival order on the
+/// Anthropic messages wire — both the streaming `ToolCallDelta` id
+/// emissions and the final `tool_calls` list. The transform does NOT
+/// sort by content index: HY's index sort is a Pi-wire artifact (Pi
+/// blocks may open out of order); on the Anthropic wire index order IS
+/// arrival order, so arrival order is the pinned behavior
+/// (DECISION-1: keep wire-index/arrival order, reject the Pi-wire
+/// specific sort).
+///
+/// Zero-args half (G5): a `tool_use` block with no input deltas
+/// finalizes with the proven `""` arguments at a completed terminal.
+/// (The Length-terminal half is pinned by
+/// `max_tokens_tool_use_without_arg_deltas_collects_empty_arguments`.)
+/// Green-from-start pin — re-expresses no HY/xli source.
+///
+/// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/pi_messages.rs:1232 :: stream_emits_toolcall_start_for_zero_args_and_sorts_tool_calls (pinning; DECISION-1 — the HY index-sort assertion is deliberately not adopted: Pi-wire-specific, out-of-order block opens do not occur on the Anthropic wire)
+#[tokio::test]
+async fn tool_call_order_follows_wire_arrival_and_zero_args_complete() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        // Tool A: two argument deltas (split so neither raw literal ends
+        // in a quote, which would merge with the `r#"` closer)
+        Ok(tool_use_start(0, "call_a", "tool_a")),
+        Ok(input_delta(0, r#"{"a":"1"#)),
+        Ok(input_delta(0, r#""}"#)),
+        Ok(block_stop(0)),
+        // Tool B: zero arguments (no input deltas)
+        Ok(tool_use_start(1, "call_b", "tool_b")),
+        Ok(block_stop(1)),
+        Ok(message_delta_with_stop(messages::StopReason::ToolUse)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    // Streaming side: ToolCallDelta id emissions in arrival order.
+    let id_emissions: Vec<&str> = evs
+        .iter()
+        .filter_map(|ev| match ev {
+            SamplingEvent::ToolCallDelta { id: Some(id), .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        id_emissions,
+        vec!["call_a", "call_b"],
+        "ToolCallDelta id emissions must follow wire arrival order"
+    );
+
+    // Terminal side: final tool_calls in the same arrival order (no
+    // index sort), and the zero-args tool keeps the proven `""`.
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            let calls = response.tool_calls();
+            assert_eq!(calls.len(), 2);
+            assert_eq!(calls[0].id.as_ref(), "call_a");
+            assert_eq!(calls[0].name, "tool_a");
+            assert_eq!(calls[0].arguments.as_ref(), r#"{"a":"1"}"#);
+            assert_eq!(calls[1].id.as_ref(), "call_b");
+            assert_eq!(calls[1].name, "tool_b");
+            assert_eq!(
+                calls[1].arguments.as_ref(),
+                "",
+                "zero-args tool at a completed terminal keeps the proven empty shape (G5)"
+            );
+        }
+        other => panic!("expected Completed, got {other:?}"),
+    }
+}

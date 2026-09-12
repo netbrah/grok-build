@@ -1,0 +1,16 @@
+{
+  "fixture_id": "EQ-19",
+  "hi_rows": [
+    "HI-C5-009"
+  ],
+  "ri_rows": [],
+  "wires": [
+    "anthropic"
+  ],
+  "spokes": [
+    "apex"
+  ],
+  "fidelity": "policy-assert",
+  "source": "anthropicContentGenerator.test.ts:1718-1780",
+  "hce05_seed": null
+}

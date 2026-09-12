@@ -130,13 +130,16 @@ pub enum ContentBlock {
     },
     Thinking {
         thinking: String,
+        /// The start block may omit the signature (the real API delivers it
+        /// via `signature_delta`; xli's wire type carries no signature field
+        /// at all), so a missing one parses as empty — same house pattern as
+        /// the MW-2 R9 `id` leniency. A missing `thinking` stays fatal.
+        #[serde(default)]
         signature: String,
     },
     /// Encrypted reasoning the model chose to redact: an opaque `data` blob, never plaintext.
     /// Parsed so a stream carrying one deserializes instead of failing the whole event parse; request-building and the sampler never construct one.
-    RedactedThinking {
-        data: String,
-    },
+    RedactedThinking { data: String },
     /// A content block kind this build does not model (R1 forward-compat).
     /// Stream-decode ONLY: the `MessageStreamEvent` parse site maps an unknown
     /// `content_block` kind to this variant so the stream transform opens a
@@ -146,9 +149,7 @@ pub enum ContentBlock {
     /// logging. Never constructed on the request side or by the non-stream
     /// `MessagesResponse` parse (its `Deserialize` impl stays strict over the
     /// six known kinds above), and never produced on a serialization path.
-    Unknown {
-        kind: String,
-    },
+    Unknown { kind: String },
 }
 
 impl<'de> Deserialize<'de> for ContentBlock {
@@ -187,6 +188,7 @@ impl<'de> Deserialize<'de> for ContentBlock {
             },
             Thinking {
                 thinking: String,
+                #[serde(default)]
                 signature: String,
             },
             RedactedThinking {
@@ -1066,6 +1068,33 @@ mod tests {
         assert!(
             event.is_err(),
             "a known subtype with a wrong-typed field must stay fatal, not map to Ping"
+        );
+    }
+
+    /// Provenance: xli@3d4a08271e — codex-rs/codex-api/src/sse/messages_wire_types.rs :: Thinking wire variant (re-expressed pin: xli's wire type carries NO signature field and its parse test accepts `{"type":"thinking","thinking":"hmm"}`; the real API delivers the signature via `signature_delta`, so a start block omitting it is a legitimate wire shape, not corruption — same house pattern as the MW-2 R9 id leniency on `MessagesResponse`)
+    /// A thinking `content_block_start` omitting `signature` must parse with
+    /// an empty signature, never fail (wire-fidelity pin; RED-verified
+    /// against the pre-fix strict type — the R4 fixture replays
+    /// eq-03/eq-04/eq-16 demonstrate the same red at the stream site).
+    #[test]
+    fn thinking_block_start_without_signature_parses_empty() {
+        let block: ContentBlock = serde_json::from_str(r#"{"type":"thinking","thinking":"hmm"}"#)
+            .expect("a thinking start without signature is a real wire shape");
+        match block {
+            ContentBlock::Thinking {
+                thinking,
+                signature,
+            } => {
+                assert_eq!(thinking, "hmm");
+                assert_eq!(signature, "");
+            }
+            other => panic!("expected Thinking, got {other:?}"),
+        }
+        // A KNOWN required field is still fatal (corruption stays fatal).
+        let err = serde_json::from_str::<ContentBlock>(r#"{"type":"thinking"}"#);
+        assert!(
+            err.is_err(),
+            "a thinking block missing `thinking` must stay fatal"
         );
     }
 

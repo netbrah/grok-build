@@ -1,0 +1,32 @@
+{
+  "ri_ids": ["RI-018", "RI-020"],
+  "stream_events_may_differ": true,
+  "items": [
+    {
+      "type": "reasoning",
+      "id": "",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "Let me think about this"
+        }
+      ],
+      "encrypted_content": "sig_equiv_abc",
+      "raw_wire_block": {
+        "type": "thinking",
+        "thinking": "Let me think about this",
+        "signature": "sig_equiv_abc"
+      }
+    },
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Here is my answer"
+        }
+      ]
+    }
+  ]
+}

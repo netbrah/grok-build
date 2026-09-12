@@ -1,0 +1,17 @@
+{
+  "fixture_id": "EQ-08",
+  "hi_rows": [
+    "HI-C5-009"
+  ],
+  "ri_rows": [],
+  "wires": [
+    "anthropic"
+  ],
+  "spokes": [
+    "apex",
+    "xli"
+  ],
+  "fidelity": "byte-equal",
+  "source": "Python SDK basic_response.txt",
+  "hce05_seed": null
+}

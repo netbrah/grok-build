@@ -809,3 +809,7 @@ pub fn stream_messages<'a>(
 #[cfg(test)]
 #[path = "messages_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "messages_equiv_tests.rs"]
+mod equiv_tests;

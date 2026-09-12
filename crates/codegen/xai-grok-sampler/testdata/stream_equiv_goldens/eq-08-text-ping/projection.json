@@ -1,0 +1,16 @@
+{
+  "message_id": "msg_4QpJur2dWWDjF6C758FbBw5vm12BaVipnK",
+  "model": "claude-3-opus-latest",
+  "stop_reason": "stop",
+  "text": "Hello there!",
+  "reasoning": null,
+  "tool_calls": [],
+  "usage": {
+    "prompt_tokens": 11,
+    "completion_tokens": 6,
+    "total_tokens": 17,
+    "reasoning_tokens": 0,
+    "cached_prompt_tokens": 0,
+    "cache_creation_prompt_tokens": 0
+  }
+}

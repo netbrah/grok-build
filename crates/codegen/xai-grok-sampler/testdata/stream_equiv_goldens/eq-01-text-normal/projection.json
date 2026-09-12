@@ -1,0 +1,16 @@
+{
+  "message_id": "msg_123",
+  "model": "claude-sonnet-4.6",
+  "stop_reason": "stop",
+  "text": "Hello world",
+  "reasoning": null,
+  "tool_calls": [],
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 5,
+    "total_tokens": 15,
+    "reasoning_tokens": 0,
+    "cached_prompt_tokens": 0,
+    "cache_creation_prompt_tokens": 0
+  }
+}

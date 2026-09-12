@@ -1,0 +1,17 @@
+{
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "I'll check the current weather in Paris for you."
+    },
+    {
+      "type": "tool_use",
+      "id": "toolu_01NRLabsLyVHZPKxbKvkfSMn",
+      "name": "get_weather",
+      "input": {
+        "location": "Paris"
+      }
+    }
+  ]
+}

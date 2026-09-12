@@ -1,0 +1,9 @@
+{
+  "fixture_id": "eq-11-tool-no-stop",
+  "hi_rows": [
+    "HI-C5-007"
+  ],
+  "expected": {
+    "no_throw": true
+  }
+}

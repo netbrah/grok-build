@@ -1,0 +1,24 @@
+{
+  "message_id": "msg_mcp_ns",
+  "model": "claude-sonnet-4.6",
+  "stop_reason": "tool_calls",
+  "text": "",
+  "reasoning": null,
+  "tool_calls": [
+    {
+      "id": "mcp_ns_call_1",
+      "name": "mcp__clangd_rs__analyze_symbol",
+      "arguments": {
+        "path": "main.rs"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 20,
+    "completion_tokens": 12,
+    "total_tokens": 32,
+    "reasoning_tokens": 0,
+    "cached_prompt_tokens": 0,
+    "cache_creation_prompt_tokens": 0
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "ri_ids": ["RI-020", "RI-026"],
+  "stream_events_may_differ": false,
+  "items": [
+    {
+      "type": "reasoning",
+      "id": "",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "I need a shell command"
+        }
+      ],
+      "encrypted_content": "SIG_CHAIN=",
+      "raw_wire_block": {
+        "type": "thinking",
+        "thinking": "I need a shell command",
+        "signature": "SIG_CHAIN="
+      }
+    },
+    {
+      "type": "function_call",
+      "call_id": "equiv_call_chain",
+      "name": "shell",
+      "arguments": "{\"cmd\": \"ls\"}"
+    }
+  ]
+}

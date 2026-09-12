@@ -32,6 +32,10 @@ uuid = { workspace = true, features = ["v4"] }
 [dev-dependencies]
 # Mock HTTP server for actor / request_task integration tests.
 axum = { workspace = true }
+# R4 stream_equiv goldens: MANIFEST.sha256 verification (D5 tamper guard).
+sha2 = { workspace = true }
+# R4 tamper test: isolated copy of the fixture tree.
+tempfile = { workspace = true }
 axum-server = { workspace = true, features = ["tls-rustls"] }
 rcgen = { workspace = true }
 rustls = { workspace = true }

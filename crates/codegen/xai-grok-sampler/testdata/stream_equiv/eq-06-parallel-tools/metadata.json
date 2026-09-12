@@ -1,0 +1,17 @@
+{
+  "fixture_id": "EQ-06",
+  "hi_rows": [
+    "HI-C5-009"
+  ],
+  "ri_rows": [],
+  "wires": [
+    "anthropic"
+  ],
+  "spokes": [
+    "apex",
+    "xli"
+  ],
+  "fidelity": "byte-equal",
+  "source": "messages.rs:1407-1433",
+  "hce05_seed": null
+}

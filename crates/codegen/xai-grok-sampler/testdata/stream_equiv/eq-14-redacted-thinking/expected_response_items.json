@@ -1,0 +1,25 @@
+{
+  "ri_ids": ["RI-010"],
+  "items": [
+    {
+      "type": "reasoning",
+      "id": "",
+      "summary": [],
+      "encrypted_content": "\u0000REDACTED\u0000opaque_encrypted_data_xyz",
+      "raw_wire_block": {
+        "type": "redacted_thinking",
+        "data": "opaque_encrypted_data_xyz"
+      }
+    },
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "done"
+        }
+      ]
+    }
+  ]
+}

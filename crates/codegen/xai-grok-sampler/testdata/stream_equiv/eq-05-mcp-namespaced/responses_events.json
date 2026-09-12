@@ -1,0 +1,42 @@
+[
+  {
+    "type": "response.created",
+    "response": { "id": "resp_mcp_ns" }
+  },
+  {
+    "type": "response.output_item.added",
+    "item": {
+      "type": "function_call",
+      "call_id": "mcp_ns_call_1",
+      "name": "analyze_symbol",
+      "namespace": "mcp__clangd_rs",
+      "arguments": ""
+    }
+  },
+  {
+    "type": "response.function_call_arguments.delta",
+    "item_id": "fc_mcp_ns_1",
+    "call_id": "mcp_ns_call_1",
+    "delta": "{\"path\": \"main.rs\"}"
+  },
+  {
+    "type": "response.function_call_arguments.done",
+    "item_id": "fc_mcp_ns_1",
+    "call_id": "mcp_ns_call_1",
+    "arguments": "{\"path\": \"main.rs\"}"
+  },
+  {
+    "type": "response.output_item.done",
+    "item": {
+      "type": "function_call",
+      "call_id": "mcp_ns_call_1",
+      "name": "analyze_symbol",
+      "namespace": "mcp__clangd_rs",
+      "arguments": "{\"path\": \"main.rs\"}"
+    }
+  },
+  {
+    "type": "response.completed",
+    "response": { "id": "resp_mcp_ns" }
+  }
+]

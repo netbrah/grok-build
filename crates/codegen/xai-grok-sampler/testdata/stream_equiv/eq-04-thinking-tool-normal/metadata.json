@@ -1,0 +1,19 @@
+{
+  "fixture_id": "EQ-04",
+  "hi_rows": [
+    "HI-C5-009"
+  ],
+  "ri_rows": [
+    "RI-020"
+  ],
+  "wires": [
+    "anthropic"
+  ],
+  "spokes": [
+    "apex",
+    "xli"
+  ],
+  "fidelity": "semantic-mask",
+  "source": "response_item_equiv/thinking_tool_chain",
+  "hce05_seed": null
+}

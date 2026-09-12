@@ -1,0 +1,12 @@
+[
+  "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-sig\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-sonnet-4.6\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}",
+  "",
+  "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}",
+  "",
+  "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Deep thought\"}}",
+  "",
+  "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"partial-sig-abc\"}}",
+  "",
+  "data: {\"type\":\"message_stop\"}",
+  ""
+]

@@ -1,0 +1,11 @@
+{
+  "fixture_id": "EQ-20",
+  "hi_rows": [
+    "HI-C5-007"
+  ],
+  "expected": {
+    "stop_reason": "max_tokens",
+    "tool_args_state": "invalid_json_retained",
+    "no_throw": true
+  }
+}

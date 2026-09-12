@@ -1,0 +1,19 @@
+{
+  "message_id": "msg_equiv_think",
+  "model": "claude-sonnet-4.6",
+  "stop_reason": "stop",
+  "text": "Here is my answer",
+  "reasoning": {
+    "text": "Let me think about this",
+    "encrypted_content": "sig_equiv_abc"
+  },
+  "tool_calls": [],
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 20,
+    "total_tokens": 30,
+    "reasoning_tokens": 0,
+    "cached_prompt_tokens": 0,
+    "cache_creation_prompt_tokens": 0
+  }
+}

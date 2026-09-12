@@ -1,0 +1,18 @@
+{
+  "role": "assistant",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "I need a shell command",
+      "signature": "SIG_CHAIN="
+    },
+    {
+      "type": "tool_use",
+      "id": "equiv_call_chain",
+      "name": "shell",
+      "input": {
+        "cmd": "ls"
+      }
+    }
+  ]
+}

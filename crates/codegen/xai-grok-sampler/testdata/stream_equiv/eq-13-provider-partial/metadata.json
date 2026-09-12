@@ -1,0 +1,17 @@
+{
+  "fixture_id": "EQ-13",
+  "hi_rows": [
+    "HI-C5-007"
+  ],
+  "ri_rows": [],
+  "wires": [
+    "anthropic"
+  ],
+  "spokes": [
+    "apex",
+    "xli"
+  ],
+  "fidelity": "policy-assert",
+  "source": "incomplete_partial_json_response.txt",
+  "hce05_seed": null
+}

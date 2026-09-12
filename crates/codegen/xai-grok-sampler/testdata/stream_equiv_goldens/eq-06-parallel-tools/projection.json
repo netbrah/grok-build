@@ -1,0 +1,31 @@
+{
+  "message_id": "msg_multi",
+  "model": "claude-sonnet-4.6",
+  "stop_reason": "tool_calls",
+  "text": "Let me check",
+  "reasoning": null,
+  "tool_calls": [
+    {
+      "id": "toolu_a",
+      "name": "read_file",
+      "arguments": {
+        "path": "main.rs"
+      }
+    },
+    {
+      "id": "toolu_b",
+      "name": "shell",
+      "arguments": {
+        "command": "ls"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 30,
+    "completion_tokens": 40,
+    "total_tokens": 70,
+    "reasoning_tokens": 0,
+    "cached_prompt_tokens": 0,
+    "cache_creation_prompt_tokens": 0
+  }
+}

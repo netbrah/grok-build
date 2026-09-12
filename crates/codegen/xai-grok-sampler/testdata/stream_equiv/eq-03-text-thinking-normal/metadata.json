@@ -1,0 +1,20 @@
+{
+  "fixture_id": "EQ-03",
+  "hi_rows": [
+    "HI-C5-009"
+  ],
+  "ri_rows": [
+    "RI-018",
+    "RI-020"
+  ],
+  "wires": [
+    "anthropic"
+  ],
+  "spokes": [
+    "apex",
+    "xli"
+  ],
+  "fidelity": "semantic-mask",
+  "source": "response_item_equiv/thinking_block_roundtrip",
+  "hce05_seed": null
+}
