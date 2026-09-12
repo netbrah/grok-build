@@ -1,5 +1,6 @@
 //! Anthropic Messages API (`/v1/messages`) wire types.
 
+use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -101,7 +102,7 @@ impl CacheControl {
 }
 
 /// Content blocks used in both requests and responses
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
     Text {
@@ -136,6 +137,108 @@ pub enum ContentBlock {
     RedactedThinking {
         data: String,
     },
+    /// A content block kind this build does not model (R1 forward-compat).
+    /// Stream-decode ONLY: the `MessageStreamEvent` parse site maps an unknown
+    /// `content_block` kind to this variant so the stream transform opens a
+    /// swallowed phantom block (spec D3) instead of failing the frame — which
+    /// would poison the block's later delta/stop into the fatal unopened-index
+    /// classes (spec G3). `kind` carries the verbatim wire `type` string for
+    /// logging. Never constructed on the request side or by the non-stream
+    /// `MessagesResponse` parse (its `Deserialize` impl stays strict over the
+    /// six known kinds above), and never produced on a serialization path.
+    Unknown {
+        kind: String,
+    },
+}
+
+impl<'de> Deserialize<'de> for ContentBlock {
+    /// Strict over the six known kinds: the `Unknown` variant is a
+    /// stream-decode-only construct (see its doc), so neither the non-stream
+    /// response parse nor any request-side parse may produce it. An unknown
+    /// `type` or a known kind missing a required field is a fatal
+    /// deserialization error at every call site except the `MessageStreamEvent`
+    /// parse site, which maps unknown kinds to the phantom variant (R1/D3).
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Mirror of the known variants (kept in sync with the enum above):
+        // the derive on the public enum cannot exclude the stream-only
+        // `Unknown` variant from deserialization, so the strict parse runs
+        // against this mirror.
+        #[derive(Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum StrictBlock {
+            Text {
+                text: String,
+                cache_control: Option<CacheControl>,
+            },
+            Image {
+                source: ImageSource,
+                cache_control: Option<CacheControl>,
+            },
+            ToolUse {
+                id: String,
+                name: String,
+                input: serde_json::Value,
+                cache_control: Option<CacheControl>,
+            },
+            ToolResult {
+                tool_use_id: String,
+                content: ToolResultContent,
+                cache_control: Option<CacheControl>,
+            },
+            Thinking {
+                thinking: String,
+                signature: String,
+            },
+            RedactedThinking {
+                data: String,
+            },
+        }
+        let block = StrictBlock::deserialize(deserializer)?;
+        Ok(match block {
+            StrictBlock::Text {
+                text,
+                cache_control,
+            } => ContentBlock::Text {
+                text,
+                cache_control,
+            },
+            StrictBlock::Image {
+                source,
+                cache_control,
+            } => ContentBlock::Image {
+                source,
+                cache_control,
+            },
+            StrictBlock::ToolUse {
+                id,
+                name,
+                input,
+                cache_control,
+            } => ContentBlock::ToolUse {
+                id,
+                name,
+                input,
+                cache_control,
+            },
+            StrictBlock::ToolResult {
+                tool_use_id,
+                content,
+                cache_control,
+            } => ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                cache_control,
+            },
+            StrictBlock::Thinking {
+                thinking,
+                signature,
+            } => ContentBlock::Thinking {
+                thinking,
+                signature,
+            },
+            StrictBlock::RedactedThinking { data } => ContentBlock::RedactedThinking { data },
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -299,7 +402,7 @@ pub struct MessagesUsage {
 // ============================================================================
 
 /// Top-level streaming event (SSE `type` field determines variant)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MessageStreamEvent {
     MessageStart {
@@ -325,6 +428,191 @@ pub enum MessageStreamEvent {
     Error {
         error: StreamError,
     },
+}
+
+/// Wire tag strings of the known top-level event types (serde `snake_case`
+/// renames of the variants above). A payload carrying any other tag is an
+/// unknown event type: the R1 table maps it to `Ping` (liveness,
+/// forward-compat, never fatal).
+const KNOWN_EVENT_TAGS: &[&str] = &[
+    "message_start",
+    "message_delta",
+    "message_stop",
+    "content_block_start",
+    "content_block_delta",
+    "content_block_stop",
+    "ping",
+    "error",
+];
+
+/// Wire tag strings of the known `content_block` kinds (serde `snake_case`
+/// renames of the `ContentBlock` variants). An unknown kind keeps the
+/// `content_block_start` event and maps the block to the phantom
+/// `ContentBlock::Unknown` variant (R1/D3).
+const KNOWN_BLOCK_KINDS: &[&str] = &[
+    "text",
+    "image",
+    "tool_use",
+    "tool_result",
+    "thinking",
+    "redacted_thinking",
+];
+
+/// Wire tag strings of the known `StreamDelta` subtypes (serde `snake_case`
+/// renames of its variants). An unknown subtype maps the whole
+/// `content_block_delta` event to `Ping` (R1).
+const KNOWN_DELTA_SUBTYPES: &[&str] = &[
+    "text_delta",
+    "input_json_delta",
+    "thinking_delta",
+    "signature_delta",
+];
+
+impl<'de> Deserialize<'de> for MessageStreamEvent {
+    /// The single production parse site (spec D2): the client decodes every
+    /// SSE data payload against this impl, so the R1 forward-compat table
+    /// lives here and nowhere else.
+    ///
+    /// Target semantics (MW-3 spec R1, binding):
+    /// - unknown top-level event type -> `Ping` (liveness, never fatal);
+    /// - unknown `content_block` kind in `content_block_start` -> phantom-open
+    ///   (the event survives with `ContentBlock::Unknown`; the transform
+    ///   opens-and-swallow the block — spec D3);
+    /// - unknown delta subtype in `content_block_delta` -> `Ping`;
+    /// - KNOWN event type missing a required field -> FATAL (wire corruption
+    ///   must not be hidden; surfaces as `SamplingError::Serialization` at
+    ///   the client);
+    /// - `ping` -> `Ping`; well-known shapes parse strictly as before.
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Stage 1: capture the wire tag plus the remaining payload fields, so
+        // the known-vs-unknown decision happens BEFORE any strict variant
+        // parse (an unknown tag must never surface as a fatal serde error).
+        #[derive(Deserialize)]
+        struct EventProbe {
+            #[serde(rename = "type")]
+            tag: String,
+            #[serde(flatten)]
+            fields: serde_json::Map<String, serde_json::Value>,
+        }
+        let EventProbe { tag, fields } = EventProbe::deserialize(deserializer)?;
+
+        if !KNOWN_EVENT_TAGS.contains(&tag.as_str()) {
+            // R1: unknown top-level event type -> Ping.
+            return Ok(MessageStreamEvent::Ping);
+        }
+
+        // Stage 2: known tag — strict-parse the variant payload.
+        let mut payload = fields;
+        payload.insert("type".to_owned(), serde_json::Value::String(tag));
+        let value = serde_json::Value::Object(payload);
+
+        #[derive(Deserialize)]
+        struct MessageStartWire {
+            message: MessagesResponse,
+        }
+        #[derive(Deserialize)]
+        struct MessageDeltaWire {
+            delta: MessageDeltaBody,
+            usage: MessageDeltaUsage,
+        }
+        #[derive(Deserialize)]
+        struct ContentBlockStartWire {
+            index: u32,
+            content_block: serde_json::Value,
+        }
+        #[derive(Deserialize)]
+        struct ContentBlockDeltaWire {
+            index: u32,
+            delta: serde_json::Value,
+        }
+        #[derive(Deserialize)]
+        struct ContentBlockStopWire {
+            index: u32,
+        }
+        #[derive(Deserialize)]
+        struct ErrorWire {
+            error: StreamError,
+        }
+
+        match value.as_str_tag() {
+            "message_start" => {
+                let MessageStartWire { message } =
+                    serde::Deserialize::deserialize(value).map_err(serde::de::Error::custom)?;
+                Ok(MessageStreamEvent::MessageStart { message })
+            }
+            "message_delta" => {
+                let MessageDeltaWire { delta, usage } =
+                    serde::Deserialize::deserialize(value).map_err(serde::de::Error::custom)?;
+                Ok(MessageStreamEvent::MessageDelta { delta, usage })
+            }
+            "message_stop" => Ok(MessageStreamEvent::MessageStop),
+            "content_block_start" => {
+                let ContentBlockStartWire {
+                    index,
+                    content_block,
+                } = serde::Deserialize::deserialize(value).map_err(serde::de::Error::custom)?;
+                let kind = content_block
+                    .get("type")
+                    .and_then(serde_json::Value::as_str);
+                let content_block = if KNOWN_BLOCK_KINDS.contains(&kind.unwrap_or_default()) {
+                    // Known kind: strict (a known shape missing a required
+                    // field stays fatal — wire corruption must not be hidden).
+                    serde::Deserialize::deserialize(content_block)
+                        .map_err(serde::de::Error::custom)?
+                } else {
+                    // R1/D3: unknown kind -> phantom (index survives; the
+                    // transform opens-and-swallow the block).
+                    ContentBlock::Unknown {
+                        kind: kind.unwrap_or_default().to_owned(),
+                    }
+                };
+                Ok(MessageStreamEvent::ContentBlockStart {
+                    index,
+                    content_block,
+                })
+            }
+            "content_block_delta" => {
+                let ContentBlockDeltaWire { index, delta } =
+                    serde::Deserialize::deserialize(value).map_err(serde::de::Error::custom)?;
+                let subtype = delta.get("type").and_then(serde_json::Value::as_str);
+                if !KNOWN_DELTA_SUBTYPES.contains(&subtype.unwrap_or_default()) {
+                    // R1: unknown delta subtype -> Ping (liveness).
+                    return Ok(MessageStreamEvent::Ping);
+                }
+                // Known subtype: strict (wrong-typed/missing fields stay fatal).
+                let delta =
+                    serde::Deserialize::deserialize(delta).map_err(serde::de::Error::custom)?;
+                Ok(MessageStreamEvent::ContentBlockDelta { index, delta })
+            }
+            "content_block_stop" => {
+                let ContentBlockStopWire { index } =
+                    serde::Deserialize::deserialize(value).map_err(serde::de::Error::custom)?;
+                Ok(MessageStreamEvent::ContentBlockStop { index })
+            }
+            "ping" => Ok(MessageStreamEvent::Ping),
+            "error" => {
+                let ErrorWire { error } =
+                    serde::Deserialize::deserialize(value).map_err(serde::de::Error::custom)?;
+                Ok(MessageStreamEvent::Error { error })
+            }
+            // Unreachable: KNOWN_EVENT_TAGS is the exact tag set above.
+            other => Err(serde::de::Error::custom(format!(
+                "unhandled known event tag {other:?}"
+            ))),
+        }
+    }
+}
+
+/// Helper for the match dispatch: the re-attached `type` field.
+trait StrTag {
+    fn as_str_tag(&self) -> &str;
+}
+impl StrTag for serde_json::Value {
+    fn as_str_tag(&self) -> &str {
+        self.get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -650,6 +938,149 @@ mod tests {
         assert_eq!(
             usage.output_tokens_details,
             Some(OutputTokensDetails { thinking_tokens: 0 })
+        );
+    }
+
+    // ========================================================================
+    // MW-3 R1 — SSE frame forward-compat (spec v1 R1 semantics table)
+    //
+    // Parse site: this `MessageStreamEvent` Deserialize impl is the single
+    // production parse site (D2; client.rs decodes each SSE data payload
+    // against it). The table: unknown top-level type -> Ping; unknown
+    // content_block kind -> phantom-open (D3, R2); unknown delta subtype ->
+    // Ping; known type missing a required field -> FATAL Serialization;
+    // ping -> Ping; id-less message_start -> lenient (MW-2 R9 pin).
+    // ========================================================================
+
+    /// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/client.rs :: decode_messages_sse_frame_skips_unknown_event_types (re-expressed; grok maps the unknown kind to a liveness Ping instead of HY's decode-skip — same forward-compat class, grok-shaped event)
+    /// A top-level event type this build does not model is liveness, not a
+    /// protocol error: it maps to `Ping` and the stream continues.
+    #[test]
+    fn unknown_top_level_event_type_maps_to_ping() {
+        let event: MessageStreamEvent = serde_json::from_str(r#"{"type":"citation","index":0}"#)
+            .expect("an unknown event type must not fail the frame parse");
+        assert!(
+            matches!(event, MessageStreamEvent::Ping),
+            "unknown top-level event type must map to Ping, got {event:?}"
+        );
+    }
+
+    /// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/client.rs :: decode_messages_sse_frame_skips_unknown_content_block_kinds (re-expressed, start half; grok deviates from HY's Ping mapping per the D3 phantom-open ruling: the unknown kind must open a swallowed phantom block, not disappear — otherwise its later delta/stop hit the fatal unopened-index classes (spec G3))
+    /// An unknown `content_block` kind in `content_block_start` keeps the
+    /// event (with its index) and maps the block to the phantom `Unknown`
+    /// variant, so the stream transform opens-and-swallow the block. A block
+    /// object with no `type` at all is likewise an unknown kind (phantom with
+    /// an empty kind string), not corruption of a known shape.
+    #[test]
+    fn unknown_content_block_kind_opens_phantom_block() {
+        let event: MessageStreamEvent = serde_json::from_str(
+            r#"{"type":"content_block_start","index":3,"content_block":{"type":"brand_new_block","id":"b1"}}"#,
+        )
+        .expect("an unknown content block kind must not fail the frame parse");
+        match event {
+            MessageStreamEvent::ContentBlockStart {
+                index,
+                content_block,
+            } => {
+                assert_eq!(index, 3, "the index must survive for the phantom-open");
+                match content_block {
+                    ContentBlock::Unknown { kind } => assert_eq!(kind, "brand_new_block"),
+                    other => panic!(
+                        "unknown kind must map to the phantom Unknown variant, got {other:?}"
+                    ),
+                }
+            }
+            other => panic!(
+                "unknown content block kind must stay a ContentBlockStart (phantom-open), got {other:?}"
+            ),
+        }
+
+        let event: MessageStreamEvent = serde_json::from_str(
+            r#"{"type":"content_block_start","index":0,"content_block":{"id":"b2"}}"#,
+        )
+        .expect("a block object without a type is an unknown kind, not corruption");
+        match event {
+            MessageStreamEvent::ContentBlockStart { content_block, .. } => match content_block {
+                ContentBlock::Unknown { kind } => assert!(kind.is_empty()),
+                other => panic!("typeless block must map to the phantom variant, got {other:?}"),
+            },
+            other => panic!("expected ContentBlockStart, got {other:?}"),
+        }
+    }
+
+    /// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/client.rs :: decode_messages_sse_frame_skips_unknown_content_block_kinds (re-expressed, delta half; HY asserts Ping for an unknown delta subtype — same mapping on this wire)
+    /// An unknown delta subtype in `content_block_delta` maps the whole event
+    /// to `Ping` (liveness): the delta is dropped, never fatal.
+    #[test]
+    fn unknown_delta_subtype_maps_to_ping() {
+        let event: MessageStreamEvent = serde_json::from_str(
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"brand_new_delta","x":"y"}}"#,
+        )
+        .expect("an unknown delta subtype must not fail the frame parse");
+        assert!(
+            matches!(event, MessageStreamEvent::Ping),
+            "unknown delta subtype must map the event to Ping, got {event:?}"
+        );
+    }
+
+    /// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/client.rs :: decode_messages_sse_frame_keeps_malformed_known_events_strict (re-expressed; near-verbatim)
+    /// Forward-compat must not hide wire corruption: a KNOWN event type
+    /// missing a required field is a fatal deserialization error.
+    #[test]
+    fn malformed_known_event_missing_required_field_stays_fatal() {
+        let event = serde_json::from_str::<MessageStreamEvent>(r#"{"type":"content_block_stop"}"#);
+        assert!(
+            event.is_err(),
+            "a known type missing a required field must stay fatal"
+        );
+    }
+
+    /// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/client.rs :: decode_messages_sse_frame_parses_ping_and_text_delta (re-expressed; near-verbatim)
+    /// The two already-lenient rows: an explicit `ping` parses as Ping and a
+    /// well-known `text_delta` parses as a ContentBlockDelta.
+    #[test]
+    fn ping_and_text_delta_parse() {
+        assert!(matches!(
+            serde_json::from_str::<MessageStreamEvent>(r#"{"type":"ping"}"#).unwrap(),
+            MessageStreamEvent::Ping
+        ));
+        let event: MessageStreamEvent = serde_json::from_str(
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#,
+        )
+        .unwrap();
+        assert!(
+            matches!(event, MessageStreamEvent::ContentBlockDelta { .. }),
+            "a well-known text_delta must parse as ContentBlockDelta, got {event:?}"
+        );
+    }
+
+    /// Fresh-written: R7 row-18 wrong-type subcase at the serde level — a KNOWN
+    /// delta subtype carrying a wrong-typed field is wire corruption, not an
+    /// unknown shape: it must stay a fatal error (the R1 unknown-subtype -> Ping
+    /// mapping must not swallow it).
+    #[test]
+    fn known_delta_subtype_with_wrong_typed_field_stays_fatal() {
+        let event = serde_json::from_str::<MessageStreamEvent>(
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":42}}"#,
+        );
+        assert!(
+            event.is_err(),
+            "a known subtype with a wrong-typed field must stay fatal, not map to Ping"
+        );
+    }
+
+    /// Fresh-written: A5 no-diff guard for the R1 serde adaptation — the R1
+    /// unknown-kind leniency lives at the STREAM parse site only. The
+    /// non-stream `MessagesResponse` parse must stay strict: an unknown
+    /// content block kind in a non-stream response is still a fatal error.
+    #[test]
+    fn non_stream_response_unknown_block_kind_stays_fatal() {
+        let event = serde_json::from_str::<MessagesResponse>(
+            r#"{"type":"message","role":"assistant","content":[{"type":"brand_new_block","id":"b1"}],"model":"claude-sonnet-5","stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1}}"#,
+        );
+        assert!(
+            event.is_err(),
+            "non-stream block-kind leniency would be an unscoped behavior change"
         );
     }
 }
