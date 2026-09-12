@@ -3,7 +3,16 @@
 //! LiteLLM-style catalogs (and many OpenAI-compatible proxies) emit `{id, object,
 //! owned_by}` only. Without a local classification, every row collapses to
 //! Chat Completions and OpenAI reasoning models never reach `/v1/responses`.
-//! Explicit `api_backend` / `model_family` / reasoning fields always win.
+//!
+//! The slug-only resolvers ([`catalog_family`], [`infer_api_backend`],
+//! [`infer_reasoning_efforts`]) are **slug-keyed fallbacks**: they classify
+//! from the model slug alone and cannot see the row's explicit fields. The
+//! "explicit fields always win" contract is enforced at the config seam
+//! (xai-grok-shell) by the row-aware resolvers below
+//! ([`resolve_family`], [`resolve_api_backend`], [`resolve_reasoning_efforts`]),
+//! which consult the row's explicit `model_family` / `api_backend` /
+//! reasoning menu before any slug inference:
+//! row field > inference > endpoint defaults > built-in defaults.
 
 use crate::{ApiBackend, ReasoningEffort, ReasoningEffortOption};
 
@@ -107,6 +116,48 @@ pub fn infer_reasoning_efforts(model_id: &str) -> Vec<ReasoningEffortOption> {
     menu.into_iter()
         .map(|value| effort_option(value, value == default))
         .collect()
+}
+
+/// Map an explicit row `model_family` string to a family, case-insensitively.
+/// `None` and unmappable strings mean "no explicit evidence" — the caller
+/// falls back to slug inference.
+fn parse_explicit_family(explicit: Option<&str>) -> Option<CatalogFamily> {
+    let family = explicit?.to_ascii_lowercase();
+    match family.as_str() {
+        "xai" => Some(CatalogFamily::Xai),
+        // "codex" is the provider-family string the sampler's Responses
+        // dialect gate (`xai-grok-sampler::provider`) keys on; both spellings
+        // denote the OpenAI GPT provider family in this stack.
+        "codex" | "openai" => Some(CatalogFamily::OpenAi),
+        "anthropic" => Some(CatalogFamily::Anthropic),
+        _ => None,
+    }
+}
+
+/// Resolve the provider family for a catalog row: the row's explicit
+/// `model_family` wins when mappable; otherwise the slug-keyed fallback
+/// [`catalog_family`] decides.
+pub fn resolve_family(explicit_family: Option<&str>, model_id: &str) -> CatalogFamily {
+    parse_explicit_family(explicit_family).unwrap_or_else(|| catalog_family(model_id))
+}
+
+/// Resolve the API backend for a catalog row: an explicit `api_backend` wins
+/// outright; otherwise the slug-keyed fallback [`infer_api_backend`] decides.
+pub fn resolve_api_backend(explicit_backend: Option<ApiBackend>, model_id: &str) -> ApiBackend {
+    explicit_backend.unwrap_or_else(|| infer_api_backend(model_id))
+}
+
+/// Resolve the reasoning-effort menu for a catalog row: a non-empty explicit
+/// menu wins; otherwise the slug-keyed fallback [`infer_reasoning_efforts`]
+/// decides (empty when the slug advertises no menu).
+pub fn resolve_reasoning_efforts(
+    explicit_efforts: Option<&[ReasoningEffortOption]>,
+    model_id: &str,
+) -> Vec<ReasoningEffortOption> {
+    match explicit_efforts {
+        Some(efforts) if !efforts.is_empty() => efforts.to_vec(),
+        _ => infer_reasoning_efforts(model_id),
+    }
 }
 
 fn effort_option(value: ReasoningEffort, default: bool) -> ReasoningEffortOption {
@@ -246,6 +297,137 @@ mod tests {
         assert!(
             grok.iter()
                 .any(|o| o.default && o.value == ReasoningEffort::High)
+        );
+    }
+    // ==================== P2.0: row-aware resolvers ====================
+    // The resolve_* trio consults the row's explicit field before any slug
+    // inference; with the field absent (or empty/unmappable) the slug-keyed
+    // fallback below still applies.
+
+    /// Explicit `model_family` overrides a contradicting slug inference.
+    #[test]
+    fn resolve_family_explicit_wins_over_slug() {
+        // Brief examples, case-insensitive mapping.
+        assert_eq!(
+            resolve_family(Some("xai"), "gpt-5.6-sol"),
+            CatalogFamily::Xai,
+            "explicit xai wins over the gpt slug"
+        );
+        assert_eq!(
+            resolve_family(Some("codex"), "grok-4.6"),
+            CatalogFamily::OpenAi,
+            "codex is the OpenAI-family row string"
+        );
+        assert_eq!(
+            resolve_family(Some("openai"), "grok-4.6"),
+            CatalogFamily::OpenAi,
+            "openai maps to the OpenAi family"
+        );
+        assert_eq!(
+            resolve_family(Some("anthropic"), "gpt-5.6-sol"),
+            CatalogFamily::Anthropic,
+            "explicit anthropic wins over the gpt slug"
+        );
+        assert_eq!(
+            resolve_family(Some("XAI"), "gpt-5.6-sol"),
+            CatalogFamily::Xai
+        );
+        assert_eq!(
+            resolve_family(Some("Codex"), "grok-4.6"),
+            CatalogFamily::OpenAi
+        );
+    }
+
+    /// No explicit family — or an unmappable one — falls back to the slug.
+    #[test]
+    fn resolve_family_absent_or_unmappable_uses_slug() {
+        assert_eq!(resolve_family(None, "grok-4.6"), CatalogFamily::Xai);
+        assert_eq!(resolve_family(None, "gpt-5.6-sol"), CatalogFamily::OpenAi);
+        assert_eq!(
+            resolve_family(None, "claude-sonnet-5"),
+            CatalogFamily::Anthropic
+        );
+        assert_eq!(
+            resolve_family(Some("glm"), "claude-sonnet-5"),
+            CatalogFamily::Anthropic,
+            "an unmappable explicit family defers to the slug"
+        );
+        assert_eq!(
+            resolve_family(Some("xai"), "gemini-3.5-flash"),
+            CatalogFamily::Xai,
+            "a mappable explicit family wins over an Other slug"
+        );
+    }
+
+    /// Explicit `api_backend` overrides a contradicting slug inference.
+    #[test]
+    fn resolve_api_backend_explicit_wins_over_slug() {
+        assert_eq!(
+            resolve_api_backend(Some(ApiBackend::ChatCompletions), "grok-4.6"),
+            ApiBackend::ChatCompletions,
+            "explicit chat completions wins over the grok slug"
+        );
+        assert_eq!(
+            resolve_api_backend(Some(ApiBackend::Messages), "gpt-5.6-sol"),
+            ApiBackend::Messages,
+            "explicit messages wins over the gpt slug"
+        );
+    }
+
+    /// No explicit backend — the slug-keyed fallback still applies.
+    #[test]
+    fn resolve_api_backend_absent_uses_slug() {
+        assert_eq!(resolve_api_backend(None, "grok-4.6"), ApiBackend::Responses);
+        assert_eq!(
+            resolve_api_backend(None, "gpt-5.6-sol"),
+            ApiBackend::Responses
+        );
+        assert_eq!(
+            resolve_api_backend(None, "gpt-4"),
+            ApiBackend::ChatCompletions
+        );
+        assert_eq!(
+            resolve_api_backend(None, "claude-sonnet-5"),
+            ApiBackend::ChatCompletions
+        );
+    }
+
+    /// A non-empty explicit menu overrides a contradicting slug inference.
+    #[test]
+    fn resolve_reasoning_efforts_explicit_wins_over_slug() {
+        let low = vec![effort_option(ReasoningEffort::Low, true)];
+        assert_eq!(
+            resolve_reasoning_efforts(Some(&low), "grok-4.6"),
+            low,
+            "explicit [Low] wins over the grok menu"
+        );
+        let single = vec![effort_option(ReasoningEffort::High, false)];
+        assert_eq!(
+            resolve_reasoning_efforts(Some(&single), "gpt-5.4"),
+            single,
+            "explicit [High] wins over the openai menu"
+        );
+    }
+
+    /// No explicit menu (or an empty one) — the slug-keyed fallback applies.
+    #[test]
+    fn resolve_reasoning_efforts_absent_or_empty_uses_slug() {
+        assert_eq!(
+            resolve_reasoning_efforts(None, "grok-4.6"),
+            infer_reasoning_efforts("grok-4.6")
+        );
+        assert_eq!(
+            resolve_reasoning_efforts(None, "gpt-5.4"),
+            infer_reasoning_efforts("gpt-5.4")
+        );
+        assert_eq!(
+            resolve_reasoning_efforts(Some(&[]), "gpt-5.4"),
+            infer_reasoning_efforts("gpt-5.4"),
+            "an empty explicit menu is not a menu"
+        );
+        assert!(
+            resolve_reasoning_efforts(None, "claude-sonnet-5").is_empty(),
+            "claude slugs advertise no menu until Messages lands"
         );
     }
 }

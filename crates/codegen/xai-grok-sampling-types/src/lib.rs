@@ -15,7 +15,8 @@ pub mod tool_overrides;
 pub mod types;
 
 pub use self::catalog_wire::{
-    CatalogFamily, catalog_family, infer_api_backend, infer_reasoning_efforts,
+    CatalogFamily, catalog_family, infer_api_backend, infer_reasoning_efforts, resolve_api_backend,
+    resolve_family, resolve_reasoning_efforts,
 };
 pub use self::conversation::*;
 pub use self::doom_loop::{
