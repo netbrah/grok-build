@@ -1601,3 +1601,86 @@ fn s022_e2e_warning_injected_between_tool_use_and_result() {
     }
     assert_adjacency_invariant(&msgs.messages);
 }
+
+// ============================================================================
+// (d) Per-model helpers — combination arms through the full builder
+// ============================================================================
+
+/// New grok-shape test (MW-1 spec D4): an explicit request budget wins over
+/// the per-model cap; without one, the per-model cap applies — the floor
+/// while the table is empty — and a messages request never carries 0.
+#[test]
+fn d4_max_tokens_combination_arms() {
+    fn built_max(model: &str, max_output_tokens: Option<u32>) -> u32 {
+        let req = ConversationRequest {
+            items: vec![ConversationItem::user("hi")],
+            model: Some(model.to_string()),
+            reasoning_effort: None,
+            max_output_tokens,
+            ..Default::default()
+        };
+        build_messages_request(&req).max_tokens
+    }
+    assert_eq!(
+        built_max("claude-sonnet-5", Some(4096)),
+        4096,
+        "set + known slug: the request value wins"
+    );
+    assert_eq!(
+        built_max("some-unknown-slug", Some(4096)),
+        4096,
+        "set + unknown slug: the request value wins"
+    );
+    assert_eq!(
+        built_max("claude-sonnet-5", None),
+        crate::messages_model::MESSAGES_MAX_OUTPUT_TOKENS_FLOOR,
+        "unset + known slug (empty table): the floor, never 0"
+    );
+    assert_eq!(
+        built_max("some-unknown-slug", None),
+        crate::messages_model::MESSAGES_MAX_OUTPUT_TOKENS_FLOOR,
+        "unset + unknown slug: the floor, never 0"
+    );
+}
+
+// ============================================================================
+// Regression pin (spec §3): System → system-param placement
+// ============================================================================
+
+/// Regression pin (spec §3, grok-shape — grok already places system items
+/// correctly, this exists so a future change cannot silently move them into
+/// `messages`): `ConversationItem::System` lands in the request's `system`
+/// param and contributes no message of its own.
+#[test]
+fn regression_pin_system_items_land_in_system_param_not_messages() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::system("You are a helpful assistant."),
+        ConversationItem::user("Fix the bug"),
+    ])
+    .with_model("messages-compatible-model");
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+
+    let system = json["system"]
+        .as_array()
+        .expect("system param present: {json:#}");
+    assert!(
+        system
+            .iter()
+            .any(|b| b["text"] == "You are a helpful assistant."),
+        "the system text must be in the system param: {json:#}"
+    );
+
+    let messages = json["messages"].as_array().unwrap();
+    assert_eq!(
+        messages.len(),
+        1,
+        "the system item must not contribute a message: {json:#}"
+    );
+    assert_eq!(messages[0]["role"], "user");
+    for block in messages[0]["content"].as_array().unwrap() {
+        assert_ne!(
+            block["text"], "You are a helpful assistant.",
+            "system text must never appear inside messages: {json:#}"
+        );
+    }
+}

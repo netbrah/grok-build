@@ -681,12 +681,12 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             schema: schema.clone(),
         });
 
-    // thinking is driven by reasoning_effort only, not by json_schema.
-    let thinking = effort
-        .as_ref()
-        .map(|_| crate::messages::ThinkingConfig::Adaptive {
-            display: Some(crate::messages::ThinkingDisplay::Summarized),
-        });
+    // Per-model thinking knowledge (D4): the table row wins when the slug
+    // has one; until MW-3 fills the table this is exactly the current
+    // effort-driven default (effort -> Adaptive summarized; else none).
+    // Driven by reasoning_effort only, not by json_schema.
+    let model = req.model.as_deref().unwrap_or_default();
+    let thinking = crate::messages_model::messages_thinking_config(model, req.reasoning_effort);
 
     let output_config = if effort.is_some() || format.is_some() {
         Some(OutputConfig { effort, format })
@@ -697,7 +697,10 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     MessagesRequest {
         model: req.model.clone().unwrap_or_default(),
         messages,
-        max_tokens: req.max_output_tokens.unwrap_or(0),
+        max_tokens: req
+            .max_output_tokens
+            .unwrap_or_else(|| crate::messages_model::messages_max_output_tokens(model))
+            .max(crate::messages_model::MESSAGES_MAX_OUTPUT_TOKENS_FLOOR),
         system,
         tools,
         tool_choice,

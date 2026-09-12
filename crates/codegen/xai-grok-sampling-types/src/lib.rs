@@ -9,6 +9,7 @@ pub mod conversation;
 pub mod doom_loop;
 pub mod error;
 pub mod messages;
+pub mod messages_model;
 pub mod provider_error;
 pub mod serde_helpers;
 pub mod tool_overrides;
@@ -29,6 +30,10 @@ pub use self::error::{
     ResponseModelMetadata, Result, SamplingError, SentCredential, is_context_length_error,
     is_retryable_api_status, is_size_overflow_error_code, parse_error_code, status_user_message,
     user_facing_api_error_message,
+};
+pub use self::messages_model::{
+    MESSAGES_MAX_OUTPUT_TOKENS_FLOOR, is_anthropic_model, messages_max_output_tokens,
+    messages_thinking_config,
 };
 pub use self::tool_overrides::{
     ClearableField, MAX_WEB_SEARCH_DOMAINS, SearchDateBound, SearchDateBoundError, ToolOverrides,
