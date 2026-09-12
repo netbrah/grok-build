@@ -1118,6 +1118,11 @@ pub struct CreateResponseWrapper {
     /// xAI-specific tool definitions that can't be expressed via `async_openai`'s `rs::Tool` enum (e.g., `x_search`).
     /// They are injected as raw JSON into the serialized request body's `tools` array.
     pub extra_tool_entries: Vec<serde_json::Value>,
+    /// Ordered `(flattened input position, exact provider item)` splices for
+    /// Codex compaction replacement-history carriers. Populated only for the
+    /// codex wire dialect; the sampler replaces the typed placeholders at
+    /// these positions after request serialization.
+    pub raw_input_replacements: Vec<crate::RawInputItemReplacement>,
 }
 
 impl CreateResponseWrapper {
@@ -1134,6 +1139,7 @@ impl CreateResponseWrapper {
             x_grok_user_id: None,
             trace: None,
             extra_tool_entries: vec![],
+            raw_input_replacements: vec![],
         }
     }
 

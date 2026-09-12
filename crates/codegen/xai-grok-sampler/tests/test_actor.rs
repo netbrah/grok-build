@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::response::sse::{Event, Sse};
 use axum::routing::post;
 use futures_util::stream::{self, StreamExt};
@@ -1818,4 +1819,365 @@ async fn await_event_matching(
             Err(_) => return None,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Codex remote compaction v2
+// ---------------------------------------------------------------------------
+
+/// Provenance: open-grok@240c99c9 xai-grok-sampler/tests/test_actor.rs:188 :: xai_function_exec_history_request (rewritten on `ToolResult` — the worktree `ConversationItem` enum has no `CustomToolOutput` variant)
+fn xai_function_exec_history_request() -> ConversationRequest {
+    ConversationRequest::from_items(vec![
+        ConversationItem::assistant_tool_calls(vec![xai_grok_sampling_types::ToolCall {
+            id: "call-xai-exec".into(),
+            name: "exec".into(),
+            arguments: r#"{"source":"return 42"}"#.into(),
+        }]),
+        ConversationItem::tool_result("call-xai-exec", "42"),
+        ConversationItem::user("continue"),
+    ])
+}
+
+/// Provenance: open-grok@240c99c9 xai-grok-sampler/tests/test_actor.rs:2102 :: codex_remote_compaction_v2_uses_responses_stream_contract (adapted per review Claim 5: `SamplingClient::new` + `model_family: Some("codex")`; turn-state capture/assertion and the two coalescing assertions dropped; `prompt_cache_key` set explicitly on the request; reasoning summary asserts `"concise"` — the worktree From-projection hardcodes it)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codex_remote_compaction_v2_uses_responses_stream_contract() {
+    use std::sync::Mutex;
+
+    let captured: Arc<Mutex<Vec<(axum::http::HeaderMap, serde_json::Value)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let captured_handler = Arc::clone(&captured);
+    let app = Router::new().route(
+        "/v1/responses",
+        post(
+            move |headers: axum::http::HeaderMap, body: axum::Json<serde_json::Value>| {
+                let captured = Arc::clone(&captured_handler);
+                async move {
+                    captured.lock().unwrap().push((headers, body.0));
+                    let events = vec![
+                        Event::default().event("response.output_item.done").data(
+                            json!({
+                                "type": "response.output_item.done",
+                                "output_index": 0,
+                                "item": {"type": "message", "id": "ignored-message"}
+                            })
+                            .to_string(),
+                        ),
+                        Event::default().event("response.output_item.done").data(
+                            json!({
+                                "type": "response.output_item.done",
+                                "output_index": 1,
+                                "item": {
+                                    "type": "compaction",
+                                    "encrypted_content": "opaque-v2-summary"
+                                }
+                            })
+                            .to_string(),
+                        ),
+                        Event::default().event("response.completed").data(
+                            json!({
+                                "type": "response.completed",
+                                "response": {
+                                    "id": "resp_compact_v2",
+                                    "usage": {
+                                        "input_tokens": 321,
+                                        "output_tokens": 9,
+                                        "input_tokens_details": {"cached_tokens": 123},
+                                        "output_tokens_details": {"reasoning_tokens": 7}
+                                    }
+                                }
+                            })
+                            .to_string(),
+                        ),
+                    ];
+                    Sse::new(stream::iter(
+                        events.into_iter().map(Ok::<_, std::convert::Infallible>),
+                    ))
+                    .into_response()
+                }
+            },
+        ),
+    );
+    let server = MockServer::spawn(app).await;
+    let mut config = responses_config(server.base_url(), None);
+    config.model_family = Some("codex".into());
+    config.model = "gpt-5.6-sol".into();
+    config.reasoning_effort = Some(xai_grok_sampling_types::ReasoningEffort::High);
+    config
+        .extra_headers
+        .insert("x-codex-beta-features".into(), "existing_feature".into());
+
+    let client = xai_grok_sampler::SamplingClient::new(config).expect("Codex sampling client");
+    let mut request = xai_function_exec_history_request();
+    request.x_grok_session_id = Some("session-cache-key".into());
+    request.prompt_cache_key = Some("session-cache-key".into());
+    request.reasoning_effort = Some(xai_grok_sampling_types::ReasoningEffort::High);
+    request.hosted_tools = vec![xai_grok_sampling_types::HostedTool::WebSearch { options: None }];
+    request.json_schema = Some(json!({
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+        "additionalProperties": false
+    }));
+    let result = client
+        .compact_codex_conversation_v2(request, "base instructions")
+        .await
+        .expect("remote compaction v2 should complete over /responses SSE");
+    server.shutdown();
+
+    assert_eq!(result.response_id, "resp_compact_v2");
+    let usage = result.usage.expect("completion usage should be captured");
+    assert_eq!(usage.input_tokens, 321);
+    assert_eq!(usage.output_tokens, 9);
+    assert_eq!(usage.total_tokens, 330);
+    assert_eq!(usage.input_tokens_details.cached_tokens, 123);
+    assert_eq!(usage.output_tokens_details.reasoning_tokens, 7);
+    let replay = ConversationRequest::from_items(vec![result.compaction_item])
+        .raw_codex_input_replacements();
+    assert_eq!(replay[0].value["encrypted_content"], "opaque-v2-summary");
+    assert!(
+        replay[0].value.get("id").is_none(),
+        "the typed empty-ID sentinel must never leak into replay input"
+    );
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 1, "v2 compaction must make one request");
+    let (headers, body) = &captured[0];
+    assert_eq!(
+        headers
+            .get("x-codex-beta-features")
+            .and_then(|value| value.to_str().ok()),
+        Some("existing_feature,remote_compaction_v2")
+    );
+    assert_eq!(body["model"], "gpt-5.6-sol");
+    assert_eq!(body["instructions"], "base instructions");
+    assert_eq!(body["tool_choice"], "auto");
+    assert_eq!(body["parallel_tool_calls"], true);
+    assert_eq!(body["prompt_cache_key"], "session-cache-key");
+    assert_eq!(body["store"], false);
+    assert_eq!(body["stream"], true);
+    assert_eq!(body.pointer("/reasoning/effort"), Some(&json!("high")));
+    assert_eq!(body.pointer("/reasoning/summary"), Some(&json!("concise")));
+    assert_eq!(
+        body.pointer("/text/format/type"),
+        Some(&json!("json_schema"))
+    );
+    assert!(body["tools"].as_array().is_some_and(|tools| {
+        tools
+            .iter()
+            .any(|tool| tool.get("type") == Some(&json!("web_search")))
+    }));
+    assert!(body["include"].as_array().is_some_and(|includes| {
+        includes
+            .iter()
+            .any(|include| include == "reasoning.encrypted_content")
+    }));
+    let input = body["input"].as_array().expect("input must be an array");
+    assert_eq!(
+        input.last(),
+        Some(&json!({"type": "compaction_trigger"})),
+        "the compaction trigger must be the exact final input item"
+    );
+    assert_eq!(
+        input
+            .iter()
+            .filter(|item| item.get("type") == Some(&json!("compaction_trigger")))
+            .count(),
+        1,
+        "the request must contain exactly one compaction trigger"
+    );
+    assert!(
+        body.get("previous_response_id")
+            .is_none_or(|value| matches!(value, serde_json::Value::Null)),
+        "HTTP compaction v2 replays full input and must not chain response IDs"
+    );
+}
+
+/// Provenance: hyper-grok-build@45e984f3 packages/ai/xai-grok-sampler/tests/codex_compact.rs:82 :: codex_compact_uses_unary_schema_and_replays_turn_state (adapted to the v2-over-`/responses` protocol: the v1 unary endpoint is 403-blocked on the proxy and unmodeled in the worktree; turn-state replay dropped — review Claim 5. The carried contract: live auth (bearer + configured extra headers) rides the v2 request, and the next turn's conversation request splices the exact opaque compaction output.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codex_remote_compaction_v2_carries_live_auth_and_splices_next_turn() {
+    use std::sync::{Mutex, atomic::AtomicU32};
+
+    let request_number = Arc::new(AtomicU32::new(0));
+    let captured: Arc<Mutex<Vec<(axum::http::HeaderMap, serde_json::Value)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let captured_handler = Arc::clone(&captured);
+    let counter_handler = Arc::clone(&request_number);
+    let app = Router::new().route(
+        "/v1/responses",
+        post(
+            move |headers: axum::http::HeaderMap, body: axum::Json<serde_json::Value>| {
+                let captured = Arc::clone(&captured_handler);
+                let counter = Arc::clone(&counter_handler);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    captured.lock().unwrap().push((headers, body.0));
+                    let events = if counter.load(Ordering::SeqCst) == 1 {
+                        // v2 compaction stream: one opaque compaction item + terminal
+                        vec![
+                            Event::default().event("response.output_item.done").data(
+                                json!({
+                                    "type": "response.output_item.done",
+                                    "output_index": 0,
+                                    "item": {
+                                        "type": "compaction",
+                                        "encrypted_content": "ENCRYPTED_COMPACT_STATE"
+                                    }
+                                })
+                                .to_string(),
+                            ),
+                            Event::default().event("response.completed").data(
+                                json!({
+                                    "type": "response.completed",
+                                    "response": {"id": "resp_compact_next_turn"}
+                                })
+                                .to_string(),
+                            ),
+                        ]
+                    } else {
+                        // next turn: ordinary message stream
+                        sse::responses_api_events("next turn text", "gpt-5.6-sol")
+                    };
+                    Sse::new(stream::iter(
+                        events.into_iter().map(Ok::<_, std::convert::Infallible>),
+                    ))
+                    .into_response()
+                }
+            },
+        ),
+    );
+    let server = MockServer::spawn(app).await;
+    let mut config = responses_config(server.base_url(), None);
+    config.model_family = Some("codex".into());
+    config.model = "gpt-5.6-sol".into();
+    config
+        .extra_headers
+        .insert("x-openai-originator".into(), "grok-shell".into());
+    let client = xai_grok_sampler::SamplingClient::new(config).expect("codex client");
+
+    let compact_request = ConversationRequest::from_items(vec![
+        ConversationItem::system("authoritative instructions"),
+        ConversationItem::user("keep this request"),
+    ])
+    .with_model("gpt-5.6-sol");
+    let result = client
+        .compact_codex_conversation_v2(compact_request, "authoritative instructions")
+        .await
+        .expect("v2 compaction succeeds");
+
+    // Next turn: a conversation carrying the opaque compaction carrier must
+    // splice the exact provider item at the typed placeholder's position.
+    let mut next_turn = ConversationRequest::from_items(vec![result.compaction_item]);
+    next_turn.model = Some("gpt-5.6-sol".into());
+    let _stream = client
+        .conversation_stream_responses(next_turn)
+        .await
+        .expect("next-turn stream starts");
+    server.shutdown();
+
+    let captured = captured.lock().unwrap();
+    assert_eq!(captured.len(), 2, "compaction + one next-turn request");
+
+    // (1) the v2 request carries live auth and the configured extra headers
+    let (compact_headers, _) = &captured[0];
+    assert_eq!(
+        compact_headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer test-key")
+    );
+    assert_eq!(
+        compact_headers
+            .get("x-openai-originator")
+            .and_then(|value| value.to_str().ok()),
+        Some("grok-shell")
+    );
+
+    // (2) the next turn receives the exact opaque item, byte-for-byte
+    let next_input = captured[1].1["input"]
+        .as_array()
+        .expect("next-turn input array");
+    let spliced = next_input
+        .iter()
+        .find(|item| item.get("type") == Some(&json!("compaction")))
+        .expect("the exact compaction item must be spliced into the next turn: {next_input:?}");
+    assert_eq!(
+        spliced["encrypted_content"], "ENCRYPTED_COMPACT_STATE",
+        "the spliced item must be the exact provider payload"
+    );
+}
+
+/// Provenance: hyper-grok-build@45e984f3 packages/ai/xai-grok-sampler/tests/codex_compact.rs:155 :: unsupported_compact_endpoint_is_cached_but_auth_is_not_fallback + unavailable_compact_model_channel_falls_back_but_generic_503_does_not (adapted to v2-over-`/responses`: the worktree sampler makes exactly one attempt and classifies the error; the 3-attempt retry loop and sticky Schema suppression live in the shell `run_compact_inner` (commit 3), so this test pins the classification, not retry behavior)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codex_remote_compaction_v2_classifies_failures_without_sampler_retry() {
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    async fn classify(
+        status: StatusCode,
+        body: serde_json::Value,
+    ) -> (xai_grok_sampling_types::SamplingError, usize) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_handler = Arc::clone(&calls);
+        let app = Router::new().route(
+            "/v1/responses",
+            post(move || {
+                let calls = Arc::clone(&calls_handler);
+                async move {
+                    calls.fetch_add(1, AtomicOrdering::SeqCst);
+                    (status, axum::Json(body))
+                }
+            }),
+        );
+        let server = MockServer::spawn(app).await;
+        let mut config = responses_config(server.base_url(), None);
+        config.model_family = Some("codex".into());
+        config.model = "gpt-5.6-sol".into();
+        let client = xai_grok_sampler::SamplingClient::new(config).expect("codex client");
+        let request = ConversationRequest::from_items(vec![ConversationItem::user("compact me")])
+            .with_model("gpt-5.6-sol");
+        let error = client
+            .compact_codex_conversation_v2(request, "")
+            .await
+            .expect_err("failure must classify");
+        server.shutdown();
+        (error, calls.load(AtomicOrdering::SeqCst))
+    }
+
+    // 400 invalid_request_error: non-retryable API error, one request
+    let (error, requests) = classify(
+        StatusCode::BAD_REQUEST,
+        json!({"error": {"message": "invalid request", "code": "invalid_request_error"}}),
+    )
+    .await;
+    assert_eq!(requests, 1, "the sampler must not retry a 400");
+    assert!(!error.is_retryable(), "400 must be non-retryable: {error}");
+    assert!(matches!(
+        error,
+        xai_grok_sampling_types::SamplingError::Api { status, .. }
+            if status == StatusCode::BAD_REQUEST
+    ));
+
+    // 401: auth rejection, never retried by the sampler
+    let (error, requests) = classify(
+        StatusCode::UNAUTHORIZED,
+        json!({"error": {"message": "bad token"}}),
+    )
+    .await;
+    assert_eq!(requests, 1, "the sampler must not retry a 401");
+    assert!(
+        !error.is_retryable(),
+        "auth rejection must not be retryable"
+    );
+    assert!(matches!(
+        error,
+        xai_grok_sampling_types::SamplingError::Auth { .. }
+    ));
+
+    // generic 503: retryable — the shell attempt loop owns the retries
+    let (error, requests) = classify(
+        StatusCode::SERVICE_UNAVAILABLE,
+        json!({"error": {"message": "temporarily unavailable"}}),
+    )
+    .await;
+    assert_eq!(requests, 1, "the sampler must make exactly one attempt");
+    assert!(error.is_retryable(), "503 must be retryable: {error}");
 }
