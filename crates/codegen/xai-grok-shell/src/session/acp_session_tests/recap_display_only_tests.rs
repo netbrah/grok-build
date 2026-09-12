@@ -80,12 +80,40 @@ fn assert_messages_rides_parent_prefix(
         .expect("main Messages request serializes");
     let expected_messages = without_cache_control(expected["messages"].clone());
     let actual_messages = without_cache_control(body["messages"].clone());
-    let expected = expected_messages
+    let mut expected = expected_messages
         .as_array()
-        .expect("main Messages request has messages");
+        .expect("main Messages request has messages")
+        .clone();
     let actual = actual_messages
         .as_array()
         .expect("side-call Messages request has messages");
+
+    // MW-1 (trailing-assistant repair): a parent-only build that ends on an
+    // assistant message gets a synthetic sentinel user appended, but the real
+    // side call replaces that trailing position with its instruction, so drop
+    // the sentinel from the expected prefix before comparing.
+    if let Some(last) = expected.last()
+        && expected.len() >= 2
+        && last.get("role").and_then(|r| r.as_str()) == Some("user")
+        && expected[expected.len() - 2]
+            .get("role")
+            .and_then(|r| r.as_str())
+            == Some("assistant")
+    {
+        let is_sentinel = last
+            .get("content")
+            .and_then(|c| c.as_array())
+            .is_some_and(|blocks| {
+                blocks.len() == 1
+                    && matches!(
+                        blocks[0].get("text").and_then(|t| t.as_str()),
+                        Some("[Continue]") | Some("[Awaiting tool result]")
+                    )
+            });
+        if is_sentinel {
+            expected.pop();
+        }
+    }
 
     assert!(
         actual.len() > expected.len(),
