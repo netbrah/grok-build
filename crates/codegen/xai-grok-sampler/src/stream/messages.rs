@@ -51,6 +51,11 @@ struct BlockState {
     tool_name: String,
     tool_id: String,
     args_acc: String,
+    /// R7 (row 17): the block's own non-empty `input` object, compact
+    /// serialized — the wire's authoritative tool-call payload. Wins over
+    /// `args_acc` at the block's stop; `None` for the normal wire shape
+    /// (`input: {}` at start, arguments via `input_json_delta`).
+    authoritative_args: Option<String>,
     thinking_acc: String,
     signature: String,
     /// A `signature_delta` already arrived for this block (R2
@@ -242,6 +247,7 @@ pub fn stream_messages<'a>(
                                 tool_name: String::new(),
                                 tool_id: String::new(),
                                 args_acc: String::new(),
+                                authoritative_args: None,
                                 thinking_acc: thinking.clone(),
                                 signature: signature.clone(),
                                 signature_seen: !signature.is_empty(),
@@ -263,6 +269,7 @@ pub fn stream_messages<'a>(
                                 tool_name: String::new(),
                                 tool_id: String::new(),
                                 args_acc: String::new(),
+                                authoritative_args: None,
                                 thinking_acc: String::new(),
                                 signature: String::new(),
                                 signature_seen: false,
@@ -275,7 +282,7 @@ pub fn stream_messages<'a>(
                             };
                         }
                     }
-                    ContentBlock::ToolUse { id, name, .. } => {
+                    ContentBlock::ToolUse { id, name, input, .. } => {
                         let tool_index = next_tool_index;
                         next_tool_index += 1;
                         block_to_tool_index.insert(index, tool_index);
@@ -290,6 +297,17 @@ pub fn stream_messages<'a>(
                                 // Anthropic Messages API streams arguments via InputJsonDelta events
                                 // Starting from "{}" then appending fragments would produce invalid JSON
                                 args_acc: String::new(),
+                                // R7 (row 17): a NON-EMPTY start `input` object
+                                // is the wire's authoritative tool-call payload
+                                // and wins over the streamed deltas at stop.
+                                // The normal shape is `{}` (no authority).
+                                authoritative_args: if input.is_object()
+                                    && !input.as_object().unwrap().is_empty()
+                                {
+                                    Some(input.to_string())
+                                } else {
+                                    None
+                                },
                                 thinking_acc: String::new(),
                                 signature: String::new(),
                                 signature_seen: false,
@@ -325,6 +343,7 @@ pub fn stream_messages<'a>(
                                     tool_name: String::new(),
                                     tool_id: String::new(),
                                     args_acc: String::new(),
+                                    authoritative_args: None,
                                     thinking_acc: String::new(),
                                     signature: String::new(),
                                     signature_seen: false,
@@ -511,7 +530,13 @@ pub fn stream_messages<'a>(
                                 assistant_tool_calls.push(ToolCall {
                                     id: std::sync::Arc::<str>::from(state.tool_id),
                                     name: state.tool_name,
-                                    arguments: std::sync::Arc::<str>::from(state.args_acc),
+                                    // R7: the authoritative `input` wins over
+                                    // the accumulated deltas when present.
+                                    arguments: std::sync::Arc::<str>::from(
+                                        state
+                                            .authoritative_args
+                                            .unwrap_or_else(|| state.args_acc),
+                                    ),
                                 });
                             }
                             // D3 phantom / inert: the stop is a no-op.

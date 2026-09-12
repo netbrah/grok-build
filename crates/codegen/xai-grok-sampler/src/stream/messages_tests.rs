@@ -1436,3 +1436,185 @@ async fn tool_call_order_follows_wire_arrival_and_zero_args_complete() {
         other => panic!("expected Completed, got {other:?}"),
     }
 }
+
+/// A `tool_use` start carrying a non-empty `input` object (the wire's
+/// authoritative payload).
+fn tool_use_start_with_input(
+    index: u32,
+    id: &str,
+    name: &str,
+    input: serde_json::Value,
+) -> MessageStreamEvent {
+    MessageStreamEvent::ContentBlockStart {
+        index,
+        content_block: ContentBlock::ToolUse {
+            id: id.into(),
+            name: name.into(),
+            input,
+            cache_control: None,
+        },
+    }
+}
+
+/// R7 (row 17): the wire's authoritative tool-call payload — the
+/// `tool_use` block's own non-empty `input` object — WINS over
+/// accumulated argument deltas at the block's stop. The normal wire
+/// shape is `input: {}` at start with the arguments arriving via
+/// `input_json_delta` (all R4 fixtures); a NON-EMPTY start `input` is
+/// the anomalous authoritative shape this pins. The "rejects text
+/// rewrite" half of HY row 17 has no Anthropic-wire analogue: the
+/// messages wire carries no full-content echo at block stop
+/// (`content_block_stop` is index-only), so there is no rewrite channel
+/// to reject — documented no-analogue, not a skipped requirement.
+///
+/// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/pi_messages.rs:1292 :: stream_accepts_authoritative_tool_arguments_and_rejects_text_rewrite (re-expressed; the text-rewrite half has no messages-wire channel)
+#[tokio::test]
+async fn authoritative_tool_use_input_wins_over_arg_deltas() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(tool_use_start_with_input(
+            0,
+            "call_c",
+            "tool",
+            serde_json::json!({"x": 2}),
+        )),
+        Ok(input_delta(0, r#"{"x":1"#)),
+        Ok(input_delta(0, r#"}"#)),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::ToolUse)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            let calls = response.tool_calls();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(
+                calls[0].arguments.as_ref(),
+                r#"{"x":2}"#,
+                "the block's own non-empty input object must win over the accumulated deltas"
+            );
+        }
+        other => panic!("expected Completed, got {other:?}"),
+    }
+}
+
+/// R8 (row 18 subcase): an unknown delta subtype inside an OPEN tool
+/// block. R1 (D2) maps an unknown `content_block_delta` subtype to
+/// `Ping` at the serde parse site (pinned by
+/// sampling-types `unknown_delta_subtype_maps_to_ping`), so the
+/// transform only ever observes a `Ping` here — it must be swallowed
+/// (liveness no-op, never fatal) and the tool call must still complete
+/// with its accumulated arguments. Together the serde pin and this
+/// transform pin cover the row-18 subcase end to end.
+///
+/// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/pi_messages.rs:1358 :: stream_rejects_duplicate_wrong_type_unknown_and_non_object_tool_args (re-expressed; grok classifies the unknown subtype as a swallowed Ping per R1 instead of a rejection — documented divergence, the Pi wire has no unknown-subtype shape because its delta enum is closed)
+#[tokio::test]
+async fn ping_inside_open_tool_block_is_swallowed_and_tool_completes() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(tool_use_start(0, "call_p", "tool_p")),
+        Ok(input_delta(0, r#"{"k":"#)),
+        Ok(MessageStreamEvent::Ping),
+        Ok(input_delta(0, r#"1}"#)),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::ToolUse)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            let calls = response.tool_calls();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(
+                calls[0].arguments.as_ref(),
+                r#"{"k":1}"#,
+                "a swallowed mid-tool ping must not perturb the argument accumulation"
+            );
+        }
+        other => panic!("expected Completed (unknown delta subtype swallowed), got {other:?}"),
+    }
+}
+
+/// R8 (row 18 subcase): NON-OBJECT tool arguments. A final arguments
+/// string that is valid JSON but not an object (here a JSON array) is
+/// RETAINED VERBATIM at a completed terminal — the R3
+/// `invalid_tool_args` class (row 18 subcase "invalid args") only
+/// fires for non-JSON garbage, pinned by `tool_args_invalid_json_fails`.
+/// Divergence from HY: the Pi wire rejects non-object arguments
+/// ("is not an object"); the messages wire carries arguments as an
+/// opaque string and the agent loop's tool dispatch owns the object
+/// shape check, so grok retains verbatim.
+///
+/// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/pi_messages.rs:1358 :: stream_rejects_duplicate_wrong_type_unknown_and_non_object_tool_args (re-expressed; the non-object subcase re-classified from rejection to verbatim retention — documented divergence)
+#[tokio::test]
+async fn valid_json_non_object_tool_args_retained_verbatim() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(tool_use_start(0, "call_n", "tool_n")),
+        Ok(input_delta(0, r#"["a", "#)),
+        Ok(input_delta(0, r#""b"]"#)),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::ToolUse)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            let calls = response.tool_calls();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(
+                calls[0].arguments.as_ref(),
+                r#"["a", "b"]"#,
+                "valid-JSON non-object args are retained verbatim (object shape is the tool dispatcher's check)"
+            );
+        }
+        other => panic!("expected Completed (non-object JSON retained), got {other:?}"),
+    }
+}
+
+/// R8 (row 19): AUDITED + PINNED idle-timeout terminal. A stream that
+/// delivers NO events at all (pure pending) must fail terminally with
+/// the idle-timeout error class once the per-attempt idle deadline
+/// elapses.
+///
+/// Audit (spec R8 STOP condition — no divergence found):
+/// - Transform: pending `next()` past the deadline yields
+///   `Failed(SamplingErrorInfo::from(&SamplingError::IdleTimeout))` —
+///   terminal, no recovery (stream/messages.rs idle paths).
+/// - Actor contract: `IdleTimeout` is `is_retryable() == false`
+///   (sampling-types error.rs:424, "replaying the same request would
+///   likely stall again") and the actor classifies it Fatal (pinned by
+///   `classify_idle_timeout_is_fatal` in retry.rs) — EXACT PARITY with
+///   HY, whose retry.rs module doc lists IdleTimeout as
+///   "model stuck, retry would stall again" and whose
+///   `classify_idle_timeout_is_fatal` test asserts `RetryDecision::Fatal`.
+///
+/// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/pi_messages.rs:1442 :: stream_fails_idle_timeout (pinning re-expression over the audited worktree behavior; no behavior change)
+#[tokio::test(start_paused = true)]
+async fn pending_stream_fails_idle_timeout_terminal() {
+    let raw = stream::pending::<Result<MessageStreamEvent, SamplingError>>().boxed();
+    let evs = collect(stream_messages(
+        raw,
+        None,
+        rid(),
+        Duration::from_millis(100),
+    ))
+    .await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Failed { error, .. } => {
+            assert_eq!(error.kind, crate::events::SamplingErrorKind::IdleTimeout);
+            // Actor contract (parity-pinned): the idle-timeout class is
+            // NOT retryable and the actor treats it as Fatal.
+            assert!(!SamplingError::IdleTimeout { elapsed_secs: 100 }.is_retryable());
+        }
+        other => panic!("expected Failed(IdleTimeout) on a fully-pending stream, got {other:?}"),
+    }
+}
