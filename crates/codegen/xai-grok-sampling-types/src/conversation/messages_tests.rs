@@ -2,7 +2,8 @@ use super::test_support::*;
 use super::*;
 
 use super::messages::{
-    clean_orphaned_blocks_by_adjacency, clean_orphaned_items, strip_thinking_blocks,
+    clean_orphaned_blocks_by_adjacency, clean_orphaned_items, hoist_tool_results_to_front,
+    repair_trailing_assistant,
 };
 
 fn messages_test_request(reasoning_effort: Option<crate::ReasoningEffort>) -> ConversationRequest {
@@ -213,8 +214,16 @@ fn test_messages_request_cache_breakpoint_skips_thinking() {
         .find(|b| b["type"] == "thinking")
         .expect("reasoning should emit a thinking block");
     assert!(thinking.get("cache_control").is_none(), "{json:#}");
+    // The trailing-assistant repair appends a synthetic user sentinel after
+    // this assistant turn, so the cache-breakpoint tip lands on the sentinel
+    // (the R2 interaction, pinned by
+    // history_cache_control_lands_on_synthetic_user_after_trailing_assistant);
+    // the thinking-bearing assistant keeps no marker at all.
+    for block in blocks {
+        assert!(block.get("cache_control").is_none(), "{json:#}");
+    }
     assert_eq!(
-        marker_on_last_block(&json["messages"][1]),
+        marker_on_last_block(&json["messages"][2]),
         Some("ephemeral"),
         "{json:#}",
     );
@@ -623,6 +632,26 @@ fn mk_call(id: &str) -> ToolCall {
         name: "shell".to_string(),
         arguments: r#"{"cmd":"ls"}"#.into(),
     }
+}
+
+fn blocks_of(msg: &crate::messages::Message) -> &[crate::messages::ContentBlock] {
+    match &msg.content {
+        crate::messages::MessageContent::Blocks(blocks) => blocks,
+        _ => panic!("expected block content: {msg:?}"),
+    }
+}
+
+fn sentinel_text(msg: &crate::messages::Message) -> &str {
+    let blocks = blocks_of(msg);
+    assert_eq!(
+        blocks.len(),
+        1,
+        "the sentinel is a single text block: {blocks:?}"
+    );
+    let crate::messages::ContentBlock::Text { text, .. } = &blocks[0] else {
+        panic!("sentinel must be a text block: {blocks:?}");
+    };
+    text
 }
 
 // ============================================================================
@@ -1275,4 +1304,300 @@ fn test_verbatim_pair_survives_but_unsigned_dropped_in_latest() {
     };
     assert_eq!(thinking, "RAW verbatim thinking");
     assert_eq!(signature, "RawSignature==");
+}
+
+// ============================================================================
+// (c) Trailing-assistant repair — S-014
+// ============================================================================
+
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/src/wire.rs :: trailing_plain_text_assistant_gets_continue_sentinel (adapted)
+#[test]
+fn trailing_plain_text_assistant_gets_continue_sentinel() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::user("hello"),
+        ConversationItem::assistant("hi there"),
+    ])
+    .with_model("messages-compatible-model");
+    let msgs = build_messages_request(&req);
+    assert_eq!(
+        msgs.messages.len(),
+        3,
+        "user + assistant + synthetic user: {msgs:?}"
+    );
+    let last = msgs.messages.last().unwrap();
+    assert!(
+        matches!(last.role, crate::messages::MessageRole::User),
+        "the appended sentinel must be a user message"
+    );
+    assert_eq!(
+        sentinel_text(last),
+        "[Continue]",
+        "plain-text assistant ending gets the [Continue] sentinel"
+    );
+}
+
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/src/wire.rs :: trailing_tool_use_assistant_gets_awaiting_sentinel (re-derived)
+/// Re-derived at the repair-fn level: through the full pipeline a trailing
+/// assistant can never retain a tool_use — the adjacency stage strips it
+/// first, exactly as in the port source, whose own test therefore only
+/// asserts the negative side. The awaiting branch is exercised directly here
+/// as defensive parity, with the negative arm at the same level.
+#[test]
+fn trailing_tool_use_assistant_gets_awaiting_sentinel() {
+    let mut msgs = vec![m_assistant(vec![m_text("working"), m_tool_use("tc1")])];
+    repair_trailing_assistant(&mut msgs);
+    assert_eq!(msgs.len(), 2, "a synthetic user sentinel is appended");
+    let last = &msgs[1];
+    assert!(matches!(last.role, crate::messages::MessageRole::User));
+    assert_eq!(
+        sentinel_text(last),
+        "[Awaiting tool result]",
+        "a trailing assistant with a tool_use gets the awaiting sentinel"
+    );
+
+    let mut plain = vec![m_assistant(vec![m_text("done")])];
+    repair_trailing_assistant(&mut plain);
+    assert_eq!(
+        sentinel_text(&plain[1]),
+        "[Continue]",
+        "a tool_use-free trailing assistant gets [Continue]"
+    );
+}
+
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/src/wire.rs :: forked_conversation_ending_with_assistant_gets_sentinel (adapted)
+#[test]
+fn forked_conversation_ending_with_assistant_gets_sentinel() {
+    // A fork/resume snapshot that ends on an assistant boundary.
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::user("analyze this code"),
+        ConversationItem::assistant("I'll analyze the code for you."),
+    ])
+    .with_model("messages-compatible-model");
+    let msgs = build_messages_request(&req);
+    assert_eq!(
+        msgs.messages.len(),
+        3,
+        "forked assistant-ending conv needs a sentinel: {msgs:?}"
+    );
+    let last = msgs.messages.last().unwrap();
+    assert!(matches!(last.role, crate::messages::MessageRole::User));
+    assert_eq!(sentinel_text(last), "[Continue]");
+}
+
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/src/wire.rs :: history_cache_control_lands_on_synthetic_user_after_trailing_assistant (adapted)
+#[test]
+fn history_cache_control_lands_on_synthetic_user_after_trailing_assistant() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::user("hi"),
+        ConversationItem::assistant("response"),
+    ])
+    .with_model("messages-compatible-model");
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    let last = &json["messages"][2];
+    assert_eq!(last["role"], "user");
+    assert_eq!(
+        last["content"][0]["cache_control"]["type"], "ephemeral",
+        "the synthetic trailing user message must carry the cache breakpoint: {json:#}"
+    );
+    for block in json["messages"][1]["content"].as_array().unwrap() {
+        assert!(
+            block.get("cache_control").is_none(),
+            "the assistant turn must not carry the marker: {json:#}"
+        );
+    }
+}
+
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/src/wire.rs :: no_synthetic_user_when_ending_on_user (re-derived)
+/// Negation arm of the repair rule: a history ending on a user message gets
+/// no synthetic append.
+#[test]
+fn no_synthetic_user_when_ending_on_user() {
+    let req = ConversationRequest::from_items(vec![ConversationItem::user("hello")])
+        .with_model("messages-compatible-model");
+    let msgs = build_messages_request(&req);
+    assert_eq!(msgs.messages.len(), 1, "no synthetic message needed");
+    assert!(matches!(
+        msgs.messages[0].role,
+        crate::messages::MessageRole::User
+    ));
+}
+
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/src/wire.rs :: no_synthetic_user_after_tool_result (re-derived)
+/// Negation arm of the repair rule: a paired tool result ends the history on
+/// a user message, so the last message must be the real tool_result, not a
+/// synthetic sentinel.
+#[test]
+fn no_synthetic_user_after_tool_result() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::user("run ls"),
+        ConversationItem::assistant_tool_calls(vec![mk_call("toolu_pair")]),
+        ConversationItem::tool_result("toolu_pair", "file.txt"),
+    ])
+    .with_model("messages-compatible-model");
+    let msgs = build_messages_request(&req);
+    let last = msgs.messages.last().unwrap();
+    assert!(
+        matches!(last.role, crate::messages::MessageRole::User),
+        "tool_result is role:user — no synthetic needed"
+    );
+    assert!(
+        matches!(
+            blocks_of(last).first(),
+            Some(crate::messages::ContentBlock::ToolResult { .. })
+        ),
+        "the last message must be the real tool_result, not a sentinel: {last:?}"
+    );
+}
+
+// ============================================================================
+// (e) tool_result hoist — S-022
+// ============================================================================
+
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/src/wire.rs :: s022_hoists_tool_result_when_preceded_by_text (adapted)
+#[test]
+fn s022_hoists_tool_result_when_preceded_by_text() {
+    let mut msgs = vec![m_user(vec![
+        m_text("Warning: too many processes"),
+        m_tool_result("tc1"),
+    ])];
+    hoist_tool_results_to_front(&mut msgs);
+    let blocks = blocks_of(&msgs[0]);
+    let crate::messages::ContentBlock::ToolResult { tool_use_id, .. } = &blocks[0] else {
+        panic!("the tool_result must be hoisted to the front: {blocks:?}");
+    };
+    assert_eq!(tool_use_id, "tc1");
+    assert!(
+        matches!(&blocks[1], crate::messages::ContentBlock::Text { text, .. }
+            if text == "Warning: too many processes"),
+        "the text block follows: {blocks:?}"
+    );
+}
+
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/src/wire.rs :: s022_stable_partition_preserves_relative_order (adapted)
+#[test]
+fn s022_stable_partition_preserves_relative_order() {
+    let mut msgs = vec![m_user(vec![
+        m_tool_result("tcA"),
+        m_text("mid"),
+        m_tool_result("tcB"),
+        m_text("end"),
+    ])];
+    hoist_tool_results_to_front(&mut msgs);
+    let blocks = blocks_of(&msgs[0]);
+    assert_eq!(blocks.len(), 4);
+    let crate::messages::ContentBlock::ToolResult { tool_use_id: a, .. } = &blocks[0] else {
+        panic!("{blocks:?}");
+    };
+    let crate::messages::ContentBlock::ToolResult { tool_use_id: b, .. } = &blocks[1] else {
+        panic!("{blocks:?}");
+    };
+    assert_eq!(
+        (a.as_str(), b.as_str()),
+        ("tcA", "tcB"),
+        "relative order of results is preserved"
+    );
+    assert!(
+        matches!(&blocks[2], crate::messages::ContentBlock::Text { text, .. } if text == "mid")
+            && matches!(&blocks[3], crate::messages::ContentBlock::Text { text, .. } if text == "end"),
+        "the text blocks follow in relative order: {blocks:?}"
+    );
+}
+
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/src/wire.rs :: s022_noop_when_tool_results_already_leading (adapted)
+#[test]
+fn s022_noop_when_tool_results_already_leading() {
+    let mut msgs = vec![m_user(vec![m_tool_result("tc1"), m_text("trailing")])];
+    hoist_tool_results_to_front(&mut msgs);
+    let blocks = blocks_of(&msgs[0]);
+    assert_eq!(blocks.len(), 2);
+    assert!(
+        matches!(&blocks[0], crate::messages::ContentBlock::ToolResult { tool_use_id, .. }
+            if tool_use_id == "tc1")
+            && matches!(&blocks[1], crate::messages::ContentBlock::Text { text, .. }
+                if text == "trailing"),
+        "already-correct ordering is a no-op: {blocks:?}"
+    );
+}
+
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/src/wire.rs :: s022_noop_when_no_tool_results (adapted)
+#[test]
+fn s022_noop_when_no_tool_results() {
+    let mut msgs = vec![m_user(vec![m_text("hello"), m_text("world")])];
+    hoist_tool_results_to_front(&mut msgs);
+    let blocks = blocks_of(&msgs[0]);
+    assert!(
+        matches!(&blocks[0], crate::messages::ContentBlock::Text { text, .. } if text == "hello")
+            && matches!(&blocks[1], crate::messages::ContentBlock::Text { text, .. } if text == "world"),
+        "a message with no tool_result is untouched: {blocks:?}"
+    );
+}
+
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/src/wire.rs :: s022_does_not_touch_assistant_messages (adapted)
+#[test]
+fn s022_does_not_touch_assistant_messages() {
+    let mut msgs = vec![m_assistant(vec![m_text("thinking"), m_tool_use("tc1")])];
+    hoist_tool_results_to_front(&mut msgs);
+    let blocks = blocks_of(&msgs[0]);
+    assert!(
+        matches!(&blocks[0], crate::messages::ContentBlock::Text { text, .. } if text == "thinking")
+            && matches!(&blocks[1], crate::messages::ContentBlock::ToolUse { id, .. } if id == "tc1"),
+        "assistant messages are not reordered: {blocks:?}"
+    );
+}
+
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/src/wire.rs :: s022_e2e_warning_injected_between_tool_use_and_result (re-derived)
+/// Re-derived for grok: the port source merges consecutive user-role items
+/// into one message, so an out-of-band warning injected between a tool call
+/// and its result lands in the SAME user message as the tool_result and the
+/// hoist reorders it to [tool_result, text]. grok's builder does not merge
+/// consecutive user messages in V1, so the warning message sits between the
+/// assistant tool_use and the tool_result user message: the pair is
+/// non-adjacent and both sides are stripped by the S-021 stage instead. The
+/// hoist stays defensive in V1 (the builder never emits a mixed
+/// text+tool_result user message) and becomes live when a user-merging seam
+/// lands (MW-2); this test pins the invariant side of the scenario.
+#[test]
+fn s022_e2e_warning_injected_between_tool_use_and_result() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::user("do the thing"),
+        ConversationItem::assistant_tool_calls(vec![mk_call("tc1")]),
+        // Out-of-band warning injected into history between the tool call
+        // and its output.
+        ConversationItem::user("Warning: too many processes"),
+        ConversationItem::tool_result("tc1", "ok"),
+    ])
+    .with_model("messages-compatible-model");
+    let msgs = build_messages_request(&req);
+    // grok does not merge the warning into the tool_result message: the
+    // split pair is non-adjacent, so no tool block may survive at all.
+    for (i, msg) in msgs.messages.iter().enumerate() {
+        for (j, block) in blocks_of(msg).iter().enumerate() {
+            assert!(
+                !matches!(
+                    block,
+                    crate::messages::ContentBlock::ToolUse { .. }
+                        | crate::messages::ContentBlock::ToolResult { .. }
+                ),
+                "messages[{i}][{j}]: the non-adjacent pair must be stripped on both sides"
+            );
+        }
+    }
+    // And whatever the pipeline emits, any tool_result-bearing message must
+    // lead with its tool_result.
+    for (i, msg) in msgs.messages.iter().enumerate() {
+        let blocks = blocks_of(msg);
+        if blocks
+            .iter()
+            .any(|b| matches!(b, crate::messages::ContentBlock::ToolResult { .. }))
+        {
+            assert!(
+                matches!(
+                    blocks.first(),
+                    Some(crate::messages::ContentBlock::ToolResult { .. })
+                ),
+                "messages[{i}]: a tool_result-bearing message must lead with it"
+            );
+        }
+    }
+    assert_adjacency_invariant(&msgs.messages);
 }

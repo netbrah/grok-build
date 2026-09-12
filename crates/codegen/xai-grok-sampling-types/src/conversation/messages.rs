@@ -9,15 +9,19 @@
 //! 3. **message-level adjacency cleanup** ([`clean_orphaned_blocks_by_adjacency`])
 //!    — a `tool_use` survives only if the immediately following user message
 //!    carries its `tool_result`, and vice versa; emptied messages are removed;
-//! 4. **three-part thinking strip** ([`strip_thinking_blocks`]) — non-latest
+//! 4. **tool_result hoist** ([`hoist_tool_results_to_front`]) — within a user
+//!    message, `tool_result` blocks are stable-partitioned to the front
+//!    (Vertex-backed endpoints reject the other ordering);
+//! 5. **three-part thinking strip** ([`strip_thinking_blocks`]) — non-latest
 //!    assistant messages lose all thinking blocks; the latest keeps a block
 //!    only as a verbatim (text, signature) pair; signature-only blocks are
 //!    dropped; emptied assistant messages are removed;
-//! 5. **cache-control window** ([`apply_cache_breakpoints`]) — runs last.
-//!
-//! Stages 4 (hoist) and 6 (trailing-assistant repair) of the full MW-1 D5
-//! order land in the follow-up commit of this series; the order above is the
-//! canonical pipeline this module implements.
+//! 6. **trailing-assistant repair** ([`repair_trailing_assistant`]) — a
+//!    history ending on an assistant message gets a synthetic user sentinel
+//!    (`[Awaiting tool result]` / `[Continue]`), because the proxy-routed
+//!    endpoints reject assistant prefill;
+//! 7. **cache-control window** ([`apply_cache_breakpoints`]) — runs last, so
+//!    its tip can land on the synthetic sentinel user.
 
 use super::*;
 
@@ -256,6 +260,99 @@ pub(crate) fn strip_thinking_blocks(messages: &mut Vec<crate::messages::Message>
     messages.retain(|m| {
         !(matches!(m.role, MessageRole::Assistant)
             && matches!(&m.content, MessageContent::Blocks(blocks) if blocks.is_empty()))
+    });
+}
+
+/// D5 stage 4 — hoist `tool_result` blocks to the front of their user
+/// message (S-022).
+///
+/// Vertex-backed Claude endpoints reject a request where a user message
+/// following a `tool_use`-bearing assistant message does not *begin* with
+/// the matching `tool_result` block(s); the direct API accepts either
+/// ordering, which is why the failure only surfaces on proxy/Vertex routes.
+/// A stable partition (tool_result blocks first, everything else after,
+/// relative order preserved within each group) restores the required
+/// ordering. Runs after the adjacency stage, so every `tool_result` here
+/// already pairs with the preceding assistant message.
+///
+/// Defensive in V1: the translation loop never emits a user message mixing
+/// text and tool_result blocks (user items become text/image-only messages;
+/// consecutive tool results batch into their own message). The stage becomes
+/// live when a user-merging seam lands (MW-2).
+pub(crate) fn hoist_tool_results_to_front(messages: &mut [crate::messages::Message]) {
+    use crate::messages::{ContentBlock, MessageContent, MessageRole};
+
+    for msg in messages.iter_mut() {
+        if !matches!(msg.role, MessageRole::User) {
+            continue;
+        }
+        let MessageContent::Blocks(blocks) = &mut msg.content else {
+            continue;
+        };
+        let result_count = blocks
+            .iter()
+            .filter(|b| matches!(b, ContentBlock::ToolResult { .. }))
+            .count();
+        if result_count == 0 {
+            continue;
+        }
+        let leading_results = blocks
+            .iter()
+            .take_while(|b| matches!(b, ContentBlock::ToolResult { .. }))
+            .count();
+        if leading_results == result_count {
+            continue;
+        }
+        // Stable partition: tool_result blocks first, everything else after.
+        let owned = std::mem::take(blocks);
+        let (results, rest): (Vec<ContentBlock>, Vec<ContentBlock>) = owned
+            .into_iter()
+            .partition(|b| matches!(b, ContentBlock::ToolResult { .. }));
+        blocks.extend(results);
+        blocks.extend(rest);
+    }
+}
+
+/// D5 stage 6 — trailing-assistant repair (S-014).
+///
+/// The Vertex-backed endpoints the proxy routes to reject assistant prefill
+/// ("This model does not support assistant message prefill"), so the repair
+/// is unconditional — grok is proxy-routed and there is no
+/// prefill-capability gate to consult. When the translated history ends on
+/// an assistant message, a synthetic user message is appended whose single
+/// text block is `"[Awaiting tool result]"` if the trailing assistant still
+/// carries a `tool_use` block, else `"[Continue]"`. The sentinel is
+/// model-visible: parity with the port source, not an oversight. Nothing is
+/// appended when the history ends on a user message (a `tool_result`
+/// included). Runs after the thinking strip and before the cache-control
+/// window, so the window's tip lands on the synthetic message when it
+/// exists.
+pub(crate) fn repair_trailing_assistant(messages: &mut Vec<crate::messages::Message>) {
+    use crate::messages::{ContentBlock, Message, MessageContent, MessageRole};
+
+    let Some(last) = messages.last() else {
+        return;
+    };
+    if !matches!(last.role, MessageRole::Assistant) {
+        return;
+    }
+    let has_tool_use = match &last.content {
+        MessageContent::Blocks(blocks) => blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolUse { .. })),
+        MessageContent::Text(_) => false,
+    };
+    let sentinel = if has_tool_use {
+        "[Awaiting tool result]"
+    } else {
+        "[Continue]"
+    };
+    messages.push(Message {
+        role: MessageRole::User,
+        content: MessageContent::Blocks(vec![ContentBlock::Text {
+            text: sentinel.to_string(),
+            cache_control: None,
+        }]),
     });
 }
 
@@ -532,11 +629,12 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     flush_assistant(&mut pending_assistant, &mut messages);
     flush_tool_results(&mut pending_tool_results, &mut messages);
 
-    // D5 stages 3 and 5: message-level adjacency cleanup, then the three-part
-    // thinking strip (the hoist and trailing-repair stages of the full D5
-    // order land in the follow-up commit of this series).
+    // D5 stages 3-6: adjacency cleanup, tool_result hoist, the three-part
+    // thinking strip, then the trailing-assistant repair.
     clean_orphaned_blocks_by_adjacency(&mut messages);
+    hoist_tool_results_to_front(&mut messages);
     strip_thinking_blocks(&mut messages);
+    repair_trailing_assistant(&mut messages);
 
     apply_cache_breakpoints(&mut system_blocks, &mut messages);
 
