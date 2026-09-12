@@ -6,7 +6,7 @@ use futures_util::stream;
 use std::pin::pin;
 use xai_grok_sampling_types::messages::{
     ContentBlock, MessageDeltaBody, MessageDeltaUsage, MessagesResponse, MessagesUsage,
-    StreamDelta, StreamError,
+    OutputTokensDetails, StreamDelta, StreamError,
 };
 
 fn rid() -> RequestId {
@@ -27,6 +27,8 @@ fn message_start() -> MessageStreamEvent {
                 output_tokens: 0,
                 cache_creation_input_tokens: 0,
                 cache_read_input_tokens: 0,
+                output_tokens_details: None,
+                cache_creation: None,
             },
         },
     }
@@ -65,6 +67,7 @@ fn message_delta_with_stop(stop: messages::StopReason) -> MessageStreamEvent {
             input_tokens: Some(10),
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
+            output_tokens_details: None,
         },
     }
 }
@@ -86,6 +89,7 @@ fn message_delta_refusal_with_explanation(explanation: &str) -> MessageStreamEve
             input_tokens: Some(10),
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
+            output_tokens_details: None,
         },
     }
 }
@@ -703,6 +707,8 @@ fn message_start_with_cache(
                 output_tokens: 0,
                 cache_creation_input_tokens: cache_creation,
                 cache_read_input_tokens: cache_read,
+                output_tokens_details: None,
+                cache_creation: None,
             },
         },
     }
@@ -725,6 +731,7 @@ fn message_delta_with_cache(
             input_tokens: input,
             cache_read_input_tokens: cache_read,
             cache_creation_input_tokens: cache_creation,
+            output_tokens_details: None,
         },
     }
 }
@@ -798,4 +805,102 @@ async fn pure_cache_hit_with_zero_uncached_still_emits_usage() {
     assert_eq!(usage.prompt_tokens, 2500);
     assert_eq!(usage.cached_prompt_tokens, 2500);
     assert_eq!(usage.total_tokens, 2501);
+}
+
+// ── MW-2 R4 — thinking tokens → TokenUsage.reasoning_tokens ───────────────
+
+fn message_start_with_thinking(input: u32, thinking_tokens: u32) -> MessageStreamEvent {
+    MessageStreamEvent::MessageStart {
+        message: MessagesResponse {
+            id: "msg_r4".into(),
+            r#type: "message".into(),
+            role: "assistant".into(),
+            content: vec![],
+            model: "messages-compatible-model".into(),
+            stop_reason: None,
+            usage: MessagesUsage {
+                input_tokens: input,
+                output_tokens: 0,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
+                output_tokens_details: Some(OutputTokensDetails { thinking_tokens }),
+                cache_creation: None,
+            },
+        },
+    }
+}
+
+fn message_delta_with_thinking(output: u32, thinking_tokens: u32) -> MessageStreamEvent {
+    MessageStreamEvent::MessageDelta {
+        delta: MessageDeltaBody {
+            stop_reason: Some(messages::StopReason::EndTurn),
+            stop_sequence: None,
+            stop_details: None,
+        },
+        usage: MessageDeltaUsage {
+            output_tokens: output,
+            input_tokens: None,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            output_tokens_details: Some(OutputTokensDetails { thinking_tokens }),
+        },
+    }
+}
+
+/// Fresh-written: R4 mapping (spec R4 pre-resolved plumbing). The responses wire already
+/// maps its `output_tokens_details.reasoning_tokens` into `TokenUsage.reasoning_tokens`
+/// (stream/responses.rs:635); the messages route must map `thinking_tokens` the same way
+/// instead of hardcoding 0. Field per wirejig/refs/anthropic@d3d5028 messages.ts:2423.
+#[tokio::test]
+async fn thinking_tokens_from_message_start_map_to_reasoning_tokens() {
+    let usage = usage_from_stream(vec![
+        message_start_with_thinking(10, 25),
+        text_block_start(0),
+        text_delta(0, "ok"),
+        block_stop(0),
+        // No detail object on the delta: the message_start value is preserved,
+        // matching the existing cache-bucket preserve pattern.
+        message_delta_with_cache(7, None, None, None),
+        MessageStreamEvent::MessageStop,
+    ])
+    .await;
+
+    assert_eq!(usage.reasoning_tokens, 25);
+    assert_eq!(usage.completion_tokens, 7);
+}
+
+/// Fresh-written: a `message_delta` carrying its own `output_tokens_details`
+/// overrides the `message_start` value (same preserve/override pattern as the
+/// existing cache buckets).
+#[tokio::test]
+async fn thinking_tokens_delta_overrides_message_start() {
+    let usage = usage_from_stream(vec![
+        message_start_with_thinking(10, 25),
+        text_block_start(0),
+        text_delta(0, "ok"),
+        block_stop(0),
+        message_delta_with_thinking(7, 40),
+        MessageStreamEvent::MessageStop,
+    ])
+    .await;
+
+    assert_eq!(usage.reasoning_tokens, 40);
+    assert_eq!(usage.completion_tokens, 7);
+}
+
+/// Fresh-written: when neither event carries the detail object, reasoning tokens
+/// stay 0 (the pre-R4 value) — absence must not fail the stream nor fabricate.
+#[tokio::test]
+async fn missing_thinking_details_keep_reasoning_tokens_zero() {
+    let usage = usage_from_stream(vec![
+        message_start_with_cache(10, 0, 0),
+        text_block_start(0),
+        text_delta(0, "ok"),
+        block_stop(0),
+        message_delta_with_cache(7, None, None, None),
+        MessageStreamEvent::MessageStop,
+    ])
+    .await;
+
+    assert_eq!(usage.reasoning_tokens, 0);
 }

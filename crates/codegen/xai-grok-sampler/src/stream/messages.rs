@@ -97,6 +97,10 @@ pub fn stream_messages<'a>(
         let mut final_cache_read_input_tokens: u32 = 0;
         let mut final_cache_creation_input_tokens: u32 = 0;
         let mut final_output_tokens: u32 = 0;
+        // R4: the messages route's thinking decomposition (thinking_tokens).
+        // Mapped into TokenUsage.reasoning_tokens so the messages wire displays
+        // real reasoning tokens like the responses wire (stream/responses.rs:635).
+        let mut final_reasoning_tokens: u32 = 0;
         let mut final_stop_reason: Option<StopReason> = None;
         let mut final_stop_message: Option<String> = None;
         let mut final_message_id: Option<String> = None;
@@ -159,6 +163,11 @@ pub fn stream_messages<'a>(
                     final_input_tokens = message.usage.input_tokens;
                     final_cache_read_input_tokens = message.usage.cache_read_input_tokens;
                     final_cache_creation_input_tokens = message.usage.cache_creation_input_tokens;
+                    final_reasoning_tokens = message
+                        .usage
+                        .output_tokens_details
+                        .map(|d| d.thinking_tokens)
+                        .unwrap_or(0);
                     // Yield the real id, model, and input usage before any content
                     // Partial-mode framing then emits them on the real `message_start` instead of a synthesized placeholder
                     yield SamplingEvent::ResponseStarted {
@@ -434,6 +443,11 @@ pub fn stream_messages<'a>(
                     if let Some(cache_creation) = usage.cache_creation_input_tokens {
                         final_cache_creation_input_tokens = cache_creation;
                     }
+                    // Override the message_start value when the terminal delta
+                    // carries its own decomposition (preserve otherwise).
+                    if let Some(details) = usage.output_tokens_details {
+                        final_reasoning_tokens = details.thinking_tokens;
+                    }
                 }
 
                 MessageStreamEvent::MessageStop => {
@@ -491,7 +505,7 @@ pub fn stream_messages<'a>(
                 prompt_tokens: total_prompt_tokens,
                 completion_tokens: final_output_tokens,
                 total_tokens: total_prompt_tokens.saturating_add(final_output_tokens),
-                reasoning_tokens: 0,
+                reasoning_tokens: final_reasoning_tokens,
                 cached_prompt_tokens: final_cache_read_input_tokens,
                 cache_creation_prompt_tokens: final_cache_creation_input_tokens,
             })

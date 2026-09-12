@@ -207,6 +207,10 @@ pub struct Metadata {
 /// Non-streaming response from POST /v1/messages
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessagesResponse {
+    /// Compatibility metadata only: some providers omit the response id on
+    /// `message_start`, so a missing id parses as empty (""), never as an
+    /// error. `tool_use` ids stay required — they are semantic.
+    #[serde(default)]
     pub id: String,
     #[serde(rename = "type")]
     pub r#type: String, // "message"
@@ -251,6 +255,27 @@ impl StopReason {
     }
 }
 
+/// Breakdown of output tokens by category (wire shape: pin
+/// wirejig/refs/anthropic@d3d5028 spec/src/resources/messages/messages.ts:1290).
+/// `output_tokens` remains the authoritative total; this is a read-only
+/// decomposition for observability.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputTokensDetails {
+    /// Output tokens the model generated as internal reasoning (thinking).
+    #[serde(default)]
+    pub thinking_tokens: u32,
+}
+
+/// Breakdown of cached input tokens by TTL (pin
+/// wirejig/refs/anthropic@d3d5028 spec/src/resources/messages/messages.ts:310-321).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheCreation {
+    #[serde(default)]
+    pub ephemeral_5m_input_tokens: u32,
+    #[serde(default)]
+    pub ephemeral_1h_input_tokens: u32,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MessagesUsage {
     pub input_tokens: u32,
@@ -259,6 +284,14 @@ pub struct MessagesUsage {
     pub cache_creation_input_tokens: u32,
     #[serde(default)]
     pub cache_read_input_tokens: u32,
+    /// Present on proxy responses carrying a thinking decomposition (pin
+    /// messages.ts:2423); absent on the majority, so `Option` + default.
+    #[serde(default)]
+    pub output_tokens_details: Option<OutputTokensDetails>,
+    /// Per-TTL cache-write breakdown (pin messages.ts:2388); absent on the
+    /// majority, so `Option` + default.
+    #[serde(default)]
+    pub cache_creation: Option<CacheCreation>,
 }
 
 // ============================================================================
@@ -329,6 +362,11 @@ pub struct MessageDeltaUsage {
     pub cache_read_input_tokens: Option<u32>,
     #[serde(default)]
     pub cache_creation_input_tokens: Option<u32>,
+    /// Terminal-delta thinking decomposition (pin messages.ts:2423); when
+    /// present it overrides the `message_start` value, else the start value is
+    /// preserved by the stream transform.
+    #[serde(default)]
+    pub output_tokens_details: Option<OutputTokensDetails>,
 }
 
 /// Content delta within a content_block_delta event
@@ -510,5 +548,108 @@ mod tests {
         let json = serde_json::to_value(&config).unwrap();
         assert!(json.get("effort").is_none(), "effort omitted when None");
         assert_eq!(json["format"]["type"], "json_schema");
+    }
+    // ========================================================================
+    // MW-2 R9 — response-id leniency
+    // ========================================================================
+
+    /// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampling-types/src/messages.rs :: message_start_accepts_missing_response_id (re-expressed; near-verbatim — same-shaped types: HY's `MessagesResponse.id` already carries `#[serde(default)]` at that file's line 217)
+    /// A `message_start` without a response-level `id` is missing
+    /// compatibility metadata, not a protocol error: the id defaults to
+    /// empty and the event still parses.
+    #[test]
+    fn message_start_accepts_missing_response_id() {
+        let event: MessageStreamEvent = serde_json::from_str(
+            r#"{"type":"message_start","message":{"type":"message","role":"assistant","content":[],"model":"claude-sonnet-5","stop_reason":null,"usage":{"input_tokens":3,"output_tokens":0}}}"#,
+        )
+        .expect("a response-level id is optional compatibility metadata");
+
+        match event {
+            MessageStreamEvent::MessageStart { message } => {
+                assert!(message.id.is_empty());
+                assert_eq!(message.model, "claude-sonnet-5");
+            }
+            other => panic!("expected MessageStart, got {other:?}"),
+        }
+    }
+
+    /// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampling-types/src/messages.rs :: message_start_still_requires_tool_call_ids (re-expressed; near-verbatim — same-shaped types)
+    /// Response-level id leniency must not leak into `tool_use` ids: those
+    /// are semantic (they pair calls with results) and stay required.
+    #[test]
+    fn message_start_still_requires_tool_call_ids() {
+        let event = serde_json::from_str::<MessageStreamEvent>(
+            r#"{"type":"message_start","message":{"type":"message","role":"assistant","content":[{"type":"tool_use","name":"read_file","input":{}}],"model":"claude-sonnet-5","stop_reason":null,"usage":{"input_tokens":3,"output_tokens":0}}}"#,
+        );
+        assert!(
+            event.is_err(),
+            "tool-use ids are semantic and must remain required"
+        );
+    }
+
+    // ========================================================================
+    // MW-2 R4 — usage detail fields
+    // ========================================================================
+
+    /// Fresh-written: R4's usage-detail deserialize (spec §4 fresh list) against the exact Q1 proxy usage shape (research-04 §4: `output_tokens_details{thinking_tokens}` + `cache_creation{ephemeral_5m/1h}`). Field names per wirejig/refs/anthropic@d3d5028 spec/src/resources/messages/messages.ts:1290 (OutputTokensDetails), :2423 (Usage.output_tokens_details), :310-321 (CacheCreation), :2388 (Usage.cache_creation).
+    #[test]
+    fn usage_deserializes_output_tokens_details_and_cache_creation() {
+        let usage: MessagesUsage = serde_json::from_str(
+            r#"{
+                "input_tokens": 100,
+                "output_tokens": 42,
+                "cache_creation_input_tokens": 10,
+                "cache_read_input_tokens": 5,
+                "output_tokens_details": { "thinking_tokens": 31 },
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 8,
+                    "ephemeral_1h_input_tokens": 2
+                }
+            }"#,
+        )
+        .expect("proxy usage shape with detail objects must parse");
+
+        assert_eq!(
+            usage.output_tokens_details,
+            Some(OutputTokensDetails {
+                thinking_tokens: 31
+            })
+        );
+        assert_eq!(
+            usage.cache_creation,
+            Some(CacheCreation {
+                ephemeral_5m_input_tokens: 8,
+                ephemeral_1h_input_tokens: 2
+            })
+        );
+    }
+
+    /// Fresh-written: the detail objects are absent on most proxy responses;
+    /// absence must stay lenient (None) on both the response and the delta
+    /// usage shapes.
+    #[test]
+    fn usage_detail_fields_default_to_none_when_absent() {
+        let usage: MessagesUsage =
+            serde_json::from_str(r#"{"input_tokens":1,"output_tokens":2}"#).unwrap();
+        assert_eq!(usage.output_tokens_details, None);
+        assert_eq!(usage.cache_creation, None);
+
+        let delta: MessageDeltaUsage = serde_json::from_str(r#"{"output_tokens":7}"#).unwrap();
+        assert_eq!(delta.output_tokens_details, None);
+    }
+
+    /// Fresh-written: the Q1 probe returned `thinking_tokens: 0` (claude-sonnet-5
+    /// emitted no thinking block); zero must deserialize as PRESENT zero, not
+    /// be conflated with an absent detail object.
+    #[test]
+    fn usage_zero_thinking_tokens_is_present_zero() {
+        let usage: MessagesUsage = serde_json::from_str(
+            r#"{"input_tokens":0,"output_tokens":1,"output_tokens_details":{"thinking_tokens":0}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            usage.output_tokens_details,
+            Some(OutputTokensDetails { thinking_tokens: 0 })
+        );
     }
 }
