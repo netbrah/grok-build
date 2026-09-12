@@ -8747,3 +8747,56 @@ fn p1_route_matrix_endpoints_defaults_serde() {
         "empty provider defaults must not serialize"
     );
 }
+/// Route matrix #9: fail-closed — a custom-endpoint model with no resolvable
+/// credential is a hard configuration error naming the model and both fixes; a
+/// first-party xAI model keeps the ambient `XAI_API_KEY` last resort.
+#[test]
+#[serial]
+fn p1_route_matrix_fail_closed_custom_endpoint_without_credentials() {
+    use crate::agent::auth_method::{LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR};
+    use xai_chat_state::AuthType;
+    const ENV: &str = "P1_FAIL_CLOSED_PROXY_KEY";
+    let _env = EnvGuard::unset(ENV);
+    let _xai = EnvGuard::set(XAI_API_KEY_ENV_VAR, "fail-closed-ambient-key");
+    let _legacy = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
+    // (a) custom-endpoint model, no per-model auth, no endpoint default -> hard error
+    // naming the model and both fixes.
+    let broken = test_model_entry(
+        "proxy-model",
+        "https://llm-proxy.example.com/v1",
+        None,
+        None,
+        None,
+    );
+    assert!(!broken.has_own_credentials());
+    let error = custom_endpoint_credential_error(&broken).expect("must fail closed");
+    assert!(
+        error.contains("proxy-model"),
+        "error must name the model: {error}"
+    );
+    assert!(
+        error.contains("[model.proxy-model]") && error.contains("default_env_key"),
+        "error must name both fixes: {error}"
+    );
+    // (b) the same model becomes routable the moment a credential resolves
+    // (per-model env_key with the env var set, or an endpoint default landed on it).
+    let _env = EnvGuard::set(ENV, "fail-closed-proxy-key");
+    let with_env = test_model_entry(
+        "proxy-model",
+        "https://llm-proxy.example.com/v1",
+        None,
+        Some(ENV),
+        None,
+    );
+    assert!(
+        custom_endpoint_credential_error(&with_env).is_none(),
+        "resolvable per-model env_key clears the guard"
+    );
+    // (c) first-party xAI model without own credentials: guard stays off and the
+    // ambient key remains the last resort (stock behavior preserved).
+    let xai = test_model_entry("grok-4.6", "https://api.x.ai/v1", None, None, None);
+    assert!(custom_endpoint_credential_error(&xai).is_none());
+    let creds = resolve_credentials(&xai, None);
+    assert_eq!(creds.auth_type, AuthType::ApiKey);
+    assert_eq!(creds.api_key.as_deref(), Some("fail-closed-ambient-key"));
+}

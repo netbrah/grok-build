@@ -16,9 +16,17 @@ impl MvpAgent {
         else {
             return;
         };
-        let final_base_url = self
-            .resolve_sampling_config_for_model(&final_model_id, origin_client)
-            .base_url;
+        let Ok(final_config) =
+            self.resolve_sampling_config_for_model(&final_model_id, origin_client)
+        else {
+            // Opportunistic prewarm only: the prompt path re-resolves and surfaces the error.
+            tracing::warn!(
+                session_id = %session_id.0,
+                "sampler prewarm skipped: final model route failed credential resolution"
+            );
+            return;
+        };
+        let final_base_url = final_config.base_url;
         if let Some(base_url) = prewarm_base_url_if_changed(provisional_base_url, &final_base_url) {
             spawn_sampler_transport_prewarm(&base_url);
         }

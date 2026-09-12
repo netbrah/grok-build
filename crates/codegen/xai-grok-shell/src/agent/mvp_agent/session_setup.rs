@@ -410,9 +410,8 @@ impl MvpAgent {
         let build_custom_model_id: Option<String> = campaign_nudge
             .map(|c| c.value)
             .or_else(|| build_custom_model_id.map(str::to_owned));
-        let resolved_custom_model = build_custom_model_id
-            .as_deref()
-            .and_then(|custom_model| match self
+        let resolved_custom_model = match build_custom_model_id.as_deref() {
+            Some(custom_model) => match self
                 .resolve_model_id(&acp::ModelId::new(custom_model))
             {
                 Ok(model) if model.info.user_selectable => {
@@ -420,7 +419,7 @@ impl MvpAgent {
                     let origin_client = self
                         .origin_client_info_from_meta(arguments.meta.as_ref());
                     session_sampling_override = Some(
-                        self.prepare_sampling_config_for_model(&model, origin_client),
+                        self.prepare_sampling_config_for_model(&model, origin_client)?,
                     );
                     Some(custom_model)
                 }
@@ -442,7 +441,9 @@ impl MvpAgent {
                     );
                     None
                 }
-            });
+            },
+            None => None,
+        };
         if model_agent_type.is_none()
             && custom_model_id.is_none()
             && let Ok(default_model) =
@@ -458,12 +459,13 @@ impl MvpAgent {
             );
         }
         let origin_client = self.origin_client_info_from_meta(arguments.meta.as_ref());
-        let mut session_sampling = session_sampling_override.unwrap_or_else(|| {
-            self.resolve_sampling_config_for_model(
+        let mut session_sampling = match session_sampling_override {
+            Some(sampling) => sampling,
+            None => self.resolve_sampling_config_for_model(
                 &self.models_manager.current_model_id(),
                 origin_client.clone(),
-            )
-        });
+            )?,
+        };
         let effort_route = split_new_session_effort(
             resolved_custom_model,
             resolve_new_session_effort_hint(
@@ -873,7 +875,7 @@ impl MvpAgent {
         let mut load_session_sampling = self.resolve_sampling_config_for_model(
             &self.models_manager.current_model_id(),
             origin_client.clone(),
-        );
+        )?;
         self.models_manager.apply_supported_effort(
             &mut load_session_sampling,
             initial_reasoning_effort,
@@ -925,9 +927,9 @@ impl MvpAgent {
             goal_mode_state: _persisted_goal_mode,
             workflow_runs: persisted_workflow_runs,
         } = persistence_info;
-        let persisted_base_url = self
-            .resolve_sampling_config_for_model(&summary.current_model_id, origin_client.clone())
-            .base_url;
+        let persisted_sampling = self
+            .resolve_sampling_config_for_model(&summary.current_model_id, origin_client.clone())?;
+        let persisted_base_url = persisted_sampling.base_url;
         spawn_sampler_transport_prewarm(&persisted_base_url);
         let restored =
             RestoredSignals::read(persisted_signals.as_ref(), persisted_plan_mode.as_ref());

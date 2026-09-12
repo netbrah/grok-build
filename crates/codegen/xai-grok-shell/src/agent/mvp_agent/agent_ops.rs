@@ -1926,7 +1926,14 @@ impl MvpAgent {
         &self,
         model: &ModelEntry,
         origin_client: Option<crate::http::OriginClientInfo>,
-    ) -> SamplingConfig {
+    ) -> Result<SamplingConfig, acp::Error> {
+        if let Some(message) = crate::agent::config::custom_endpoint_credential_error(model) {
+            tracing::error!(
+                model = model.info().model.as_str(),
+                "fail-closed: custom-endpoint model has no resolvable credential; refusing to route"
+            );
+            return Err(acp::Error::invalid_params().data(message));
+        }
         let preferred = self.cfg.borrow().grok_com_config.preferred_method;
         let prefers_oidc = preferred == Some(PreferredAuthMethod::Oidc);
         let is_session_based_auth = self.is_session_based_auth();
@@ -2010,21 +2017,24 @@ impl MvpAgent {
             user_id,
         );
         config.origin_client = origin_client;
-        config
+        Ok(config)
     }
     /// Resolve sampling config for a model by ID, falling back to the global default on resolution failure.
     /// API-key auth then routes to the public API (via resolve_credentials) instead of the global config's cli-chat-proxy base_url.
+    /// A model that RESOLVES but fails the fail-closed credential guard is an error, not a fallback:
+    /// the global default is only for model ids that are not in the catalog at all.
     pub(super) fn resolve_sampling_config_for_model(
         &self,
         model_id: &acp::ModelId,
         origin_client: Option<crate::http::OriginClientInfo>,
-    ) -> SamplingConfig {
-        if let Ok(model) = self.resolve_model_id(model_id) {
-            self.prepare_sampling_config_for_model(&model, origin_client.clone())
-        } else {
-            let mut c = self.sampling_config.borrow().clone();
-            c.origin_client = origin_client;
-            c
+    ) -> Result<SamplingConfig, acp::Error> {
+        match self.resolve_model_id(model_id) {
+            Ok(model) => self.prepare_sampling_config_for_model(&model, origin_client.clone()),
+            Err(_) => {
+                let mut c = self.sampling_config.borrow().clone();
+                c.origin_client = origin_client;
+                Ok(c)
+            }
         }
     }
     /// Apply a profile's pinned-model override to the session's sampling config.
@@ -2036,16 +2046,16 @@ impl MvpAgent {
         default_model_id: acp::ModelId,
         default_sampling: SamplingConfig,
         origin_client: Option<crate::http::OriginClientInfo>,
-    ) -> (acp::ModelId, SamplingConfig) {
+    ) -> Result<(acp::ModelId, SamplingConfig), acp::Error> {
         let Some((id, model)) = pinned_model else {
-            return (default_model_id, default_sampling);
+            return Ok((default_model_id, default_sampling));
         };
-        let new_config = self.prepare_sampling_config_for_model(model, origin_client);
+        let new_config = self.prepare_sampling_config_for_model(model, origin_client)?;
         tracing::info!(
             model = %id.0,
             "agent profile model override applied to parent session"
         );
-        (id.clone(), new_config)
+        Ok((id.clone(), new_config))
     }
     /// Whether the current session is a personal grok.com account on a gated tier (free / X Basic). The Imagine tools stay advertised to the model but are flagged tier-restricted.
     /// They then short-circuit at call time with the SuperGrok upsell prose (see `ImageGenConfig`/`VideoGenConfig`'s `tier_restricted`).
@@ -4249,7 +4259,7 @@ impl MvpAgent {
         let telemetry_enabled = self.product_analytics_enabled();
         let origin_client = self.origin_client_info_from_meta(init.meta.as_ref());
         let sampling_config = self
-            .resolve_sampling_config_for_model(&session_model_id, origin_client.clone());
+            .resolve_sampling_config_for_model(&session_model_id, origin_client.clone())?;
         if self.auth_method_id.load().is_none() {
             return Err(acp::Error::auth_required().data("no auth method id provided"));
         }
@@ -4378,7 +4388,7 @@ impl MvpAgent {
                 session_model_id,
                 sampling_config,
                 origin_client.clone(),
-            );
+            )?;
         self.models_manager
             .apply_supported_effort(
                 &mut sampling_config,

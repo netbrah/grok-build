@@ -1368,7 +1368,7 @@ async fn apply_supported_effort_assigns_only_when_supported() {
         .models_manager
         .insert_test_entry("plain-model", plain.clone());
     let sid = acp::SessionId::new("meta-effort-sess");
-    let mut supported_cfg = agent.prepare_sampling_config_for_model(&supported, None);
+    let mut supported_cfg = agent.prepare_sampling_config_for_model(&supported, None).unwrap();
     supported_cfg.reasoning_effort = None;
     agent.models_manager.apply_supported_effort(
         &mut supported_cfg,
@@ -1377,7 +1377,7 @@ async fn apply_supported_effort_assigns_only_when_supported() {
         EffortTarget::NewSession,
     );
     assert_eq!(supported_cfg.reasoning_effort, Some(ReasoningEffort::High));
-    let mut plain_cfg = agent.prepare_sampling_config_for_model(&plain, None);
+    let mut plain_cfg = agent.prepare_sampling_config_for_model(&plain, None).unwrap();
     plain_cfg.reasoning_effort = None;
     agent.models_manager.apply_supported_effort(
         &mut plain_cfg,
@@ -1386,7 +1386,7 @@ async fn apply_supported_effort_assigns_only_when_supported() {
         EffortTarget::NewSession,
     );
     assert_eq!(plain_cfg.reasoning_effort, None);
-    let mut none_cfg = agent.prepare_sampling_config_for_model(&supported, None);
+    let mut none_cfg = agent.prepare_sampling_config_for_model(&supported, None).unwrap();
     none_cfg.reasoning_effort = Some(ReasoningEffort::Low);
     agent.models_manager.apply_supported_effort(
         &mut none_cfg,
@@ -1395,6 +1395,36 @@ async fn apply_supported_effort_assigns_only_when_supported() {
         EffortTarget::NewSession,
     );
     assert_eq!(none_cfg.reasoning_effort, Some(ReasoningEffort::Low));
+}
+/// Fail-closed guard at the route seam (spec P1 ruling 6): a custom-endpoint model with no
+/// resolvable credential is rejected naming the model and both fixes; first-party routes
+/// (cli-chat-proxy / xAI) keep the ambient-key last resort and stay routable.
+#[tokio::test]
+async fn prepare_sampling_config_fails_closed_for_credentialless_custom_endpoint() {
+    use crate::agent::config::{EndpointsConfig, ModelEntry};
+    let agent = build_minimal_agent_for_tests();
+    let mut custom = ModelEntry::fallback("proxy-model", &EndpointsConfig::default());
+    custom.info.base_url = "https://llm-proxy.example.com/v1".to_string();
+    let error = agent
+        .prepare_sampling_config_for_model(&custom, None)
+        .expect_err("custom-endpoint model without credentials must fail closed");
+    let message = error
+        .data
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("<no error data>");
+    assert!(
+        message.contains("proxy-model"),
+        "error must name the model: {message}"
+    );
+    assert!(
+        message.contains("[model.proxy-model]") && message.contains("default_env_key"),
+        "error must name both fixes: {message}"
+    );
+    let first_party = ModelEntry::fallback("xai-model", &EndpointsConfig::default());
+    agent
+        .prepare_sampling_config_for_model(&first_party, None)
+        .expect("first-party (cli-chat-proxy) route keeps the ambient-key last resort");
 }
 /// Setting `reasoning_effort` without switching the id runs, and bills, whatever the entry opened on.
 /// The status line would still read `low`.
@@ -1438,7 +1468,7 @@ async fn an_effort_that_names_its_own_model_switches_the_id() {
         .models_manager
         .insert_test_entry("plain-model", plain.clone());
     let sid = acp::SessionId::new("effort-routing-sess");
-    let mut cfg = agent.prepare_sampling_config_for_model(&routed, None);
+    let mut cfg = agent.prepare_sampling_config_for_model(&routed, None).unwrap();
     assert_eq!(cfg.model, "routed-high");
     agent.models_manager.apply_supported_effort(
         &mut cfg,
@@ -1448,7 +1478,7 @@ async fn an_effort_that_names_its_own_model_switches_the_id() {
     );
     assert_eq!(cfg.model, "routed-low");
     assert_eq!(cfg.reasoning_effort, Some(ReasoningEffort::Low));
-    let mut plain_cfg = agent.prepare_sampling_config_for_model(&plain, None);
+    let mut plain_cfg = agent.prepare_sampling_config_for_model(&plain, None).unwrap();
     agent.models_manager.apply_supported_effort(
         &mut plain_cfg,
         Some(ReasoningEffort::Low),
@@ -1569,7 +1599,7 @@ async fn new_session_meta_effort_seeds_spawn_for_supported_model_and_drops_for_u
         NewSessionEffort::Switch(_) | NewSessionEffort::None => None,
     };
     let sid = acp::SessionId::new("new-session-meta-effort");
-    let mut supported_cfg = agent.prepare_sampling_config_for_model(&supported, None);
+    let mut supported_cfg = agent.prepare_sampling_config_for_model(&supported, None).unwrap();
     agent.models_manager.apply_supported_effort(
         &mut supported_cfg,
         spawn_effort,
@@ -1577,7 +1607,7 @@ async fn new_session_meta_effort_seeds_spawn_for_supported_model_and_drops_for_u
         EffortTarget::NewSession,
     );
     assert_eq!(supported_cfg.reasoning_effort, Some(ReasoningEffort::High));
-    let mut plain_cfg = agent.prepare_sampling_config_for_model(&plain, None);
+    let mut plain_cfg = agent.prepare_sampling_config_for_model(&plain, None).unwrap();
     agent.models_manager.apply_supported_effort(
         &mut plain_cfg,
         spawn_effort,
@@ -1614,7 +1644,7 @@ async fn new_session_without_meta_keeps_current_effort_over_catalog_default() {
         NewSessionEffort::Spawn(effort) => Some(effort),
         NewSessionEffort::Switch(_) | NewSessionEffort::None => None,
     };
-    let mut cfg = agent.prepare_sampling_config_for_model(&supported, None);
+    let mut cfg = agent.prepare_sampling_config_for_model(&supported, None).unwrap();
     assert_eq!(cfg.reasoning_effort, Some(ReasoningEffort::High));
     agent.models_manager.apply_supported_effort(
         &mut cfg,

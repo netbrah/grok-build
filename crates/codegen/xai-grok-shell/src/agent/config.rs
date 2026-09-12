@@ -4729,6 +4729,33 @@ pub(crate) fn resolve_credentials(
         auth_scheme,
     }
 }
+/// Fail-closed credential guard (spec P1 ruling 6): a model that routes to a custom
+/// (non-xAI) endpoint with no resolvable credential — no per-model `api_key`/`env_key`,
+/// no endpoint `default_env_key`, no auth provider — is a hard configuration error
+/// naming the model and both fixes. First-party xAI routes keep the ambient
+/// `XAI_API_KEY` last resort (stock behavior), never custom-endpoint models.
+pub(crate) fn custom_endpoint_credential_error(model: &ModelEntry) -> Option<String> {
+    if model.has_own_credentials() {
+        return None;
+    }
+    let key_url = model
+        .api_base_url
+        .clone()
+        .unwrap_or_else(|| model.info().base_url.clone());
+    if crate::util::is_xai_api_url(&key_url) {
+        return None;
+    }
+    let slug = model.info().model.clone();
+    let env_hint = model
+        .env_key
+        .as_ref()
+        .map(|keys| format!(" (env_key '{keys}' is set but none of its variables are)"))
+        .unwrap_or_default();
+    Some(format!(
+        "model '{slug}' routes to '{key_url}' but has no API key{env_hint}: \
+         set [model.{slug}] env_key or api_key, or [endpoints] default_env_key"
+    ))
+}
 /// `disable_api_key_auth` at the credential seam: swap a first-party xAI API key for the IdP session.
 /// When no session is available the request fails and forces a login.
 /// BYOK (non-xAI `base_url`) is untouched; no-op when the switch is off.

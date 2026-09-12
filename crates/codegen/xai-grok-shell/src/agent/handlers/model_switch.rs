@@ -157,7 +157,7 @@ pub(crate) async fn apply(
             .and_then(|cfg| cfg.reasoning_effort),
     };
     let mut model_sampling =
-        agent.prepare_sampling_config_for_model(&model, handle.origin_client.clone());
+        agent.prepare_sampling_config_for_model(&model, handle.origin_client.clone())?;
     agent.models_manager.apply_supported_effort(
         &mut model_sampling,
         effective_effort,
