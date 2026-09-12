@@ -20,6 +20,10 @@ pub struct CompactionPolicy {
     /// At compaction, that note and the recent tail are summarized together (pass 2).
     /// Resolved from the `two_pass_compaction` config flag at session build; `false` keeps the legacy single-pass path.
     pub two_pass_enabled: bool,
+    /// Codex remote compaction v2: the provider server compacts the conversation over the
+    /// Responses wire (codex family + `ApiBackend::Responses` only). Resolved from the
+    /// `remote_compaction_v2` config flag at session build; `false` keeps local compaction.
+    pub remote_compaction_v2: bool,
 }
 
 impl Default for CompactionPolicy {
@@ -30,6 +34,7 @@ impl Default for CompactionPolicy {
             memory_flush_enabled: false,
             wall_clock_budget_secs: 300,
             two_pass_enabled: false,
+            remote_compaction_v2: true,
         }
     }
 }

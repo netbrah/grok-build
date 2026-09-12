@@ -4382,6 +4382,8 @@ impl MvpAgent {
         );
         let compaction_mode = pins.mode;
         let two_pass_enabled = pins.two_pass;
+        let remote_compaction_v2_enabled =
+            self.cfg.borrow().is_remote_compaction_v2_enabled();
         let (session_model_id, mut sampling_config) = self
             .apply_agent_model_override(
                 pinned_model.as_ref(),
@@ -4736,6 +4738,7 @@ impl MvpAgent {
                     compaction_verbatim_input,
                     compaction_tool_choice,
                     two_pass_enabled,
+                    remote_compaction_v2_enabled,
                     buffering_settings,
                     origin_client.clone(),
                     self.codebase_indexes.clone(),

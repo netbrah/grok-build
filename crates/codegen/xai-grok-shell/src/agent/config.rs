@@ -2371,6 +2371,12 @@ impl Config {
     pub(crate) fn is_two_pass_compaction_enabled(&self) -> bool {
         self.is_feature_enabled(Feature::TwoPassCompaction)
     }
+    /// Codex remote compaction v2 gate. Default ON to match current codex-rs;
+    /// `[features] remote_compaction_v2 = false` (or the environment override)
+    /// falls back to local compaction.
+    pub(crate) fn is_remote_compaction_v2_enabled(&self) -> bool {
+        self.is_feature_enabled(Feature::RemoteCompactionV2)
+    }
     pub(crate) fn resolve_telemetry_mode(&self) -> Resolved<TelemetryMode> {
         if let Some(mode) = self.requirements.telemetry.pinned() {
             return Resolved::new(mode, ConfigSource::Requirement);

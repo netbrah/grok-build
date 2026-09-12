@@ -37,6 +37,8 @@ pub enum Feature {
     CompactionVerbatimInput,
     /// Summarize the earlier part of a long conversation in the background, before compaction.
     TwoPassCompaction,
+    /// Server-side Codex remote compaction v2 (default ON; off selects local compaction).
+    RemoteCompactionV2,
     /// Server-side execution of `web_search` and `x_search`.
     BackendTools,
     /// Continue the conversation as soon as a background task or subagent finishes.
@@ -189,6 +191,16 @@ pub const FEATURES: &[FeatureSpec] = &[
         env: "GROK_TWO_PASS_COMPACTION",
         default_enabled: true,
         remote: Some(|settings| settings.two_pass_compaction_enabled),
+    },
+    FeatureSpec {
+        id: Feature::RemoteCompactionV2,
+        key: "remote_compaction_v2",
+        path: "features.remote_compaction_v2",
+        env: "GROK_REMOTE_COMPACTION_V2",
+        default_enabled: true,
+        // No remote tier: pin / env / config over the default, mirroring the OG resolver
+        // (open-grok@240c99c9 `resolve_remote_compaction_v2`).
+        remote: None,
     },
     FeatureSpec {
         id: Feature::BackendTools,

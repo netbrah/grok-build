@@ -1496,6 +1496,9 @@ pub(crate) async fn run_shell_child(
         ctx.resolve_compaction_verbatim_input(),
         ctx.resolve_compaction_tool_choice(),
         pins.two_pass,
+        ctx.agent_config
+            .as_ref()
+            .is_none_or(|config| config.is_remote_compaction_v2_enabled()),
         None,
         None,
         std::sync::Arc::new(parking_lot::Mutex::new(

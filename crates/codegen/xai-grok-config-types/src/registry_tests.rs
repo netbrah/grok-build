@@ -61,6 +61,7 @@ fn registered_settings() {
                 ("GROK_COMPACTION_VERBATIM_INPUT", true),
             ),
             ("two_pass_compaction", ("GROK_TWO_PASS_COMPACTION", true)),
+            ("remote_compaction_v2", ("GROK_REMOTE_COMPACTION_V2", true)),
             ("backend_tools", ("GROK_BACKEND_SEARCH", true)),
             ("auto_wake", ("GROK_AUTO_WAKE", true)),
             (
@@ -101,6 +102,13 @@ fn every_registered_feature_reads_its_own_remote_setting() {
             Feature::CancelRewind => settings.cancel_rewind_enabled = Some(value),
             Feature::CompactionVerbatimInput => settings.compaction_verbatim_input = Some(value),
             Feature::TwoPassCompaction => settings.two_pass_compaction_enabled = Some(value),
+            // No remote tier: pin / env / config over the default, mirroring the OG resolver
+            // (open-grok@240c99c9 crates/codegen/xai-grok-shell/src/agent/config.rs
+            // `resolve_remote_compaction_v2`).
+            Feature::RemoteCompactionV2 => {
+                assert!(spec.remote.is_none(), "{} grew a remote tier", spec.key);
+                continue;
+            }
             Feature::AutoWake => settings.auto_wake_enabled = Some(value),
             Feature::SubagentWorktreeSnapshot => {
                 settings.subagent_worktree_snapshot_enabled = Some(value)
@@ -174,6 +182,29 @@ fn pin_outranks_env_outranks_config_outranks_remote_outranks_default() {
     let fallback = Feature::SessionSearch.resolve(FeatureSources::default());
     assert!(fallback.value);
     assert_eq!(fallback.source, ConfigSource::Default);
+}
+
+/// Provenance: open-grok@240c99c9 crates/codegen/xai-grok-shell/src/agent/config.rs:11366 :: resolve_remote_compaction_v2_precedence (adapted: the worktree resolves every registry row through the one shared `Feature::resolve` ladder, so the ported assertions run against `FeatureSources` instead of a per-key resolver and process env; the OG `OPENGROK_REMOTE_COMPACTION_V2` env is spelled `GROK_REMOTE_COMPACTION_V2` in the registry row)
+#[test]
+fn remote_compaction_v2_precedence() {
+    let resolved = Feature::RemoteCompactionV2.resolve(FeatureSources::default());
+    assert!(resolved.value, "current Codex compaction is default-on");
+    assert_eq!(resolved.source, ConfigSource::Default);
+
+    let config_off = Feature::RemoteCompactionV2.resolve(FeatureSources {
+        config: Some(false),
+        ..Default::default()
+    });
+    assert!(!config_off.value);
+    assert_eq!(config_off.source, ConfigSource::Config);
+
+    let env_wins = Feature::RemoteCompactionV2.resolve(FeatureSources {
+        env: Some(true),
+        config: Some(false),
+        ..Default::default()
+    });
+    assert!(env_wins.value, "env override wins over config");
+    assert_eq!(env_wins.source, ConfigSource::Env);
 }
 
 #[test]
