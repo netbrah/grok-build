@@ -1646,12 +1646,29 @@ fn has_own_credentials_guards_session_vs_external_key() {
 #[test]
 fn byok_from_lookup_classifies_all_states() {
     assert_eq!(
-        byok_from_lookup(&ModelLookup::ConfigUnavailable),
+        byok_from_lookup(&ModelLookup::ConfigUnavailable, false),
         ModelByok::Unknown,
     );
+    // First-party endpoint: a catalog miss is a definite NotByok (built-in session model).
     assert_eq!(
-        byok_from_lookup(&ModelLookup::Loaded(None)),
+        byok_from_lookup(&ModelLookup::Loaded(None), false),
         ModelByok::NotByok,
+    );
+    // Custom endpoint: the miss is a hydrated-only entry — indeterminate, and the
+    // session-token gate must stay inactive against the non-first-party host.
+    let custom_miss = byok_from_lookup(&ModelLookup::Loaded(None), true);
+    assert_eq!(custom_miss, ModelByok::Unknown);
+    assert!(
+        !crate::agent::auth_method::session_token_auth_gate(true, custom_miss, false),
+        "hydrated model on a custom endpoint must not drive the session-token refresh"
+    );
+    assert!(
+        crate::agent::auth_method::session_token_auth_gate(
+            true,
+            byok_from_lookup(&ModelLookup::Loaded(None), false),
+            true
+        ),
+        "first-party miss keeps stock session-token refresh"
     );
     let byok = test_model_entry(
         "m",
@@ -1661,12 +1678,12 @@ fn byok_from_lookup_classifies_all_states() {
         None,
     );
     assert_eq!(
-        byok_from_lookup(&ModelLookup::Loaded(Some(&byok))),
+        byok_from_lookup(&ModelLookup::Loaded(Some(&byok)), true),
         ModelByok::Byok,
     );
     let session = test_model_entry("m", "https://api.x.ai/v1", None, None, None);
     assert_eq!(
-        byok_from_lookup(&ModelLookup::Loaded(Some(&session))),
+        byok_from_lookup(&ModelLookup::Loaded(Some(&session)), false),
         ModelByok::NotByok,
     );
 }

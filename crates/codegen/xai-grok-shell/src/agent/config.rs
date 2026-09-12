@@ -4822,7 +4822,12 @@ pub(crate) struct ModelAuthFacts {
     pub auth_scheme: AuthScheme,
 }
 /// Resolve `model_id` to its auth facts and auth-provider reference from one effective-config load. Both ride the same memo (see `SessionActor::model_auth_memo`).
-/// A load/parse failure yields `byok = Unknown`; a model absent from the catalog yields `NotByok`.
+/// A load/parse failure yields `byok = Unknown`. A model absent from this config-only
+/// catalog (built with `prefetched = None`) yields `NotByok` on a first-party endpoint
+/// (stock built-in session models), but `Unknown` on a custom (non-first-party) endpoint:
+/// hydrated catalog entries are invisible here, and a definite `NotByok` would activate
+/// the session-token refresh and overwrite the env_key credential the endpoint-default
+/// fill installed (spec P1 test #6 ladder: entry env_key beats the session token).
 /// An empty `model_id` (no sampling config yet) yields `Unknown`, not `NotByok`, so the gate isn't activated for an unidentified model.
 pub(crate) fn resolve_model_auth_facts_and_provider(
     model_id: &str,
@@ -4836,9 +4841,9 @@ pub(crate) fn resolve_model_auth_facts_and_provider(
             None,
         );
     }
-    with_resolved_model(model_id, |lookup| {
+    with_resolved_model(model_id, |lookup, custom_endpoint| {
         let facts = ModelAuthFacts {
-            byok: byok_from_lookup(&lookup),
+            byok: byok_from_lookup(&lookup, custom_endpoint),
             auth_scheme: match lookup {
                 ModelLookup::Loaded(Some(e)) => e.info().auth_scheme,
                 _ => AuthScheme::default(),
@@ -4851,10 +4856,16 @@ pub(crate) fn resolve_model_auth_facts_and_provider(
         (facts, provider)
     })
 }
-fn byok_from_lookup(lookup: &ModelLookup) -> ModelByok {
+/// `Loaded(None)` on a custom endpoint means the model exists only in the live
+/// (prefetched) catalog: its BYOK status is not knowable from config alone, so it is
+/// `Unknown` — the session-token gate stays inactive against the non-first-party host,
+/// preserving the endpoint-default env_key credential. First-party misses stay
+/// `NotByok` (stock behavior for built-in xAI session models).
+fn byok_from_lookup(lookup: &ModelLookup, custom_endpoint: bool) -> ModelByok {
     match lookup {
         ModelLookup::ConfigUnavailable => ModelByok::Unknown,
         ModelLookup::Loaded(Some(e)) if e.has_own_credentials() => ModelByok::Byok,
+        ModelLookup::Loaded(None) if custom_endpoint => ModelByok::Unknown,
         ModelLookup::Loaded(_) => ModelByok::NotByok,
     }
 }
@@ -4863,23 +4874,27 @@ enum ModelLookup<'a> {
     Loaded(Option<&'a ModelEntry>),
     ConfigUnavailable,
 }
-/// Load and parse the effective config and hand the `model_id` lookup to `f`.
+/// Load and parse the effective config and hand the `model_id` lookup to `f`,
+/// plus whether the config routes through a custom (non-first-party) endpoint.
 /// Keeps "config unavailable" distinct from "model absent" so callers can stay conservative on a transient config failure.
-fn with_resolved_model<T>(model_id: &str, f: impl FnOnce(ModelLookup) -> T) -> T {
+fn with_resolved_model<T>(model_id: &str, f: impl FnOnce(ModelLookup, bool) -> T) -> T {
     let Some(raw) = crate::config::load_effective_config()
         .map_err(|e| tracing::warn!(error = %e, "config load failed for model auth lookup"))
         .ok()
     else {
-        return f(ModelLookup::ConfigUnavailable);
+        return f(ModelLookup::ConfigUnavailable, false);
     };
     let Some(cfg) = Config::new_from_toml_cfg(&raw)
         .map_err(|e| tracing::warn!(error = %e, "config parse failed for model auth lookup"))
         .ok()
     else {
-        return f(ModelLookup::ConfigUnavailable);
+        return f(ModelLookup::ConfigUnavailable, false);
     };
     let models = resolve_model_list(&cfg, None);
-    f(ModelLookup::Loaded(find_model_by_id(&models, model_id)))
+    f(
+        ModelLookup::Loaded(find_model_by_id(&models, model_id)),
+        cfg.endpoints.has_custom_endpoint(),
+    )
 }
 /// Resolve a standalone `SamplerConfig` for an auxiliary model slug (image description, session summary, ...).
 /// Resolved through the catalog so a `[model.*]` override redirects it to its own endpoint, credentials, and routing `model`.

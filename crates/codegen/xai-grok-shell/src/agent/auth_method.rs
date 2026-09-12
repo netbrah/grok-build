@@ -279,7 +279,10 @@ pub(crate) enum ModelByok {
     Byok,
     /// Model has no per-model key (session auth governs).
     NotByok,
-    /// Config couldn't be loaded/parsed; BYOK status indeterminate.
+    /// BYOK status indeterminate: config couldn't be loaded/parsed, or the model is
+    /// absent from the config-only catalog on a custom endpoint (a hydrated entry
+    /// whose credential comes from endpoint defaults — session tokens can't
+    /// authenticate there, so refresh must stay inactive against that host).
     Unknown,
 }
 /// Whether this session and model combination uses a refreshable session token. Gates on stable inputs, not `Credentials.auth_type`. `model_byok` still excludes genuine per-model BYOK, whose keys are not refreshable.
