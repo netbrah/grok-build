@@ -1,4 +1,263 @@
+//! Wire builder for the Anthropic `/v1/messages` request.
+//!
+//! The builder pipeline (MW-1 spec D5, in order) repairs the translated
+//! history before it is serialized:
+//!
+//! 1. **item-level orphan cleanup** ([`clean_orphaned_items`]) — tool calls
+//!    with no result and results with no call are removed pre-translation;
+//! 2. **translate** — items become `Message`s (this file's mapping loop);
+//! 3. **message-level adjacency cleanup** ([`clean_orphaned_blocks_by_adjacency`])
+//!    — a `tool_use` survives only if the immediately following user message
+//!    carries its `tool_result`, and vice versa; emptied messages are removed;
+//! 4. **three-part thinking strip** ([`strip_thinking_blocks`]) — non-latest
+//!    assistant messages lose all thinking blocks; the latest keeps a block
+//!    only as a verbatim (text, signature) pair; signature-only blocks are
+//!    dropped; emptied assistant messages are removed;
+//! 5. **cache-control window** ([`apply_cache_breakpoints`]) — runs last.
+//!
+//! Stages 4 (hoist) and 6 (trailing-assistant repair) of the full MW-1 D5
+//! order land in the follow-up commit of this series; the order above is the
+//! canonical pipeline this module implements.
+
 use super::*;
+
+/// D5 stage 1 — item-level orphan cleanup (pre-translation).
+///
+/// A tool call with no matching result, and a result with no matching call,
+/// is unsendable: the Anthropic API rejects unpaired tool_use/tool_result
+/// with a 400, so both sides are removed before translation. Pairing is by
+/// the stored (unsanitized) id, mirroring the port source; the message-level
+/// stage re-checks pairing on the sanitized wire ids.
+pub(crate) fn clean_orphaned_items(items: &[ConversationItem]) -> Vec<ConversationItem> {
+    use std::collections::HashSet;
+
+    let mut call_ids: HashSet<&str> = HashSet::new();
+    let mut result_ids: HashSet<&str> = HashSet::new();
+    for item in items {
+        match item {
+            ConversationItem::Assistant(a) => {
+                for tc in &a.tool_calls {
+                    call_ids.insert(&tc.id);
+                }
+            }
+            ConversationItem::ToolResult(t) => {
+                result_ids.insert(&t.tool_call_id);
+            }
+            _ => {}
+        }
+    }
+    let paired: HashSet<&str> = call_ids.intersection(&result_ids).map(|id| *id).collect();
+
+    items
+        .iter()
+        .filter_map(|item| match item {
+            ConversationItem::Assistant(a) => {
+                let kept_calls: Vec<ToolCall> = a
+                    .tool_calls
+                    .iter()
+                    .filter(|tc| paired.contains(&tc.id[..]))
+                    .cloned()
+                    .collect();
+                if kept_calls.is_empty() && a.content.is_empty() {
+                    // The item carries nothing wire-visible once the orphaned
+                    // calls are gone; drop it rather than emit an empty turn.
+                    None
+                } else {
+                    Some(ConversationItem::Assistant(AssistantItem {
+                        tool_calls: kept_calls,
+                        ..a.clone()
+                    }))
+                }
+            }
+            ConversationItem::ToolResult(t) => paired
+                .contains(t.tool_call_id.as_str())
+                .then(|| item.clone()),
+            other => Some(other.clone()),
+        })
+        .collect()
+}
+
+/// D5 stage 3 — message-level adjacency cleanup (post-translation).
+///
+/// The Anthropic wire requires the adjacency, not just the pairing: a
+/// `tool_use` block survives only if the immediately following user message
+/// carries a `tool_result` for it, and a `tool_result` only if the
+/// immediately preceding assistant message carries the matching `tool_use`.
+/// A non-adjacent pair (e.g. split by an injected user message) 400s, so
+/// both sides are stripped. Messages emptied by the strip are removed.
+pub(crate) fn clean_orphaned_blocks_by_adjacency(messages: &mut Vec<crate::messages::Message>) {
+    use crate::messages::{ContentBlock, MessageContent, MessageRole};
+
+    let len = messages.len();
+    // Assistant pass: keep only tool_use blocks answered by the next user message.
+    for i in 0..len {
+        if !matches!(messages[i].role, MessageRole::Assistant) {
+            continue;
+        }
+        // Immutable phases first so the neighbour lookups do not fight the
+        // later mutable strip.
+        let use_ids: std::collections::HashSet<String> = match &messages[i].content {
+            MessageContent::Blocks(blocks) => blocks
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                    _ => None,
+                })
+                .collect(),
+            MessageContent::Text(_) => continue,
+        };
+        if use_ids.is_empty() {
+            continue;
+        }
+        let next_result_ids: std::collections::HashSet<String> = messages
+            .get(i + 1)
+            .filter(|m| matches!(m.role, MessageRole::User))
+            .and_then(|m| match &m.content {
+                MessageContent::Blocks(blocks) => Some(
+                    blocks
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::ToolResult { tool_use_id, .. } => {
+                                Some(tool_use_id.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect(),
+                ),
+                MessageContent::Text(_) => None,
+            })
+            .unwrap_or_default();
+        let matched: std::collections::HashSet<&String> =
+            use_ids.intersection(&next_result_ids).collect();
+        if matched.len() < use_ids.len() {
+            tracing::debug!(
+                stripped = use_ids.len() - matched.len(),
+                "MW-1: stripping non-adjacent tool_use block(s) from assistant message {i}"
+            );
+            if let MessageContent::Blocks(blocks) = &mut messages[i].content {
+                blocks.retain(|b| match b {
+                    ContentBlock::ToolUse { id, .. } => {
+                        matched.iter().any(|m| m.as_str() == id.as_str())
+                    }
+                    _ => true,
+                });
+            }
+        }
+    }
+    // User pass: keep only tool_result blocks paired with the preceding assistant.
+    for i in 0..len {
+        if !matches!(messages[i].role, MessageRole::User) {
+            continue;
+        }
+        let result_ids: std::collections::HashSet<String> = match &messages[i].content {
+            MessageContent::Blocks(blocks) => blocks
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
+                    _ => None,
+                })
+                .collect(),
+            MessageContent::Text(_) => continue,
+        };
+        if result_ids.is_empty() {
+            continue;
+        }
+        let prev_use_ids: std::collections::HashSet<String> =
+            if i > 0 && matches!(messages[i - 1].role, MessageRole::Assistant) {
+                match &messages[i - 1].content {
+                    MessageContent::Blocks(blocks) => blocks
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                            _ => None,
+                        })
+                        .collect(),
+                    MessageContent::Text(_) => std::collections::HashSet::new(),
+                }
+            } else {
+                std::collections::HashSet::new()
+            };
+        let matched: std::collections::HashSet<&String> =
+            result_ids.intersection(&prev_use_ids).collect();
+        if matched.len() < result_ids.len() {
+            tracing::debug!(
+                stripped = result_ids.len() - matched.len(),
+                "MW-1: stripping non-adjacent tool_result block(s) from user message {i}"
+            );
+            if let MessageContent::Blocks(blocks) = &mut messages[i].content {
+                blocks.retain(|b| match b {
+                    ContentBlock::ToolResult { tool_use_id, .. } => {
+                        matched.iter().any(|m| m.as_str() == tool_use_id.as_str())
+                    }
+                    _ => true,
+                });
+            }
+        }
+    }
+    // Remove messages whose content became empty after stripping.
+    messages.retain(|m| !matches!(&m.content, MessageContent::Blocks(blocks) if blocks.is_empty()));
+}
+
+/// D5 stage 5 — the three-part thinking replay rule (xli S-031, spec rule 2).
+///
+/// (a) every assistant message before the latest loses ALL thinking blocks —
+/// the API only requires the latest assistant's thinking to replay
+/// verbatim, and earlier turns are safe to strip;
+/// (b) the latest assistant message keeps a `Thinking` block only if it
+/// carries both thinking text and a non-empty signature — the verbatim pair
+/// as stored by the stream consumer, which is exactly what Anthropic's
+/// "thinking blocks in the latest assistant message cannot be modified"
+/// check verifies;
+/// (c) a signature-only block (empty thinking text, the opus47 shape) is
+/// dropped entirely — there is nothing to replay.
+///
+/// `RedactedThinking` blocks are dropped at every position: grok V1 has no
+/// storage path that produces one with verifiable provenance (the stream
+/// consumer drops redacted blocks), so none is ever trustworthy here.
+/// Assistant messages left empty by the strip are removed.
+pub(crate) fn strip_thinking_blocks(messages: &mut Vec<crate::messages::Message>) {
+    use crate::messages::{ContentBlock, MessageContent, MessageRole};
+
+    let Some(last_idx) = messages
+        .iter()
+        .rposition(|m| matches!(m.role, MessageRole::Assistant))
+    else {
+        return;
+    };
+    for (i, msg) in messages.iter_mut().enumerate() {
+        if !matches!(msg.role, MessageRole::Assistant) {
+            continue;
+        }
+        let MessageContent::Blocks(blocks) = &mut msg.content else {
+            continue;
+        };
+        if i < last_idx {
+            // Non-latest assistant: drop all thinking blocks.
+            blocks.retain(|b| {
+                !matches!(
+                    b,
+                    ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }
+                )
+            });
+        } else {
+            // Latest assistant: only the verbatim (text, signature) pair
+            // survives; unsigned and signature-only blocks are dropped.
+            blocks.retain(|b| match b {
+                ContentBlock::Thinking {
+                    thinking,
+                    signature,
+                } => !thinking.is_empty() && !signature.is_empty(),
+                ContentBlock::RedactedThinking { .. } => false,
+                _ => true,
+            });
+        }
+    }
+    // Remove assistant messages left empty by the strip.
+    messages.retain(|m| {
+        !(matches!(m.role, MessageRole::Assistant)
+            && matches!(&m.content, MessageContent::Blocks(blocks) if blocks.is_empty()))
+    });
+}
 
 /// Marks the last block that can carry one, scanning back past `Thinking`, which the API rejects a breakpoint on.
 fn mark_message_cache_breakpoint(msg: &mut crate::messages::Message) -> bool {
@@ -71,6 +330,9 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         ContentBlock, ImageSource, Message, MessageContent, MessageRole, MessagesRequest,
         OutputConfig, SystemParam, TextBlock, ToolChoiceParam, ToolParam, ToolResultContent,
     };
+
+    // D5 stage 1: item-level orphan cleanup, before translation.
+    let items = clean_orphaned_items(&req.items);
 
     let mut system_blocks: Vec<TextBlock> = Vec::new();
     let mut messages: Vec<Message> = Vec::new();
@@ -158,7 +420,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         }
     };
 
-    for item in &req.items {
+    for item in &items {
         match item {
             ConversationItem::System(s) => {
                 flush_assistant(&mut pending_assistant, &mut messages);
@@ -269,6 +531,12 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
 
     flush_assistant(&mut pending_assistant, &mut messages);
     flush_tool_results(&mut pending_tool_results, &mut messages);
+
+    // D5 stages 3 and 5: message-level adjacency cleanup, then the three-part
+    // thinking strip (the hoist and trailing-repair stages of the full D5
+    // order land in the follow-up commit of this series).
+    clean_orphaned_blocks_by_adjacency(&mut messages);
+    strip_thinking_blocks(&mut messages);
 
     apply_cache_breakpoints(&mut system_blocks, &mut messages);
 
