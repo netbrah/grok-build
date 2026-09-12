@@ -519,8 +519,8 @@ fn image_source_or_fallback(url: &str) -> Result<crate::messages::ImageSource, S
 
 pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::MessagesRequest {
     use crate::messages::{
-        ContentBlock, ImageSource, Message, MessageContent, MessageRole, MessagesRequest,
-        OutputConfig, SystemParam, TextBlock, ToolChoiceParam, ToolParam, ToolResultContent,
+        ContentBlock, Message, MessageContent, MessageRole, MessagesRequest, OutputConfig,
+        SystemParam, TextBlock, ToolChoiceParam, ToolParam, ToolResultContent,
     };
 
     // D5 stage 1: item-level orphan cleanup, before translation.
