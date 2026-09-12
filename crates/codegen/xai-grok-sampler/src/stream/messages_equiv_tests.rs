@@ -536,6 +536,7 @@ async fn eq_20_tool_truncated_mid_policy() {
     take_failed("eq-20", &events, "invalid_tool_args", "not valid JSON");
 }
 
+/// Provenance: xli@3d4a08271e — codex-api/tests/fixtures/stream_equiv/eq-15-tool-response-only (fixture source; the documented-non-replayable pin itself is fresh grok infra per spec R4/G7 — xli verifies this fixture on its responses side, not as a messages replay)
 /// eq-15 is responses-only (no messages_sse.json) — NON-REPLAYABLE on the
 /// messages route. Its role (xli): the expected-side fixture for the
 /// responses-wire projection comparator (non_stream_response.json +
