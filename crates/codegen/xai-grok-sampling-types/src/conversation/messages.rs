@@ -697,10 +697,14 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     MessagesRequest {
         model: req.model.clone().unwrap_or_default(),
         messages,
-        max_tokens: req
-            .max_output_tokens
-            .unwrap_or_else(|| crate::messages_model::messages_max_output_tokens(model))
-            .max(crate::messages_model::MESSAGES_MAX_OUTPUT_TOKENS_FLOOR),
+        max_tokens: match req.max_output_tokens {
+            Some(budget) => budget.max(crate::messages_model::MESSAGES_MAX_OUTPUT_TOKENS_FLOOR),
+            // D4 ruling (ledger 2026-09-12): no budget + empty table (until
+            // MW-3 fills it) serializes 0 — the live proxy tolerates 0
+            // (pre-MW-1 wire parity); a floor-1 fallback truncated every
+            // no-budget turn (L2 l2_messages_wire, stop_reason=max_tokens).
+            None => crate::messages_model::messages_max_output_tokens_opt(model).unwrap_or(0),
+        },
         system,
         tools,
         tool_choice,

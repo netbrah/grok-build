@@ -11,17 +11,22 @@
 //! proxy catalog is IDs-only. A value row may be added only from a pinned
 //! snapshot of an official `/v1/models` response (snapshot + SHA recorded in
 //! the pin/ledger) — that lands in MW-3. Until then the private table fns
-//! below return `None`, the default arms win, and
-//! [`messages_max_output_tokens`] returns [`MESSAGES_MAX_OUTPUT_TOKENS_FLOOR`].
-//! Filling a row is a one-line `Some(...)` inside the private table fn.
+//! below return `None`, the default arms win, and a no-budget request
+//! serializes `max_tokens: 0` — the observed proxy contract tolerates 0
+//! (pre-MW-1 wire parity; a floor-1 fallback truncated every no-budget turn
+//! live, ledger D4 ruling 2026-09-12). Filling a row is a one-line
+//! `Some(...)` inside the private table fn; a row then wins over the 0.
 
 use crate::ReasoningEffort;
 use crate::messages::{ThinkingConfig, ThinkingDisplay};
 
-/// A `/v1/messages` request must never serialize `max_tokens < 1` (pin
-/// messages.ts:1830 — a thinking budget must be < max_tokens). When the
-/// request carries no explicit budget and the per-model table has no row,
-/// the floor is what goes on the wire.
+/// Defensive floor for an EXPLICIT request budget: a budget the caller set
+/// must never serialize as `max_tokens < 1` (pin messages.ts:1830 — a
+/// thinking budget must be < max_tokens), hence `budget.max(FLOOR)`. A
+/// no-budget request with no table row serializes 0 instead: the live proxy
+/// tolerates 0 (pre-MW-1 wire parity) and a floor-1 fallback would
+/// guarantee truncation of every no-budget turn (D4 ruling, ledger
+/// 2026-09-12 — supersedes the spec v1 floor-for-all fallback).
 pub const MESSAGES_MAX_OUTPUT_TOKENS_FLOOR: u32 = 1;
 
 /// Whether the slug names an Anthropic Claude model.
@@ -58,12 +63,13 @@ pub fn messages_thinking_config(
 
 /// Per-model `max_tokens` cap for the `/v1/messages` wire (D4).
 ///
-/// Returns the table row when one exists, else
-/// [`MESSAGES_MAX_OUTPUT_TOKENS_FLOOR`] (the empty-table fallback). The
-/// builder still prefers an explicit `req.max_output_tokens` over this
-/// value, floored at [`MESSAGES_MAX_OUTPUT_TOKENS_FLOOR`].
-pub fn messages_max_output_tokens(model_slug: &str) -> u32 {
-    per_model_max_output_tokens(model_slug).unwrap_or(MESSAGES_MAX_OUTPUT_TOKENS_FLOOR)
+/// Returns the table row when one exists, else `None`. The builder prefers
+/// an explicit `req.max_output_tokens` (floored at
+/// [`MESSAGES_MAX_OUTPUT_TOKENS_FLOOR`]); a no-budget request falls back to
+/// the table row, else `0` (proxy-tolerated, pre-MW-1 wire parity — see the
+/// `MESSAGES_MAX_OUTPUT_TOKENS_FLOOR` docs for the ruling).
+pub fn messages_max_output_tokens_opt(model_slug: &str) -> Option<u32> {
+    per_model_max_output_tokens(model_slug)
 }
 
 // ---------------------------------------------------------------------------
@@ -139,16 +145,11 @@ mod tests {
     }
 
     #[test]
-    fn messages_max_output_tokens_arms() {
-        // Empty table (MW-1): known and unknown slugs both fall to the
-        // floor; the floor is the expected outcome, not a failure.
-        assert_eq!(
-            messages_max_output_tokens("claude-sonnet-5"),
-            MESSAGES_MAX_OUTPUT_TOKENS_FLOOR
-        );
-        assert_eq!(
-            messages_max_output_tokens("some-unknown-slug"),
-            MESSAGES_MAX_OUTPUT_TOKENS_FLOOR
-        );
+    fn messages_max_output_tokens_opt_arms() {
+        // Empty table (MW-1): known and unknown slugs both return None —
+        // the builder then serializes a no-budget request as 0 (proxy
+        // tolerated; D4 ruling 2026-09-12).
+        assert_eq!(messages_max_output_tokens_opt("claude-sonnet-5"), None);
+        assert_eq!(messages_max_output_tokens_opt("some-unknown-slug"), None);
     }
 }

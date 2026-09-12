@@ -1606,9 +1606,11 @@ fn s022_e2e_warning_injected_between_tool_use_and_result() {
 // (d) Per-model helpers — combination arms through the full builder
 // ============================================================================
 
-/// New grok-shape test (MW-1 spec D4): an explicit request budget wins over
-/// the per-model cap; without one, the per-model cap applies — the floor
-/// while the table is empty — and a messages request never carries 0.
+/// New grok-shape test (MW-1 spec D4, re-adjudicated ledger 2026-09-12): an
+/// explicit request budget wins over the per-model cap and is floored at 1
+/// (never serialized below the floor); a no-budget request with an empty
+/// table serializes 0 — the live proxy tolerates 0 (pre-MW-1 wire parity;
+/// a floor-1 fallback guaranteed truncation, L2 l2_messages_wire).
 #[test]
 fn d4_max_tokens_combination_arms() {
     fn built_max(model: &str, max_output_tokens: Option<u32>) -> u32 {
@@ -1632,14 +1634,19 @@ fn d4_max_tokens_combination_arms() {
         "set + unknown slug: the request value wins"
     );
     assert_eq!(
-        built_max("claude-sonnet-5", None),
+        built_max("claude-sonnet-5", Some(0)),
         crate::messages_model::MESSAGES_MAX_OUTPUT_TOKENS_FLOOR,
-        "unset + known slug (empty table): the floor, never 0"
+        "explicit budget is floored: Some(0) never serializes 0"
+    );
+    assert_eq!(
+        built_max("claude-sonnet-5", None),
+        0,
+        "unset + known slug (empty table): proxy-tolerated 0, pre-MW-1 wire parity"
     );
     assert_eq!(
         built_max("some-unknown-slug", None),
-        crate::messages_model::MESSAGES_MAX_OUTPUT_TOKENS_FLOOR,
-        "unset + unknown slug: the floor, never 0"
+        0,
+        "unset + unknown slug: proxy-tolerated 0, pre-MW-1 wire parity"
     );
 }
 
