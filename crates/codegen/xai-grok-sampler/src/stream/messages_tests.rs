@@ -103,13 +103,34 @@ async fn collect(s: impl Stream<Item = SamplingEvent>) -> Vec<SamplingEvent> {
     out
 }
 
+/// R3: a stream that ends without `message_stop` is truncated — the pre-MW-3
+/// behavior was a silent `Completed`, which is now a hard failure (spec G6:
+/// NEW hard failure; live verification at A6 records the observed terminal
+/// event of every live turn).
+///
+/// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/pi_messages.rs :: stream_fails_truncated_and_unended_blocks (re-expressed, "without done" half; the pre-MW-3 test of this file pinned the old silent-complete behavior and is amended here, disclosed in the MW-3 R2/R3 commit body)
 #[tokio::test]
-async fn empty_stream_yields_started_then_completed() {
+async fn empty_stream_fails_truncated_without_done() {
     let raw = stream::iter(Vec::<Result<MessageStreamEvent, SamplingError>>::new()).boxed();
     let events = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
     assert_eq!(events.len(), 2);
     assert!(matches!(events[0], SamplingEvent::StreamStarted { .. }));
-    assert!(matches!(events[1], SamplingEvent::Completed { .. }));
+    match &events[1] {
+        SamplingEvent::Failed { error, .. } => {
+            assert_eq!(error.kind, crate::events::SamplingErrorKind::Api);
+            assert!(
+                error.message.contains("stream error (stream_truncated)"),
+                "got {}",
+                error.message
+            );
+            assert!(error.message.contains("without done"));
+            assert!(
+                error.is_retryable,
+                "stream errors keep the actor retry path"
+            );
+        }
+        other => panic!("expected Failed(stream_truncated), got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -596,6 +617,7 @@ async fn refusal_after_tool_use_blocks_keeps_tool_calls_stop_reason() {
     }
 }
 
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/tests/stream_invariants.rs :: error_event_propagates_typed (re-expressed; grok surfaces the in-stream `error` event as a `Failed` terminal — already satisfied pre-MW-3, so this is the pinning re-expression, HI-C5-006)
 #[tokio::test]
 async fn server_error_event_yields_failed_500() {
     let err_event = MessageStreamEvent::Error {
@@ -903,4 +925,444 @@ async fn missing_thinking_details_keep_reasoning_tokens_zero() {
     .await;
 
     assert_eq!(usage.reasoning_tokens, 0);
+}
+
+// ── MW-3 R2 — stream invariants (transform level; xli suite re-expression) ──
+
+fn thinking_block_start(index: u32) -> MessageStreamEvent {
+    MessageStreamEvent::ContentBlockStart {
+        index,
+        content_block: ContentBlock::Thinking {
+            thinking: String::new(),
+            signature: String::new(),
+        },
+    }
+}
+
+fn thinking_delta(index: u32, thinking: &str) -> MessageStreamEvent {
+    MessageStreamEvent::ContentBlockDelta {
+        index,
+        delta: StreamDelta::ThinkingDelta {
+            thinking: thinking.into(),
+        },
+    }
+}
+
+fn signature_delta(index: u32, signature: &str) -> MessageStreamEvent {
+    MessageStreamEvent::ContentBlockDelta {
+        index,
+        delta: StreamDelta::SignatureDelta {
+            signature: signature.into(),
+        },
+    }
+}
+
+fn tool_use_start(index: u32, id: &str, name: &str) -> MessageStreamEvent {
+    MessageStreamEvent::ContentBlockStart {
+        index,
+        content_block: ContentBlock::ToolUse {
+            id: id.into(),
+            name: name.into(),
+            input: serde_json::json!({}),
+            cache_control: None,
+        },
+    }
+}
+
+fn input_delta(index: u32, partial_json: &str) -> MessageStreamEvent {
+    MessageStreamEvent::ContentBlockDelta {
+        index,
+        delta: StreamDelta::InputJsonDelta {
+            partial_json: partial_json.into(),
+        },
+    }
+}
+
+/// Assert the terminal is a `Failed` stream error of `error_type` whose
+/// message contains `phrase`; returns the error info for extra assertions.
+fn assert_failed_stream_error(evs: &[SamplingEvent], error_type: &str, phrase: &str) {
+    match evs.last().unwrap() {
+        SamplingEvent::Failed { error, .. } => {
+            assert_eq!(
+                error.kind,
+                crate::events::SamplingErrorKind::Api,
+                "stream errors surface as the Api kind, got {}",
+                error.message
+            );
+            assert!(
+                error.is_retryable,
+                "stream errors keep the actor retry path"
+            );
+            assert!(
+                error
+                    .message
+                    .contains(&format!("stream error ({error_type})")),
+                "expected error_type {error_type}, got {}",
+                error.message
+            );
+            assert!(
+                error.message.contains(phrase),
+                "expected {phrase:?} in {}",
+                error.message
+            );
+        }
+        other => panic!("expected Failed({error_type}), got {other:?}"),
+    }
+}
+
+/// D3 phantom-open (spec G3 ruling, binding): an unknown-kind
+/// `content_block_start` opens a swallowed phantom block — the index is
+/// recorded, its deltas are swallowed, and its stop is a no-op, so a
+/// forward-compat stream COMPLETES instead of hitting the fatal
+/// unopened-index classes. Green-from-start pin: this held pre-guard (the
+/// transform ignored unknown starts) and must hold with the guard in place.
+///
+/// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/client.rs :: decode_messages_sse_frame_skips_unknown_content_block_kinds (re-expressed, transform half; the serde half mapping the unknown kind to the phantom variant is the sampling-types R1 test unknown_content_block_kind_opens_phantom_block; grok deviates from HY's Ping mapping per the D3 ruling)
+#[tokio::test]
+async fn unknown_kind_phantom_block_stream_completes() {
+    let phantom_start = MessageStreamEvent::ContentBlockStart {
+        index: 1,
+        content_block: ContentBlock::Unknown {
+            kind: "brand_new_block".into(),
+        },
+    };
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(text_block_start(0)),
+        Ok(text_delta(0, "real")),
+        Ok(block_stop(0)),
+        Ok(phantom_start),
+        Ok(text_delta(1, "phantom")),
+        Ok(block_stop(1)),
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            assert_eq!(
+                response.assistant().map(|a| a.content.as_ref()),
+                Some("real"),
+                "phantom deltas are swallowed; only the text block survives"
+            );
+        }
+        other => panic!("expected Completed (D3 phantom-open), got {other:?}"),
+    }
+}
+
+/// A delta on an index that never received a start is true wire corruption:
+/// FATAL (xli `DeltaForUnopenedIndex`). RED pre-guard: the transform silently
+/// dropped such deltas and completed.
+///
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/tests/stream_invariants.rs :: accumulator_delta_for_unopened_index_is_fatal (re-expressed on the grok transform, HI-C5-002)
+#[tokio::test]
+async fn never_started_index_delta_fails_unopened() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> =
+        vec![Ok(message_start()), Ok(text_delta(0, "hi"))];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    assert_failed_stream_error(
+        &evs,
+        "unopened_index",
+        "content_block_delta for unopened index 0",
+    );
+    assert!(
+        !evs.iter()
+            .any(|e| matches!(e, SamplingEvent::Completed { .. }))
+    );
+}
+
+/// A stop on an index that never received a start is true wire corruption:
+/// FATAL (xli `StopForUnknownIndex`). RED pre-guard: the transform silently
+/// ignored such stops and completed.
+///
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/tests/stream_invariants.rs :: accumulator_stop_for_unknown_index_is_fatal (re-expressed on the grok transform, HI-C5-001)
+#[tokio::test]
+async fn never_started_index_stop_fails_unopened() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> =
+        vec![Ok(message_start()), Ok(block_stop(0))];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    assert_failed_stream_error(
+        &evs,
+        "unopened_index",
+        "content_block_stop for unknown index 0",
+    );
+    assert!(
+        !evs.iter()
+            .any(|e| matches!(e, SamplingEvent::Completed { .. }))
+    );
+}
+
+/// A `content_block_start` for an index that already holds an open block is
+/// the NEW `DuplicateToolCallIndex` recoverable violation (R7 row 18; xli
+/// overwrites silently, grok warns and keeps the FIRST block).
+///
+/// Fresh-written: spec R2 note + R7 row-18 duplicate-index subcase (no xli home)
+#[tokio::test]
+async fn duplicate_open_index_warns_and_keeps_first_block() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(tool_use_start(0, "call_first", "first_tool")),
+        Ok(tool_use_start(0, "call_second", "second_tool")),
+        Ok(input_delta(0, r#"{"k":1}"#)),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::ToolUse)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    let id_deltas: Vec<Option<String>> = evs
+        .iter()
+        .filter_map(|e| match e {
+            SamplingEvent::ToolCallDelta { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        id_deltas.iter().filter(|id| id.is_some()).count(),
+        1,
+        "the duplicate start must not re-emit a tool call id"
+    );
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            let calls = response.tool_calls();
+            assert_eq!(calls.len(), 1, "the first block wins; no second call");
+            assert_eq!(calls[0].id.as_ref(), "call_first");
+            assert_eq!(calls[0].name, "first_tool");
+            assert_eq!(calls[0].arguments.as_ref(), r#"{"k":1}"#);
+        }
+        other => panic!("expected Completed (recoverable duplicate), got {other:?}"),
+    }
+}
+
+/// Usage counters are monotonic across `message_start` → `message_delta`; a
+/// regressed counter is skipped (previous kept) — recoverable, never fatal
+/// (xli `UsageMonotonicityViolation`, R-risk-4 live audit pending at A6).
+/// RED pre-guard: the transform overwrote unconditionally.
+///
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/tests/stream_invariants.rs :: accumulator_usage_non_monotonic_clamps (re-expressed on the grok transform, HI-C1-012; grok skips the regressed FIELD, xli drops the whole snapshot — documented divergence)
+#[tokio::test]
+async fn usage_non_monotonic_deltas_keep_previous_values() {
+    let usage = usage_from_stream(vec![
+        message_start_with_cache(100, 0, 0),
+        text_block_start(0),
+        text_delta(0, "ok"),
+        block_stop(0),
+        // input regresses 100 -> 90 (skipped); output 0 -> 30 (applied)
+        message_delta_with_cache(30, Some(90), None, None),
+        // output regresses 30 -> 20 (skipped); input 100 -> 110 (applied)
+        message_delta_with_cache(20, Some(110), None, None),
+        MessageStreamEvent::MessageStop,
+    ])
+    .await;
+
+    assert_eq!(
+        usage.completion_tokens, 30,
+        "regressed output must be skipped"
+    );
+    assert_eq!(usage.prompt_tokens, 110, "monotonic input must still apply");
+}
+
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/tests/stream_invariants.rs :: ping_event_is_noop (re-expressed on the grok transform, HI-C5-005: pings are liveness-only and never touch accumulation)
+#[tokio::test]
+async fn ping_events_are_liveness_noop() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(MessageStreamEvent::Ping),
+        Ok(text_block_start(0)),
+        Ok(MessageStreamEvent::Ping),
+        Ok(text_delta(0, "hi")),
+        Ok(MessageStreamEvent::Ping),
+        Ok(block_stop(0)),
+        Ok(MessageStreamEvent::Ping),
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
+        Ok(MessageStreamEvent::Ping),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            assert_eq!(response.assistant().map(|a| a.content.as_ref()), Some("hi"));
+        }
+        other => panic!("expected Completed (pings are no-ops), got {other:?}"),
+    }
+}
+
+/// A `signature_delta` that arrives before any thinking text is
+/// recoverable (xli `SignatureBeforeThinking`): the stream continues and the
+/// signature still lands. (xli asserts the log line; grok asserts the
+/// non-fatal continuation — the is_fatal=false classification is pinned in
+/// the guard module's unit suite.)
+///
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/tests/stream_invariants.rs :: signature_before_thinking_warns (re-expressed on the grok transform, HI-C5-004)
+#[tokio::test]
+async fn signature_before_thinking_keeps_stream_alive() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(thinking_block_start(0)),
+        Ok(signature_delta(0, "sig-early")),
+        Ok(thinking_delta(0, "why")),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            let r = response
+                .reasoning_items()
+                .next()
+                .expect("reasoning preserved");
+            assert_eq!(r.encrypted_content.as_deref(), Some("sig-early"));
+        }
+        other => panic!("expected Completed (recoverable), got {other:?}"),
+    }
+}
+
+/// A second `signature_delta` for the same block is recoverable (xli
+/// `DuplicateSignatureDelta`). grok accumulation divergence from xli (documented):
+/// the transform is LAST-WINS (xli concatenates "sig1sig2").
+///
+/// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/tests/stream_invariants.rs :: duplicate_signature_delta_warns_and_concats (re-expressed on the grok transform, HI-C5-005-adjacent; grok last-wins, xli concat — divergence documented in the guard module)
+#[tokio::test]
+async fn duplicate_signature_delta_keeps_last_signature() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(thinking_block_start(0)),
+        Ok(thinking_delta(0, "why")),
+        Ok(signature_delta(0, "sig-1")),
+        Ok(signature_delta(0, "sig-2")),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    let sigs: Vec<&str> = evs
+        .iter()
+        .filter_map(|e| match e {
+            SamplingEvent::ReasoningCompleted { signature, .. } => Some(signature.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sigs, vec!["sig-2"], "grok is last-wins (xli concats)");
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            let r = response
+                .reasoning_items()
+                .next()
+                .expect("reasoning preserved");
+            assert_eq!(r.encrypted_content.as_deref(), Some("sig-2"));
+        }
+        other => panic!("expected Completed (recoverable), got {other:?}"),
+    }
+}
+
+// ── MW-3 R3 — truncation / unclosed-block failures ─────────────────────────
+
+/// R3: the stream ends (raw `None`) without a `message_stop` →
+/// `Failed(stream_truncated)`, the "without done" shape. RED pre-MW-3:
+/// silent `Completed` (spec G6: NEW hard failure, live-verified at A6).
+///
+/// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/pi_messages.rs :: stream_fails_truncated_and_unended_blocks (re-expressed, "without done" half, audit row 15)
+#[tokio::test]
+async fn stream_ends_without_done_fails_truncated() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(text_block_start(0)),
+        Ok(text_delta(0, "hi")),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
+        // no MessageStop: the raw stream ends
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    assert_failed_stream_error(&evs, "stream_truncated", "without done");
+}
+
+/// R3: `message_stop` while any block is still open →
+/// `Failed(unclosed_blocks)`, the "before all blocks ended" shape
+/// (xli eq-11/eq-19 shape). RED pre-MW-3: silent `Completed`.
+///
+/// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/pi_messages.rs :: stream_fails_truncated_and_unended_blocks (re-expressed, "before all blocks ended" half, audit row 15; fixture shape xli codex-api/tests/fixtures/stream_equiv/eq-11-tool-no-stop)
+#[tokio::test]
+async fn message_stop_with_open_blocks_fails_unclosed() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(text_block_start(0)),
+        Ok(text_delta(0, "hi")),
+        // block 0 never stops
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    assert_failed_stream_error(&evs, "unclosed_blocks", "before all blocks ended");
+}
+
+/// R3: a tool call whose accumulated arguments are non-empty and not valid
+/// JSON at a completed (non-Length) terminal → `Failed(invalid_tool_args)`
+/// (the eq-10 `tool_args_state` class). RED pre-MW-3: `Completed` with the
+/// garbage args. Scoped out: `Length` terminals keep the 09-09 proven
+/// salvage surface (`max_tokens_with_tool_use_keeps_length_stop`).
+///
+/// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/pi_messages.rs :: stream_fails_truncated_and_unended_blocks (re-expressed, tool-args class; fixture shape xli codex-api/tests/fixtures/stream_equiv/eq-10-tool-truncated-invalid-json)
+#[tokio::test]
+async fn tool_args_invalid_json_fails() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(tool_use_start(0, "call_x", "do_thing")),
+        Ok(input_delta(0, r#"{"a":"#)),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::ToolUse)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    assert_failed_stream_error(&evs, "invalid_tool_args", "not valid JSON");
+}
+
+/// G5: the proven zero-args `""` finalization is EXCLUDED from the
+/// invalid_tool_args class — an empty-arguments tool call at a completed
+/// terminal still completes. Green-from-start pin.
+///
+/// Fresh-written: spec G5 ruling (`""` kept; xref the 09-09 pin max_tokens_tool_use_without_arg_deltas_collects_empty_arguments, which covers the Length terminal)
+#[tokio::test]
+async fn zero_arg_tool_call_empty_string_is_not_invalid() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(tool_use_start(0, "call_e", "do_thing")),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            let calls = response.tool_calls();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(
+                calls[0].arguments.as_ref(),
+                "",
+                "the proven zero-args shape must not trip invalid_tool_args"
+            );
+        }
+        other => panic!("expected Completed (empty args excluded), got {other:?}"),
+    }
 }

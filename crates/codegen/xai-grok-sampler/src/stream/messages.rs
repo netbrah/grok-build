@@ -19,6 +19,16 @@ use crate::events::{SamplingChannel, SamplingErrorInfo, SamplingEvent};
 use crate::metrics::InferenceLatencyStats;
 use crate::types::RequestId;
 
+/// The wire `type` string of a delta (input to the R2 unopened-index guard).
+fn stream_delta_type(delta: &messages::StreamDelta) -> &'static str {
+    match delta {
+        messages::StreamDelta::TextDelta { .. } => "text_delta",
+        messages::StreamDelta::InputJsonDelta { .. } => "input_json_delta",
+        messages::StreamDelta::ThinkingDelta { .. } => "thinking_delta",
+        messages::StreamDelta::SignatureDelta { .. } => "signature_delta",
+    }
+}
+
 /// Returns whether a Messages API event reflects real model progress rather than a liveness-only heartbeat (Ping).
 pub(crate) fn messages_event_has_meaningful_content(event: &MessageStreamEvent) -> bool {
     match event {
@@ -43,6 +53,9 @@ struct BlockState {
     args_acc: String,
     thinking_acc: String,
     signature: String,
+    /// A `signature_delta` already arrived for this block (R2
+    /// `DuplicateSignatureDelta` guard input; xli `signature_seen`).
+    signature_seen: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +63,16 @@ enum BlockType {
     Text,
     ToolUse,
     Thinking,
+    /// D3 phantom (spec G3 ruling): an unknown wire `type` opened a block the
+    /// transform does not model — index recorded, deltas swallowed, stop
+    /// no-op. A forward-compat stream never hits the fatal unopened-index
+    /// classes because of this.
+    Unknown,
+    /// A KNOWN wire kind this transform does not model (redacted_thinking /
+    /// image / tool_result in an assistant stream): recorded so its stop is
+    /// not misclassified as the fatal never-started-index class, but inert
+    /// otherwise (deltas swallowed, stop no-op — pre-MW-3 observable behavior).
+    Inert,
 }
 
 /// Transform a raw Anthropic Messages API stream into a stream of [`SamplingEvent`]s.
@@ -126,6 +149,13 @@ pub fn stream_messages<'a>(
         let mut next_tool_index: u32 = 0;
         let mut block_to_tool_index: BTreeMap<u32, u32> = BTreeMap::new();
 
+        // R2 usage-monotonicity guard state (xli `UsageSnapshot` subset:
+        // input + output wire fields; zero/absent incoming skips the check).
+        let mut prev_input_tokens: u32 = 0;
+        let mut prev_output_tokens: u32 = 0;
+        // R3: `message_stop` observed — the stream is only complete with it.
+        let mut message_stop_seen = false;
+
         let mut stream = raw_stream;
         loop {
             let event_result = match tokio::time::timeout(idle_timeout, stream.next()).await {
@@ -161,6 +191,8 @@ pub fn stream_messages<'a>(
                     final_message_id = Some(message.id.clone());
                     final_model = Some(message.model.clone());
                     final_input_tokens = message.usage.input_tokens;
+                    prev_input_tokens = message.usage.input_tokens;
+                    prev_output_tokens = message.usage.output_tokens;
                     final_cache_read_input_tokens = message.usage.cache_read_input_tokens;
                     final_cache_creation_input_tokens = message.usage.cache_creation_input_tokens;
                     final_reasoning_tokens = message
@@ -187,7 +219,17 @@ pub fn stream_messages<'a>(
                 MessageStreamEvent::ContentBlockStart {
                     index,
                     content_block,
-                } => match content_block {
+                } => {
+                    if blocks.contains_key(&index) {
+                        // R7 row 18: duplicate open index — recoverable
+                        // (xli overwrites silently; grok warns and keeps the
+                        // first block, so its deltas/stop stay coherent).
+                        let v = super::messages_invariants::StreamInvariantViolation::DuplicateToolCallIndex {
+                            block_index: index,
+                        };
+                        tracing::warn!(violation = ?v, "messages-stream:invariant");
+                    } else {
+                        match content_block {
                     ContentBlock::Thinking {
                         thinking,
                         signature,
@@ -202,6 +244,7 @@ pub fn stream_messages<'a>(
                                 args_acc: String::new(),
                                 thinking_acc: thinking.clone(),
                                 signature: signature.clone(),
+                                signature_seen: !signature.is_empty(),
                             },
                         );
                         if !first_token_emitted {
@@ -222,6 +265,7 @@ pub fn stream_messages<'a>(
                                 args_acc: String::new(),
                                 thinking_acc: String::new(),
                                 signature: String::new(),
+                                signature_seen: false,
                             },
                         );
                         if !first_token_emitted {
@@ -248,6 +292,7 @@ pub fn stream_messages<'a>(
                                 args_acc: String::new(),
                                 thinking_acc: String::new(),
                                 signature: String::new(),
+                                signature_seen: false,
                             },
                         );
 
@@ -260,16 +305,71 @@ pub fn stream_messages<'a>(
                             arguments_delta: None,
                         };
                     }
-                    // Encrypted reasoning the model chose to redact
-                    // The `RedactedThinking` wire variant exists so a stream containing one deserializes instead of failing the whole event parse
-                    // Its opaque `data` blob is not forwarded as a `SamplingEvent`; no consumer claims redacted_thinking support
-                    ContentBlock::RedactedThinking { .. } => {}
-                    // Image / ToolResult are not expected in assistant streams.
-                    _ => {}
-                },
+                        // Encrypted reasoning the model chose to redact; not
+                        // forwarded (no consumer claims redacted_thinking
+                        // support), but RECORDED as inert so its stop is not
+                        // misclassified as the fatal never-started-index class.
+                        ContentBlock::RedactedThinking { .. }
+                        | ContentBlock::Image { .. }
+                        | ContentBlock::ToolResult { .. }
+                        | ContentBlock::Unknown { .. } => {
+                            let block_type = match content_block {
+                                ContentBlock::Unknown { .. } => BlockType::Unknown,
+                                _ => BlockType::Inert,
+                            };
+                            blocks.insert(
+                                index,
+                                BlockState {
+                                    block_type,
+                                    text_acc: String::new(),
+                                    tool_name: String::new(),
+                                    tool_id: String::new(),
+                                    args_acc: String::new(),
+                                    thinking_acc: String::new(),
+                                    signature: String::new(),
+                                    signature_seen: false,
+                                },
+                            );
+                        }
+                    }
+                    // end duplicate-check branch
+                }
+                }
 
                 MessageStreamEvent::ContentBlockDelta { index, delta } => {
+                    let delta_type = stream_delta_type(&delta);
+                    if let Some(v) =
+                        super::messages_invariants::check_content_block_delta(
+                            index,
+                            delta_type,
+                            blocks.contains_key(&index),
+                        )
+                    {
+                        if !v.is_fatal() {
+                            tracing::warn!(violation = ?v, "messages-stream:invariant");
+                        } else {
+                            let message = format!(
+                                "content_block_delta for unopened index {index} (delta {delta_type})"
+                            );
+                            yield SamplingEvent::Failed {
+                                request_id: request_id.clone(),
+                                error: SamplingErrorInfo::from(&SamplingError::StreamError {
+                                    error_type: "unopened_index".to_owned(),
+                                    message,
+                                    code: None,
+                                }),
+                            };
+                            return;
+                        }
+                    }
                     if let Some(state) = blocks.get_mut(&index) {
+                        if matches!(
+                            state.block_type,
+                            BlockType::Unknown | BlockType::Inert
+                        ) {
+                            // D3 phantom / inert known-unmodeled kind: deltas
+                            // are swallowed, never fatal.
+                        } else {
                         match delta {
                             StreamDelta::ThinkingDelta { thinking } => {
                                 if !thinking.is_empty() {
@@ -290,7 +390,18 @@ pub fn stream_messages<'a>(
                                 }
                             }
                             StreamDelta::SignatureDelta { signature } => {
+                                for v in super::messages_invariants::check_signature_delta(
+                                    index,
+                                    state.block_type == BlockType::Thinking,
+                                    state.thinking_acc.is_empty(),
+                                    state.signature_seen,
+                                ) {
+                                    tracing::warn!(violation = ?v, "messages-stream:invariant");
+                                }
+                                // Last-wins (xli concatenates — documented
+                                // divergence in messages_invariants.rs).
                                 state.signature = signature;
+                                state.signature_seen = true;
                             }
                             StreamDelta::TextDelta { text } => {
                                 if !text.is_empty() {
@@ -325,10 +436,31 @@ pub fn stream_messages<'a>(
                                 }
                             }
                         }
+                        }
                     }
                 }
 
                 MessageStreamEvent::ContentBlockStop { index } => {
+                    if let Some(v) =
+                        super::messages_invariants::check_content_block_stop(
+                            index,
+                            blocks.contains_key(&index),
+                        )
+                    {
+                        // xli StopForUnknownIndex: true corruption (the index
+                        // never received a start — every start, including
+                        // unknown-kind phantoms, records its index).
+                        let message = format!("content_block_stop for unknown index {index}");
+                        yield SamplingEvent::Failed {
+                            request_id: request_id.clone(),
+                            error: SamplingErrorInfo::from(&SamplingError::StreamError {
+                                error_type: "unopened_index".to_owned(),
+                                message,
+                                code: None,
+                            }),
+                        };
+                        return;
+                    }
                     if let Some(state) = blocks.remove(&index) {
                         match state.block_type {
                             BlockType::Text => {
@@ -382,6 +514,8 @@ pub fn stream_messages<'a>(
                                     arguments: std::sync::Arc::<str>::from(state.args_acc),
                                 });
                             }
+                            // D3 phantom / inert: the stop is a no-op.
+                            BlockType::Unknown | BlockType::Inert => {}
                         }
                     }
                 }
@@ -432,11 +566,36 @@ pub fn stream_messages<'a>(
                             StopReason::Stop
                         }
                     });
-                    final_output_tokens = usage.output_tokens;
-                    // Optional on the delta; preserve message_start values when omitted.
-                    if let Some(input) = usage.input_tokens {
+                    let output_incoming = usage.output_tokens;
+                    let input_incoming = usage.input_tokens;
+                    // R2: usage counters are monotonic across
+                    // message_start → message_delta; a regressed counter is
+                    // warned and SKIPPED (previous kept) — recoverable,
+                    // never fatal (R-risk-4: live audit at A6 finalizes the
+                    // recoverable-vs-fatal call against L2 wire logs).
+                    if let Some(v) =
+                        super::messages_invariants::check_usage_counter(
+                            "input_tokens",
+                            input_incoming,
+                            prev_input_tokens,
+                        )
+                    {
+                        tracing::warn!(violation = ?v, "messages-stream:invariant");
+                    } else if let Some(input) = input_incoming {
+                        prev_input_tokens = input;
                         final_input_tokens = input;
                     }
+                    if let Some(v) = super::messages_invariants::check_usage_counter(
+                        "output_tokens",
+                        Some(output_incoming),
+                        prev_output_tokens,
+                    ) {
+                        tracing::warn!(violation = ?v, "messages-stream:invariant");
+                    } else {
+                        prev_output_tokens = output_incoming;
+                        final_output_tokens = output_incoming;
+                    }
+                    // Optional on the delta; preserve message_start values when omitted.
                     if let Some(cache_read) = usage.cache_read_input_tokens {
                         final_cache_read_input_tokens = cache_read;
                     }
@@ -451,7 +610,26 @@ pub fn stream_messages<'a>(
                 }
 
                 MessageStreamEvent::MessageStop => {
+                    // R3: `message_stop` while any block is still open is a
+                    // truncation — the provider never closed the block it
+                    // (claiming) finished (xli eq-11/eq-19 shape).
+                    if !blocks.is_empty() {
+                        let open: Vec<u32> = blocks.keys().copied().collect();
+                        let message = format!(
+                            "message_stop before all blocks ended (open indices: {open:?})"
+                        );
+                        yield SamplingEvent::Failed {
+                            request_id: request_id.clone(),
+                            error: SamplingErrorInfo::from(&SamplingError::StreamError {
+                                error_type: "unclosed_blocks".to_owned(),
+                                message,
+                                code: None,
+                            }),
+                        };
+                        return;
+                    }
                     // Final message complete; the loop exits naturally when the underlying stream ends
+                    message_stop_seen = true;
                 }
 
                 MessageStreamEvent::Ping => {
@@ -491,6 +669,22 @@ pub fn stream_messages<'a>(
             }
         }
 
+        // R3: the raw stream ended without a `message_stop` — truncated
+        // ("without done" shape). Pre-MW-3 this was a silent `Completed`;
+        // spec G6: NEW hard failure, live-verified at A6.
+        if !message_stop_seen {
+            let err = SamplingError::StreamError {
+                error_type: "stream_truncated".to_owned(),
+                message: "stream ended without done (no message_stop)".to_owned(),
+                code: None,
+            };
+            yield SamplingEvent::Failed {
+                request_id: request_id.clone(),
+                error: SamplingErrorInfo::from(&err),
+            };
+            return;
+        }
+
         // A `Length` stop is NOT failed here
         // The transform completes with `stop_reason=Length` and `drive_l2` decides fail-vs-salvage per the request's `LengthPolicy`
 
@@ -524,6 +718,36 @@ pub fn stream_messages<'a>(
         } else {
             final_stop_reason
         };
+
+        // R3: at a completed (non-Length) terminal, every tool call's
+        // arguments must be empty (G5: the proven `""` shape) or valid JSON —
+        // the provider asserted the call is complete, so garbage args are a
+        // deterministic failure (the eq-10 tool_args_state class). `Length`
+        // terminals are EXCLUDED: the provider cut the stream, the
+        // intentionally-truncated prefix is the 09-09 proven salvage shape
+        // for `drive_l2`'s LengthPolicy (pinned by
+        // max_tokens_with_tool_use_keeps_length_stop).
+        if stop_reason != Some(StopReason::Length) {
+            for tc in &assistant_tool_calls {
+                if !tc.arguments.is_empty()
+                    && serde_json::from_str::<serde_json::Value>(&tc.arguments).is_err()
+                {
+                    let message = format!(
+                        "tool call `{}` arguments are not valid JSON",
+                        tc.name
+                    );
+                    yield SamplingEvent::Failed {
+                        request_id: request_id.clone(),
+                        error: SamplingErrorInfo::from(&SamplingError::StreamError {
+                            error_type: "invalid_tool_args".to_owned(),
+                            message,
+                            code: None,
+                        }),
+                    };
+                    return;
+                }
+            }
+        }
 
         let assistant_item = ConversationItem::Assistant(AssistantItem {
             content: std::sync::Arc::<str>::from(assistant_text),

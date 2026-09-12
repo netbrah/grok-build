@@ -3169,6 +3169,46 @@ mod tests {
     use xai_grok_sampling_types::ApiErrorCode;
     use xai_grok_sampling_types::types::ChatRequestMessage;
 
+    /// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/pi_messages.rs :: decode_done_unknown_and_crlf_multidata_payload (re-expressed; row 8 on the Anthropic SSE framing: the eventsource adapter the messages decode loop uses below delivers CRLF-terminated and multi-`data:` events intact, and `[DONE]` arrives as a data payload — the loop's clean-end condition is `data == "[DONE]"` in this file; unknown event TYPES are the serde-level R1 half, sampling-types)
+    #[tokio::test]
+    async fn sse_framing_crlf_multidata_and_done_payload() {
+        use eventsource_stream::Eventsource;
+        use futures_util::StreamExt;
+
+        async fn datas(input: &str) -> Vec<String> {
+            let byte_stream = futures_util::stream::iter(vec![Ok::<_, std::io::Error>(
+                axum::body::Bytes::copy_from_slice(input.as_bytes()),
+            )]);
+            let mut events = byte_stream.eventsource();
+            let mut out = Vec::new();
+            while let Some(Ok(event)) = events.next().await {
+                out.push(event.data);
+            }
+            out
+        }
+
+        let payload = r#"{"type":"ping"}"#;
+        assert_eq!(
+            datas(&format!("data: {payload}\r\n\r\n")).await,
+            vec![payload.to_owned()],
+            "CRLF line endings must parse identically to LF"
+        );
+        assert_eq!(
+            datas(&format!("data: {payload}\n\n")).await,
+            vec![payload.to_owned()]
+        );
+        assert_eq!(
+            datas("data: a\r\ndata: b\r\n\r\n").await,
+            vec!["a\nb".to_owned()],
+            "multi-`data:` lines join with a single newline (SSE spec)"
+        );
+        assert_eq!(
+            datas("data: [DONE]\r\n\r\n").await,
+            vec!["[DONE]".to_owned()],
+            "[DONE] arrives intact as a data payload for the loop's clean-end condition"
+        );
+    }
+
     #[test]
     fn splice_extra_tool_entries_extends_existing_tools_array() {
         let mut body = serde_json::json!({ "tools": [{ "type": "function" }] });

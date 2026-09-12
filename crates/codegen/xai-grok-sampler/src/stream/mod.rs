@@ -9,6 +9,10 @@ pub mod collect;
 pub mod messages;
 pub mod responses;
 
+/// R2 stream-invariant guards consulted by the messages transform (private
+/// helper; re-expressed from xli — see the module's doc).
+mod messages_invariants;
+
 pub use chat_completions::stream_chat_completions;
 pub use collect::collect_response;
 pub use messages::stream_messages;
