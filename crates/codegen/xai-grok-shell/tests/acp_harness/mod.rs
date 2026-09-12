@@ -614,8 +614,27 @@ fn set_live_proxy_env(grok_home: &std::path::Path, probe_sink_url: &str) {
     }
 }
 
+/// Process-wide `GROK_HOME` shared by every live test in this binary.
+///
+/// Product constraint: `xai-dirs::grok_home()` caches the FIRST resolved home in a
+/// process-global `OnceLock`, and the config reader (`user_grok_home`) consults that
+/// cache. With per-test temp dirs, the first test's home would pin and its
+/// `TempDir` drop would delete it, so every later test reads a deleted home and
+/// loses the injected `[endpoints]` block — the catalog fetch and the turns then
+/// fall back to the `GROK_XAI_API_BASE_URL` base (the probe sink) and 404 on live
+/// runs (observed: 1/4 green with the rest 404; 3/4 with the first home retained).
+/// All live tests inject a byte-identical config.toml, so one shared temp dir
+/// (held until process exit) is behavior-identical for everything the scenarios
+/// assert.
+fn shared_live_grok_home() -> &'static std::path::Path {
+    static LIVE_HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    LIVE_HOME
+        .get_or_init(|| tempfile::TempDir::new().expect("shared live GROK_HOME"))
+        .path()
+}
+
 /// Live-proxy sibling of [`run_agent_test_with_models`]: spawns NO mock server.
-/// `GROK_HOME` is a temp dir carrying the P1 `[endpoints]` block (mirrored from the live
+/// `GROK_HOME` is the process-shared temp dir (see [`shared_live_grok_home`]) carrying the P1 `[endpoints]` block (mirrored from the live
 /// `~/.grok`; the key is referenced by name only — the credential is env-only) plus the
 /// documented `[model.claude-sonnet-5]` messages-wire row (P1 spec: the live config pins
 /// claude to `api_backend = "messages"`; without it the L2 messages-wire scenario would
@@ -648,26 +667,31 @@ where
 
     let proxy_base = std::env::var("GROK_L2_PROXY_BASE_URL")
         .unwrap_or_else(|_| "https://llm-proxy-api.ai.eng.netapp.com/v1".to_owned());
-    let grok_home = tempfile::TempDir::new().expect("grok home");
+    let grok_home = shared_live_grok_home();
     let workdir = tempfile::TempDir::new().expect("workdir");
-    std::fs::write(
-        grok_home.path().join("config.toml"),
-        format!(
-            "[endpoints]\n\
-             models_base_url = \"{proxy_base}\"\n\
-             default_api_backend = \"responses\"\n\
-             default_env_key = \"CODEX_LLM_PROXY_KEY\"\n\
-             default_context_window = 256000\n\
-             default_model_family = \"codex\"\n\
-             default_agent_type = \"grok-build-plan\"\n\
-             \n\
-             [model.claude-sonnet-5]\n\
-             api_backend = \"messages\"\n"
-        ),
-    )
-    .expect("write live-proxy [endpoints] config.toml");
+    // Written once per process (the home is process-shared; ENV_LOCK serializes
+    // these writes, so first-writer-wins is race-free): the first live test in
+    // the process fixes the proxy base URL for the rest of it.
+    if !grok_home.join("config.toml").exists() {
+        std::fs::write(
+            grok_home.join("config.toml"),
+            format!(
+                "[endpoints]\n\
+                 models_base_url = \"{proxy_base}\"\n\
+                 default_api_backend = \"responses\"\n\
+                 default_env_key = \"CODEX_LLM_PROXY_KEY\"\n\
+                 default_context_window = 256000\n\
+                 default_model_family = \"codex\"\n\
+                 default_agent_type = \"grok-build-plan\"\n\
+                 \n\
+                 [model.claude-sonnet-5]\n\
+                 api_backend = \"messages\"\n"
+            ),
+        )
+        .expect("write live-proxy [endpoints] config.toml");
+    }
     let probe_sink = ProbeSink::spawn();
-    set_live_proxy_env(grok_home.path(), &probe_sink.url);
+    set_live_proxy_env(grok_home, &probe_sink.url);
     // After GROK_HOME is the temp dir, so teardown cannot OnceLock ~/.grok.
     let _globals = RestoreProcessGlobals::enter();
 
@@ -701,14 +725,14 @@ where
         );
         body(workdir.path().to_path_buf(), agent_config).await
     }));
-    // Live-debug knob: retain the temp GROK_HOME (the agent's `unified_log` file lives
-    // under it) so a failing run's auth/probe evidence can be inspected.
+    // The shared home (and the agent's `unified_log` under it) lives in the process
+    // static, so it is retained until process exit for a failing run's auth/probe
+    // evidence; GROK_L2_KEEP_HOME just surfaces the path.
     if std::env::var_os("GROK_L2_KEEP_HOME").is_some() {
         eprintln!(
-            "GROK_L2_KEEP_HOME: grok home retained at {}",
-            grok_home.path().display()
+            "GROK_L2_KEEP_HOME: shared grok home at {}",
+            grok_home.display()
         );
-        std::mem::forget(grok_home);
     }
 }
 
