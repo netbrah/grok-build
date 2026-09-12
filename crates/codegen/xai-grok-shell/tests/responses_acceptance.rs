@@ -260,3 +260,58 @@ fn l2_subagent() {
         assert_no_auth_error(&client, &session_id);
     });
 }
+
+/// L1 `c-subagent` re-run with the parent on the messages wire: parent =
+/// claude-sonnet-5 (the same `[model.claude-sonnet-5] api_backend = "messages"`
+/// config row `l2_messages_wire` uses) + the same `echo` child spec as
+/// `l2_subagent`. Roadmap item 6 requires subagents working ON the messages
+/// wire; `l2_subagent` only proved the subagent path on the responses wire.
+///
+/// CHILD-WIRE PIN (live-observed 2026-09-12, de-risking run, log
+/// /tmp/mw4-l2-live.log): the child rides the RESPONSES wire, not the
+/// parent's messages wire. The wire is a per-model property —
+/// `[model.<slug>] api_backend` else the `[endpoints] default_api_backend`
+/// hydration — never inherited from the parent session:
+///   - parent claude-sonnet-5: explicit `api_backend = "messages"` row →
+///     POST .../v1/messages (the parent's own UUIDv7 session id).
+///   - child qwen3.8-27b: no `[model.qwen3.8-27b]` row → hydrated off the
+///     endpoint defaults (`default_api_backend = "responses"`) →
+///     POST .../v1/responses, with `x-grok-model-override: qwen3.8-27b` on a
+///     fresh UUIDv7 child session id distinct from the parent's.
+/// The c88936e fail-closed guard did NOT fire: the hydrated child entry
+/// carries the endpoint-default `env_key = CODEX_LLM_PROXY_KEY` (env-only),
+/// so `has_own_credentials()` holds, the `AgentDefinition` pin is accepted,
+/// and the parent-route fall-through (which would have run the child as
+/// claude-sonnet-5 on messages) was never reached.
+#[test]
+#[ignore = "live proxy acceptance"]
+fn l2_subagent_messages_wire() {
+    run_agent_test_live_proxy(|cwd, mut cfg| async move {
+        cfg.cli_agents = vec![echo_agent_definition()];
+        let client = RecordingClient::default();
+        let (conn, _init) = connect_and_auth_live(client.clone(), "l2-subagent-msgs", cfg).await;
+        let session_id = live_new_session(&conn, &cwd, "claude-sonnet-5").await;
+        live_prompt_turn(
+            &conn,
+            &session_id,
+            "Spawn the echo subagent and ask it to reply with exactly: CHILD-OK",
+        )
+        .await;
+        let finished = client
+            .wait_for_subagent_finished_any(live_rpc_timeout())
+            .await;
+        assert!(
+            !finished.is_empty(),
+            "no subagent_finished in the ACP stream (child never finished)"
+        );
+        let text = client.recorded_text();
+        assert!(
+            text.contains("CHILD-OK"),
+            "CHILD-OK missing from the streamed reply: {text:?}"
+        );
+        // The child's wire is not visible in the ACP stream; it is pinned by
+        // the CHILD-WIRE PIN above (sampler per-request send lines —
+        // model_id + endpoint URL — from the de-risking run's log).
+        assert_no_auth_error(&client, &session_id);
+    });
+}
