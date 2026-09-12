@@ -801,7 +801,6 @@ impl ReasoningEffort {
         }
     }
 
-
     pub fn to_messages_api(self) -> Option<&'static str> {
         match self {
             Self::None | Self::Minimal => None,
