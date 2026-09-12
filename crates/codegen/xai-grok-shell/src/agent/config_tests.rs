@@ -8384,3 +8384,366 @@ async fn process_key_from_model_env_key() {
         Some(TOKEN)
     );
 }
+
+// ==================== P1: provider-default seam — route matrix ====================
+// Priority (highest wins): `[model.<id>]` config > donor (baked keys) > `[endpoints]`
+// provider defaults > built-in defaults. The endpoint fill fires strictly for fields
+// still at their built-in defaults, so stock behavior is byte-identical when no
+// defaults are configured.
+
+/// Route matrix #1: a baked model with no endpoint defaults configured is untouched
+/// end to end, and the ambient `XAI_API_KEY` remains the last-resort credential.
+#[test]
+#[serial]
+fn p1_route_matrix_baked_model_unchanged_without_endpoint_defaults() {
+    use crate::agent::auth_method::{LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR};
+    use xai_chat_state::AuthType;
+    let _xai = EnvGuard::set(XAI_API_KEY_ENV_VAR, "ambient-sentinel");
+    let _legacy = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
+    let cfg = Config::default();
+    assert!(!cfg.endpoints.has_custom_endpoint());
+    let resolved = resolve_model_list(&cfg, None);
+    let dm = crate::models::default_model();
+    let entry = resolved.get(dm).expect("baked model must exist");
+    assert_eq!(entry.info.api_backend, ApiBackend::Responses);
+    assert_eq!(entry.info.context_window.get(), 500_000);
+    assert_eq!(entry.info.model_family.as_deref(), Some("xai"));
+    assert!(entry.env_key.is_none(), "baked model carries no env_key");
+    let creds = resolve_credentials(entry, None);
+    assert_eq!(creds.auth_type, AuthType::ApiKey);
+    assert_eq!(
+        creds.api_key.as_deref(),
+        Some("ambient-sentinel"),
+        "ambient XAI_API_KEY stays the last resort for baked xAI models"
+    );
+}
+/// Route matrix #2: a remote (prefetched) model with every endpoint default set
+/// inherits all five routing fields — backend, credential, context, family, agent type.
+#[test]
+fn p1_route_matrix_prefetched_inherits_all_endpoint_defaults() {
+    let mut cfg = Config::default();
+    cfg.endpoints.models_base_url = Some("https://llm-proxy.example.com/v1".to_owned());
+    cfg.endpoints.default_api_backend = Some(ApiBackend::Responses);
+    cfg.endpoints.default_env_key = Some(EnvKeys::single("PROXY_TEST_KEY"));
+    cfg.endpoints.default_context_window = Some(123_456);
+    cfg.endpoints.default_model_family = Some("openai".to_owned());
+    cfg.endpoints.default_agent_type = Some("grok-build".to_owned());
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(
+        "proxy-model".to_owned(),
+        prefetch_model_entry("proxy-model", DEFAULT_CONTEXT_WINDOW, ApiBackend::default()),
+    );
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    let entry = resolved
+        .get("proxy-model")
+        .expect("prefetched model must exist");
+    assert_eq!(entry.info.api_backend, ApiBackend::Responses);
+    assert_eq!(
+        entry.env_key.as_ref().map(|k| k.names()),
+        Some(vec!["PROXY_TEST_KEY"]),
+        "endpoint default_env_key is the auth fix for hydrated models"
+    );
+    assert_eq!(entry.info.context_window.get(), 123_456);
+    assert_eq!(entry.info.model_family.as_deref(), Some("openai"));
+    assert_eq!(entry.info.agent_type, "grok-build");
+}
+/// Route matrix #3: a `[model.<id>]` override for a subset of fields wins for those
+/// fields; the endpoint defaults fill only the rest.
+#[test]
+fn p1_route_matrix_config_override_wins_defaults_fill_the_rest() {
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [endpoints]
+            models_base_url = "https://llm-proxy.example.com/v1"
+            default_api_backend = "responses"
+            default_env_key = "PROXY_TEST_KEY"
+            default_context_window = 123456
+            default_model_family = "openai"
+            default_agent_type = "grok-build"
+
+            [model.proxy-model]
+            context_window = 99999
+        "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(
+        "proxy-model".to_owned(),
+        prefetch_model_entry("proxy-model", DEFAULT_CONTEXT_WINDOW, ApiBackend::default()),
+    );
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    let entry = resolved
+        .get("proxy-model")
+        .expect("prefetched model must exist");
+    assert_eq!(
+        entry.info.context_window.get(),
+        99_999,
+        "config override wins for the field it sets"
+    );
+    assert_eq!(
+        entry.info.api_backend,
+        ApiBackend::Responses,
+        "endpoint default fills the fields the config leaves unset"
+    );
+    assert_eq!(
+        entry.env_key.as_ref().map(|k| k.names()),
+        Some(vec!["PROXY_TEST_KEY"])
+    );
+    assert_eq!(entry.info.model_family.as_deref(), Some("openai"));
+    assert_eq!(entry.info.agent_type, "grok-build");
+}
+/// Route matrix #4: donor (baked) inheritance still wins over endpoint defaults for
+/// the fields the donor covers; defaults fill only what the donor left at built-in.
+#[test]
+fn p1_route_matrix_donor_wins_over_endpoint_defaults() {
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [endpoints]
+            default_api_backend = "messages"
+            default_env_key = "PROXY_TEST_KEY"
+            default_context_window = 777777
+            default_model_family = "openai"
+            default_agent_type = "grok-build"
+        "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    let dm = crate::models::default_model();
+    let mut prefetched = IndexMap::new();
+    // Stock mode (no custom endpoint), so the baked donor for `dm` exists.
+    prefetched.insert(
+        dm.to_owned(),
+        prefetch_model_entry(dm, DEFAULT_CONTEXT_WINDOW, ApiBackend::default()),
+    );
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    let entry = resolved.get(dm).expect("model must exist");
+    assert_eq!(
+        entry.info.context_window.get(),
+        500_000,
+        "donor (baked) context_window wins over the endpoint default"
+    );
+    assert_eq!(
+        entry.info.api_backend,
+        ApiBackend::Responses,
+        "donor (baked) api_backend wins over the endpoint default (messages)"
+    );
+    assert_eq!(
+        entry.info.model_family.as_deref(),
+        Some("openai"),
+        "donor does not cover model_family; endpoint default fills it"
+    );
+    assert_eq!(
+        entry.env_key.as_ref().map(|k| k.names()),
+        Some(vec!["PROXY_TEST_KEY"]),
+        "donor does not cover env_key; endpoint default fills it"
+    );
+}
+/// Route matrix #5: `ModelEntry::fallback` applies the endpoint defaults; the context
+/// window applies unconditionally because `ModelInfo::fallback` hardcodes a 200k
+/// placeholder (not `DEFAULT_CONTEXT_WINDOW`), which the "still at built-in default"
+/// test could never catch.
+#[test]
+fn p1_route_matrix_fallback_entry_applies_endpoint_defaults() {
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [endpoints]
+            models_base_url = "https://llm-proxy.example.com/v1"
+            default_api_backend = "responses"
+            default_env_key = "PROXY_TEST_KEY"
+            default_context_window = 300000
+            default_model_family = "openai"
+            default_agent_type = "grok-build"
+            default_extra_headers = { x-team = "acme" }
+        "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    let entry = ModelEntry::fallback("mystery-slug", &cfg.endpoints);
+    assert_eq!(entry.info.base_url, "https://llm-proxy.example.com/v1");
+    assert_eq!(
+        entry.info.context_window.get(),
+        300_000,
+        "endpoint default context_window replaces the 200k fallback placeholder"
+    );
+    assert_eq!(entry.info.api_backend, ApiBackend::Responses);
+    assert_eq!(entry.info.model_family.as_deref(), Some("openai"));
+    assert_eq!(entry.info.agent_type, "grok-build");
+    assert_eq!(
+        entry.env_key.as_ref().map(|k| k.names()),
+        Some(vec!["PROXY_TEST_KEY"])
+    );
+    assert_eq!(
+        entry.info.extra_headers.get("x-team").map(String::as_str),
+        Some("acme")
+    );
+}
+/// Route matrix #6: credential ladder on a resolved entry — api_key > env_key >
+/// (endpoint-default env_key via the resolved entry) > session > XAI_API_KEY.
+#[test]
+#[serial]
+fn p1_route_matrix_credential_ladder_on_resolved_entry() {
+    use crate::agent::auth_method::{LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR};
+    use xai_chat_state::AuthType;
+    const ENV: &str = "P1_LADDER_PROXY_KEY";
+    let _env = EnvGuard::set(ENV, "ladder-proxy-key");
+    let _xai = EnvGuard::set(XAI_API_KEY_ENV_VAR, "ladder-ambient-key");
+    let _legacy = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
+    // (a) per-model api_key beats its env_key.
+    let inline = test_model_entry(
+        "m",
+        "https://llm-proxy.example.com/v1",
+        Some("inline-key"),
+        Some(ENV),
+        None,
+    );
+    assert_eq!(
+        resolve_credentials(&inline, None).api_key.as_deref(),
+        Some("inline-key")
+    );
+    // (b) per-model env_key beats the ambient key.
+    let by_env = test_model_entry(
+        "m",
+        "https://llm-proxy.example.com/v1",
+        None,
+        Some(ENV),
+        None,
+    );
+    assert_eq!(
+        resolve_credentials(&by_env, None).api_key.as_deref(),
+        Some("ladder-proxy-key")
+    );
+    // (c) the endpoint-default env_key, landed on the resolved entry, resolves.
+    let raw: toml::Value = toml::from_str(&format!(
+        r#"
+            [endpoints]
+            models_base_url = "https://llm-proxy.example.com/v1"
+            default_env_key = "{ENV}"
+        "#
+    ))
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(
+        "m".to_owned(),
+        prefetch_model_entry("m", DEFAULT_CONTEXT_WINDOW, ApiBackend::default()),
+    );
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    let resolved_entry = resolved.get("m").expect("model must exist");
+    let creds = resolve_credentials(resolved_entry, None);
+    assert_eq!(creds.auth_type, AuthType::ApiKey);
+    assert_eq!(creds.api_key.as_deref(), Some("ladder-proxy-key"));
+    // (d) session token beats the ambient key for first-party xAI routes.
+    let xai = test_model_entry("m", "https://api.x.ai/v1", None, None, None);
+    let creds = resolve_credentials(&xai, Some("ladder-session-jwt"));
+    assert_eq!(creds.auth_type, AuthType::SessionToken);
+    assert_eq!(creds.api_key.as_deref(), Some("ladder-session-jwt"));
+    // (e) ambient XAI_API_KEY stays the last resort for first-party xAI routes.
+    let creds = resolve_credentials(&xai, None);
+    assert_eq!(creds.auth_type, AuthType::ApiKey);
+    assert_eq!(creds.api_key.as_deref(), Some("ladder-ambient-key"));
+}
+/// Route matrix #7: `default_extra_headers` lands only on entries whose own headers
+/// are empty (mirrors the `ConfigModelOverride` replace-when-non-empty rule — no merge).
+#[test]
+fn p1_route_matrix_default_extra_headers_land_only_when_empty() {
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [endpoints]
+            models_base_url = "https://llm-proxy.example.com/v1"
+            default_extra_headers = { x-team = "acme" }
+        "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(
+        "empty-headers".to_owned(),
+        prefetch_model_entry(
+            "empty-headers",
+            DEFAULT_CONTEXT_WINDOW,
+            ApiBackend::default(),
+        ),
+    );
+    let mut own =
+        prefetch_model_entry("own-headers", DEFAULT_CONTEXT_WINDOW, ApiBackend::default());
+    own.info
+        .extra_headers
+        .insert("x-tenant".to_owned(), "other".to_owned());
+    prefetched.insert("own-headers".to_owned(), own);
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    let empty = resolved.get("empty-headers").expect("model must exist");
+    assert_eq!(
+        empty.info.extra_headers.get("x-team").map(String::as_str),
+        Some("acme")
+    );
+    let own = resolved.get("own-headers").expect("model must exist");
+    assert_eq!(
+        own.info.extra_headers.len(),
+        1,
+        "own headers are kept, defaults do not merge"
+    );
+    assert_eq!(
+        own.info.extra_headers.get("x-tenant").map(String::as_str),
+        Some("other")
+    );
+    assert!(!own.info.extra_headers.contains_key("x-team"));
+}
+/// Route matrix #8: serde — absent defaults stay None/empty (stock behavior
+/// byte-identical, including serialization), present defaults parse (string or array env key).
+#[test]
+fn p1_route_matrix_endpoints_defaults_serde() {
+    let cfg =
+        Config::new_from_toml_cfg(&toml::from_str("").unwrap()).expect("empty config should parse");
+    assert!(cfg.endpoints.default_api_backend.is_none());
+    assert!(cfg.endpoints.default_env_key.is_none());
+    assert!(cfg.endpoints.default_context_window.is_none());
+    assert!(cfg.endpoints.default_model_family.is_none());
+    assert!(cfg.endpoints.default_agent_type.is_none());
+    assert!(cfg.endpoints.default_extra_headers.is_empty());
+
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [endpoints]
+            default_api_backend = "responses"
+            default_env_key = ["PROXY_TEST_KEY_A", "PROXY_TEST_KEY_B"]
+            default_context_window = 123456
+            default_model_family = "openai"
+            default_agent_type = "grok-build"
+            default_extra_headers = { x-team = "acme" }
+        "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    assert_eq!(
+        cfg.endpoints.default_api_backend,
+        Some(ApiBackend::Responses)
+    );
+    assert_eq!(
+        cfg.endpoints.default_env_key.as_ref().map(|k| k.names()),
+        Some(vec!["PROXY_TEST_KEY_A", "PROXY_TEST_KEY_B"])
+    );
+    assert_eq!(cfg.endpoints.default_context_window, Some(123_456));
+    assert_eq!(
+        cfg.endpoints.default_model_family.as_deref(),
+        Some("openai")
+    );
+    assert_eq!(
+        cfg.endpoints.default_agent_type.as_deref(),
+        Some("grok-build")
+    );
+    assert_eq!(
+        cfg.endpoints
+            .default_extra_headers
+            .get("x-team")
+            .map(String::as_str),
+        Some("acme")
+    );
+    // Empty defaults must not appear in the serialized `[endpoints]` base that
+    // `from_config_value` layers user config over (stock output stays byte-identical).
+    let serialized = toml::to_string(&EndpointsConfig::default()).expect("serialize");
+    assert!(
+        !serialized.contains("default_"),
+        "empty provider defaults must not serialize"
+    );
+}

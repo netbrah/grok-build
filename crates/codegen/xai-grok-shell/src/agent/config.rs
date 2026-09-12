@@ -220,6 +220,32 @@ pub struct EndpointsConfig {
     /// Read by `load_gcs_service_account_key_sync()`. Declared for `serde_ignored`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gcs_service_account_key: Option<String>,
+    /// Provider-level model routing defaults (P1 provider-default seam).
+    /// Applied to prefetched (remote-hydrated) models and `ModelEntry::fallback` entries
+    /// strictly for fields still at their built-in defaults, so priority is:
+    /// `[model.<id>]` config > donor (baked keys) > these defaults > built-in defaults.
+    /// TOML-only (no env-var overrides): these bind to the ACTIVE endpoint's provider,
+    /// unlike the infrastructure URLs above.
+    /// Backend wire for hydrated models: "chat_completions" | "responses" | "messages".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_api_backend: Option<ApiBackend>,
+    /// Env var name(s) for the provider key: string or array in config.toml.
+    /// The auth fix for hydrated models: without it, custom-endpoint models fall
+    /// through to the ambient `XAI_API_KEY` (the 403 class).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_env_key: Option<EnvKeys>,
+    /// Context window (tokens) for hydrated models left at the built-in default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_context_window: Option<u64>,
+    /// Provider family for hydrated models with no explicit family.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_model_family: Option<String>,
+    /// Harness agent type for hydrated models left at the built-in default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_agent_type: Option<String>,
+    /// Extra headers for hydrated models whose own headers are empty (no merge).
+    #[serde(skip_serializing_if = "IndexMap::is_empty")]
+    pub default_extra_headers: IndexMap<String, String>,
 }
 /// A blank or whitespace-only override counts as unset.
 /// Single source of truth for the "an empty value means not configured" rule shared by the endpoint resolvers.
@@ -516,6 +542,12 @@ impl Default for EndpointsConfig {
                 .and_then(|s| s.parse().ok()),
             management_api_key: None,
             gcs_service_account_key: None,
+            default_api_backend: None,
+            default_env_key: None,
+            default_context_window: None,
+            default_model_family: None,
+            default_agent_type: None,
+            default_extra_headers: IndexMap::new(),
         }
     }
 }
@@ -3281,6 +3313,81 @@ fn managed_settings_env_flag(key: &str) -> Option<bool> {
     let json: serde_json::Value = serde_json::from_str(&content).ok()?;
     xai_grok_workspace::permission::resolution::json_env_flag(json.get("env"), key)
 }
+/// P1 provider-default seam: fill a hydrated entry's fields that are still at their
+/// built-in defaults from the `[endpoints]` provider defaults.
+/// Runs after donor inheritance and before `[model.<id>]` config overrides, so the
+/// effective priority is: config > donor > endpoint defaults > built-in defaults.
+/// Never touches a field that moved off its built-in default, so with no endpoint
+/// defaults configured every entry comes out byte-identical to stock.
+fn fill_from_endpoint_defaults(entry: &mut ModelEntry, endpoints: &EndpointsConfig) {
+    let info = &mut entry.info;
+    if info.api_backend == ApiBackend::default()
+        && let Some(backend) = &endpoints.default_api_backend
+    {
+        tracing::debug!(
+            model = %info.model,
+            inherited = ?backend,
+            source = "endpoint-defaults",
+            "hydrated model at built-in api_backend, filling from endpoint defaults"
+        );
+        info.api_backend.clone_from(backend);
+    }
+    if info.context_window.get() == DEFAULT_CONTEXT_WINDOW
+        && let Some(context_window) = endpoints.default_context_window.and_then(NonZeroU64::new)
+    {
+        tracing::debug!(
+            model = %info.model,
+            from = DEFAULT_CONTEXT_WINDOW,
+            inherited = context_window.get(),
+            source = "endpoint-defaults",
+            "hydrated model at built-in context_window, filling from endpoint defaults"
+        );
+        info.context_window = context_window;
+    }
+    if info.agent_type == DEFAULT_AGENT_TYPE
+        && let Some(agent_type) = &endpoints.default_agent_type
+    {
+        tracing::debug!(
+            model = %info.model,
+            inherited = %agent_type,
+            source = "endpoint-defaults",
+            "hydrated model at built-in agent_type, filling from endpoint defaults"
+        );
+        info.agent_type.clone_from(agent_type);
+    }
+    if info.model_family.is_none()
+        && let Some(model_family) = &endpoints.default_model_family
+    {
+        tracing::debug!(
+            model = %info.model,
+            inherited = %model_family,
+            source = "endpoint-defaults",
+            "hydrated model without model_family, filling from endpoint defaults"
+        );
+        info.model_family = Some(model_family.clone());
+    }
+    if info.extra_headers.is_empty() && !endpoints.default_extra_headers.is_empty() {
+        tracing::debug!(
+            model = %info.model,
+            header_keys = ?endpoints.default_extra_headers.keys().collect::<Vec<_>>(),
+            source = "endpoint-defaults",
+            "hydrated model without extra_headers, filling from endpoint defaults"
+        );
+        info.extra_headers
+            .clone_from(&endpoints.default_extra_headers);
+    }
+    if entry.env_key.is_none()
+        && let Some(env_key) = &endpoints.default_env_key
+    {
+        tracing::debug!(
+            model = %info.model,
+            inherited = %env_key,
+            source = "endpoint-defaults",
+            "hydrated model without env_key, filling from endpoint defaults"
+        );
+        entry.env_key = Some(env_key.clone());
+    }
+}
 /// Assemble the final model map. Priority (highest wins):
 /// config.toml `[model.*]` > prefetched (remote) > hardcoded defaults.
 pub(crate) fn resolve_model_list(
@@ -3328,6 +3435,9 @@ pub(crate) fn resolve_model_list(
             if resolved.contains_key(key) {
                 tracing::debug!(model_key = %key, "prefetched model overriding default");
             }
+            // P1 provider-default seam: donor inheritance ran first, so this only
+            // touches fields still at their built-in defaults.
+            fill_from_endpoint_defaults(entry, &cfg.endpoints);
         }
         resolved = prefetched;
     }
@@ -4191,14 +4301,22 @@ impl ModelEntry {
     pub fn fallback(slug: &str, endpoints: &EndpointsConfig) -> Self {
         let mut info = ModelInfo::fallback(slug);
         info.base_url = endpoints.resolve_inference_base_url();
-        Self {
+        // `ModelInfo::fallback` hardcodes a 200k placeholder, not `DEFAULT_CONTEXT_WINDOW`,
+        // so the "still at built-in default" fill below would never catch it; apply the
+        // endpoint default unconditionally when present (the placeholder is a stand-in).
+        if let Some(context_window) = endpoints.default_context_window.and_then(NonZeroU64::new) {
+            info.context_window = context_window;
+        }
+        let mut entry = Self {
             info,
             mtls_cert_dir: None,
             api_key: None,
             env_key: None,
             auth_provider: None,
             api_base_url: None,
-        }
+        };
+        fill_from_endpoint_defaults(&mut entry, endpoints);
+        entry
     }
     pub fn info(&self) -> &ModelInfo {
         &self.info
