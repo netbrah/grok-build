@@ -2456,7 +2456,11 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
             id: None,
             model_family: None,
             model: model_id.to_string(),
-            base_url: String::new(),
+            // First-party xAI route by default: the P1 fail-closed credential
+            // guard rejects credentialless custom-endpoint models, so a generic
+            // catalog test entry must look like a first-party route. Tests that
+            // exercise the BYOK/custom path set a non-xAI base_url explicitly.
+            base_url: "https://api.x.ai/v1".to_string(),
             name: None,
             description: None,
             max_completion_tokens: None,
