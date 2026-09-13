@@ -41,9 +41,27 @@
     ],
     "artifact": [
       {
+        "file": "compaction/segment_*.md",
+        "op": "count",
+        "min": 1
+      },
+      {
+        "file": "compaction_checkpoints/*.json",
+        "op": "count",
+        "min": 1
+      },
+      {
+        "file": "compaction_requests/*.json",
+        "field": "$.error",
+        "eq": null,
+        "absent_ok": true,
+        "which": "last"
+      },
+      {
         "file": "compaction_requests/*.json",
         "field": "$.summary",
         "ne_null": true,
+        "absent_ok": true,
         "which": "last"
       }
     ]

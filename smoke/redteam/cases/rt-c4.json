@@ -47,16 +47,52 @@
     ],
     "artifact": [
       {
+        "file": "compaction/segment_*.md",
         "op": "count",
+        "min": 1
+      },
+      {
+        "file": "compaction_checkpoints/*.json",
+        "op": "count",
+        "min": 1
+      },
+      {
         "file": "compaction_requests/*.json",
-        "min": 1,
-        "max": 1
+        "field": "$.error",
+        "eq": null,
+        "absent_ok": true,
+        "which": "last"
       },
       {
         "file": "compaction_requests/*.json",
         "field": "$.summary",
         "ne_null": true,
+        "absent_ok": true,
         "which": "last"
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "$.body.model": "qwen3.8-27b"
+        },
+        "nth": 0,
+        "grep": "This session is being continued from a previous conversation that ran out of context"
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "$.body.model": "qwen3.8-27b"
+        },
+        "nth": 1,
+        "grep": "This session is being continued from a previous conversation that ran out of context"
       }
     ]
   }
