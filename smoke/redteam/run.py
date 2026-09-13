@@ -110,7 +110,14 @@ def live_upstream(live_home: str) -> str:
     cfg = read_live_config(live_home)
     m = re.search(r'^models_base_url\s*=\s*"([^"]+)"', cfg, re.M)
     if m:
-        return m.group(1).rstrip("/")
+        base = m.group(1).rstrip("/")
+        # The wiretap appends the full route path grok issues against
+        # models_base_url (/v1/<route>), so the origin it forwards to
+        # must NOT already end in /v1 (else: https://host/v1/v1/<route>
+        # -> 403 "Route is blocked").
+        if base.endswith("/v1"):
+            base = base[:-3]
+        return base
     return DEFAULT_UPSTREAM
 
 
@@ -240,6 +247,14 @@ class HermeticHome:
                          flags=re.M)
         with open(os.path.join(self.home, "config.toml"), "w") as fh:
             fh.write(cfg)
+        cache_src = os.path.join(live_home, "models_cache.json")
+        if os.path.isfile(cache_src):
+            # Catalog cache: -m <model> resolves against config + cache;
+            # without it the hermetic registry only sees [model."X"]
+            # sections and catalog models (qwen3.8-27b) are "unknown id".
+            cache_path = os.path.join(self.home, "models_cache.json")
+            shutil.copy(cache_src, cache_path)
+            _align_models_cache(cache_path, wire_port)
         if not keep:
             pass  # cleanup via caller (tempdir)
         self.keep = keep
@@ -247,6 +262,45 @@ class HermeticHome:
     def session_dir_for(self, cwd: str, sid: str) -> str:
         return os.path.join(self.home, "sessions",
                             encode_cwd_dirname(cwd), sid)
+
+
+def _align_models_cache(cache_path: str, wire_port) -> None:
+    """Align the copied live catalog cache to the hermetic scope.
+
+    The cache scope gate (remote_config/cache.rs try_load_fresh) checks
+    grok_version, auth_method, origin, identity, and a 300s TTL. The
+    live copy mismatches on origin (rewritten base_url under wirecap),
+    identity (computed from the live session's XAI_API_KEY), and
+    freshness (TTL). grok_version already matches (same CARGO_PKG_VERSION
+    for source builds) and auth_method is "api_key" whenever XAI_API_KEY
+    is set in the environment (the L1 contract keeps it). Rewriting the
+    three fields materializes "the catalog fetched for this hermetic
+    scope" so -m <catalog-model> resolves offline and race-free; the
+    catalog content is credential-independent (same 76-model list).
+    """
+    try:
+        with open(cache_path) as fh:
+            cache = json.load(fh)
+    except Exception:
+        return
+    if not isinstance(cache, dict) or not cache.get("models"):
+        return
+    cache["renewed_at"] = datetime.now(timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ")
+    if wire_port:
+        cache["origin"] = "http://127.0.0.1:%d/v1/models" % wire_port
+    xai_key = os.environ.get("XAI_API_KEY", "")
+    if xai_key:
+        import hashlib
+        h = hashlib.sha256()
+        for part in ("models-api-key", xai_key, ""):
+            # model_fetch_auth.rs scope_hash: NUL-separated sha256.
+            # alpha_test_key is unset in the live config (verified).
+            h.update(part.encode())
+            h.update(b"\x00")
+        cache["identity"] = h.hexdigest()
+    with open(cache_path, "w") as fh:
+        json.dump(cache, fh, indent=2)
 
 
 # ---------------------------------------------------------------------------
