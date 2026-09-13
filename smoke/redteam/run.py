@@ -1405,7 +1405,7 @@ def run_case(case, args, budget):
                                                os.devnull)))
         if wirecap:
             for spec in assert_block.get("wire", []):
-                if spec.get("kind") == "recon":
+                if spec.get("kind") == "recon" or spec.get("op") == "recon":
                     results.append(check_recon(spec, ctx))
                     continue
                 results.append(check_wire(spec, os.path.join(run_dir,
