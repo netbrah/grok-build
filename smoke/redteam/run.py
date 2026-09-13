@@ -291,8 +291,13 @@ def seed_history(home: str, cwd: str, sid: str, model: str,
     def _size():
         return sum(len(l) for l in lines)
 
-    while (est < target_tokens and (not target_bytes
-                                    or _size() < target_bytes)):
+    def _cap_met():
+        # target_bytes takes precedence (docstring); token cap otherwise.
+        if target_bytes:
+            return _size() >= target_bytes
+        return est >= target_tokens
+
+    while not _cap_met():
         for role_lines in (
             [json.dumps({"type": "user", "content": [
                 {"type": "text",
