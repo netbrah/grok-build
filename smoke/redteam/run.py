@@ -1529,13 +1529,15 @@ KEY_HEURISTIC = re.compile(
     r'|user=[A-Za-z0-9]+:[A-Za-z0-9+/=]{20,}@)')
 
 
-def redaction_sweep(root: str, ambient_key: str):
-    """Grep the whole run dir for the ambient key + key-like heuristics.
-    Returns (hits, details)."""
+def redaction_sweep(root: str, ambient_key: str, files=None):
+    """Grep the run dir (or the named files within it) for the ambient key
+    + key-like heuristics. Returns (hits, details)."""
     hits = 0
     details = []
     for dirpath, dirnames, filenames in os.walk(root):
         for fn in filenames:
+            if files is not None and fn not in files:
+                continue
             p = os.path.join(dirpath, fn)
             try:
                 with open(p, errors="replace") as fh:
@@ -1679,7 +1681,7 @@ def write_report(out: str, rows, env_meta, args, sweep_hits, sweep_details):
             if not a.get("ok") or a.get("recon"):
                 md.append("  - evidence: %s" % a["evidence"])
         if r["status"] == "FAIL":
-            md.extend(slice_evidence(r, secrets=(env_meta.get("key", ""),)))
+            md.extend(slice_evidence(r, secrets=(args.ambient_key,)))
         md.append("")
     if sweep_details:
         md.append("## Redaction sweep details")
@@ -1769,12 +1771,19 @@ def main(argv=None):
         log("=== %s: %s" % (case["id"], case.get("title", "")))
         rows.append(run_case(case, a, budget))
     sweep_hits, sweep_details = redaction_sweep(a.out, ambient)
+    md = write_report(a.out, rows, env_meta, a, sweep_hits, sweep_details)
+    # G4 contract covers the run dir INCLUDING the generated reports, so
+    # sweep report.md/report.json after write_report; a hit there fails
+    # the sweep like any other artifact.
+    report_hits, report_details = redaction_sweep(
+        a.out, ambient, files=("report.md", "report.json"))
+    sweep_hits += report_hits
+    sweep_details.extend(report_details)
     if sweep_hits:
         log("REDACTION SWEEP: %d HIT(S) — inspect before sharing"
             % sweep_hits)
     else:
         log("redaction sweep: 0 hits")
-    md = write_report(a.out, rows, env_meta, a, sweep_hits, sweep_details)
     log("report: %s" % md)
     log("calls used: %d / %d" % (budget.used, budget.limit))
     bad = [r for r in rows if r["status"] in ("FAIL", "BLOCKED")]
