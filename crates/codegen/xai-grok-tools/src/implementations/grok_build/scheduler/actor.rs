@@ -750,6 +750,7 @@ impl SchedulerActor {
             surface_completion: true,
             await_to_completion: false,
             fork_context: false,
+            context: xai_tool_types::SubagentContextRequest::default(),
             owner: SubagentOwner::Task,
             // A child of the actor's token, so shutdown cancels a fire the
             // coordinator still has queued at the concurrent limit.

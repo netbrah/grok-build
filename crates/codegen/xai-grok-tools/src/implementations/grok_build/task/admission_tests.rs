@@ -18,6 +18,7 @@ fn request(parent_session_id: &str) -> SubagentRequest {
         surface_completion: false,
         await_to_completion: true,
         fork_context: false,
+        context: xai_tool_types::SubagentContextRequest::default(),
         owner: SubagentOwner::Task,
         cancel_token: tokio_util::sync::CancellationToken::new(),
         spawn_root: Default::default(),

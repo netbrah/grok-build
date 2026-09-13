@@ -23,7 +23,9 @@ use std::sync::Arc;
 use educe::Educe;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use xai_tool_types::{SubagentCapabilityMode, SubagentIsolationMode, WaitMode};
+use xai_tool_types::{
+    SubagentCapabilityMode, SubagentContextRequest, SubagentIsolationMode, WaitMode,
+};
 
 use crate::register_resource;
 
@@ -97,6 +99,12 @@ pub struct SubagentRequest {
     /// Harness-only: seed child with normalized parent conversation, then append
     /// `prompt`. Not on TaskToolInput. Successful `resume_from` takes precedence.
     pub fork_context: bool,
+    /// How the spawn asks for the child's initial context (v2 `fork_turns`).
+    /// `Default` defers to the child model's catalog default (fresh when the
+    /// model has no row). The v2 fork path resolves this through
+    /// `ForkDirective::resolve` (child-vs-parent model identity); v1 spawns
+    /// keep the `fork_context` bool behavior.
+    pub context: SubagentContextRequest,
     pub owner: SubagentOwner,
     pub cancel_token: CancellationToken,
     pub spawn_root: SpawnRootSpan,
@@ -200,8 +208,228 @@ pub enum ModelOverrideProvenance {
     Tool,
 }
 
+// ── Native multi-agent v2 (item 9 / MA-2) ─────────────────────────────────
+// Provenance: open-grok@240c99c9 crates/codegen/xai-grok-tools/src/
+// implementations/grok_build/task/types.rs:247-448 +
+// implementations/codex/multi_agent_v2.rs (re-expressed for the WT host:
+// `service_tier`/`reasoning_effort` dropped per spec D-9; `context` added to
+// `NativeAgentSpawn` because the WT `TaskToolInput` schema is pinned).
+
+/// Team identity injected into every model-facing session.
+///
+/// `agent_id` is the current session ID. `team_scope_id` is the root session
+/// that owns the flat subagent cohort. Keeping these separate lets children
+/// address siblings without weakening the existing parent-session scoping
+/// used by task polling and cancellation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentMailboxIdentity {
+    pub team_scope_id: String,
+    pub agent_id: String,
+}
+
+register_resource!("grok_build", "AgentMailboxIdentity", AgentMailboxIdentity);
+
+/// `Message` is the steering channel: it is pushed into the recipient session
+/// live (a running turn consumes it at an interjection boundary; an idle
+/// recipient starts an agent-message turn). `FollowupTask` is the passive
+/// queue: it waits in the recipient's mailbox until drained via `wait_agent`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMailboxMessageKind {
+    Message,
+    FollowupTask,
+    NativeMessage,
+    NativeFollowup,
+}
+
+impl AgentMailboxMessageKind {
+    pub fn steers_recipient(self) -> bool {
+        matches!(
+            self,
+            Self::Message | Self::NativeMessage | Self::NativeFollowup
+        )
+    }
+
+    pub fn triggers_turn(self) -> bool {
+        matches!(self, Self::Message | Self::NativeFollowup)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Message | Self::NativeMessage => "message",
+            Self::FollowupTask | Self::NativeFollowup => "followup_task",
+        }
+    }
+}
+
+/// One immutable peer message. Runtime-owned fields are never accepted from
+/// the model; the send tools stamp them before dispatch.
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct AgentMailboxMessage {
+    pub message_id: String,
+    pub team_scope_id: String,
+    pub from_agent_id: String,
+    pub to_agent_id: String,
+    pub kind: AgentMailboxMessageKind,
+    pub body: String,
+    pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<NativeAgentMessage>,
+}
+
+/// Native (v2) metadata attached to inter-agent messages. v0 transport is
+/// plaintext with the untrusted-marker shape (spec D-3): `encrypted` is
+/// carried as part of the message contract but no v0 encoder exists, so it is
+/// always `false` under the proxy.
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct NativeAgentMessage {
+    pub author: String,
+    pub recipient: String,
+    pub encrypted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_prompt_id: Option<String>,
+}
+
+impl AgentMailboxMessage {
+    pub fn display_body(&self) -> &str {
+        if self.native.as_ref().is_some_and(|native| native.encrypted) {
+            "[Encrypted agent message]"
+        } else {
+            &self.body
+        }
+    }
+
+    /// The Responses-wire carrier form of this message. v0 never arms the
+    /// carrier under the proxy (spec F-b/F-c); the shape is pinned so the
+    /// boundary function's contract stays testable.
+    pub fn native_wire_item(&self) -> Option<serde_json::Value> {
+        let native = self.native.as_ref()?;
+        let content = if native.encrypted {
+            serde_json::json!({"type": "encrypted_content", "encrypted_content": self.body})
+        } else {
+            serde_json::json!({"type": "input_text", "text": self.body})
+        };
+        Some(serde_json::json!({
+            "type": "agent_message",
+            "id": self.message_id,
+            "author": native.author,
+            "recipient": native.recipient,
+            "content": [content],
+        }))
+    }
+}
+
+/// Spawn parameters for a native (named) v2 agent. Carried in the tool call
+/// context by `spawn_agent` and folded into `SubagentRuntimeOverrides` by
+/// `TaskTool::run` (the WT `TaskToolInput` schema is pinned, so `context`
+/// rides here instead of the input struct).
+#[derive(Debug, Clone, Default)]
+pub struct NativeAgentSpawn {
+    pub task_name: String,
+    pub fork_turns: Option<usize>,
+    pub context: SubagentContextRequest,
+    pub message: Option<AgentMailboxMessage>,
+}
+
+/// One durable named-agent entry in the session's `native_agents.json`
+/// registry (spec Q5: secure tmp+rename, session-dir scoped).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NativeAgentRecord {
+    pub task_name: String,
+    pub agent_id: String,
+    pub agent_type: String,
+    pub model: Option<String>,
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub mailbox: Vec<AgentMailboxMessage>,
+}
+
+#[derive(Debug)]
+pub enum NativeAgentOperation {
+    List {
+        path_prefix: Option<String>,
+    },
+    Message {
+        target: String,
+        message: AgentMailboxMessage,
+    },
+    Interrupt {
+        target: String,
+    },
+    Wait {
+        timeout_ms: u64,
+    },
+}
+
+#[derive(Debug)]
+pub struct NativeAgentRequest {
+    pub identity: AgentMailboxIdentity,
+    pub operation: NativeAgentOperation,
+    pub respond_to: oneshot::Sender<Result<serde_json::Value, String>>,
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct AgentRosterEntry {
+    pub agent_id: String,
+    pub is_root: bool,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumed_from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct ListAgentsOutput {
+    pub team_scope_id: String,
+    pub agents: Vec<AgentRosterEntry>,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageDeliveryStatus {
+    Queued,
+    Delivered,
+    Rejected,
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct AgentMessageSendOutput {
+    pub message_id: String,
+    pub target_agent_id: String,
+    pub status: AgentMessageDeliveryStatus,
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct WaitAgentMessagesOutput {
+    pub messages: Vec<AgentMailboxMessage>,
+    pub timed_out: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SubagentRuntimeOverrides {
+    /// Native (named) v2 spawn parameters; `None` for every v1 spawn.
+    pub native_agent: Option<NativeAgentSpawn>,
     /// Override the model (e.g. "test-model").
     pub model: Option<String>,
     /// Whether `model` came from a model-facing Task call or internal harness logic.
@@ -436,6 +664,10 @@ pub struct SubagentResult {
     /// auto-background). Not a completion — `success` stays false so `status()` is not `"completed"`; branch on this before
     /// `success`. Task `run_in_background` start is a separate registration signal, not this flag on `spawn()`.
     pub backgrounded: bool,
+    /// Non-fatal notices to surface to the model alongside the result (e.g. the
+    /// Q2 credential-guard fall-through notice on an explicit `spawn_agent(model=…)`).
+    /// Never includes credential material.
+    pub warnings: Vec<String>,
 }
 
 impl Default for SubagentResult {
@@ -456,6 +688,7 @@ impl Default for SubagentResult {
             output_usage_incomplete: false,
             worktree_path: None,
             backgrounded: false,
+            warnings: Vec::new(),
         }
     }
 }
@@ -529,6 +762,35 @@ pub struct SubagentQueryRequest {
     /// Oneshot for the coordinator to send back the snapshot.
     #[educe(Debug(ignore))]
     pub respond_to: oneshot::Sender<Option<SubagentSnapshot>>,
+}
+
+// ── Native agent mailbox requests (item 9 / MA-2) ─────────────────────────
+
+#[derive(Educe)]
+#[educe(Debug)]
+pub struct AgentListRequest {
+    pub identity: AgentMailboxIdentity,
+    #[educe(Debug(ignore))]
+    pub respond_to: oneshot::Sender<ListAgentsOutput>,
+}
+
+#[derive(Educe)]
+#[educe(Debug)]
+pub struct AgentMessageRequest {
+    pub identity: AgentMailboxIdentity,
+    pub target: String,
+    pub message: AgentMailboxMessage,
+    #[educe(Debug(ignore))]
+    pub respond_to: oneshot::Sender<Result<AgentMessageSendOutput, String>>,
+}
+
+#[derive(Educe)]
+#[educe(Debug)]
+pub struct AgentMailboxWaitRequest {
+    pub identity: AgentMailboxIdentity,
+    pub timeout_ms: u64,
+    #[educe(Debug(ignore))]
+    pub respond_to: oneshot::Sender<WaitAgentMessagesOutput>,
 }
 
 #[derive(Educe)]
@@ -923,7 +1185,16 @@ pub struct SubagentDescribeRequest {
 /// Coordinator message enum. Kept exhaustive so every actor command is handled.
 pub enum SubagentEvent {
     Spawn(SubagentSpawnRequest),
+    /// Native (named) v2 agent operation: list / message / interrupt / wait.
+    NativeAgent(NativeAgentRequest),
     Query(SubagentQueryRequest),
+    /// Roster query for the team's named agents (model-facing `list_agents`).
+    ListAgents(AgentListRequest),
+    /// Steer/queue one peer message (model-facing `send_message`).
+    SendAgentMessage(AgentMessageRequest),
+    /// Poll the caller's own mailbox, optionally blocking (model-facing
+    /// `wait_agent` passive drain).
+    WaitAgentMessages(AgentMailboxWaitRequest),
     Cancel(SubagentCancelRequest),
     ListActive(SubagentListActiveRequest),
     ListRunning(SubagentListRunningRequest),

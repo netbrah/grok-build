@@ -125,6 +125,79 @@ pub fn is_not_sentinel(s: &str) -> bool {
         && !t.eq_ignore_ascii_case("undefined")
 }
 
+// Path-segment safety for agent / task ids used in worktree and session
+// directory names. Provenance: hyper-grok-build@45e984f3
+// packages/tools/xai-tool-types/src/task.rs:147-243 (re-expressed, same
+// fail-closed rules: no traversal, no separators, no reserved basenames).
+/// Maximum length of a safe single path segment.
+pub const MAX_SAFE_PATH_SEGMENT_LEN: usize = 128;
+
+/// Windows device / reserved basenames (case-insensitive) that must never be
+/// used as a sole path segment on NTFS.
+fn is_windows_reserved_basename(base: &str) -> bool {
+    matches!(
+        base.to_ascii_uppercase().as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6"
+            | "COM7" | "COM8" | "COM9" | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6"
+            | "LPT7" | "LPT8" | "LPT9"
+    )
+}
+
+/// Core path-segment safety shared by agent names and task ids.
+///
+/// Fail-closed: non-empty, length <= [`MAX_SAFE_PATH_SEGMENT_LEN`], not the
+/// whole segment `.` or `..`, no `/`, `\`, NUL, control chars, or Windows
+/// ADS `:`, no leading/trailing ASCII whitespace or trailing `.`, and not a
+/// Windows reserved device basename. `allow_internal_dot` permits historical
+/// internal single dots (`task.v1`) for task ids.
+fn is_safe_segment_inner(s: &str, allow_internal_dot: bool) -> bool {
+    if s.is_empty() || s.len() > MAX_SAFE_PATH_SEGMENT_LEN {
+        return false;
+    }
+    // Explicit IDs must not be silently trimmed — surrounding whitespace is
+    // invalid, not normalized away.
+    if s != s.trim() {
+        return false;
+    }
+    if s == "." || s == ".." {
+        return false;
+    }
+    // Trailing dot/space are stripped or reserved on Windows; reject them.
+    if s.ends_with('.') || s.ends_with(' ') {
+        return false;
+    }
+    if s.contains('/') || s.contains('\\') || s.contains('\0') || s.contains(':') {
+        return false;
+    }
+    if s.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    let basename = s.split('.').next().unwrap_or(s);
+    if is_windows_reserved_basename(basename) {
+        return false;
+    }
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || (allow_internal_dot && c == '.'))
+}
+
+/// Whether `s` is safe to use as a single path segment for agent names /
+/// session directory components (no internal dots).
+#[inline]
+pub fn is_safe_path_segment(s: &str) -> bool {
+    is_safe_segment_inner(s, false)
+}
+
+/// Whether `s` is a safe subagent / task id for path joins (worktree dirs,
+/// session meta dirs, resume handles, background output files).
+///
+/// Same traversal / separator rules as [`is_safe_path_segment`], but allows
+/// historical internal single dots such as `task.v1`. Does **not** trim:
+/// leading/trailing whitespace makes the id invalid.
+#[inline]
+pub fn is_safe_task_id(s: &str) -> bool {
+    is_safe_segment_inner(s, true)
+}
+
 /// Drop sentinels and trim; move the original `String` when no trim is needed.
 pub fn sanitize_optional_arg(value: Option<String>) -> Option<String> {
     value.and_then(|s| {
@@ -2214,5 +2287,61 @@ mod tests {
         assert!(SubagentContextRequest::default().may_fork());
         assert!(!SubagentContextRequest::FRESH.may_fork());
         assert!(!SubagentContextRequest::Explicit(SubagentContextMode::Fresh).may_fork());
+    }
+
+    // Provenance: hyper-grok-build@45e984f3 packages/tools/xai-tool-types/src/task.rs:1729 ::
+    // is_safe_task_id_accepts_uuid_v7_legacy_slugs_and_internal_dots (adapted: function ported
+    // into WT xai-tool-types for the v2 worktree-path validator; body unchanged)
+    #[test]
+    fn is_safe_task_id_accepts_uuid_v7_legacy_slugs_and_internal_dots() {
+        for good in [
+            "019e0000-0000-7000-8000-0000000000bb",
+            "task-123",
+            "abc-123",
+            "prev-id",
+            "a",
+            "A_b-9",
+            "task.v1",
+            "foo.bar.baz",
+        ] {
+            assert!(is_safe_task_id(good), "{good:?} should be accepted");
+        }
+        // Agent path segments still reject internal dots.
+        assert!(!is_safe_path_segment("task.v1"));
+        assert!(is_safe_path_segment("task-v1"));
+    }
+
+    // Provenance: hyper-grok-build@45e984f3 packages/tools/xai-tool-types/src/task.rs:1748 ::
+    // is_safe_task_id_rejects_path_traversal_and_separators (adapted: function ported into WT
+    // xai-tool-types for the v2 worktree-path validator; body unchanged)
+    #[test]
+    fn is_safe_task_id_rejects_path_traversal_and_separators() {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../etc",
+            "..\\windows",
+            "a/b",
+            "a\\b",
+            "a/../b",
+            "has space",
+            "  leading",
+            "trailing  ",
+            "null\0byte",
+            "ads:stream",
+            "CON",
+            "con.txt",
+            "nul",
+            "ends.",
+            "ctrl\x01char",
+            &"x".repeat(MAX_SAFE_PATH_SEGMENT_LEN + 1),
+        ] {
+            assert!(!is_safe_task_id(bad), "{bad:?} should be rejected");
+        }
+        // Internal ".." as a multi-dot sequence is still only rejected when
+        // it forms path separators; "foo..bar" has no separator and is a
+        // single segment — allowed for task ids (historical).
+        assert!(is_safe_task_id("foo..bar"));
     }
 }

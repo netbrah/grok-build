@@ -369,6 +369,31 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
     fn handle_command(&mut self, command: SubagentEvent) {
         match command {
             SubagentEvent::Spawn(command) => self.handle_spawn(command),
+            // Native (named) v2 agent operations. Mailbox/registry handlers
+            // land in MA-2.2; until then these arms fail closed with a
+            // channel-close-shaped reply so no command is silently dropped.
+            SubagentEvent::NativeAgent(request) => {
+                let _ = request
+                    .respond_to
+                    .send(Err("Native agent collaboration is unavailable in this host".to_owned()));
+            }
+            SubagentEvent::ListAgents(request) => {
+                let _ = request.respond_to.send(super::types::ListAgentsOutput {
+                    team_scope_id: request.identity.team_scope_id,
+                    agents: Vec::new(),
+                });
+            }
+            SubagentEvent::SendAgentMessage(request) => {
+                let _ = request
+                    .respond_to
+                    .send(Err("Agent mailbox is unavailable in this host".to_owned()));
+            }
+            SubagentEvent::WaitAgentMessages(request) => {
+                let _ = request.respond_to.send(super::types::WaitAgentMessagesOutput {
+                    messages: Vec::new(),
+                    timed_out: true,
+                });
+            }
             SubagentEvent::Query(query) => {
                 self.handle_query(
                     query.subagent_id,

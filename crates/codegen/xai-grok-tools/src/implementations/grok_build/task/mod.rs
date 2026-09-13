@@ -598,6 +598,9 @@ impl xai_tool_runtime::Tool for TaskTool {
             resume_from,
             cwd,
             runtime_overrides: SubagentRuntimeOverrides {
+                // v2 `spawn_agent` folds its context-carried parameters in
+                // below; plain `task` spawns carry none.
+                native_agent: None,
                 model,
                 model_override_provenance: ModelOverrideProvenance::Tool,
                 reasoning_effort: None,
@@ -621,6 +624,7 @@ impl xai_tool_runtime::Tool for TaskTool {
             surface_completion: true,
             await_to_completion: false,
             fork_context: false,
+            context: xai_tool_types::SubagentContextRequest::default(),
             owner: SubagentOwner::Task,
             cancel_token: child_cancellation,
             spawn_root: SpawnRootSpan::new(spawn_root_span),
