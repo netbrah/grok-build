@@ -1144,6 +1144,134 @@ fn stamp_live_fork_session_metadata(
         tracing::warn!(error = %e, "live fork: failed to write forked session summary");
     }
 }
+
+/// Fraction of the child's context window budgeted for the cross-model fork
+/// digest (in tokens; converted to characters at ~4 chars/token).
+const DIGEST_BUDGET_PERCENT: u64 = 35;
+/// Floor for the digest character budget so tiny context windows still get a
+/// usable digest.
+const DIGEST_MIN_BUDGET_CHARS: usize = 8_000;
+/// Cap on the plaintext source fed to the LLM compaction pass.
+const DIGEST_LLM_SOURCE_CAP_CHARS: usize = 240_000;
+/// Cross-model fork: render the parent history into a plaintext
+/// `<forked_context>` digest and seed the child with
+/// `[System(placeholder), User(digest)]` (prefix 2, mirroring the
+/// summarized-fork shape). Raw parent items never reach the child, so
+/// provider isolation holds by construction (F7). Fails open to a fresh
+/// spawn when there is nothing inheritable.
+async fn digest_fork_initial_context(
+    request: &SubagentRequest,
+    ctx: &SubagentSpawnContext,
+    child_session_info: &SessionInfo,
+    effective_model_id: &str,
+    items: Vec<ConversationItem>,
+    child_context_window: u64,
+) -> InitialContext {
+    let fresh = |copy_error: String| InitialContext {
+        source: InitialContextSource::New,
+        copy_error: Some(copy_error),
+        prefix_len: None,
+        conversation: vec![],
+        force_compact: false,
+        verbatim_fork: false,
+    };
+    if !items
+        .iter()
+        .any(|i| !matches!(i, ConversationItem::System(_)))
+    {
+        return fresh("parent conversation unavailable".to_string());
+    }
+    let budget_chars = ((child_context_window * DIGEST_BUDGET_PERCENT / 100) as usize)
+        .saturating_mul(4)
+        .max(DIGEST_MIN_BUDGET_CHARS);
+    let plan = xai_grok_subagent_resolution::digest::plan_forked_context_digest(
+        &items, budget_chars,
+    );
+    let earlier_summary = if !plan.fits && plan.earlier_items > 0 {
+        let source = xai_grok_subagent_resolution::digest::digest_earlier_source_text(
+            &items, plan.earlier_items, DIGEST_LLM_SOURCE_CAP_CHARS,
+        );
+        llm_digest_summary(ctx, &source).await
+    } else {
+        None
+    };
+    let digest = xai_grok_subagent_resolution::digest::render_forked_context_digest(
+        &items,
+        budget_chars,
+        &plan,
+        earlier_summary.as_deref(),
+    );
+    tracing::info!(
+        subagent_id = %request.id,
+        subagent_type = %request.subagent_type,
+        parent_items = items.len(),
+        digest_chars = digest.len(),
+        budget_chars,
+        llm_compacted = earlier_summary.is_some(),
+        "Seeded cross-model forked child with context digest"
+    );
+    InitialContext {
+        source: InitialContextSource::Forked,
+        copy_error: None,
+        prefix_len: Some(2),
+        conversation: vec![
+            ConversationItem::system(String::new()),
+            ConversationItem::user(digest),
+        ],
+        force_compact: false,
+        verbatim_fork: false,
+    }
+}
+/// One-shot LLM compaction of the digest's earlier portion, routed on the
+/// parent's own model and credentials (`ctx.sampling_config`). Fails open:
+/// any error or timeout returns `None` and the deterministic metadata
+/// summary stands in.
+async fn llm_digest_summary(ctx: &SubagentSpawnContext, source: &str) -> Option<String> {
+    const DIGEST_LLM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+    let client = match crate::sampling::Client::new(ctx.sampling_config.clone()) {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::warn!(error = %e, "digest fork: failed to build compaction client");
+            return None;
+        }
+    };
+    let request = xai_grok_sampling_types::ConversationRequest::from_items(vec![
+        ConversationItem::system(
+            "You compress agent conversation history. Summarize the transcript below into a \
+             dense briefing for another agent that continues the work: goals, key findings, \
+             files/paths touched, decisions made, and current state. Preserve concrete \
+             identifiers (paths, symbols, commands, error messages). Plain text only, no \
+             preamble.",
+        ),
+        ConversationItem::user(source),
+    ])
+    .with_model(&ctx.sampling_config.model)
+    .with_max_output_tokens(4_000);
+    let response =
+        match tokio::time::timeout(DIGEST_LLM_TIMEOUT, client.conversation_collect(request))
+            .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    error = %e,
+                    "digest fork: LLM compaction failed; using deterministic summary"
+                );
+                return None;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "digest fork: LLM compaction timed out; using deterministic summary"
+                );
+                return None;
+            }
+        };
+    let text = response
+        .assistant()
+        .map(|a| a.content.trim().to_string())
+        .unwrap_or_default();
+    if text.is_empty() { None } else { Some(text) }
+}
 enum BootstrapInitialContext {
     Ready(InitialContext),
     /// Explicit resume_from failed: abort spawn (fail closed).
@@ -1292,21 +1420,43 @@ async fn bootstrap_initial_context(
         None => None,
     };
     if let Some(items) = live_items {
-        let ctx_out = verbatim_or_normalize_fork(items, window.context_window);
+        let directive = xai_grok_subagent_resolution::fork::fork_directive_for_items(
+            &items,
+            effective_model_id,
+            child_wire_model,
+        );
+        let ctx_out = match directive {
+            xai_grok_subagent_resolution::fork::ForkDirective::Digest => {
+                digest_fork_initial_context(
+                    request,
+                    ctx,
+                    child_session_info,
+                    effective_model_id,
+                    items,
+                    window.context_window,
+                )
+                .await
+            }
+            _ => verbatim_or_normalize_fork(items, window.context_window),
+        };
         tracing::info!(
             subagent_id = %request.id,
             subagent_type = %request.subagent_type,
+            directive = ?directive,
             loaded_items = ctx_out.conversation.len(),
             source = ?ctx_out.source,
             verbatim = ctx_out.verbatim_fork,
             "Forked context from live parent_chat_state"
         );
         if matches!(ctx_out.source, InitialContextSource::Forked) {
-            let marker = if ctx_out.verbatim_fork {
-                "forked_verbatim"
-            } else {
-                "forked_summarized"
-            };
+            let marker =
+                if directive == xai_grok_subagent_resolution::fork::ForkDirective::Digest {
+                    "forked_digest"
+                } else if ctx_out.verbatim_fork {
+                    "forked_verbatim"
+                } else {
+                    "forked_summarized"
+                };
             stamp_live_fork_session_metadata(
                 child_session_info,
                 &ctx.parent_session_id,
@@ -1358,7 +1508,40 @@ async fn bootstrap_initial_context(
                         );
                         vec![]
                     });
-                BootstrapInitialContext::Ready(forked_initial_context(items))
+                let directive = xai_grok_subagent_resolution::fork::fork_directive_for_items(
+                    &items,
+                    effective_model_id,
+                    child_wire_model,
+                );
+                let ctx_out = match directive {
+                    xai_grok_subagent_resolution::fork::ForkDirective::Digest => {
+                        digest_fork_initial_context(
+                            request,
+                            ctx,
+                            child_session_info,
+                            effective_model_id,
+                            items,
+                            window.context_window,
+                        )
+                        .await
+                    }
+                    _ => forked_initial_context(items),
+                };
+                if directive == xai_grok_subagent_resolution::fork::ForkDirective::Digest
+                    && matches!(ctx_out.source, InitialContextSource::Forked)
+                {
+                    // The disk copy stamped "forked"; correct the marker so the
+                    // digest fork is distinguishable in the child summary.
+                    stamp_live_fork_session_metadata(
+                        child_session_info,
+                        &ctx.parent_session_id,
+                        request.parent_prompt_id.clone(),
+                        effective_model_id,
+                        Some(2),
+                        "forked_digest",
+                    );
+                }
+                BootstrapInitialContext::Ready(ctx_out)
             }
             Err(e) => {
                 let err_msg = format!("{e}");
