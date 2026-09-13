@@ -1677,6 +1677,7 @@ async fn bootstrap_in_place_resume_reads_existing_transcript() {
             &child,
             &child_dir,
             "test-model",
+            "test-model",
             super::resume_window::ResumeWindowPolicy {
                 context_window: 128_000,
                 auto_compact_threshold_percent: 85,
@@ -1707,6 +1708,7 @@ async fn bootstrap_no_fork_is_new() {
             &ctx,
             &child,
             Path::new("/tmp"),
+            "m",
             "m",
             super::resume_window::ResumeWindowPolicy {
                 context_window: 128_000,
@@ -1739,6 +1741,7 @@ async fn bootstrap_fork_without_parent_fails_open() {
             &ctx,
             &child,
             Path::new("/tmp"),
+            "m",
             "m",
             super::resume_window::ResumeWindowPolicy {
                 context_window: 128_000,
@@ -1782,6 +1785,7 @@ async fn bootstrap_fork_live_parent_chat_state_is_forked_with_marker() {
             &ctx,
             &child,
             Path::new("/tmp"),
+            "m",
             "m",
             super::resume_window::ResumeWindowPolicy {
                 context_window: 128_000,
@@ -1831,6 +1835,156 @@ async fn bootstrap_fork_live_parent_chat_state_is_forked_with_marker() {
                     !text.contains("<background_context>"),
                     "verbatim mirror must NOT wrap items in a background_context blob: {text}"
                 );
+        }
+        BootstrapInitialContext::ResumeAbort(m) => panic!("unexpected abort: {m}"),
+    }
+}
+/// F7 (item 9, MA-1.4, red-first): a cross-model fork child must receive
+/// the plaintext `<forked_context>` digest — never raw parent items. A
+/// parent assistant item stamped with model-A provenance and a raw Codex
+/// payload must not cross into a model-B child's initial context.
+#[tokio::test]
+async fn bootstrap_fork_cross_model_child_gets_digest_not_raw_items() {
+    use xai_grok_sampling_types::conversation::{
+        BackendToolCallItem, BackendToolKind, CodexRawInputItem, ConversationItem,
+    };
+    const MARKER: &str = "UNIQUE_CROSS_MODEL_PARENT_MARKER_abc123";
+    let req = bootstrap_test_request(true);
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    let chat = spawn_test_parent_chat_state("model-a");
+    chat.replace_conversation(vec![
+        ConversationItem::system("parent system"),
+        ConversationItem::user("find the regression"),
+        ConversationItem::assistant_with_model(
+            format!("{MARKER} the regression is in unescape()"),
+            "model-a",
+        ),
+        ConversationItem::BackendToolCall(BackendToolCallItem {
+            kind: BackendToolKind::CodexRawInput(CodexRawInputItem {
+                id: "raw-1".to_string(),
+                raw: serde_json::json!({
+                    "type": "compaction",
+                    "encrypted_content": "SECRET_ENCRYPTED_BLOB"
+                }),
+                cross_provider_fallback: None,
+            }),
+        }),
+        ConversationItem::assistant_with_model("done investigating; no further notes", "model-a"),
+    ]);
+    ctx.parent_chat_state = Some(chat);
+    ctx.parent_session_info = None;
+    let child = SessionInfo {
+        id: acp::SessionId::new("child-boot-xmodel"),
+        cwd: "/tmp".into(),
+    };
+    let out = bootstrap_initial_context(
+            &req,
+            None,
+            &ctx,
+            &child,
+            Path::new("/tmp"),
+            "model-b",
+            "model-b",
+            super::resume_window::ResumeWindowPolicy {
+                context_window: 128_000,
+                auto_compact_threshold_percent: 85,
+            },
+        )
+        .await;
+    match out {
+        BootstrapInitialContext::Ready(ic) => {
+            assert_eq!(ic.source, InitialContextSource::Forked);
+            assert!(
+                    !ic.verbatim_fork,
+                    "cross-model fork must not mirror raw parent items"
+                );
+            assert_eq!(ic.conversation.len(), 2);
+            assert!(matches!(ic.conversation[0], ConversationItem::System(_)));
+            assert!(matches!(ic.conversation[1], ConversationItem::User(_)));
+            // Raw parent items never cross the model boundary.
+            assert!(
+                    !ic.conversation.iter().any(|item| {
+                        matches!(item, ConversationItem::Assistant(a)
+                            if a.model_id.as_deref() == Some("model-a"))
+                            || matches!(item, ConversationItem::BackendToolCall(_))
+                    }),
+                    "raw parent assistant/backend items crossed into the cross-model child"
+                );
+            let user_text = match &ic.conversation[1] {
+                ConversationItem::User(u) => u
+                    .content
+                    .iter()
+                    .filter_map(|p| match p {
+                        xai_grok_sampling_types::conversation::ContentPart::Text { text } => {
+                            Some(text.as_ref())
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                other => panic!("expected user digest, got {other:?}"),
+            };
+            assert!(
+                    user_text.starts_with("<forked_context>"),
+                    "digest open tag missing: {user_text}"
+                );
+            assert!(user_text.ends_with("</forked_context>"));
+            assert!(
+                    !user_text.contains("SECRET_ENCRYPTED_BLOB"),
+                    "encrypted raw payload leaked into the cross-model digest"
+                );
+        }
+        BootstrapInitialContext::ResumeAbort(m) => panic!("unexpected abort: {m}"),
+    }
+}
+/// F7 (item 9, MA-1.4): a same-model fork keeps today's verbatim behavior
+/// (raw items copied byte-for-byte on a complete tail) — pinned so the
+/// cross-model split cannot drift onto same-model forks.
+#[tokio::test]
+async fn bootstrap_fork_same_model_child_gets_verbatim_mirror() {
+    use xai_grok_sampling_types::conversation::ConversationItem;
+    const MARKER: &str = "UNIQUE_SAME_MODEL_PARENT_MARKER_def456";
+    let req = bootstrap_test_request(true);
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    let chat = spawn_test_parent_chat_state("model-x");
+    chat.replace_conversation(vec![
+        ConversationItem::system("parent system"),
+        ConversationItem::user(format!("{MARKER} implement multi-repo fix")),
+        ConversationItem::assistant_with_model("noted the multi-repo work", "model-x"),
+    ]);
+    ctx.parent_chat_state = Some(chat);
+    ctx.parent_session_info = None;
+    let child = SessionInfo {
+        id: acp::SessionId::new("child-boot-samemodel"),
+        cwd: "/tmp".into(),
+    };
+    let out = bootstrap_initial_context(
+            &req,
+            None,
+            &ctx,
+            &child,
+            Path::new("/tmp"),
+            "model-x",
+            "model-x",
+            super::resume_window::ResumeWindowPolicy {
+                context_window: 128_000,
+                auto_compact_threshold_percent: 85,
+            },
+        )
+        .await;
+    match out {
+        BootstrapInitialContext::Ready(ic) => {
+            assert_eq!(ic.source, InitialContextSource::Forked);
+            assert!(
+                    ic.verbatim_fork,
+                    "same-model fork must mirror verbatim"
+                );
+            assert_eq!(ic.conversation.len(), 3);
+            assert_eq!(ic.prefix_len, Some(3));
+            assert!(matches!(
+                    &ic.conversation[2],
+                    ConversationItem::Assistant(a) if a.model_id.as_deref() == Some("model-x")
+                ));
         }
         BootstrapInitialContext::ResumeAbort(m) => panic!("unexpected abort: {m}"),
     }

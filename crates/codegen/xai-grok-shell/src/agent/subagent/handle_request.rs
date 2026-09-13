@@ -884,6 +884,7 @@ pub(crate) async fn run_shell_child(
         &child_session_info,
         &child_session_dir,
         effective_model_id.0.as_ref(),
+        &subagent_model_id,
         super::resume_window::ResumeWindowPolicy {
             context_window: effective_sampling_config.context_window,
             auto_compact_threshold_percent,

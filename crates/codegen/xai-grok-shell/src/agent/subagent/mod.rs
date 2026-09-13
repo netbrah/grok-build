@@ -1159,6 +1159,7 @@ async fn bootstrap_initial_context(
     child_session_info: &SessionInfo,
     child_session_dir: &std::path::Path,
     effective_model_id: &str,
+    child_wire_model: &str,
     window: resume_window::ResumeWindowPolicy,
 ) -> BootstrapInitialContext {
     if request.fork_context && request.resume_from.is_some() {
