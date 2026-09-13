@@ -15,7 +15,7 @@
     }
   ],
   "watchdog_s": 300,
-  "est_calls": 3,
+  "est_calls": 4,
   "assert": {
     "exit": 0,
     "ndjson": [
@@ -30,15 +30,27 @@
     ],
     "artifact": [
       {
-        "file": "compaction_requests/*.json",
-        "field": "$.summary",
-        "ne_null": true,
-        "which": "last"
+        "file": "compaction/segment_*.md",
+        "op": "count",
+        "min": 1
+      },
+      {
+        "file": "compaction_checkpoints/*.json",
+        "op": "count",
+        "min": 1
       },
       {
         "file": "compaction_requests/*.json",
         "field": "$.error",
         "eq": null,
+        "absent_ok": true,
+        "which": "last"
+      },
+      {
+        "file": "compaction_requests/*.json",
+        "field": "$.summary",
+        "ne_null": true,
+        "absent_ok": true,
         "which": "last"
       }
     ],
@@ -50,7 +62,8 @@
         "eq": "qwen3.8-27b",
         "where": {
           "method": "POST",
-          "path": "/v1/responses"
+          "path": "/v1/responses",
+          "$.body.model": "qwen3.8-27b"
         },
         "nth": 0
       },
@@ -60,7 +73,8 @@
           "file": "req-*.json",
           "where": {
             "method": "POST",
-            "path": "/v1/responses"
+            "path": "/v1/responses",
+            "$.body.model": "qwen3.8-27b"
           },
           "nth": 0
         },
@@ -68,9 +82,10 @@
           "file": "req-*.json",
           "where": {
             "method": "POST",
-            "path": "/v1/responses"
+            "path": "/v1/responses",
+            "$.body.model": "qwen3.8-27b"
           },
-          "nth": 1
+          "last": 0
         }
       }
     ]

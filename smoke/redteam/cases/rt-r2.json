@@ -14,7 +14,7 @@
     {
       "op": "kill",
       "after_s": 2.5,
-      "prompt": "RT-R2 KILLED"
+      "prompt": "RT-R2 KILLMARK: Write a 600-word essay about the history of lighthouses, covering at least three named lighthouses. Begin the essay immediately."
     },
     {
       "op": "switch",

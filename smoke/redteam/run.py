@@ -1485,7 +1485,12 @@ def _finish(case, run_dir, ctx, results, status, started, wt, home, args,
                 continue
             if rm:
                 spec = dict(spec)
-                spec["nth"] = run_order.index(rm)
+                if spec.get("where"):
+                    # Per-row where-filter: nth selects within the row's
+                    # own requests (default 0 = newest of that row).
+                    spec.setdefault("nth", 0)
+                else:
+                    spec["nth"] = run_order.index(rm)
             results.append(check_wire(spec, os.path.join(run_dir, "wire")))
     hard_fails = [r for r in results if not r.ok and not r.recon]
     if row_asserts and hard_fails and status == "PASS":

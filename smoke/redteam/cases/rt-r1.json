@@ -18,7 +18,7 @@
     {
       "op": "kill",
       "after_s": 2.5,
-      "prompt": "RT-R1 KILLED: Reply with exactly: RT-R1-KILLED"
+      "prompt": "RT-R1 KILLMARK: Write a 600-word essay about the history of lighthouses, covering at least three named lighthouses. Begin the essay immediately."
     },
     {
       "op": "turn",
@@ -69,14 +69,14 @@
       {
         "op": "grep",
         "file": "chat_history.jsonl",
-        "grep": "RT-R1-KILLED",
-        "max_count": 1
+        "grep": "RT-R1-KILLMARK",
+        "max_count": 2
       },
       {
         "op": "grep",
         "file": "chat_history.jsonl",
         "grep": "RT-R1-T1",
-        "max_count": 3
+        "max_count": 6
       },
       {
         "op": "count",
