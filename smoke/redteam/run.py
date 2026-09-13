@@ -1337,6 +1337,12 @@ def run_case(case, args, budget):
                                       "resp": str(resp)[:200]})
                     ctx.events.append({"type": "acp_set_model",
                                        "model": cur_model, "_line": 0})
+                    if "error" in resp:
+                        ctx.events.append({"type": "acp_error",
+                                           "error": resp["error"],
+                                           "model": cur_model})
+                        mark("FAIL", "acp set_model error: %s"
+                             % str(resp["error"])[:120])
                 else:
                     ctx.turns.append({"op": "switch", "step": si,
                                       "model": cur_model, "via": "resume"})
