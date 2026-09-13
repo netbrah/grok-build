@@ -51,8 +51,9 @@ pub(crate) use spawn::{
 
 mod worktree_guard;
 pub(crate) use worktree_guard::{
-    ensure_real_dir, recheck_worktree_identity, subagent_temp_worktree_base,
-    validate_subagent_worktree_path, validate_unix_parent_chain, WorktreeIdentity,
+    ensure_real_dir, is_safe_task_id, recheck_worktree_identity,
+    subagent_temp_worktree_base, validate_subagent_worktree_path,
+    validate_unix_parent_chain, WorktreeIdentity,
 };
 #[cfg(unix)]
 pub(crate) use worktree_guard::{
@@ -2116,7 +2117,8 @@ enum ResumeWorktreeAction {
     Reuse,
     /// Directory gone but a snapshot ref exists: rehydrate from it.
     Rehydrate,
-    /// Directory gone and no snapshot: fall back to the shared workspace.
+    /// Directory gone and no snapshot: spawn fails closed (isolation was
+    /// requested; the shared workspace is never a silent substitute).
     Shared,
 }
 /// Decide how to recover a resumed subagent's worktree from its on-disk state and whether a durable snapshot is available.

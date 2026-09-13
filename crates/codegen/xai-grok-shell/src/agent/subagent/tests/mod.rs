@@ -3990,3 +3990,25 @@ fn validate_subagent_worktree_inode_recheck_detects_replacement() {
     let _ = std::fs::remove_dir_all(&dest);
     let _ = std::fs::remove_dir_all(&aside);
 }
+
+/// NEW (MA-2.6, WT-specific — not a HY port): the app's worktree subsystem
+/// creates `~/.grok/worktrees/<repo>` with default 0755 mode. The guard must
+/// tighten such an existing euid-owned, write-safe base to 0700 instead of
+/// refusing it — production isolation=worktree spawns depend on the base
+/// surviving validation. Group/world **write** bits stay a refusal (covered
+/// by the ported `validate_subagent_worktree_rejects_world_writable_base`).
+#[cfg(unix)]
+#[test]
+fn ensure_real_dir_tightens_app_created_0755_base() {
+    use super::ensure_real_dir;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let _lock = env_test_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path().join("app-created-base");
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o755)).unwrap();
+    ensure_real_dir(&base)
+        .expect("0755 euid-owned write-safe base must be accepted (tightened)");
+    let meta = std::fs::symlink_metadata(&base).unwrap();
+    assert_eq!(meta.mode() & 0o777, 0o700, "base must be tightened to 0700");
+}
