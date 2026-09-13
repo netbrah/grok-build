@@ -79,7 +79,7 @@ pub fn normalize_forked_context(items: Vec<ConversationItem>) -> (Vec<Conversati
 /// The scan skips those, both before the Assistant and inside the ToolResult run that follows it. Otherwise long forked
 /// histories would register zero turns and never summarize, blowing up token usage. NOTE: two scanners walk turn
 /// boundaries while skipping `Reasoning` items, and they must move together.
-fn count_complete_turns(items: &[&ConversationItem]) -> Vec<usize> {
+pub(crate) fn count_complete_turns(items: &[&ConversationItem]) -> Vec<usize> {
     let mut turn_ends = Vec::new();
     let mut i = 0;
     while i < items.len() {
@@ -125,7 +125,7 @@ fn count_complete_turns(items: &[&ConversationItem]) -> Vec<usize> {
 /// Strip content from user message text that is redundant in a forked child context. The child session gets its own
 /// system reminders, user info, git status, and project layout via the system prompt builder. Also strips the skill body
 /// that follows a `</command-args>` tag; those instructions drove the parent's skill run and mean nothing to the child.
-fn strip_fork_noise(text: &str) -> String {
+pub(crate) fn strip_fork_noise(text: &str) -> String {
     if !text.contains('<') {
         let mut result = collapse_blank_lines(text);
         trim_string_in_place(&mut result);
@@ -291,7 +291,7 @@ fn render_item_to_background(out: &mut String, item: &ConversationItem) {
 }
 
 /// Render a summary of early conversation items (files mentioned, tools used).
-fn render_summary(out: &mut String, items: &[&ConversationItem]) {
+pub(crate) fn render_summary(out: &mut String, items: &[&ConversationItem]) {
     let mut tools_used = BTreeSet::new();
     let mut user_messages = 0u32;
     let mut assistant_messages = 0u32;
@@ -322,7 +322,7 @@ fn render_summary(out: &mut String, items: &[&ConversationItem]) {
 /// Truncate a string to at most `max_chars` Unicode characters. `char_indices` finds the byte offset of the Nth
 /// character, so multi-byte UTF-8 content (emoji, CJK) never splits mid-character. Returns the full string if it has
 /// `max_chars` or fewer characters.
-fn truncate_str(s: &str, max_chars: usize) -> &str {
+pub(crate) fn truncate_str(s: &str, max_chars: usize) -> &str {
     match s.char_indices().nth(max_chars) {
         Some((byte_offset, _)) => &s[..byte_offset],
         None => s, // string has at most max_chars characters
