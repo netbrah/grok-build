@@ -360,3 +360,88 @@ async fn native_registry_reloads_names_and_resumes_through_the_original_owner() 
     );
     harness.actor.abort();
 }
+
+
+// Q6 (item 9, MA-2.4, binding (c)): followup reuse never accumulates depth
+// — a reused named agent can be reused AGAIN after its second completion;
+// the registry keeps one entry and the child stays root-parented. The
+// coordinator's reuse path (fresh handle_spawn + fresh UUIDv7 +
+// `resume_from`) carries no depth state (OG
+// coordinator/native.rs:415/:433 no-depth-bump). WT-native (the source's
+// reuse test covered a single reuse).
+#[tokio::test]
+async fn native_followup_reuse_never_accumulates_depth() {
+    let mut harness = harness(false, std::time::Duration::from_secs(60));
+    let mut original = named_request("native-worker", "worker");
+    original.runtime_overrides.model = Some("saved-model".into());
+    harness.backend.spawn(original, None).await.unwrap();
+    harness.requests.recv().await.unwrap();
+    harness.started.recv().await.unwrap();
+    let root = mailbox_identity("parent", "parent");
+    // First completion.
+    let _ = harness.finish.send(());
+    harness
+        .backend
+        .query("native-worker", true, Some(1_000))
+        .await
+        .unwrap();
+    // Reuse #1.
+    let message = native_message(&root, "/root/worker", "second task", true);
+    harness
+        .backend
+        .native_agent(
+            root.clone(),
+            NativeAgentOperation::Message {
+                target: "/root/worker".into(),
+                message,
+            },
+        )
+        .await
+        .unwrap();
+    let resumed1 = harness.requests.recv().await.unwrap();
+    assert_eq!(resumed1.resume_from.as_deref(), Some("native-worker"));
+    assert_eq!(resumed1.parent_session_id, "parent");
+    harness.started.recv().await.unwrap();
+    let _ = harness.followups.recv().await.unwrap();
+    // Second completion.
+    let _ = harness.finish.send(());
+    harness
+        .backend
+        .query(resumed1.id.as_str(), true, Some(1_000))
+        .await
+        .unwrap();
+    // Reuse #2 — still allowed; the reuse path never accumulates depth.
+    let message = native_message(&root, "/root/worker", "third task", true);
+    harness
+        .backend
+        .native_agent(
+            root.clone(),
+            NativeAgentOperation::Message {
+                target: "/root/worker".into(),
+                message,
+            },
+        )
+        .await
+        .unwrap();
+    let resumed2 = harness.requests.recv().await.unwrap();
+    assert_eq!(resumed2.resume_from.as_deref(), Some(resumed1.id.as_str()));
+    assert_eq!(resumed2.parent_session_id, "parent");
+    assert_ne!(resumed2.id, resumed1.id, "each reuse mints a fresh agent id");
+    harness.started.recv().await.unwrap();
+    let _ = harness.followups.recv().await.unwrap();
+    // One registry entry, pointing at the latest incarnation.
+    let roster = harness
+        .backend
+        .native_agent(
+            root,
+            NativeAgentOperation::List {
+                path_prefix: Some("/root/worker".into()),
+            },
+        )
+        .await
+        .unwrap();
+    let agents = roster["agents"].as_array().unwrap();
+    assert_eq!(agents.len(), 1, "reuses must not accumulate registry entries");
+    assert_eq!(agents[0]["agent_id"], resumed2.id);
+    harness.actor.abort();
+}

@@ -642,7 +642,7 @@ impl xai_tool_runtime::Tool for TaskTool {
         // lifecycle (named registry, mailbox, auto-wake); the model gets
         // the canonical task path and agent id to address it with.
         if let Some(native) = &native_agent {
-            let result = backend.backend().spawn(request).await?;
+            let result = backend.backend().spawn(request, None).await?;
             if !result.success {
                 return Err(xai_tool_runtime::ToolError::custom(
                     "spawn_failed",
@@ -3252,6 +3252,88 @@ mod tests {
         assert!(
             spawn.request.spawn_root.take_span().is_none(),
             "slot must be single-take"
+        );
+    }
+    // Q6 (item 9, MA-2.4, spec §8 MA-2(5)): followup reuse does NOT
+    // increment depth. (a) a fresh v2 spawn at the depth limit is rejected
+    // before any coordinator traffic; (b) a followup reuse at the same
+    // depth limit never sees the depth check (the coordinator's reuse path
+    // carries no depth state — OG coordinator/native.rs:415/:433
+    // no-depth-bump).
+    fn native_v2_resources(backend: SubagentBackendResource) -> Resources {
+        let mut resources = Resources::new();
+        resources.insert(backend);
+        resources.insert(SubagentDepthCounter(MAX_SUBAGENT_DEPTH)); // at limit
+        resources.insert(NativeAgentsEnabled(true));
+        resources.insert(AgentMailboxIdentity {
+            team_scope_id: "team".to_string(),
+            agent_id: "root".to_string(),
+        });
+        resources.insert(SessionIdResource("test-session".to_string()));
+        resources.insert(CurrentPromptIdResource("prompt-123".to_string()));
+        resources
+    }
+    #[tokio::test]
+    async fn spawn_agent_at_depth_limit_is_rejected_before_spawn() {
+        let (backend, mut rx) = make_backend();
+        let result = xai_tool_runtime::Tool::run(
+            &crate::implementations::grok_build::native_agents::SpawnAgentTool,
+            test_ctx(native_v2_resources(backend).into_shared()),
+            crate::implementations::grok_build::native_agents::SpawnAgentInput {
+                task_name: "worker".to_string(),
+                message: "work".to_string(),
+                agent_type: None,
+                model: None,
+                fork_turns: None,
+            },
+        )
+        .await;
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("depth limit exceeded"), "error: {err}");
+        assert!(
+            rx.try_recv().is_err(),
+            "coordinator must not receive the request"
+        );
+    }
+    #[tokio::test]
+    async fn followup_task_at_depth_limit_does_not_check_depth() {
+        let (backend, mut rx) = make_backend();
+        let run = tokio::spawn(async {
+            xai_tool_runtime::Tool::run(
+                &crate::implementations::grok_build::native_agents::FollowupTaskTool,
+                test_ctx(native_v2_resources(backend).into_shared()),
+                crate::implementations::grok_build::native_agents::MessageInput {
+                    target: "/root/worker".to_string(),
+                    message: "more work".to_string(),
+                },
+            )
+            .await
+        });
+        // Answer the coordinator op with a controlled error so the tool
+        // result is deterministic — it must be THAT error, not a depth one.
+        let event = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            rx.recv(),
+        )
+        .await
+        .expect("coordinator op must arrive")
+        .expect("channel open");
+        match event {
+            SubagentEvent::NativeAgent(req) => {
+                let _ = req
+                    .respond_to
+                    .send(Err("no such agent: worker".to_owned()));
+            }
+            _ => panic!("expected NativeAgent op on the coordinator channel"),
+        }
+        let err = run.await.unwrap().unwrap_err().to_string();
+        assert!(
+            err.contains("no such agent"),
+            "error must be the controlled op error: {err}"
+        );
+        assert!(
+            !err.to_lowercase().contains("depth"),
+            "followup reuse must not check or increment depth: {err}"
         );
     }
 }

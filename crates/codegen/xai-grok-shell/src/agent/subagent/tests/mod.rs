@@ -2989,3 +2989,474 @@ async fn join_worker_task_drop_aborts_worker() {
         .expect("abort must reach the worker task")
         .expect("drop probe fires on abort");
 }
+// ── MA-2.4 (item 9, v2 multi-agent port) ────────────────────────────────────
+// G6 binding: the v2 spawn path is where `ForkDirective::resolve`'s
+// child-vs-parent comparison goes live (MA-1 reserved it for this stage).
+// WT-native tests — the v2 bootstrap branch has no OG test counterpart (the
+// source's fork wiring lived on the planner spawn; spec §8 MA-2(7)).
+fn native_v2_request(fork_turns: Option<usize>) -> SubagentRequest {
+    let mut request = bootstrap_test_request(false);
+    request.context = xai_tool_types::SubagentContextRequest::FORK;
+    request.runtime_overrides.native_agent = Some(NativeAgentSpawn {
+        task_name: "worker".into(),
+        fork_turns,
+        context: xai_tool_types::SubagentContextRequest::FORK,
+        message: None,
+    });
+    request
+}
+fn conversation_joined_text(items: &[xai_grok_sampling_types::conversation::ConversationItem]) -> String {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            xai_grok_sampling_types::conversation::ConversationItem::User(u) => Some(
+                u.content
+                    .iter()
+                    .filter_map(|p| match p {
+                        xai_grok_sampling_types::conversation::ContentPart::Text { text } => {
+                            Some(text.as_ref())
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            xai_grok_sampling_types::conversation::ConversationItem::Assistant(a) => {
+                Some(a.content.as_ref().to_owned())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+/// G6 (item 9, MA-2.4): v2 spawn, `fork_turns` on, DIFFERENT-model child ⇒
+/// Digest — the plaintext `<forked_context>` re-render, never raw parent
+/// items (a model-A assistant item and a raw Codex payload must not cross
+/// into a model-B child).
+#[tokio::test]
+async fn bootstrap_native_v2_cross_model_fork_gets_digest_not_raw_items() {
+    use xai_grok_sampling_types::conversation::{
+        BackendToolCallItem, BackendToolKind, CodexRawInputItem, ConversationItem,
+    };
+    let req = native_v2_request(None);
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    ctx.model_id = acp::ModelId::new("model-a");
+    let chat = spawn_test_parent_chat_state("model-a");
+    chat.replace_conversation(vec![
+        ConversationItem::system("parent system"),
+        ConversationItem::user("find the regression"),
+        ConversationItem::assistant_with_model(
+            "the regression is in unescape()",
+            "model-a",
+        ),
+        ConversationItem::BackendToolCall(BackendToolCallItem {
+            kind: BackendToolKind::CodexRawInput(CodexRawInputItem {
+                id: "raw-v2".to_string(),
+                raw: serde_json::json!({
+                    "type": "compaction",
+                    "encrypted_content": "SECRET_V2_BLOB"
+                }),
+                cross_provider_fallback: None,
+            }),
+        }),
+        ConversationItem::assistant_with_model("done investigating", "model-a"),
+    ]);
+    ctx.parent_chat_state = Some(chat);
+    ctx.parent_session_info = None;
+    let child = SessionInfo {
+        id: acp::SessionId::new("child-v2-xmodel"),
+        cwd: "/tmp".into(),
+    };
+    let out = bootstrap_initial_context(
+            &req,
+            None,
+            &ctx,
+            &child,
+            Path::new("/tmp"),
+            "model-b",
+            "model-b",
+            super::resume_window::ResumeWindowPolicy {
+                context_window: 128_000,
+                auto_compact_threshold_percent: 85,
+            },
+        )
+        .await;
+    match out {
+        BootstrapInitialContext::Ready(ic) => {
+            assert_eq!(ic.source, InitialContextSource::Forked);
+            assert!(
+                    !ic.verbatim_fork,
+                    "v2 cross-model fork must not mirror raw parent items"
+                );
+            assert_eq!(ic.conversation.len(), 2);
+            assert!(matches!(ic.conversation[0], ConversationItem::System(_)));
+            assert!(
+                    !ic.conversation.iter().any(|item| {
+                        matches!(item, ConversationItem::Assistant(a)
+                            if a.model_id.as_deref() == Some("model-a"))
+                            || matches!(item, ConversationItem::BackendToolCall(_))
+                    }),
+                    "raw parent assistant/backend items crossed into the v2 cross-model child"
+                );
+            let user_text = match &ic.conversation[1] {
+                ConversationItem::User(u) => u
+                    .content
+                    .iter()
+                    .filter_map(|p| match p {
+                        xai_grok_sampling_types::conversation::ContentPart::Text { text } => {
+                            Some(text.as_ref())
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                other => panic!("expected user digest, got {other:?}"),
+            };
+            assert!(
+                    user_text.starts_with("<forked_context>"),
+                    "digest open tag missing: {user_text}"
+                );
+            assert!(user_text.ends_with("</forked_context>"));
+            assert!(
+                    !user_text.contains("SECRET_V2_BLOB"),
+                    "encrypted raw payload leaked into the v2 cross-model digest"
+                );
+        }
+        BootstrapInitialContext::ResumeAbort(m) => panic!("unexpected abort: {m}"),
+    }
+}
+/// G6 (item 9, MA-2.4): v2 spawn, SAME-model child ⇒ Verbatim mirror — the
+/// byte-for-byte fork the v1 same-model path already does, now driven by
+/// `ForkDirective::resolve` on the v2 spawn input.
+#[tokio::test]
+async fn bootstrap_native_v2_same_model_fork_gets_verbatim_mirror() {
+    use xai_grok_sampling_types::conversation::ConversationItem;
+    let req = native_v2_request(None);
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    ctx.model_id = acp::ModelId::new("model-a");
+    let chat = spawn_test_parent_chat_state("model-a");
+    chat.replace_conversation(vec![
+        ConversationItem::system("parent system"),
+        ConversationItem::user("implement multi-repo fix"),
+        ConversationItem::assistant_with_model("noted the multi-repo work", "model-a"),
+    ]);
+    ctx.parent_chat_state = Some(chat);
+    ctx.parent_session_info = None;
+    let child = SessionInfo {
+        id: acp::SessionId::new("child-v2-samemodel"),
+        cwd: "/tmp".into(),
+    };
+    let out = bootstrap_initial_context(
+            &req,
+            None,
+            &ctx,
+            &child,
+            Path::new("/tmp"),
+            "model-a",
+            "model-a",
+            super::resume_window::ResumeWindowPolicy {
+                context_window: 128_000,
+                auto_compact_threshold_percent: 85,
+            },
+        )
+        .await;
+    match out {
+        BootstrapInitialContext::Ready(ic) => {
+            assert_eq!(ic.source, InitialContextSource::Forked);
+            assert!(
+                    ic.verbatim_fork,
+                    "v2 same-model fork must mirror verbatim"
+                );
+            assert_eq!(ic.conversation.len(), 3);
+            assert_eq!(ic.prefix_len, Some(3));
+            assert!(matches!(
+                    &ic.conversation[2],
+                    ConversationItem::Assistant(a) if a.model_id.as_deref() == Some("model-a")
+                ));
+        }
+        BootstrapInitialContext::ResumeAbort(m) => panic!("unexpected abort: {m}"),
+    }
+}
+/// MA-2.4 (fork_turns N, spec §6.4): v2 spawn with `fork_turns: Some(1)`
+/// truncates to the most recent non-synthetic user turn plus the leading
+/// System head — the older user turn must not reach the child.
+#[tokio::test]
+async fn bootstrap_native_v2_fork_turns_truncates_to_recent_user_turns() {
+    use xai_grok_sampling_types::conversation::ConversationItem;
+    let req = native_v2_request(Some(1));
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    ctx.model_id = acp::ModelId::new("model-a");
+    let chat = spawn_test_parent_chat_state("model-a");
+    chat.replace_conversation(vec![
+        ConversationItem::system("parent system"),
+        ConversationItem::user("FIRST_TASK_MARKER investigate module A"),
+        ConversationItem::assistant_with_model("module A checked", "model-a"),
+        ConversationItem::user("SECOND_TASK_MARKER now module B"),
+        ConversationItem::assistant_with_model("module B checked", "model-a"),
+    ]);
+    ctx.parent_chat_state = Some(chat);
+    ctx.parent_session_info = None;
+    let child = SessionInfo {
+        id: acp::SessionId::new("child-v2-truncated"),
+        cwd: "/tmp".into(),
+    };
+    let out = bootstrap_initial_context(
+            &req,
+            None,
+            &ctx,
+            &child,
+            Path::new("/tmp"),
+            "model-a",
+            "model-a",
+            super::resume_window::ResumeWindowPolicy {
+                context_window: 128_000,
+                auto_compact_threshold_percent: 85,
+            },
+        )
+        .await;
+    match out {
+        BootstrapInitialContext::Ready(ic) => {
+            assert_eq!(ic.source, InitialContextSource::Forked);
+            assert!(ic.verbatim_fork, "truncated same-model fork stays verbatim");
+            let joined = conversation_joined_text(&ic.conversation);
+            assert!(joined.contains("SECOND_TASK_MARKER"));
+            assert!(
+                    !joined.contains("FIRST_TASK_MARKER"),
+                    "fork_turns: 1 must drop the older user turn"
+                );
+        }
+        BootstrapInitialContext::ResumeAbort(m) => panic!("unexpected abort: {m}"),
+    }
+}
+/// Q2 (item 9, MA-2.4, spec §8 MA-2(6)): the credential-guard notice is
+/// PRESENT on guard-fire with an explicit `model` argument and ABSENT on
+/// clean resolution — including the v1-adjacent cases the notice must not
+/// observe (no explicit arg, non-Tool provenance, non-native spawn, unknown
+/// model, first-party xAI route, resolvable credential).
+#[test]
+fn native_model_guard_notice_present_on_guard_fire_and_absent_on_clean_resolution() {
+    use crate::agent::config::{EndpointsConfig, ModelEntry};
+    use xai_grok_tools::implementations::grok_build::task::types::ModelOverrideProvenance;
+    fn entry(slug: &str, base_url: &str) -> ModelEntry {
+        let mut entry = ModelEntry::fallback(slug, &EndpointsConfig::default());
+        entry.info.base_url = base_url.to_owned();
+        entry.api_key = None;
+        entry.env_key = None;
+        entry.auth_provider = None;
+        entry
+    }
+    let broken = entry("proxy-model", "https://llm-proxy.example.com/v1");
+    let mut catalog = indexmap::IndexMap::new();
+    catalog.insert("proxy-model".to_owned(), broken);
+    // (a) guard-fire with explicit arg ⇒ notice naming the model.
+    let notice = super::handle_request::native_model_guard_notice(
+        true,
+        ModelOverrideProvenance::Tool,
+        Some("proxy-model"),
+        &catalog,
+    )
+    .expect("guard-fire must carry the notice");
+    assert!(notice.contains("proxy-model"), "notice must name the model: {notice}");
+    assert!(
+        notice.contains("credential guard"),
+        "notice must name the guard: {notice}"
+    );
+    // (b) resolvable credential ⇒ clean resolution, no notice.
+    let clean = {
+        let mut clean = entry("proxy-model", "https://llm-proxy.example.com/v1");
+        clean.api_key = Some("resolvable-key".to_owned());
+        clean
+    };
+    let mut clean_catalog = indexmap::IndexMap::new();
+    clean_catalog.insert("proxy-model".to_owned(), clean);
+    assert!(
+        super::handle_request::native_model_guard_notice(
+            true,
+            ModelOverrideProvenance::Tool,
+            Some("proxy-model"),
+            &clean_catalog,
+        )
+        .is_none(),
+        "resolvable credential is a clean resolution"
+    );
+    // (c) first-party xAI route without own credentials ⇒ ambient-key last
+    // resort stays; the guard does not fire; no notice.
+    let xai = entry("grok-test", "https://api.x.ai/v1");
+    let mut xai_catalog = indexmap::IndexMap::new();
+    xai_catalog.insert("grok-test".to_owned(), xai);
+    assert!(
+        super::handle_request::native_model_guard_notice(
+            true,
+            ModelOverrideProvenance::Tool,
+            Some("grok-test"),
+            &xai_catalog,
+        )
+        .is_none()
+    );
+    // (d) no explicit model argument ⇒ no notice (inherited/pinned tiers).
+    assert!(
+        super::handle_request::native_model_guard_notice(
+            true,
+            ModelOverrideProvenance::Tool,
+            None,
+            &catalog,
+        )
+        .is_none()
+    );
+    // (e) non-Tool provenance (harness/role/config resolution) ⇒ no notice.
+    assert!(
+        super::handle_request::native_model_guard_notice(
+            true,
+            ModelOverrideProvenance::Harness,
+            Some("proxy-model"),
+            &catalog,
+        )
+        .is_none()
+    );
+    // (f) non-native (v1) spawn ⇒ no notice, whatever the guard says.
+    assert!(
+        super::handle_request::native_model_guard_notice(
+            false,
+            ModelOverrideProvenance::Tool,
+            Some("proxy-model"),
+            &catalog,
+        )
+        .is_none()
+    );
+    // (g) model not in the catalog ⇒ unknown-model fall-through, no notice.
+    assert!(
+        super::handle_request::native_model_guard_notice(
+            true,
+            ModelOverrideProvenance::Tool,
+            Some("unknown-model"),
+            &catalog,
+        )
+        .is_none()
+    );
+}
+/// MA-2.4 (closes the MA-1 self-flag): hermetic mock-client test for the
+/// LLM-compaction FAIL-OPEN path. The digest planner attempts the LLM
+/// compaction side-call only when the deterministic render does not fit the
+/// budget and there are earlier items to summarize; a failing side-call
+/// (mock endpoint answering HTTP 500) must fall back to the deterministic
+/// metadata summary — the same fail-open result as the client-build-failure
+/// arm (spec §8 MA-2(9); OG `llm_digest_summary` failure arms return None).
+#[tokio::test]
+async fn native_v2_digest_falls_back_to_metadata_summary_when_llm_compaction_fails() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use xai_grok_sampling_types::conversation::ConversationItem;
+    // Mock LLM endpoint: accepts any request, answers 500, counts hits.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hits_server = hits.clone();
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(_) => break,
+            };
+            let hits_conn = hits_server.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 64 * 1024];
+                let _ = stream.read(&mut buf).await;
+                hits_conn.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 500 Internal Server Error\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n{}",
+                    )
+                    .await;
+            });
+        }
+    });
+    let req = native_v2_request(None);
+    let mut ctx = ctx_with_toggle(HashMap::new());
+    ctx.model_id = acp::ModelId::new("model-a");
+    // The 8_000-char minimum digest budget (context_window clamps to it) is
+    // far below the rendered early turn, forcing the summarize-earlier
+    // branch and therefore the LLM side-call against the mock.
+    ctx.sampling_config.base_url = format!("http://{addr}");
+    ctx.sampling_config.model = "digest-mock-model".to_owned();
+    ctx.sampling_config.api_key = Some("mock-key".to_owned());
+    ctx.sampling_config.max_retries = Some(0);
+    let chat = spawn_test_parent_chat_state("model-a");
+    let early_user = format!("V2_FAIL_OPEN_EARLY_USER_{}", "u".repeat(3_900));
+    let early_assistant = format!("V2_FAIL_OPEN_EARLY_ASSISTANT_{}", "a".repeat(3_900));
+    chat.replace_conversation(vec![
+        ConversationItem::system("parent system"),
+        ConversationItem::user(early_user),
+        ConversationItem::assistant_with_model(early_assistant, "model-a"),
+        ConversationItem::user("V2_FAIL_OPEN_TAIL_USER continue with module B"),
+        ConversationItem::assistant_with_model(
+            "V2_FAIL_OPEN_TAIL_ASSISTANT module B started",
+            "model-a",
+        ),
+    ]);
+    ctx.parent_chat_state = Some(chat);
+    ctx.parent_session_info = None;
+    let child = SessionInfo {
+        id: acp::SessionId::new("child-v2-failopen"),
+        cwd: "/tmp".into(),
+    };
+    let out = bootstrap_initial_context(
+            &req,
+            None,
+            &ctx,
+            &child,
+            Path::new("/tmp"),
+            "model-b",
+            "model-b",
+            super::resume_window::ResumeWindowPolicy {
+                context_window: 1,
+                auto_compact_threshold_percent: 85,
+            },
+        )
+        .await;
+    match out {
+        BootstrapInitialContext::Ready(ic) => {
+            assert_eq!(ic.source, InitialContextSource::Forked);
+            assert!(!ic.verbatim_fork);
+            assert_eq!(ic.conversation.len(), 2);
+            let user_text = match &ic.conversation[1] {
+                ConversationItem::User(u) => u
+                    .content
+                    .iter()
+                    .filter_map(|p| match p {
+                        xai_grok_sampling_types::conversation::ContentPart::Text { text } => {
+                            Some(text.as_ref())
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                other => panic!("expected user digest, got {other:?}"),
+            };
+            assert!(user_text.starts_with("<forked_context>"));
+            assert!(user_text.ends_with("</forked_context>"));
+            // Failed LLM side-call ⇒ deterministic metadata summary of the
+            // earlier portion (not LLM text, not raw early items).
+            assert!(
+                user_text.contains("Messages: 1 user, 1 assistant"),
+                "deterministic metadata summary missing: {user_text}"
+            );
+            assert!(
+                !user_text.contains("V2_FAIL_OPEN_EARLY_USER_"),
+                "raw early user item crossed into the digest"
+            );
+            assert!(
+                !user_text.contains("V2_FAIL_OPEN_EARLY_ASSISTANT_"),
+                "raw early assistant item crossed into the digest"
+            );
+            // The recent tail stays verbatim.
+            assert!(user_text.contains("V2_FAIL_OPEN_TAIL_USER"));
+            assert!(user_text.contains("V2_FAIL_OPEN_TAIL_ASSISTANT"));
+            // The mock endpoint proves the LLM side-call was attempted
+            // (and failed) — fail-open, not a skipped call.
+            assert!(
+                hits.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+                "LLM compaction side-call was not attempted"
+            );
+        }
+        BootstrapInitialContext::ResumeAbort(m) => panic!("unexpected abort: {m}"),
+    }
+}

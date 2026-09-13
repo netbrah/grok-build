@@ -312,6 +312,29 @@ pub(super) fn task_model_override_error(
     let requested = requested?;
     crate::agent::remote_config::task_model_error_for_catalog(requested, available, is_session_auth)
 }
+/// Q2 (item 9, MA-2): a v2 spawn with an explicit `model` argument that
+/// trips the fail-closed credential guard surfaces a model-facing NOTICE on
+/// the terminal result — the pinned parent-route fall-through (D-2) is
+/// preserved; this only observes the guard, it changes no resolution.
+/// `requested_model` is the RESOLVED runtime model (it is `None` on resume,
+/// where the caller override is deliberately ignored), not the raw request
+/// field.
+pub(super) fn native_model_guard_notice(
+    is_native_spawn: bool,
+    provenance: ModelOverrideProvenance,
+    requested_model: Option<&str>,
+    available: &indexmap::IndexMap<String, crate::agent::config::ModelEntry>,
+) -> Option<String> {
+    if !is_native_spawn || provenance != ModelOverrideProvenance::Tool {
+        return None;
+    }
+    let requested_model = requested_model?;
+    let entry = crate::agent::config::find_model_by_id(available, requested_model)?;
+    let guard_message = crate::agent::config::custom_endpoint_credential_error(entry)?;
+    Some(format!(
+        "Explicit model '{requested_model}' was rejected by the credential guard ({guard_message}); the agent is running on the parent model route instead."
+    ))
+}
 #[tracing::instrument(
     name = "subagent.handle_request",
     skip_all,
@@ -775,26 +798,20 @@ pub(crate) async fn run_shell_child(
             effective_model_id = parent_mid;
         }
     }
-    // Q2 (item 9, MA-2): a v2 spawn with an explicit `model` argument that
-    // trips the fail-closed credential guard surfaces a NOTICE on the
-    // terminal result — the pinned parent-route fall-through is preserved
-    // (D-2); this only observes the guard, it changes no resolution.
+    // Q2 (item 9, MA-2): observe the fail-closed credential guard on a v2
+    // explicit-model spawn; the notice rides the terminal result. The pinned
+    // parent-route fall-through (D-2) is untouched — see
+    // `native_model_guard_notice`.
     let mut model_notices: Vec<String> = Vec::new();
-    if request.runtime_overrides.native_agent.is_some()
-        && request
-            .runtime_overrides
-            .model_override_provenance
-            == xai_grok_tools::implementations::grok_build::task::types::ModelOverrideProvenance::Tool
-        && let Some(requested_model) = effective_runtime.model.as_deref()
-        && let Some(entry) =
-            crate::agent::config::find_model_by_id(&ctx.available_models, requested_model)
-        && let Some(guard_message) =
-            crate::agent::config::custom_endpoint_credential_error(entry)
-    {
-        model_notices.push(format!(
-            "Explicit model '{requested_model}' was rejected by the credential guard ({guard_message}); the agent is running on the parent model route instead."
-        ));
-    }
+    model_notices.extend(
+        native_model_guard_notice(
+            request.runtime_overrides.native_agent.is_some(),
+            request.runtime_overrides.model_override_provenance,
+            effective_runtime.model.as_deref(),
+            &ctx.available_models,
+        )
+        .into_iter(),
+    );
     // v2 native spawn: fail fast when the spawn message cannot be routed to
     // the child's conversation (source parity, open-grok@240c99c9
     // handle_request.rs:679). WT adaptation: the source's provider /
@@ -1689,7 +1706,7 @@ pub(crate) async fn run_shell_child(
         Ok(r) => r,
         Err(e) => {
             let msg = format!("Failed to spawn child session: {e}");
-            let result = if completion_data.has_emitted_spawned_notification() {
+            let mut result = if completion_data.has_emitted_spawned_notification() {
                 fail_subagent(
                     &msg,
                     &subagent_id,
@@ -1907,7 +1924,7 @@ pub(crate) async fn run_shell_child(
     if !promoted && completed_before_ack.is_none() {
         ready_to_first_turn_span.close();
         drop(spawn_root.take());
-        let result = cancel_pending_shell_child(
+        let mut result = cancel_pending_shell_child(
             &child_handle.cmd_tx,
             child_thread,
             &ctx.workspace_ops,

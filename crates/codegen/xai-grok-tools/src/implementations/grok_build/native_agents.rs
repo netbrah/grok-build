@@ -523,4 +523,38 @@ mod tests {
             assert!(result.unwrap_err().to_string().contains("not enabled"));
         }
     }
+    /// D-9/G8 (item 9, MA-2.4, spec §8 MA-2(8)): the v0 `spawn_agent`
+    /// schema is PINNED — the v1-only knobs (`reasoning_effort`,
+    /// `service_tier`) and the v1 fork knob (`fork_context`) are rejected
+    /// model-visibly by `deny_unknown_fields` (a stray-arg error the model
+    /// can see), while a clean v0 input still parses. WT-native (the
+    /// source schema never carried these names; D-9 is a WT ruling).
+    #[test]
+    fn spawn_agent_rejects_v1_parameter_names_model_visibly() {
+        for (key, value) in [
+            ("reasoning_effort", serde_json::json!("high")),
+            ("service_tier", serde_json::json!("flex")),
+            ("fork_context", serde_json::json!(true)),
+        ] {
+            let mut input =
+                serde_json::json!({ "task_name": "worker", "message": "work" });
+            input
+                .as_object_mut()
+                .expect("object input")
+                .insert(key.to_owned(), value);
+            let err = serde_json::from_value::<SpawnAgentInput>(input).unwrap_err();
+            assert!(
+                err.to_string().contains("unknown field"),
+                "stray {key} must be a model-visible unknown-field rejection: {err}"
+            );
+        }
+        // The clean v0 input still parses with every optional field absent.
+        let ok: SpawnAgentInput = serde_json::from_value(
+            serde_json::json!({ "task_name": "worker", "message": "work" }),
+        )
+        .unwrap();
+        assert!(ok.agent_type.is_none());
+        assert!(ok.model.is_none());
+        assert!(ok.fork_turns.is_none());
+    }
 }
