@@ -48,6 +48,17 @@ pub(crate) use spawn::{
     emit_subagent_notification, spawn_subagent_coordinator, subagent_coordinator_channel,
     worker_runtime,
 };
+
+mod worktree_guard;
+pub(crate) use worktree_guard::{
+    ensure_real_dir, recheck_worktree_identity, subagent_temp_worktree_base,
+    validate_subagent_worktree_path, validate_unix_parent_chain, WorktreeIdentity,
+};
+#[cfg(unix)]
+pub(crate) use worktree_guard::{
+    unix_mode_has_sticky, unix_mode_is_owner_only, unix_mode_no_group_world_write,
+    unix_parent_component_is_safe, unix_xdg_runtime_dir_mode_ok,
+};
 pub(crate) use xai_grok_tools::implementations::grok_build::task::coordinator::{
     ChildRunOutput, StartedChild,
 };
