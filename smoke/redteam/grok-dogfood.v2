@@ -60,13 +60,20 @@ mkdir -p "$CAPDIR/wire" || { echo "grok-dogfood: cannot create $CAPDIR" >&2; exi
 # origin, so the upstream origin must NOT carry a trailing /v1).
 PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
 
-# Tempdir GROK_HOME: copy of the live home (config.toml + sessions/ + auth,
+# Tempdir GROK_HOME: copy of the live home (config.toml + sessions/,
 # spec §3.2) with base_urls rewritten to the local wiretap. Wirecap runs in
 # the COPIED home: NEW sessions live under the temp home, never ~/.grok.
+# auth.json is deliberately NOT copied (HT-1.2-A5): the wiretap base_url is
+# loopback, which is_xai_api_url treats as first-party, so a session-based
+# cached credential (is_session_based=true) + Unknown BYOK (hydrated model,
+# no [model.<id>] row) re-activates the session-token refresh gate at
+# reconstruct_full_config and overwrites the env_key with the stub token
+# -> 403 "Unknown authorization credentials" at the real proxy. Without
+# auth.json the harness selects xai.api_key and rides env_key, the same
+# auth semantics the L3 hermetic home uses.
 TMPHOME=$(mktemp -d /tmp/grok-dogfood-home.XXXXXX)
 chmod 700 "$TMPHOME"
 cp "$LIVE_HOME/config.toml" "$TMPHOME/config.toml"
-[ -f "$LIVE_HOME/auth.json" ] && cp "$LIVE_HOME/auth.json" "$TMPHOME/auth.json"
 [ -f "$LIVE_HOME/proxy-auth-stub.sh" ] && cp "$LIVE_HOME/proxy-auth-stub.sh" "$TMPHOME/proxy-auth-stub.sh"
 
 # sessions/ copy — targeted by default (the live sessions/ is large, ~1000
