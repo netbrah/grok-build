@@ -1,0 +1,71 @@
+{
+  "id": "RT-M3",
+  "title": "Cross-wire M->R claude-sonnet-5->qwen via ACP; RECON by design (pre-CROSSWIRE-1): responses-side may replay foreign reasoning VERBATIM \u2014 record accept OR 400 + exact error",
+  "driver": "acp",
+  "model": "claude-sonnet-5",
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M3-C1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M3-C2"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M3-C3"
+    },
+    {
+      "op": "switch",
+      "model": "qwen3.8-27b",
+      "via": "acp"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M3-Q1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M3-Q2"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 7,
+  "recon": true,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "recon",
+        "label": "accept vs 400 + exact error class (CROSSWIRE-1 seam)",
+        "event": "acp_error",
+        "field": "error"
+      }
+    ],
+    "wire": [
+      {
+        "kind": "field",
+        "file": "req-*.json",
+        "path": "$.model",
+        "eq": "qwen3.8-27b",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses"
+        },
+        "nth": 0
+      },
+      {
+        "op": "recon",
+        "base": "wire",
+        "file": "req-*.json",
+        "nth": 0,
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses"
+        },
+        "grep": "reasoning",
+        "label": "foreign (claude) reasoning items present in first post-switch responses request?"
+      }
+    ]
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "id": "RT-S1",
+  "title": "v1 subagent (spawn_subagent) in a LONG session: parent near compact threshold, child qwen, parent continues to compact",
+  "model": "qwen3.8-27b",
+  "config_patch": {
+    "model/qwen3.8-27b/context_window": 12000
+  },
+  "seed": {
+    "hist_tokens": 11000
+  },
+  "agents_json": {
+    "echo": {
+      "model": "qwen3.8-27b",
+      "prompt": "You are an echo agent. Reply with exactly what the parent asks for, nothing else."
+    }
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Spawn the echo subagent and ask it to reply with exactly: CHILD-OK. After it completes, reply with exactly: PARENT-DONE",
+      "timeout_s": 300
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 4,
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error"
+      },
+      {
+        "op": "text_contains",
+        "value": "CHILD-OK"
+      },
+      {
+        "op": "text_contains",
+        "value": "PARENT-DONE"
+      }
+    ],
+    "artifact": [
+      {
+        "file": "compaction_requests/*.json",
+        "field": "$.summary",
+        "ne_null": true,
+        "which": "last"
+      }
+    ]
+  }
+}

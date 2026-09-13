@@ -1,0 +1,39 @@
+{
+  "id": "RT-R3",
+  "title": "Long-idle resume: session idle 60s, resume 1 turn; no timeout/auth-refresh surprise (024ef68 regression pin); R-6: record whether idle/auth surfaces a distinct event",
+  "model": "qwen3.8-27b",
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "RT-R3 T1: Reply with exactly: RT-R3-T1"
+    },
+    {
+      "op": "idle",
+      "s": 60
+    },
+    {
+      "op": "turn",
+      "prompt": "RT-R3 T2: Reply with exactly: RT-R3-T2"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 2,
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error"
+      },
+      {
+        "op": "text_contains",
+        "value": "RT-R3-T2"
+      },
+      {
+        "op": "recon",
+        "label": "R-6: event surface across the idle gap (usage/end rows in report)",
+        "event": "usage"
+      }
+    ]
+  }
+}

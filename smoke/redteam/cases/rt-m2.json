@@ -1,0 +1,87 @@
+{
+  "id": "RT-M2",
+  "title": "Cross-wire R->M qwen->claude-sonnet-5 via ACP; R8 suppression verifiable: first messages request must carry NO thinking blocks from qwen-identity items",
+  "driver": "acp",
+  "model": "qwen3.8-27b",
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M2-Q1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M2-Q2"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M2-Q3"
+    },
+    {
+      "op": "switch",
+      "model": "claude-sonnet-5",
+      "via": "acp"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M2-C1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M2-C2"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M2-C3"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 8,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error"
+      },
+      {
+        "op": "recon",
+        "label": "acp_error detail (R8 suppression failure would surface here)",
+        "event": "acp_error",
+        "field": "error"
+      }
+    ],
+    "wire": [
+      {
+        "kind": "field",
+        "file": "req-*.json",
+        "path": "$.model",
+        "eq": "claude-sonnet-5",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages"
+        },
+        "nth": 0
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "grep": "RT-M2-Q1",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages"
+        },
+        "nth": 0
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "grep": "\"thinking\"",
+        "absent": true,
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages"
+        },
+        "nth": 0
+      }
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "id": "RT-S3",
+  "title": "v2 gate-on (post-MA-3): placeholder \u2014 v2 spawn + wait + message per MA-3 spec",
+  "disabled": true,
+  "unblocks_at": "MA-3"
+}

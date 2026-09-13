@@ -1,0 +1,88 @@
+{
+  "id": "RT-R1",
+  "title": "kill -9 mid-session: qwen 3-turn session, SIGKILL during turn 4, resume 2 turns; history intact, no phantom turns",
+  "model": "qwen3.8-27b",
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "RT-R1 T1: Reply with exactly: RT-R1-T1"
+    },
+    {
+      "op": "turn",
+      "prompt": "RT-R1 T2: Reply with exactly: RT-R1-T2"
+    },
+    {
+      "op": "turn",
+      "prompt": "RT-R1 T3: Reply with exactly: RT-R1-T3"
+    },
+    {
+      "op": "kill",
+      "after_s": 2.5,
+      "prompt": "RT-R1 KILLED: Reply with exactly: RT-R1-KILLED"
+    },
+    {
+      "op": "turn",
+      "prompt": "RT-R1 T5: Reply with exactly: RT-R1-T5"
+    },
+    {
+      "op": "turn",
+      "prompt": "RT-R1 T6: Reply with exactly: RT-R1-T6"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 6,
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error"
+      },
+      {
+        "op": "text_contains",
+        "value": "RT-R1-T5"
+      },
+      {
+        "op": "text_contains",
+        "value": "RT-R1-T6"
+      }
+    ],
+    "artifact": [
+      {
+        "op": "grep",
+        "file": "chat_history.jsonl",
+        "grep": "RT-R1-T1",
+        "min_count": 1
+      },
+      {
+        "op": "grep",
+        "file": "chat_history.jsonl",
+        "grep": "RT-R1-T3",
+        "min_count": 1
+      },
+      {
+        "op": "grep",
+        "file": "chat_history.jsonl",
+        "grep": "RT-R1-T6",
+        "min_count": 1
+      },
+      {
+        "op": "grep",
+        "file": "chat_history.jsonl",
+        "grep": "RT-R1-KILLED",
+        "max_count": 1
+      },
+      {
+        "op": "grep",
+        "file": "chat_history.jsonl",
+        "grep": "RT-R1-T1",
+        "max_count": 3
+      },
+      {
+        "op": "count",
+        "file": "compaction_requests/*.json",
+        "max": 0
+      }
+    ]
+  }
+}

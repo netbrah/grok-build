@@ -1,0 +1,46 @@
+{
+  "id": "RT-C2",
+  "title": "Manual /compact via headless slash (RECON R-3: builtins run in headless turns)",
+  "model": "qwen3.8-27b",
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Remember this fact: the lighthouse keeper's name is Ada. Then reply with exactly: RT-C2-SETUP"
+    },
+    {
+      "op": "compact",
+      "via": "headless"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 2,
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error"
+      }
+    ],
+    "artifact": [
+      {
+        "file": "compaction_requests/*.json",
+        "field": "$.trigger",
+        "eq": "manual",
+        "which": "last"
+      },
+      {
+        "file": "compaction_requests/*.json",
+        "field": "$.summary",
+        "ne_null": true,
+        "which": "last"
+      },
+      {
+        "file": "compaction_requests/*.json",
+        "field": "$.error",
+        "eq": null,
+        "which": "last"
+      }
+    ]
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "id": "RT-C6",
+  "title": "256k policy window on 1M-capable model (claude-sonnet-5, messages wire): auto-compact at ~218k DESPITE 1M capability",
+  "model": "claude-sonnet-5",
+  "seed": {
+    "hist_tokens": 222000
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-C6-OK"
+    }
+  ],
+  "watchdog_s": 600,
+  "est_calls": 3,
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error"
+      }
+    ],
+    "artifact": [
+      {
+        "file": "compaction_requests/*.json",
+        "field": "$.summary",
+        "ne_null": true,
+        "which": "last"
+      },
+      {
+        "file": "compaction_requests/*.json",
+        "field": "$.error",
+        "eq": null,
+        "which": "last"
+      }
+    ],
+    "wire": [
+      {
+        "kind": "field",
+        "file": "req-*.json",
+        "path": "$.model",
+        "eq": "claude-sonnet-5",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages"
+        },
+        "nth": 0
+      }
+    ]
+  }
+}

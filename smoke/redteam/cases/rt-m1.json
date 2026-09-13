@@ -1,0 +1,76 @@
+{
+  "id": "RT-M1",
+  "title": "In-wire switch qwen->sol (responses->responses) via ACP session/set_model; RECON step 0 found a replay 400 on this exact path \u2014 v0 expect per spec (0 errors) will likely FAIL pre-ledger-ruling",
+  "driver": "acp",
+  "model": "qwen3.8-27b",
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M1-Q1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M1-Q2"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M1-Q3"
+    },
+    {
+      "op": "switch",
+      "model": "gpt-5.6-sol",
+      "via": "acp"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M1-S1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M1-S2"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M1-S3"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 8,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error"
+      },
+      {
+        "op": "recon",
+        "label": "acp_error detail (RECON: 'Invalid input[N].content: array too long' replay 400 class)",
+        "event": "acp_error",
+        "field": "error"
+      }
+    ],
+    "wire": [
+      {
+        "kind": "field",
+        "file": "req-*.json",
+        "path": "$.model",
+        "eq": "gpt-5.6-sol",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses"
+        },
+        "last": 0
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "grep": "RT-M1-Q1",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses"
+        },
+        "last": 0
+      }
+    ]
+  }
+}

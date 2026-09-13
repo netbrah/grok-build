@@ -1,0 +1,63 @@
+{
+  "id": "RT-C4",
+  "title": "Resume-after-compact: compact fires, kill, resume 2 turns \u2014 summary replayed, no re-compact storm",
+  "model": "qwen3.8-27b",
+  "config_patch": {
+    "model/qwen3.8-27b/context_window": 12000
+  },
+  "seed": {
+    "hist_tokens": 11000
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-C4-PRE"
+    },
+    {
+      "op": "kill",
+      "after_s": 1.0,
+      "prompt": "KILL-PROBE-RT-C4"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-C4-POST-1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-C4-POST-2"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 5,
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error"
+      },
+      {
+        "op": "text_contains",
+        "value": "RT-C4-POST-1"
+      },
+      {
+        "op": "text_contains",
+        "value": "RT-C4-POST-2"
+      }
+    ],
+    "artifact": [
+      {
+        "op": "count",
+        "file": "compaction_requests/*.json",
+        "min": 1,
+        "max": 1
+      },
+      {
+        "file": "compaction_requests/*.json",
+        "field": "$.summary",
+        "ne_null": true,
+        "which": "last"
+      }
+    ]
+  }
+}

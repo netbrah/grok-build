@@ -1,0 +1,68 @@
+{
+  "id": "RT-M4",
+  "title": "Switch->compact->switch: qwen->claude (switch), /compact on the switched session, ->qwen; compaction installs on the switched session, final qwen turn fits",
+  "driver": "acp",
+  "model": "qwen3.8-27b",
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M4-Q1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M4-Q2"
+    },
+    {
+      "op": "switch",
+      "model": "claude-sonnet-5",
+      "via": "acp"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M4-C1"
+    },
+    {
+      "op": "compact",
+      "via": "acp"
+    },
+    {
+      "op": "switch",
+      "model": "qwen3.8-27b",
+      "via": "acp"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-M4-Q3"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 7,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error"
+      },
+      {
+        "op": "recon",
+        "label": "acp_error detail (cross-wire compact failure would surface here)",
+        "event": "acp_error",
+        "field": "error"
+      }
+    ],
+    "artifact": [
+      {
+        "file": "compaction_requests/*.json",
+        "field": "$.summary",
+        "ne_null": true,
+        "which": "last"
+      },
+      {
+        "file": "compaction_requests/*.json",
+        "field": "$.error",
+        "eq": null,
+        "which": "last"
+      }
+    ]
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "id": "RT-C3",
+  "title": "OVER-CAPACITY PIN: 1.7MB history vs 262144 window (reproduces 01a09be2; pre-FIX-2 = honest failure text, no crash)",
+  "model": "qwen3.8-27b",
+  "config_patch": {
+    "model/qwen3.8-27b/context_window": 262144
+  },
+  "seed": {
+    "hist_tokens": 1000,
+    "hist_bytes": 1700000
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-C3-OK"
+    }
+  ],
+  "watchdog_s": 600,
+  "est_calls": 4,
+  "recon": true,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "recon",
+        "what": "final-text",
+        "label": "final turn text (pre-FIX-2 honest-failure text pin)"
+      },
+      {
+        "op": "recon",
+        "label": "end event (stopReason/usage \u2014 session continued?)",
+        "event": "end"
+      },
+      {
+        "op": "present",
+        "event": "end"
+      }
+    ],
+    "artifact": [
+      {
+        "op": "recon",
+        "label": "compaction error text (01a09be2 class: 'Response API in-stream error')",
+        "file": "compaction_requests/*.json",
+        "field": "$.error"
+      },
+      {
+        "op": "recon",
+        "label": "summary (expect null pre-FIX-2)",
+        "file": "compaction_requests/*.json",
+        "field": "$.summary"
+      },
+      {
+        "op": "recon",
+        "label": "attempts/attempt_details (retry storm shape)",
+        "file": "compaction_requests/*.json",
+        "field": "$.attempt_details"
+      }
+    ],
+    "wire": [
+      {
+        "op": "recon",
+        "base": "wire",
+        "file": "req-*.json",
+        "nth": 0,
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses"
+        },
+        "grep": "Synthetic context paragraph",
+        "label": "compact request carries the full over-capacity history (request body size > capacity)"
+      }
+    ]
+  }
+}

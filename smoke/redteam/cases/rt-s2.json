@@ -1,0 +1,59 @@
+{
+  "id": "RT-S2",
+  "title": "v2 TOOLS-DARK PIN (MA-2 G18 negative evidence as a REGRESSION PIN; flips at MA-3): NO v2 tool names advertised; v1 spawn_subagent present. Turn is killed mid-model-call: tool list only, minimal proxy use.",
+  "model": "qwen3.8-27b",
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-S2-OK",
+      "kill_after_s": 6,
+      "expect_kill": true
+    }
+  ],
+  "watchdog_s": 120,
+  "est_calls": 1,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "tools_absent",
+        "names": [
+          "spawn_agent",
+          "send_message",
+          "followup_task",
+          "list_agents",
+          "wait_agent",
+          "interrupt_agent"
+        ]
+      },
+      {
+        "op": "tools_present",
+        "names": [
+          "spawn_subagent"
+        ]
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "grep": "\"spawn_agent\"",
+        "absent": true,
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses"
+        },
+        "nth": 0
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "grep": "\"spawn_subagent\"",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses"
+        },
+        "nth": 0
+      }
+    ]
+  }
+}

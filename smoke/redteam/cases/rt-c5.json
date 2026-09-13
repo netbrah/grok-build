@@ -1,0 +1,63 @@
+{
+  "id": "RT-C5",
+  "title": "sol remote_compaction_v2 (flag ON), seed ~220k of 256k policy \u2014 D-ENC RECON: session-affinity probe for the proxy-team ask",
+  "model": "gpt-5.6-sol",
+  "config_patch": {
+    "features/remote_compaction_v2": true,
+    "model/gpt-5.6-sol/context_window": 256000
+  },
+  "seed": {
+    "hist_tokens": 220000
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-C5-OK"
+    }
+  ],
+  "watchdog_s": 600,
+  "est_calls": 4,
+  "recon": true,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "recon",
+        "what": "final-text",
+        "label": "final turn text (accept vs encrypted-content 400 \u2014 the D-ENC outcome)"
+      },
+      {
+        "op": "recon",
+        "label": "end event",
+        "event": "end"
+      }
+    ],
+    "artifact": [
+      {
+        "op": "recon",
+        "label": "compaction error/summary (v2 remote path)",
+        "file": "compaction_requests/*.json",
+        "field": "$.error"
+      },
+      {
+        "op": "recon",
+        "label": "trigger (expect remote/v2 marker)",
+        "file": "compaction_requests/*.json",
+        "field": "$.trigger"
+      }
+    ],
+    "wire": [
+      {
+        "op": "recon",
+        "base": "wire",
+        "file": "req-*.json",
+        "nth": 0,
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses"
+        },
+        "grep": "compaction",
+        "label": "wire marker: compaction_trigger/request_kind on the v2 request"
+      }
+    ]
+  }
+}

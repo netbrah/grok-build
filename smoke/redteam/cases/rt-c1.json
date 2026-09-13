@@ -1,0 +1,78 @@
+{
+  "id": "RT-C1",
+  "title": "Local compaction local-fit: qwen, window 12000, seed ~11k (threshold 85%=10200)",
+  "model": "qwen3.8-27b",
+  "config_patch": {
+    "model/qwen3.8-27b/context_window": 12000
+  },
+  "seed": {
+    "hist_tokens": 11000
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-C1-OK"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 3,
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error"
+      },
+      {
+        "op": "text_contains",
+        "value": "RT-C1-OK"
+      }
+    ],
+    "artifact": [
+      {
+        "file": "compaction_requests/*.json",
+        "field": "$.summary",
+        "ne_null": true,
+        "which": "last"
+      },
+      {
+        "file": "compaction_requests/*.json",
+        "field": "$.error",
+        "eq": null,
+        "which": "last"
+      }
+    ],
+    "wire": [
+      {
+        "kind": "field",
+        "file": "req-*.json",
+        "path": "$.model",
+        "eq": "qwen3.8-27b",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses"
+        },
+        "nth": 0
+      },
+      {
+        "kind": "size_lt",
+        "a": {
+          "file": "req-*.json",
+          "where": {
+            "method": "POST",
+            "path": "/v1/responses"
+          },
+          "nth": 1
+        },
+        "b": {
+          "file": "req-*.json",
+          "where": {
+            "method": "POST",
+            "path": "/v1/responses"
+          },
+          "nth": 0
+        }
+      }
+    ]
+  }
+}
