@@ -506,6 +506,7 @@ impl ChannelSpawner {
             surface_completion: false,
             await_to_completion: false,
             fork_context: false,
+            context: xai_tool_types::SubagentContextRequest::FRESH,
             owner: SubagentOwner::Task,
             cancel_token: tokio_util::sync::CancellationToken::new(),
             spawn_root: Default::default(),

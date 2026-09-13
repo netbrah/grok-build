@@ -3,10 +3,13 @@ use crate::implementations::grok_build::task::admission::{LimitBehavior, Subagen
 use crate::implementations::grok_build::task::backend::{ChannelBackend, SubagentBackend};
 use crate::implementations::grok_build::task::types::{
     ActiveAgentMessageDelivery, ActiveAgentMessageOperation, ActiveAgentMessageRequest,
-    ActiveAgentMessageSource, SubagentCancelRequest, SubagentClearUsageNotAppliedRequest,
-    SubagentCompletionsRequest, SubagentListActiveRequest, SubagentLoopUnitActiveRequest,
-    SubagentMarkUsageNotAppliedRequest, SubagentOutstandingReply, SubagentOutstandingRequest,
-    SubagentOwner, SubagentRegistryCounts, SubagentRequest, SubagentSnapshotStatus,
+    ActiveAgentMessageSource, AgentMailboxIdentity, AgentMailboxMessage,
+    AgentMailboxMessageKind, AgentMessageDeliveryStatus, NativeAgentMessage,
+    NativeAgentOperation, NativeAgentRecord, NativeAgentSpawn, SubagentCancelRequest,
+    SubagentClearUsageNotAppliedRequest, SubagentCompletionsRequest, SubagentListActiveRequest,
+    SubagentLoopUnitActiveRequest, SubagentMarkUsageNotAppliedRequest,
+    SubagentOutstandingReply, SubagentOutstandingRequest, SubagentOwner,
+    SubagentRegistryCounts, SubagentRequest, SubagentSnapshotStatus,
     SubagentWaitPromptDrainedRequest,
 };
 use tokio_util::sync::CancellationToken;
@@ -22,6 +25,8 @@ struct TestControl {
     cancellation: CancellationToken,
     admission_gate: Option<AdmissionGate>,
     admitted_messages: Option<mpsc::UnboundedSender<(ActiveAgentMessageOperation, String)>>,
+    followups: mpsc::UnboundedSender<AgentMailboxMessage>,
+    interruptions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl ChildControl for TestControl {
@@ -71,6 +76,19 @@ impl ChildControl for TestControl {
     fn cancel(&self) {
         self.cancellation.cancel();
     }
+
+    fn interrupt(&self) -> bool {
+        self.interruptions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        true
+    }
+
+    fn accepts_native_message(&self, _message: &AgentMailboxMessage) -> bool {
+        true
+    }
+
+    fn deliver_followup(&self, message: &AgentMailboxMessage) -> bool {
+        self.followups.send(message.clone()).is_ok()
+    }
 }
 
 #[derive(Default)]
@@ -114,6 +132,11 @@ struct TestRunner {
     wake_runs: mpsc::UnboundedSender<WakeRun>,
     admitted_messages: Option<mpsc::UnboundedSender<(ActiveAgentMessageOperation, String)>>,
     admission_gate: Option<AdmissionGate>,
+    followups: mpsc::UnboundedSender<AgentMailboxMessage>,
+    interruptions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    registry: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<String, Vec<NativeAgentRecord>>>,
+    >,
 }
 
 impl ChildRunner for TestRunner {
@@ -143,6 +166,8 @@ impl ChildRunner for TestRunner {
         let wake_runs = self.wake_runs.clone();
         let admitted_messages = self.admitted_messages.clone();
         let admission_gate = self.admission_gate.clone();
+        let followups = self.followups.clone();
+        let interruptions = self.interruptions.clone();
         let failed_wake_teardown_ready = self.failed_wake_teardown_ready.clone();
         Box::pin(async move {
             let ChildRunRequest {
@@ -237,6 +262,8 @@ impl ChildRunner for TestRunner {
                     } else {
                         None
                     },
+                    followups,
+                    interruptions,
                 },
             };
             let rejects_deferred_start = reject_wake_after_deferred_start
@@ -320,6 +347,39 @@ impl ChildRunner for TestRunner {
         } else {
             terminal_published();
         }
+    }
+
+    fn load_native_agents(
+        &self,
+        team: &str,
+    ) -> Result<Vec<NativeAgentRecord>, String> {
+        Ok(self
+            .registry
+            .lock()
+            .unwrap()
+            .get(team)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn save_native_agents(
+        &self,
+        team: &str,
+        records: &[NativeAgentRecord],
+    ) -> Result<(), String> {
+        self.registry
+            .lock()
+            .unwrap()
+            .insert(team.to_owned(), records.to_vec());
+        Ok(())
+    }
+
+    fn deliver_root_followup(
+        &self,
+        _root_session_id: &str,
+        message: &AgentMailboxMessage,
+    ) -> bool {
+        message.native.is_some() && self.followups.send(message.clone()).is_ok()
     }
 }
 
@@ -411,6 +471,12 @@ pub(in crate::implementations::grok_build::task::coordinator) struct Harness {
         mpsc::UnboundedReceiver<WakeRun>,
     pub(in crate::implementations::grok_build::task::coordinator) admitted_messages:
         mpsc::UnboundedReceiver<(ActiveAgentMessageOperation, String)>,
+    pub(in crate::implementations::grok_build::task::coordinator) followups:
+        mpsc::UnboundedReceiver<AgentMailboxMessage>,
+    pub(in crate::implementations::grok_build::task::coordinator) interruptions:
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub(in crate::implementations::grok_build::task::coordinator) registry:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<NativeAgentRecord>>>>,
     pub(in crate::implementations::grok_build::task::coordinator) actor: tokio::task::JoinHandle<()>,
 }
 
@@ -458,6 +524,10 @@ pub(in crate::implementations::grok_build::task::coordinator) fn harness_with_op
     let (advertise_tx, advertise_targets) = mpsc::unbounded_channel();
     let (wake_run_tx, wake_runs) = mpsc::unbounded_channel();
     let (admitted_message_tx, admitted_messages) = mpsc::unbounded_channel();
+    let (followup_tx, followups) = mpsc::unbounded_channel();
+    let interruptions = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let registry =
+        std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let actor = tokio::spawn(
         SubagentCoordinator::from_channel(
             command_rx,
@@ -477,6 +547,9 @@ pub(in crate::implementations::grok_build::task::coordinator) fn harness_with_op
                 wake_runs: wake_run_tx,
                 admitted_messages: Some(admitted_message_tx),
                 admission_gate: None,
+                followups: followup_tx,
+                interruptions: interruptions.clone(),
+                registry: registry.clone(),
             },
             config,
         )
@@ -500,6 +573,9 @@ pub(in crate::implementations::grok_build::task::coordinator) fn harness_with_op
         advertise_targets,
         wake_runs,
         admitted_messages,
+        followups,
+        interruptions,
+        registry,
         actor,
     }
 }
@@ -528,6 +604,10 @@ fn harness_with_admission_gate(
     let (advertise_tx, advertise_targets) = mpsc::unbounded_channel();
     let (wake_run_tx, wake_runs) = mpsc::unbounded_channel();
     let (admitted_message_tx, admitted_messages) = mpsc::unbounded_channel();
+    let (followup_tx, followups) = mpsc::unbounded_channel();
+    let interruptions = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let registry =
+        std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let (entered_tx, admission_entered) = mpsc::unbounded_channel();
     let (admission_release, _) = tokio::sync::broadcast::channel(4);
     let gate = AdmissionGate {
@@ -556,6 +636,9 @@ fn harness_with_admission_gate(
                 wake_runs: wake_run_tx,
                 admitted_messages: Some(admitted_message_tx),
                 admission_gate: Some(gate),
+                followups: followup_tx,
+                interruptions: interruptions.clone(),
+                registry: registry.clone(),
             },
             config,
         )
@@ -577,6 +660,9 @@ fn harness_with_admission_gate(
             advertise_targets,
             wake_runs,
             admitted_messages,
+            followups,
+            interruptions,
+            registry,
             actor,
         },
         admission_entered,
@@ -4099,5 +4185,280 @@ async fn workflow_spawns_bypass_the_session_concurrent_limit() {
             .expect("spawn round-trips")
             .success
     );
+    harness.actor.abort();
+}
+
+// Native (v2) mailbox + named-agent test cluster.
+// Provenance: re-expressed from open-grok@240c99c9
+// `task/coordinator_tests.rs` (mailbox helpers + 5 mailbox tests) and
+// `task/native_tests.rs` (5 named-agent tests, included below via `#[path]`).
+// ADAPTATION vs source: `ChannelBackend::spawn` is two-arg in the WT
+// (`registered_tx`), so every source `spawn(request)` call passes `None`.
+
+#[cfg(test)]
+#[path = "native_tests.rs"]
+mod native_tests;
+
+fn mailbox_identity(team_scope_id: &str, agent_id: &str) -> AgentMailboxIdentity {
+    AgentMailboxIdentity {
+        team_scope_id: team_scope_id.to_string(),
+        agent_id: agent_id.to_string(),
+    }
+}
+
+fn mailbox_message(
+    id: &str,
+    identity: &AgentMailboxIdentity,
+    target: &str,
+    body: &str,
+) -> AgentMailboxMessage {
+    AgentMailboxMessage {
+        message_id: id.to_string(),
+        team_scope_id: identity.team_scope_id.clone(),
+        from_agent_id: identity.agent_id.clone(),
+        to_agent_id: target.to_string(),
+        kind: AgentMailboxMessageKind::Message,
+        body: body.to_string(),
+        created_at_ms: 1,
+        native: None,
+    }
+}
+
+fn followup_message(
+    id: &str,
+    identity: &AgentMailboxIdentity,
+    target: &str,
+    body: &str,
+) -> AgentMailboxMessage {
+    AgentMailboxMessage {
+        kind: AgentMailboxMessageKind::FollowupTask,
+        ..mailbox_message(id, identity, target, body)
+    }
+}
+
+// Provenance: open-grok@240c99c9 task/coordinator_tests.rs:2127 (fifo-deliver).
+// ADAPTATION: `spawn(request, None)` two-arg WT channel.
+#[tokio::test]
+async fn team_mailbox_lists_pending_child_and_delivers_fifo() {
+    let mut harness = harness(true, std::time::Duration::from_secs(60));
+    let backend = harness.backend.clone();
+    let spawn = tokio::spawn(async move {
+        backend
+            .spawn(request("mail-child", true), None)
+            .await
+    });
+    let _ = harness.requests.recv().await.expect("spawn request");
+
+    let root = mailbox_identity("parent", "parent");
+    let roster = harness.backend.list_agents(root.clone()).await;
+    assert_eq!(roster.team_scope_id, "parent");
+    assert!(roster.agents.iter().any(|agent| {
+        agent.agent_id == "mail-child" && !agent.is_root && agent.status == "pending"
+    }));
+
+    for (id, body) in [("m1", "first"), ("m2", "second")] {
+        let output = harness
+            .backend
+            .send_agent_message(
+                root.clone(),
+                "mail-child",
+                mailbox_message(id, &root, "mail-child", body),
+            )
+            .await
+            .expect("message accepted");
+        assert_eq!(output.status, AgentMessageDeliveryStatus::Queued);
+    }
+
+    let child = mailbox_identity("parent", "mail-child");
+    let inbox = harness.backend.wait_agent_messages(child, 0).await;
+    assert!(!inbox.timed_out);
+    assert_eq!(
+        inbox
+            .messages
+            .iter()
+            .map(|message| message.body.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first", "second"]
+    );
+
+    spawn.abort();
+    harness.actor.abort();
+}
+
+// Provenance: open-grok@240c99c9 task/coordinator_tests.rs:2172 (steer-live).
+// ADAPTATION: `spawn(request, None)` two-arg WT channel.
+#[tokio::test]
+async fn team_mailbox_steers_active_child_live() {
+    let mut harness = harness(false, std::time::Duration::from_secs(60));
+    let backend = harness.backend.clone();
+    let spawn = tokio::spawn(async move {
+        backend
+            .spawn(request("steer-child", true), None)
+            .await
+    });
+    let _ = harness.requests.recv().await.expect("spawn request");
+    assert_eq!(
+        harness.started.recv().await.expect("child started"),
+        "steer-child"
+    );
+
+    let root = mailbox_identity("parent", "parent");
+    let output = harness
+        .backend
+        .send_agent_message(
+            root.clone(),
+            "steer-child",
+            mailbox_message("m1", &root, "steer-child", "stop work"),
+        )
+        .await
+        .expect("message accepted");
+    assert_eq!(output.status, AgentMessageDeliveryStatus::Delivered);
+
+    let delivered = harness.followups.recv().await.expect("live delivery");
+    assert_eq!(delivered.body, "stop work");
+    assert_eq!(delivered.kind, AgentMailboxMessageKind::Message);
+
+    // Nothing lingers in the mailbox after a live delivery.
+    let child = mailbox_identity("parent", "steer-child");
+    let inbox = harness.backend.wait_agent_messages(child, 0).await;
+    assert!(inbox.messages.is_empty());
+
+    spawn.abort();
+    harness.actor.abort();
+}
+
+// Provenance: open-grok@240c99c9 task/coordinator_tests.rs:2211 (queued flush).
+// ADAPTATION: `spawn(request, None)` two-arg WT channel.
+#[tokio::test]
+async fn queued_mail_flushes_when_pending_child_starts() {
+    let mut harness = harness(true, std::time::Duration::from_secs(60));
+    let backend = harness.backend.clone();
+    let spawn = tokio::spawn(async move {
+        backend
+            .spawn(request("flush-child", true), None)
+            .await
+    });
+    let _ = harness.requests.recv().await.expect("spawn request");
+
+    let root = mailbox_identity("parent", "parent");
+    for message in [
+        mailbox_message("m1", &root, "flush-child", "first"),
+        followup_message("f1", &root, "flush-child", "later task"),
+        mailbox_message("m2", &root, "flush-child", "second"),
+    ] {
+        let output = harness
+            .backend
+            .send_agent_message(root.clone(), "flush-child", message)
+            .await
+            .expect("message accepted");
+        assert_eq!(output.status, AgentMessageDeliveryStatus::Queued);
+    }
+
+    let _ = harness.start.send(());
+    assert_eq!(
+        harness.started.recv().await.expect("child started"),
+        "flush-child"
+    );
+
+    let first = harness.followups.recv().await.expect("first flushed");
+    let second = harness.followups.recv().await.expect("second flushed");
+    assert_eq!([first.body.as_str(), second.body.as_str()], ["first", "second"]);
+
+    // The follow-up task did not flush; it waits in the mailbox.
+    let child = mailbox_identity("parent", "flush-child");
+    let inbox = harness.backend.wait_agent_messages(child, 0).await;
+    assert_eq!(
+        inbox
+            .messages
+            .iter()
+            .map(|message| message.body.as_str())
+            .collect::<Vec<_>>(),
+        vec!["later task"]
+    );
+
+    spawn.abort();
+    harness.actor.abort();
+}
+
+// Provenance: open-grok@240c99c9 task/coordinator_tests.rs:2263 (followup queue).
+// ADAPTATION: `spawn(request, None)` two-arg WT channel.
+#[tokio::test]
+async fn followup_task_queues_mail_for_active_child() {
+    let mut harness = harness(false, std::time::Duration::from_secs(60));
+    let backend = harness.backend.clone();
+    let spawn = tokio::spawn(async move {
+        backend
+            .spawn(request("busy-child", true), None)
+            .await
+    });
+    let _ = harness.requests.recv().await.expect("spawn request");
+    assert_eq!(
+        harness.started.recv().await.expect("child started"),
+        "busy-child"
+    );
+
+    let root = mailbox_identity("parent", "parent");
+    let output = harness
+        .backend
+        .send_agent_message(
+            root.clone(),
+            "busy-child",
+            followup_message("f1", &root, "busy-child", "next task"),
+        )
+        .await
+        .expect("message accepted");
+    assert_eq!(output.status, AgentMessageDeliveryStatus::Queued);
+
+    // No live delivery happened; the child drains it via wait_agent.
+    assert!(harness.followups.try_recv().is_err());
+    let child = mailbox_identity("parent", "busy-child");
+    let inbox = harness.backend.wait_agent_messages(child, 0).await;
+    assert_eq!(
+        inbox
+            .messages
+            .iter()
+            .map(|message| message.body.as_str())
+            .collect::<Vec<_>>(),
+        vec!["next task"]
+    );
+
+    spawn.abort();
+    harness.actor.abort();
+}
+
+// Provenance: open-grok@240c99c9 task/coordinator_tests.rs:2303 (foreign/self).
+// ADAPTATION: `spawn(request, None)` two-arg WT channel.
+#[tokio::test]
+async fn team_mailbox_rejects_foreign_scope_and_self_send() {
+    let mut harness = harness(true, std::time::Duration::from_secs(60));
+    let backend = harness.backend.clone();
+    let spawn = tokio::spawn(async move {
+        backend
+            .spawn(request("mail-child", true), None)
+            .await
+    });
+    let _ = harness.requests.recv().await.expect("spawn request");
+
+    let foreign = mailbox_identity("foreign-parent", "foreign-parent");
+    let error = harness
+        .backend
+        .send_agent_message(
+            foreign.clone(),
+            "mail-child",
+            mailbox_message("foreign", &foreign, "mail-child", "no"),
+        )
+        .await
+        .expect_err("foreign team must not address child");
+    assert!(error.contains("not found"));
+
+    let root = mailbox_identity("parent", "parent");
+    let error = harness
+        .backend
+        .send_agent_message(root.clone(), "root", mailbox_message("self", &root, "root", "loop"))
+        .await
+        .expect_err("self send must fail");
+    assert!(error.contains("itself"));
+
+    spawn.abort();
     harness.actor.abort();
 }

@@ -13,13 +13,16 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 use super::types::{
-    ActiveAgentMessageOutcome, ActiveAgentMessageRequest, SpawnedSubagentRef,
+    ActiveAgentMessageOutcome, ActiveAgentMessageRequest, AgentListRequest,
+    AgentMailboxWaitRequest, AgentMailboxIdentity, AgentMailboxMessage, AgentMessageRequest,
+    AgentMessageSendOutput, ListAgentsOutput, NativeAgentOperation, NativeAgentRequest,
+    SpawnedSubagentRef,
     SubagentActiveMessageRequest, SubagentCancelOutcome, SubagentCancelRequest,
     SubagentCancelTarget, SubagentDescribeOutcome, SubagentDescribeRequest, SubagentEvent,
     SubagentEventSender, SubagentInspectRequest, SubagentInspection, SubagentListRunningRequest,
     SubagentQueryRequest, SubagentRegistryCounts, SubagentRegistryCountsRequest, SubagentRequest,
     SubagentResult, SubagentSnapshot, SubagentSpawnRequest, SubagentSpawnedRefsRequest,
-    SubagentValidateTypeOutcome, SubagentValidateTypeRequest,
+    SubagentValidateTypeOutcome, SubagentValidateTypeRequest, WaitAgentMessagesOutput,
 };
 use crate::register_resource;
 use xai_tool_runtime::ToolError;
@@ -78,6 +81,46 @@ pub trait SubagentBackend: Send + Sync + 'static {
         harness_agent_type: Option<&str>,
         parent_session_id: &str,
     ) -> SubagentDescribeOutcome;
+
+    /// One native (v2) named-agent operation, dispatched to the coordinator.
+    /// Hosts without the v2 surface return the unavailable error.
+    async fn native_agent(
+        &self,
+        _identity: AgentMailboxIdentity,
+        _operation: NativeAgentOperation,
+    ) -> Result<serde_json::Value, String> {
+        Err("Native agent collaboration is unavailable in this host".to_owned())
+    }
+
+    /// Roster of the calling session's team (mailbox surface).
+    async fn list_agents(&self, identity: AgentMailboxIdentity) -> ListAgentsOutput {
+        ListAgentsOutput {
+            team_scope_id: identity.team_scope_id,
+            agents: Vec::new(),
+        }
+    }
+
+    /// Send a (non-native) agent message to a target in the caller's team.
+    async fn send_agent_message(
+        &self,
+        _identity: AgentMailboxIdentity,
+        _target: &str,
+        _message: AgentMailboxMessage,
+    ) -> Result<AgentMessageSendOutput, String> {
+        Err("Agent mailbox is unavailable in this host".to_string())
+    }
+
+    /// Drain or wait on the caller's own mailbox.
+    async fn wait_agent_messages(
+        &self,
+        _identity: AgentMailboxIdentity,
+        _timeout_ms: u64,
+    ) -> WaitAgentMessagesOutput {
+        WaitAgentMessagesOutput {
+            messages: Vec::new(),
+            timed_out: true,
+        }
+    }
 }
 
 /// Resource wrapper injected into every session's `Resources`. Wraps an `Arc<dyn SubagentBackend>`
@@ -640,6 +683,103 @@ impl SubagentBackend for ChannelBackend {
                 SubagentDescribeOutcome::Unavailable
             }
         }
+    }
+
+    async fn native_agent(
+        &self,
+        identity: AgentMailboxIdentity,
+        operation: NativeAgentOperation,
+    ) -> Result<serde_json::Value, String> {
+        if self
+            .parent_session_id
+            .as_deref()
+            .is_some_and(|id| id != identity.agent_id)
+        {
+            return Err("Agent identity does not match the calling session".to_owned());
+        }
+        let (respond_to, response_rx) = oneshot::channel();
+        self.tx
+            .event_sender()
+            .send(SubagentEvent::NativeAgent(NativeAgentRequest {
+                identity,
+                operation,
+                respond_to,
+            }))
+            .map_err(|_| "Subagent coordinator channel closed".to_owned())?;
+        response_rx
+            .await
+            .map_err(|_| "Subagent coordinator dropped the response".to_owned())?
+    }
+
+    async fn list_agents(&self, identity: AgentMailboxIdentity) -> ListAgentsOutput {
+        let team_scope_id = identity.team_scope_id.clone();
+        let (respond_to, response_rx) = oneshot::channel();
+        if self
+            .tx
+            .event_sender()
+            .send(SubagentEvent::ListAgents(AgentListRequest {
+                identity,
+                respond_to,
+            }))
+            .is_err()
+        {
+            return ListAgentsOutput {
+                team_scope_id,
+                agents: Vec::new(),
+            };
+        }
+        response_rx.await.unwrap_or(ListAgentsOutput {
+            team_scope_id,
+            agents: Vec::new(),
+        })
+    }
+
+    async fn send_agent_message(
+        &self,
+        identity: AgentMailboxIdentity,
+        target: &str,
+        message: AgentMailboxMessage,
+    ) -> Result<AgentMessageSendOutput, String> {
+        let (respond_to, response_rx) = oneshot::channel();
+        self.tx
+            .event_sender()
+            .send(SubagentEvent::SendAgentMessage(AgentMessageRequest {
+                identity,
+                target: target.to_owned(),
+                message,
+                respond_to,
+            }))
+            .map_err(|_| "Subagent coordinator channel closed".to_string())?;
+        response_rx
+            .await
+            .map_err(|_| "Subagent coordinator dropped the message response".to_string())?
+    }
+
+    async fn wait_agent_messages(
+        &self,
+        identity: AgentMailboxIdentity,
+        timeout_ms: u64,
+    ) -> WaitAgentMessagesOutput {
+        let (respond_to, response_rx) = oneshot::channel();
+        if self
+            .tx
+            .event_sender()
+            .send(SubagentEvent::WaitAgentMessages(AgentMailboxWaitRequest {
+                identity,
+                timeout_ms,
+                respond_to,
+            }))
+            .is_err()
+        {
+            return WaitAgentMessagesOutput {
+                messages: Vec::new(),
+                timed_out: true,
+            };
+        }
+        response_rx.await.unwrap_or(WaitAgentMessagesOutput {
+            messages: Vec::new(),
+            timed_out: true,
+        })
     }
 }
 

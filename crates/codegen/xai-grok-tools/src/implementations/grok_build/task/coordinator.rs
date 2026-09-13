@@ -12,6 +12,7 @@
 pub(crate) mod active_message;
 mod completion;
 mod graph;
+mod native;
 mod query;
 mod queue;
 mod spawn;
@@ -27,16 +28,20 @@ use tokio::sync::{mpsc, oneshot};
 use super::active_message::ActiveMessageIngress;
 use super::admission::Admission;
 use super::coordinator_state::{
-    ActiveChild, BlockingWaiter, BufferedCompletion, ChildRecord, CompletedChild,
-    DisplacedCompletedChild, InternalEvent, ListRequest, PendingChild, ProgressFuture,
-    ProgressTarget, ReplyFuture, TaggedFuture, active_summary, background_at_deadline,
-    background_if_caller_gone, completed_snapshot, sleep_until, workflow_outstanding,
+    ActiveChild, AgentMailboxWaiter, BlockingWaiter, BufferedCompletion, ChildRecord,
+    CompletedChild, DisplacedCompletedChild, InternalEvent, ListRequest, PendingChild,
+    ProgressFuture, ProgressTarget, ReplyFuture, TaggedFuture, active_summary,
+    background_at_deadline, background_if_caller_gone, completed_snapshot, sleep_until,
+    workflow_outstanding,
 };
 use super::types::{
-    ActiveAgentMessageOutcome, AgentAddress, SpawnedSubagentRef, SubagentCancelOutcome,
-    SubagentCancelTarget, SubagentDescribeOutcome, SubagentEvent, SubagentOutstandingReply,
-    SubagentRegistryCounts, SubagentRequest, SubagentResult, SubagentResumeLookup,
-    SubagentResumeSource, SubagentValidateTypeOutcome,
+    ActiveAgentMessageOutcome, AgentAddress, AgentMailboxIdentity, AgentMailboxMessage,
+    AgentMessageDeliveryStatus, AgentMessageSendOutput, AgentRosterEntry, ListAgentsOutput,
+    SpawnedSubagentRef,
+    SubagentCancelOutcome, SubagentCancelTarget, SubagentDescribeOutcome, SubagentEvent,
+    SubagentOutstandingReply, SubagentRegistryCounts, SubagentRequest, SubagentResult,
+    SubagentResumeLookup, SubagentResumeSource, SubagentValidateTypeOutcome,
+    WaitAgentMessagesOutput,
 };
 use active_message::{
     ActiveChildGeneration, ActiveMessageFuture, ActiveMessageLifecycle, SpawnReadyMessages,
@@ -81,6 +86,13 @@ pub struct SubagentCoordinator<R: ChildRunner> {
     graph: SpawnGraph,
     waiters: HashMap<String, Vec<BlockingWaiter>>,
     drain_waiters: HashMap<PromptScope, Vec<oneshot::Sender<SubagentOutstandingReply>>>,
+    mailboxes: HashMap<MailboxKey, VecDeque<AgentMailboxMessage>>,
+    mailbox_waiters: HashMap<MailboxKey, AgentMailboxWaiter>,
+    native_names: HashMap<MailboxKey, String>,
+    native_records: HashMap<MailboxKey, super::types::NativeAgentRecord>,
+    native_loaded: HashSet<String>,
+    native_activity: HashMap<MailboxKey, Vec<String>>,
+    native_waiters: HashMap<MailboxKey, native::NativeWaiter>,
     workflow_cancel_waiters: HashMap<String, Vec<oneshot::Sender<SubagentCancelOutcome>>>,
     /// Per-parent delete-path teardown drain, present only while a responder-bearing `TeardownSession` (`/delete`) waits for the session's children
     /// to finish. While an entry exists, spawn admission stays closed and [`SubagentEvent::OpenSpawnAdmission`] cannot reopen it (a racing
@@ -183,6 +195,21 @@ struct PromptScope {
     prompt_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct MailboxKey {
+    team_scope_id: String,
+    agent_id: String,
+}
+
+impl From<&AgentMailboxIdentity> for MailboxKey {
+    fn from(identity: &AgentMailboxIdentity) -> Self {
+        Self {
+            team_scope_id: identity.team_scope_id.clone(),
+            agent_id: identity.agent_id.clone(),
+        }
+    }
+}
+
 impl PromptScope {
     fn new(parent_session_id: String, prompt_id: String) -> Self {
         Self {
@@ -257,6 +284,13 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             graph: SpawnGraph::default(),
             waiters: HashMap::new(),
             drain_waiters: HashMap::new(),
+            mailboxes: HashMap::new(),
+            mailbox_waiters: HashMap::new(),
+            native_names: HashMap::new(),
+            native_records: HashMap::new(),
+            native_loaded: HashSet::new(),
+            native_activity: HashMap::new(),
+            native_waiters: HashMap::new(),
             workflow_cancel_waiters: HashMap::new(),
             teardown_drains: HashMap::new(),
             spawn_blocked_sessions: HashSet::new(),
@@ -369,30 +403,17 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
     fn handle_command(&mut self, command: SubagentEvent) {
         match command {
             SubagentEvent::Spawn(command) => self.handle_spawn(command),
-            // Native (named) v2 agent operations. Mailbox/registry handlers
-            // land in MA-2.2; until then these arms fail closed with a
-            // channel-close-shaped reply so no command is silently dropped.
-            SubagentEvent::NativeAgent(request) => {
-                let _ = request
-                    .respond_to
-                    .send(Err("Native agent collaboration is unavailable in this host".to_owned()));
-            }
+            SubagentEvent::NativeAgent(request) => self.handle_native_agent(request),
             SubagentEvent::ListAgents(request) => {
-                let _ = request.respond_to.send(super::types::ListAgentsOutput {
-                    team_scope_id: request.identity.team_scope_id,
-                    agents: Vec::new(),
-                });
+                let _ = request.respond_to.send(self.list_agents(&request.identity));
             }
             SubagentEvent::SendAgentMessage(request) => {
-                let _ = request
-                    .respond_to
-                    .send(Err("Agent mailbox is unavailable in this host".to_owned()));
+                let result =
+                    self.send_agent_message(&request.identity, &request.target, request.message);
+                let _ = request.respond_to.send(result);
             }
             SubagentEvent::WaitAgentMessages(request) => {
-                let _ = request.respond_to.send(super::types::WaitAgentMessagesOutput {
-                    messages: Vec::new(),
-                    timed_out: true,
-                });
+                self.wait_agent_messages(request.identity, request.timeout_ms, request.respond_to);
             }
             SubagentEvent::Query(query) => {
                 self.handle_query(
@@ -480,6 +501,28 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             } => {
                 self.pending_completions
                     .retain(|completion| completion.parent_session_id != parent_session_id);
+                self.mailboxes
+                    .retain(|key, _| key.team_scope_id != parent_session_id);
+                self.native_names
+                    .retain(|key, _| key.team_scope_id != parent_session_id);
+                self.native_records
+                    .retain(|key, _| key.team_scope_id != parent_session_id);
+                self.native_loaded.remove(&parent_session_id);
+                self.native_activity
+                    .retain(|key, _| key.team_scope_id != parent_session_id);
+                self.native_waiters
+                    .retain(|key, _| key.team_scope_id != parent_session_id);
+                let closed_waiters: Vec<_> = self
+                    .mailbox_waiters
+                    .extract_if(|key, _| key.team_scope_id == parent_session_id)
+                    .map(|(_, waiter)| waiter)
+                    .collect();
+                for waiter in closed_waiters {
+                    let _ = waiter.respond_to.send(WaitAgentMessagesOutput {
+                        messages: Vec::new(),
+                        timed_out: true,
+                    });
+                }
                 self.teardown_session_children(&parent_session_id);
                 // Only the delete path (responder present) holds spawn admission closed until children drain, so a next-turn
                 // OpenSpawnAdmission cannot reopen Task spawns mid-delete. Close / idle unload (no responder) keep the pre-existing
@@ -673,6 +716,300 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             .sum()
     }
 
+    /// Roster for the mailbox surface: the team root plus every pending,
+    /// active, and completed child of the caller's team, sorted by id.
+    fn list_agents(&self, identity: &AgentMailboxIdentity) -> ListAgentsOutput {
+        let mut agents = vec![AgentRosterEntry {
+            agent_id: identity.team_scope_id.clone(),
+            is_root: true,
+            status: "running".to_string(),
+            subagent_type: None,
+            description: Some("Root agent".to_string()),
+            resumed_from: None,
+            worktree_path: None,
+        }];
+        agents.extend(
+            self.pending
+                .values()
+                .filter(|child| child.request.parent_session_id == identity.team_scope_id)
+                .map(|child| AgentRosterEntry {
+                    agent_id: child.request.id.clone(),
+                    is_root: false,
+                    status: "pending".to_string(),
+                    subagent_type: Some(child.request.subagent_type.clone()),
+                    description: Some(child.request.description.clone()),
+                    resumed_from: child.request.resume_from.clone(),
+                    worktree_path: None,
+                }),
+        );
+        agents.extend(
+            self.active
+                .values()
+                .filter(|child| child.request.parent_session_id == identity.team_scope_id)
+                .map(|child| AgentRosterEntry {
+                    agent_id: child.request.id.clone(),
+                    is_root: false,
+                    status: "running".to_string(),
+                    subagent_type: Some(child.request.subagent_type.clone()),
+                    description: Some(child.request.description.clone()),
+                    resumed_from: child.resumed_from.clone(),
+                    worktree_path: child.worktree_path.clone(),
+                }),
+        );
+        agents.extend(
+            self.completed
+                .values()
+                .filter(|child| child.request.parent_session_id == identity.team_scope_id)
+                .map(|child| AgentRosterEntry {
+                    agent_id: child.request.id.clone(),
+                    is_root: false,
+                    status: child.result.status().to_string(),
+                    subagent_type: Some(child.request.subagent_type.clone()),
+                    description: Some(child.request.description.clone()),
+                    resumed_from: child.resumed_from.clone(),
+                    worktree_path: child.worktree_path.clone(),
+                }),
+        );
+        agents[1..].sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
+        ListAgentsOutput {
+            team_scope_id: identity.team_scope_id.clone(),
+            agents,
+        }
+    }
+
+    /// Resolve a target name to an agent id the caller may address: `root`
+    /// and the team scope resolve to the root; a self-address is refused;
+    /// anything else must be a live or completed child of the caller's team.
+    fn resolve_message_target(
+        &self,
+        identity: &AgentMailboxIdentity,
+        target: &str,
+    ) -> Result<String, String> {
+        let target = target.trim();
+        if target.is_empty() {
+            return Err("target must not be empty".to_string());
+        }
+        let target = if target.eq_ignore_ascii_case("root") || target == identity.team_scope_id {
+            identity.team_scope_id.clone()
+        } else {
+            target.to_string()
+        };
+        if target == identity.agent_id {
+            return Err("Cannot send an agent message to the calling agent itself. \
+                 Use list_agents to see teammates, or target \"root\" for the team root."
+                .to_string());
+        }
+        if target == identity.team_scope_id {
+            return Ok(target);
+        }
+        let belongs_to_team = self
+            .pending
+            .get(&target)
+            .is_some_and(|child| child.request.parent_session_id == identity.team_scope_id)
+            || self
+                .active
+                .get(&target)
+                .is_some_and(|child| child.request.parent_session_id == identity.team_scope_id)
+            || self
+                .completed
+                .get(&target)
+                .is_some_and(|child| child.request.parent_session_id == identity.team_scope_id);
+        if belongs_to_team {
+            Ok(target)
+        } else {
+            Err(format!(
+                "Agent '{target}' was not found in team '{}'",
+                identity.team_scope_id
+            ))
+        }
+    }
+
+    /// Deliver (or queue) a non-native agent message. A blocked `wait_agent`
+    /// waiter is answered first; steering mail goes live to the recipient
+    /// session (queue only when it cannot receive yet); follow-up tasks are
+    /// passive and always queue.
+    fn send_agent_message(
+        &mut self,
+        identity: &AgentMailboxIdentity,
+        target: &str,
+        mut message: AgentMailboxMessage,
+    ) -> Result<AgentMessageSendOutput, String> {
+        if message.team_scope_id != identity.team_scope_id
+            || message.from_agent_id != identity.agent_id
+        {
+            return Err("Agent message identity did not match the calling session".to_string());
+        }
+        let target = self.resolve_message_target(identity, target)?;
+        message.to_agent_id = target.clone();
+
+        if target != identity.team_scope_id
+            && self
+                .completed
+                .get(&target)
+                .is_some_and(|child| child.request.parent_session_id == identity.team_scope_id)
+        {
+            return Err(format!(
+                "Agent '{target}' has finished. Continue it with task(resume_from=\"{target}\") \
+                 before sending more work."
+            ));
+        }
+
+        let key = MailboxKey {
+            team_scope_id: identity.team_scope_id.clone(),
+            agent_id: target.clone(),
+        };
+        let status = if let Some(waiter) = self.mailbox_waiters.remove(&key) {
+            let _ = waiter.respond_to.send(WaitAgentMessagesOutput {
+                messages: vec![message.clone()],
+                timed_out: false,
+            });
+            AgentMessageDeliveryStatus::Delivered
+        } else if message.kind.steers_recipient() {
+            let delivered = if target == identity.team_scope_id {
+                self.runner.deliver_root_followup(&target, &message)
+            } else {
+                self.active
+                    .get(&target)
+                    .is_some_and(|child| child.control.deliver_followup(&message))
+            };
+            if delivered {
+                AgentMessageDeliveryStatus::Delivered
+            } else if target == identity.team_scope_id || self.pending.contains_key(&target) {
+                self.enqueue_agent_message(key, message.clone())?;
+                AgentMessageDeliveryStatus::Queued
+            } else {
+                return Err(format!(
+                    "Agent '{target}' is not currently able to receive messages"
+                ));
+            }
+        } else {
+            self.enqueue_agent_message(key, message.clone())?;
+            AgentMessageDeliveryStatus::Queued
+        };
+
+        self.runner.on_agent_message(&message, status);
+        Ok(AgentMessageSendOutput {
+            message_id: message.message_id,
+            target_agent_id: target,
+            status,
+        })
+    }
+
+    /// Steering mail accepted while the recipient was still pending is
+    /// delivered to the live session as soon as its control exists,
+    /// preserving FIFO order among steering messages. Follow-up tasks (and
+    /// anything the control refuses) stay queued for `wait_agent`.
+    fn flush_mailbox_to_started_child(&mut self, key: &MailboxKey) {
+        let Some(mailbox) = self.mailboxes.remove(key) else {
+            return;
+        };
+        let Some(child) = self.active.get(&key.agent_id) else {
+            self.mailboxes.insert(key.clone(), mailbox);
+            return;
+        };
+        let mut retained = VecDeque::new();
+        let mut steering_live = true;
+        for mut message in mailbox {
+            if message.native.is_some() && !child.control.accepts_native_message(&message) {
+                self.runner
+                    .on_agent_message(&message, AgentMessageDeliveryStatus::Rejected);
+                continue;
+            }
+            if matches!(
+                message.kind,
+                super::types::AgentMailboxMessageKind::NativeFollowup
+            ) {
+                message.kind = super::types::AgentMailboxMessageKind::NativeMessage;
+            }
+            if steering_live
+                && message.kind.steers_recipient()
+                && child.control.deliver_initial_message(&message)
+            {
+                continue;
+            }
+            if message.kind.steers_recipient() {
+                // The control refused a live delivery; keep later steering
+                // mail queued behind it so FIFO order survives a retry.
+                steering_live = false;
+            }
+            retained.push_back(message);
+        }
+        if !retained.is_empty() {
+            self.mailboxes.insert(key.clone(), retained);
+        }
+        self.persist_native_registry(&key.team_scope_id);
+    }
+
+    fn enqueue_agent_message(
+        &mut self,
+        key: MailboxKey,
+        message: AgentMailboxMessage,
+    ) -> Result<(), String> {
+        const MAX_MAILBOX_MESSAGES: usize = 128;
+        let mailbox = self.mailboxes.entry(key).or_default();
+        if mailbox.len() >= MAX_MAILBOX_MESSAGES {
+            return Err(format!(
+                "Recipient mailbox is full (maximum {MAX_MAILBOX_MESSAGES} messages)"
+            ));
+        }
+        mailbox.push_back(message);
+        Ok(())
+    }
+
+    /// Drain the caller's own mailbox of non-native mail (up to the cap) or
+    /// register a deadline-bound waiter when the inbox is empty.
+    fn wait_agent_messages(
+        &mut self,
+        identity: AgentMailboxIdentity,
+        timeout_ms: u64,
+        respond_to: oneshot::Sender<WaitAgentMessagesOutput>,
+    ) {
+        const MAX_DRAIN_MESSAGES: usize = 20;
+        let key = MailboxKey::from(&identity);
+        if let Some(mailbox) = self.mailboxes.get_mut(&key)
+            && mailbox.iter().any(|message| message.native.is_none())
+        {
+            let mut messages = Vec::new();
+            while messages.len() < MAX_DRAIN_MESSAGES {
+                let Some(index) = mailbox.iter().position(|message| message.native.is_none())
+                else {
+                    break;
+                };
+                if let Some(message) = mailbox.remove(index) {
+                    messages.push(message);
+                }
+            }
+            if mailbox.is_empty() {
+                self.mailboxes.remove(&key);
+            }
+            let _ = respond_to.send(WaitAgentMessagesOutput {
+                messages,
+                timed_out: false,
+            });
+            return;
+        }
+        if timeout_ms == 0 {
+            let _ = respond_to.send(WaitAgentMessagesOutput {
+                messages: Vec::new(),
+                timed_out: true,
+            });
+            return;
+        }
+        if let Some(previous) = self.mailbox_waiters.insert(
+            key,
+            AgentMailboxWaiter {
+                deadline: tokio::time::Instant::now()
+                    + std::time::Duration::from_millis(timeout_ms),
+                respond_to,
+            },
+        ) {
+            let _ = previous.respond_to.send(WaitAgentMessagesOutput {
+                messages: Vec::new(),
+                timed_out: false,
+            });
+        }
+    }
+
     fn handle_internal(&mut self, event: InternalEvent<R::Control>) {
         match event {
             InternalEvent::Started {
@@ -691,7 +1028,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                     definition_background,
                     control,
                 } = child;
-                let Some(pending) = self.pending.remove(&subagent_id) else {
+                let Some(mut pending) = self.pending.remove(&subagent_id) else {
                     let _ = respond_to.send(false);
                     return;
                 };
@@ -701,6 +1038,25 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                     // Never becomes active: human parked sends are terminal.
                     self.reject_spawn_ready_ids(&[subagent_id]);
                     return;
+                }
+                let mailbox_key = MailboxKey {
+                    team_scope_id: pending.request.parent_session_id.clone(),
+                    agent_id: subagent_id.clone(),
+                };
+                // Native (v2) handle-only spawns get an early ack the moment
+                // the child is live; the terminal result still flows on the
+                // normal completion path.
+                if pending.request.runtime_overrides.native_agent.is_some()
+                    && pending.handle_only
+                    && let Some(reply) = pending.spawn_reply.take()
+                {
+                    let _ = reply.send(SubagentResult {
+                        success: true,
+                        backgrounded: true,
+                        subagent_id: subagent_id.clone(),
+                        child_session_id: child_session_id.clone(),
+                        ..Default::default()
+                    });
                 }
                 let promoted_id = subagent_id.clone();
                 let deferred_wake = defer_admission.then_some(pending.wake_of).flatten();
@@ -732,6 +1088,11 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 let _ = respond_to.send(true);
                 if !defer_admission {
                     self.admit_spawn_ready_messages(&promoted_id);
+                    // Mail queued while the child was pending flushes live
+                    // now that its control exists. Deferred (wake) starts
+                    // flush after their admission settles, mirroring the
+                    // spawn-ready message gate above.
+                    self.flush_mailbox_to_started_child(&mailbox_key);
                 }
             }
             InternalEvent::SettleDeferredStart {
@@ -1203,6 +1564,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         let finished_session = completed.child_session_id.clone();
         self.completed.insert(id.to_owned(), completed);
         self.completed_order.push_back(id.to_owned());
+        self.notify_native_completion(&request);
         self.purge_completions_for_spawner(&finished_session);
         self.running_count_changed();
         let workflow_run_id = request.owner.workflow_run_id().map(str::to_owned);
@@ -1474,6 +1836,8 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                     .flatten()
                     .map(|waiter| waiter.deadline),
             )
+            .chain(self.mailbox_waiters.values().map(|waiter| waiter.deadline))
+            .chain(self.native_waiters.values().map(|waiter| waiter.deadline))
             .chain(self.teardown_drains.values().map(|drain| drain.deadline))
             .chain(self.spawn_ready.deadlines())
             .min()
@@ -1499,6 +1863,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
     }
 
     fn process_deadlines(&mut self) {
+        self.expire_native_waiters();
         self.reap_abandoned_callers();
         let now = tokio::time::Instant::now();
         self.expire_spawn_ready_messages(now);
@@ -1566,6 +1931,20 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 } else {
                     let _ = waiter.respond_to.send(self.ready_snapshot(&id));
                 }
+            }
+        }
+        let expired_mailboxes: Vec<_> = self
+            .mailbox_waiters
+            .iter()
+            .filter(|(_, waiter)| waiter.deadline <= now)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in expired_mailboxes {
+            if let Some(waiter) = self.mailbox_waiters.remove(&key) {
+                let _ = waiter.respond_to.send(WaitAgentMessagesOutput {
+                    messages: Vec::new(),
+                    timed_out: true,
+                });
             }
         }
     }

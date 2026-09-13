@@ -75,6 +75,7 @@ async fn create_test_actor(
     );
     chat_state_handle.record_token_usage(total_tokens);
     SessionActor {
+        pending_native_agent_messages: Default::default(),
         repo_status_prefetch: crate::session::repo_status_prefix::RepoStatusPrefetchState::default(
         ),
         transient_retry_enabled: true,
@@ -505,6 +506,7 @@ async fn create_test_actor_with_memory(
         .as_ref()
         .map_or_else(Default::default, |mc| mc.initial_injection.clone());
     SessionActor {
+        pending_native_agent_messages: Default::default(),
         repo_status_prefetch: crate::session::repo_status_prefix::RepoStatusPrefetchState::default(
         ),
         transient_retry_enabled: true,

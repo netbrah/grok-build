@@ -1171,6 +1171,7 @@ impl SessionActor {
                     ConversationItem::subagent_completed(user_message)
                 }
                 super::super::PromptOrigin::ParentAgentMessage { .. }
+                | super::super::PromptOrigin::AgentMessage { .. }
                 | super::super::PromptOrigin::ParentHumanMessage { .. } => {
                     ConversationItem::agent_message(user_message)
                 }

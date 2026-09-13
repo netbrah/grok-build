@@ -63,6 +63,13 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             ));
             return;
         }
+        // Native (v2) named agents: validate the name, enforce the per-team
+        // cap, and reserve the name before admission (re-expressed from
+        // open-grok@240c99c9 coordinator/spawn.rs:50).
+        if let Err(error) = self.register_native_spawn(&mut request) {
+            let _ = result_tx.send(rejected_spawn_result(&id, &error, false));
+            return;
+        }
         // Capture before `insert_nested` moves `spawner`.
         let spawner_session_id = spawner.as_ref().map(|nested| nested.session_id.clone());
         // The node must exist before any record that can be looked up by `id`.

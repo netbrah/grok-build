@@ -752,6 +752,12 @@ pub(crate) struct SessionActor {
     pub(crate) chat_state_handle: xai_chat_state::ChatStateHandle,
     /// Current running prompt/turn id, shared with SessionHandle.
     pub(crate) current_prompt_id: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// Native (v2) agent messages that arrived while a turn was running;
+    /// flushed as tool results before the next turn / at the interjection
+    /// safe point (spec F5 delivery side).
+    pub(crate) pending_native_agent_messages: std::sync::Mutex<
+        Vec<xai_grok_sampling_types::conversation::ConversationItem>,
+    >,
     pub(crate) active_work: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pub(crate) unattributed_background_usage: std::sync::atomic::AtomicBool,
     /// Open blocking reverse-requests (permission / question / plan-approval), keyed by `tool_call_id`.

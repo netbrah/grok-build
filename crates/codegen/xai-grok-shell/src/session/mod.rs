@@ -9,6 +9,7 @@ pub mod handle;
 pub(crate) mod memory_state;
 pub mod merge;
 pub(crate) mod message_delivery;
+pub(crate) mod native_agents;
 pub mod notifications;
 pub mod pending_interaction;
 pub mod prompt_queue;
@@ -125,6 +126,13 @@ pub enum PromptOrigin {
     /// The shell re-parked `exit_plan_mode` on resume, the user approved/revised, and the shell injects the follow-up turn.
     /// Synthetic: the user never typed it, so it stays out of prompt history, but it still runs a real turn.
     PlanResume,
+    /// Wake this session with a typed message from another agent in the same
+    /// mailbox team (v2 multi-agent). The sender is another model, not the
+    /// user; the pager must not render it as user-authored input.
+    AgentMessage {
+        /// The `amsg_`-prefixed message id.
+        message_id: String,
+    },
 }
 impl PromptOrigin {
     pub fn from_prompt_id(prompt_id: &str) -> Self {
@@ -135,6 +143,10 @@ impl PromptOrigin {
         } else if let Some(subagent_id) = prompt_id.strip_prefix("subagent-completed-") {
             Self::SubagentCompleted {
                 subagent_id: subagent_id.to_string(),
+            }
+        } else if let Some(agent_message_id) = prompt_id.strip_prefix("agent-message-") {
+            Self::AgentMessage {
+                message_id: agent_message_id.to_string(),
             }
         } else if let Some(parent_message_id) = prompt_id.strip_prefix("parent-agent-message-") {
             Self::ParentAgentMessage {
@@ -176,6 +188,15 @@ impl PromptOrigin {
                 shutdown: ShutdownPolicy::Drain,
             },
             Self::ParentAgentMessage { .. } => InputPolicy {
+                authority: InputAuthority::ModelAuthoredUntrusted,
+                slash: SlashAuthority::ModelAuthored,
+                turn_boundary: TurnBoundary::Conversational,
+                analytics: AnalyticsClass::AgentMessage,
+                compaction: CompactionClass::ConversationalAgentAnchor,
+                queue: QueuePolicy::VisibleProtected,
+                shutdown: ShutdownPolicy::Drain,
+            },
+            Self::AgentMessage { .. } => InputPolicy {
                 authority: InputAuthority::ModelAuthoredUntrusted,
                 slash: SlashAuthority::ModelAuthored,
                 turn_boundary: TurnBoundary::Conversational,
@@ -232,6 +253,7 @@ impl PromptOrigin {
                 | Self::SubagentCompleted { .. }
                 | Self::WorkflowCompleted { .. }
                 | Self::ParentAgentMessage { .. }
+                | Self::AgentMessage { .. }
                 | Self::ParentHumanMessage { .. }
                 | Self::NotificationDrain
         )
@@ -242,6 +264,7 @@ impl PromptOrigin {
         match self {
             Self::User
             | Self::ParentAgentMessage { .. }
+            | Self::AgentMessage { .. }
             | Self::ParentHumanMessage { .. }
             | Self::SchedulerFired
             | Self::PlanResume => false,
@@ -260,6 +283,7 @@ impl PromptOrigin {
             Self::WorkflowCompleted { completion_id } => Some(completion_id),
             Self::User
             | Self::ParentAgentMessage { .. }
+            | Self::AgentMessage { .. }
             | Self::ParentHumanMessage { .. }
             | Self::NotificationDrain
             | Self::GoalSummary

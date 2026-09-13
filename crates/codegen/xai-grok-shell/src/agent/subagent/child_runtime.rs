@@ -2,7 +2,9 @@ use tokio::sync::mpsc;
 use xai_grok_tools::implementations::grok_build::task::coordinator::{
     ActiveMessageAdmission, ChildControl, LocalBoxFuture, SendBoxFuture, SubagentProgress,
 };
-use xai_grok_tools::implementations::grok_build::task::types::ActiveAgentMessageDelivery;
+use xai_grok_tools::implementations::grok_build::task::types::{
+    ActiveAgentMessageDelivery, AgentMailboxMessage,
+};
 use xai_message_delivery_core::DeliveryEnvelope;
 
 use super::prompt_turn_receipt::{PromptTurnReceipt, cancel_shell_child_turn};
@@ -87,6 +89,46 @@ impl ChildControl for ShellChildRuntime {
 
     fn cancel(&self) {
         cancel_shell_child_turn(&self.child_cmd_tx);
+    }
+
+    fn interrupt(&self) -> bool {
+        self.child_cmd_tx
+            .send(SessionCommand::Cancel(crate::session::CancelOptions {
+                cancel_subagents: false,
+                kill_background_tasks: false,
+                ..Default::default()
+            }))
+            .is_ok()
+    }
+
+    fn accepts_native_message(&self, message: &AgentMailboxMessage) -> bool {
+        // WT adaptation: no codex wire under the proxy, so `encrypted` is
+        // always false (spec D-3); a native message is acceptable unless it is
+        // marked encrypted (the encrypted carrier is never armed, F3 out).
+        !message.native.as_ref().is_some_and(|native| native.encrypted)
+    }
+
+    fn deliver_initial_message(&self, message: &AgentMailboxMessage) -> bool {
+        if !self.accepts_native_message(message) {
+            return false;
+        }
+        self.child_cmd_tx
+            .send(SessionCommand::AgentMessage {
+                message: message.clone(),
+            })
+            .is_ok()
+    }
+
+    fn deliver_followup(&self, message: &AgentMailboxMessage) -> bool {
+        // WT adaptation: the source additionally required the child to hold a
+        // live prompt before accepting a steer; the shell child runtime has no
+        // prompt-id field, and the session actor queues a not-yet-running
+        // delivery, so the readiness gate is dropped (command-channel delivery
+        // is lossless). Encrypted follow-ups are still rejected.
+        if message.native.as_ref().is_some_and(|native| native.encrypted) {
+            return false;
+        }
+        self.deliver_initial_message(message)
     }
 }
 

@@ -117,6 +117,9 @@ pub(crate) struct AgentRebuildSpec {
     pub subagent_depth: u32,
     pub subagents_max_depth: u32,
     pub session_id_str: String,
+    /// Mailbox team scope: the root session id for a subagent, or the session's
+    /// own id otherwise (v2 multi-agent identity, spec MA-2).
+    pub team_scope_id: String,
     pub blocking_wait_depth: Arc<crate::tools::tool_context::BlockingWaitState>,
     pub respect_gitignore: bool,
     pub path_not_found_hints: bool,
@@ -210,6 +213,7 @@ impl AgentRebuildSpec {
             subagent_depth,
             subagents_max_depth,
             session_id_str,
+            team_scope_id,
             blocking_wait_depth,
             respect_gitignore,
             path_not_found_hints,
@@ -363,6 +367,14 @@ impl AgentRebuildSpec {
                     resources.insert(SubagentDepthCounter(*subagent_depth));
                     resources.insert(MaxSubagentDepth(*subagents_max_depth));
                     resources.insert(SessionIdResource(session_id_str.clone()));
+                    // v2 multi-agent mailbox identity: a session addresses its
+                    // peers within the team scope (spec MA-2 / recon 1.4).
+                    resources.insert(
+                        xai_grok_tools::implementations::grok_build::task::types::AgentMailboxIdentity {
+                            team_scope_id: team_scope_id.clone(),
+                            agent_id: session_id_str.clone(),
+                        },
+                    );
                     resources.insert(SubagentEventSender(event_tx));
                     resources
                         .insert(
@@ -455,6 +467,7 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         subagent_depth: 0,
         subagents_max_depth: xai_grok_tools::implementations::grok_build::task::MAX_SUBAGENT_DEPTH,
         session_id_str: "test-session".to_string(),
+        team_scope_id: "test-session".to_string(),
         blocking_wait_depth: Arc::new(crate::tools::tool_context::BlockingWaitState::new()),
         respect_gitignore: false,
         path_not_found_hints: false,

@@ -9,9 +9,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::coordinator::active_message::{ActiveChildGeneration, ActiveMessageLifecycle};
 use super::types::{
-    ActiveAgentMessageDelivery, ActiveSubagentSummary, AgentAddress, SubagentCompletionSummary,
-    SubagentDescribeOutcome, SubagentInspection, SubagentRequest, SubagentResult,
-    SubagentResumeLookup, SubagentSnapshot, SubagentSnapshotStatus, SubagentValidateTypeOutcome,
+    ActiveAgentMessageDelivery, ActiveSubagentSummary, AgentAddress, AgentMailboxMessage,
+    AgentMessageDeliveryStatus, SubagentCompletionSummary, SubagentDescribeOutcome,
+    SubagentInspection, SubagentRequest, SubagentResult, SubagentResumeLookup, SubagentSnapshot,
+    SubagentSnapshotStatus, SubagentValidateTypeOutcome, WaitAgentMessagesOutput,
 };
 
 /// Cap on retained completed-subagent entries before the oldest are evicted.
@@ -71,6 +72,31 @@ pub trait ChildControl: 'static {
     }
 
     fn cancel(&self);
+
+    /// Interrupt the child's current turn without terminating it. Hosts that
+    /// cannot interrupt without a kill report `false`.
+    fn interrupt(&self) -> bool {
+        false
+    }
+
+    /// Whether a native (v2) agent message may be handed to this child at all
+    /// (e.g. provider-boundary checks). `false` keeps the message out of the
+    /// session entirely.
+    fn accepts_native_message(&self, _message: &AgentMailboxMessage) -> bool {
+        false
+    }
+
+    /// First mailbox flush after a child started: deliver queued steering mail
+    /// live, preserving FIFO order. Defaults to the follow-up path.
+    fn deliver_initial_message(&self, message: &AgentMailboxMessage) -> bool {
+        self.deliver_followup(message)
+    }
+
+    /// Deliver a message to the live child session (steer). `false` when the
+    /// session cannot receive yet — the caller then queues the message.
+    fn deliver_followup(&self, _message: &AgentMailboxMessage) -> bool {
+        false
+    }
 }
 
 /// Data reported when runtime initialization has produced a live child.
@@ -172,6 +198,42 @@ pub trait ChildRunner: 'static {
         completion: ChildCompletion<Self::CompletionData>,
         terminal_published: Box<dyn FnOnce() + Send>,
     );
+
+    /// Load the team's persisted native (named v2) agent records, if the host
+    /// has a registry for them.
+    fn load_native_agents(
+        &self,
+        _team: &str,
+    ) -> Result<Vec<super::types::NativeAgentRecord>, String> {
+        Ok(Vec::new())
+    }
+
+    /// Persist the team's native agent records (best effort).
+    fn save_native_agents(
+        &self,
+        _team: &str,
+        _records: &[super::types::NativeAgentRecord],
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Deliver a follow-up to the root session of this host. `false` when the
+    /// root cannot receive it.
+    fn deliver_root_followup(
+        &self,
+        _root_session_id: &str,
+        _message: &AgentMailboxMessage,
+    ) -> bool {
+        false
+    }
+
+    /// Observe every outbound agent message with its delivery disposition.
+    fn on_agent_message(
+        &self,
+        _message: &AgentMailboxMessage,
+        _status: AgentMessageDeliveryStatus,
+    ) {
+    }
 
     /// Whether `run` can continue a woken agent's persisted session in place.
     fn supports_wake(&self) -> bool;
@@ -479,6 +541,11 @@ pub(super) struct CompletedChild {
 pub(super) struct BlockingWaiter {
     pub(super) deadline: tokio::time::Instant,
     pub(super) respond_to: oneshot::Sender<Option<SubagentSnapshot>>,
+}
+
+pub(super) struct AgentMailboxWaiter {
+    pub(super) deadline: tokio::time::Instant,
+    pub(super) respond_to: oneshot::Sender<WaitAgentMessagesOutput>,
 }
 
 pub(super) struct BufferedCompletion {

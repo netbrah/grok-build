@@ -302,6 +302,7 @@ impl ChannelSpawner {
             surface_completion: false,
             await_to_completion: false,
             fork_context: true,
+            context: xai_tool_types::SubagentContextRequest::FORK,
             owner: SubagentOwner::Task,
             cancel_token: self.cancel_token.clone(),
             spawn_root: Default::default(),

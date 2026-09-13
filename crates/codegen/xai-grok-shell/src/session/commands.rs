@@ -366,6 +366,15 @@ pub enum SessionCommand {
             xai_grok_tools::implementations::grok_build::task::coordinator::ActiveMessageAdmission,
         >,
     },
+    /// Wake this session with a typed mailbox message from another agent in
+    /// the same v2 multi-agent team (the delivery side of the coordinator
+    /// mailbox). Unlike `Interject`, the sender is another model, not the
+    /// user, and the pager must not render it as user-authored input.
+    /// Provenance: open-grok@240c99c9 session/commands.rs `AgentMessage`
+    /// (re-expressed).
+    AgentMessage {
+        message: xai_grok_tools::implementations::grok_build::task::types::AgentMailboxMessage,
+    },
     SessionMode {
         session_mode: acp::SessionModeId,
         responds_to: oneshot::Sender<()>,

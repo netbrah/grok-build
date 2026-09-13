@@ -77,6 +77,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
     });
     let (event_tx, event_rx) = mpsc::unbounded_channel::<SessionEvent>();
     let actor = SessionActor {
+        pending_native_agent_messages: Default::default(),
         repo_status_prefetch: crate::session::repo_status_prefix::RepoStatusPrefetchState::default(
         ),
         transient_retry_enabled: true,

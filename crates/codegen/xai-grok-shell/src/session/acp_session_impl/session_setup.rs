@@ -340,8 +340,23 @@ impl SessionActor {
             self.persist_announcement_state().await;
         }
     }
+    /// Flush buffered native (v2) agent messages into chat state as tool
+    /// results. Provenance: open-grok@240c99c9 session_setup.rs
+    /// `flush_native_agent_messages`. Returns whether anything was flushed.
+    pub(super) fn flush_native_agent_messages(&self) -> bool {
+        let items = match self.pending_native_agent_messages.lock() {
+            Ok(mut buffered) => std::mem::take(&mut *buffered),
+            Err(_) => Vec::new(),
+        };
+        let has_items = !items.is_empty();
+        for item in items {
+            self.chat_state_handle.push_tool_result(item);
+        }
+        has_items
+    }
     #[tracing::instrument(level = "debug", skip_all)]
     pub(super) async fn flush_pending_skill_reminders(&self) {
+        self.flush_native_agent_messages();
         let activation = self.plan_mode.lock().take_pending_activation();
         if let Some(text) = activation {
             self.chat_state_handle

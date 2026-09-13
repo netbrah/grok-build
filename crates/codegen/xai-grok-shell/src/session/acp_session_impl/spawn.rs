@@ -1136,6 +1136,10 @@ pub(crate) async fn spawn_session_actor(
         subagent_depth: tool_context.subagent_depth,
         subagents_max_depth,
         session_id_str: session_info.id.0.to_string(),
+        team_scope_id: startup_hints
+            .parent_session_id
+            .clone()
+            .unwrap_or_else(|| session_info.id.0.to_string()),
         blocking_wait_depth: tool_context.blocking_wait_depth.clone(),
         respect_gitignore,
         path_not_found_hints,
@@ -1734,6 +1738,7 @@ pub(crate) async fn spawn_session_actor(
         chat_state_handle,
         unattributed_background_usage: std::sync::atomic::AtomicBool::new(false),
         current_prompt_id: current_prompt_id.clone(),
+        pending_native_agent_messages: std::sync::Mutex::new(Vec::new()),
         active_work: active_work.clone(),
         pending_interactions: pending_interactions.clone(),
         telemetry_enabled,

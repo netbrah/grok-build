@@ -560,6 +560,11 @@ impl HostService {
                     surface_completion: false,
                     await_to_completion: true,
                     fork_context,
+                    context: if fork_context {
+                        xai_tool_types::SubagentContextRequest::FORK
+                    } else {
+                        xai_tool_types::SubagentContextRequest::FRESH
+                    },
                     owner: SubagentOwner::workflow(&self.params.run_id),
                     cancel_token: cancel_token.clone(),
                     spawn_root: Default::default(),

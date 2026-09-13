@@ -304,6 +304,10 @@ impl SessionActor {
     }
 
     pub(super) async fn drain_pending_interjections(&self) -> bool {
+        // A native (v2) agent message flushed here is activity even when no
+        // human interjection drained (provenance: open-grok@240c99c9
+        // interjection.rs safe point).
+        let native_activity = self.flush_native_agent_messages();
         // Manual drain (not `drain_formatted`): skill parsing needs the raw text.
         // Parsed after wrapping, the envelope's closing `</user_query>` tag would pollute the trailing skill's args.
         // The guard owns the drained entries until the batch is submitted: every await below is a.
@@ -312,7 +316,7 @@ impl SessionActor {
             entries: self.pending_interjections.drain_all(),
         };
         if guard.entries.is_empty() {
-            return false;
+            return native_activity;
         }
 
         let mut prepared = Vec::with_capacity(guard.entries.len());
@@ -362,7 +366,7 @@ impl SessionActor {
                 session_id = %self.session_info.id.0,
                 "interjection drain skipped: chat-state actor unavailable"
             );
-            return false;
+            return native_activity;
         }
         // Persist only after the submit succeeded: on the failure/cancel paths the entries go back
         // to the buffer and the fallback-prompt turn persists them, so persisting here too would

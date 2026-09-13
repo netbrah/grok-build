@@ -316,6 +316,76 @@ impl coordinator::ChildRunner for ShellChildRunner {
         crate::agent::subagent::read_subagent_output(std::path::Path::new(reference))
             .map(std::sync::Arc::from)
     }
+    // Provenance: re-expressed from open-grok@240c99c9
+    // `agent/mvp_agent/subagent_coordinator.rs` (registry load/save + root
+    // follow-up). ADAPTATION: the WT session dir is resolved via
+    // `ensure_owner_only_session_dir` (no separate `session_dir`); the root is
+    // addressed through `MvpAgent::resident_handle` as in the source.
+    fn load_native_agents(
+        &self,
+        team: &str,
+    ) -> Result<
+        Vec<xai_grok_tools::implementations::grok_build::task::types::NativeAgentRecord>,
+        String,
+    > {
+        let handle = self
+            .agent_ref
+            .get()
+            .resident_handle(&acp::SessionId::new(team))
+            .ok_or_else(|| "Root session is unavailable".to_owned())?;
+        let path = crate::session::persistence::ensure_owner_only_session_dir(&handle.info)
+            .map_err(|error| error.to_string())?
+            .join("native_agents.json");
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|error| format!("Invalid native agent registry: {error}")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    fn save_native_agents(
+        &self,
+        team: &str,
+        records: &[xai_grok_tools::implementations::grok_build::task::types::NativeAgentRecord],
+    ) -> Result<(), String> {
+        let handle = self
+            .agent_ref
+            .get()
+            .resident_handle(&acp::SessionId::new(team))
+            .ok_or_else(|| "Root session is unavailable".to_owned())?;
+        let directory = crate::session::persistence::ensure_owner_only_session_dir(&handle.info)
+            .map_err(|error| error.to_string())?;
+        let temporary = directory.join(format!(".native-agents-{}.tmp", uuid::Uuid::now_v7()));
+        let bytes = serde_json::to_vec(records).map_err(|error| error.to_string())?;
+        crate::util::secure_file::write_secure_file(&temporary, &bytes)
+            .map_err(|error| error.to_string())?;
+        if let Err(error) = std::fs::rename(&temporary, directory.join("native_agents.json")) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error.to_string());
+        }
+        Ok(())
+    }
+
+    fn deliver_root_followup(
+        &self,
+        root_session_id: &str,
+        message: &xai_grok_tools::implementations::grok_build::task::types::AgentMailboxMessage,
+    ) -> bool {
+        let Some(handle) = self
+            .agent_ref
+            .get()
+            .resident_handle(&acp::SessionId::new(root_session_id))
+        else {
+            return false;
+        };
+        handle
+            .cmd_tx
+            .send(SessionCommand::AgentMessage {
+                message: message.clone(),
+            })
+            .is_ok()
+    }
 }
 /// Coordinator limit sink; the coordinator cannot link telemetry directly.
 fn log_limit_notice(notice: coordinator::SubagentLimitNotice) {
