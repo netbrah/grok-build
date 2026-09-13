@@ -46,7 +46,7 @@
       {
         "kind": "field",
         "file": "req-*.json",
-        "path": "$.model",
+        "path": "$.body.model",
         "eq": "qwen3.8-27b",
         "where": {
           "method": "POST",

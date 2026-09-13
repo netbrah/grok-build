@@ -39,7 +39,7 @@
       {
         "kind": "field",
         "file": "req-*.json",
-        "path": "$.model",
+        "path": "$.body.model",
         "eq": "claude-sonnet-5",
         "where": {
           "method": "POST",

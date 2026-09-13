@@ -53,7 +53,7 @@
       {
         "kind": "field",
         "file": "req-*.json",
-        "path": "$.model",
+        "path": "$.body.model",
         "eq": "claude-sonnet-5",
         "where": {
           "method": "POST",
@@ -80,7 +80,8 @@
           "method": "POST",
           "path": "/v1/messages"
         },
-        "nth": 0
+        "nth": 0,
+        "last": 0
       }
     ]
   }

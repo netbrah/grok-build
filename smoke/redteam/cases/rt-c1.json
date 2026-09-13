@@ -46,7 +46,7 @@
       {
         "kind": "field",
         "file": "req-*.json",
-        "path": "$.model",
+        "path": "$.body.model",
         "eq": "qwen3.8-27b",
         "where": {
           "method": "POST",
@@ -62,7 +62,7 @@
             "method": "POST",
             "path": "/v1/responses"
           },
-          "nth": 1
+          "nth": 0
         },
         "b": {
           "file": "req-*.json",
@@ -70,7 +70,7 @@
             "method": "POST",
             "path": "/v1/responses"
           },
-          "nth": 0
+          "nth": 1
         }
       }
     ]
