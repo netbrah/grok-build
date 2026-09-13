@@ -31,7 +31,7 @@
     }
   ],
   "watchdog_s": 300,
-  "est_calls": 7,
+  "est_calls": 13,
   "assert": {
     "exit": 0,
     "ndjson": [

@@ -232,6 +232,15 @@ class HermeticHome:
         os.makedirs(self.home, mode=0o700, exist_ok=True)
         os.makedirs(self.cwd, exist_ok=True)
         cfg = read_live_config(live_home)
+        # Harness invariant (disclosed in the report): this fork fires
+        # display-only side-calls on every headless turn — a full-history
+        # "dashboard line" call and a session-title refresh, both gated by
+        # features.turn_summary (title_refresh.rs: shares the
+        # turn_summary_enabled gate). They triple per-turn proxy spend
+        # without touching any behavior under test (compaction, switch,
+        # resume, tools), so the hermetic home disables them. Case
+        # patches still take precedence (applied after).
+        cfg = _apply_config_patch(cfg, {"features/turn_summary": False})
         cfg = _apply_config_patch(cfg, config_patch or {})
         stub_dst = os.path.join(self.home, "proxy-auth-stub.sh")
         shutil.copy(os.path.join(live_home, "proxy-auth-stub.sh"), stub_dst)
@@ -1446,7 +1455,7 @@ def _copy_session_evidence(home, ctx, run_dir):
         os.makedirs(dst, exist_ok=True)
         for k in keep:
             p = os.path.join(ctx.session_dir, k)
-            if os.path.exists(p):
+            if os.path.isdir(p):
                 shutil.copytree(p, os.path.join(dst, k),
                                 dirs_exist_ok=True)
             elif os.path.isfile(p):
