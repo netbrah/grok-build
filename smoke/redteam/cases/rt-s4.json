@@ -1,6 +1,6 @@
 {
   "id": "RT-S4",
-  "title": "glm worker seat (ledger R-SEAT-1, coordinator addendum #2): qwen3.8-27b parent, default config (NO glm-row patch), v1 task tool spawn with EXPLICIT child model = glm-5.2 (c-subagent pattern: model lives in the --agents agent definition, task tool names the agent). Asserts: (1) child completes -> CHILD-OK in parsed output; (2) WIRE: a request with body.model == glm-5.2 exists AND no x-litellm-tags header on glm requests (glm row is untagged in the live config — a tag header on the glm path IS the 401 bug, hard FAIL); (3) parent turn completes after the child -> PARENT-OK + exit 0.",
+  "title": "glm worker seat (ledger R-SEAT-1, coordinator addendum #2): qwen3.8-27b parent, default config (NO glm-row patch), v1 task tool spawn with EXPLICIT child model = glm-5.2 (c-subagent pattern: model lives in the --agents agent definition, task tool names the agent via subagent_type='echo' \u2014 spawn_subagent resolves the definition's model; verified on wire: parent must pass subagent_type 'echo', not general-purpose, or the child silently inherits the parent model). Asserts: (1) child completes -> CHILD-OK in parsed output; (2) WIRE: a request with body.model == glm-5.2 exists AND no x-litellm-tags header on glm requests (glm row is untagged in the live config \u2014 a tag header on the glm path IS the 401 bug, hard FAIL); (3) parent turn completes after the child -> PARENT-OK + exit 0.",
   "model": "qwen3.8-27b",
   "agents_json": {
     "echo": {
@@ -11,7 +11,7 @@
   "steps": [
     {
       "op": "turn",
-      "prompt": "Spawn the echo subagent and ask it to reply with exactly: CHILD-OK. Once it replies, reply with exactly: CHILD-OK PARENT-OK"
+      "prompt": "Spawn a subagent using the user-defined subagent type 'echo' (pass subagent_type \"echo\" in the spawn_subagent call; its model is glm-5.2 per the agent configuration) and ask it to reply with exactly: CHILD-OK. Once it replies, reply with exactly: CHILD-OK PARENT-OK"
     }
   ],
   "watchdog_s": 300,
