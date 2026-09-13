@@ -71,6 +71,11 @@ pub struct AgentBuilder {
     write_file_enabled: bool,
     active_agent_messages_enabled: bool,
     subagents_enabled: bool,
+    /// TOOLS-DARK stage (spec G18): when false (the MA-2 default — there is
+    /// no host gate surface until MA-3) the native v2 tools are stripped
+    /// after the v1 task strip, and the `NativeAgentsEnabled` resource is
+    /// seeded false. Test harnesses can still inject the resource directly.
+    native_agents_enabled: bool,
     background_workflows_enabled: bool,
     ask_user_question_enabled: bool,
     subagent_toggle: HashMap<String, bool>,
@@ -201,6 +206,7 @@ impl AgentBuilder {
             write_file_enabled: true,
             active_agent_messages_enabled: false,
             subagents_enabled: false,
+            native_agents_enabled: false,
             background_workflows_enabled: false,
             ask_user_question_enabled: true,
             subagent_toggle: HashMap::new(),
@@ -461,6 +467,14 @@ impl AgentBuilder {
     /// Disabled strips the `TaskTool` from the tool config, so the model cannot spawn child agent sessions.
     pub fn with_subagents_enabled(mut self, enabled: bool) -> Self {
         self.subagents_enabled = enabled;
+        self
+    }
+    /// TOOLS-DARK stage (spec G18): registers the six native v2 tools and
+    /// seeds the `NativeAgentsEnabled` resource. MA-2 has no host gate
+    /// surface (no feature flag / env / per-model row), so production
+    /// always stays false.
+    pub fn with_native_agents_enabled(mut self, enabled: bool) -> Self {
+        self.native_agents_enabled = enabled;
         self
     }
     pub fn with_background_workflows_enabled(mut self, enabled: bool) -> Self {
@@ -804,6 +818,36 @@ impl AgentBuilder {
                     .retain(|tc| !lifecycle.contains(&short_tool_name(&tc.id)));
             }
         }
+        if self.native_agents_enabled {
+            use xai_grok_tools::implementations::grok_build::native_agents;
+            let can_spawn = self.subagents_enabled
+                && tool_config.tools.iter().any(|tool| {
+                    xai_grok_tools::implementations::grok_build::task::is_task_tool_id(
+                        short_tool_name(&tool.id),
+                    )
+                });
+            // Parity strip: the four v1-era names are removed so the v2
+            // tools own those names; spawn_agent/interrupt_agent are NOT
+            // stripped (open-grok@240c99c9 builder.rs:1194-1199).
+            tool_config.tools.retain(|tool| {
+                !matches!(
+                    short_tool_name(&tool.id),
+                    "send_message" | "followup_task" | "list_agents" | "wait_agent"
+                )
+            });
+            if can_spawn {
+                tool_config
+                    .tools
+                    .push((&native_agents::SpawnAgentTool).into());
+            }
+            tool_config.tools.extend([
+                (&native_agents::SendMessageTool).into(),
+                (&native_agents::FollowupTaskTool).into(),
+                (&native_agents::ListAgentsTool).into(),
+                (&native_agents::WaitAgentTool).into(),
+                (&native_agents::InterruptAgentTool).into(),
+            ]);
+        }
         if let xai_grok_tools::implementations::grok_build::web_fetch::WebFetchConfig::Enabled {
             ref params,
         } = self.web_fetch_config
@@ -1035,6 +1079,16 @@ impl AgentBuilder {
         if let Some(access) = self.memory_v2_access.clone() {
             tool_bridge.update_resource(access).await;
         }
+        // TOOLS-DARK stage (spec G18): the v2 tools gate on this resource
+        // at call time; it is seeded from the builder flag (false in MA-2
+        // production) and test harnesses may override it directly.
+        tool_bridge
+            .update_resource(
+                xai_grok_tools::implementations::grok_build::task::types::NativeAgentsEnabled(
+                    self.native_agents_enabled,
+                ),
+            )
+            .await;
         if let Some(bytes) = self.mcp_max_output_bytes {
             tool_bridge.toolset().resources.lock().await.insert(
                 xai_grok_tools::types::resources::TruncationCfg(

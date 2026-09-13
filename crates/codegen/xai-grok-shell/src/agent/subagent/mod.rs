@@ -1040,6 +1040,89 @@ fn conversation_tail_is_complete(
         Some(ConversationItem::Assistant(a)) if a.tool_calls.is_empty()
     )
 }
+/// Length of the longest prefix of `items` that ends at a clean turn
+/// boundary (no dangling tool calls).
+///
+/// Provenance: open-grok@240c99c9
+/// crates/codegen/xai-grok-shell/src/agent/subagent/mod.rs:1385
+/// :: clean_fork_prefix_len (re-expressed).
+/// ADAPTATION: the source also pairs custom-tool call ids (Code Mode
+/// `exec` envelopes); the WT conversation model has no custom-tool
+/// envelope, so pairing is plain `ToolCall.id` / `ToolResultItem.tool_call_id`.
+fn clean_fork_prefix_len(
+    items: &[xai_grok_sampling_types::conversation::ConversationItem],
+) -> usize {
+    fn prefix_is_clean(prefix: &[ConversationItem]) -> bool {
+        match prefix.last() {
+            Some(
+                ConversationItem::User(_)
+                | ConversationItem::Assistant(_)
+                | ConversationItem::ToolResult(_),
+            ) => {}
+            // Reasoning / backend-call / system tails are mid-turn artifacts.
+            _ => return false,
+        }
+        let mut dangling: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for item in prefix {
+            match item {
+                ConversationItem::Assistant(a) => {
+                    dangling.extend(a.tool_calls.iter().map(|call| call.id.as_ref()));
+                }
+                ConversationItem::ToolResult(result) => {
+                    dangling.remove(result.tool_call_id.as_str());
+                }
+                _ => {}
+            }
+        }
+        dangling.is_empty()
+    }
+    let mut len = items.len();
+    while len > 0 {
+        if prefix_is_clean(&items[..len]) {
+            return len;
+        }
+        len -= 1;
+    }
+    0
+}
+/// Truncate a forked parent conversation to the most recent `count`
+/// genuine (non-synthetic) user turns, keeping a leading System head.
+///
+/// Provenance: open-grok@240c99c9
+/// crates/codegen/xai-grok-shell/src/agent/subagent/mod.rs:1457
+/// :: select_native_fork_turns (re-expressed; the source's
+/// `CustomToolOutput` pairing is dropped — the WT has no custom-tool
+/// envelope).
+fn select_native_fork_turns(
+    mut items: Vec<ConversationItem>,
+    count: Option<usize>,
+) -> Vec<ConversationItem> {
+    let Some(count) = count else { return items };
+    items.truncate(clean_fork_prefix_len(&items));
+    let start = items
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, item)| {
+            matches!(item, ConversationItem::User(user) if user.synthetic_reason.is_none())
+        })
+        .take(count)
+        .last()
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    if start == 0 {
+        return items;
+    }
+    let head = items
+        .first()
+        .filter(|item| matches!(item, ConversationItem::System(_)))
+        .cloned();
+    let mut selected = items.split_off(start);
+    if let Some(head) = head {
+        selected.insert(0, head);
+    }
+    selected
+}
 /// Decide the live-fork context. Verbatim mirror (the cache-preserving path): keep the items BYTE-FOR-BYTE. It applies when the parent fits the fork's 80% guard and ends at a clean turn boundary.
 /// We deliberately do NOT run `fork_filter_chat` here. At planner spawn the conversation is between turns (the `/goal` user message is not yet pushed). (This is the ONLY path that filters; the verbatim path never does.)
 /// Input that is empty or only `System` item(s), before OR after filtering, inherited nothing, so it fails open to `New` rather than a hollow fork.
@@ -1401,6 +1484,116 @@ async fn bootstrap_initial_context(
             "Loaded source child session data for resume"
         );
         return BootstrapInitialContext::Ready(resume_initial_context(conversation, force_compact));
+    }
+    // v2 native spawn (item 9, MA-2, F7/G6): the fork directive comes from
+    // the resolved context request plus the child-vs-parent model
+    // comparison — same model keeps the raw verbatim copy, a different
+    // model gets the plaintext digest (raw items never cross). The v1
+    // `fork_context` path below is untouched.
+    if let Some(native) = request.runtime_overrides.native_agent.as_ref() {
+        let directive = xai_grok_subagent_resolution::fork::ForkDirective::resolve(
+            request.context,
+            None,
+            effective_model_id,
+            &ctx.model_id.0,
+        );
+        if matches!(directive, xai_grok_subagent_resolution::fork::ForkDirective::None) {
+            return BootstrapInitialContext::Ready(InitialContext {
+                source: InitialContextSource::New,
+                copy_error: None,
+                prefix_len: None,
+                conversation: vec![],
+                force_compact: false,
+                verbatim_fork: false,
+            });
+        }
+        let live_items = match ctx.parent_chat_state.as_ref() {
+            Some(chat_state) => {
+                let items = chat_state.get_conversation().await;
+                if items.is_empty() { None } else { Some(items) }
+            }
+            None => None,
+        };
+        let items = match live_items {
+            Some(items) => items,
+            // Live state gone (spawn from a rehydrated session): fall back
+            // to the parent's persisted history (source parity,
+            // open-grok@240c99c9 mod.rs).
+            None => match ctx.parent_session_info.as_ref() {
+                Some(parent_info) => {
+                    let storage =
+                        crate::session::storage::jsonl::JsonlStorageAdapter::with_root(
+                            crate::util::grok_home::grok_home(),
+                        );
+                    storage
+                        .load_chat_history_from_dir(
+                            &crate::session::persistence::session_dir(parent_info),
+                        )
+                        .unwrap_or_default()
+                }
+                None => return BootstrapInitialContext::Ready(InitialContext {
+                    source: InitialContextSource::New,
+                    copy_error: None,
+                    prefix_len: None,
+                    conversation: vec![],
+                    force_compact: false,
+                    verbatim_fork: false,
+                }),
+            },
+        };
+        let items = select_native_fork_turns(items, native.fork_turns);
+        if directive == xai_grok_subagent_resolution::fork::ForkDirective::Digest {
+            let ctx_out = digest_fork_initial_context(
+                request,
+                ctx,
+                child_session_info,
+                effective_model_id,
+                items,
+                window.context_window,
+            )
+            .await;
+            tracing::info!(
+                subagent_id = %request.id,
+                subagent_type = %request.subagent_type,
+                loaded_items = ctx_out.conversation.len(),
+                "Native v2 fork resolved to a cross-model digest"
+            );
+            if matches!(ctx_out.source, InitialContextSource::Forked) {
+                stamp_live_fork_session_metadata(
+                    child_session_info,
+                    &ctx.parent_session_id,
+                    request.parent_prompt_id.clone(),
+                    effective_model_id,
+                    Some(2),
+                    "forked_digest",
+                );
+            }
+            return BootstrapInitialContext::Ready(ctx_out);
+        }
+        let ctx_out = verbatim_or_normalize_fork(items, window.context_window);
+        tracing::info!(
+            subagent_id = %request.id,
+            subagent_type = %request.subagent_type,
+            loaded_items = ctx_out.conversation.len(),
+            verbatim = ctx_out.verbatim_fork,
+            "Native v2 fork resolved to a same-model copy"
+        );
+        if matches!(ctx_out.source, InitialContextSource::Forked) {
+            let marker = if ctx_out.verbatim_fork {
+                "forked_verbatim"
+            } else {
+                "forked_summarized"
+            };
+            stamp_live_fork_session_metadata(
+                child_session_info,
+                &ctx.parent_session_id,
+                request.parent_prompt_id.clone(),
+                effective_model_id,
+                ctx_out.prefix_len,
+                marker,
+            );
+        }
+        return BootstrapInitialContext::Ready(ctx_out);
     }
     if !request.fork_context {
         return BootstrapInitialContext::Ready(InitialContext {

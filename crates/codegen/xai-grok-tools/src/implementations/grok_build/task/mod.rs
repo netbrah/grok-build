@@ -588,6 +588,13 @@ impl xai_tool_runtime::Tool for TaskTool {
             })
             .flatten();
 
+        // v2 `spawn_agent` folds its context-carried parameters in here:
+        // the pinned `task` input schema has no `context` field, so the
+        // spawn tool passes the parsed fork intent through the tool-call
+        // context (spec D-8/D-9).
+        let native_agent = ctx
+            .get::<NativeAgentSpawn>()
+            .map(|options| (*options).clone());
         let request = SubagentRequest {
             id: id.clone(),
             prompt: input.prompt.clone(),
@@ -598,9 +605,7 @@ impl xai_tool_runtime::Tool for TaskTool {
             resume_from,
             cwd,
             runtime_overrides: SubagentRuntimeOverrides {
-                // v2 `spawn_agent` folds its context-carried parameters in
-                // below; plain `task` spawns carry none.
-                native_agent: None,
+                native_agent: native_agent.clone(),
                 model,
                 model_override_provenance: ModelOverrideProvenance::Tool,
                 reasoning_effort: None,
@@ -624,12 +629,36 @@ impl xai_tool_runtime::Tool for TaskTool {
             surface_completion: true,
             await_to_completion: false,
             fork_context: false,
-            context: xai_tool_types::SubagentContextRequest::default(),
+            context: native_agent
+                .as_ref()
+                .map(|native| native.context)
+                .unwrap_or_default(),
             owner: SubagentOwner::Task,
             cancel_token: child_cancellation,
             spawn_root: SpawnRootSpan::new(spawn_root_span),
         };
 
+        // v2 spawn: handle-only early ack. The coordinator owns the
+        // lifecycle (named registry, mailbox, auto-wake); the model gets
+        // the canonical task path and agent id to address it with.
+        if let Some(native) = &native_agent {
+            let result = backend.backend().spawn(request).await?;
+            if !result.success {
+                return Err(xai_tool_runtime::ToolError::custom(
+                    "spawn_failed",
+                    result
+                        .error
+                        .unwrap_or_else(|| "Agent could not be started".to_owned()),
+                ));
+            }
+            return Ok(ToolOutput::Dynamic(
+                serde_json::json!({
+                    "task_name": format!("/root/{}", native.task_name),
+                    "agent_id": result.subagent_id,
+                })
+                .into(),
+            ));
+        }
         // 4. Background mode: await registration (pending/queued), not the
         // child session. `spawn()` stays the terminal result; late failures
         // are logged from a detached waiter.

@@ -775,6 +775,41 @@ pub(crate) async fn run_shell_child(
             effective_model_id = parent_mid;
         }
     }
+    // Q2 (item 9, MA-2): a v2 spawn with an explicit `model` argument that
+    // trips the fail-closed credential guard surfaces a NOTICE on the
+    // terminal result — the pinned parent-route fall-through is preserved
+    // (D-2); this only observes the guard, it changes no resolution.
+    let mut model_notices: Vec<String> = Vec::new();
+    if request.runtime_overrides.native_agent.is_some()
+        && request
+            .runtime_overrides
+            .model_override_provenance
+            == xai_grok_tools::implementations::grok_build::task::types::ModelOverrideProvenance::Tool
+        && let Some(requested_model) = effective_runtime.model.as_deref()
+        && let Some(entry) =
+            crate::agent::config::find_model_by_id(&ctx.available_models, requested_model)
+        && let Some(guard_message) =
+            crate::agent::config::custom_endpoint_credential_error(entry)
+    {
+        model_notices.push(format!(
+            "Explicit model '{requested_model}' was rejected by the credential guard ({guard_message}); the agent is running on the parent model route instead."
+        ));
+    }
+    // v2 native spawn: fail fast when the spawn message cannot be routed to
+    // the child's conversation (source parity, open-grok@240c99c9
+    // handle_request.rs:679). WT adaptation: the source's provider /
+    // native-protocol dimensions collapse to the WT's constant v0 transport
+    // gate (F3/Q3) — `native_enabled` is false under the WT proxy.
+    if let Some(native) = &request.runtime_overrides.native_agent
+        && let Some(message) = &native.message
+        && let Err(error) = crate::session::native_agents::message_item(
+            message,
+            &effective_sampling_config.api_backend,
+            false,
+        )
+    {
+        return child_run_output(failure_result(&request, &error), completion_data, None);
+    }
     if let Some(ref source) = resume_source
         && let Some(ref source_model) = source.model_id
         && effective_model_id.0.as_ref() != source_model.as_str()
@@ -908,6 +943,24 @@ pub(crate) async fn run_shell_child(
     let task_prompt_text = prompt.clone();
     let (mut forked_conversation, mut inherited_prefix_len) =
         (forked_conversation, inherited_prefix_len.unwrap_or(0));
+    // v2 native spawn: the first agent message is seeded into the child's
+    // initial conversation as the untrusted-marker item (source parity,
+    // open-grok@240c99c9 handle_request.rs:839; WT route dimensions as
+    // above — the pre-validation call cannot fail here).
+    if let Some(message) = request
+        .runtime_overrides
+        .native_agent
+        .as_ref()
+        .and_then(|native| native.message.as_ref())
+    {
+        let item = crate::session::native_agents::message_item(
+            message,
+            &effective_sampling_config.api_backend,
+            false,
+        )
+        .expect("native message route validated");
+        forked_conversation.push(item);
+    }
     if context_source != InitialContextSource::Resumed
         && !verbatim_mirror_fork
         && let Some(ref pi) = effective_runtime.persona_instructions
@@ -1648,6 +1701,7 @@ pub(crate) async fn run_shell_child(
             } else {
                 failure_result(&request, &msg)
             };
+            result.warnings.extend(model_notices.drain(..));
             return child_run_output(result, completion_data, None);
         }
     };
@@ -1877,6 +1931,7 @@ pub(crate) async fn run_shell_child(
             }
             let _ = reporter.settle_deferred_start(false).await;
         }
+        result.warnings.extend(model_notices.drain(..));
         return child_run_output(result, completion_data, None);
     }
     let _progress_publisher = spawn_progress_publisher(
@@ -2364,6 +2419,7 @@ pub(crate) async fn run_shell_child(
         })),
     );
     crate::waterfall::mark(&request.id, crate::waterfall::stage::CHILD_DONE);
+    result.warnings.extend(model_notices.drain(..));
     child_run_output(result, completion_data, disposed_snapshot_ref)
 }
 pub(crate) enum Disposal {

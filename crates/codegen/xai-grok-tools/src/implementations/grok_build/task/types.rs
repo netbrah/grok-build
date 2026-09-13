@@ -229,6 +229,15 @@ pub struct AgentMailboxIdentity {
 
 register_resource!("grok_build", "AgentMailboxIdentity", AgentMailboxIdentity);
 
+/// Per-session gate for the native multi-agent v2 tools. Default `false`:
+/// the only MA-2 enable path is direct test injection of this resource
+/// (TOOLS-DARK stage, spec G18); the host gate surface (feature flag /
+/// config) lands in MA-3.
+#[derive(Clone, Copy, Default)]
+pub struct NativeAgentsEnabled(pub bool);
+
+register_resource!("grok_build", "NativeAgentsEnabled", NativeAgentsEnabled);
+
 /// `Message` is the steering channel: it is pushed into the recipient session
 /// live (a running turn consumes it at an interjection boundary; an idle
 /// recipient starts an agent-message turn). `FollowupTask` is the passive
