@@ -1,0 +1,185 @@
+#!/bin/zsh
+# grok-dogfood v2 — instrumented dogfood launcher (HT-1 A5). STAGED HERE;
+# the coordinator installs it over ~/.grok/bin/grok-dogfood. This file is
+# never installed by the harness and never writes to ~/.grok itself.
+#
+# PROVENANCE
+#   - v1 contract (kept): ~/.grok/bin/grok-dogfood (10 L: BIN default,
+#     GROK_DOGFOOD_LOG filter, `exec env -u <provider vars>
+#     GROK_AUTH_EXPIRED=1 RUST_LOG=... "$BIN" "$@"`).
+#   - Spec: grok/plans/HT-1-redteam-harness-spec.md §3 (A5).
+#   - Wire capture: smoke/wiretap/wiretap.py (wiretap2, HT-1 A1), which
+#     extends ~/bin/wiretap.py (original untouched; CDX-1 HTTP/1.1 fix
+#     included per /tmp/cdx1-spawn/wiretap9099.py + plans/cdx1-report.md).
+#
+# Usage: grok-dogfood [args...]      (same args as the binary: -p, -m,
+#                                    --resume <sid>, --output-format, ...)
+# Env:
+#   GROK_DOGFOOD_BIN=<path>    binary (default: worktree debug build)
+#   GROK_DOGFOOD_LOG=<filter>  RUST_LOG value; 'debug-all' = plain `debug`
+#   GROK_DOGFOOD_WIRECAP=1     forensic proxy capture (default OFF)
+#   GROK_DOGFOOD_CLEANUP=1     delete capture dir + temp home after the run
+#   GROK_DOGFOOD_WIRETAP=<path> wiretap2 location (default: worktree)
+
+BIN=${GROK_DOGFOOD_BIN:-/Users/palanisd/Projects/upstream/wt/grok-build-responses/target/debug/grok-responses}
+[ -x "$BIN" ] || {
+  echo "grok-dogfood: binary missing: $BIN (in-flight build? cargo build -p xai-grok-pager-bin)" >&2
+  exit 2
+}
+LIVE_HOME="$HOME/.grok"
+WIRETAP=${GROK_DOGFOOD_WIRETAP:-/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wiretap/wiretap.py}
+
+# --- 1. Full debug scope (v1 targets stay a subset of this) -------------
+if [ "$GROK_DOGFOOD_LOG" = "debug-all" ]; then
+  RUST_LOG="debug"
+elif [ -n "$GROK_DOGFOOD_LOG" ]; then
+  RUST_LOG="$GROK_DOGFOOD_LOG"
+else
+  RUST_LOG="info,xai_grok_shell=debug,xai_grok_sampler=debug,xai_grok_pager=debug,xai_chat_state=debug,xai_grok_agent=debug,xai_grok_config=debug"
+fi
+
+# L1 env contract: provider vars unset, auth refresh declined headless.
+run_env() {
+  env -u OPENAI_API_KEY -u OPENAI_BASE_URL \
+      -u ANTHROPIC_API_KEY -u ANTHROPIC_BASE_URL \
+      GROK_AUTH_EXPIRED=1 RUST_LOG="$RUST_LOG" "$@"
+}
+
+# --- 2. Plain dogfood (default): v1 semantics, new default scope --------
+if [ -z "$GROK_DOGFOOD_WIRECAP" ]; then
+  exec run_env "$BIN" "$@"
+fi
+
+# --- 3. Wirecap mode: forensic capture (default OFF) --------------------
+[ -f "$WIRETAP" ] || { echo "grok-dogfood: wiretap2 missing: $WIRETAP" >&2; exit 2; }
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+CAPDIR="$LIVE_HOME/dogfood/$TS"
+mkdir -p "$CAPDIR/wire" || { echo "grok-dogfood: cannot create $CAPDIR" >&2; exit 2; }
+
+# Free port (wiretap2 appends grok's full route path /v1/<route> to the
+# origin, so the upstream origin must NOT carry a trailing /v1).
+PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+
+# Tempdir GROK_HOME: copy of the live home (config.toml + sessions/ + auth,
+# spec §3.2) with base_urls rewritten to the local wiretap. Wirecap runs in
+# the COPIED home: NEW sessions live under the temp home, never ~/.grok.
+TMPHOME=$(mktemp -d /tmp/grok-dogfood-home.XXXXXX)
+chmod 700 "$TMPHOME"
+cp "$LIVE_HOME/config.toml" "$TMPHOME/config.toml"
+[ -f "$LIVE_HOME/auth.json" ] && cp "$LIVE_HOME/auth.json" "$TMPHOME/auth.json"
+[ -f "$LIVE_HOME/proxy-auth-stub.sh" ] && cp "$LIVE_HOME/proxy-auth-stub.sh" "$TMPHOME/proxy-auth-stub.sh"
+
+# sessions/ copy — targeted by default (the live sessions/ is large, ~1000
+# dirs): -r/--resume <sid> copies just sessions/*/<sid>; -c/--continue or
+# GROK_DOGFOOD_COPY_SESSIONS=all copies all of it; a new session gets an
+# empty sessions/. (Recognized forms: "-r SID", "--resume SID", "--resume=SID".)
+mkdir -p "$TMPHOME/sessions"
+RESUME_SID=""
+prev=""
+for a in "$@"; do
+  case "$a" in --resume=*) RESUME_SID=${a#--resume=};; esac
+  if [ "$prev" = "-r" ] || [ "$prev" = "--resume" ]; then RESUME_SID="$a"; fi
+  prev="$a"
+done
+if [ "$GROK_DOGFOOD_COPY_SESSIONS" = "all" ] || [[ " $* " == *" -c "* ]] || [[ " $* " == *"--continue"* ]]; then
+  echo "grok-dogfood: copying full sessions/ from live home"
+  cp -R "$LIVE_HOME/sessions/." "$TMPHOME/sessions/"
+elif [ -n "$RESUME_SID" ]; then
+  SRC=$(find "$LIVE_HOME/sessions" -mindepth 2 -maxdepth 2 -type d -name "$RESUME_SID" 2>/dev/null | head -1)
+  if [ -n "$SRC" ]; then
+    ENC=$(basename "$(dirname "$SRC")")
+    mkdir -p "$TMPHOME/sessions/$ENC"
+    cp -R "$SRC/." "$TMPHOME/sessions/$ENC/$RESUME_SID/"
+    echo "grok-dogfood: copied session $RESUME_SID from live home"
+  else
+    echo "grok-dogfood: WARNING: session $RESUME_SID not found under $LIVE_HOME/sessions" >&2
+  fi
+fi
+sed -i '' \
+  -e "s|^base_url = \".*\"|base_url = \"http://127.0.0.1:$PORT/v1\"|" \
+  -e "s|^models_base_url = \".*\"|models_base_url = \"http://127.0.0.1:$PORT/v1\"|" \
+  -e "s|$LIVE_HOME/proxy-auth-stub.sh|$TMPHOME/proxy-auth-stub.sh|g" \
+  "$TMPHOME/config.toml"
+# Mirror the catalog cache (models_cache.json) and align its scope to the
+# hermetic home (origin/identity/renewed_at) so -m <catalog-model> resolves
+# offline — same alignment the L3 runner uses (HT-1 A2).
+if [ -f "$LIVE_HOME/models_cache.json" ]; then
+  cp "$LIVE_HOME/models_cache.json" "$TMPHOME/models_cache.json"
+  TMPHOME="$TMPHOME" PORT="$PORT" python3 - <<'PYEOF'
+import json, os, hashlib
+from datetime import datetime, timezone
+p = os.path.join(os.environ["TMPHOME"], "models_cache.json")
+try:
+    cache = json.load(open(p))
+except Exception:
+    raise SystemExit(0)
+if isinstance(cache, dict) and cache.get("models"):
+    cache["renewed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    cache["origin"] = "http://127.0.0.1:%s/v1/models" % os.environ["PORT"]
+    key = os.environ.get("XAI_API_KEY", "")
+    if key:
+        h = hashlib.sha256()
+        for part in ("models-api-key", key, ""):
+            h.update(part.encode()); h.update(b"\x00")
+        cache["identity"] = h.hexdigest()
+    json.dump(cache, open(p, "w"), indent=2)
+PYEOF
+fi
+
+# Start wiretap2 (stdout summary lines kept for live monitoring).
+run_env python3 "$WIRETAP" --port "$PORT" \
+  --upstream https://llm-proxy-api.ai.eng.netapp.com \
+  --capture "$CAPDIR/wire" >"$CAPDIR/wiretap-stdout.log" 2>&1 &
+WT_PID=$!
+trap 'kill "$WT_PID" 2>/dev/null' EXIT INT TERM
+
+ready=0
+for _ in {1..25}; do
+  if nc -z 127.0.0.1 "$PORT" 2>/dev/null; then ready=1; break; fi
+  sleep 0.2
+done
+if [ "$ready" != 1 ]; then
+  echo "grok-dogfood: wiretap2 not ready on :$PORT" >&2
+  exit 4
+fi
+
+run_env GROK_HOME="$TMPHOME" "$BIN" "$@"
+RC=$?
+kill "$WT_PID" 2>/dev/null
+wait "$WT_PID" 2>/dev/null
+
+UNIFIED="$TMPHOME/logs/unified.jsonl"
+
+# Manifest = the run's redaction contract: the raw key must be absent from
+# the capture dir and the unified log (defense in depth over wiretap2's
+# masking). Any hit => exit non-zero.
+KEY="${CODEX_LLM_PROXY_KEY:-}"
+HITS=0
+if [ -n "$KEY" ]; then
+  HITS=$( { grep -rFao -- "$KEY" "$CAPDIR" 2>/dev/null;
+            grep -Fao -- "$KEY" "$UNIFIED" 2>/dev/null; } | wc -l | tr -d ' ' )
+fi
+KEYSHA=$( [ -n "$KEY" ] && printf '%s' "$KEY" | shasum -a 256 | cut -c1-12 || echo none )
+BINSHA=$(shasum -a 256 "$BIN" | cut -c1-12)
+
+echo "grok-dogfood v2 wirecap manifest"
+echo "  ts:            $TS"
+echo "  binary:        $BIN (sha256_12 $BINSHA)"
+echo "  key sha256_12: $KEYSHA (value never printed)"
+echo "  wirecap port:  $PORT"
+echo "  capture dir:   $CAPDIR/wire"
+echo "  unified.jsonl: $UNIFIED"
+echo "  temp home:     $TMPHOME"
+echo "  exit:          $RC"
+echo "NOTE: wirecap ran in a copied home — new sessions live under $TMPHOME/sessions (never ~/.grok); \"-r <sid>\" auto-copied that session from the live home."
+
+if [ -n "$KEY" ] && [ "$HITS" != 0 ]; then
+  echo "grok-dogfood: REDACTION VIOLATION: $HITS raw-key hit(s) in capture dir / unified log" >&2
+  [ "$GROK_DOGFOOD_CLEANUP" = 1 ] && rm -rf "$CAPDIR" "$TMPHOME"
+  exit 3
+fi
+if [ "$GROK_DOGFOOD_CLEANUP" = 1 ]; then
+  rm -rf "$CAPDIR" "$TMPHOME"
+  echo "cleanup: capture dir + temp home deleted (GROK_DOGFOOD_CLEANUP=1)"
+fi
+exit $RC
