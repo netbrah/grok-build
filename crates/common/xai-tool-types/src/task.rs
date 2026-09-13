@@ -180,6 +180,78 @@ impl SubagentCapabilityMode {
     }
 }
 
+/// The spawn-time request for a subagent's initial-context mode: does the
+/// child start fresh, or with a copy of the parent's conversation history?
+///
+/// MA-1 lands this as a standalone pure type; the model-facing `context`
+/// argument and the per-model catalog default that consume it arrive with
+/// the v2 multi-agent port (MA-2/MA-3). The v1 `task` tool schema is pinned
+/// and carries no `context` field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentContextMode {
+    /// The child starts with only its system prompt and task prompt.
+    #[serde(alias = "Fresh", alias = "new", alias = "clean")]
+    Fresh,
+    /// The child inherits the parent's conversation context.
+    #[serde(alias = "Fork", alias = "forked", alias = "Forked")]
+    Fork,
+}
+
+impl SubagentContextMode {
+    /// Canonical wire string (matches the serde `snake_case` representation).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Fork => "fork",
+        }
+    }
+}
+
+/// How a spawn asks for the child's initial context to be resolved.
+///
+/// `Default` defers to the child model's catalog default (fresh when the
+/// model has no row); `Explicit` is the caller's decision — a model-facing
+/// argument or a harness caller that requires a specific mode (the goal
+/// planner forks; swarm members, loop units and harness-internal helpers
+/// stay fresh) — and is never overridden by model metadata.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SubagentContextRequest {
+    /// No explicit choice — resolve from the child model's catalog default.
+    #[default]
+    Default,
+    /// Explicit caller choice — never overridden by model metadata.
+    Explicit(SubagentContextMode),
+}
+
+impl SubagentContextRequest {
+    /// Explicit fork request; harness callers relying on this keep the
+    /// legacy "fork pins the parent model" behavior.
+    pub const FORK: Self = Self::Explicit(SubagentContextMode::Fork);
+    /// Explicit fresh request.
+    pub const FRESH: Self = Self::Explicit(SubagentContextMode::Fresh);
+
+    /// The effective mode given the child model's catalog default.
+    pub fn resolve(self, model_default: Option<SubagentContextMode>) -> SubagentContextMode {
+        match self {
+            Self::Explicit(mode) => mode,
+            Self::Default => model_default.unwrap_or(SubagentContextMode::Fresh),
+        }
+    }
+
+    /// True only for a caller-explicit fork.
+    pub fn is_explicit_fork(self) -> bool {
+        matches!(self, Self::Explicit(SubagentContextMode::Fork))
+    }
+
+    /// True when the spawn may still resolve to a fork (explicit fork, or
+    /// deferred to model metadata) — spawn-context builders use this to
+    /// capture fork-only parent state before the effective mode is known.
+    pub fn may_fork(self) -> bool {
+        matches!(self, Self::Default | Self::Explicit(SubagentContextMode::Fork))
+    }
+}
+
 /// Isolation mode for subagent execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -2070,5 +2142,77 @@ mod tests {
             "review",
             "review the diff",
         ));
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // SubagentContextMode / SubagentContextRequest (MA-1 port)
+    // ───────────────────────────────────────────────────────────────────────
+
+    /// Provenance: open-grok@240c99c9 crates/common/xai-tool-types/src/task.rs:363 :: SubagentContextMode (new test — no OG test counterpart; asserts the ported serde wire contract and alias set)
+    #[test]
+    fn subagent_context_mode_serde_wire_contract() {
+        use serde_json::json;
+        assert_eq!(SubagentContextMode::Fresh.as_str(), "fresh");
+        assert_eq!(SubagentContextMode::Fork.as_str(), "fork");
+        assert_eq!(
+            serde_json::to_value(SubagentContextMode::Fresh).unwrap(),
+            json!("fresh")
+        );
+        assert_eq!(
+            serde_json::to_value(SubagentContextMode::Fork).unwrap(),
+            json!("fork")
+        );
+        for alias in ["fresh", "Fresh", "new", "clean"] {
+            assert_eq!(
+                serde_json::from_value::<SubagentContextMode>(json!(alias)).unwrap(),
+                SubagentContextMode::Fresh,
+                "alias {alias:?}"
+            );
+        }
+        for alias in ["fork", "Fork", "forked", "Forked"] {
+            assert_eq!(
+                serde_json::from_value::<SubagentContextMode>(json!(alias)).unwrap(),
+                SubagentContextMode::Fork,
+                "alias {alias:?}"
+            );
+        }
+        assert!(serde_json::from_value::<SubagentContextMode>(json!("bogus")).is_err());
+    }
+
+    /// Provenance: open-grok@240c99c9 crates/codegen/xai-grok-tools/src/implementations/grok_build/task/types.rs:146 :: SubagentContextRequest (new test — no OG test counterpart; asserts the ported resolve/Default/Explicit contract)
+    #[test]
+    fn subagent_context_request_resolves_against_model_default() {
+        let default = SubagentContextRequest::default();
+        assert_eq!(default, SubagentContextRequest::Default);
+        assert_eq!(
+            default.resolve(None),
+            SubagentContextMode::Fresh
+        );
+        assert_eq!(
+            default.resolve(Some(SubagentContextMode::Fork)),
+            SubagentContextMode::Fork
+        );
+        // Explicit beats the catalog default in both directions.
+        assert_eq!(
+            SubagentContextRequest::FRESH.resolve(Some(SubagentContextMode::Fork)),
+            SubagentContextMode::Fresh
+        );
+        assert_eq!(
+            SubagentContextRequest::FORK.resolve(Some(SubagentContextMode::Fresh)),
+            SubagentContextMode::Fork
+        );
+    }
+
+    /// Provenance: open-grok@240c99c9 crates/codegen/xai-grok-tools/src/implementations/grok_build/task/types.rs:146 :: SubagentContextRequest (new test — fork markers used by spawn-context builders)
+    #[test]
+    fn subagent_context_request_fork_markers() {
+        assert!(SubagentContextRequest::FORK.is_explicit_fork());
+        assert!(!SubagentContextRequest::FRESH.is_explicit_fork());
+        assert!(!SubagentContextRequest::default().is_explicit_fork());
+        assert!(SubagentContextRequest::FORK.may_fork());
+        assert!(SubagentContextRequest::default().may_fork());
+        assert!(!SubagentContextRequest::FRESH.may_fork());
+        assert!(!SubagentContextRequest::Explicit(SubagentContextMode::Fresh).may_fork());
     }
 }
