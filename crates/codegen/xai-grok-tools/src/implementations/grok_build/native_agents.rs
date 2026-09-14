@@ -571,4 +571,49 @@ mod tests {
         assert!(ok.model.is_none());
         assert!(ok.fork_turns.is_none());
     }
+
+    /// MA-4 pre-roll (micro-fix A): const/registry drift guard.
+    /// `child_tool_projection::child_safe_tool_specs` exempts v2 child-wire
+    /// tools BY NAME (`V2_COLLABORATION_TOOL_NAMES`) while filtering by KIND
+    /// (`ActiveAgentMessage`); a rename or a newly added ActiveAgentMessage
+    /// tool without a const update would silently change what v2 children
+    /// keep. Fail closed: enumerate every ActiveAgentMessage tool the real
+    /// registry declares and pin the split against the const.
+    #[test]
+    fn v2_collaboration_const_covers_registry_active_agent_message_tools() {
+        use crate::registry::types::ToolRegistryBuilder;
+        use crate::types::tool::ToolKind;
+        let registry = ToolRegistryBuilder::new();
+        let registry_aam: std::collections::BTreeSet<String> = registry
+            .known_tool_kinds()
+            .into_iter()
+            .filter(|(_, kind)| matches!(kind, ToolKind::ActiveAgentMessage))
+            .map(|(id, _)| {
+                id.rsplit_once(':')
+                    .map(|(_, name)| name.to_owned())
+                    .unwrap_or(id)
+            })
+            .collect();
+        let expected: std::collections::BTreeSet<String> = V2_COLLABORATION_TOOL_NAMES
+            .iter()
+            .map(|name| (*name).to_owned())
+            .chain(
+                [crate::implementations::grok_build::SEND_SUBAGENT_MESSAGE_TOOL_NAME]
+                    .into_iter()
+                    .map(str::to_owned),
+            )
+            .collect();
+        assert_eq!(
+            registry_aam, expected,
+            "registry ActiveAgentMessage tools drifted from V2_COLLABORATION_TOOL_NAMES (+v1); \
+             update the const when renaming or adding these tools"
+        );
+        // The M-2b child-wire exemption is name-based: a v1 name in the const
+        // would let the root-only send_subagent_message ride onto the child wire.
+        assert!(
+            !V2_COLLABORATION_TOOL_NAMES
+                .contains(&crate::implementations::grok_build::SEND_SUBAGENT_MESSAGE_TOOL_NAME),
+            "v1 send_subagent_message must never be in the v2 exemption const"
+        );
+    }
 }
