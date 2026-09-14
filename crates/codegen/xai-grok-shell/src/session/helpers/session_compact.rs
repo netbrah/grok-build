@@ -128,6 +128,13 @@ fn classify_sampling_error(err: SamplingError) -> CompactFailure {
     if err.is_payload_too_large() || err.is_context_length_error() {
         return CompactFailure::Overflow(acp_err);
     }
+    // Deterministic in-stream text (opaque proxy failures / over-capacity):
+    // `Transient` would be retried by the sampler's retry loop AND the
+    // compaction engine, turning one upstream failure into a retry storm
+    // (C3: 3 attempts, all transient)
+    if err.is_deterministic_in_stream_error() {
+        return CompactFailure::Deterministic(acp_err);
+    }
     let deterministic = match &err {
         SamplingError::Auth { .. }
         | SamplingError::InvalidConfiguration(_)
@@ -180,6 +187,17 @@ fn classify_response_event_error(code: Option<&str>, message: &str) -> CompactFa
         && status_code != 408
         && status_code != 429
     {
+        return CompactFailure::Deterministic(acp_err);
+    }
+
+    // Residual opaque in-stream text with no structured code to key on: the same
+    // deterministic class as `SamplingError::StreamError` above. 408/429 are
+    // excluded above and stay excluded here — a rate-limit or timeout status
+    // says "try again later" regardless of the text.
+    let excluded_status = code
+        .and_then(|c| c.parse::<u16>().ok())
+        .is_some_and(|s| s == 408 || s == 429);
+    if !excluded_status && xai_grok_sampling_types::is_deterministic_in_stream_message(message) {
         return CompactFailure::Deterministic(acp_err);
     }
 

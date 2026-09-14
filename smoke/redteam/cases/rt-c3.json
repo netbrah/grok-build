@@ -1,6 +1,6 @@
 {
   "id": "RT-C3",
-  "title": "OVER-CAPACITY PIN: 1.7MB history vs 262144 window (reproduces 01a09be2; pre-FIX-2 = honest failure text, no crash)",
+  "title": "OVER-CAPACITY PIN: 1.7MB history vs 262144 window - deterministic in-stream error stops the retry storm (attempts==1, deterministic outcome, honest text, no crash)",
   "model": "qwen3.8-27b",
   "config_patch": {
     "model/qwen3.8-27b/context_window": 262144
@@ -17,20 +17,9 @@
   ],
   "watchdog_s": 600,
   "est_calls": 4,
-  "recon": true,
   "assert": {
     "exit": 1,
     "ndjson": [
-      {
-        "op": "recon",
-        "what": "final-text",
-        "label": "final turn text (pre-FIX-2 honest-failure text pin)"
-      },
-      {
-        "op": "recon",
-        "label": "end event (stopReason/usage \u2014 session continued?)",
-        "event": "end"
-      },
       {
         "op": "present",
         "event": "end",
@@ -39,34 +28,52 @@
     ],
     "artifact": [
       {
-        "op": "recon",
-        "label": "compaction error text (01a09be2 class: 'Response API in-stream error')",
+        "op": "count",
         "file": "compaction_requests/*.json",
-        "field": "$.error"
+        "min": 1,
+        "max": 1,
+        "label": "exactly one compaction pass (no multi-pass storm)"
       },
       {
-        "op": "recon",
-        "label": "summary (expect null pre-FIX-2)",
         "file": "compaction_requests/*.json",
-        "field": "$.summary"
+        "field": "$.attempts",
+        "eq": 1,
+        "label": "single sample attempt: deterministic in-stream error stops the retry storm (was 3)"
       },
       {
-        "op": "recon",
-        "label": "attempts/attempt_details (retry storm shape)",
         "file": "compaction_requests/*.json",
-        "field": "$.attempt_details"
+        "field": "$.attempt_details[0].outcome",
+        "eq": "deterministic",
+        "label": "attempt 1 outcome is deterministic (was transient; the CompactionAttempt vocab has no 'fatal')"
+      },
+      {
+        "file": "compaction_requests/*.json",
+        "field": "$.error",
+        "eq": "Compaction sampler build failed: compact failed: stream error (unknown): litellm.APIError: Response API in-stream error",
+        "label": "honest error text (01a09be2 class: 'Response API in-stream error')"
+      },
+      {
+        "file": "compaction_requests/*.json",
+        "field": "$.attempt_details[0].error",
+        "eq": "Compaction sampler build failed: compact failed: stream error (unknown): litellm.APIError: Response API in-stream error",
+        "label": "attempt row carries the honest error text"
+      },
+      {
+        "file": "compaction_requests/*.json",
+        "field": "$.summary",
+        "eq": null,
+        "label": "no summary produced (honest failure, no crash)"
       }
     ],
     "wire": [
       {
-        "op": "recon",
-        "base": "wire",
+        "kind": "grep",
         "file": "req-*.json",
-        "nth": 0,
         "where": {
           "method": "POST",
           "path": "/v1/responses"
         },
+        "any": true,
         "grep": "Synthetic context paragraph",
         "label": "compact request carries the full over-capacity history (request body size > capacity)"
       }

@@ -270,6 +270,20 @@ impl<'de> Deserialize<'de> for ApiErrorCode {
     }
 }
 
+/// Deterministic in-stream failure text: the upstream (typically a proxy such as
+/// LiteLLM) reported the failure inside the SSE stream, and re-sending the same
+/// payload cannot change the outcome — an opaque in-stream error or an
+/// over-capacity condition.
+///
+/// Size / context-length text and size-coded errors are deliberately excluded:
+/// those already classify deterministic via [`SamplingError::is_context_length_error`],
+/// and hosts give them a specific recovery (image strip / input ladder) instead
+/// of a plain stop.
+pub fn is_deterministic_in_stream_message(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("response api in-stream error") || m.contains("over capacity")
+}
+
 impl SamplingError {
     /// Auth error of unknown wire provenance.
     /// Used by paths that never sent a request (config validation, cancellation, actor teardown) or that lost the provenance (legacy round trips).
@@ -542,6 +556,31 @@ impl SamplingError {
     /// Context-length overflow: deterministic; re-sending the same payload always fails.
     pub fn is_retry_vetoed(&self) -> bool {
         self.should_retry_header() == Some(false) || self.is_context_length_error()
+    }
+
+    /// Deterministic in-stream failure: a `StreamError`/`EventStreamError` whose
+    /// message hits the deterministic in-stream text set (see
+    /// [`is_deterministic_in_stream_message`]). Re-sending the same payload cannot
+    /// change the outcome, so retry loops must classify it non-retryable instead
+    /// of burning the retry budget (C3: 3-attempt compaction storm).
+    pub fn is_deterministic_in_stream_error(&self) -> bool {
+        match self {
+            SamplingError::StreamError { message, .. }
+            | SamplingError::EventStreamError(message) => {
+                is_deterministic_in_stream_message(message)
+            }
+            // Explicit so a new variant must state its in-stream classification.
+            SamplingError::Api { .. }
+            | SamplingError::Auth { .. }
+            | SamplingError::InvalidConfiguration(_)
+            | SamplingError::MtlsConfiguration(_)
+            | SamplingError::Http(_)
+            | SamplingError::Serialization(_)
+            | SamplingError::IdleTimeout { .. }
+            | SamplingError::EmptyResponse { .. }
+            | SamplingError::MaxTokensTruncation
+            | SamplingError::DoomLoopDetected { .. } => false,
+        }
     }
 }
 
@@ -934,6 +973,50 @@ mod tests {
             error_code: None,
         };
         assert!(!not_vetoed.is_retry_vetoed());
+    }
+
+    #[test]
+    fn deterministic_in_stream_text_set_classifies_stream_variants() {
+        // C3 wire shape (LiteLLM opaque in-stream failure)
+        assert!(SamplingError::StreamError {
+            error_type: "unknown".into(),
+            message: "litellm.APIError: Response API in-stream error".into(),
+            code: None,
+        }
+        .is_deterministic_in_stream_error());
+        assert!(SamplingError::EventStreamError(
+            "litellm.APIError: Response API in-stream error".into()
+        )
+        .is_deterministic_in_stream_error());
+        // Over-capacity in-stream text
+        assert!(SamplingError::StreamError {
+            error_type: "unknown".into(),
+            message: "over capacity".into(),
+            code: None,
+        }
+        .is_deterministic_in_stream_error());
+
+        // Narrowness: transient in-stream blips are not in the set
+        assert!(!SamplingError::StreamError {
+            error_type: "overloaded_error".into(),
+            message: "The server is overloaded.".into(),
+            code: None,
+        }
+        .is_deterministic_in_stream_error());
+        // Size / context-length text is NOT in this set: it already classifies
+        // deterministic via is_context_length_error, with its own recovery path
+        // (image strip / input ladder)
+        let size = SamplingError::StreamError {
+            error_type: "BAD_REQUEST".into(),
+            message: "Input length (300000 tokens) exceeds the maximum allowed length \
+                      (200000 tokens)"
+                .into(),
+            code: None,
+        };
+        assert!(size.is_context_length_error());
+        assert!(!size.is_deterministic_in_stream_error());
+        // Non-stream variants never classify
+        assert!(!SamplingError::auth_unknown("expired").is_deterministic_in_stream_error());
     }
 
     #[test]

@@ -121,6 +121,13 @@ pub fn classify_error(
         return RetryDecision::Fatal(clone_error(err));
     }
 
+    // Deterministic in-stream errors (opaque proxy failures / over-capacity):
+    // re-sending cannot help; fail fast instead of burning the retry budget
+    // (C3: a 3-attempt compaction storm on a single upstream failure)
+    if err.is_deterministic_in_stream_error() {
+        return RetryDecision::Fatal(clone_error(err));
+    }
+
     if matches!(err, SamplingError::DoomLoopDetected { .. }) {
         return RetryDecision::Retry {
             backoff: doom_loop_backoff(retry_count + 1),
@@ -547,6 +554,45 @@ mod tests {
         assert!(!matches!(
             classify_error(&unrelated, 0, 5, RATE_LIMIT_RETRY_THRESHOLD),
             RetryDecision::RetryWithImageStrip
+        ));
+    }
+
+    #[test]
+    fn classify_deterministic_in_stream_error_is_fatal() {
+        // C3 wire shape: the proxy (LiteLLM) fails mid-stream with an opaque
+        // error and no structured code; re-sending the same payload cannot
+        // change the outcome, so the retry budget must not be burned.
+        let err = SamplingError::StreamError {
+            error_type: "unknown".into(),
+            message: "litellm.APIError: Response API in-stream error".into(),
+            code: None,
+        };
+        match classify_error(&err, 0, 5, RATE_LIMIT_RETRY_THRESHOLD) {
+            RetryDecision::Fatal(SamplingError::StreamError { message, .. }) => {
+                assert!(message.contains("Response API in-stream error"));
+            }
+            other => panic!("expected Fatal for deterministic in-stream error, got {other:?}"),
+        }
+        // Over-capacity in-stream text is the same class.
+        let over_capacity = SamplingError::StreamError {
+            error_type: "unknown".into(),
+            message: "litellm.APIError: over capacity".into(),
+            code: None,
+        };
+        assert!(matches!(
+            classify_error(&over_capacity, 0, 5, RATE_LIMIT_RETRY_THRESHOLD),
+            RetryDecision::Fatal(_)
+        ));
+        // Narrowness: a transient in-stream blip stays retryable — only the
+        // deterministic text set stops the retry.
+        let transient = SamplingError::StreamError {
+            error_type: "overloaded_error".into(),
+            message: "The server is overloaded.".into(),
+            code: None,
+        };
+        assert!(!matches!(
+            classify_error(&transient, 0, 5, RATE_LIMIT_RETRY_THRESHOLD),
+            RetryDecision::Fatal(_)
         ));
     }
 

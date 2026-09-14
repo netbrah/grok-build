@@ -129,6 +129,58 @@ fn sampling_stream_error_with_structured_size_code_is_overflow() {
 }
 
 #[test]
+fn sampling_deterministic_in_stream_error_is_deterministic_not_transient() {
+    // C3 wire shape: LiteLLM opaque in-stream failure with no structured code.
+    // `Transient` here would be retried by the compaction engine (3-attempt
+    // storm); `Deterministic` short-circuits the pass on attempt 1.
+    assert!(is_det(&classify_sampling_error(SamplingError::StreamError {
+        error_type: "unknown".into(),
+        message: "litellm.APIError: Response API in-stream error".into(),
+        code: None,
+    })));
+    // Over-capacity in-stream text is the same class.
+    assert!(is_det(&classify_sampling_error(SamplingError::StreamError {
+        error_type: "unknown".into(),
+        message: "litellm.APIError: over capacity".into(),
+        code: None,
+    })));
+    // EventStreamError carries the same text set.
+    assert!(is_det(&classify_sampling_error(SamplingError::EventStreamError(
+        "litellm.APIError: Response API in-stream error".into()
+    ))));
+    // Narrowness: opaque blips and overload text stay transient.
+    assert!(!is_det(&classify_sampling_error(SamplingError::StreamError {
+        error_type: "unknown".into(),
+        message: "stream interrupted".into(),
+        code: None,
+    })));
+    assert!(!is_det(&classify_sampling_error(SamplingError::StreamError {
+        error_type: "overloaded_error".into(),
+        message: "The server is overloaded.".into(),
+        code: None,
+    })));
+}
+
+#[test]
+fn response_event_deterministic_in_stream_text_is_deterministic() {
+    // Codeless opaque in-stream text on the Responses-wire error events: the
+    // same deterministic class as SamplingError::StreamError above.
+    assert!(is_det(&classify_response_event_error(
+        None,
+        "litellm.APIError: Response API in-stream error"
+    )));
+    assert!(is_det(&classify_response_event_error(
+        Some("error"),
+        "over capacity"
+    )));
+    // Structured signals keep priority: 408/429 stay transient whatever the text.
+    assert!(!is_det(&classify_response_event_error(Some("429"), "over capacity")));
+    assert!(!is_det(&classify_response_event_error(Some("408"), "over capacity")));
+    // Opaque non-deterministic text stays transient.
+    assert!(!is_det(&classify_response_event_error(None, "stream interrupted")));
+}
+
+#[test]
 fn sampling_non_api_variants_classify_correctly() {
     assert!(is_det(&classify_sampling_error(
         SamplingError::auth_unknown("expired")
