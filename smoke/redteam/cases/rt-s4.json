@@ -29,6 +29,16 @@
     ],
     "wire": [
       {
+        "kind": "grep",
+        "file": "req-*.json",
+        "grep": "Only choose an explicit model when the user directly requests it",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses"
+        },
+        "nth": 0
+      },
+      {
         "kind": "field",
         "file": "req-*.json",
         "path": "$.body.model",

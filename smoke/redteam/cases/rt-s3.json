@@ -1,6 +1,63 @@
 {
   "id": "RT-S3",
-  "title": "v2 gate-on (post-MA-3): placeholder \u2014 v2 spawn + wait + message per MA-3 spec",
-  "disabled": true,
-  "unblocks_at": "MA-3"
+  "title": "v2 gate-ON (MA-3, unblocked): qwen3.8-27b parent, model row multi_agent_v2=true via runner-scoped config_patch (disclosed in MA-3 report; live ~/.grok config stays dark). All six v2 agent tools advertised on the wire; spawn_agent(helper) + wait_agent in T1, child reply arrives via the buffered mailbox flush on T2, parent answers with the child's reply.",
+  "model": "qwen3.8-27b",
+  "config_patch": {
+    "features/multi_agent_v2": true,
+    "model/qwen3.8-27b/multi_agent_v2": true
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Use the spawn_agent tool to start a background agent named helper. In its message, instruct it to reply with exactly: CHILD-OK. Then use wait_agent to wait for it to finish. Acknowledge with exactly: HELPER-SPAWNED",
+      "timeout_s": 240
+    },
+    {
+      "op": "turn",
+      "prompt": "What did the helper agent reply? Reply with exactly: <its reply> PARENT-OK",
+      "timeout_s": 120
+    }
+  ],
+  "watchdog_s": 600,
+  "est_calls": 8,
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error"
+      },
+      {
+        "op": "tools_present",
+        "names": [
+          "spawn_agent",
+          "send_message",
+          "followup_task",
+          "list_agents",
+          "wait_agent",
+          "interrupt_agent"
+        ]
+      },
+      {
+        "op": "text_contains",
+        "value": "CHILD-OK"
+      },
+      {
+        "op": "text_contains",
+        "value": "PARENT-OK"
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "grep": "\"spawn_agent\"",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses"
+        },
+        "nth": 0
+      }
+    ]
+  }
 }

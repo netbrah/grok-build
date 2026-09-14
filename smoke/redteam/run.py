@@ -1191,6 +1191,68 @@ def check_wire(spec, capture_dir):
     if kind == "grep":
         paths = _resolve_glob(spec.get("file", ""), base)
         paths = _wire_filter(paths, spec.get("where"))
+        if spec.get("all"):
+            # MA-3: absent across ALL filtered files (not just the selected
+            # nth). Fail-closed: `all` without `absent` is rejected, and an
+            # empty match set is a harness failure, not a vacuous pass.
+            if not spec.get("absent"):
+                return AssertResult(spec, "wire.grep", False,
+                                    "all:true requires absent:true",
+                                    "wire: all without absent rejected")
+            if not paths:
+                return AssertResult(spec, "wire.grep", False,
+                                    "no wire files match glob %r"
+                                    % spec.get("file"),
+                                    "wire: glob %s -> none"
+                                    % spec.get("file"))
+            needle = spec.get("grep", "")
+            hit = None
+            for f in paths:
+                with open(f) as fh:
+                    if needle in fh.read():
+                        hit = f
+                        break
+            if hit is not None:
+                return AssertResult(spec, "wire.grep", False,
+                                    "%s contains %r (absent in all %d)"
+                                    % (os.path.basename(hit), needle,
+                                       len(paths)),
+                                    "wire: %s grep %r"
+                                    % (os.path.basename(hit),
+                                       needle[:80]))
+            return AssertResult(spec, "wire.grep", True,
+                                "all %d files lack %r"
+                                % (len(paths), needle),
+                                "wire: all files grep %r" % needle[:80])
+        if spec.get("any"):
+            # MA-3: present in at least ONE filtered file (complement of the
+            # `all`+absent form). Fail-closed: `any` with `absent` is
+            # rejected; an empty match set is a harness failure, not a pass.
+            if spec.get("absent"):
+                return AssertResult(spec, "wire.grep", False,
+                                    "any:true requires presence (absent not allowed)",
+                                    "wire: any with absent rejected")
+            if not paths:
+                return AssertResult(spec, "wire.grep", False,
+                                    "no wire files match glob %r"
+                                    % spec.get("file"),
+                                    "wire: glob %s -> none"
+                                    % spec.get("file"))
+            needle = spec.get("grep", "")
+            for f in paths:
+                with open(f) as fh:
+                    if needle in fh.read():
+                        return AssertResult(spec, "wire.grep", True,
+                                            "%s contains %r (any of %d)"
+                                            % (os.path.basename(f), needle,
+                                               len(paths)),
+                                            "wire: %s grep %r"
+                                            % (os.path.basename(f),
+                                               needle[:80]))
+            return AssertResult(spec, "wire.grep", False,
+                                "no file of %d contains %r"
+                                % (len(paths), needle),
+                                "wire: any-of files grep %r" % needle[:80])
         nth = _nth_select(paths, spec)
         if nth >= len(paths):
             return AssertResult(spec, "wire.grep", False,

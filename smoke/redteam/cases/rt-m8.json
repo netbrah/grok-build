@@ -1,0 +1,66 @@
+{
+  "id": "RT-M8",
+  "title": "v2 gate-ON live WIRE proof (MA-3): qwen3.8-27b parent + child, model row + feature tier multi_agent_v2=true via runner-scoped config_patch. T1: spawn_agent(worker)+wait_agent; T2 asks for the child's reply. WIRE pins L495 + spec D-3: (1) NO opaque \"agent_message\" carrier item on ANY /v1/responses request — the carrier never arms in v0 (all:true absent); (2) the plaintext v0 envelope marker 'Untrusted message from agent' IS present on the wire (any:true) — observed on the child session's follow-up request carrying the parent's spawn message as a plaintext untrusted agent item (D-3 shape); the child's completion additionally surfaced to the parent via the wait_agent tool-output system-reminder. Child compliance with the untrusted instruction is model-temperament and NOT asserted (qwen refused the handshake on 20260914T091642Z, which is expected v0 behavior).",
+  "model": "qwen3.8-27b",
+  "config_patch": {
+    "features/multi_agent_v2": true,
+    "model/qwen3.8-27b/multi_agent_v2": true
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Use the spawn_agent tool to start a background agent named worker. In its message, instruct it to reply with exactly: CHILD-OK. Then use wait_agent to wait for it to finish. Acknowledge with exactly: WORKER-ACK",
+      "timeout_s": 240
+    },
+    {
+      "op": "turn",
+      "prompt": "What did the worker agent reply? Reply with exactly: <its reply> PARENT-OK",
+      "timeout_s": 120
+    }
+  ],
+  "watchdog_s": 600,
+  "est_calls": 8,
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error"
+      },
+      {
+        "op": "tools_present",
+        "names": [
+          "spawn_agent",
+          "wait_agent"
+        ]
+      },
+      {
+        "op": "text_contains",
+        "value": "PARENT-OK"
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "grep": "\"agent_message\"",
+        "absent": true,
+        "all": true,
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses"
+        }
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "grep": "Untrusted message from agent",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses"
+        },
+        "any": true
+      }
+    ]
+  }
+}
