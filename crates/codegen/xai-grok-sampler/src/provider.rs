@@ -577,8 +577,13 @@ mod tests {
             reasoning.get("content").is_none(),
             "reasoning.content must be omitted for strict targets"
         );
-        // Everything the strict schema accepts survives, losslessly.
-        assert_eq!(reasoning["id"], "rs_288b9ed724204ccd8cffb5ae41ca4753");
+        // Second violation (REPLAY-1 addendum): with store=false the strict
+        // target has no persisted state under any id -> replayed
+        // reasoning.id must be omitted too; the text survives in summary.
+        assert!(
+            reasoning.get("id").is_none(),
+            "reasoning.id must be omitted for strict targets (store=false id lookup)"
+        );
         assert_eq!(
             reasoning["summary"][0]["text"],
             "The user is requesting that I respond exactly as follows: \"RT-M1-Q1\"."
@@ -624,7 +629,7 @@ mod tests {
         assert_eq!(input[2], body["input"][2]);
         assert_eq!(input[3], body["input"][3]);
         assert!(input[4].get("content").is_none());
-        assert_eq!(input[4]["id"], "rs_288b9ed724204ccd8cffb5ae41ca4753");
+        assert!(input[4].get("id").is_none());
     }
 
     #[test]
@@ -659,7 +664,7 @@ mod tests {
         let mut projected = serialized(make_item());
         project_strict_responses_input(&mut projected, true);
         assert!(projected["input"][0].get("content").is_none());
-        assert_eq!(projected["input"][0]["id"], "rs_288b9ed724204ccd8cffb5ae41ca4753");
+        assert!(projected["input"][0].get("id").is_none());
         let mut control = serialized(make_item());
         project_strict_responses_input(&mut control, false);
         assert_eq!(control, red_state);
