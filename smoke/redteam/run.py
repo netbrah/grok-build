@@ -594,6 +594,12 @@ def count_wire_model_calls(capture_dir: str) -> int:
 # ACP stdio driver (RECON R-1b: NDJSON-RPC 2.0, stdlib-reachable)
 # ---------------------------------------------------------------------------
 
+ACP_ERROR_GRACE_S = 3.0
+# ACP-2: on error turns the provider error text (e.g. the Azure 400
+# body) arrives in prompt_complete.agentResult, typically a few lines
+# AFTER the turn_completed notification. This grace read waits that
+# long for the matching prompt_complete before falling back to the
+# generic 'turn ended with stopReason=error' shape.
 class AcpSession:
     def __init__(self, bin_path, home, cwd, model, log_path,
                  timeout_s=180):
@@ -755,6 +761,39 @@ class AcpSession:
                                   "stopReason": u.get("stop_reason"),
                                   "agentResult": None,
                                   "via": "turn_completed"}
+                    if u.get("stop_reason") == "error":
+                        # ACP-2: turn_completed carries no agentResult;
+                        # the provider error text lives in the
+                        # matching prompt_complete, which lands a few
+                        # lines later (wave-2 forensics: acp.log
+                        # turn_completed+3 lines). Keep reading briefly
+                        # for it so the synthesized acp_error carries
+                        # the detail. Match by promptId; when the turn
+                        # has no mapped promptId, take the first
+                        # prompt_complete for this session (recency).
+                        # Timeout fallback = the generic shape above.
+                        for gline in self._iter_lines(ACP_ERROR_GRACE_S):
+                            try:
+                                gd = json.loads(gline)
+                            except Exception:
+                                continue
+                            if gd.get("method") \
+                                    != "_x.ai/session/prompt_complete":
+                                continue
+                            gp = gd.get("params") or {}
+                            if gp.get("sessionId") not in \
+                                    (None, self.session_id):
+                                continue
+                            gpid = gp.get("promptId")
+                            if (gpid is None or turn_prompt_id is None
+                                    or gpid == turn_prompt_id):
+                                completion = {"promptId": gpid or pid,
+                                              "stopReason":
+                                                  completion["stopReason"],
+                                              "agentResult":
+                                                  gp.get("agentResult"),
+                                              "via": "prompt_complete"}
+                                break
                     break
         return completion, response
 
