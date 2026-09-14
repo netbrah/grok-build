@@ -1138,7 +1138,23 @@ def _wire_filter(paths, where):
         ok = True
         for k, v in where.items():
             found, val = get_path(d, k)
-            if not found or not _val_eq(val, v):
+            if isinstance(v, dict):
+                # Prefix matching on string values (COMP-3: distinguishing
+                # xai-compact-* tagged requests from ordinary turn requests).
+                # `not_prefix` treats an absent field as not carrying the
+                # prefix, so it passes the filter.
+                if "prefix" in v:
+                    m = (found and isinstance(val, str)
+                         and val.startswith(v["prefix"]))
+                elif "not_prefix" in v:
+                    m = not (found and isinstance(val, str)
+                             and val.startswith(v["not_prefix"]))
+                else:
+                    m = False
+                if not m:
+                    ok = False
+                    break
+            elif not found or not _val_eq(val, v):
                 ok = False
                 break
         if ok:
@@ -1292,6 +1308,24 @@ def check_wire(spec, capture_dir):
                                 "<" if ok else ">=",
                                 os.path.basename(pb[nth_b]), sb),
                             "wire: %d B vs %d B" % (sa, sb))
+    if kind == "count":
+        all_paths = _resolve_glob(spec.get("file", ""), base)
+        if not all_paths:
+            # Fail-closed like the grep ops: a glob that matches nothing is a
+            # harness failure, not a vacuous pass (MA-3 discipline).
+            return AssertResult(spec, "wire.count", False,
+                                "no wire files match glob %r" % spec.get("file"),
+                                "wire: glob %s -> none" % spec.get("file"))
+        paths = _wire_filter(all_paths, spec.get("where"))
+        n = len(paths)
+        lo = spec.get("min", 0)
+        hi = spec.get("max")
+        ok = n >= lo and (hi is None or n <= hi)
+        return AssertResult(spec, "wire.count", ok,
+                            "%d wire files match %s (want %d..%s)" % (
+                                n, spec.get("file"), lo,
+                                str(hi) if hi is not None else "inf"),
+                            "wire: %d match %s" % (n, spec.get("file")))
     raise ValueError("unknown wire kind: %r" % kind)
 
 

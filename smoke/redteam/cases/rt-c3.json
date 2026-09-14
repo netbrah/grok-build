@@ -76,6 +76,20 @@
         "any": true,
         "grep": "Synthetic context paragraph",
         "label": "compact request carries the full over-capacity history (request body size > capacity)"
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "headers.x-grok-req-id": {
+            "not_prefix": "xai-compact-"
+          }
+        },
+        "min": 0,
+        "max": 1,
+        "label": "main-turn fail-fast (site a, retry.rs): at most one non-compact POST /v1/responses - pre-COMP-3 the same deterministic in-stream error was re-sent 15 times"
       }
     ]
   }
