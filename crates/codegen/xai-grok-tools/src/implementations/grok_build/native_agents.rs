@@ -248,7 +248,21 @@ macro_rules! native_tool {
 // `spawn_agent` rides the `Task` kind so the existing child tool policy
 // strips it at max depth; the five collaboration tools ride the
 // `ActiveAgentMessage` kind and stay visible to children (siblings
-// message each other through the mailbox).
+// message each other through the mailbox). Kind consumers that treat
+// `ActiveAgentMessage` as the v1 root-only `send_subagent_message` tool
+// must exempt these fixed wire names via `V2_COLLABORATION_TOOL_NAMES`
+// (see `child_tool_projection::child_safe_tool_specs`).
+
+/// Client names of the five v2 collaboration tools (not `spawn_agent`,
+/// which rides the `Task` kind). The v2 protocol pins these wire names,
+/// so name-based exemption is stable for kind consumers.
+pub const V2_COLLABORATION_TOOL_NAMES: &[&str] = &[
+    "send_message",
+    "followup_task",
+    "list_agents",
+    "wait_agent",
+    "interrupt_agent",
+];
 native_tool!(
     SpawnAgentTool,
     "spawn_agent",

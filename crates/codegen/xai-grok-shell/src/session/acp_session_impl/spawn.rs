@@ -1116,6 +1116,9 @@ pub(crate) async fn spawn_session_actor(
         // MA-3 (spec Q1.1): the v2 multi-agent feature tier, resolved per
         // session like the sibling feature booleans (ships dark).
         multi_agent_v2_feature: crate::util::config::resolve_multi_agent_v2_feature(),
+        // MA-3.1 (M-1): the session-row gate input. Starts at the spawn
+        // model; `handle_set_session_model` keeps it current.
+        session_model_id: std::sync::Arc::new(std::sync::RwLock::new(session_model_id.clone())),
         subagent_toggle: subagent_toggle.clone(),
         background_workflows_enabled,
         ask_user_question_enabled,

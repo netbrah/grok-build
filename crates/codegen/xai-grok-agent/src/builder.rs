@@ -2754,4 +2754,101 @@ mod tests {
             "definition tool_overrides must be applied to HostedTool options"
         );
     }
+
+    /// The six client-facing v2 multi-agent tool names (MA-3 wire evidence:
+    /// parent-armed request carries all six; child-flat carries none).
+    const V2_AGENT_TOOL_NAMES: [&str; 6] = [
+        "spawn_agent",
+        "send_message",
+        "wait_agent",
+        "followup_task",
+        "interrupt_agent",
+        "list_agents",
+    ];
+    async fn build_v2_gated_child(def: crate::config::AgentDefinition) -> crate::agent::Agent {
+        use xai_grok_tools::computer::local::LocalTerminalBackend;
+        use xai_grok_tools::notification::ToolNotificationHandle;
+        AgentBuilder::new(
+            std::env::temp_dir(),
+            Arc::new(LocalTerminalBackend::new()),
+            ToolNotificationHandle::noop(),
+        )
+        .from_definition(def)
+        .with_subagents_enabled(true)
+        .with_native_agents_enabled(true)
+        .build()
+        .await
+        .unwrap()
+    }
+    fn finalized_tool_names(agent: &crate::agent::Agent) -> Vec<String> {
+        agent
+            .tool_bridge()
+            .toolset()
+            .tool_definitions()
+            .into_iter()
+            .map(|td| td.function.name)
+            .collect()
+    }
+
+    /// MA-3.1 M-2 discriminator, inverted N-4: a gate-ON child definition
+    /// must KEEP the six v2 names in its finalized toolset. Raw builtin
+    /// `general_purpose` — the type the live M8/S3 cases resolve.
+    #[tokio::test(flavor = "current_thread")]
+    async fn v2_gated_general_purpose_keeps_native_tools() {
+        let agent = build_v2_gated_child(crate::config::AgentDefinition::general_purpose()).await;
+        let names = finalized_tool_names(&agent);
+        for name in V2_AGENT_TOOL_NAMES {
+            assert!(
+                names.iter().any(|n| n == name),
+                "gate-ON general-purpose lost v2 tool `{name}`; final: {names:?}"
+            );
+        }
+    }
+
+    /// MA-3.1 M-2 discriminator, inverted N-4 (spawn-faithful): the same
+    /// assertion after the v2 spawn path's child tool policy mutations
+    /// (workflow strip; depth 1 keeps the task tool, no capability mode in
+    /// the live cases). If the raw definition passes but this fails, the
+    /// strip is in the spawn-path definition mutation.
+    #[tokio::test(flavor = "current_thread")]
+    async fn v2_gated_spawn_mutated_general_purpose_keeps_native_tools() {
+        let mut def = crate::config::AgentDefinition::general_purpose();
+        def.tool_config.tools.retain(|tool| {
+            !xai_grok_tools::implementations::grok_build::is_workflow_tool(tool.kind, &tool.id)
+        });
+        let agent = build_v2_gated_child(def).await;
+        let names = finalized_tool_names(&agent);
+        for name in V2_AGENT_TOOL_NAMES {
+            assert!(
+                names.iter().any(|n| n == name),
+                "gate-ON spawn-mutated general-purpose lost v2 tool `{name}`; final: {names:?}"
+            );
+        }
+    }
+
+    /// N-4 (MA-3 review): the dark direction of the v2 gate — a gate-OFF
+    /// child definition's finalized toolset must NOT carry the six v2 names
+    /// (they are injected only at `builder.rs` native-agents block).
+    #[tokio::test(flavor = "current_thread")]
+    async fn v2_dark_general_purpose_has_no_native_tools() {
+        use xai_grok_tools::computer::local::LocalTerminalBackend;
+        use xai_grok_tools::notification::ToolNotificationHandle;
+        let agent = AgentBuilder::new(
+            std::env::temp_dir(),
+            Arc::new(LocalTerminalBackend::new()),
+            ToolNotificationHandle::noop(),
+        )
+        .from_definition(crate::config::AgentDefinition::general_purpose())
+        .with_subagents_enabled(true)
+        .build()
+        .await
+        .unwrap();
+        let names = finalized_tool_names(&agent);
+        for name in V2_AGENT_TOOL_NAMES {
+            assert!(
+                !names.iter().any(|n| n == name),
+                "gate-OFF general-purpose must not carry v2 tool `{name}`; final: {names:?}"
+            );
+        }
+    }
 }

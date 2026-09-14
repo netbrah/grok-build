@@ -122,6 +122,14 @@ pub(crate) struct AgentRebuildSpec {
     /// conjunct is looked up live at build time, so model switches
     /// re-evaluate the gate against the session's own row (Q1.3/D-4).
     pub multi_agent_v2_feature: bool,
+    /// MA-3.1 (M-1): the session's own model id, interior-mutable so a
+    /// mid-session model switch updates the gate input without a spec
+    /// rebuild. The per-model row conjunct is looked up against this id at
+    /// build time — NOT against the process-shared `ModelsManager` cursor,
+    /// which the TUI/Leader switch path never moves (see
+    /// `agent/handlers/model_switch.rs`). Set at spawn, updated on
+    /// `SetSessionModel` (D-4 session-row semantics).
+    pub session_model_id: std::sync::Arc<std::sync::RwLock<agent_client_protocol::ModelId>>,
     pub session_id_str: String,
     /// Mailbox team scope: the root session id for a subagent, or the session's
     /// own id otherwise (v2 multi-agent identity, spec MA-2).
@@ -214,6 +222,7 @@ impl AgentRebuildSpec {
             active_agent_messages_enabled,
             subagents_enabled,
             multi_agent_v2_feature,
+            session_model_id,
             subagent_toggle,
             background_workflows_enabled,
             ask_user_question_enabled,
@@ -264,18 +273,42 @@ impl AgentRebuildSpec {
             env.insert("GROK_SESSION_ID".to_string(), session_id_str.clone());
             Arc::new(env)
         };
-        // MA-3 (spec Q1.3): the single v2 enablement point. The feature tier
-        // is pre-resolved per session; the model row is looked up live
-        // against the manager's current model, so a mid-session model switch
-        // re-evaluates the gate against the session's own row (Q1.3/D-4).
+        // MA-3 (spec Q1.3), MA-3.1 (M-1): the single v2 enablement point.
+        // The feature tier is pre-resolved per session; the model row is
+        // looked up live at build time against the SESSION's own model id
+        // (spec `session_model_id`, updated on SetSessionModel) — NOT the
+        // process-shared `ModelsManager` cursor, which the TUI/Leader
+        // switch path never moves (`agent/handlers/model_switch.rs`). A
+        // mid-session switch thus re-evaluates the gate against this
+        // session's row (Q1.3/D-4) even when the cursor lags.
+        let session_model = session_model_id
+            .read()
+            .expect("session model lock poisoned")
+            .clone();
+        let session_model_key = session_model.0.as_ref();
+        let model_row = models_manager
+            .models()
+            .get(session_model_key)
+            .and_then(|entry| entry.info.multi_agent_v2);
+        let definition_name = definition.name.clone();
         let native_agents_enabled = native_agents_enabled_for(
             *subagents_enabled,
             *subagent_depth,
             *multi_agent_v2_feature,
-            models_manager
-                .models()
-                .get(models_manager.current_model_id().0.as_ref())
-                .and_then(|entry| entry.info.multi_agent_v2),
+            model_row,
+        );
+        xai_grok_telemetry::unified_log::info(
+            "native_agents gate decision",
+            Some(session_id_str.as_str()),
+            Some(serde_json::json!({
+                "enabled": native_agents_enabled,
+                "subagents_enabled": *subagents_enabled,
+                "subagent_depth": *subagent_depth,
+                "multi_agent_v2_feature": *multi_agent_v2_feature,
+                "session_model": session_model_key,
+                "cursor_model": models_manager.current_model_id().0.as_ref(),
+                "model_row": model_row,
+            })),
         );
         let mut builder = AgentBuilder::new(
             working_directory.clone(),
@@ -363,6 +396,25 @@ impl AgentRebuildSpec {
             builder = builder.with_preloaded_skills(skills);
         }
         let agent = builder.build().await?;
+        {
+            let toolset = agent.tool_bridge().toolset();
+            let built_tool_count = toolset.tool_definitions().len();
+            let built_gate = toolset
+                .resources
+                .lock()
+                .await
+                .get::<xai_grok_tools::implementations::grok_build::task::types::NativeAgentsEnabled>()
+                .map(|gate| gate.0);
+            xai_grok_telemetry::unified_log::info(
+                "native_agents built agent",
+                Some(session_id_str.as_str()),
+                Some(serde_json::json!({
+                    "definition": definition_name,
+                    "tool_count": built_tool_count,
+                    "native_agents_resource": built_gate,
+                })),
+            );
+        }
         crate::waterfall::mark(session_id_str, crate::waterfall::stage::SB_BUILDER_DONE);
         let agent_build_elapsed = build_phase_start.elapsed();
         let model_validator = models_manager.clone();
@@ -504,6 +556,9 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         user_question_tx: uq_tx,
         subagent_depth: 0,
         multi_agent_v2_feature: false,
+        session_model_id: Arc::new(std::sync::RwLock::new(agent_client_protocol::ModelId::new(
+            "test-session-model",
+        ))),
         subagents_max_depth: xai_grok_tools::implementations::grok_build::task::MAX_SUBAGENT_DEPTH,
         session_id_str: "test-session".to_string(),
         team_scope_id: "test-session".to_string(),
@@ -711,11 +766,64 @@ mod tests {
         );
     }
 
-    /// MA-3 wiring at the single enablement point: `NativeAgentsEnabled`
-    /// follows the session's OWN model row (Q1.3/D-4). Gate-OFF pin: a
-    /// row-less model stays dark even with the feature on (S3 SKIP
-    /// semantics hold without the row). Gate-ON: the same session model's
-    /// row opting in arms the resource.
+    /// MA-3.1 (M-1 RED, D-4 session semantics): the session's own row
+    /// arms the gate even when the process-shared cursor sits on a
+    /// row-less model — the TUI/Leader switch path never moves that
+    /// cursor (`agent/handlers/model_switch.rs`), so a cursor-reading
+    /// gate disarms a live v2 session.
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_agents_gate_survives_cursor_contamination() {
+        use xai_grok_tools::implementations::grok_build::task::types::NativeAgentsEnabled;
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut spec = test_rebuild_spec_default();
+                {
+                    let spec_mut =
+                        Arc::get_mut(&mut spec).expect("test rebuild spec uniquely owned");
+                    spec_mut.subagents_enabled = true;
+                    spec_mut.multi_agent_v2_feature = true;
+                }
+                let models_manager = spec.models_manager.clone();
+                models_manager
+                    .insert_test_entry("plain-model", model_entry("plain-model"));
+                let mut v2_entry = model_entry("v2-model");
+                v2_entry.info.multi_agent_v2 = Some(true);
+                models_manager.insert_test_entry("v2-model", v2_entry);
+                models_manager
+                    .set_current_model_id(agent_client_protocol::ModelId::new(
+                        "plain-model",
+                    ));
+                *spec
+                    .session_model_id
+                    .write()
+                    .expect("session model lock") = agent_client_protocol::ModelId::new("v2-model");
+                let agent = spec
+                    .build_agent(AgentDefinition::default_grok_build())
+                    .await
+                    .expect("v2-row session build should succeed");
+                let enabled = agent
+                    .tool_bridge()
+                    .toolset()
+                    .resources
+                    .lock()
+                    .await
+                    .get::<NativeAgentsEnabled>()
+                    .map(|gate| gate.0);
+                assert_eq!(
+                    enabled,
+                    Some(true),
+                    "session v2 row arms the gate despite cursor on a row-less model"
+                );
+            })
+            .await;
+    }
+
+    /// MA-3.1 (N-3): both switch directions ride the session's OWN model.
+    /// The process-shared cursor is pinned on a row-less model for the
+    /// whole test, so neither direction can be satisfied by cursor reads
+    /// (the M-1 contamination shape). Gate-OFF pin: a row-less session
+    /// model stays dark even with the feature on (S3 SKIP semantics hold
+    /// without the row).
     #[tokio::test(flavor = "current_thread")]
     async fn native_agents_gate_follows_session_model_row() {
         use xai_grok_tools::implementations::grok_build::task::types::NativeAgentsEnabled;
@@ -731,47 +839,60 @@ mod tests {
                 let models_manager = spec.models_manager.clone();
                 models_manager
                     .insert_test_entry("plain-model", model_entry("plain-model"));
+                let mut v2_entry = model_entry("v2-model");
+                v2_entry.info.multi_agent_v2 = Some(true);
+                models_manager.insert_test_entry("v2-model", v2_entry);
+                // Cursor pinned off the session model for the whole test.
                 models_manager
                     .set_current_model_id(agent_client_protocol::ModelId::new(
                         "plain-model",
                     ));
-                let agent = spec
-                    .build_agent(AgentDefinition::default_grok_build())
-                    .await
-                    .expect("row-less build should succeed");
-                let enabled = agent
-                    .tool_bridge()
-                    .toolset()
-                    .resources
-                    .lock()
-                    .await
-                    .get::<NativeAgentsEnabled>()
-                    .map(|gate| gate.0);
-                assert_eq!(enabled, Some(false), "row-less model stays dark");
+                let set_session_model = |id: &str| {
+                    *spec
+                        .session_model_id
+                        .write()
+                        .expect("session model lock") = agent_client_protocol::ModelId::new(id);
+                };
+                async fn read_gate(agent: &Agent) -> Option<bool> {
+                    agent
+                        .tool_bridge()
+                        .toolset()
+                        .resources
+                        .lock()
+                        .await
+                        .get::<NativeAgentsEnabled>()
+                        .map(|gate| gate.0)
+                }
+                async fn build_one(spec: &Arc<AgentRebuildSpec>) -> Agent {
+                    spec
+                        .build_agent(AgentDefinition::default_grok_build())
+                        .await
+                        .expect("test build should succeed")
+                }
 
-                let mut v2_entry = model_entry("v2-model");
-                v2_entry.info.multi_agent_v2 = Some(true);
-                models_manager.insert_test_entry("v2-model", v2_entry);
-                models_manager
-                    .set_current_model_id(agent_client_protocol::ModelId::new(
-                        "v2-model",
-                    ));
-                let agent = spec
-                    .build_agent(AgentDefinition::default_grok_build())
-                    .await
-                    .expect("row-on build should succeed");
-                let enabled = agent
-                    .tool_bridge()
-                    .toolset()
-                    .resources
-                    .lock()
-                    .await
-                    .get::<NativeAgentsEnabled>()
-                    .map(|gate| gate.0);
+                // dark -> ON: the session switches onto a v2 row.
+                set_session_model("plain-model");
+                let agent = build_one(&spec).await;
                 assert_eq!(
-                    enabled,
+                    read_gate(&agent).await,
+                    Some(false),
+                    "row-less session model stays dark"
+                );
+                set_session_model("v2-model");
+                let agent = build_one(&spec).await;
+                assert_eq!(
+                    read_gate(&agent).await,
                     Some(true),
-                    "row + feature + subagents arms the gate"
+                    "switching onto the v2 row arms the gate (cursor still row-less)"
+                );
+
+                // ON -> dark: the session switches back off the v2 row.
+                set_session_model("plain-model");
+                let agent = build_one(&spec).await;
+                assert_eq!(
+                    read_gate(&agent).await,
+                    Some(false),
+                    "switching off the v2 row disarms the gate"
                 );
             })
             .await;

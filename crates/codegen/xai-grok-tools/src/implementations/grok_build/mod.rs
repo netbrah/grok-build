@@ -58,7 +58,7 @@ pub use list_dir::ListDirTool;
 pub use lsp::LspTool;
 pub use native_agents::{
     FollowupTaskTool, InterruptAgentTool, ListAgentsTool, SendMessageTool, SpawnAgentTool,
-    WaitAgentTool, parse_fork_turns,
+    WaitAgentTool, parse_fork_turns, V2_COLLABORATION_TOOL_NAMES,
 };
 pub use monitor::tool::MonitorTool;
 pub use read_file::ReadFileTool;

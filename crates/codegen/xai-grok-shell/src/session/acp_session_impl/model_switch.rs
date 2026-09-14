@@ -18,6 +18,15 @@ impl SessionActor {
             sampling_config.conversation_group_id = Some(id);
         }
         let model_id = acp::ModelId::new(sampling_config.model.clone());
+        // MA-3.1 (M-1): keep the spec's session-model slot in sync so a
+        // later agent rebuild re-evaluates the v2 gate against THIS
+        // session's row (D-4) — the process-shared cursor is not the gate
+        // input (the TUI/Leader switch path never moves it).
+        *self
+            .rebuild_spec
+            .session_model_id
+            .write()
+            .expect("session model lock poisoned") = model_id.clone();
         let new_context_window = self.compaction.context_window_override.unwrap_or_else(|| {
             std::num::NonZeroU64::new(sampling_config.context_window).unwrap_or_else(|| {
                 std::num::NonZeroU64::new(DEFAULT_CONTEXT_WINDOW)

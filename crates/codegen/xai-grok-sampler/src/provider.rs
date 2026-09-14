@@ -61,7 +61,12 @@ const EXPLICIT_REQUEST_ONLY_MULTI_AGENT_MODE_TEXT: &str = "explicit_request_only
 ///
 /// `model_family` selects the provider dialect. `reasoning_effort` is the
 /// local (pre-wire) effort, needed for Max/Ultra mapping and v2 policy.
-/// `multi_agent_v2` enables the v2 developer policy injection.
+/// `multi_agent_v2` enables the codex-dialect developer-policy injection
+/// (the `<multi_agent_mode>` input item). Naming homonym, NOT the shell's
+/// `Feature::MultiAgentV2` feature tier that gates the native v2 agent
+/// tools: this flag only shapes the codex wire policy for the codex model
+/// family and is ignored by every other dialect (see
+/// `patch_codex_responses_request`).
 pub fn patch_responses_request(
     request_body: &mut Value,
     model_family: Option<&str>,
