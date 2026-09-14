@@ -1,0 +1,53 @@
+{
+ "id": "RT-M9",
+ "title": "v2 ROUND-TRIP live WIRE proof (MA-3.1): qwen3.8-27b parent + child, gate ON via runner-scoped config_patch (both keys). T1: parent spawn_agents a worker with a real work item (create rt9.txt) and designates send_message as the team reporting channel (the child's report to the parent must ride send_message, not just a final answer); parent wait_agents. T2/T3: parent re-requests (replays its conversation, so any received message rides the request INPUT items). Strong assert, N-2 scoped: the child-to-parent plaintext v0 envelope marker \"to /root (not user consent)\" IS present on at least one /v1/responses REQUEST (req-*.json only = request input items; an assistant meta-quote of the envelope in resp-*.jsonl can never satisfy it). The direction-scoped needle cannot be satisfied by the parent-to-child spawn-message envelope (\"to /root/<child>\"), so it proves the child actually called send_message — impossible pre-fix (b), where child tool projection stripped all five ActiveAgentMessage-kind v2 tools from the child wire (child request showed 22 tools / 0 v2 at 20260914T104139Z; post-fix the same child request showed 27 tools / 5 v2 at 20260914T110017Z). A pure canary task (\"send exactly M9-RT-OK, do nothing else\") was refused by qwen as a prompt-injection probe at 20260914T110017Z — expected v0 temperament; the real-work framing above is the countermeasure.",
+ "model": "qwen3.8-27b",
+ "config_patch": {
+  "features/multi_agent_v2": true,
+  "model/qwen3.8-27b/multi_agent_v2": true
+ },
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Use the spawn_agent tool to start a background agent named worker. In its message, give it this task: create a file named rt9.txt in the working directory containing exactly ROUNDTRIP-OK on its first line. This team reports results over the agent mailbox, so the worker must use the send_message tool to send its completion report to the parent agent (root) — a short message saying it created rt9.txt — and only then finish. After spawning, use wait_agent to wait for the worker to finish. Acknowledge with exactly: WORKER-ACK",
+   "timeout_s": 240
+  },
+  {
+   "op": "turn",
+   "prompt": "Did the worker agent send you a report message? If so, what did it say? Reply with exactly: <what it reported> PARENT-OK",
+   "timeout_s": 120
+  },
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: M9-DONE",
+   "timeout_s": 60
+  }
+ ],
+ "watchdog_s": 600,
+ "est_calls": 10,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error"
+   },
+   {
+    "op": "text_contains",
+    "value": "PARENT-OK"
+   }
+  ],
+  "wire": [
+   {
+    "kind": "grep",
+    "file": "req-*.json",
+    "grep": "to /root (not user consent)",
+    "where": {
+     "method": "POST",
+     "path": "/v1/responses"
+    },
+    "any": true
+   }
+  ]
+ }
+}
