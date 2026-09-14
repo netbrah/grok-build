@@ -2,3 +2,7 @@
 **/*.rs.bk
 .DS_Store
 .codegraph/
+
+# redteam run evidence (local forensics, not source) + generated full matrix
+smoke/redteam/report/
+smoke/redteam/cases/rt-m6.json
