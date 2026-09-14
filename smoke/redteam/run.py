@@ -614,7 +614,8 @@ class AcpSession:
         self.proc = subprocess.Popen(
             [self.bin_path, "agent", "stdio"], cwd=self.cwd, env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True)
+            stderr=subprocess.DEVNULL, text=True,
+            preexec_fn=os.setsid)
         import select
         self._select = select
         init_params = {
