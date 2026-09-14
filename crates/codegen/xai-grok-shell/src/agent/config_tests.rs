@@ -9139,3 +9139,45 @@ fn multi_agent_v2_row_beats_base_entry() {
         "explicit row (even false) must beat the base row"
     );
 }
+/// FLT-1: pins the serde states of the config-tier model-row flag
+/// `strict_responses_input` on a `[model."<id>"]` row: explicit `true`
+/// parses to `true` (the escalate-to-true path in `ConfigModelOverride::apply`),
+/// explicit `false` stays `false`, absent parses to the serde default `false`
+/// (lenient, byte-identical replay). A future drift on the `#[serde(default)]`
+/// attribute or the field type fails the test rather than silently changing the
+/// resolved default.
+#[test]
+fn model_row_strict_responses_input_serde_states() {
+    let on: ConfigModelOverride =
+        toml::from_str("strict_responses_input = true").expect("explicit true");
+    assert!(on.strict_responses_input, "explicit true should parse to true");
+
+    let off: ConfigModelOverride =
+        toml::from_str("strict_responses_input = false").expect("explicit false");
+    assert!(!off.strict_responses_input, "explicit false should parse to false");
+
+    let absent: ConfigModelOverride = toml::from_str("").expect("absent row");
+    assert!(
+        !absent.strict_responses_input,
+        "absent should parse to the serde default false (lenient)"
+    );
+}
+/// FLT-1: pins all three serde states of the per-model v2 multi-agent row
+/// gate `multi_agent_v2`: absent -> `None` (dark), explicit `true` ->
+/// `Some(true)`, explicit `false` -> `Some(false)`.
+#[test]
+fn model_row_multi_agent_v2_serde_states() {
+    let some_true: ConfigModelOverride =
+        toml::from_str("multi_agent_v2 = true").expect("explicit true");
+    assert_eq!(some_true.multi_agent_v2, Some(true));
+
+    let some_false: ConfigModelOverride =
+        toml::from_str("multi_agent_v2 = false").expect("explicit false");
+    assert_eq!(some_false.multi_agent_v2, Some(false));
+
+    let absent: ConfigModelOverride = toml::from_str("").expect("absent row");
+    assert_eq!(
+        absent.multi_agent_v2, None,
+        "absent should stay None (dark)"
+    );
+}

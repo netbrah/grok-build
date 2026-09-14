@@ -93,6 +93,7 @@ assert config["hints"] == {
     "new_session_worktree_mode": "never",
     "fork_worktree_mode": "never",
 }
+assert config["features"] == {"remote_compaction_v2": False}
 
 credential_name = re.compile(r"TOKEN|KEY|SECRET|PASSWORD|AUTH|COOKIE", re.I)
 allowed_literal_paths = {"AIQ_TOKEN_COMMAND", "SMARTSOLVE_COOKIE_PATH"}

@@ -19,6 +19,9 @@ extra_rule_dirs = ["/x/eng/apex/apexai/rules"]
 new_session_worktree_mode = "never"
 fork_worktree_mode = "never"
 
+[features]
+remote_compaction_v2 = false
+
 [mcp_servers.ghe]
 command = "${GHE_MCP_BIN}"
 startup_timeout_sec = 300
