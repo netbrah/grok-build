@@ -647,58 +647,188 @@ class AcpSession:
         self.log.flush()
         return None if not want_id else self._id
 
-    def _read_until(self, target_id, timeout):
-        import select
+    def _iter_lines(self, timeout):
+        """Yield raw stdout lines, each mirrored to self.log as read.
+
+        The whole iteration is bounded by one deadline (`timeout` from
+        the first read); iteration ends at the deadline or on EOF.
+        """
         end = time.time() + timeout
         pending = ""
         while time.time() < end:
-            r, _, _ = select.select([self.proc.stdout], [], [],
-                                    max(0.1, end - time.time()))
+            r, _, _ = self._select.select([self.proc.stdout], [], [],
+                                          max(0.1, end - time.time()))
             if not r:
                 continue
             ch = self.proc.stdout.read(1)
             if not ch:
-                break
+                return
             self.log.write(ch)
-            if ch == "\n":
-                line = pending.strip()
-                pending = ""
-                if not line:
-                    continue
-                try:
-                    d = json.loads(line)
-                except Exception:
-                    continue
-                if d.get("method") == "session/update":
-                    p = d.get("params") or {}
-                    u = p.get("update") or {}
-                    u["_sessionId"] = p.get("sessionId")
-                    self.updates.append(u)
-                if isinstance(d.get("id"), int) and d["id"] == target_id:
-                    return d
-            else:
+            if ch != "\n":
                 pending += ch
+                continue
+            line = pending.strip()
+            pending = ""
+            if line:
+                yield line
+
+    def _track_update(self, d):
+        if d.get("method") != "session/update":
+            return
+        p = d.get("params") or {}
+        u = p.get("update") or {}
+        u["_sessionId"] = p.get("sessionId")
+        self.updates.append(u)
+
+    def _read_until(self, target_id, timeout):
+        for line in self._iter_lines(timeout):
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            self._track_update(d)
+            if isinstance(d.get("id"), int) and d["id"] == target_id:
+                return d
         return {"error": {"message": "timeout after %ss" % timeout}}
 
     def call(self, method, params, timeout=None):
         tid = self._send(method, params)
         return self._read_until(tid, timeout or self.timeout_s)
 
+    def _read_turn_completion(self, tid, timeout):
+        """Wait for a prompt turn to end on the notification rail.
+
+        The grok-responses ACP binary announces turn end via the
+        `_x.ai/session/prompt_complete` notification ({sessionId,
+        promptId, stopReason, agentResult}; promptId optional on older
+        shells), falling back to the `turn_completed`
+        session_notification. The turn's promptId is tracked from
+        `_x.ai/queue/changed.runningPromptId`. A JSON-RPC response for
+        `tid` (result or error, arriving before or after the
+        notification) is captured informationally; its absence never
+        fails the turn. Returns (completion, response); either may be
+        None.
+        """
+        turn_prompt_id = None
+        completion = None
+        response = None
+        for line in self._iter_lines(timeout):
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            if d.get("method") is None:
+                # JSON-RPC response (result or error): informational.
+                if isinstance(d.get("id"), int) and d["id"] == tid \
+                        and response is None:
+                    response = d
+                continue
+            p = d.get("params") or {}
+            if p.get("sessionId") not in (None, self.session_id):
+                continue
+            self._track_update(d)
+            m = d.get("method")
+            if m == "_x.ai/queue/changed":
+                if turn_prompt_id is None and p.get("runningPromptId"):
+                    turn_prompt_id = p["runningPromptId"]
+            elif m == "_x.ai/session/prompt_complete":
+                pid = p.get("promptId")
+                if turn_prompt_id is None and pid:
+                    # Completion raced ahead of queue/changed: adopt.
+                    turn_prompt_id = pid
+                if pid and pid == turn_prompt_id:
+                    completion = {"promptId": pid,
+                                  "stopReason": p.get("stopReason"),
+                                  "agentResult": p.get("agentResult"),
+                                  "via": "prompt_complete"}
+                    break
+            elif m == "_x.ai/session_notification":
+                u = p.get("update") or {}
+                if u.get("sessionUpdate") != "turn_completed":
+                    continue
+                pid = u.get("prompt_id")
+                if turn_prompt_id is None:
+                    turn_prompt_id = pid  # may stay None (unmapped)
+                if turn_prompt_id is None or pid == turn_prompt_id:
+                    completion = {"promptId": pid,
+                                  "stopReason": u.get("stop_reason"),
+                                  "agentResult": None,
+                                  "via": "turn_completed"}
+                    break
+        return completion, response
+
     def prompt(self, text, timeout=None):
-        resp = self.call("session/prompt",
+        t = timeout or self.timeout_s
+        tid = self._send("session/prompt",
                          {"sessionId": self.session_id,
-                          "prompt": [{"type": "text", "text": text}]},
-                         timeout=timeout)
-        stop = None
-        if "result" in resp:
-            stop = resp["result"].get("stopReason")
-        return resp, stop
+                          "prompt": [{"type": "text", "text": text}]})
+        completion, response = self._read_turn_completion(tid, t)
+        if response is not None:
+            # A JSON-RPC response (result or error) arrived: keep it as
+            # the canonical resp so caller error surfaces (acp_error +
+            # FAIL) fire unchanged.
+            stop = None
+            if "result" in response:
+                stop = (response["result"] or {}).get("stopReason")
+            if stop is None and completion is not None:
+                stop = completion.get("stopReason")
+            return response, stop
+        if completion is not None:
+            # Notification-only completion (the normal path on
+            # grok-responses): synthesize the resp. A turn that ended
+            # in error still surfaces through the caller's
+            # "error" in resp check via stopReason=error.
+            stop = completion.get("stopReason")
+            if stop == "error":
+                return ({"error": {"message": completion.get(
+                                     "agentResult") or
+                                     "turn ended with stopReason=error",
+                                   "via": completion["via"],
+                                   "promptId": completion.get("promptId")}},
+                        stop)
+            return ({"result": {"stopReason": stop,
+                                "_via": completion["via"],
+                                "promptId": completion.get("promptId")}},
+                    stop)
+        return {"error": {"message": "timeout after %ss" % t}}, None
 
     def set_model(self, model):
+        """Switch the session model; wait for the switch verdict.
+
+        The binary answers `session/set_model` with a JSON-RPC response
+        (result on success, error on refusal); as a hedge, an error
+        carrying `error`/`error_type` fields in a
+        session_notification is surfaced the same way. Both error
+        shapes return the {"error": ...} form the M-2 surface
+        (acp_error event + FAIL) keys on; a timeout returns that shape
+        for the never-answers world.
+        """
         self.model = model
-        return self.call("session/set_model",
-                         {"sessionId": self.session_id, "modelId": model},
-                         timeout=60)
+        tid = self._send("session/set_model",
+                          {"sessionId": self.session_id, "modelId": model})
+        t = 60
+        for line in self._iter_lines(t):
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            if d.get("method") is None:
+                if isinstance(d.get("id"), int) and d["id"] == tid:
+                    return d  # result OR error response
+                continue
+            p = d.get("params") or {}
+            if p.get("sessionId") not in (None, self.session_id):
+                continue
+            self._track_update(d)
+            u = (p.get("update") or {}) if d.get("method") == \
+                "_x.ai/session_notification" else {}
+            if u.get("sessionUpdate") and \
+                    (u.get("error") or u.get("error_type")):
+                return {"error": {"message": "set_model failed via "
+                                              "notification",
+                                  "data": u}}
+        return {"error": {"message": "timeout after %ss waiting for "
+                                     "set_model response" % t}}
 
     def available_commands(self):
         tools = []
