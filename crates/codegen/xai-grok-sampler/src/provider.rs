@@ -185,6 +185,45 @@ pub fn strip_encrypted_content_input(body: &mut Value) {
     }
 }
 
+/// Project replayed `reasoning` input items for targets that enforce the
+/// strict OpenAI/Azure Responses input schema (REPLAY-1).
+///
+/// Lenient backends (the vLLM Responses shim) emit `reasoning` output items
+/// carrying a `content` array of `reasoning_text` parts; this harness stores
+/// the item verbatim and replays it on later turns. Strict targets (Azure
+/// OpenAI) model `reasoning.content` on input as an array with `maxItems: 0`
+/// and 400 with `array_above_max_length` ("Invalid 'input[N].content': array
+/// too long...") the moment a non-empty one is replayed — deterministic,
+/// `is_retryable=false`. The projection is lossless: the same reasoning text
+/// rides in `summary`, which the strict schema accepts, and the full item
+/// remains in the local chat history.
+///
+/// Schema audit (REPLAY-1): of the input item types this harness replays
+/// (message, reasoning, function_call, function_call_output,
+/// web_search_call, custom_tool_call, code_interpreter_call, compaction
+/// carrier), only `reasoning` carries a schema-forbidden non-empty
+/// `content` on strict targets.
+///
+/// Transport seam: call on every /responses send path after dialect patching
+/// and the raw carrier splice, gated by the per-model
+/// `strict_responses_input` config. Lenient targets must stay
+/// byte-identical (vLLM-dialect regression pin).
+pub fn project_strict_responses_input(body: &mut Value, strict_dialect: bool) {
+    if !strict_dialect {
+        return;
+    }
+    if let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) {
+        for item in input.iter_mut() {
+            let Some(obj) = item.as_object_mut() else {
+                continue;
+            };
+            if obj.get("type").and_then(Value::as_str) == Some("reasoning") {
+                obj.remove("content");
+            }
+        }
+    }
+}
+
 /// Ensure a `reasoning` object exists on the request body.
 fn ensure_reasoning_object(request_body: &mut Value) {
     if request_body.get("reasoning").is_none() {

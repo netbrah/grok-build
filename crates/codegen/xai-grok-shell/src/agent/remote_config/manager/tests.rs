@@ -2213,6 +2213,7 @@ fn make_entry_config_with_id(
     config::ModelEntryConfig {
         id: id.map(|s| s.to_owned()),
         model_family: None,
+        strict_responses_input: false,
         model: model.to_owned(),
         base_url: "https://test.api/v1".to_owned(),
         name: name.map(|n| n.to_owned()),

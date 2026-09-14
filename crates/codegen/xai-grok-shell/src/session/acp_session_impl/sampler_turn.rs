@@ -660,6 +660,20 @@ impl SessionActor {
                     .and_then(|entry| entry.info.model_family.clone())
             })
         };
+        // REPLAY-1 gate: per-model strict-input-schema flag (same catalog read as the family above).
+        let strict_responses_input = {
+            let models = self.models_manager.models();
+            crate::agent::remote_config::resolve_catalog_key(
+                &models,
+                &acp::ModelId::new(cfg.model.clone()),
+            )
+            .and_then(|catalog_id| {
+                models
+                    .get(catalog_id.0.as_ref())
+                    .map(|entry| entry.info.strict_responses_input)
+            })
+            .unwrap_or(false)
+        };
         let creds = self.chat_state_handle.get_credentials().await;
         let model_facts = self.model_auth_facts(cfg.model.as_str());
         // Gate on the stable session classifier, not `creds.auth_type`; see `crate::agent::auth_method::session_token_auth_gate`
@@ -776,6 +790,7 @@ impl SessionActor {
             doom_loop_recovery: self.doom_loop_recovery,
             header_injector: Some(std::sync::Arc::new(TraceContextInjector)),
             model_family,
+            strict_responses_input,
         }
     }
 

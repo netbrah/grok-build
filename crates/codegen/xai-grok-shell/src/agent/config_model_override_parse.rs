@@ -666,6 +666,7 @@ mod tests {
         ConfigModelOverride {
             model: Some("m".into()),
             model_family: None,
+            strict_responses_input: false,
             base_url: Some("https://example.com".into()),
             mtls_cert_dir: Some("/run/model-identity".into()),
             name: Some("Model M".into()),

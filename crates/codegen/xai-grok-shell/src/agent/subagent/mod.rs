@@ -783,6 +783,12 @@ async fn read_parent_sampling_config(
                 .get(catalog_model_id.0.as_ref())
                 .map(|entry| entry.info.model_family.clone())
                 .unwrap_or_else(|| ctx.sampling_config.model_family.clone());
+            let strict_responses_input = ctx
+                .models_manager
+                .models()
+                .get(catalog_model_id.0.as_ref())
+                .map(|entry| entry.info.strict_responses_input)
+                .unwrap_or(ctx.sampling_config.strict_responses_input);
             let supports_backend_search = ctx
                 .models_manager
                 .model_supports_backend_search(catalog_model_id.0.as_ref());
@@ -834,6 +840,7 @@ async fn read_parent_sampling_config(
                 doom_loop_recovery: ctx.sampling_config.doom_loop_recovery,
                 header_injector: ctx.sampling_config.header_injector.clone(),
                 model_family,
+                strict_responses_input,
             };
             let model_id = ctx.model_id.clone();
             let global_model_id = ctx.models_manager.current_model_id();

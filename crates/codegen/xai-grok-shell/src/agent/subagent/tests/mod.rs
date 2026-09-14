@@ -2611,6 +2611,7 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
             user_selectable: true,
             id: None,
             model_family: None,
+            strict_responses_input: false,
             model: model_id.to_string(),
             // First-party xAI route by default: the P1 fail-closed credential
             // guard rejects credentialless custom-endpoint models, so a generic

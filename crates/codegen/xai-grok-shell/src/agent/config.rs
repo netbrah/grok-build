@@ -3811,6 +3811,7 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 id: m.id,
                 model: m.model,
                 model_family: m.model_family,
+                strict_responses_input: false,
                 base_url: endpoints.resolve_inference_base_url(),
                 api_base_url: Some(endpoints.xai_api_base_url.clone()),
                 name: m.name,
@@ -3861,6 +3862,9 @@ pub struct ModelEntryConfig {
     /// See [`ModelInfo::model_family`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_family: Option<String>,
+    /// See [`ModelInfo::strict_responses_input`].
+    #[serde(default)]
+    pub strict_responses_input: bool,
     /// The base URL of the model. e.g. "https://api.x.ai/v1"
     pub base_url: String,
     /// Human-readable display name of the model.
@@ -3981,6 +3985,12 @@ fn is_default_laziness_detector(cfg: &LazinessDetectorPerModelConfig) -> bool {
 pub struct ConfigModelOverride {
     pub model: Option<String>,
     pub model_family: Option<String>,
+    /// True when the target backend enforces the strict OpenAI/Azure
+    /// Responses input schema (replayed reasoning items with a non-empty
+    /// `content` array 400 with `array_above_max_length` — REPLAY-1).
+    /// Absent = false (lenient, byte-identical replay).
+    #[serde(default)]
+    pub strict_responses_input: bool,
     pub base_url: Option<String>,
     /// Directory containing this model's mTLS client certificate and private key.
     /// Requires one HTTPS `base_url`; an alternate `api_base_url` is rejected.
@@ -4044,6 +4054,9 @@ impl ConfigModelOverride {
         }
         if self.model_family.is_some() {
             entry.info.model_family.clone_from(&self.model_family);
+        }
+        if self.strict_responses_input {
+            entry.info.strict_responses_input = true;
         }
         if let Some(ref v) = self.base_url {
             entry.info.base_url = v.clone();
@@ -4168,6 +4181,11 @@ pub struct ModelInfo {
     /// Provider family that mints this model's conversation items (e.g. "xai"); `None` means unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_family: Option<String>,
+    /// True when the target backend enforces the strict OpenAI/Azure
+    /// Responses input schema; gates the REPLAY-1 reasoning-item input
+    /// projection in the sampler transport seam.
+    #[serde(default)]
+    pub strict_responses_input: bool,
     /// The base URL of the model (session endpoint). e.g. "https://cli-chat-proxy.grok.com/v1"
     pub base_url: String,
     /// Human-readable name of the model.
@@ -4244,6 +4262,7 @@ impl ModelInfo {
             id: None,
             model: slug.to_owned(),
             model_family: None,
+            strict_responses_input: false,
             base_url: String::new(),
             name: None,
             description: None,
@@ -4284,6 +4303,7 @@ impl ModelInfo {
             id: entry.id.clone(),
             model: entry.model.clone(),
             model_family: entry.model_family.clone(),
+            strict_responses_input: entry.strict_responses_input,
             base_url: entry.base_url.clone(),
             name: entry.name.clone(),
             description: entry.description.clone(),
@@ -5028,6 +5048,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 user_selectable: false,
                 id: None,
                 model_family: None,
+                strict_responses_input: false,
                 model: catalog_entry
                     .map(|e| e.info.model)
                     .unwrap_or_else(|| model_id.to_owned()),
@@ -5217,6 +5238,7 @@ pub(crate) fn sampling_config_for_model(
         doom_loop_recovery: None,
         header_injector: None,
         model_family: info.model_family.clone(),
+        strict_responses_input: info.strict_responses_input,
     }
 }
 /// Fold URL-derived headers into `extra_headers`. The sampler crate is intentionally URL-agnostic: it does not inspect `base_url` to decide which auth or staging headers to add.
@@ -5252,6 +5274,7 @@ fn resolve_hidden_default_web_search_sampling_config(
         info: ModelInfo {
             id: None,
             model_family: None,
+            strict_responses_input: false,
             model: model_id.to_owned(),
             base_url: endpoints.resolve_inference_base_url(),
             name: None,

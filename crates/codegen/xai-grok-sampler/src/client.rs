@@ -865,6 +865,9 @@ struct ClientDefaults {
     doom_loop_recovery: Option<xai_grok_sampling_types::DoomLoopRecoveryPolicy>,
     /// Provider family ("xai", "codex", "glm", etc.). Gates provider-specific request patches.
     model_family: Option<String>,
+    /// Gates the REPLAY-1 strict-input projection (see
+    /// `provider::project_strict_responses_input`).
+    strict_responses_input: bool,
     /// Local reasoning effort for Max/Ultra wire mapping and multi-agent v2 policy.
     reasoning_effort: Option<ReasoningEffort>,
 }
@@ -1345,6 +1348,7 @@ impl SamplingClient {
             extra_response_includes: config.extra_response_includes,
             doom_loop_recovery: config.doom_loop_recovery,
             model_family: config.model_family.clone(),
+            strict_responses_input: config.strict_responses_input,
             reasoning_effort: config.reasoning_effort,
         };
 
@@ -1960,6 +1964,12 @@ impl SamplingClient {
         // Transport seam: carrier ciphertext cannot round-trip the proxy's
         // cross-deployment load balancing; strip it after the splice.
         crate::provider::strip_encrypted_content_input(&mut request_body);
+        // Transport seam: strict targets forbid non-empty reasoning.content
+        // on replay (REPLAY-1); project per the per-model gate.
+        crate::provider::project_strict_responses_input(
+            &mut request_body,
+            self.defaults.strict_responses_input,
+        );
         self.prepare_bearer().await;
         let SentRequest {
             builder,
@@ -2121,6 +2131,12 @@ impl SamplingClient {
         // Transport seam: carrier ciphertext cannot round-trip the proxy's
         // cross-deployment load balancing; strip it after the splice.
         crate::provider::strip_encrypted_content_input(&mut request_body);
+        // Transport seam: strict targets forbid non-empty reasoning.content
+        // on replay (REPLAY-1); project per the per-model gate.
+        crate::provider::project_strict_responses_input(
+            &mut request_body,
+            self.defaults.strict_responses_input,
+        );
         // Fresh per attempt so signals never leak across retries; `None` (check disabled) sends no header and does no peek work per event
         let doom_loop = self
             .defaults
@@ -2373,6 +2389,12 @@ impl SamplingClient {
         // Transport seam: carrier ciphertext cannot round-trip the proxy's
         // cross-deployment load balancing; strip it after patching.
         crate::provider::strip_encrypted_content_input(&mut request_body);
+        // Transport seam: strict targets forbid non-empty reasoning.content
+        // on replay (REPLAY-1); project per the per-model gate.
+        crate::provider::project_strict_responses_input(
+            &mut request_body,
+            self.defaults.strict_responses_input,
+        );
         if request_body
             .get("tool_choice")
             .is_none_or(serde_json::Value::is_null)
@@ -3317,6 +3339,7 @@ mod tests {
             doom_loop_recovery: None,
             header_injector: None,
             model_family: None,
+            strict_responses_input: false,
         }
     }
 

@@ -71,6 +71,14 @@ pub struct SamplerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_family: Option<String>,
 
+    /// True when the target backend enforces the strict OpenAI/Azure
+    /// Responses input schema: replayed `reasoning` items whose `content`
+    /// array is non-empty 400 with `array_above_max_length` (REPLAY-1).
+    /// Gates the provider-seam input projection; `false` (default) keeps the
+    /// replay byte-identical for lenient (vLLM-dialect) backends.
+    #[serde(default)]
+    pub strict_responses_input: bool,
+
     // Client identity
     pub origin_client: Option<OriginClientInfo>,
     pub client_identifier: Option<String>,
@@ -150,6 +158,7 @@ impl Default for SamplerConfig {
             doom_loop_recovery: None,
             header_injector: None,
             model_family: None,
+            strict_responses_input: false,
         }
     }
 }

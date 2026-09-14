@@ -1055,6 +1055,7 @@ fn test_model_entry(
             user_selectable: true,
             id: None,
             model_family: None,
+            strict_responses_input: false,
             model: model.to_string(),
             base_url: base_url.to_string(),
             name: None,
@@ -2142,6 +2143,7 @@ fn model_info_from_config_propagates_use_concise() {
     let entry = ModelEntryConfig {
         id: None,
         model_family: None,
+        strict_responses_input: false,
         model: "test".to_string(),
         base_url: "https://test.api/v1".to_string(),
         name: None,
@@ -2305,6 +2307,7 @@ fn model_info_from_config_propagates_agent_type() {
     let entry = ModelEntryConfig {
         id: None,
         model_family: None,
+        strict_responses_input: false,
         model: "test".to_string(),
         base_url: "https://test.api/v1".to_string(),
         name: None,
@@ -2760,6 +2763,7 @@ fn inference_idle_timeout_propagates_to_model_info() {
     let entry = ModelEntryConfig {
         id: None,
         model_family: None,
+        strict_responses_input: false,
         model: "test".to_string(),
         base_url: "https://test.api/v1".to_string(),
         name: None,
@@ -7419,6 +7423,7 @@ fn prefetch_model_entry(slug: &str, context_window: u64, api_backend: ApiBackend
             user_selectable: true,
             id: None,
             model_family: None,
+            strict_responses_input: false,
             model: slug.to_owned(),
             base_url: "https://test.example.com/v1".to_owned(),
             name: Some(slug.to_owned()),

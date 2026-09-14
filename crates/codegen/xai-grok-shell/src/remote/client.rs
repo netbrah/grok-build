@@ -647,6 +647,11 @@ pub(crate) fn parse_remote_model_value(
         .or_else(|| get_string(obj, "model_family"))
         .or_else(|| meta.and_then(|m| get_string(m, "modelFamily")))
         .or_else(|| meta.and_then(|m| get_string(m, "model_family")));
+    let strict_responses_input = obj
+        .get("strictResponsesInput")
+        .or_else(|| obj.get("strict_responses_input"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let base_url = get_string(obj, "baseUrl")
         .or_else(|| get_string(obj, "base_url"))
         .unwrap_or_else(|| default_base_url.to_owned());
@@ -677,6 +682,7 @@ pub(crate) fn parse_remote_model_value(
         id,
         model,
         model_family,
+        strict_responses_input,
         base_url,
         name,
         description: get_string(obj, "description"),
