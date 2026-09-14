@@ -1284,6 +1284,7 @@ def run_case(case, args, budget):
     ctx.fmt = fmt
     results = []
     status = "PASS"
+    exp_red = case.get("expected_red") or {}
 
     def mark(status_, why=""):
         nonlocal status
@@ -1291,7 +1292,9 @@ def run_case(case, args, budget):
             return
         status = status_
         if why:
-            log("  %s -> %s (%s)" % (cid, status, why))
+            shown = ("RED-EXPECTED (%s)" % exp_red.get("id", "?")
+                     if exp_red and status_ == "FAIL" else status_)
+            log("  %s -> %s (%s)" % (cid, shown, why))
 
     try:
         if case.get("disabled"):
@@ -1657,8 +1660,18 @@ def _finish(case, run_dir, ctx, results, status, started, wt, home, args,
     if row_asserts and hard_fails and status == "PASS":
         status = "FAIL"
     budget.add(ctx.model_calls)
+    exp_red = case.get("expected_red") or {}
+    status_out = status
+    if exp_red:
+        rid = exp_red.get("id", "?")
+        status_out = ("RED-EXPECTED (%s)" % rid if status == "FAIL"
+                      else "RED-CLEARED (%s)" % rid)
+        if status == "PASS":
+            log("  %s: RED-CLEARED (%s) — documented red no longer "
+                "reproduces; promote to hard assert" % (case["id"], rid))
     row = {"id": case["id"], "title": case.get("title", ""),
            "status": status,
+           "expected_red": exp_red or None,
            "duration_s": round(time.time() - started, 1),
            "model_calls": ctx.model_calls,
            "session_id": ctx.session_id,
@@ -1668,7 +1681,7 @@ def _finish(case, run_dir, ctx, results, status, started, wt, home, args,
                         "spec": r.spec} for r in results],
            "snapshots": ctx.snapshots,
            "run_dir": run_dir}
-    log("  %s: %s in %.1fs calls=%d" % (case["id"], status,
+    log("  %s: %s in %.1fs calls=%d" % (case["id"], status_out,
                                         row["duration_s"],
                                         ctx.model_calls))
     return row
@@ -1769,6 +1782,21 @@ def slice_evidence(row, limit=10, secrets=()):
 
 def write_report(out: str, rows, env_meta, args, sweep_hits, sweep_details):
     os.makedirs(out, exist_ok=True)
+
+    def status_label(r):
+        # expected_red annotation: documented reds render as
+        # RED-EXPECTED/RED-CLEARED in the summary; the raw status
+        # stays in the row (report.json) for machine consumers.
+        exp = r.get("expected_red")
+        if not exp:
+            return r["status"]
+        rid = exp.get("id", "?")
+        if r["status"] == "FAIL":
+            return "RED-EXPECTED (%s)" % rid
+        if r["status"] == "PASS":
+            return "RED-CLEARED (%s)" % rid
+        return r["status"]
+
     order = ["PASS", "RECON", "FAIL", "BLOCKED", "SKIP"]
     rows_sorted = sorted(rows, key=lambda r: (order.index(r["status"])
                                               if r["status"] in order
@@ -1797,11 +1825,11 @@ def write_report(out: str, rows, env_meta, args, sweep_hits, sweep_details):
     md.append("|---|---|---|---|---|")
     for r in rows_sorted:
         md.append("| %s | %s | %s | %s | %s |" % (
-            r["id"], r["status"], r["duration_s"], r["model_calls"],
+            r["id"], status_label(r), r["duration_s"], r["model_calls"],
             r.get("title", "")[:60]))
     md.append("")
     for r in rows_sorted:
-        md.append("## %s — %s" % (r["id"], r["status"]))
+        md.append("## %s — %s" % (r["id"], status_label(r)))
         if r.get("skipped"):
             md.append("- skipped: %s" % r["skipped"])
             md.append("")

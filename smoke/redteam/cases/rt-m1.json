@@ -1,6 +1,10 @@
 {
   "id": "RT-M1",
   "title": "In-wire switch qwen->sol (responses->responses) via ACP session/set_model; RECON step 0 found a replay 400 on this exact path \u2014 v0 expect per spec (0 errors) will likely FAIL pre-ledger-ruling",
+  "expected_red": {
+    "id": "REPLAY-1",
+    "reason": "pre-registered product-side red (pass-4 adjudicated): after the mid-session switch to gpt-5.6-sol, the post-switch turns (S1-S3) deterministically fail with an Azure 400 (litellm.BadRequestError: Invalid 'input[7].content': array too long)"
+  },
   "driver": "acp",
   "model": "qwen3.8-27b",
   "steps": [

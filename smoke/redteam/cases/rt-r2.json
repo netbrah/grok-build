@@ -1,6 +1,10 @@
 {
   "id": "RT-R2",
   "title": "Resume+switch: RT-R1 state, resume with -m gpt-5.6-sol, 2 turns (= RT-M1 via the resume path)",
+  "expected_red": {
+    "id": "REPLAY-1",
+    "reason": "pre-registered product-side red (pass-4 adjudicated): resume with -m gpt-5.6-sol, then the post-switch turns deterministically fail with the same Azure 400 (litellm.BadRequestError 'Invalid input[7].content: array too long') as RT-M1 via the resume path"
+  },
   "model": "qwen3.8-27b",
   "steps": [
     {
