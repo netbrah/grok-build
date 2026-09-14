@@ -373,24 +373,50 @@ pub(crate) struct PromptHookJson {
     pub decision: Option<String>,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default, rename = "hookSpecificOutput")]
+    pub hook_specific_output: Option<serde_json::Value>,
 }
 
-pub(crate) fn prompt_json_to_block(
+impl PromptHookJson {
+    fn additional_context(&self) -> Option<String> {
+        let context = self
+            .hook_specific_output
+            .as_ref()?
+            .as_object()?
+            .get("additionalContext")?
+            .as_str()?;
+        (!context.trim().is_empty()).then(|| clip_text(context, MAX_HOOK_FEEDBACK_CHARS))
+    }
+}
+
+pub(crate) struct PromptHookOutcome {
+    pub block_reason: Option<String>,
+    pub additional_context: Option<String>,
+}
+
+pub(crate) fn prompt_json_to_outcome(
     json: &PromptHookJson,
     hook_name: &str,
     fallback_reason: Option<&str>,
-) -> Result<Option<String>, String> {
-    match json.decision.as_deref() {
-        Some("block") => Ok(Some(
+) -> Result<PromptHookOutcome, String> {
+    let block_reason = match json.decision.as_deref() {
+        Some("block") => Some(
             json.reason
                 .clone()
                 .filter(|r| !r.trim().is_empty())
                 .or_else(|| fallback_reason.map(str::to_string))
                 .unwrap_or_else(|| format!("Prompt blocked by hook '{hook_name}'")),
-        )),
-        None | Some("approve") => Ok(None),
-        Some(other) => Err(format!("unknown decision value '{other}'")),
-    }
+        ),
+        None | Some("approve") => None,
+        Some(other) => return Err(format!("unknown decision value '{other}'")),
+    };
+    Ok(PromptHookOutcome {
+        additional_context: block_reason
+            .is_none()
+            .then(|| json.additional_context())
+            .flatten(),
+        block_reason,
+    })
 }
 
 #[derive(Debug, Default, Deserialize)]

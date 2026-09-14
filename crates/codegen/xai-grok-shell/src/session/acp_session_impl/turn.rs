@@ -883,8 +883,10 @@ impl SessionActor {
             }
             acc
         });
-        let prompt_block = if policy.authority != InputAuthority::ModelAuthoredUntrusted {
-            let prompt_gate_verdict = self
+        let (prompt_block, prompt_additional_context) = if policy.authority
+            != InputAuthority::ModelAuthoredUntrusted
+        {
+            let prompt_gate = self
                 .dispatch_prompt_submit_hook(
                     xai_grok_hooks::event::HookPayload::UserPromptSubmit {
                         prompt: Some(text.clone()),
@@ -893,28 +895,29 @@ impl SessionActor {
                     Some(prompt_id),
                 )
                 .await;
-            match (
-                self.should_enforce_prompt_block(&policy),
-                prompt_gate_verdict,
-            ) {
-                (true, xai_grok_hooks::result::PromptDecision::Block { reason, hook_name }) => {
-                    Some((hook_name, reason))
+            let enforce = self.should_enforce_prompt_block(&policy);
+            match prompt_gate.decision {
+                xai_grok_hooks::result::PromptDecision::Block { reason, hook_name } if enforce => {
+                    (Some((hook_name, reason)), Vec::new())
                 }
-                (false, xai_grok_hooks::result::PromptDecision::Block { reason, hook_name }) => {
+                xai_grok_hooks::result::PromptDecision::Block { reason, hook_name } => {
                     tracing::info!(%hook_name, %reason, "user_prompt_submit block ignored for non-user origin");
                     self.send_hook_annotation(
                             &format!(
-                        "\u{26a0} Prompt block requested by {} (not enforced for this origin): {reason}",
-                        xai_grok_hooks::config::hook_display_name(&hook_name)
-                    ),
+                                "\u{26a0} Prompt block requested by {} (not enforced for this origin): {reason}",
+                                xai_grok_hooks::config::hook_display_name(&hook_name)
+                            ),
                         )
                         .await;
-                    None
+                    (None, Vec::new())
                 }
-                (_, xai_grok_hooks::result::PromptDecision::Allow) => None,
+                xai_grok_hooks::result::PromptDecision::Allow if enforce => {
+                    (None, prompt_gate.additional_context)
+                }
+                xai_grok_hooks::result::PromptDecision::Allow => (None, Vec::new()),
             }
         } else {
-            None
+            (None, Vec::new())
         };
         if prompt_block.is_some() {
             if let Some(ack) = persist_ack.take() {
@@ -1214,9 +1217,21 @@ impl SessionActor {
                     user_chat.add_image(format!("data:{};base64,{}", image.mime_type, image.data));
                 }
             }
+            let mut user_messages = prompt_additional_context
+                .into_iter()
+                .map(|context| {
+                    self.wrap_hook_note(
+                        xai_grok_hooks::event::HookEventName::UserPromptSubmit,
+                        HookNoteKind::Context,
+                        &context.hook_name,
+                        &context.text,
+                    )
+                })
+                .collect::<Vec<_>>();
+            user_messages.push(user_chat);
             if self
                 .chat_state_handle
-                .push_user_message_and_ack(user_chat)
+                .push_user_messages_batch_and_ack(user_messages)
                 .await
                 .is_some()
             {

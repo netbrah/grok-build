@@ -11,7 +11,7 @@ use super::command::MAX_OUTPUT_BYTES;
 use super::{
     GateKind, GateOutcome, HookHealth, HookRunOutput, HookRunnerResult, PostToolUseHookJson,
     PromptHookJson, RunContext, StopHookJson, extract_system_message,
-    post_tool_use_json_to_outcome, prompt_json_to_block, stop_json_to_outcome,
+    post_tool_use_json_to_outcome, prompt_json_to_outcome, stop_json_to_outcome,
 };
 
 const RESPONSE_PREVIEW_MAX: usize = 200;
@@ -364,12 +364,17 @@ fn parse_http_prompt_result(
         return HookRunnerResult::Success;
     }
     match serde_json::from_str::<PromptHookJson>(trimmed) {
-        Ok(json) => match prompt_json_to_block(&json, hook_name, None) {
-            Ok(Some(reason)) => HookRunnerResult::Block {
-                reason,
-                hook_name: hook_name.to_string(),
+        Ok(json) => match prompt_json_to_outcome(&json, hook_name, None) {
+            Ok(outcome) => match outcome.block_reason {
+                Some(reason) => HookRunnerResult::Block {
+                    reason,
+                    hook_name: hook_name.to_string(),
+                },
+                None => HookRunnerResult::Allow {
+                    updated_input: None,
+                    additional_context: outcome.additional_context,
+                },
             },
-            Ok(None) => HookRunnerResult::Success,
             Err(err) => HookRunnerResult::Failed(err),
         },
         Err(e) => {
@@ -681,20 +686,56 @@ mod tests {
     }
 
     #[test]
-    fn http_prompt_allows_on_success_without_verdict() {
+    fn http_prompt_block_ignores_malformed_additional_context() {
         for body in [
-            "",
-            "plain text",
-            "{}",
-            r#"{"hookSpecificOutput":{"additionalContext":"ctx"}}"#,
-            "not json at all",
+            r#"{"decision":"block","reason":"policy","hookSpecificOutput":{"additionalContext":42}}"#,
+            r#"{"decision":"block","reason":"policy","hookSpecificOutput":[]}"#,
         ] {
+            match parse_http_prompt_result(body, StatusCode::OK, "prompt-hook") {
+                HookRunnerResult::Block { reason, .. } => assert_eq!(reason, "policy"),
+                other => panic!("expected Block despite malformed context, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn http_prompt_allows_without_context_on_empty_or_unstructured_success() {
+        for body in ["", "plain text", "not json at all"] {
             let result = parse_http_prompt_result(body, StatusCode::OK, "prompt-hook");
             assert!(
                 matches!(result, HookRunnerResult::Success),
-                "body {body:?} must allow"
+                "body {body:?} must allow without context"
             );
         }
+        for body in [
+            "{}",
+            r#"{"hookSpecificOutput":{"additionalContext":"   "}}"#,
+        ] {
+            let result = parse_http_prompt_result(body, StatusCode::OK, "prompt-hook");
+            assert!(matches!(
+                result,
+                HookRunnerResult::Allow {
+                    additional_context: None,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn http_prompt_carries_additional_context() {
+        let result = parse_http_prompt_result(
+            r#"{"hookSpecificOutput":{"additionalContext":"ctx"}}"#,
+            StatusCode::OK,
+            "prompt-hook",
+        );
+        assert!(matches!(
+            result,
+            HookRunnerResult::Allow {
+                additional_context: Some(ref context),
+                ..
+            } if context == "ctx"
+        ));
     }
 
     #[test]

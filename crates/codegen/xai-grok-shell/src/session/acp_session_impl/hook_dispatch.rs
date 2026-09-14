@@ -440,20 +440,28 @@ impl SessionActor {
     }
 
     /// Run the `UserPromptSubmit` prompt gate: observe client hooks, then the on-disk registry, with shared scrollback and telemetry side effects.
-    /// Returns the gate verdict; the caller decides whether to enforce it (`Block` rejects the prompt).
+    /// Returns the full gate result so the caller can enforce blocks and deliver allowed context according to the input origin.
     pub(super) async fn dispatch_prompt_submit_hook(
         &self,
         payload: xai_grok_hooks::event::HookPayload,
         prompt_id: Option<&str>,
-    ) -> xai_grok_hooks::result::PromptDecision {
+    ) -> xai_grok_hooks::dispatcher::PromptGateResult {
         let event = xai_grok_hooks::event::HookEventName::UserPromptSubmit;
         if !self.may_have_hooks_for(event) {
-            return xai_grok_hooks::result::PromptDecision::Allow;
+            return xai_grok_hooks::dispatcher::PromptGateResult {
+                decision: xai_grok_hooks::result::PromptDecision::Allow,
+                additional_context: Vec::new(),
+                results: Vec::new(),
+            };
         }
         // Fires observe-only client hooks before (and independent of) the on-disk registry guard below.
         let envelope = self.fire_hook(event, prompt_id.map(|s| s.to_string()), payload);
         let Some(registry) = self.hook_registry.borrow().clone() else {
-            return xai_grok_hooks::result::PromptDecision::Allow;
+            return xai_grok_hooks::dispatcher::PromptGateResult {
+                decision: xai_grok_hooks::result::PromptDecision::Allow,
+                additional_context: Vec::new(),
+                results: Vec::new(),
+            };
         };
         let ctx = self.hook_run_ctx();
         let batch = self.announce_hook_run(&registry, &envelope, &ctx);
@@ -462,7 +470,7 @@ impl SessionActor {
         self.send_hook_execution(&batch, &gate.results).await;
         self.emit_hook_executed_telemetry(&batch.event_name, None, &gate.results)
             .await;
-        gate.decision
+        gate
     }
 
     pub(super) async fn emit_hook_executed_telemetry(

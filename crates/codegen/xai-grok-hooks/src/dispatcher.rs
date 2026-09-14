@@ -352,6 +352,7 @@ pub async fn dispatch_pre_tool_use(
 
 pub struct PromptGateResult {
     pub decision: PromptDecision,
+    pub additional_context: Vec<AdditionalContext>,
     pub results: Vec<HookRunResult>,
 }
 
@@ -369,11 +370,17 @@ pub async fn dispatch_prompt_gate(
         ctx,
     )
     .await;
+    let decision = match outcome.block {
+        Some(GateBlock { hook_name, reason }) => PromptDecision::Block { reason, hook_name },
+        None => PromptDecision::Allow,
+    };
     PromptGateResult {
-        decision: match outcome.block {
-            Some(GateBlock { hook_name, reason }) => PromptDecision::Block { reason, hook_name },
-            None => PromptDecision::Allow,
+        additional_context: if matches!(decision, PromptDecision::Allow) {
+            outcome.additional_context
+        } else {
+            Vec::new()
         },
+        decision,
         results: outcome.results,
     }
 }
@@ -1546,12 +1553,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prompt_gate_allows_and_discards_stdout() {
-        let spec = make_prompt_spec("context-only", "echo 'extra context the model never sees'");
-        let registry = registry_from_specs(vec![spec]);
+    async fn prompt_gate_carries_additional_context_in_call_order() {
+        let first = make_prompt_spec(
+            "first",
+            r#"echo '{"hookSpecificOutput":{"additionalContext":"heads up"}}'"#,
+        );
+        let second = make_prompt_spec(
+            "second",
+            r#"echo '{"hookSpecificOutput":{"additionalContext":"and also"}}'"#,
+        );
+        let registry = registry_from_specs(vec![first, second]);
         let result = dispatch_prompt_gate(&registry, &prompt_submit_envelope(), &run_ctx()).await;
         assert_eq!(result.decision, PromptDecision::Allow);
-        assert!(matches!(result.results[0], HookRunResult::Success { .. }));
+        let carried: Vec<(&str, &str)> = result
+            .additional_context
+            .iter()
+            .map(|context| (context.hook_name.as_str(), context.text.as_str()))
+            .collect();
+        assert_eq!(carried, [("first", "heads up"), ("second", "and also")]);
+        assert!(
+            result
+                .results
+                .iter()
+                .all(|result| matches!(result, HookRunResult::Success { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_gate_block_drops_prior_additional_context() {
+        let context = make_prompt_spec(
+            "context-only",
+            r#"echo '{"hookSpecificOutput":{"additionalContext":"must not survive"}}'"#,
+        );
+        let blocker = make_prompt_spec("blocker", r#"echo '{"decision":"block","reason":"stop"}'"#);
+        let registry = registry_from_specs(vec![context, blocker]);
+        let result = dispatch_prompt_gate(&registry, &prompt_submit_envelope(), &run_ctx()).await;
+        assert!(matches!(result.decision, PromptDecision::Block { .. }));
+        assert!(
+            result.additional_context.is_empty(),
+            "a blocked prompt must not carry hook context into a later turn"
+        );
     }
 
     #[tokio::test]

@@ -27,7 +27,7 @@ use crate::result::StopHookOutcome;
 use super::{
     GateHookJson, GateKind, GateOutcome, HookHealth, HookRunnerResult, PostToolUseHookJson,
     PostToolUseParse, PromptHookJson, RunContext, StopHookJson, extract_system_message,
-    gate_outcome, post_tool_use_json_to_outcome, prompt_json_to_block, stop_json_to_outcome,
+    gate_outcome, post_tool_use_json_to_outcome, prompt_json_to_outcome, stop_json_to_outcome,
 };
 
 const CAPTURE_HEADROOM_OVER_REPLACEMENT: usize = 16;
@@ -820,17 +820,27 @@ fn parse_prompt_result(
     let trimmed = stdout.trim();
     if !trimmed.is_empty() {
         match serde_json::from_str::<PromptHookJson>(trimmed) {
-            Ok(json) => match prompt_json_to_block(&json, hook_name, stderr_message.as_deref()) {
-                Ok(Some(reason)) => {
-                    return (
-                        HookRunnerResult::Block {
-                            reason,
-                            hook_name: hook_name.to_string(),
-                        },
-                        elapsed,
-                    );
+            Ok(json) => match prompt_json_to_outcome(&json, hook_name, stderr_message.as_deref()) {
+                Ok(outcome) => {
+                    if let Some(reason) = outcome.block_reason {
+                        return (
+                            HookRunnerResult::Block {
+                                reason,
+                                hook_name: hook_name.to_string(),
+                            },
+                            elapsed,
+                        );
+                    }
+                    if exit_code == 0 {
+                        return (
+                            HookRunnerResult::Allow {
+                                updated_input: None,
+                                additional_context: outcome.additional_context,
+                            },
+                            elapsed,
+                        );
+                    }
                 }
-                Ok(None) => {}
                 Err(err) => {
                     if exit_code == GATE_EXIT_CODE {
                         tracing::warn!(
@@ -1746,18 +1756,65 @@ mod tests {
     }
 
     #[test]
-    fn prompt_allow_on_exit_0_discards_stdout() {
-        for stdout in [
-            "",
-            "plain context text",
-            "{}",
-            r#"{"hookSpecificOutput":{"additionalContext":"ctx","sessionTitle":"t"}}"#,
-        ] {
+    fn prompt_allow_on_exit_0_discards_unstructured_stdout() {
+        for stdout in ["", "plain context text"] {
             let (result, _) = parse_prompt_result(stdout, "", 0, "p", Duration::ZERO);
             assert!(
                 matches!(result, HookRunnerResult::Success),
-                "stdout {stdout:?} must allow"
+                "stdout {stdout:?} must allow without context"
             );
+        }
+
+        for stdout in [
+            "{}",
+            r#"{"hookSpecificOutput":{"additionalContext":"   "}}"#,
+        ] {
+            let (result, _) = parse_prompt_result(stdout, "", 0, "p", Duration::ZERO);
+            assert!(
+                matches!(
+                    result,
+                    HookRunnerResult::Allow {
+                        additional_context: None,
+                        ..
+                    }
+                ),
+                "stdout {stdout:?} must allow without context"
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_additional_context_is_carried_and_clipped() {
+        let (result, _) = parse_prompt_result(
+            r#"{"hookSpecificOutput":{"additionalContext":"ctx","sessionTitle":"t"}}"#,
+            "",
+            0,
+            "p",
+            Duration::ZERO,
+        );
+        assert!(matches!(
+            result,
+            HookRunnerResult::Allow {
+                additional_context: Some(ref context),
+                ..
+            } if context == "ctx"
+        ));
+
+        let long = "x".repeat(crate::event::MAX_HOOK_FEEDBACK_CHARS + 7);
+        let stdout = serde_json::json!({
+            "hookSpecificOutput": { "additionalContext": long }
+        })
+        .to_string();
+        let (result, _) = parse_prompt_result(&stdout, "", 0, "p", Duration::ZERO);
+        match result {
+            HookRunnerResult::Allow {
+                additional_context: Some(context),
+                ..
+            } => {
+                assert!(context.starts_with(&"x".repeat(crate::event::MAX_HOOK_FEEDBACK_CHARS)));
+                assert!(context.ends_with("… [+7 chars]"));
+            }
+            other => panic!("expected Allow with clipped additionalContext, got {other:?}"),
         }
     }
 
@@ -1785,10 +1842,27 @@ mod tests {
     }
 
     #[test]
+    fn prompt_block_ignores_malformed_additional_context() {
+        for stdout in [
+            r#"{"decision":"block","reason":"policy","hookSpecificOutput":{"additionalContext":42}}"#,
+            r#"{"decision":"block","reason":"policy","hookSpecificOutput":[]}"#,
+        ] {
+            let (result, _) = parse_prompt_result(stdout, "", 0, "p", Duration::ZERO);
+            assert_eq!(prompt_block_reason(result), "policy");
+        }
+    }
+
+    #[test]
     fn prompt_approve_decision_renders_no_verdict() {
         let (result, _) =
             parse_prompt_result(r#"{"decision":"approve"}"#, "", 0, "p", Duration::ZERO);
-        assert!(matches!(result, HookRunnerResult::Success));
+        assert!(matches!(
+            result,
+            HookRunnerResult::Allow {
+                additional_context: None,
+                ..
+            }
+        ));
         let (result, _) = parse_prompt_result(
             r#"{"decision":"approve"}"#,
             "blocked anyway\n",
@@ -1801,13 +1875,18 @@ mod tests {
 
     #[test]
     fn prompt_other_exit_codes_fail_open() {
-        let (result, _) = parse_prompt_result("", "boom\n", 1, "p", Duration::ZERO);
-        match result {
-            HookRunnerResult::Failed(error) => assert!(
-                error.contains("exit code 1") && error.contains("boom"),
-                "prompt failure must carry exit code AND stderr text, got: {error}"
-            ),
-            other => panic!("expected Failed, got {other:?}"),
+        for stdout in [
+            "",
+            r#"{"hookSpecificOutput":{"additionalContext":"partial output"}}"#,
+        ] {
+            let (result, _) = parse_prompt_result(stdout, "boom\n", 1, "p", Duration::ZERO);
+            match result {
+                HookRunnerResult::Failed(error) => assert!(
+                    error.contains("exit code 1") && error.contains("boom"),
+                    "prompt failure must carry exit code AND stderr text, got: {error}"
+                ),
+                other => panic!("expected Failed, got {other:?}"),
+            }
         }
     }
 
