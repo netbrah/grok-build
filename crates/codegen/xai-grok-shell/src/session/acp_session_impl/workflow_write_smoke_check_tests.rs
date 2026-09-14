@@ -202,6 +202,8 @@ async fn parse_failure_is_returned_during_snapshot() {
 
 #[tokio::test]
 async fn nonterminating_workflow_times_out_promptly() {
+    // A non-terminating workflow must be rejected promptly whether the 100ms
+    // timeout or the op budget fires first.
     let snapshot = AuthoredWorkflowSnapshot {
         path: PathBuf::from(".grok/workflows/loop.rhai"),
         script: workflow("loop", "loop {}"),
@@ -210,10 +212,20 @@ async fn nonterminating_workflow_times_out_promptly() {
 
     let failure = check_snapshot(snapshot, &permits())
         .await
-        .expect("nonterminating workflow should time out");
+        .expect("nonterminating workflow should be rejected");
 
-    assert_eq!(failure.detail, "smoke check exceeded 100 ms");
-    assert!(started.elapsed() >= CHECK_TIMEOUT);
+    // Reject verdict is profile-invariant; only the winning detail string
+    // differs: the wall-clock timeout (built from CHECK_TIMEOUT, as in
+    // workflow_write_smoke_check.rs) or the xai-workflow engine op budget
+    // ("dry-run: failed: Too many operations (line N, position M)").
+    let timeout_detail = format!("smoke check exceeded {} ms", CHECK_TIMEOUT.as_millis());
+    assert!(
+        failure.detail == timeout_detail
+            || (failure.detail.starts_with("dry-run: failed:")
+                && failure.detail.contains("Too many operations")),
+        "expected a smoke-check rejection, got: {}",
+        failure.detail
+    );
     assert!(started.elapsed() < Duration::from_secs(2));
 }
 
