@@ -1,142 +1,168 @@
 {
-  "id": "RT-M5",
-  "title": "Fresh -m matrix: every live-catalog model, one fresh headless turn each; wire shows the expected backend path (/responses vs /messages) + model field. Row asserts filter wire requests by body.model so nth resolution is per-row regardless of mtime order.",
-  "rows": [
-    {
-      "model": "qwen3.8-27b",
-      "prompt": "Reply with exactly: HT1-OK"
-    },
-    {
-      "model": "gpt-5.6-sol",
-      "prompt": "Reply with exactly: HT1-OK"
-    },
-    {
-      "model": "grok-4.6",
-      "prompt": "Reply with exactly: HT1-OK"
-    },
-    {
-      "model": "glm-5.2",
-      "prompt": "Reply with exactly: HT1-OK"
-    },
-    {
-      "model": "claude-sonnet-5",
-      "prompt": "Reply with exactly: HT1-OK"
-    }
-  ],
-  "watchdog_s": 300,
-  "est_calls": 5,
-  "row_asserts": {
-    "wire": [
-      {
-        "kind": "field",
-        "file": "req-*.json",
-        "path": "$.path",
-        "eq": "/v1/responses",
-        "where": {
-          "method": "POST",
-          "$.body.model": "qwen3.8-27b"
-        },
-        "row_model": "qwen3.8-27b"
-      },
-      {
-        "kind": "field",
-        "file": "req-*.json",
-        "path": "$.body.model",
-        "eq": "qwen3.8-27b",
-        "where": {
-          "method": "POST",
-          "$.body.model": "qwen3.8-27b"
-        },
-        "row_model": "qwen3.8-27b"
-      },
-      {
-        "kind": "field",
-        "file": "req-*.json",
-        "path": "$.path",
-        "eq": "/v1/responses",
-        "where": {
-          "method": "POST",
-          "$.body.model": "gpt-5.6-sol"
-        },
-        "row_model": "gpt-5.6-sol"
-      },
-      {
-        "kind": "field",
-        "file": "req-*.json",
-        "path": "$.body.model",
-        "eq": "gpt-5.6-sol",
-        "where": {
-          "method": "POST",
-          "$.body.model": "gpt-5.6-sol"
-        },
-        "row_model": "gpt-5.6-sol"
-      },
-      {
-        "kind": "field",
-        "file": "req-*.json",
-        "path": "$.path",
-        "eq": "/v1/responses",
-        "where": {
-          "method": "POST",
-          "$.body.model": "grok-4.6"
-        },
-        "row_model": "grok-4.6"
-      },
-      {
-        "kind": "field",
-        "file": "req-*.json",
-        "path": "$.body.model",
-        "eq": "grok-4.6",
-        "where": {
-          "method": "POST",
-          "$.body.model": "grok-4.6"
-        },
-        "row_model": "grok-4.6"
-      },
-      {
-        "kind": "field",
-        "file": "req-*.json",
-        "path": "$.path",
-        "eq": "/v1/responses",
-        "where": {
-          "method": "POST",
-          "$.body.model": "glm-5.2"
-        },
-        "row_model": "glm-5.2"
-      },
-      {
-        "kind": "field",
-        "file": "req-*.json",
-        "path": "$.body.model",
-        "eq": "glm-5.2",
-        "where": {
-          "method": "POST",
-          "$.body.model": "glm-5.2"
-        },
-        "row_model": "glm-5.2"
-      },
-      {
-        "kind": "field",
-        "file": "req-*.json",
-        "path": "$.path",
-        "eq": "/v1/messages",
-        "where": {
-          "method": "POST",
-          "$.body.model": "claude-sonnet-5"
-        },
-        "row_model": "claude-sonnet-5"
-      },
-      {
-        "kind": "field",
-        "file": "req-*.json",
-        "path": "$.body.model",
-        "eq": "claude-sonnet-5",
-        "where": {
-          "method": "POST",
-          "$.body.model": "claude-sonnet-5"
-        },
-        "row_model": "claude-sonnet-5"
-      }
-    ]
+ "id": "RT-M5",
+ "title": "Slim regression matrix: one frontier model per wire/handler class - responses wire: qwen3.8-27b (vLLM), glm-5.2 (vLLM), gpt-5.6-sol (Azure OpenAI), grok-4.6 (Vertex xai, gemini-format), gemini-3.7-flash (Vertex gemini, known-issue family); messages wire: claude-sonnet-5 (only messages-wire class). Full catalog sweep = generated RT-M6 (gen-matrix.py). Row asserts filter wire requests by body.model so nth resolution is per-row.",
+ "rows": [
+  {
+   "model": "qwen3.8-27b",
+   "prompt": "Reply with exactly: HT1-OK"
+  },
+  {
+   "model": "gpt-5.6-sol",
+   "prompt": "Reply with exactly: HT1-OK"
+  },
+  {
+   "model": "grok-4.6",
+   "prompt": "Reply with exactly: HT1-OK"
+  },
+  {
+   "model": "glm-5.2",
+   "prompt": "Reply with exactly: HT1-OK"
+  },
+  {
+   "model": "claude-sonnet-5",
+   "prompt": "Reply with exactly: HT1-OK"
+  },
+  {
+   "model": "gemini-3.7-flash",
+   "prompt": "Reply with exactly: HT1-OK"
   }
+ ],
+ "watchdog_s": 300,
+ "est_calls": 6,
+ "row_asserts": {
+  "wire": [
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "path": "$.path",
+    "eq": "/v1/responses",
+    "where": {
+     "method": "POST",
+     "$.body.model": "qwen3.8-27b"
+    },
+    "row_model": "qwen3.8-27b"
+   },
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "path": "$.body.model",
+    "eq": "qwen3.8-27b",
+    "where": {
+     "method": "POST",
+     "$.body.model": "qwen3.8-27b"
+    },
+    "row_model": "qwen3.8-27b"
+   },
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "path": "$.path",
+    "eq": "/v1/responses",
+    "where": {
+     "method": "POST",
+     "$.body.model": "gpt-5.6-sol"
+    },
+    "row_model": "gpt-5.6-sol"
+   },
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "path": "$.body.model",
+    "eq": "gpt-5.6-sol",
+    "where": {
+     "method": "POST",
+     "$.body.model": "gpt-5.6-sol"
+    },
+    "row_model": "gpt-5.6-sol"
+   },
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "path": "$.path",
+    "eq": "/v1/responses",
+    "where": {
+     "method": "POST",
+     "$.body.model": "grok-4.6"
+    },
+    "row_model": "grok-4.6"
+   },
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "path": "$.body.model",
+    "eq": "grok-4.6",
+    "where": {
+     "method": "POST",
+     "$.body.model": "grok-4.6"
+    },
+    "row_model": "grok-4.6"
+   },
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "path": "$.path",
+    "eq": "/v1/responses",
+    "where": {
+     "method": "POST",
+     "$.body.model": "glm-5.2"
+    },
+    "row_model": "glm-5.2"
+   },
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "path": "$.body.model",
+    "eq": "glm-5.2",
+    "where": {
+     "method": "POST",
+     "$.body.model": "glm-5.2"
+    },
+    "row_model": "glm-5.2"
+   },
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "path": "$.path",
+    "eq": "/v1/messages",
+    "where": {
+     "method": "POST",
+     "$.body.model": "claude-sonnet-5"
+    },
+    "row_model": "claude-sonnet-5"
+   },
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "path": "$.body.model",
+    "eq": "claude-sonnet-5",
+    "where": {
+     "method": "POST",
+     "$.body.model": "claude-sonnet-5"
+    },
+    "row_model": "claude-sonnet-5"
+   },
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "path": "$.path",
+    "eq": "/v1/responses",
+    "where": {
+     "method": "POST",
+     "$.body.model": "gemini-3.7-flash"
+    },
+    "row_model": "gemini-3.7-flash"
+   },
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "path": "$.body.model",
+    "eq": "gemini-3.7-flash",
+    "where": {
+     "method": "POST",
+     "$.body.model": "gemini-3.7-flash"
+    },
+    "row_model": "gemini-3.7-flash"
+   }
+  ]
+ }
 }
