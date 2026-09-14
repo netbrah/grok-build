@@ -1,10 +1,11 @@
 {
  "id": "RT-M10a",
- "title": "v2 CROSS-MODEL pair, child row-OFF (MA-4): qwen3.8-27b parent armed via runner-scoped config_patch (features + qwen row only — claude-sonnet-5 has NO multi_agent_v2 row). T1: parent spawn_agents a worker with model claude-sonnet-5 (cross-model child, messages wire) with a real work item (create rt10a.txt) and wait_agents; T2: parent reads the file back. PIN (Q1/Q2 ruling, verification): the child evaluates its OWN model row — row absent => flat child: NO v2 tool definition may appear on ANY /v1/messages request (all 6 v2 description needles absent across all claude requests, fail-closed all:true); the parent's own wire keeps v2 (ndjson tools_present spawn_agent+wait_agent). Child cannot report over the mailbox (no send_message on its wire) — completion reaches the parent via the wait_agent task output; file readback is the round-trip proof.",
+ "title": "v2 CROSS-MODEL pair, child row-OFF (MA-4): qwen3.8-27b parent armed via runner-scoped config_patch (features + qwen row; claude-sonnet-5 pinned DARK via config_patch — hermetic against live arming). T1: parent spawn_agents a worker with model claude-sonnet-5 (cross-model child, messages wire) with a real work item (create rt10a.txt) and wait_agents; T2: parent reads the file back. PIN (Q1/Q2 ruling, verification): the child evaluates its OWN model row — row off (absent or pinned false) => flat child: NO v2 tool definition may appear on ANY /v1/messages request (all 6 v2 description needles absent across all claude requests, fail-closed all:true); the parent's own wire keeps v2 (ndjson tools_present spawn_agent+wait_agent). Child cannot report over the mailbox (no send_message on its wire) — completion reaches the parent via the wait_agent task output; file readback is the round-trip proof.",
  "model": "qwen3.8-27b",
  "config_patch": {
   "features/multi_agent_v2": true,
-  "model/qwen3.8-27b/multi_agent_v2": true
+  "model/qwen3.8-27b/multi_agent_v2": true,
+  "model/claude-sonnet-5/multi_agent_v2": false
  },
  "steps": [
   {
