@@ -1,0 +1,111 @@
+{
+ "id": "RT-M10a",
+ "title": "v2 CROSS-MODEL pair, child row-OFF (MA-4): qwen3.8-27b parent armed via runner-scoped config_patch (features + qwen row only — claude-sonnet-5 has NO multi_agent_v2 row). T1: parent spawn_agents a worker with model claude-sonnet-5 (cross-model child, messages wire) with a real work item (create rt10a.txt) and wait_agents; T2: parent reads the file back. PIN (Q1/Q2 ruling, verification): the child evaluates its OWN model row — row absent => flat child: NO v2 tool definition may appear on ANY /v1/messages request (all 6 v2 description needles absent across all claude requests, fail-closed all:true); the parent's own wire keeps v2 (ndjson tools_present spawn_agent+wait_agent). Child cannot report over the mailbox (no send_message on its wire) — completion reaches the parent via the wait_agent task output; file readback is the round-trip proof.",
+ "model": "qwen3.8-27b",
+ "config_patch": {
+  "features/multi_agent_v2": true,
+  "model/qwen3.8-27b/multi_agent_v2": true
+ },
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Use the spawn_agent tool to start a background agent named worker with model claude-sonnet-5 (pass model: claude-sonnet-5 in the tool arguments). In its message, give it this task: create a file named rt10a.txt in the working directory containing exactly CROSSMODEL-OK on its first line, then finish. After spawning, use wait_agent to wait for the worker to finish. Acknowledge with exactly: WORKER-ACK",
+   "timeout_s": 300
+  },
+  {
+   "op": "turn",
+   "prompt": "Read the file rt10a.txt and reply with exactly: <its first line> PARENT-OK",
+   "timeout_s": 120
+  }
+ ],
+ "watchdog_s": 600,
+ "est_calls": 10,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error"
+   },
+   {
+    "op": "tools_present",
+    "names": [
+     "spawn_agent",
+     "wait_agent"
+    ]
+   },
+   {
+    "op": "text_contains",
+    "value": "PARENT-OK"
+   }
+  ],
+  "wire": [
+   {
+    "kind": "grep",
+    "file": "req-*.json",
+    "grep": "Start a named background agent",
+    "absent": true,
+    "all": true,
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages"
+    }
+   },
+   {
+    "kind": "grep",
+    "file": "req-*.json",
+    "grep": "Deliver a message promptly to an agent",
+    "absent": true,
+    "all": true,
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages"
+    }
+   },
+   {
+    "kind": "grep",
+    "file": "req-*.json",
+    "grep": "Send work to a non-root agent",
+    "absent": true,
+    "all": true,
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages"
+    }
+   },
+   {
+    "kind": "grep",
+    "file": "req-*.json",
+    "grep": "List this team's named agents",
+    "absent": true,
+    "all": true,
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages"
+    }
+   },
+   {
+    "kind": "grep",
+    "file": "req-*.json",
+    "grep": "Wait for agent messages or final-status activity",
+    "absent": true,
+    "all": true,
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages"
+    }
+   },
+   {
+    "kind": "grep",
+    "file": "req-*.json",
+    "grep": "Interrupt an agent's current turn without deleting its history",
+    "absent": true,
+    "all": true,
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages"
+    }
+   }
+  ]
+ }
+}

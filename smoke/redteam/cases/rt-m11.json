@@ -1,0 +1,86 @@
+{
+ "id": "RT-M11",
+ "title": "v2 CROSS-WIRE spawn (MA-4, minimum per OPORD): responses-wire parent (qwen3.8-27b, armed) -> messages-wire child (claude-sonnet-5, row armed via case config_patch). PINS (Q3 ruling, verification): (1) NO opaque \"agent_message\" carrier item on ANY request of EITHER wire — all:true absent on /v1/responses AND on /v1/messages (fail-closed: an empty match set is a harness failure, and a cross-wire run must produce requests on both paths); (2) text-fallback frames ARE present: the plaintext v0 spawn envelope marker \"Untrusted message from agent\" on the child's wire (/v1/messages, any:true — the child's first full request carries the parent's spawn message as a plaintext untrusted agent item, wire-agnostic system_reminder shape) and the child-to-parent envelope marker \"to /root (not user consent)\" on the parent's wire (/v1/responses, any:true — N-2 direction-scoped; proves the mailbox round-trip crossed the wire boundary). Live config DARK; both model rows armed in-case only.",
+ "model": "qwen3.8-27b",
+ "config_patch": {
+  "features/multi_agent_v2": true,
+  "model/qwen3.8-27b/multi_agent_v2": true,
+  "model/claude-sonnet-5/multi_agent_v2": true
+ },
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Use the spawn_agent tool to start a background agent named worker with model claude-sonnet-5 (pass model: claude-sonnet-5 in the tool arguments). In its message, give it this task: create a file named rt11.txt in the working directory containing exactly CROSSWIRE-OK on its first line. This team reports results over the agent mailbox, so the worker must use the send_message tool to send its completion report to the parent agent (root) — a short message saying it created rt11.txt — and only then finish. After spawning, use wait_agent to wait for the worker to finish. Acknowledge with exactly: WORKER-ACK",
+   "timeout_s": 300
+  },
+  {
+   "op": "turn",
+   "prompt": "Did the worker agent send you a report message? If so, what did it say? Reply with exactly: <what it reported> PARENT-OK",
+   "timeout_s": 120
+  },
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: M11-DONE",
+   "timeout_s": 60
+  }
+ ],
+ "watchdog_s": 600,
+ "est_calls": 12,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error"
+   },
+   {
+    "op": "text_contains",
+    "value": "PARENT-OK"
+   }
+  ],
+  "wire": [
+   {
+    "kind": "grep",
+    "file": "req-*.json",
+    "grep": "\"agent_message\"",
+    "absent": true,
+    "all": true,
+    "where": {
+     "method": "POST",
+     "path": "/v1/responses"
+    }
+   },
+   {
+    "kind": "grep",
+    "file": "req-*.json",
+    "grep": "\"agent_message\"",
+    "absent": true,
+    "all": true,
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages"
+    }
+   },
+   {
+    "kind": "grep",
+    "file": "req-*.json",
+    "grep": "Untrusted message from agent",
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages"
+    },
+    "any": true
+   },
+   {
+    "kind": "grep",
+    "file": "req-*.json",
+    "grep": "to /root (not user consent)",
+    "where": {
+     "method": "POST",
+     "path": "/v1/responses"
+    },
+    "any": true
+   }
+  ]
+ }
+}

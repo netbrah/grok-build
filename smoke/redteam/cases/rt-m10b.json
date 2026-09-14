@@ -1,0 +1,85 @@
+{
+ "id": "RT-M10b",
+ "title": "v2 CROSS-MODEL pair, child row-ON (MA-4): qwen3.8-27b parent + claude-sonnet-5 child, BOTH rows armed via runner-scoped config_patch (live config DARK). T1: parent spawn_agents a worker with model claude-sonnet-5 carrying a real work item (create rt10b.txt) and designates send_message as the team reporting channel (child row-ON => it HAS send_message on its wire); parent wait_agents. T2/T3: parent re-requests so the received report rides its request INPUT items. PINS (Q1/Q2 ruling, verification): cross-model child (Digest fork path) rebuilds its OWN toolset from its OWN row => child wire carries the 5 v2 collaboration tool definitions (send_message + list_agents description needles present on /v1/messages) but NOT spawn_agent (max-depth 5-not-6, all:true absent) + the child-to-parent plaintext v0 envelope marker \"to /root (not user consent)\" IS present on at least one /v1/responses REQUEST (direction-scoped N-2 needle: impossible to satisfy by the parent-to-child spawn envelope, which says \"to /root/worker\").",
+ "model": "qwen3.8-27b",
+ "config_patch": {
+  "features/multi_agent_v2": true,
+  "model/qwen3.8-27b/multi_agent_v2": true,
+  "model/claude-sonnet-5/multi_agent_v2": true
+ },
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Use the spawn_agent tool to start a background agent named worker with model claude-sonnet-5 (pass model: claude-sonnet-5 in the tool arguments). In its message, give it this task: create a file named rt10b.txt in the working directory containing exactly CROSSMODEL-OK on its first line. This team reports results over the agent mailbox, so the worker must use the send_message tool to send its completion report to the parent agent (root) — a short message saying it created rt10b.txt — and only then finish. After spawning, use wait_agent to wait for the worker to finish. Acknowledge with exactly: WORKER-ACK",
+   "timeout_s": 300
+  },
+  {
+   "op": "turn",
+   "prompt": "Did the worker agent send you a report message? If so, what did it say? Reply with exactly: <what it reported> PARENT-OK",
+   "timeout_s": 120
+  },
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: M10-DONE",
+   "timeout_s": 60
+  }
+ ],
+ "watchdog_s": 600,
+ "est_calls": 12,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error"
+   },
+   {
+    "op": "text_contains",
+    "value": "PARENT-OK"
+   }
+  ],
+  "wire": [
+   {
+    "kind": "grep",
+    "file": "req-*.json",
+    "grep": "Deliver a message promptly to an agent",
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages"
+    },
+    "any": true
+   },
+   {
+    "kind": "grep",
+    "file": "req-*.json",
+    "grep": "List this team's named agents",
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages"
+    },
+    "any": true
+   },
+   {
+    "kind": "grep",
+    "file": "req-*.json",
+    "grep": "Start a named background agent",
+    "absent": true,
+    "all": true,
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages"
+    }
+   },
+   {
+    "kind": "grep",
+    "file": "req-*.json",
+    "grep": "to /root (not user consent)",
+    "where": {
+     "method": "POST",
+     "path": "/v1/responses"
+    },
+    "any": true
+   }
+  ]
+ }
+}
