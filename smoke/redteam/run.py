@@ -947,7 +947,7 @@ def _val_eq(a, b):
     return a == b
 
 
-def check_ndjson(spec, events, fmt):
+def check_ndjson(spec, events, fmt, ctx=None):
     op = spec.get("op")
     ev = spec.get("event")
     if op == "count":
@@ -959,8 +959,17 @@ def check_ndjson(spec, events, fmt):
     if op in ("absent", "present"):
         n = sum(1 for e in events if e.get("type") == ev)
         ok = (n == 0) if op == "absent" else (n >= 1)
-        return AssertResult(spec, "ndjson.%s" % op, ok,
-                            "%d events of type %s" % (n, ev),
+        detail = "%d events of type %s" % (n, ev)
+        if (op == "present" and not ok and spec.get("absent_ok")
+                and ctx is not None
+                and ctx.last_exit not in (0, None)):
+            # absent_ok: the event's absence is accepted ONLY on an error
+            # terminal (run's last exit non-zero). Pins the honest-failure
+            # shape (no clean end event because the turn errored) while a
+            # silent no-terminal run (exit 0, no event) still FAILs.
+            ok = True
+            detail += " (absent_ok: error terminal, exit=%s)" % ctx.last_exit
+        return AssertResult(spec, "ndjson.%s" % op, ok, detail,
                             "ndjson: %d x type=%s" % (n, ev))
     if op in ("eq", "ne"):
         matches = [e for e in events if e.get("type") == ev]
@@ -1444,8 +1453,17 @@ def run_case(case, args, budget):
                              else status,
                              "turn killed (watchdog/kill_after)")
                     elif tr.exit_code != 0:
-                        mark("FAIL", "turn exit=%s" % tr.exit_code)
-                        ctx.crashed = True
+                        want_exit = (case.get("assert") or {}).get("exit")
+                        if tr.exit_code == want_exit:
+                            # Case-declared expected error terminal: an
+                            # honest-failure pin, not a crash. The hard
+                            # `exit` assert still verifies the exact value
+                            # at assert stage (drift either way FAILs).
+                            log("  %s: turn exit=%s (expected terminal)"
+                                % (cid, tr.exit_code))
+                        else:
+                            mark("FAIL", "turn exit=%s" % tr.exit_code)
+                            ctx.crashed = True
                     ctx.last_exit = tr.exit_code
                 snapshot_history(ctx, "turn%d" % si, home, home.cwd)
             elif op == "kill":
@@ -1543,7 +1561,7 @@ def run_case(case, args, budget):
             if spec.get("op") == "recon":
                 results.append(check_recon(spec, ctx))
                 continue
-            results.append(check_ndjson(spec, ctx.events, fmt))
+            results.append(check_ndjson(spec, ctx.events, fmt, ctx))
         for spec in assert_block.get("artifact", []):
             if spec.get("op") == "recon":
                 results.append(check_recon(spec, ctx))
