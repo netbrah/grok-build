@@ -624,6 +624,17 @@ impl ToolRegistryBuilder {
         b.register::<grok_build::WaitTasksTool>();
         b.register::<grok_build::TaskTool>();
         b.register::<grok_build::SendSubagentMessageTool>();
+        // Native v2 multi-agent tools (MA-3): registered like every other
+        // built-in; per-agent availability is controlled by the agent
+        // builder native_agents_enabled push (and the call-time
+        // NativeAgentsEnabled resource), so TOOLS-DARK agents never
+        // advertise them.
+        b.register::<grok_build::SpawnAgentTool>();
+        b.register::<grok_build::SendMessageTool>();
+        b.register::<grok_build::FollowupTaskTool>();
+        b.register::<grok_build::ListAgentsTool>();
+        b.register::<grok_build::WaitAgentTool>();
+        b.register::<grok_build::InterruptAgentTool>();
         b.register::<grok_build::SendFeedbackTool>();
         b.register::<grok_build::WebSearchTool>();
         b.register_with_params::<grok_build::WebFetchTool, grok_build::web_fetch::WebFetchParams>();

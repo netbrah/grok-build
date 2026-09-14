@@ -1052,6 +1052,7 @@ fn test_model_entry(
 ) -> ModelEntry {
     ModelEntry {
         info: ModelInfo {
+            multi_agent_v2: None,
             user_selectable: true,
             id: None,
             model_family: None,
@@ -2141,6 +2142,7 @@ fn model_use_concise_defaults_to_false() {
 #[test]
 fn model_info_from_config_propagates_use_concise() {
     let entry = ModelEntryConfig {
+        multi_agent_v2: None,
         id: None,
         model_family: None,
         strict_responses_input: false,
@@ -2305,6 +2307,7 @@ fn model_agent_type_defaults_to_grok_build() {
 #[test]
 fn model_info_from_config_propagates_agent_type() {
     let entry = ModelEntryConfig {
+        multi_agent_v2: None,
         id: None,
         model_family: None,
         strict_responses_input: false,
@@ -2761,6 +2764,7 @@ fn inference_idle_timeout_secs_absent_defaults_to_none() {
 #[test]
 fn inference_idle_timeout_propagates_to_model_info() {
     let entry = ModelEntryConfig {
+        multi_agent_v2: None,
         id: None,
         model_family: None,
         strict_responses_input: false,
@@ -7420,6 +7424,7 @@ fn slug_propagation_noop_when_no_donor() {
 fn prefetch_model_entry(slug: &str, context_window: u64, api_backend: ApiBackend) -> ModelEntry {
     ModelEntry {
         info: ModelInfo {
+            multi_agent_v2: None,
             user_selectable: true,
             id: None,
             model_family: None,
@@ -9066,5 +9071,71 @@ fn p20_ladder_inference_stays_out_for_anthropic() {
     assert!(
         entry.info.reasoning_efforts.is_empty(),
         "Claude advertises no menu until Messages lands"
+    );
+}
+
+/// MA-3 (spec Q1.2): the per-model `multi_agent_v2` row — TOML
+/// `[model."<slug>"] multi_agent_v2 = true` — hydrates onto the resolved
+/// `ModelEntry` alongside `api_backend`. Absent stays `None` (ships dark;
+/// there is deliberately no endpoint- or `[models]`-level default).
+#[test]
+fn multi_agent_v2_model_row_hydrates_from_config() {
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [endpoints]
+            models_base_url = "https://llm-proxy.example.com/v1"
+
+            [model."v2-model"]
+            base_url = "https://llm-proxy.example.com/v1"
+            context_window = 256000
+            multi_agent_v2 = true
+
+            [model."plain-model"]
+            base_url = "https://llm-proxy.example.com/v1"
+            context_window = 256000
+        "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    let resolved = resolve_model_list(&cfg, None);
+    assert_eq!(
+        resolved.get("v2-model").unwrap().info.multi_agent_v2,
+        Some(true),
+        "explicit row must hydrate the v2 gate row"
+    );
+    assert_eq!(
+        resolved.get("plain-model").unwrap().info.multi_agent_v2,
+        None,
+        "absent field ships dark (no implicit enable)"
+    );
+}
+
+/// MA-3 (spec Q1.2): the user row wins over the base (catalog/prefetched)
+/// row — the same copy seam as `api_backend` in `ConfigModelOverride::apply`,
+/// including an explicit `false` that must beat a base `true`.
+#[test]
+fn multi_agent_v2_row_beats_base_entry() {
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [endpoints]
+            models_base_url = "https://llm-proxy.example.com/v1"
+
+            [model."v2-model"]
+            base_url = "https://llm-proxy.example.com/v1"
+            context_window = 256000
+            multi_agent_v2 = false
+        "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    let mut prefetched = IndexMap::new();
+    let mut base = prefetch_model_entry("v2-model", 256_000, ApiBackend::Responses);
+    base.info.multi_agent_v2 = Some(true);
+    prefetched.insert("v2-model".to_owned(), base);
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    assert_eq!(
+        resolved.get("v2-model").unwrap().info.multi_agent_v2,
+        Some(false),
+        "explicit row (even false) must beat the base row"
     );
 }

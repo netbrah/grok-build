@@ -116,6 +116,12 @@ pub(crate) struct AgentRebuildSpec {
     pub user_question_tx: UnboundedSender<UserQuestionRequest>,
     pub subagent_depth: u32,
     pub subagents_max_depth: u32,
+    /// MA-3 (spec Q1.3): the session's resolved `multi_agent_v2` feature
+    /// tier (registry row; pin > env > config > default ladder), resolved
+    /// once at spawn like the sibling feature booleans. The per-model row
+    /// conjunct is looked up live at build time, so model switches
+    /// re-evaluate the gate against the session's own row (Q1.3/D-4).
+    pub multi_agent_v2_feature: bool,
     pub session_id_str: String,
     /// Mailbox team scope: the root session id for a subagent, or the session's
     /// own id otherwise (v2 multi-agent identity, spec MA-2).
@@ -133,6 +139,23 @@ pub(crate) struct AgentRebuildSpec {
     pub owner_session_id: Option<String>,
     pub parent_scheduler_handle:
         Option<xai_grok_tools::implementations::grok_build::scheduler::types::SchedulerHandle>,
+}
+
+/// MA-3 gate formula (spec Q1.3; OG parity `agent_rebuild.rs:442-448`, the
+/// `|| subagent_depth > 0` disjunct ported, the provider/backend conjunct
+/// re-sourced per Q1.1/Q1.2, disclosed D-1). Evaluated per session against
+/// the session's OWN resolved model row: a child whose row lacks the flag is
+/// flat (D-4), and a mid-session model switch re-evaluates it (Q1.3).
+/// Default-OFF everywhere: feature ships dark, rows ship `None`.
+pub(crate) fn native_agents_enabled_for(
+    subagents_enabled: bool,
+    subagent_depth: u32,
+    multi_agent_v2_feature: bool,
+    model_row: Option<bool>,
+) -> bool {
+    (subagents_enabled || subagent_depth > 0)
+        && multi_agent_v2_feature
+        && model_row.unwrap_or(false)
 }
 impl AgentRebuildSpec {
     /// This is the canonical construction path; see module docs for the invariant.
@@ -190,6 +213,7 @@ impl AgentRebuildSpec {
             write_file_enabled,
             active_agent_messages_enabled,
             subagents_enabled,
+            multi_agent_v2_feature,
             subagent_toggle,
             background_workflows_enabled,
             ask_user_question_enabled,
@@ -240,6 +264,19 @@ impl AgentRebuildSpec {
             env.insert("GROK_SESSION_ID".to_string(), session_id_str.clone());
             Arc::new(env)
         };
+        // MA-3 (spec Q1.3): the single v2 enablement point. The feature tier
+        // is pre-resolved per session; the model row is looked up live
+        // against the manager's current model, so a mid-session model switch
+        // re-evaluates the gate against the session's own row (Q1.3/D-4).
+        let native_agents_enabled = native_agents_enabled_for(
+            *subagents_enabled,
+            *subagent_depth,
+            *multi_agent_v2_feature,
+            models_manager
+                .models()
+                .get(models_manager.current_model_id().0.as_ref())
+                .and_then(|entry| entry.info.multi_agent_v2),
+        );
         let mut builder = AgentBuilder::new(
             working_directory.clone(),
             terminal_backend.clone(),
@@ -265,6 +302,7 @@ impl AgentRebuildSpec {
         .with_active_agent_messages_enabled(*active_agent_messages_enabled)
         .with_fs(fs_backend.clone())
         .with_subagents_enabled(*subagents_enabled)
+        .with_native_agents_enabled(native_agents_enabled)
         .with_subagent_toggle(subagent_toggle.clone())
         .with_background_workflows_enabled(*background_workflows_enabled)
         .with_task_model_slugs(
@@ -465,6 +503,7 @@ pub(crate) fn test_rebuild_spec_default() -> Arc<AgentRebuildSpec> {
         monitor_event_buffer: None,
         user_question_tx: uq_tx,
         subagent_depth: 0,
+        multi_agent_v2_feature: false,
         subagents_max_depth: xai_grok_tools::implementations::grok_build::task::MAX_SUBAGENT_DEPTH,
         session_id_str: "test-session".to_string(),
         team_scope_id: "test-session".to_string(),
@@ -633,6 +672,106 @@ mod tests {
                          - beta-public\n\
                          - zeta-public"
                     )
+                );
+            })
+            .await;
+    }
+
+    /// MA-3 (spec Q1.3): the gate formula — subagents disjunct × feature
+    /// tier × per-model row. The feature ships dark, so with it off every
+    /// combination stays dark regardless of the row.
+    #[test]
+    fn native_agents_enabled_for_matrix() {
+        for subagents in [false, true] {
+            for depth in [0u32, 1] {
+                for row in [None, Some(false), Some(true)] {
+                    assert!(
+                        !native_agents_enabled_for(subagents, depth, false, row),
+                        "feature dark must keep the gate dark ({subagents}/{depth}/{row:?})"
+                    );
+                }
+            }
+        }
+        assert!(!native_agents_enabled_for(true, 0, true, None), "row absent: dark");
+        assert!(
+            !native_agents_enabled_for(true, 0, true, Some(false)),
+            "row false: dark"
+        );
+        assert!(
+            !native_agents_enabled_for(false, 0, true, Some(true)),
+            "no subagents and not a subagent: dark (OG parity)"
+        );
+        assert!(
+            native_agents_enabled_for(true, 0, true, Some(true)),
+            "all conjuncts: armed"
+        );
+        assert!(
+            native_agents_enabled_for(false, 1, true, Some(true)),
+            "subagent depth re-arms the gate (Q1.3 disjunct)"
+        );
+    }
+
+    /// MA-3 wiring at the single enablement point: `NativeAgentsEnabled`
+    /// follows the session's OWN model row (Q1.3/D-4). Gate-OFF pin: a
+    /// row-less model stays dark even with the feature on (S3 SKIP
+    /// semantics hold without the row). Gate-ON: the same session model's
+    /// row opting in arms the resource.
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_agents_gate_follows_session_model_row() {
+        use xai_grok_tools::implementations::grok_build::task::types::NativeAgentsEnabled;
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut spec = test_rebuild_spec_default();
+                {
+                    let spec_mut =
+                        Arc::get_mut(&mut spec).expect("test rebuild spec uniquely owned");
+                    spec_mut.subagents_enabled = true;
+                    spec_mut.multi_agent_v2_feature = true;
+                }
+                let models_manager = spec.models_manager.clone();
+                models_manager
+                    .insert_test_entry("plain-model", model_entry("plain-model"));
+                models_manager
+                    .set_current_model_id(agent_client_protocol::ModelId::new(
+                        "plain-model",
+                    ));
+                let agent = spec
+                    .build_agent(AgentDefinition::default_grok_build())
+                    .await
+                    .expect("row-less build should succeed");
+                let enabled = agent
+                    .tool_bridge()
+                    .toolset()
+                    .resources
+                    .lock()
+                    .await
+                    .get::<NativeAgentsEnabled>()
+                    .map(|gate| gate.0);
+                assert_eq!(enabled, Some(false), "row-less model stays dark");
+
+                let mut v2_entry = model_entry("v2-model");
+                v2_entry.info.multi_agent_v2 = Some(true);
+                models_manager.insert_test_entry("v2-model", v2_entry);
+                models_manager
+                    .set_current_model_id(agent_client_protocol::ModelId::new(
+                        "v2-model",
+                    ));
+                let agent = spec
+                    .build_agent(AgentDefinition::default_grok_build())
+                    .await
+                    .expect("row-on build should succeed");
+                let enabled = agent
+                    .tool_bridge()
+                    .toolset()
+                    .resources
+                    .lock()
+                    .await
+                    .get::<NativeAgentsEnabled>()
+                    .map(|gate| gate.0);
+                assert_eq!(
+                    enabled,
+                    Some(true),
+                    "row + feature + subagents arms the gate"
                 );
             })
             .await;

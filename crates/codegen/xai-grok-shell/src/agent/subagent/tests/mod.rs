@@ -2608,6 +2608,7 @@ async fn startup_admission_timeout_is_failed_not_cancelled() {
 fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
     crate::agent::config::ModelEntry {
         info: crate::agent::config::ModelInfo {
+            multi_agent_v2: None,
             user_selectable: true,
             id: None,
             model_family: None,

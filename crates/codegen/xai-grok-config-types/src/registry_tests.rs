@@ -78,6 +78,7 @@ fn registered_settings() {
             ),
             ("dock", ("GROK_DOCK", false)),
             ("terminal_theme", ("GROK_TERMINAL_THEME", false)),
+            ("multi_agent_v2", ("GROK_MULTI_AGENT_V2", false)),
         ]),
     );
 }
@@ -119,6 +120,12 @@ fn every_registered_feature_reads_its_own_remote_setting() {
             }
             Feature::Dock => settings.dock_enabled = Some(value),
             Feature::TerminalTheme => settings.terminal_theme_enabled = Some(value),
+            // No remote tier: the proxy catalog carries no capability field;
+            // the per-model row lives on the model entry (MA-3, spec Q1.1/Q1.2).
+            Feature::MultiAgentV2 => {
+                assert!(spec.remote.is_none(), "{} grew a remote tier", spec.key);
+                continue;
+            }
             // The one row with no remote tier, stated as such rather than as a projection that reads nothing
             Feature::BackendTools => {
                 assert!(spec.remote.is_none(), "{} grew a remote tier", spec.key);
@@ -207,6 +214,47 @@ fn remote_compaction_v2_precedence() {
     assert_eq!(env_wins.source, ConfigSource::Env);
 }
 
+/// MA-3 (ledger L559-562): the v2 multi-agent gate ships dark. The spec
+/// (item9-v2-multiagent-spec.md Q1.1, G2) requires the precedence test to
+/// assert the ladder direction: pin beats env.
+#[test]
+fn multi_agent_v2_precedence() {
+    let resolved = Feature::MultiAgentV2.resolve(FeatureSources::default());
+    assert!(!resolved.value, "v2 multi-agent ships dark");
+    assert_eq!(resolved.source, ConfigSource::Default);
+
+    let pin_wins = Feature::MultiAgentV2.resolve(FeatureSources {
+        pin: Some(true),
+        env: Some(false),
+        ..Default::default()
+    });
+    assert!(pin_wins.value, "pin beats env");
+    assert_eq!(pin_wins.source, ConfigSource::Requirement);
+
+    let env_wins = Feature::MultiAgentV2.resolve(FeatureSources {
+        env: Some(true),
+        config: Some(false),
+        ..Default::default()
+    });
+    assert!(env_wins.value, "env beats config");
+    assert_eq!(env_wins.source, ConfigSource::Env);
+
+    let config_on = Feature::MultiAgentV2.resolve(FeatureSources {
+        config: Some(true),
+        ..Default::default()
+    });
+    assert!(config_on.value);
+    assert_eq!(config_on.source, ConfigSource::Config);
+
+    // The kill-switch direction: env off beats config on.
+    let env_off = Feature::MultiAgentV2.resolve(FeatureSources {
+        env: Some(false),
+        config: Some(true),
+        ..Default::default()
+    });
+    assert!(!env_off.value);
+    assert_eq!(env_off.source, ConfigSource::Env);
+}
 #[test]
 fn off_reason_names_the_setting_that_turned_it_off() {
     let on = Feature::SessionSearch.off_reason(FeatureSources {

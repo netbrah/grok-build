@@ -2211,6 +2211,7 @@ fn make_entry_config_with_id(
     name: Option<&str>,
 ) -> config::ModelEntryConfig {
     config::ModelEntryConfig {
+        multi_agent_v2: None,
         id: id.map(|s| s.to_owned()),
         model_family: None,
         strict_responses_input: false,

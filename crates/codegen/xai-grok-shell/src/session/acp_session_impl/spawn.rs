@@ -1113,6 +1113,9 @@ pub(crate) async fn spawn_session_actor(
         write_file_enabled,
         active_agent_messages_enabled,
         subagents_enabled,
+        // MA-3 (spec Q1.1): the v2 multi-agent feature tier, resolved per
+        // session like the sibling feature booleans (ships dark).
+        multi_agent_v2_feature: crate::util::config::resolve_multi_agent_v2_feature(),
         subagent_toggle: subagent_toggle.clone(),
         background_workflows_enabled,
         ask_user_question_enabled,

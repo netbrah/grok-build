@@ -664,6 +664,7 @@ mod tests {
     /// Exhaustive literal (no `..`): a new struct field is a compile error here until the drift-guard tests cover it.
     fn fully_populated_override() -> ConfigModelOverride {
         ConfigModelOverride {
+            multi_agent_v2: None,
             model: Some("m".into()),
             model_family: None,
             strict_responses_input: false,

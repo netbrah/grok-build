@@ -399,3 +399,70 @@ mod repo_status_in_system_prompt_tests {
         ));
     }
 }
+
+/// MA-3 v2 multi-agent gate, feature tier (registry row `multi_agent_v2`,
+/// ships dark): requirements pin > `GROK_MULTI_AGENT_V2` > `[features]
+/// multi_agent_v2` > default (false). No remote tier (spec Q1.1 `remote:
+/// None`). Resolved once per session at spawn into the rebuild spec, like
+/// the sibling feature booleans; the per-model row conjunct is evaluated at
+/// build time (`session::agent_rebuild::native_agents_enabled_for`).
+pub(crate) fn resolve_multi_agent_v2_feature() -> bool {
+    use crate::agent::config::{Feature, FeatureSources};
+    let user_cfg = crate::config::load_effective_config().ok();
+    let requirements = crate::config::load_merged_requirements();
+    let env = FeatureSources::from_process_env(Feature::MultiAgentV2).env;
+    compose_multi_agent_v2_feature(requirements.as_ref(), user_cfg.as_ref(), env)
+}
+
+fn compose_multi_agent_v2_feature(
+    requirements: Option<&TomlValue>,
+    user: Option<&TomlValue>,
+    env: Option<bool>,
+) -> bool {
+    use crate::agent::config::{Feature, FeatureSources};
+    let feature = Feature::MultiAgentV2;
+    let from_toml = |v: Option<&TomlValue>| -> Option<bool> {
+        v?.get("features")?.get(feature.key())?.as_bool()
+    };
+    feature
+        .resolve(FeatureSources {
+            pin: from_toml(requirements),
+            env,
+            config: from_toml(user),
+            // No remote tier: spec Q1.1 `remote: None`.
+            remote: None,
+        })
+        .value
+}
+
+#[cfg(test)]
+mod multi_agent_v2_feature_tests {
+    use super::compose_multi_agent_v2_feature;
+
+    fn features_toml(v: bool) -> toml::Value {
+        toml::from_str(&format!("[features]\nmulti_agent_v2 = {v}\n")).unwrap()
+    }
+
+    /// MA-3 spec G2: the precedence test MUST assert pin-beats-env.
+    #[test]
+    fn precedence_pin_over_env_over_config_over_default_dark() {
+        // Absent everywhere: ships dark.
+        assert!(!compose_multi_agent_v2_feature(None, None, None));
+        // config tier enables.
+        assert!(compose_multi_agent_v2_feature(None, Some(&features_toml(true)), None));
+        // env beats config (both directions).
+        assert!(compose_multi_agent_v2_feature(None, Some(&features_toml(false)), Some(true)));
+        assert!(!compose_multi_agent_v2_feature(None, Some(&features_toml(true)), Some(false)));
+        // pin beats env (both directions).
+        assert!(compose_multi_agent_v2_feature(
+            Some(&features_toml(true)),
+            None,
+            Some(false)
+        ));
+        assert!(!compose_multi_agent_v2_feature(
+            Some(&features_toml(false)),
+            None,
+            Some(true)
+        ));
+    }
+}

@@ -647,6 +647,13 @@ pub(crate) fn parse_remote_model_value(
         .or_else(|| get_string(obj, "model_family"))
         .or_else(|| meta.and_then(|m| get_string(m, "modelFamily")))
         .or_else(|| meta.and_then(|m| get_string(m, "model_family")));
+    // MA-3 (spec Q1.2/F-b): the proxy catalog carries no capability field
+    // today, so this stays None in practice; the parse seam is in place for
+    // a future catalog `multiAgentV2`, mirroring the `modelFamily` read.
+    let multi_agent_v2 = obj
+        .get("multiAgentV2")
+        .or_else(|| obj.get("multi_agent_v2"))
+        .and_then(|v| v.as_bool());
     let strict_responses_input = obj
         .get("strictResponsesInput")
         .or_else(|| obj.get("strict_responses_input"))
@@ -682,6 +689,7 @@ pub(crate) fn parse_remote_model_value(
         id,
         model,
         model_family,
+        multi_agent_v2,
         strict_responses_input,
         base_url,
         name,

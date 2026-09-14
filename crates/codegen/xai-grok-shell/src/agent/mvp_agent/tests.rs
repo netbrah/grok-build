@@ -3265,6 +3265,7 @@ mod parse_json_object_env_tests {
 fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
     let entry = |model: &str| ModelEntry {
         info: config::ModelInfo {
+            multi_agent_v2: None,
             user_selectable: true,
             id: None,
             variants: Vec::new(),

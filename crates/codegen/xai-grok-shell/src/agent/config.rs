@@ -3822,6 +3822,9 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 id: m.id,
                 model: m.model,
                 model_family: m.model_family,
+                // Built-in (XAI-direct) catalog entries ship dark for v2
+                // multi-agent; the per-model row is the only enable path.
+                multi_agent_v2: None,
                 strict_responses_input: false,
                 base_url: endpoints.resolve_inference_base_url(),
                 api_base_url: Some(endpoints.xai_api_base_url.clone()),
@@ -3873,6 +3876,11 @@ pub struct ModelEntryConfig {
     /// See [`ModelInfo::model_family`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_family: Option<String>,
+    /// Per-model native (v2) multi-agent gate (MA-3, spec Q1.2). `Some(true)`
+    /// is one conjunct of the `NativeAgentsEnabled` formula; `None`/`false`
+    /// ship dark. Deliberately has no endpoint- or global-level default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multi_agent_v2: Option<bool>,
     /// See [`ModelInfo::strict_responses_input`].
     #[serde(default)]
     pub strict_responses_input: bool,
@@ -4020,6 +4028,8 @@ pub struct ConfigModelOverride {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub api_backend: Option<ApiBackend>,
+    /// Per-model native (v2) multi-agent gate (MA-3, spec Q1.2); `None` = dark.
+    pub multi_agent_v2: Option<bool>,
     #[serde(default)]
     pub extra_headers: IndexMap<String, String>,
     #[serde(default)]
@@ -4095,6 +4105,9 @@ impl ConfigModelOverride {
         }
         if let Some(ref v) = self.api_backend {
             entry.info.api_backend = v.clone();
+        }
+        if let Some(v) = self.multi_agent_v2 {
+            entry.info.multi_agent_v2 = Some(v);
         }
         if !self.extra_headers.is_empty() {
             entry.info.extra_headers = self.extra_headers.clone();
@@ -4192,6 +4205,11 @@ pub struct ModelInfo {
     /// Provider family that mints this model's conversation items (e.g. "xai"); `None` means unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_family: Option<String>,
+    /// Per-model native (v2) multi-agent gate (MA-3, spec Q1.2); `None` = dark.
+    /// The gate formula ANDs this row with the `multi_agent_v2` feature and
+    /// the subagents-enabled disjunct (single enablement point, MA-3 Q1.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multi_agent_v2: Option<bool>,
     /// True when the target backend enforces the strict OpenAI/Azure
     /// Responses input schema; gates the REPLAY-1 reasoning-item input
     /// projection in the sampler transport seam.
@@ -4273,6 +4291,7 @@ impl ModelInfo {
             id: None,
             model: slug.to_owned(),
             model_family: None,
+            multi_agent_v2: None,
             strict_responses_input: false,
             base_url: String::new(),
             name: None,
@@ -4314,6 +4333,7 @@ impl ModelInfo {
             id: entry.id.clone(),
             model: entry.model.clone(),
             model_family: entry.model_family.clone(),
+            multi_agent_v2: entry.multi_agent_v2.clone(),
             strict_responses_input: entry.strict_responses_input,
             base_url: entry.base_url.clone(),
             name: entry.name.clone(),
@@ -5059,6 +5079,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 user_selectable: false,
                 id: None,
                 model_family: None,
+                multi_agent_v2: None,
                 strict_responses_input: false,
                 model: catalog_entry
                     .map(|e| e.info.model)
@@ -5285,6 +5306,7 @@ fn resolve_hidden_default_web_search_sampling_config(
         info: ModelInfo {
             id: None,
             model_family: None,
+            multi_agent_v2: None,
             strict_responses_input: false,
             model: model_id.to_owned(),
             base_url: endpoints.resolve_inference_base_url(),

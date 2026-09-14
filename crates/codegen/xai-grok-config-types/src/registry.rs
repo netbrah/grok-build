@@ -52,6 +52,10 @@ pub enum Feature {
     Dock,
     /// The terminal-native `terminal` color theme (staged rollout).
     TerminalTheme,
+    /// Native (v2) multi-agent tools: in-process spawn, structured mailbox,
+    /// named agents. Gated per model (the model row's `multi_agent_v2` is the
+    /// other conjunct, MA-3 spec Q1.3); ships dark for all proxy models.
+    MultiAgentV2,
 }
 
 /// How one feature is written on each surface it can be set from.
@@ -200,6 +204,18 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
         // No remote tier: pin / env / config over the default, mirroring the OG resolver
         // (open-grok@240c99c9 `resolve_remote_compaction_v2`).
+        remote: None,
+    },
+    FeatureSpec {
+        id: Feature::MultiAgentV2,
+        key: "multi_agent_v2",
+        path: "features.multi_agent_v2",
+        env: "GROK_MULTI_AGENT_V2",
+        // Ships dark (MA-3, ledger L562): the codex analogue is default-off,
+        // and every proxy model must opt in via its model row as well.
+        default_enabled: false,
+        // No remote tier: the proxy catalog carries no capability field
+        // (spec F-b); the per-model row is the catalog analogue.
         remote: None,
     },
     FeatureSpec {
