@@ -506,4 +506,131 @@ mod tests {
         patch_responses_request(&mut body, Some("xai"), None, false);
         assert_eq!(body, original);
     }
+
+    // REPLAY-1: the real shape of input[7] from the first rejected sol request
+    // (smoke/redteam/report/20260914T035640Z/rt-m1/wire/req-006.json): a
+    // vLLM-emitted reasoning item with a reasoning_text content array, stored
+    // verbatim and replayed into the strict Azure input schema (maxItems 0).
+    fn captured_reasoning_item() -> serde_json::Value {
+        serde_json::json!({
+            "type": "reasoning",
+            "id": "rs_288b9ed724204ccd8cffb5ae41ca4753",
+            "summary": [
+                {
+                    "type": "summary_text",
+                    "text": "The user is requesting that I respond exactly as follows: \"RT-M1-Q1\"."
+                }
+            ],
+            "content": [
+                {
+                    "type": "reasoning_text",
+                    "text": "The user is requesting that I respond exactly as follows: \"RT-M1-Q1\"."
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn strict_replay_projection_strips_reasoning_content() {
+        let mut body = serde_json::json!({
+            "model": "gpt-5.6-sol",
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+                captured_reasoning_item()
+            ]
+        });
+        project_strict_responses_input(&mut body, true);
+        let reasoning = body["input"][1].as_object().unwrap();
+        // The strict schema forbids non-empty reasoning.content -> omitted.
+        assert!(
+            reasoning.get("content").is_none(),
+            "reasoning.content must be omitted for strict targets"
+        );
+        // Everything the strict schema accepts survives, losslessly.
+        assert_eq!(reasoning["id"], "rs_288b9ed724204ccd8cffb5ae41ca4753");
+        assert_eq!(
+            reasoning["summary"][0]["text"],
+            "The user is requesting that I respond exactly as follows: \"RT-M1-Q1\"."
+        );
+        // Sibling items untouched.
+        assert_eq!(body["input"][0]["role"], "user");
+        assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+    }
+
+    #[test]
+    fn lenient_replay_projection_keeps_reasoning_content_unchanged() {
+        // vLLM-dialect regression pin: lenient targets accept the shape today,
+        // so the replay must stay byte-identical (no projection).
+        let body = serde_json::json!({
+            "model": "qwen3.8-27b",
+            "input": [captured_reasoning_item()]
+        });
+        let mut projected = body.clone();
+        project_strict_responses_input(&mut projected, false);
+        assert_eq!(projected, body);
+    }
+
+    #[test]
+    fn strict_replay_projection_leaves_other_item_types_untouched() {
+        // Schema audit of the item types the harness replays: only reasoning
+        // carries a schema-forbidden non-empty `content` on strict targets.
+        // function_call / function_call_output / message / compaction carriers
+        // must pass through unmodified.
+        let body = serde_json::json!({
+            "input": [
+                {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]},
+                {"type": "function_call", "call_id": "call_1", "name": "echo", "arguments": "{\"x\":1}", "status": "completed"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "{\"x\":1}"},
+                {"id": "cmp_01", "type": "compaction", "encrypted_content": "gAAAAA-compaction"},
+                captured_reasoning_item()
+            ]
+        });
+        let mut projected = body.clone();
+        project_strict_responses_input(&mut projected, true);
+        let input = projected["input"].as_array().unwrap();
+        assert_eq!(input[0], body["input"][0]);
+        assert_eq!(input[1], body["input"][1]);
+        assert_eq!(input[2], body["input"][2]);
+        assert_eq!(input[3], body["input"][3]);
+        assert!(input[4].get("content").is_none());
+        assert_eq!(input[4]["id"], "rs_288b9ed724204ccd8cffb5ae41ca4753");
+    }
+
+    #[test]
+    fn strict_replay_projection_strips_typed_serialized_reasoning_item() {
+        // End-to-end through the real serde path: a typed rs::ReasoningItem with
+        // content: Some(..) serializes WITH content (the red state), and the
+        // projection removes it for strict targets only.
+        use xai_grok_sampling_types::rs;
+        let make_item = || rs::ReasoningItem {
+            id: "rs_288b9ed724204ccd8cffb5ae41ca4753".to_owned(),
+            summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
+                text: "thinking...".to_owned(),
+            })],
+            content: Some(vec![rs::ReasoningTextContent {
+                text: "thinking...".to_owned(),
+            }]),
+            encrypted_content: None,
+            status: None,
+        };
+        let serialized = |item: rs::ReasoningItem| {
+            let mut body = serde_json::json!({
+                "input": [rs::InputItem::Item(rs::Item::Reasoning(item))]
+            });
+            xai_grok_sampling_types::patch_reasoning_text_types(&mut body);
+            body
+        };
+        let red_state = serialized(make_item());
+        assert!(
+            red_state["input"][0].get("content").is_some(),
+            "pre-fix wire state: typed serialization emits reasoning.content"
+        );
+        let mut projected = serialized(make_item());
+        project_strict_responses_input(&mut projected, true);
+        assert!(projected["input"][0].get("content").is_none());
+        assert_eq!(projected["input"][0]["id"], "rs_288b9ed724204ccd8cffb5ae41ca4753");
+        let mut control = serialized(make_item());
+        project_strict_responses_input(&mut control, false);
+        assert_eq!(control, red_state);
+    }
 }
