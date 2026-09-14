@@ -1584,8 +1584,8 @@ def run_case(case, args, budget):
         with open(os.path.join(run_dir, "runner-exception.txt"), "w") as fh:
             fh.write(traceback.format_exc())
         mark("FAIL", "runner exception: %s" % e)
-    return _finish(case, run_dir, ctx, results, status, started, None,
-                   None, args, budget)
+    return _finish(case, run_dir, ctx, results, status, started, wt,
+                   home, args, budget)
 
 
 def _copy_session_evidence(home, ctx, run_dir):
