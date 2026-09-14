@@ -202,7 +202,37 @@ pub fn strip_encrypted_content_input(body: &mut Value) {
 /// (message, reasoning, function_call, function_call_output,
 /// web_search_call, custom_tool_call, code_interpreter_call, compaction
 /// carrier), only `reasoning` carries a schema-forbidden non-empty
-/// `content` on strict targets.
+/// `content` on strict targets; the audit addendum below covers the second,
+/// independently observed `reasoning` violation (item `id`).
+///
+/// Schema audit addendum (REPLAY-1, observed 2026-09-14 after the content
+/// strip cleared): with `store: false` — this transport's standing setting
+/// (the carrier-splice seam above depends on it) — strict targets also
+/// reject replayed `reasoning` items that carry their prior-response `id`,
+/// because no item state is persisted under any id. Verbatim 400 (req-006,
+/// smoke/redteam/report/20260914T054941Z/rt-m1/wire/resp-006.jsonl, same
+/// class on the R2 path in 20260914T055323Z/rt-r2/wire/resp-013.jsonl):
+/// "Item with id 'rs_a87ac633e3b4401c9bd568c33c6a37e6' not found. Items are
+/// not persisted when `store` is set to false. Try again with `store` set
+/// to true, or remove this item from your input." (`invalid_request_error`,
+/// param `input`). The projection therefore removes `id` as well —
+/// lossless for the same reason as `content`: the item is self-contained via
+/// `summary`. `store: true` is rejected as an alternative because it would
+/// change the persistence/load-balancing contract the carrier splice
+/// depends on.
+///
+/// Intentional divergences from the codex reference (pinned 2026-09-14,
+/// coordinator ruling KEEP; grok/plans/replay1-codex-determination.md):
+/// (1) id-strip — this projection removes `id` for `strict_responses_input`
+/// targets because Azure/store=false rejects unknown ids (wire-pinned
+/// above); codex keeps prefixed ids because its daily target (OpenAI)
+/// tolerates them — a target-aware refinement required by the llm-proxy
+/// multi-provider scenario. (2) Lenient rows stay verbatim — this harness
+/// projects ONLY for strict rows, so vLLM-bound requests retain the full
+/// vLLM-coined shape (content + id) at maximum fidelity, wire-proven
+/// accepted (M1 req-005, 200); codex drops `content` unconditionally via
+/// serde for ALL targets, which we deliberately do not — vLLM accepts its
+/// own output verbatim and nothing is lost.
 ///
 /// Transport seam: call on every /responses send path after dialect patching
 /// and the raw carrier splice, gated by the per-model
@@ -219,6 +249,7 @@ pub fn project_strict_responses_input(body: &mut Value, strict_dialect: bool) {
             };
             if obj.get("type").and_then(Value::as_str) == Some("reasoning") {
                 obj.remove("content");
+                obj.remove("id");
             }
         }
     }
