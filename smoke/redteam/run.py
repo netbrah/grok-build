@@ -857,11 +857,17 @@ class Wiretap:
     def __init__(self, port, upstream, capture_dir, ambient_key):
         self.port = port
         self.capture_dir = capture_dir
+        env = dict(os.environ)
+        if ambient_key:
+            # HYG-1: hand the key to wiretap via env, never argv
+            # (argv is ps-visible; 5 dead orphans leaked it that way).
+            env["WIRETAP_AMBIENT_KEY"] = ambient_key
         self.proc = subprocess.Popen(
             [sys.executable, os.path.abspath(WIRETAP),
              "--port", str(port), "--upstream", upstream,
-             "--capture", capture_dir, "--ambient-key", ambient_key],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+             "--capture", capture_dir],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env)
         self.out_log = open(capture_dir + ".wiretap-stdout.log", "w")
 
     def wait_ready(self, timeout=15):

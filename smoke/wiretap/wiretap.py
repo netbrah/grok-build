@@ -31,8 +31,11 @@ Extensions over the original (HT-1 spec §2):
   3. Method coverage: do_GET/do_DELETE/do_PUT pass-through + one-line log
      (the original 501s on GET).
   4. Threading: ThreadingHTTPServer (original is single-threaded).
-  5. CLI: --port N --upstream URL --capture DIR
-     (defaults: 9098, the llm-proxy, no capture).
+  5. CLI: --port N --upstream URL --capture DIR [--ambient-key KEY]
+     (defaults: 9098, the llm-proxy, no capture). The ambient key is
+     taken from --ambient-key when non-empty, else the WIRETAP_AMBIENT_KEY
+     env (set by the red-team runner), else CODEX_LLM_PROXY_KEY. It is
+     never read from argv by the caller in normal operation.
   6. Keep: CERT_NONE SSL context (corp internal MITM CA), 600 s upstream
      timeout, chunked re-encode of streamed responses.
   7. Self-test: --selftest — in-process stub upstream (canned SSE + a 400
@@ -584,14 +587,21 @@ def main(argv=None) -> int:
     p.add_argument("--capture", default=None,
                    help="capture dir (per-request req/resp evidence)")
     p.add_argument("--ambient-key", default=None,
-                   help="override ambient key for masking (tests)")
+                   help="override ambient key for masking (tests); "
+                        "empty/omitted reads WIRETAP_AMBIENT_KEY, then "
+                        "CODEX_LLM_PROXY_KEY")
     p.add_argument("--selftest", action="store_true")
     a = p.parse_args(argv)
     if a.selftest:
         return _selftest()
-    ambient = a.ambient_key
-    if ambient is None:
-        ambient = os.environ.get("CODEX_LLM_PROXY_KEY", "")
+    # HYG-1: the ambient key travels via env, never argv (ps-visible).
+    # Precedence: explicit --ambient-key value (back-compat alias), then
+    # WIRETAP_AMBIENT_KEY (set by the red-team runner), then the
+    # pre-existing CODEX_LLM_PROXY_KEY ambient fallback. An empty or
+    # omitted flag value falls through to the env seams.
+    ambient = (a.ambient_key
+               or os.environ.get("WIRETAP_AMBIENT_KEY", "")
+               or os.environ.get("CODEX_LLM_PROXY_KEY", ""))
     serve(a.port, a.upstream, a.capture, ambient)
     return 0
 
