@@ -1930,6 +1930,9 @@ mod image_strip_tests;
 #[path = "acp_session_tests/inline_auto_compact_flow_tests.rs"]
 mod inline_auto_compact_flow_tests;
 #[cfg(test)]
+#[path = "acp_session_tests/session_model_slot_tests.rs"]
+mod session_model_slot_tests;
+#[cfg(test)]
 #[path = "acp_session_tests/laziness/laziness_debug_tests.rs"]
 mod laziness_debug_tests;
 #[cfg(test)]
