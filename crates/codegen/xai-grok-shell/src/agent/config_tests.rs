@@ -8515,6 +8515,100 @@ fn p1_route_matrix_config_override_wins_defaults_fill_the_rest() {
     assert_eq!(entry.info.model_family.as_deref(), Some("openai"));
     assert_eq!(entry.info.agent_type, "grok-build");
 }
+/// W-1 Task 0.3-B (COMP-1 defense-in-depth): the endpoint default must never
+/// grant the privileged "codex" family. That family selects the Codex
+/// Responses wire dialect, which unlocks the compaction_trigger append, the
+/// verbatim raw-carrier splice, and the `<multi_agent_mode>` developer-item
+/// injection. Granting it endpoint-wide is exactly the over-hydration that
+/// sent on-prem vLLM models down the Codex path (COMP-1). An uncatalogued
+/// model under `default_model_family = "codex"` must fail closed: no family
+/// (non-Codex dialect, plaintext-fallback path) instead of a silent codex.
+#[test]
+fn endpoint_default_model_family_codex_is_not_filled() {
+    let mut cfg = Config::default();
+    cfg.endpoints.models_base_url = Some("https://llm-proxy.example.com/v1".to_owned());
+    cfg.endpoints.default_model_family = Some("codex".to_owned());
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(
+        "onprem-vllm-model".to_owned(),
+        prefetch_model_entry("onprem-vllm-model", DEFAULT_CONTEXT_WINDOW, ApiBackend::default()),
+    );
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    let entry = resolved
+        .get("onprem-vllm-model")
+        .expect("prefetched model must exist");
+    assert_eq!(
+        entry.info.model_family.as_deref(),
+        None,
+        "endpoint default must not grant the codex dialect family to an uncatalogued model"
+    );
+}
+/// W-1 Task 0.3-A+B companion pins: the refusal is scoped to the codex
+/// value only. An explicit row family always wins, catalog inference still
+/// maps gpt-* slugs to "codex" (genuine Codex deployments keep their
+/// dialect), and non-codex endpoint defaults still fill (seam contract).
+#[test]
+fn codex_default_refusal_keeps_explicit_rows_and_slug_inference() {
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [endpoints]
+            models_base_url = "https://llm-proxy.example.com/v1"
+            default_model_family = "codex"
+
+            [model."gpt-5.6-sol"]
+            base_url = "https://llm-proxy.example.com/v1"
+            context_window = 256000
+
+            [model.onprem-model]
+            base_url = "https://llm-proxy.example.com/v1"
+            context_window = 256000
+            model_family = "qwen"
+        "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    let mut prefetched = IndexMap::new();
+    for model in ["gpt-5.6-sol", "onprem-model"] {
+        prefetched.insert(
+            model.to_owned(),
+            prefetch_model_entry(model, DEFAULT_CONTEXT_WINDOW, ApiBackend::default()),
+        );
+    }
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    assert_eq!(
+        resolved.get("gpt-5.6-sol").unwrap().info.model_family.as_deref(),
+        Some("codex"),
+        "gpt-* slug inference (or an explicit row) must keep the codex family"
+    );
+    assert_eq!(
+        resolved.get("onprem-model").unwrap().info.model_family.as_deref(),
+        Some("qwen"),
+        "explicit row family must win over the refused endpoint default"
+    );
+}
+/// W-1 Task 0.3-B: non-codex endpoint defaults keep filling (the P1 seam
+/// contract for every other value is untouched).
+#[test]
+fn endpoint_default_model_family_non_codex_still_fills() {
+    let mut cfg = Config::default();
+    cfg.endpoints.models_base_url = Some("https://llm-proxy.example.com/v1".to_owned());
+    cfg.endpoints.default_model_family = Some("xai".to_owned());
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(
+        "onprem-model".to_owned(),
+        prefetch_model_entry("onprem-model", DEFAULT_CONTEXT_WINDOW, ApiBackend::default()),
+    );
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    assert_eq!(
+        resolved
+            .get("onprem-model")
+            .unwrap()
+            .info
+            .model_family
+            .as_deref(),
+        Some("xai")
+    );
+}
 /// Route matrix #4: donor (baked) inheritance still wins over endpoint defaults for
 /// the fields the donor covers; defaults fill only what the donor left at built-in.
 /// P2.0 inserted the inference rung between donor and endpoint defaults (spec §7):

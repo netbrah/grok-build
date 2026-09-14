@@ -3440,6 +3440,17 @@ fn fill_from_endpoint_defaults(entry: &mut ModelEntry, endpoints: &EndpointsConf
     }
     if info.model_family.is_none()
         && let Some(model_family) = &endpoints.default_model_family
+        // COMP-1 defense-in-depth (W-1 Task 0.3-B): the "codex" value is a
+        // privileged dialect family — it selects the Codex Responses wire
+        // dialect, which unlocks the compaction_trigger append, the verbatim
+        // raw-carrier splice, and the <multi_agent_mode> developer-item
+        // injection in xai-grok-sampler. An endpoint-wide default must never
+        // grant it to an uncatalogued model: that blanket fill is the
+        // over-hydration that sent on-prem vLLM families down the Codex path
+        // (COMP-1). Codex must be declared per row (or arrive via catalog
+        // inference, which maps gpt-* slugs to "codex" before this fill
+        // runs); any other default value still fills as before.
+        && !model_family.eq_ignore_ascii_case("codex")
     {
         tracing::debug!(
             model = %info.model,

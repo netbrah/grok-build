@@ -764,4 +764,71 @@ mod tests {
             assert_eq!(body["input"][1]["content"][0]["type"], "text", "family {family} output_text");
         }
     }
+
+    /// W-1 Task 2 (T2) — the post-fix contract for vLLM families (Option A
+    /// + B): a normal qwen/glm turn body must (a) be normalized
+    /// input_text->text, (b) carry no `compaction_trigger`, (c) carry no
+    /// `encrypted_content` anywhere under input (reasoning stripped; Codex
+    /// carriers cannot exist off the Codex dialect), and (d) carry no
+    /// `<multi_agent_mode>` developer item (Option A's documented side
+    /// effect, ruling R-1 — a Codex-dialect artifact, no policy lost).
+    #[test]
+    fn vllm_families_fail_closed_on_codex_only_features() {
+        for family in ["qwen", "glm"] {
+            let mut body = serde_json::json!({
+                "input": [
+                    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+                    {"type": "reasoning", "id": "rs_9", "content": [{"type": "reasoning_text", "text": "t"}], "encrypted_content": "gAAA"}
+                ]
+            });
+            patch_responses_request(&mut body, Some(family), Some(ReasoningEffort::Max), true);
+            strip_encrypted_content_input(&mut body);
+            let input = body["input"].as_array().unwrap();
+            // (a) shim normalization
+            assert_eq!(
+                input[0]["content"][0]["type"], "text",
+                "family {family}: input_text must normalize to text"
+            );
+            // (b) no compaction-time item on a normal turn
+            assert!(
+                input.iter().all(|item| item.get("type").and_then(Value::as_str) != Some("compaction_trigger")),
+                "family {family}: compaction_trigger must not appear"
+            );
+            // (c) no ciphertext anywhere under input
+            assert!(
+                input.iter().all(|item| item.get("encrypted_content").is_none()),
+                "family {family}: encrypted_content must not ship under input"
+            );
+            // (d) no Codex-dialect v2 policy item
+            assert!(
+                !input.iter().any(is_multi_agent_mode_item),
+                "family {family}: <multi_agent_mode> is a Codex-dialect artifact"
+            );
+        }
+    }
+
+    /// W-1 Task 3.3 — zero-`encrypted_content` pin for non-OpenAI bodies.
+    /// The strip seam removes it from replayed reasoning items; carrier
+    /// items (`compaction`/`context_compaction`/`agent_message`) can only be
+    /// minted by the Codex remote-compaction round-trip, which is
+    /// dialect-gated off for vLLM families — so a vLLM body carrying any of
+    /// them with ciphertext is a splice/serialization bug this pin catches.
+    #[test]
+    fn non_openai_bodies_carry_no_encrypted_content_under_input() {
+        for family in ["qwen", "glm"] {
+            let mut body = serde_json::json!({
+                "input": [
+                    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+                    {"type": "reasoning", "id": "rs_7", "encrypted_content": "gAAA", "summary": [{"type": "summary_text", "text": "s"}]}
+                ]
+            });
+            patch_responses_request(&mut body, Some(family), None, true);
+            strip_encrypted_content_input(&mut body);
+            let input = body["input"].as_array().unwrap();
+            assert!(
+                input.iter().all(|item| item.get("encrypted_content").is_none()),
+                "family {family}: encrypted_content leaked under input"
+            );
+        }
+    }
 }
