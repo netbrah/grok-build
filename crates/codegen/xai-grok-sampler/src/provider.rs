@@ -669,4 +669,99 @@ mod tests {
         project_strict_responses_input(&mut control, false);
         assert_eq!(control, red_state);
     }
+
+    /// W-1 Task 1 (T1) — non-disruption guard: every OpenAI-family value
+    /// (`codex`, `xai`, `openai`, `""`) must produce exactly today's body:
+    /// no content-type rewrite, no `compaction_trigger`, lenient reasoning
+    /// replay retained (content kept, encrypted_content stripped). If this
+    /// test fails, the SOL/OpenAI path was disrupted.
+    #[test]
+    fn openai_families_are_byte_identical() {
+        for family in ["codex", "xai", "openai", ""] {
+            let mut body = serde_json::json!({
+                "model": "gpt-5.6-sol",
+                "input": [
+                    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+                    {"type": "reasoning", "id": "rs_1", "content": [{"type": "reasoning_text", "text": "t"}], "encrypted_content": "gAAA"}
+                ]
+            });
+            patch_responses_request(&mut body, Some(family), None, false);
+            strip_encrypted_content_input(&mut body);
+            let input = body["input"].as_array().unwrap();
+            let user = input
+                .iter()
+                .find(|item| item.get("role").and_then(Value::as_str) == Some("user"))
+                .unwrap();
+            assert_eq!(
+                user["content"][0]["type"], "input_text",
+                "family {family}: content part was normalized — SOL/OpenAI path disrupted"
+            );
+            let reasoning = input
+                .iter()
+                .find(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"))
+                .unwrap();
+            assert!(
+                reasoning.get("content").is_some(),
+                "family {family}: lenient reasoning.content replay must be retained"
+            );
+            assert!(
+                reasoning.get("encrypted_content").is_none(),
+                "family {family}: encrypted_content must be stripped on replay"
+            );
+            assert!(
+                input.iter().all(|item| item.get("type").and_then(Value::as_str) != Some("compaction_trigger")),
+                "family {family}: compaction_trigger must not appear"
+            );
+        }
+    }
+
+    /// W-1 T1 companion pin: the `<multi_agent_mode>` developer item stays
+    /// with the genuine `codex` family (part of today's Sol body — Option
+    /// A/B may remove it only from mis-hydrated families, never from real
+    /// Codex deployments) and never appears for non-codex families.
+    #[test]
+    fn multi_agent_mode_item_follows_codex_family_only() {
+        let make_body = || {
+            serde_json::json!({
+                "input": [
+                    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+                ]
+            })
+        };
+        let mut body = make_body();
+        patch_responses_request(&mut body, Some("codex"), Some(ReasoningEffort::Max), true);
+        assert!(
+            body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(is_multi_agent_mode_item),
+            "codex family lost its <multi_agent_mode> developer item"
+        );
+        for family in ["qwen", "glm", "xai", "openai", ""] {
+            let mut body = make_body();
+            patch_responses_request(&mut body, Some(family), Some(ReasoningEffort::Max), true);
+            assert!(
+                !body["input"].as_array().unwrap().iter().any(is_multi_agent_mode_item),
+                "family {family} gained a <multi_agent_mode> developer item"
+            );
+        }
+    }
+
+    /// W-1 Task 1.3 — the vLLM side of the guard: non-OpenAI families get
+    /// the shim normalization today and must keep getting it after the fix.
+    #[test]
+    fn vllm_families_normalize_content_types() {
+        for family in ["qwen", "glm"] {
+            let mut body = serde_json::json!({
+                "input": [
+                    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+                    {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}
+                ]
+            });
+            patch_responses_request(&mut body, Some(family), None, true);
+            assert_eq!(body["input"][0]["content"][0]["type"], "text", "family {family} input_text");
+            assert_eq!(body["input"][1]["content"][0]["type"], "text", "family {family} output_text");
+        }
+    }
 }
