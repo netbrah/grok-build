@@ -7,7 +7,8 @@
   },
   "model": "claude-sonnet-5",
   "seed": {
-    "hist_tokens": 222000
+    "hist_tokens": 222000,
+    "hist_bytes": 1073400
   },
   "steps": [
     {
