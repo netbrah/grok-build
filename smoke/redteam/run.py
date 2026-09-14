@@ -1326,6 +1326,108 @@ def check_wire(spec, capture_dir):
                                 n, spec.get("file"), lo,
                                 str(hi) if hi is not None else "inf"),
                             "wire: %d match %s" % (n, spec.get("file")))
+    if kind == "resp_status":
+        # XREPLAY-1: response-side status extraction. Pairs the selected
+        # request (matched with the standard where-filter on REQUEST
+        # fields) with its resp-NNN.jsonl by capture sequence number,
+        # and records the upstream HTTP status plus, for error frames,
+        # the error JSON — machine-readable verdict evidence for probes
+        # whose finding is the acceptance outcome (200 vs 400) rather
+        # than a pinned expectation. Fail-closed like the sibling ops:
+        # an empty glob, an empty where-filter result, a missing resp
+        # capture, and an unparseable status line are all harness
+        # failures. `status_in` (optional whitelist) makes the check
+        # assertive; omit it for evidence-only (ok iff a status line
+        # exists).
+        req_paths = _resolve_glob(spec.get("file", "req-*.json"), base)
+        if not req_paths:
+            return AssertResult(spec, "wire.resp_status", False,
+                                "no wire files match glob %r"
+                                % spec.get("file"),
+                                "wire: glob %s -> none" % spec.get("file"))
+        req_paths = _wire_filter(req_paths, spec.get("where"))
+        if not req_paths:
+            return AssertResult(spec, "wire.resp_status", False,
+                                "no request matches where-filter %r "
+                                "(probe request never fired)"
+                                % spec.get("where"),
+                                "wire: resp_status where -> none")
+        def _cap_n(p):
+            try:
+                with open(p) as fh:
+                    return json.load(fh).get("n")
+            except Exception:
+                return None
+        def _n_key(p):
+            n = _cap_n(p)
+            return (0, n) if isinstance(n, int) else (1, p)
+        req_paths.sort(key=_n_key)
+        if spec.get("which") == "last":
+            req_paths = list(reversed(req_paths))
+        f = req_paths[0]
+        n = _cap_n(f)
+        if not isinstance(n, int):
+            return AssertResult(spec, "wire.resp_status", False,
+                                "request %s carries no capture n"
+                                % os.path.basename(f),
+                                "wire: resp_status -> no n")
+        resp_path = os.path.join(base, "resp-%03d.jsonl" % n)
+        if not os.path.isfile(resp_path):
+            resp_path = None
+            for rp in sorted(globmod.glob(
+                    os.path.join(base, "resp-*.jsonl"))):
+                try:
+                    with open(rp) as fh:
+                        if json.loads(fh.readline()).get("n") == n:
+                            resp_path = rp
+                            break
+                except Exception:
+                    continue
+        if resp_path is None:
+            return AssertResult(spec, "wire.resp_status", False,
+                                "no response captured for %s (n=%s) - "
+                                "upstream never answered"
+                                % (os.path.basename(f), n),
+                                "wire: resp_status -> no resp capture")
+        status = None
+        error_json = None
+        with open(resp_path, errors="replace") as fh:
+            for ln in fh:
+                try:
+                    rec = json.loads(ln)
+                except Exception:
+                    continue
+                if status is None and "status" in rec:
+                    status = rec.get("status")
+                frame = rec.get("frame")
+                if error_json is None and isinstance(frame, str):
+                    try:
+                        inner = json.loads(frame)
+                    except Exception:
+                        continue
+                    if isinstance(inner, dict) and "error" in inner:
+                        error_json = json.dumps(inner["error"],
+                                                 ensure_ascii=False)
+        if not isinstance(status, int):
+            return AssertResult(spec, "wire.resp_status", False,
+                                "no parseable status line in %s"
+                                % os.path.basename(resp_path),
+                                "wire: resp_status -> unparseable")
+        want = spec.get("status_in")
+        ok = (status in want) if isinstance(want, list) else True
+        model = None
+        try:
+            with open(f) as fh:
+                model = (json.load(fh).get("body") or {}).get("model")
+        except Exception:
+            pass
+        detail = "req-%03d (model=%s) -> HTTP %d" % (n, model, status)
+        if error_json:
+            detail += "; error=%s" % error_json[:300]
+        return AssertResult(spec, "wire.resp_status", ok, detail,
+                            "wire/%s (status=%s, want=%s)"
+                            % (os.path.basename(resp_path), status,
+                               want if want is not None else "any"))
     raise ValueError("unknown wire kind: %r" % kind)
 
 
