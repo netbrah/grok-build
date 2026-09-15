@@ -87,6 +87,7 @@ pub enum RetryDecision {
         backoff: Duration,
     },
 
+    /// Provenance: hyper-grok-build@45e984f3 packages/ai/xai-grok-sampler/src/retry.rs:187 :: classify_error model-bound arm (adapted; HY placement before the max_retries gate — ledger §CROSSWIRE-1)
     /// The provider rejected model-bound continuation state (stale
     /// reasoning / thinking signatures / item ids / encrypted content). Strip
     /// it and retry ONCE with the portable transcript; the request task fails

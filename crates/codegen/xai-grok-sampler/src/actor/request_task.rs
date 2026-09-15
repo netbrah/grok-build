@@ -462,6 +462,7 @@ async fn apply_retry_decision(
             true
         }
         RetryDecision::RetryWithModelBoundStateStrip => {
+            // Provenance: hyper-grok-build@45e984f3 packages/ai/xai-grok-sampler/src/actor/request_task.rs:413-436 :: fail-closed single-retry arm (adapted — ledger §CROSSWIRE-1)
             let stripped = request.strip_model_bound_state();
             if stripped == 0 {
                 // The classifier matched but the request carries no removable

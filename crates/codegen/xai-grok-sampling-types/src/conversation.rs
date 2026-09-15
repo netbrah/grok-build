@@ -821,6 +821,7 @@ impl ConversationRequest {
         strip_images_where(&mut self.items, |_| true)
     }
 
+    /// Provenance: hyper-grok-build@45e984f3 packages/ai/xai-grok-sampling-types/src/conversation.rs:1005 :: strip_model_bound_state (adapted; two struct absences documented below — ledger §CROSSWIRE-1)
     /// Remove provider/model-bound continuation state while retaining portable
     /// user, assistant, and local-tool history. Used for the single recovery
     /// attempt when a provider rejects stale reasoning / backend-tool items

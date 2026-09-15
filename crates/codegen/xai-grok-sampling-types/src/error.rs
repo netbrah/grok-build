@@ -377,6 +377,7 @@ impl SamplingError {
         }
     }
 
+    /// Provenance: hyper-grok-build@45e984f3 packages/ai/xai-grok-sampling-types/src/error.rs:401 :: is_model_bound_history_error (adapted; family 5 is a this-stack addition — ledger §CROSSWIRE-1)
     /// The provider rejected opaque continuation state carried by conversation
     /// history — a model-bound replay that a *different* model (or deployment)
     /// cannot consume. The sampler may safely retry ONCE after removing only
