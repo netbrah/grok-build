@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "bead": "apex-ayl.51",
+  "note": "Seed catalog (T4) — standing baseline 154/154/109/1 = 418 + #5a/#5b/#6, measured 2026-09-15. Matching: fixed substring `pattern` first, one alternation `regex` second. Unknown signatures are emitted as UNKNOWN with a proposed slug SIG-<class>-<n>; `census --write-catalog` appends them as PROPOSED rows (no auto-RCA); proposed slugs are deduped across sibling unknowns in-run. T4.1 (2026-09-15, GLM-concordance adjudication): rows #7-#12 added (2 IGNORED steady-state, 4 PROPOSED); #5a RCA extended with a third unconfirmed instance.",
+  "signatures": [
+    {
+      "id": "#1",
+      "class": "mcp_server_failed",
+      "pattern": "spawn_failed/code-graph",
+      "regex": "spawn_failed[/: ]code-graph",
+      "rca": "binary missing: ~/Projects/code-graph-mcp/target/release/code-graph-mcp (os error 2)",
+      "bead": "apex-ayl.51",
+      "status": "OPEN",
+      "pointer": "build code-graph-mcp (cargo release) or drop the config row — operator decision",
+      "first_seen": "2026-09-15"
+    },
+    {
+      "id": "#2",
+      "class": "mcp_server_failed",
+      "pattern": "spawn_failed/jenkins-jarvis",
+      "regex": "spawn_failed[/: ]jenkins-jarvis",
+      "rca": "binary missing: ~/Projects/cit-mcp/target/release/cit-mcp (os error 2)",
+      "bead": "apex-ayl.51",
+      "status": "OPEN",
+      "pointer": "same class as #1 — build cit-mcp or drop the config row",
+      "first_seen": "2026-09-15"
+    },
+    {
+      "id": "#3",
+      "class": "mcp_server_failed",
+      "pattern": "handshake_failed/github",
+      "regex": "handshake_failed[/: ]github",
+      "rca": "one-time deep-dive needed (auth/protocol)",
+      "bead": "apex-ayl.51",
+      "status": "OPEN",
+      "pointer": "re-run github MCP server standalone; trace init/handshake + auth flow",
+      "first_seen": "2026-09-15"
+    },
+    {
+      "id": "#4",
+      "class": "mcp_server_failed",
+      "pattern": "timeout/codebase-memory-mcp",
+      "regex": "timeout[/: ]codebase-memory-mcp",
+      "rca": "one-time check",
+      "bead": "apex-ayl.51",
+      "status": "OPEN",
+      "pointer": "re-run codebase-memory-mcp spawn; watch cold-start time",
+      "first_seen": "2026-09-15"
+    },
+    {
+      "id": "#5a",
+      "class": "subagent_failed",
+      "pattern": " | subagent failed | ",
+      "regex": "\\| subagent failed \\|",
+      "rca": "per-instance: 1x max_tokens truncation (claude-opus-4-6 plan agent, subagent 01a0a5f4 — same root cause as #5b); 1x cancellation (claude-sonnet-5 general-purpose, 01a0a691); 1x unconfirmed (01a0a748, likely same max_tokens root cause)",
+      "bead": "apex-ayl.51",
+      "status": "OPEN",
+      "pointer": "one class, per-instance RCA: raise/plan max_tokens for long plan agents; check cancellation source",
+      "first_seen": "2026-09-15"
+    },
+    {
+      "id": "#5b",
+      "class": "shell_turn_inference_failed",
+      "pattern": " | shell.turn.inference_failed | ",
+      "regex": "\\| shell\\.turn\\.inference_failed \\|",
+      "rca": "max_tokens truncation — same root cause as the #5a truncation instance (sid 01a0a5f4); kept as a separate row since the log surfaces differ",
+      "bead": "apex-ayl.51",
+      "status": "OPEN",
+      "pointer": "cross-ref #5a; max_tokens handling in xai-grok-sampler",
+      "first_seen": "2026-09-15"
+    },
+    {
+      "id": "#6",
+      "class": "mcp_tool_deserialization",
+      "pattern": "failed to deserialize parameters",
+      "regex": "failed to deserialize parameters|expected usize",
+      "rca": "negative integer into a usize-typed pty parameter (suspected trigger); wire/model-agnostic class — 2 known grok-4.6 instances 01a06939/01a067af",
+      "bead": "apex-ayl.51",
+      "status": "OPEN",
+      "pointer": "pty client param validation (clamp/validate integer params before the MCP call)",
+      "first_seen": "2026-09-15"
+    },
+    {
+      "id": "#7",
+      "class": "paywall_check_error",
+      "pattern": " | paywall_check_error | ",
+      "regex": "\\| paywall_check_error \\|",
+      "rca": "steady-state unattributed paywall-check noise (n~2736 on 2026-09-15); no correlated failure surface identified",
+      "bead": "apex-ayl.51",
+      "status": "IGNORED",
+      "pointer": "ignored — revisit if the count drifts or a correlated failure appears",
+      "first_seen": "2026-09-15"
+    },
+    {
+      "id": "#8",
+      "class": "term.writer.blocked",
+      "pattern": " | term.writer.blocked | ",
+      "regex": "\\| term\\.writer\\.blocked \\|",
+      "rca": "steady-state terminal writer backpressure (n=16 on 2026-09-15); no correlated failures",
+      "bead": "apex-ayl.51",
+      "status": "IGNORED",
+      "pointer": "ignored — no known failure surface",
+      "first_seen": "2026-09-15"
+    },
+    {
+      "id": "#9",
+      "class": "auth gate: Unknown BYOK",
+      "pattern": "auth gate: Unknown BYOK",
+      "regex": "",
+      "rca": "BYOK auth gate rejection for an unknown provider key class (n=76 across 6 sessions on 2026-09-15); unconfirmed — config or key-class mismatch",
+      "bead": "apex-ayl.51",
+      "status": "PROPOSED",
+      "pointer": "one-time check: provider key class vs auth-gate allowlist; promote to OPEN with RCA after manual verification",
+      "first_seen": "2026-09-15"
+    },
+    {
+      "id": "#10",
+      "class": "shell.turn.inference_retry",
+      "pattern": " | shell.turn.inference_retry | ",
+      "regex": "\\| shell\\.turn\\.inference_retry \\|",
+      "rca": "inference retry surface (n=7 on 2026-09-15); unconfirmed — likely the transient/max_tokens family of #5a/#5b",
+      "bead": "apex-ayl.51",
+      "status": "PROPOSED",
+      "pointer": "cross-ref #5a/#5b; confirm retry reasons in unified ctx",
+      "first_seen": "2026-09-15"
+    },
+    {
+      "id": "#11",
+      "class": "leader.response.orphaned",
+      "pattern": " | leader.response.orphaned | ",
+      "regex": "\\| leader\\.response\\.orphaned \\|",
+      "rca": "orphaned leader response (n=4 on 2026-09-15); multi-agent coordination surface — unconfirmed",
+      "bead": "apex-ayl.51",
+      "status": "PROPOSED",
+      "pointer": "check multi-agent v2 coordination for dropped leader responses",
+      "first_seen": "2026-09-15"
+    },
+    {
+      "id": "#12",
+      "class": "turn.terminal_failure",
+      "pattern": " | turn.terminal_failure | ",
+      "regex": "\\| turn\\.terminal_failure \\|",
+      "rca": "terminal turn failure (n=2 on 2026-09-15); correlates with the #5a/#5b sessions — likely the same truncation/cancellation root cause",
+      "bead": "apex-ayl.51",
+      "status": "PROPOSED",
+      "pointer": "cross-ref #5a/#5b",
+      "first_seen": "2026-09-15"
+    }
+  ]
+}

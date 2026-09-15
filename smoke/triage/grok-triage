@@ -1,0 +1,1105 @@
+#!/usr/bin/env python3
+"""grok-triage — read-only session/log triage for a grok home (stdlib only).
+
+Walks the KNOWN artifact layout under a grok home (default ~/.grok;
+override with --home or GROK_TRIAGE_HOME) with targeted fixed-string
+prescreens — never a whole-tree grep — and collapses raw error events into
+deduplicated signatures stamped against a versioned JSON catalog
+(signatures.json, default: next to this script).
+
+Subcommands
+  scan              full census table across the home
+  show <sid>        full triage card for one session
+  hot <sid>|--latest  card for a live session (active_sessions.json);
+                      unified.jsonl restricted to the session window
+  census            scan + per-class totals + repro pointers;
+                    --write-catalog appends UNKNOWN signatures as PROPOSED rows
+
+Guarantees (plan v2.1)
+  * Read-only on the home: never writes under it. --out or --state under
+    the home -> exit 2 (C-1/m-6).
+  * Key sweep (M-4): if CODEX_LLM_PROXY_KEY (or GROK_TRIAGE_TEST_KEY
+    override) is set and its value appears in the output -> print NOTHING
+    and exit 3.
+  * Perf: fixed-string prescreen before any parse; ThreadPoolExecutor(4)
+    over sessions; 5 MB head/tail budget applies ONLY to chat_history /
+    updates / terminal logs — events.jsonl is NEVER budget-skipped (M-2).
+  * Torn reads (m-3): per-line parse failure on a prescreen hit -> skip +
+    `unparsed: N` counter on the card; torn summary.json -> skip session +
+    note; torn active_sessions.json -> hot degrades to a no-live notice.
+
+Exit codes: 0 ok, 2 path/usage violation, 3 key-sweep violation.
+"""
+
+import argparse
+import concurrent.futures
+import json
+import os
+import re
+import sys
+import threading
+import time
+from collections import Counter
+from datetime import datetime, timezone
+from pathlib import Path
+
+EXIT_OK, EXIT_VIOLATION, EXIT_KEY_SWEEP = 0, 2, 3
+THREADS = 4
+BUDGET_BYTES = 5 * 1024 * 1024      # M-2: head/tail budget (chat_history/updates/terminal only)
+MAX_VERBATIM = 50                   # cap on verbatim error events per signature
+MAX_WIDE_MATCHES = 10               # m-7: wide-regex second-pass cap
+STDERR_TAIL = 200                   # last-N lines of each mcp stderr log
+CALL_SCAN_BYTES = 1_000_000         # mcp/call-* read bound
+MSG_CAP = 300                       # normalized-message key/display cap
+COARSE_LOCK = threading.Lock()      # n-2: coarse Counter is mutated from worker threads
+
+# fixed-string prescreens (before any regex/parse)
+# live data is compact serde JSON; spaced variants accepted for robustness
+EVENT_PRESCREEN = ('"type":"mcp_server_failed"', '"type": "mcp_server_failed"',
+                   '"type":"agent_error"', '"type": "agent_error"',
+                   'error', 'failed', 'panic')
+UNIFIED_PRESCREEN = ('"lvl":"error"', '"lvl": "error"',
+                     '"lvl":"warn"', '"lvl": "warn"')
+# M-2: bare 'Mcp error'/'failed via' prescreens match transcript-quoted text
+# (benign UNKNOWN rows); framed MCP tool failures are matched by RE_TOOL_FAIL
+CH_PRECISION = ('"is_error":true', '"is_error": true',
+                'mcp_server_failed', 'subagent failed', 'inference_failed')
+RE_TOOL_FAIL = re.compile(r"Tool `[^`]+` failed via")
+CH_WIDE = re.compile(r'tool.*error|error.*tool')   # m-7 second pass, content only
+STDERR_ERROR = ('ERROR', 'panic')
+MCP_CALL_MARKERS = ('error', 'failed', 'exception')
+COARSE_OUTCOMES = {'error', 'failed'}
+
+# M-1 normalization grammar — fixed order: paths, UUIDs, hex>=12, ints, ws.
+RE_PATH = re.compile(r"/Users/[^\s\"'`,;)]+|/private/var/[^\s\"'`,;)]+")
+RE_UUID = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+RE_HEX = re.compile(r"\b[0-9a-fA-F]{12,}\b")
+RE_INT = re.compile(r"[+-]?\d+")
+RE_WS = re.compile(r"\s+")
+RE_LEADING_TS = re.compile(r"^\s*\d{4}-\d{2}-\d{2}[T ][0-9:.]*(Z)?\s+")
+RE_SUBAGENT_CWD = re.compile(
+    r"/subagent-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def is_tool_result_line(line):
+    return ('"type":"tool_result"' in line
+            or '"type": "tool_result"' in line)
+
+
+def normalize(message):
+    """Apply the fixed M-1 grammar in order. Volatile key fields (ts,
+    duration_ms, timeout_sec, target) never enter the dedup key — only
+    class/identity/message are keyed, so the exclusion is structural."""
+    if not isinstance(message, str):
+        return ""
+    s = RE_PATH.sub("<PATH>", message)
+    s = RE_UUID.sub("<ID>", s)
+    s = RE_HEX.sub("<TOKEN>", s)
+    s = RE_INT.sub("<N>", s)
+    return RE_WS.sub(" ", s).strip()
+
+
+def ts_epoch(ts):
+    if not isinstance(ts, str):
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+# ---------------------------------------------------------------- catalog
+
+def load_catalog(path):
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return []
+    if isinstance(data, dict):
+        rows = data.get("signatures", [])
+    elif isinstance(data, list):
+        rows = data
+    else:
+        rows = []
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def stamp(signature, catalog):
+    """Catalog stamp: fixed substrings first, one alternation regex second."""
+    text = signature["search_text"]
+    for row in catalog:
+        pat = row.get("pattern")
+        if isinstance(pat, str) and pat and pat in text:
+            return row
+    for row in catalog:
+        rx = row.get("regex")
+        if isinstance(rx, str) and rx:
+            try:
+                if re.search(rx, text):
+                    return row
+            except re.error:
+                pass
+    return None
+
+
+def proposed_slug(signature, catalog):
+    base = "SIG-" + re.sub(r"[^a-z0-9]+", "-",
+                           signature["class_norm"].lower()).strip("-")
+    have = {r.get("id") for r in catalog}
+    n = 1
+    while f"{base}-{n}" in have:
+        n += 1
+    return f"{base}-{n}"
+
+
+def write_catalog(path, catalog, new_rows):
+    """Append PROPOSED rows, preserving top-level metadata. Callers pass
+    only rows not already present (idempotency is checked before append)."""
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        data = {}
+    if isinstance(data, list):
+        data = {"signatures": data}
+    rows = data.get("signatures")
+    if not isinstance(rows, list):
+        rows = catalog
+    data["signatures"] = rows + new_rows
+    Path(path).write_text(json.dumps(data, indent=2) + "\n")
+
+
+# ------------------------------------------------------------- signature store
+
+def add_sig(sigs, cls, ident, msg, ts, sid=None, model=None, target=None,
+            msg_in_key=True):
+    """Fold one error instance into the dedup table.
+    key = (class, identity, normalized message) — or (class, identity) when
+    msg_in_key=False (unified.jsonl: class-level dedup, message is
+    per-instance detail, matching the recon census #5a x2)."""
+    nm = normalize(msg)
+    if len(nm) > MSG_CAP:
+        nm = nm[:MSG_CAP]
+    key = (cls, ident, nm) if msg_in_key else (cls, ident)
+    s = sigs.get(key)
+    if s is None:
+        cn = re.sub(r"\s+", "_", str(cls))
+        s = {"class": str(cls), "class_norm": cn, "identity": str(ident),
+             "normmsg": nm, "count": 0, "first": ts, "last": ts,
+             "sessions": set(), "models": set(), "events": [],
+             "target": target, "search_text": ""}
+        sigs[key] = s
+    s["count"] += 1
+    if ts:
+        if not s["first"] or ts < s["first"]:
+            s["first"] = ts
+        if not s["last"] or ts > s["last"]:
+            s["last"] = ts
+    if sid:
+        s["sessions"].add(sid)
+    if model:
+        s["models"].add(model)
+    if target and not s["target"]:
+        s["target"] = target
+    if len(s["events"]) < MAX_VERBATIM:
+        s["events"].append({"ts": ts, "msg": msg, "target": target})
+    s["search_text"] = f"{s['class']} | {s['class_norm']} | {ident} | {nm}"
+    return s
+
+
+def merge_sigs(dst, src):
+    for key, s in src.items():
+        d = dst.get(key)
+        if d is None:
+            dst[key] = s
+            continue
+        d["count"] += s["count"]
+        d["sessions"] |= s["sessions"]
+        d["models"] |= s["models"]
+        if s["first"] and (not d["first"] or s["first"] < d["first"]):
+            d["first"] = s["first"]
+        if s["last"] and (not d["last"] or s["last"] > d["last"]):
+            d["last"] = s["last"]
+        if s.get("target") and not d.get("target"):
+            d["target"] = s["target"]
+        room = MAX_VERBATIM - len(d["events"])
+        if room > 0:
+            d["events"].extend(s["events"][:room])
+
+
+# ------------------------------------------------------------------- index
+
+def build_index(home):
+    """Session index pass: summary.json only (one small JSON read per
+    session). Skips non-session entries at the sessions root; cwd dir
+    names are treated opaquely; subagent = decoded cwd suffix /subagent-<uuid>."""
+    root = home / "sessions"
+    sessions, notes = [], []
+    if not root.is_dir():
+        return sessions, notes
+    candidates = []
+    for cwd_dir in sorted(root.iterdir()):
+        if not cwd_dir.is_dir() or cwd_dir.name.startswith("."):
+            continue  # e.g. session_search.sqlite — not a session
+        for sdir in sorted(cwd_dir.iterdir()):
+            if sdir.is_dir() and (sdir / "summary.json").exists():
+                candidates.append(sdir)
+
+    def read_one(sdir):
+        try:
+            s = json.loads((sdir / "summary.json").read_text())
+        except (OSError, ValueError):
+            return None, sdir
+        info = s.get("info") if isinstance(s.get("info"), dict) else {}
+        cwd = info.get("cwd") or ""
+        return {"id": info.get("id") or sdir.name,
+                "dir": sdir,
+                "cwd": cwd,
+                "model": s.get("current_model_id") or "",
+                "agent": s.get("agent_name") or "",
+                "created_at": s.get("created_at") or "",
+                "last_active": s.get("last_active_at") or "",
+                "request_id": s.get("request_id") or "",
+                "title": (s.get("generated_title")
+                          or s.get("session_summary") or ""),
+                "subagent": bool(RE_SUBAGENT_CWD.search(cwd))}, None
+
+    with concurrent.futures.ThreadPoolExecutor(THREADS) as ex:
+        futs = [ex.submit(read_one, sdir) for sdir in candidates]
+        for fut in concurrent.futures.as_completed(futs):
+            sess, torn = fut.result()
+            if sess is None:
+                notes.append(f"skipped {torn.name}: torn summary.json")
+            else:
+                sessions.append(sess)
+    sessions.sort(key=lambda s: (s["dir"].parent.name, s["id"]))
+    return sessions, notes
+
+
+# ----------------------------------------------------------------- harvest
+
+def classify_event(o):
+    """Parsed events.jsonl line -> (keep, cls, identity, msg, target).
+    Precision rule: keep error-typed events, or events whose type name
+    carries fail/error AND has a non-null string message. Summary events
+    (mcp_init_completed, turn_ended, tool_completed outcome=error without
+    a message) are NOT signatures — callers report them as coarse flags."""
+    t = str(o.get("type") or "?")
+    if t == "mcp_server_failed":
+        et = str(o.get("error_type") or "?")
+        server = str(o.get("server_name") or "?")
+        msg = o.get("error_message") or o.get("message") or ""
+        return True, "mcp_server_failed", f"{et}/{server}", msg, o.get("target")
+    if t == "agent_error":
+        msg = o.get("error_message") or o.get("error") or o.get("message")
+        if isinstance(msg, str) and msg.strip():
+            return True, "agent_error", "agent_error", msg, None
+        return False, None, None, None, None
+    if "fail" in t or "error" in t:
+        msg = o.get("error_message") or o.get("error") or o.get("message")
+        if isinstance(msg, str) and msg.strip():
+            return True, t, t, msg, None
+    return False, None, None, None, None
+
+
+def harvest_session(sess, coarse):
+    """Per-session harvest (runs in the worker pool). Returns
+    (local_sigs, meta) — the caller merges local_sigs into the global table."""
+    local = {}
+    meta = {"unparsed": 0, "events": [], "chat_hits": [], "notes": []}
+
+    ev = sess["dir"] / "events.jsonl"
+    if ev.exists():
+        try:
+            fh = open(ev, "r", errors="replace")
+        except OSError:
+            fh = None
+        if fh is not None:
+            with fh:
+                for line in fh:  # NEVER budget-skipped (M-2)
+                    if not any(p in line for p in EVENT_PRESCREEN):
+                        continue
+                    try:
+                        o = json.loads(line)
+                    except ValueError:
+                        meta["unparsed"] += 1  # m-3 torn read: skip + count
+                        continue
+                    keep, cls, ident, msg, target = classify_event(o)
+                    if keep:
+                        add_sig(local, cls, ident, msg, o.get("ts"),
+                                sess["id"], sess["model"], target=target)
+                        meta["events"].append((o.get("ts"), cls, ident, msg,
+                                               target))
+                    elif o.get("outcome") in COARSE_OUTCOMES:
+                        with COARSE_LOCK:
+                            coarse[str(o.get("type") or "?")] += 1
+
+    ch = sess["dir"] / "chat_history.jsonl"
+    if ch.exists():
+        try:
+            size = ch.stat().st_size
+        except OSError:
+            size = 0
+        if size > BUDGET_BYTES:
+            meta["notes"].append(
+                f"chat_history {size}B exceeds 5MB budget: head/tail only "
+                "(truncated scan)")
+            text = _read_head_tail(ch, BUDGET_BYTES)
+        else:
+            try:
+                text = ch.read_text(errors="replace")
+            except OSError:
+                text = ""
+        wide_used = 0
+        for line in text.splitlines():
+            precise = (any(p in line for p in CH_PRECISION)
+                       or bool(RE_TOOL_FAIL.search(line)))
+            if not precise and not is_tool_result_line(line):
+                continue  # wide second pass is content-scoped (m-7)
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            if not precise:
+                content = o.get("content")
+                if not isinstance(content, str) or not CH_WIDE.search(content):
+                    continue
+                if wide_used >= MAX_WIDE_MATCHES:
+                    meta["notes"].append(
+                        f"chat_history wide scan truncated at "
+                        f"{MAX_WIDE_MATCHES} matches (truncated scan)")
+                    break
+                wide_used += 1
+            seg_raw = extract_chat_error(o)
+            if seg_raw is None:
+                continue
+            seg = normalize(seg_raw)[:MSG_CAP]
+            # precision hits are census signatures; wide-pass hits are
+            # card diagnostics only (capped + noted) — the wide regex on
+            # arbitrary tool_result content false-positives on live data
+            if precise:
+                add_sig(local, "mcp_tool_error", seg, seg_raw, None,
+                        sess["id"], sess["model"])
+            meta["chat_hits"].append((o.get("tool_call_id") or "-", seg_raw))
+    return local, meta
+
+
+def _read_head_tail(path, budget):
+    half = budget // 2
+    out = []
+    try:
+        with open(path, "rb") as f:
+            out.append(f.read(half).decode("utf-8", errors="replace"))
+            f.seek(-half, os.SEEK_END)
+            out.append(f.read().decode("utf-8", errors="replace"))
+    except OSError:
+        pass
+    return "\n".join(out)
+
+
+def extract_chat_error(o):
+    """Error segment of a chat_history line (raw, capped; the caller
+    normalizes for the dedup key and shows the raw segment on cards)."""
+    content = o.get("content")
+    if not isinstance(content, str):
+        content = json.dumps(o, default=str)
+    if "Mcp error" in content:
+        seg = content[content.index("Mcp error"):]
+    else:
+        seg = content
+    seg = seg.strip()
+    return seg[:MSG_CAP] or None
+
+
+def harvest_unified(home, by_id):
+    """unified.jsonl single pass; lvl in {error, warn} only. Attribution:
+    top-level sid, else ctx.subagent_id (subagent's session dir, n-5)."""
+    f = home / "logs" / "unified.jsonl"
+    lines = []
+    if not f.exists():
+        return lines
+    try:
+        fh = open(f, "r", errors="replace")
+    except OSError:
+        return lines
+    with fh:
+        for line in fh:
+            if not any(p in line for p in UNIFIED_PRESCREEN):
+                continue
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            ctx = o.get("ctx") if isinstance(o.get("ctx"), dict) else {}
+            sid = o.get("sid")
+            if not isinstance(sid, str) or not sid:
+                sub = ctx.get("subagent_id")
+                sid = sub if isinstance(sub, str) and sub else None
+            lines.append((o, by_id.get(sid) if sid else None))
+    return lines
+
+
+def harvest_mcp_stderr(home, sigs):
+    """logs/mcp/*.stderr.log — non-empty files, last 200 lines each;
+    ERROR/panic lines become signatures (context, server-level)."""
+    d = home / "logs" / "mcp"
+    servers = {}
+    if not d.is_dir():
+        return servers
+    for f in sorted(d.glob("*.stderr.log")):
+        try:
+            if f.stat().st_size == 0:
+                continue
+            lines = f.read_text(errors="replace").splitlines()[-STDERR_TAIL:]
+        except OSError:
+            continue
+        errs = [l for l in lines if any(m in l for m in STDERR_ERROR)]
+        server = f.name[: -len(".stderr.log")]
+        servers[server] = {"file": f.name, "tail": lines, "errors": errs}
+        for l in errs:
+            nl = normalize(RE_LEADING_TS.sub("", l))
+            add_sig(sigs, "mcp_stderr", f"{server}: {nl[:200]}", l, None)
+    return servers
+
+
+def scan_mcp_calls(sess):
+    """mcp/call-<uuid>-<N>.txt|.json failure scan (show card only —
+    excluded from the census so the recon oracle stays exact)."""
+    mdir = sess["dir"] / "mcp"
+    hits = []
+    if not mdir.is_dir():
+        return hits
+    for f in sorted(mdir.glob("call-*")):
+        if f.suffix not in (".txt", ".json"):
+            continue
+        try:
+            text = f.read_text(errors="replace")[:CALL_SCAN_BYTES]
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if any(m in line for m in MCP_CALL_MARKERS):
+                hits.append(f"{f.name}: {line.strip()[:200]}")
+                if len(hits) >= MAX_WIDE_MATCHES:
+                    return hits + ["... (mcp call scan truncated at 10)"]
+    return hits
+
+
+def render_auth(v):
+    """Authorization header rendering — raw values are NEVER emitted."""
+    if isinstance(v, dict):
+        if v.get("masked"):
+            return (f"masked sha256_12={v.get('sha256_12', '-')} "
+                    f"len={v.get('len', '-')}")
+        return "<masked-dict>"
+    if isinstance(v, str) and v:
+        return f"<redacted len={len(v)}>"
+    return "-"
+
+
+def wirecap_report(home, cap=10):
+    """Newest dogfood wirecap run. Primary join = numeric req-NNN <->
+    resp line n==N (M-3); X-Litellm-Call-Id / model enrichment is strictly
+    optional-when-present. Returns (run_name, rows) or (None, None)."""
+    droot = home / "dogfood"
+    runs = []
+    if droot.is_dir():
+        for d in sorted(droot.iterdir()):
+            if d.is_dir() and (d / "wire").is_dir():
+                runs.append(d / "wire")
+    if not runs:
+        return None, None
+    wire = runs[-1]
+    reqs = {}
+    for f in wire.glob("req-*.json"):
+        try:
+            o = json.loads(f.read_text())
+            if isinstance(o.get("n"), int):
+                reqs[o["n"]] = o
+        except (OSError, ValueError):
+            continue
+    resps = {}
+    for f in wire.glob("resp-*.jsonl"):
+        try:
+            frames = [json.loads(l) for l in
+                      f.read_text(errors="replace").splitlines() if l.strip()]
+        except (OSError, ValueError):
+            continue
+        if frames and isinstance(frames[0].get("n"), int):
+            resps[frames[0]["n"]] = frames
+    rows = []
+    for n in sorted(set(reqs) | set(resps))[:cap]:
+        r = reqs.get(n) or {}
+        fr = resps.get(n) or []
+        h0 = fr[0] if fr else {}
+        status = h0.get("status", "-")
+        extras = []
+        hh = h0.get("headers") if isinstance(h0.get("headers"), dict) else {}
+        for k, v in hh.items():
+            if k.lower() == "x-litellm-call-id" and isinstance(v, str):
+                extras.append(f"call-id={v}")
+                break
+        model = None
+        for frame in fr:
+            if isinstance(frame.get("model"), str):
+                model = frame["model"]
+                break
+        if model is None and isinstance(r.get("body"), str):
+            try:
+                m = json.loads(r["body"]).get("model")
+                if isinstance(m, str):
+                    model = m
+            except ValueError:
+                pass
+        if model:
+            extras.append(f"model={model}")
+        hdrs = r.get("headers") if isinstance(r.get("headers"), dict) else {}
+        auth = render_auth(hdrs.get("authorization"))
+        row = f"req-{n:03d} {r.get('method', '-')} {r.get('path', '-')} -> {status}"
+        if r:
+            row += f" [auth {auth}]"
+        if extras:
+            row += f" ({'; '.join(extras)})"
+        rows.append(row)
+    return wire.parent.name, rows
+
+
+# ----------------------------------------------------------------- rendering
+
+def fmt_models(models):
+    if not models:
+        return "-"
+    ms = sorted(models)
+    return ",".join(ms[:3]) + (f"+{len(ms) - 3}more" if len(ms) > 3 else "")
+
+
+def fmt_sessions(sessions):
+    if not sessions:
+        return "0"
+    sids = sorted(sessions)
+    if len(sids) <= 3:
+        return f"{len(sids)}({','.join(s[:8] for s in sids)})"
+    return f"{len(sids)}({','.join(s[:8] for s in sids[:3])}+{len(sids) - 3}more)"
+
+
+def census_table(sigs, catalog, wall, home, sessions, extra_counts=None):
+    L = []
+    subs = sum(1 for s in sessions if s["subagent"])
+    L.append(f"grok-triage census: {home}  sessions={len(sessions)} "
+             f"(subagent={subs})  wall={wall:.2f}s")
+    if extra_counts:
+        L.append("  " + "  ".join(str(e) for e in extra_counts))
+    L.append("")
+    L.append(f"{'SIG':<24} {'CLASS':<26} {'IDENTITY':<52} "
+             f"N FIRST LAST SESSIONS MODELS STATUS MSG RCA")
+    rows = sorted(sigs.values(),
+                  key=lambda s: (-s["count"], s["class_norm"], s["identity"]))
+    disp_have = list(catalog)   # m-2: dedup sibling unknown slugs in-run
+    for s in rows:
+        row = stamp(s, catalog)
+        if row:
+            sig_id, status = row.get("id", "?"), row.get("status", "?")
+            rca = (row.get("rca") or "")[:60]
+        else:
+            slug = proposed_slug(s, disp_have)
+            sig_id, status = f"UNKNOWN({slug})", "UNKNOWN"
+            disp_have.append({"id": slug})
+            rca = ""
+        ident = s["identity"]
+        L.append(f"{sig_id:<24} {s['class_norm']:<26} {ident:<52} "
+                 f"n={s['count']} first={str(s['first'] or '-')[:26]} "
+                 f"last={str(s['last'] or '-')[:26]} "
+                 f"sessions={fmt_sessions(s['sessions'])} "
+                 f"models={fmt_models(s['models'])} {status} "
+                 f"msg={s['normmsg'][:80]} {rca}")
+    return L, rows
+
+
+CRATE_MAP = [
+    (re.compile(r"^shell\.turn\.|^turn\.|^leader\.|^term\."), "xai-grok-shell"),
+    (re.compile(r"inference"), "xai-grok-sampler"),
+    (re.compile(r"^mcp_|spawn_failed|handshake|subagent"),
+     "xai-grok-shell (mcp client module / subagent runtime)"),
+    (re.compile(r"^agent_error"), "xai-grok-shell"),
+    (re.compile(r"^pty"), "pty MCP server (external) + pty client param validation"),
+]
+
+
+def unit_test_home(sig):
+    text = f"{sig['class']} {sig['identity']} {sig['normmsg']}"
+    for rx, dest in CRATE_MAP:
+        if rx.search(text):
+            return dest
+    return "unmapped (extend signatures.json / CRATE_MAP)"
+
+
+def nearest_case(sig, cases_dir):
+    """Nearest existing redteam case by model match (read-only, repo-side)."""
+    try:
+        files = sorted(Path(cases_dir).glob("*.json"))
+    except OSError:
+        return None
+    best = None
+    for f in files:
+        try:
+            c = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        model = c.get("model") or ""
+        score = 2 if (model and model in sig["models"]) else 0
+        if best is None or score > best[0]:
+            best = (score, c.get("id") or f.stem, model)
+    return best
+
+
+def repro_pointers(unknown_sigs, cases_dir):
+    L = ["", "repro pointers (unknown signatures):"]
+    for s in unknown_sigs:
+        slug = s.get("slug") or proposed_slug(s, [])
+        L.append(f"  {slug}  ({s['class']} {s['identity']})")
+        L.append(f"    unit-test home: {unit_test_home(s)}")
+        nc = nearest_case(s, cases_dir)
+        if nc:
+            model_note = f" (model {nc[2]})" if nc[2] else ""
+            L.append(f"    nearest case: {nc[1]}{model_note} — suggest new case "
+                     f"'rt-{re.sub(r'[^a-z0-9]+', '-', s['class_norm']).strip('-')}-1' "
+                     f"(wirecap:true)")
+        L.append("    capture: GROK_DOGFOOD_WIRECAP=1 grok-dogfood …  OR  "
+                 "redteam case (wirecap on by default)")
+    return L
+
+
+def card_lines(sess, meta, unified_attr, unified_window, wire, mcp_calls,
+               stderr_servers, mode, live_entry=None, prior_state=None):
+    L = []
+    L.append(f"=== grok-triage card: {sess['id']} ===")
+    L.append(f"title:      {sess['title'] or '-'}")
+    L.append(f"cwd:        {sess['cwd'] or '-'}")
+    L.append(f"model:      {sess['model'] or '-'}")
+    L.append(f"agent:      {sess['agent'] or '-'}")
+    L.append(f"created:    {sess['created_at'] or '-'}")
+    L.append(f"last_active: {sess['last_active'] or '-'}")
+    if sess["request_id"]:
+        L.append(f"request_id: {sess['request_id']} (last turn only — earlier "
+                 "turns correlate via wirecap numeric pairing + ts)")
+    L.append("subagent:   " + ("yes (decoded cwd suffix /subagent-<uuid>)"
+                               if sess["subagent"] else "no"))
+    if mode == "hot":
+        if live_entry:
+            L.append(f"live:       yes (pid {live_entry.get('pid', '-')}, "
+                     f"opened {live_entry.get('opened_at', '-')})")
+        else:
+            L.append("live:       no (historical card)")
+        if prior_state:
+            L.append(f"new-since:  {prior_state.get('last_run_ts', '-')}")
+
+    events = meta.get("events", [])
+    unp = meta.get("unparsed", 0)
+    L.append("")
+    L.append(f"errors ({len(events)} events; unparsed: {unp}):")
+    new_ts = (ts_epoch(prior_state.get("last_run_ts"))
+              if (mode == "hot" and prior_state) else None)
+    for ts, cls, ident, msg, target in events[:MAX_VERBATIM]:
+        marker = ""
+        if new_ts is not None:
+            e = ts_epoch(ts)
+            if e is not None and e > new_ts:
+                marker = "  (new)"
+        L.append(f"  [{ts or '-'}] {cls} {ident}{marker}")
+        if target:
+            L.append(f"    target: {target}")
+        L.append(f"    {str(msg)[:MSG_CAP]}")
+    if len(events) > MAX_VERBATIM:
+        L.append(f"  ... ({len(events) - MAX_VERBATIM} more events capped)")
+
+    L.append("")
+    L.append(f"unified (attributed: {len(unified_attr)}):")
+    for o in unified_attr[:MAX_VERBATIM]:
+        ctx = o.get("ctx") if isinstance(o.get("ctx"), dict) else {}
+        L.append(f"  [{o.get('ts', '-')}] lvl={o.get('lvl', '-')} "
+                 f"msg={o.get('msg', '-')}")
+        if ctx:
+            L.append(f"    ctx: {json.dumps(ctx, default=str)[:MSG_CAP]}")
+    if len(unified_attr) > MAX_VERBATIM:
+        L.append(f"  ... ({len(unified_attr) - MAX_VERBATIM} more lines capped)")
+    if unified_window:
+        # aggregate by (lvl, msg) — at live scale the window holds thousands
+        # of steady-state warns (paywall_check_error); a per-line dump
+        # drowns the card
+        agg = {}
+        for o in unified_window:
+            key = (str(o.get("lvl", "-")), str(o.get("msg", "-")))
+            a = agg.setdefault(key, [0, None])
+            a[0] += 1
+            ts = o.get("ts")
+            if ts and (a[1] is None or ts > a[1]):
+                a[1] = ts
+        L.append(f"unified (in-window, unattributed: "
+                 f"{len(unified_window)} lines -> {len(agg)} classes):")
+        for (lvl, msg), (n, last) in sorted(agg.items(),
+                                            key=lambda kv: -kv[1][0])[:10]:
+            L.append(f"  lvl={lvl} msg={msg} x{n} (last {last or '-'})")
+        if len(agg) > 10:
+            L.append(f"  ... ({len(agg) - 10} more classes)")
+
+    hits = meta.get("chat_hits", [])
+    L.append("")
+    L.append(f"chat_history tool errors ({len(hits)}):")
+    for tcid, seg in hits[:MAX_WIDE_MATCHES]:
+        L.append(f"  [{tcid}] {seg}")
+    if len(hits) > MAX_WIDE_MATCHES:
+        L.append("  ... (truncated scan)")
+
+    if mcp_calls:
+        L.append("")
+        L.append(f"mcp call files ({len(mcp_calls)}):")
+        for h in mcp_calls:
+            L.append(f"  {h}")
+
+    run_name, wire_rows = wire
+    if wire_rows:
+        L.append("")
+        L.append(f"wirecap ({run_name}):")
+        for row in wire_rows:
+            L.append(f"  {row}")
+
+    if stderr_servers:
+        err_servers = [s for s in stderr_servers.values() if s["errors"]]
+        if err_servers:
+            L.append("")
+            L.append("mcp stderr (last 200 lines per server):")
+            for server in sorted(stderr_servers):
+                info = stderr_servers[server]
+                if not info["errors"]:
+                    continue
+                L.append(f"  {info['file']} ({len(info['errors'])} error):")
+                for l in info["errors"][:5]:
+                    L.append(f"    {l.strip()[:MSG_CAP]}")
+
+    notes = list(meta.get("notes", []))
+    if notes:
+        L.append("")
+        L.append("notes:")
+        for n in notes:
+            L.append(f"  {n}")
+    return L
+
+
+# -------------------------------------------------------------------- main
+
+def under_home(p, home):
+    try:
+        Path(os.path.expanduser(str(p))).resolve().relative_to(home)
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def parse_args(argv):
+    def add_common(parser, suppress):
+        d = argparse.SUPPRESS if suppress else None
+        parser.add_argument("--home", default=d,
+                            help="grok home to scan (default ~/.grok)")
+        parser.add_argument("--out", default=d,
+                            help="also write the report to PATH (never "
+                                 "under the home)")
+        parser.add_argument("--state", nargs="?", const="@@BARE@@",
+                            default=d,
+                            help="opt-in state file (default ~/.cache/"
+                                 "grok-triage/state.json); never under the "
+                                 "home")
+        parser.add_argument("--catalog", default=d,
+                            help="signatures.json path (default: next to "
+                                 "this script)")
+
+    ap = argparse.ArgumentParser(prog="grok-triage",
+                                 description="Read-only session/log triage "
+                                              "for a grok home.")
+    add_common(ap, suppress=False)
+    # subparser copies use default=SUPPRESS so flags given before the
+    # subcommand are not clobbered by the subparser's defaults
+    subs = {}
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    for name, help in (("scan", "full census table"),
+                       ("show", "full card for one session"),
+                       ("hot", "card for a live session"),
+                       ("census", "scan + totals + repro pointers")):
+        p = sub.add_parser(name, help=help)
+        add_common(p, suppress=True)
+        subs[name] = p
+    subs["show"].add_argument("sid")
+    subs["hot"].add_argument("sid", nargs="?")
+    subs["hot"].add_argument("--latest", action="store_true")
+    subs["census"].add_argument("--write-catalog", action="store_true",
+                                help="append UNKNOWN signatures as "
+                                     "PROPOSED rows")
+    args = ap.parse_args(argv)
+    for opt in ("home", "out", "state", "catalog"):
+        if not hasattr(args, opt):
+            setattr(args, opt, None)
+    if args.home is None:
+        args.home = (os.environ.get("GROK_TRIAGE_HOME")
+                     or str(Path.home() / ".grok"))
+    return args
+
+
+def read_active_sessions(home):
+    """Returns (entries, notice). Torn/missing -> degrade (m-3)."""
+    f = home / "active_sessions.json"
+    if not f.exists():
+        return [], "active_sessions.json missing"
+    try:
+        data = json.loads(f.read_text())
+        if not isinstance(data, list):
+            raise ValueError("not a list")
+        return [e for e in data if isinstance(e, dict) and e.get("session_id")], None
+    except (OSError, ValueError):
+        return [], "active_sessions.json torn or invalid"
+
+
+def collect(home, catalog):
+    """Full read-only harvest. Returns (sigs, sessions, meta-dict)."""
+    t0 = time.monotonic()
+    sessions, index_notes = build_index(home)
+    by_id = {s["id"]: s for s in sessions}
+    sigs = {}
+    coarse = Counter()
+    meta_by_sid = {}
+    with concurrent.futures.ThreadPoolExecutor(THREADS) as ex:
+        futs = {ex.submit(harvest_session, s, coarse): s for s in sessions}
+        for fut in concurrent.futures.as_completed(futs):
+            s = futs[fut]
+            local, meta = fut.result()
+            merge_sigs(sigs, local)
+            meta_by_sid[s["id"]] = meta
+    unified = harvest_unified(home, by_id)
+    for o, sess in unified:
+        ctx = o.get("ctx") if isinstance(o.get("ctx"), dict) else {}
+        emsg = ctx.get("error") or ctx.get("message") or ""
+        if not isinstance(emsg, str):
+            emsg = ""
+        add_sig(sigs, str(o.get("msg") or "?"), str(o.get("msg") or "?"), emsg,
+                o.get("ts"), (sess or {}).get("id"), (sess or {}).get("model"),
+                msg_in_key=False)
+    stderr_servers = harvest_mcp_stderr(home, sigs)
+    wire = wirecap_report(home)
+    return sigs, sessions, {
+        "index_notes": index_notes,
+        "coarse": coarse,
+        "meta_by_sid": meta_by_sid,
+        "unified": unified,
+        "by_id": by_id,
+        "stderr_servers": stderr_servers,
+        "wire": wire,
+        "wall": time.monotonic() - t0,
+    }
+
+
+def emit(lines, out_path, sweep_value, extra_note=None):
+    """Key sweep (M-4) BEFORE any output: violation -> print nothing, exit 3."""
+    text = "\n".join(lines)
+    if extra_note:
+        text += "\n" + extra_note
+    text += "\n"
+    if sweep_value and sweep_value in text:
+        return EXIT_KEY_SWEEP  # silent
+    sys.stdout.write(text)
+    if out_path:
+        try:
+            out_path.write_text(text)
+        except OSError as e:
+            print(f"grok-triage: cannot write --out {out_path}: {e}",
+                  file=sys.stderr)
+            return EXIT_VIOLATION
+    return EXIT_OK
+
+
+def cmd_scan(args, home, catalog, out_path):
+    sigs, sessions, meta = collect(home, catalog)
+    extra = [f"unified-err-warn={len(meta['unified'])}",
+             f"coarse-outcomes={sum(meta['coarse'].values())}"]
+    L, _ = census_table(sigs, catalog, meta["wall"], home, sessions, extra)
+    if meta["coarse"]:
+        L.append("")
+        L.append("coarse outcome flags (context only, not signatures): "
+                 + ", ".join(f"{k} outcome=error x{v}"
+                             for k, v in sorted(meta["coarse"].items())))
+    if meta["index_notes"]:
+        L.append("notes: " + "; ".join(meta["index_notes"]))
+    return emit(L, out_path, args._sweep_value), meta
+
+
+def cmd_census(args, home, catalog_path, catalog, out_path):
+    if args.write_catalog and under_home(catalog_path, home):
+        print("grok-triage: --catalog under the grok home is rejected "
+              "(read-only contract)", file=sys.stderr)
+        return EXIT_VIOLATION, {}
+    sigs, sessions, meta = collect(home, catalog)
+    extra = [f"unified-err-warn={len(meta['unified'])}",
+             f"coarse-outcomes={sum(meta['coarse'].values())}"]
+    L, rows = census_table(sigs, catalog, meta["wall"], home, sessions, extra)
+    per_class = Counter(s["class_norm"] for s in rows)
+    L.append("")
+    L.append("per-class: " + "  ".join(f"{k}={v}"
+                                       for k, v in per_class.most_common()))
+    unknowns = [s for s in rows if stamp(s, catalog) is None]
+    slug_have = list(catalog)   # m-2: unique slugs across sibling unknowns
+    for s in unknowns:
+        s["slug"] = proposed_slug(s, slug_have)
+        slug_have.append({"id": s["slug"]})
+    if unknowns:
+        cases_dir = Path(__file__).resolve().parent.parent / "redteam" / "cases"
+        L.extend(repro_pointers(unknowns, cases_dir))
+    if args.write_catalog and unknowns:
+        new_rows = []
+        for s in unknowns:
+            new_rows.append({
+                "id": s["slug"],
+                "class": s["class"],
+                "pattern": s["identity"] or s["class_norm"],
+                "rca": "unknown — proposed by census --write-catalog (no auto-RCA)",
+                "bead": "apex-ayl.51",
+                "status": "PROPOSED",
+                "pointer": s["normmsg"][:MSG_CAP],
+                "first_seen": str((s["first"] or "")[:10] or "unknown"),
+                "key": [s["class_norm"], s["identity"], s["normmsg"][:120]],
+            })
+        write_catalog(catalog_path, load_catalog(catalog_path), new_rows)
+        L.append("")
+        L.append(f"catalog: appended {len(new_rows)} PROPOSED row(s) to "
+                 f"{catalog_path}")
+    if meta["index_notes"]:
+        L.append("notes: " + "; ".join(meta["index_notes"]))
+    return emit(L, out_path, args._sweep_value), meta
+
+
+def cmd_show(args, home, catalog, out_path, state_path):
+    sigs, sessions, meta = collect(home, catalog)
+    sess = meta["by_id"].get(args.sid)
+    if sess is None:
+        print(f"grok-triage: unknown session id {args.sid}", file=sys.stderr)
+        return EXIT_VIOLATION, {}
+    unified = meta["unified"]
+    attr = [o for o, s in unified if (s or {}).get("id") == args.sid]
+    meta_s = meta["meta_by_sid"].get(args.sid, {"unparsed": 0, "events": [],
+                                                "chat_hits": [], "notes": []})
+    L = card_lines(sess, meta_s, attr, [], meta["wire"],
+                   scan_mcp_calls(sess), meta["stderr_servers"], "show")
+    return emit(L, out_path, args._sweep_value), meta
+
+
+def cmd_hot(args, home, catalog, out_path, state_path):
+    live, notice = read_active_sessions(home)
+    if not live:
+        print(f"grok-triage hot: no live sessions ({notice or 'empty list'})")
+        return EXIT_OK, None
+    if args.latest or not args.sid:
+        entry = max(live, key=lambda e: e.get("opened_at") or "")
+        target = entry["session_id"]
+    else:
+        entry = next((e for e in live if e["session_id"] == args.sid), None)
+        target = args.sid
+    sigs, sessions, meta = collect(home, catalog)
+    sess = meta["by_id"].get(target)
+    if sess is None:
+        print(f"grok-triage hot: session {target} not in session index",
+              file=sys.stderr)
+        return EXIT_VIOLATION
+    if entry is None:
+        print(f"grok-triage hot: {target} is not live; showing historical "
+              "card (no window filter)")
+        mode = "show"
+        window = []
+        attr = [o for o, s in meta["unified"]
+                if (s or {}).get("id") == sess["id"]]
+    else:
+        mode = "hot"
+        start_eps = [e for e in (ts_epoch(sess.get("created_at")),
+                                 ts_epoch(entry.get("opened_at"))) if e]
+        start = min(start_eps) if start_eps else None
+        attr, window = [], []
+        for o, s in meta["unified"]:
+            if (s or {}).get("id") == sess["id"]:
+                attr.append(o)
+                continue
+            if s is None:
+                ts = ts_epoch(o.get("ts"))
+                if start is None or (ts is not None and ts >= start):
+                    window.append(o)
+    prior = None
+    if state_path and state_path.exists():
+        try:
+            prior = json.loads(state_path.read_text())
+        except (OSError, ValueError):
+            prior = None
+    if prior and prior.get("session_id") != sess["id"]:
+        prior = None
+    meta_s = meta["meta_by_sid"].get(sess["id"], {"unparsed": 0, "events": [],
+                                                 "chat_hits": [], "notes": []})
+    L = card_lines(sess, meta_s, attr, window, meta["wire"],
+                   scan_mcp_calls(sess), meta["stderr_servers"], mode,
+                   live_entry=entry, prior_state=prior)
+    rc = emit(L, out_path, args._sweep_value)
+    if rc == EXIT_OK and state_path:
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(json.dumps({
+                "session_id": sess["id"],
+                "last_run_ts": datetime.now(tz=timezone.utc)
+                .strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "error_events": len(meta_s.get("events", [])),
+            }) + "\n")
+        except OSError as e:
+            print(f"grok-triage: cannot write --state {state_path}: {e}",
+                  file=sys.stderr)
+            return EXIT_VIOLATION, None
+    return rc, sess["id"]
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    home = Path(os.path.expanduser(args.home)).resolve()
+    if args.catalog:
+        catalog_path = Path(os.path.expanduser(args.catalog))
+    else:
+        catalog_path = Path(__file__).resolve().parent / "signatures.json"
+    catalog = load_catalog(catalog_path)
+
+    # C-1/m-6: never write under the home
+    out_path = None
+    if args.out:
+        out_path = Path(os.path.expanduser(args.out))
+        if under_home(out_path, home):
+            print("grok-triage: --out under the grok home is rejected "
+                  "(read-only contract)", file=sys.stderr)
+            return EXIT_VIOLATION
+    state_path = None
+    if args.state:
+        if args.state == "@@BARE@@":
+            state_path = Path.home() / ".cache" / "grok-triage" / "state.json"
+        else:
+            state_path = Path(os.path.expanduser(args.state))
+        if under_home(state_path, home):
+            print("grok-triage: --state under the grok home is rejected "
+                  "(read-only contract)", file=sys.stderr)
+            return EXIT_VIOLATION
+
+    # M-4: read the swept value at start; never print it.
+    args._sweep_value = (os.environ.get("GROK_TRIAGE_TEST_KEY")
+                         or os.environ.get("CODEX_LLM_PROXY_KEY") or "")
+
+    if args.cmd == "scan":
+        rc, _ = cmd_scan(args, home, catalog, out_path)
+    elif args.cmd == "census":
+        rc, _ = cmd_census(args, home, catalog_path, catalog, out_path)
+    elif args.cmd == "show":
+        rc, _ = cmd_show(args, home, catalog, out_path, state_path)
+    elif args.cmd == "hot":
+        rc, _ = cmd_hot(args, home, catalog, out_path, state_path)
+    else:  # pragma: no cover
+        rc = EXIT_VIOLATION
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())
