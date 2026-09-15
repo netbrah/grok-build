@@ -308,6 +308,7 @@ async fn create_test_actor_inner(
                 .expect("test context_window must be non-zero"),
             reasoning_effort: None,
             stream_tool_calls: None,
+            cache_ttl: None,
         },
         chat_persistence,
         chat_event_tx,

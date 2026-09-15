@@ -110,6 +110,12 @@ pub struct SamplerConfig {
     #[serde(default)]
     pub compaction_at_tokens: Option<CompactionAtTokens>,
 
+    /// Messages-wire stable-head cache retention tier ("5m" or "1h");
+    /// `None` = the wire default 5m. Validated at the config layer
+    /// (unknown values are refused and mapped to None there).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_ttl: Option<String>,
+
     /// Server-side doom-loop check policy; `None` disables it.
     /// It also absorbs the reported trigger events (unlike environment headers in [`Self::extra_headers`], this gates the client's decode behavior).
     #[serde(default)]
@@ -155,6 +161,7 @@ impl Default for SamplerConfig {
             supports_backend_search: false,
             compactions_remaining: None,
             compaction_at_tokens: None,
+            cache_ttl: None,
             doom_loop_recovery: None,
             header_injector: None,
             model_family: None,

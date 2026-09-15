@@ -1089,6 +1089,7 @@ fn test_model_entry(
             show_model_fingerprint: false,
             stream_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
+            cache_ttl: None,
             variants: Vec::new(),
         },
         mtls_cert_dir: None,
@@ -1162,6 +1163,75 @@ fn sampling_config_uses_fallback_when_no_model_api_key() {
         None,
     );
     assert_eq!(sampling_config.api_key, Some("fallback-key".to_string()));
+}
+/// ANTHROPIC-WIRE-1 (cut 3): the `cache_ttl` config key — a `[model.<id>]`
+/// row wins for its model, and the `[models]` global fills the rest
+/// (get_or_insert), mirroring the other scalar defaults.
+#[test]
+fn cache_ttl_row_wins_global_fills_the_rest() {
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [models]
+            cache_ttl = "1h"
+
+            [model.claude-opus-4-6]
+            context_window = 200000
+            cache_ttl = "5m"
+        "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(
+        "claude-opus-4-7".to_owned(),
+        prefetch_model_entry("claude-opus-4-7", DEFAULT_CONTEXT_WINDOW, ApiBackend::Messages),
+    );
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    let row = resolved
+        .get("claude-opus-4-6")
+        .expect("the [model.<id>] row must exist");
+    assert_eq!(
+        row.info.cache_ttl.as_deref(),
+        Some("5m"),
+        "the per-model row beats the [models] global"
+    );
+    let filled = resolved
+        .get("claude-opus-4-7")
+        .expect("the prefetched row must exist");
+    assert_eq!(
+        filled.info.cache_ttl.as_deref(),
+        Some("1h"),
+        "the [models] global fills rows without a value"
+    );
+}
+
+/// ANTHROPIC-WIRE-1 (cut 3): `sampling_config_for_model` validates
+/// `cache_ttl` — "5m"/"1h" pass through, any other value is refused
+/// (warned) and mapped to None, and None stays None.
+#[test]
+fn sampling_config_validates_cache_ttl() {
+    for (row, expected) in [
+        (Some("1h"), Some("1h")),
+        (Some("5m"), Some("5m")),
+        (Some("7d"), None),
+        (None, None),
+    ] {
+        let mut model = test_model_entry("test-model", "https://test.api/v1", None, None, None);
+        model.info.cache_ttl = row.map(|s| s.to_owned());
+        let config = sampling_config_for_model(
+            &model,
+            resolve_credentials(&model, None),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            config.cache_ttl.as_deref(),
+            expected,
+            "row {row:?} must validate to {expected:?}"
+        );
+    }
 }
 #[test]
 fn sampling_config_scopes_no_inline_citations_include() {
@@ -2179,6 +2249,7 @@ fn model_info_from_config_propagates_use_concise() {
         show_model_fingerprint: false,
         stream_tool_calls: None,
         laziness_detector: LazinessDetectorPerModelConfig::default(),
+        cache_ttl: None,
         variants: Vec::new(),
     };
     let info = ModelInfo::from_config(&entry);
@@ -2344,6 +2415,7 @@ fn model_info_from_config_propagates_agent_type() {
         show_model_fingerprint: false,
         stream_tool_calls: None,
         laziness_detector: LazinessDetectorPerModelConfig::default(),
+        cache_ttl: None,
         variants: Vec::new(),
     };
     let info = ModelInfo::from_config(&entry);
@@ -2801,6 +2873,7 @@ fn inference_idle_timeout_propagates_to_model_info() {
         show_model_fingerprint: false,
         stream_tool_calls: None,
         laziness_detector: LazinessDetectorPerModelConfig::default(),
+        cache_ttl: None,
         variants: Vec::new(),
     };
     let info = ModelInfo::from_config(&entry);
@@ -7459,6 +7532,7 @@ fn prefetch_model_entry(slug: &str, context_window: u64, api_backend: ApiBackend
             show_model_fingerprint: false,
             stream_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
+            cache_ttl: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
             variants: Vec::new(),
@@ -8520,6 +8594,66 @@ fn p1_route_matrix_config_override_wins_defaults_fill_the_rest() {
     assert_eq!(entry.info.model_family.as_deref(), Some("openai"));
     assert_eq!(entry.info.agent_type, "grok-build");
 }
+/// ANTHROPIC-WIRE-1 (cut 2): an Anthropic row still at its built-in
+/// api_backend must not inherit a NON-MESSAGES endpoint default — claude on
+/// the chat/responses wire is the ANTHROPIC-WIRE-1 fidelity break (probes,
+/// 2026-09-15). The endpoint default is refused (the inherited value is
+/// logged) and the row resolves to Messages instead.
+#[test]
+fn p1_route_matrix_anthropic_rows_never_inherit_non_messages_endpoint_default() {
+    let mut cfg = Config::default();
+    cfg.endpoints.models_base_url = Some("https://llm-proxy.example.com/v1".to_owned());
+    cfg.endpoints.default_api_backend = Some(ApiBackend::Responses);
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(
+        "claude-opus-4-6".to_owned(),
+        prefetch_model_entry("claude-opus-4-6", DEFAULT_CONTEXT_WINDOW, ApiBackend::default()),
+    );
+    prefetched.insert(
+        "claude-sonnet-5".to_owned(),
+        prefetch_model_entry("claude-sonnet-5", DEFAULT_CONTEXT_WINDOW, ApiBackend::default()),
+    );
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    for key in ["claude-opus-4-6", "claude-sonnet-5"] {
+        let entry = resolved
+            .get(key)
+            .expect("prefetched model must exist");
+        assert_eq!(
+            entry.info.api_backend,
+            ApiBackend::Messages,
+            "{key}: Anthropic row must not inherit the non-messages endpoint default"
+        );
+    }
+}
+
+/// ANTHROPIC-WIRE-1 (cut 2 guard): the refusal is scoped to Anthropic slugs
+/// — non-Anthropic rows still inherit the non-messages endpoint default
+/// (seam contract unchanged).
+#[test]
+fn p1_route_matrix_anthropic_gate_scoped_to_anthropic_rows() {
+    let mut cfg = Config::default();
+    cfg.endpoints.models_base_url = Some("https://llm-proxy.example.com/v1".to_owned());
+    cfg.endpoints.default_api_backend = Some(ApiBackend::Responses);
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(
+        "qwen3.8-27b".to_owned(),
+        prefetch_model_entry("qwen3.8-27b", DEFAULT_CONTEXT_WINDOW, ApiBackend::default()),
+    );
+    prefetched.insert(
+        "gpt-5.6-terra".to_owned(),
+        prefetch_model_entry("gpt-5.6-terra", DEFAULT_CONTEXT_WINDOW, ApiBackend::default()),
+    );
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    for key in ["qwen3.8-27b", "gpt-5.6-terra"] {
+        let entry = resolved.get(key).expect("prefetched model must exist");
+        assert_eq!(
+            entry.info.api_backend,
+            ApiBackend::Responses,
+            "{key}: non-Anthropic rows inherit the endpoint default as before"
+        );
+    }
+}
+
 /// W-1 Task 0.3-B (COMP-1 defense-in-depth): the endpoint default must never
 /// grant the privileged "codex" family. That family selects the Codex
 /// Responses wire dialect, which unlocks the compaction_trigger append, the

@@ -380,7 +380,14 @@ pub(crate) fn repair_trailing_assistant(messages: &mut Vec<crate::messages::Mess
 
 /// Marks the last block that can carry one, scanning back past `Thinking`, which the API rejects a breakpoint on.
 fn mark_message_cache_breakpoint(msg: &mut crate::messages::Message) -> bool {
-    use crate::messages::{CacheControl, ContentBlock, MessageContent};
+    mark_message_cache_breakpoint_with(msg, crate::messages::CacheControl::ephemeral())
+}
+
+fn mark_message_cache_breakpoint_with(
+    msg: &mut crate::messages::Message,
+    marker: crate::messages::CacheControl,
+) -> bool {
+    use crate::messages::{ContentBlock, MessageContent};
 
     match &mut msg.content {
         MessageContent::Blocks(blocks) => {
@@ -396,7 +403,7 @@ fn mark_message_cache_breakpoint(msg: &mut crate::messages::Message) -> bool {
                         continue;
                     }
                 };
-                *cache_control = Some(CacheControl::ephemeral());
+                *cache_control = Some(marker.clone());
                 return true;
             }
             false
@@ -406,7 +413,7 @@ fn mark_message_cache_breakpoint(msg: &mut crate::messages::Message) -> bool {
             let text = std::mem::take(text);
             msg.content = MessageContent::Blocks(vec![ContentBlock::Text {
                 text,
-                cache_control: Some(CacheControl::ephemeral()),
+                cache_control: Some(marker),
             }]);
             true
         }
@@ -419,11 +426,17 @@ fn mark_message_cache_breakpoint(msg: &mut crate::messages::Message) -> bool {
 fn apply_cache_breakpoints(
     system_blocks: &mut [crate::messages::TextBlock],
     messages: &mut [crate::messages::Message],
+    head_ttl: Option<&str>,
 ) {
     use crate::messages::{CacheControl, MessageRole};
 
+    let head = match head_ttl {
+        Some(ttl) => CacheControl::ephemeral_with_ttl(ttl),
+        None => CacheControl::ephemeral(),
+    };
+
     if let Some(last) = system_blocks.last_mut() {
-        last.cache_control = Some(CacheControl::ephemeral());
+        last.cache_control = Some(head.clone());
     }
 
     let tip = (0..messages.len())
@@ -446,6 +459,17 @@ fn apply_cache_breakpoints(
             })
     {
         mark_message_cache_breakpoint(&mut messages[prev]);
+    }
+
+    // ANTHROPIC-WIRE-1 (cut 3): with no system prefix the stable head is
+    // the FIRST message. Marked LAST so it wins the head/previous-boundary
+    // collision on that same message; without a configured tier no extra
+    // breakpoint is added (the default wire stays byte-identical).
+    if system_blocks.is_empty()
+        && head_ttl.is_some()
+        && let Some(first) = messages.first_mut()
+    {
+        mark_message_cache_breakpoint_with(first, head);
     }
 }
 
@@ -754,7 +778,10 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     strip_thinking_blocks(&mut messages);
     repair_trailing_assistant(&mut messages);
 
-    apply_cache_breakpoints(&mut system_blocks, &mut messages);
+    // ANTHROPIC-WIRE-1 (cut 3): only "1h" reaches the wire; "5m"/absent and
+    // unknown tiers map to the wire default (no ttl field).
+    let head_ttl = crate::messages::cache_control_ttl(req.cache_ttl.as_deref());
+    apply_cache_breakpoints(&mut system_blocks, &mut messages, head_ttl);
 
     let system: Option<SystemParam> = if system_blocks.is_empty() {
         None
@@ -829,11 +856,25 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         max_tokens: match req.max_output_tokens {
             Some(budget) => budget.max(crate::messages_model::MESSAGES_MAX_OUTPUT_TOKENS_FLOOR),
             // D4 ruling (ledger 2026-09-12): no budget falls back to the
-            // R5 pin-sourced table row (9 endpoint-agreement slugs), else
-            // 0 — the live proxy tolerates 0 (pre-MW-1 wire parity); a
+            // R5 pin-sourced table row (9 endpoint-agreement slugs + the
+            // cut-5 dotted aliases), else 0 — the live proxy tolerates 0
+            // (pre-MW-1 wire parity); a
             // floor-1 fallback truncated every no-budget turn (L2
             // l2_messages_wire, stop_reason=max_tokens).
-            None => crate::messages_model::messages_max_output_tokens_opt(model).unwrap_or(0),
+            // ANTHROPIC-WIRE-1 (cut 5): the no-row case warns — the
+            // pipeline client fill (responses_budget_fallback) is what
+            // floors those slugs; the standalone builder keeps 0.
+            None => match crate::messages_model::messages_max_output_tokens_opt(model) {
+                Some(cap) => cap,
+                None => {
+                    tracing::warn!(
+                        model = %model,
+                        "no-budget messages request: no R5 table row (or alias) for the \
+                         slug; serializing max_tokens: 0 (pre-warm semantics)"
+                    );
+                    0
+                }
+            },
         },
         system,
         tools,

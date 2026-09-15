@@ -229,6 +229,190 @@ fn test_messages_request_cache_breakpoint_skips_thinking() {
     );
 }
 
+/// ANTHROPIC-WIRE-1 (cut 3): the configured retention tier lands on the
+/// STABLE-HEAD breakpoint only — the last system block carries
+/// `ttl: "1h"`, while the tip and previous-boundary breakpoints stay 5m (no
+/// ttl key), so every 1h breakpoint precedes every 5m on the wire (the
+/// RUBRIC ordering rule).
+#[test]
+fn test_messages_request_cache_ttl_lands_on_stable_head_only() {
+    let mut items = vec![
+        ConversationItem::system("You are a helpful assistant."),
+        ConversationItem::user("Fix the bug"),
+    ];
+    items.extend(agent_turn(0));
+    items.push(ConversationItem::assistant("done"));
+    items.push(ConversationItem::user("last"));
+    let mut req = ConversationRequest::from_items(items).with_model("messages-compatible-model");
+    req.cache_ttl = Some("1h".to_owned());
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+
+    // Stable head: a system block carrying a breakpoint forces the blocks
+    // form, and the LAST system block carries the 1h tier.
+    let head = json["system"]
+        .as_array()
+        .expect("a system with a cache breakpoint must serialize as blocks");
+    assert_eq!(
+        head.last().unwrap()["cache_control"],
+        serde_json::json!({ "type": "ephemeral", "ttl": "1h" }),
+        "the stable head adopts the configured 1h tier; {json:#}"
+    );
+    // Tip + previous boundary: 5m (no ttl key).
+    let messages = json["messages"].as_array().unwrap();
+    let tip = messages.last().unwrap();
+    assert_eq!(
+        tip["content"].as_array().unwrap().last().unwrap()["cache_control"],
+        serde_json::json!({ "type": "ephemeral" }),
+        "the tip breakpoint stays 5m; {json:#}"
+    );
+    assert_eq!(
+        count_cache_control(&json),
+        3,
+        "head (1h) + previous (5m) + tip (5m); {json:#}"
+    );
+}
+
+/// ANTHROPIC-WIRE-1 (cut 3): with no system prefix the head tier lands on
+/// the FIRST message — marked last so it wins the head/previous-boundary
+/// collision on that same message — and the tip stays 5m.
+#[test]
+fn test_messages_request_cache_ttl_without_system_prefix_lands_on_first_message() {
+    let items = vec![
+        ConversationItem::user("Fix the bug"),
+        ConversationItem::assistant("done"),
+    ];
+    let mut req = ConversationRequest::from_items(items).with_model("messages-compatible-model");
+    req.cache_ttl = Some("1h".to_owned());
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    let messages = json["messages"].as_array().unwrap();
+
+    assert_eq!(
+        messages[0]["content"].as_array().unwrap().last().unwrap()["cache_control"],
+        serde_json::json!({ "type": "ephemeral", "ttl": "1h" }),
+        "no system prefix: the first message is the stable head; {json:#}"
+    );
+    let tip = messages.last().unwrap();
+    assert_eq!(
+        tip["content"].as_array().unwrap().last().unwrap()["cache_control"],
+        serde_json::json!({ "type": "ephemeral" }),
+        "the tip breakpoint stays 5m; {json:#}"
+    );
+    assert_eq!(
+        count_cache_control(&json),
+        2,
+        "head (1h, wins the collision) + tip (5m); {json:#}"
+    );
+}
+
+/// ANTHROPIC-WIRE-1 (cut 3): "5m" (the wire default) and unknown tiers
+/// serialize NO ttl field anywhere — only "1h" touches the wire.
+#[test]
+fn test_messages_request_cache_ttl_5m_and_unknown_serialize_no_ttl() {
+    for ttl in ["5m", "7d"] {
+        let mut req =
+            ConversationRequest::from_items(vec![
+                ConversationItem::system("You are a helpful assistant."),
+                ConversationItem::user("Fix the bug"),
+                ConversationItem::assistant("done"),
+            ])
+            .with_model("messages-compatible-model");
+        req.cache_ttl = Some(ttl.to_owned());
+
+        let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+        let wire = serde_json::to_string(&json).unwrap();
+        assert!(
+            !wire.contains("\"ttl\""),
+            "tier {ttl}: the wire default 5m serializes no ttl field; {json:#}"
+        );
+    }
+}
+
+/// ANTHROPIC-WIRE-1 (cut 3, default-wire parity): with no tier configured
+/// the wire is byte-identical to pre-cut — no ttl key anywhere, no extra
+/// breakpoint on a no-system transcript.
+#[test]
+fn test_messages_request_cache_ttl_unset_keeps_wire_byte_identical() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::system("You are a helpful assistant."),
+        ConversationItem::user("Fix the bug"),
+        ConversationItem::assistant("done"),
+    ])
+    .with_model("messages-compatible-model");
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    assert!(
+        !serde_json::to_string(&json).unwrap().contains("ttl"),
+        "unset tier: no ttl field on the wire; {json:#}"
+    );
+
+    let no_system = ConversationRequest::from_items(vec![
+        ConversationItem::user("Fix the bug"),
+        ConversationItem::assistant("done"),
+    ])
+    .with_model("messages-compatible-model");
+    let json = serde_json::to_value(build_messages_request(&no_system)).unwrap();
+    let messages = json["messages"].as_array().unwrap();
+    assert_eq!(
+        messages[0]["content"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["cache_control"],
+        serde_json::json!({ "type": "ephemeral" }),
+        "no-system no-tier: the previous-boundary breakpoint keeps its \
+         pre-cut 5m shape and no head breakpoint is added; {json:#}"
+    );
+    assert_eq!(
+        count_cache_control(&json),
+        2,
+        "no-system no-tier: previous + tip only (the pre-cut shape); {json:#}"
+    );
+}
+
+/// ANTHROPIC-WIRE-1 (cut 5): the standalone-builder full matrix over ALL 17
+/// pinned claude slugs, no budget. The 10 adopted spellings (6 raw + 4
+/// dotted via alias) serialize their explicit 128_000 caps, the 3 haiku
+/// rows 64_000, and the 4 slugs with no row in either spelling (the
+/// opus/sonnet 4.5 pairs) serialize the pre-warm 0 (rule 4 — the pipeline
+/// client fill is what floors those at 64K; see the sampler matrix test).
+#[test]
+fn test_messages_request_r5_full_matrix_no_budget() {
+    let cases: &[(&str, u64)] = &[
+        // 128000 — raw agreement rows:
+        ("claude-sonnet-5", 128_000),
+        ("claude-opus-5", 128_000),
+        ("claude-opus-4-8", 128_000),
+        ("claude-opus-4-7", 128_000),
+        ("claude-opus-4-6", 128_000),
+        ("claude-sonnet-4-6", 128_000),
+        // 128000 — dotted spellings resolved via the cut-5 alias:
+        ("claude-opus-4.6", 128_000),
+        ("claude-opus-4.7", 128_000),
+        ("claude-opus-4.8", 128_000),
+        ("claude-sonnet-4.6", 128_000),
+        // 64000 — haiku agreement rows:
+        ("claude-haiku-4.5", 64_000),
+        ("claude-haiku-4-5", 64_000),
+        ("claude-haiku-4-5-20251001", 64_000),
+        // No row in either spelling: pre-warm 0 (builder rule 4).
+        ("claude-opus-4.5", 0),
+        ("claude-opus-4-5", 0),
+        ("claude-sonnet-4.5", 0),
+        ("claude-sonnet-4-5", 0),
+    ];
+    for &(slug, expected) in cases {
+        let req = ConversationRequest::from_items(vec![ConversationItem::user("hi")])
+            .with_model(slug);
+        let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+        assert_eq!(
+            json["max_tokens"].as_u64(),
+            Some(expected),
+            "slug {slug}: no-budget max_tokens must be {expected}"
+        );
+    }
+}
+
 #[test]
 fn test_btw_cross_api_messages_no_regressions() {
     let items = btw_prepare_items(btw_mid_turn_conversation());
@@ -1659,10 +1843,14 @@ fn d4_max_tokens_combination_arms() {
     );
     // R5: a DIVERGENT slug is withheld (no row) and takes the 0 fallback;
     // so does an unknown slug — the pre-MW-3 wire parity for both.
+    // ANTHROPIC-WIRE-1 (cut 5, disclosed amendment of the MW-3 arm): the
+    // dotted 4.6–4.8 spellings now alias to their adopted rows (128000 —
+    // see r5_divergent_slugs_alias_resolution); this arm keeps a divergent
+    // slug with no row in EITHER spelling.
     assert_eq!(
-        built_max("claude-opus-4.8", None),
+        built_max("claude-opus-4.5", None),
         0,
-        "unset + divergent slug (withheld row): proxy-tolerated 0"
+        "unset + no-row-in-either-spelling divergent slug: proxy-tolerated 0"
     );
     assert_eq!(
         built_max("some-unknown-slug", None),

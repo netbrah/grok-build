@@ -87,17 +87,44 @@ pub struct TextBlock {
     pub cache_control: Option<CacheControl>,
 }
 
+/// A prompt-cache breakpoint marker.
+///
+/// `ttl` is the extended cache retention tier ("5m" or "1h"); `None`
+/// (default) serializes no ttl field — the wire's 5m default. Probes S1/P2
+/// (2026-09-15): the live proxy accepts `ttl: "1h"`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheControl {
     #[serde(rename = "type")]
     pub r#type: String, // "ephemeral"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<String>,
 }
 
 impl CacheControl {
+    /// The wire-default (5m) breakpoint — serializes no ttl field.
     pub fn ephemeral() -> Self {
         Self {
             r#type: "ephemeral".to_owned(),
+            ttl: None,
         }
+    }
+    /// A breakpoint on the extended retention tier (e.g. "1h").
+    pub fn ephemeral_with_ttl(ttl: impl Into<String>) -> Self {
+        Self {
+            r#type: "ephemeral".to_owned(),
+            ttl: Some(ttl.into()),
+        }
+    }
+}
+
+/// Maps a configured retention tier onto the wire: only "1h" emits a ttl
+/// field; "5m"/absent = the wire default (no field); any other value is a
+/// config typo mapped to the 5m default (the config layer warns).
+pub fn cache_control_ttl(ttl: Option<&str>) -> Option<&str> {
+    match ttl {
+        Some("1h") => Some("1h"),
+        None | Some("5m") => None,
+        Some(_) => None,
     }
 }
 
@@ -679,6 +706,41 @@ pub struct StreamError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ANTHROPIC-WIRE-1 (cut 3, probes S1/P2 2026-09-15): the wire
+    /// `cache_control.ttl` extension. The default 5m tier serializes NO ttl
+    /// field (byte-identical to the pre-cut wire), "1h" emits exactly
+    /// `{"type":"ephemeral","ttl":"1h"}`, and absent/unknown tiers map to
+    /// the 5m default at the config boundary (`cache_control_ttl`).
+    #[test]
+    fn cache_control_ttl_serialization_and_parse() {
+        let json = serde_json::to_value(CacheControl::ephemeral()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "type": "ephemeral" }),
+            "the default tier must serialize no ttl key"
+        );
+        let json = serde_json::to_value(CacheControl::ephemeral_with_ttl("1h")).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "type": "ephemeral", "ttl": "1h" })
+        );
+
+        let parsed: CacheControl = serde_json::from_str(r#"{"type":"ephemeral"}"#).unwrap();
+        assert_eq!(parsed.ttl, None, "absent ttl must parse to None");
+        let parsed: CacheControl =
+            serde_json::from_str(r#"{"type":"ephemeral","ttl":"1h"}"#).unwrap();
+        assert_eq!(parsed.ttl.as_deref(), Some("1h"));
+
+        assert_eq!(cache_control_ttl(Some("1h")), Some("1h"));
+        assert_eq!(cache_control_ttl(Some("5m")), None);
+        assert_eq!(cache_control_ttl(None), None);
+        assert_eq!(
+            cache_control_ttl(Some("7d")),
+            None,
+            "an unknown tier falls back to the wire default; the config layer warns"
+        );
+    }
 
     #[test]
     fn stop_reason_deserializes_all_known_values_and_catches_unknown() {

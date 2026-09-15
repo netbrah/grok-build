@@ -35,6 +35,26 @@ use crate::messages::{ThinkingConfig, ThinkingDisplay};
 /// 2026-09-12 — supersedes the spec v1 floor-for-all fallback).
 pub const MESSAGES_MAX_OUTPUT_TOKENS_FLOOR: u32 = 1;
 
+/// Floor for a no-budget request on the Responses wire when neither the
+/// request nor the model config carries a budget and the model table has no
+/// row: 64K. The Responses wire must never serialize an omitted
+/// `max_output_tokens` — an omitted field takes the per-model upstream
+/// (proxy/LiteLLM) default, which for claude-opus-5 is exactly 4,096 (probe
+/// A, 2026-09-15) and is consumed 100% by default-on reasoning
+/// (text_tokens 0), leaving the turn with no usable output.
+pub const RESPONSES_DEFAULT_MAX_OUTPUT_TOKENS: u32 = 64_000;
+
+/// The fallback budget for a no-budget conversation request: the alias-aware
+/// R5 table row when one exists (claude slugs), else
+/// [`RESPONSES_DEFAULT_MAX_OUTPUT_TOKENS`]. Drives the conversation/responses
+/// default fills (xai-grok-sampler `apply_conversation_defaults` /
+/// `apply_response_defaults`) so the Responses wire always carries an
+/// explicit `max_output_tokens`.
+pub fn responses_budget_fallback(model_slug: &str) -> u32 {
+    messages_max_output_tokens_opt(model_slug)
+        .unwrap_or(RESPONSES_DEFAULT_MAX_OUTPUT_TOKENS)
+}
+
 /// Whether the slug names an Anthropic Claude model.
 ///
 /// Behavioral reference (not copied): xli@3d4a08271e + audited-ledger
@@ -67,17 +87,20 @@ pub fn messages_thinking_config(
     })
 }
 
-/// Per-model `max_tokens` cap for the `/v1/messages` wire (D4, R5).
+/// Per-model `max_tokens` cap for the `/v1/messages` wire (D4, R5,
+/// alias-aware per ANTHROPIC-WIRE-1 cut 5).
 ///
 /// Returns the pin-sourced table row when one exists (the 9
 /// endpoint-agreement rows — see [`per_model_max_output_tokens`]), else
-/// `None`. The builder prefers an explicit `req.max_output_tokens`
-/// (floored at [`MESSAGES_MAX_OUTPUT_TOKENS_FLOOR`]); a no-budget request
-/// falls back to the table row, else `0` (proxy-tolerated, pre-MW-1 wire
-/// parity — see the `MESSAGES_MAX_OUTPUT_TOKENS_FLOOR` docs for the
-/// ruling).
+/// the row for the slug's version alias ([`alias_slug`]) — the dotted
+/// spellings of the adopted opus/sonnet 4.6–4.8 rows — else `None`. The
+/// builder prefers an explicit `req.max_output_tokens` (floored at
+/// [`MESSAGES_MAX_OUTPUT_TOKENS_FLOOR`]); a no-budget request falls back
+/// to the table row, else warns and serializes `0` (proxy-tolerated,
+/// pre-warm wire parity — see the `MESSAGES_MAX_OUTPUT_TOKENS_FLOOR`
+/// docs for the ruling).
 pub fn messages_max_output_tokens_opt(model_slug: &str) -> Option<u32> {
-    per_model_max_output_tokens(model_slug)
+    per_model_max_output_tokens_resolved(model_slug)
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +139,58 @@ fn per_model_max_output_tokens(slug: &str) -> Option<u32> {
         "claude-haiku-4.5" | "claude-haiku-4-5" | "claude-haiku-4-5-20251001" => Some(64_000),
         // 8 divergent slugs: withheld as None (see fn docs); unknown slugs:
         // None (the builder's 0-fallback wins).
+        _ => None,
+    }
+}
+
+/// ANTHROPIC-WIRE-1 (cut 5): the alias-aware resolver — the raw R5 table
+/// row for the slug, else the row for its version alias ([`alias_slug`]).
+/// The raw table and its withholding ruling stay untouched: the alias only
+/// bridges a spelling to a row the table already adopted; no side of a
+/// divergence is picked.
+fn per_model_max_output_tokens_resolved(slug: &str) -> Option<u32> {
+    per_model_max_output_tokens(slug)
+        .or_else(|| alias_slug(slug).and_then(|alias| per_model_max_output_tokens(&alias)))
+}
+
+/// ANTHROPIC-WIRE-1 (cut 5): qwen-code `tokenLimits.ts:162`-style version
+/// alias for claude slugs (behavioral reference, not copied). Lowercases,
+/// strips the `claude-` prefix, and normalizes the major.minor version
+/// segment so dotted and hyphenated spellings cross-resolve:
+/// `claude-opus-4.6` → `claude-opus-4-6`, `claude-opus-4-6` →
+/// `claude-opus-4.6`, `claude-haiku-4-5-20251001` →
+/// `claude-haiku-4.5-20251001`; a dotted patch folds away
+/// (`claude-opus-4.8.0` → `claude-opus-4-8`). `None` when the slug is not
+/// a claude slug with an all-digit major.minor segment (e.g.
+/// `claude-opus-5`, `gpt-5.6`, unknown shapes).
+fn alias_slug(slug: &str) -> Option<String> {
+    let lower = slug.to_ascii_lowercase();
+    let rest = lower.strip_prefix("claude-")?;
+    let digit = rest.find(|c: char| c.is_ascii_digit())?;
+    let (family_raw, version) = rest.split_at(digit);
+    let family = family_raw.strip_suffix('-')?;
+    if family.is_empty() {
+        return None;
+    }
+    let major_len = version.bytes().take_while(|b| b.is_ascii_digit()).count();
+    let (major, after) = version.split_at(major_len);
+    if major.is_empty() || after.is_empty() {
+        return None; // no minor segment (`claude-opus-5`)
+    }
+    let (sep, tail) = after.split_at(1);
+    let minor_len = tail.bytes().take_while(|b| b.is_ascii_digit()).count();
+    let (minor, suffix) = tail.split_at(minor_len);
+    if minor.is_empty() {
+        return None; // separator not followed by an all-digit minor
+    }
+    match sep {
+        "." => {
+            // Dotted input: normalize to the hyphen spelling; a dotted
+            // patch (`4.5.1`) folds away.
+            let patch = if suffix.starts_with('.') { "" } else { suffix };
+            Some(format!("claude-{family}-{major}-{minor}{patch}"))
+        }
+        "-" => Some(format!("claude-{family}-{major}.{minor}{suffix}")),
         _ => None,
     }
 }
@@ -223,8 +298,49 @@ mod tests {
     /// the ledger item-11 live verification (2026-09-12 ruling).
     ///
     /// Provenance: pinned-snapshot-sourced — same two pins as r5_pinned_agreement_rows_adopted; the divergence set is the complement of the agreement set in the cross-check
+    /// ANTHROPIC-WIRE-1 (cut 5): the resolver is ALIAS-AWARE on top of the
+    /// intact ruling. The dotted spellings of the 4 adopted opus/sonnet
+    /// 4.6–4.8 rows resolve through the qwen-code-style version alias to
+    /// their hyphenated agreement rows (128_000); the 4 slugs with no row in
+    /// EITHER spelling (the opus/sonnet 4.5 pairs) stay withheld as None —
+    /// the builder then warns and serializes the pre-warm 0 fallback.
     #[test]
-    fn r5_divergent_slugs_withheld_as_none() {
+    fn r5_divergent_slugs_alias_resolution() {
+        // Dotted spellings of adopted rows: resolved via alias.
+        for slug in [
+            "claude-opus-4.6",
+            "claude-opus-4.7",
+            "claude-opus-4.8",
+            "claude-sonnet-4.6",
+        ] {
+            assert_eq!(
+                messages_max_output_tokens_opt(slug),
+                Some(128_000),
+                "dotted slug {slug} must alias to its adopted row"
+            );
+        }
+        // No row in either spelling: still withheld (None).
+        for slug in [
+            "claude-opus-4.5",
+            "claude-opus-4-5",
+            "claude-sonnet-4.5",
+            "claude-sonnet-4-5",
+        ] {
+            assert_eq!(
+                messages_max_output_tokens_opt(slug),
+                None,
+                "slug {slug} has no row in either spelling; the \
+                 builder's warn + 0 fallback wins"
+            );
+        }
+    }
+
+    /// ANTHROPIC-WIRE-1 (cut 5): the RAW table keeps the R5 ruling intact —
+    /// all 8 divergent slugs stay withheld at the raw layer; the alias only
+    /// bridges to already-adopted rows above it. (Passes pre-cut as well:
+    /// this pins that the cut did not touch the raw table.)
+    #[test]
+    fn r5_raw_table_withholds_all_divergent_slugs() {
         let withheld = [
             "claude-opus-4.5",
             "claude-opus-4.6",
@@ -237,9 +353,9 @@ mod tests {
         ];
         for slug in withheld {
             assert_eq!(
-                messages_max_output_tokens_opt(slug),
+                per_model_max_output_tokens(slug),
                 None,
-                "divergent slug {slug} must stay withheld (None)"
+                "raw divergent slug {slug} must stay withheld (None)"
             );
         }
     }
@@ -259,6 +375,35 @@ mod tests {
             assert!(
                 src.contains(hash),
                 "both pin sha256s must stay verbatim in messages_model.rs"
+            );
+        }
+    }
+
+    /// ANTHROPIC-WIRE-1 (cut 5): `alias_slug` shape — qwen-code
+    /// tokenLimits.ts:162-style normalization (behavioral reference, not
+    /// copied): dotted and hyphenated spellings cross-resolve, a dotted
+    /// patch folds away, and non-claude / no-minor / unknown shapes have
+    /// no alias.
+    #[test]
+    fn alias_slug_shape() {
+        let cases: &[(&str, Option<&str>)] = &[
+            ("claude-opus-4.6", Some("claude-opus-4-6")),
+            ("claude-opus-4-6", Some("claude-opus-4.6")),
+            ("claude-sonnet-4.6", Some("claude-sonnet-4-6")),
+            ("claude-haiku-4.5", Some("claude-haiku-4-5")),
+            ("claude-haiku-4-5-20251001", Some("claude-haiku-4.5-20251001")),
+            ("claude-haiku-4.5-20251001", Some("claude-haiku-4-5-20251001")),
+            ("claude-opus-4.8.0", Some("claude-opus-4-8")),
+            ("CLAUDE-OPUS-4.6", Some("claude-opus-4-6")),
+            ("claude-opus-5", None),
+            ("gpt-5.6", None),
+            ("some-unknown-slug", None),
+        ];
+        for (slug, expected) in cases {
+            assert_eq!(
+                alias_slug(slug).as_deref(),
+                *expected,
+                "alias_slug({slug})"
             );
         }
     }

@@ -17,6 +17,7 @@ use xai_grok_sampler::{AuthScheme, SamplerConfig};
 use xai_grok_sampling_types::{
     CatalogFamily, CompactionAtTokens, CompactionsRemaining, REASONING_EFFORT_META_KEY,
     REASONING_EFFORTS_META_KEY, ReasoningEffort, ReasoningEffortOption,
+    is_anthropic_model,
     reasoning_effort_meta_value, reasoning_efforts_meta_value, resolve_api_backend, resolve_family,
     resolve_reasoning_efforts,
 };
@@ -1056,6 +1057,10 @@ pub struct ModelsConfig {
     pub subagent_rate_limit_max_attempts: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_tool_calls: Option<bool>,
+    /// Global messages-wire stable-head cache retention tier ("5m" or
+    /// "1h"); per-model `[model.<id>]` values win. `None` = unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_ttl: Option<String>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -3407,13 +3412,27 @@ fn fill_from_endpoint_defaults(entry: &mut ModelEntry, endpoints: &EndpointsConf
     if info.api_backend == ApiBackend::default()
         && let Some(backend) = &endpoints.default_api_backend
     {
-        tracing::debug!(
-            model = %info.model,
-            inherited = ?backend,
-            source = "endpoint-defaults",
-            "hydrated model at built-in api_backend, filling from endpoint defaults"
-        );
-        info.api_backend.clone_from(backend);
+        if is_anthropic_model(&info.model) && backend != &ApiBackend::Messages {
+            // ANTHROPIC-WIRE-1 (cut 2): a claude row must never leave this
+            // seam on the chat/responses wire — the endpoint default is
+            // refused (logged) and Messages is inferred instead.
+            tracing::warn!(
+                model = %info.model,
+                endpoint_default = ?backend,
+                inferred = "messages",
+                source = "endpoint-defaults",
+                "Anthropic model at built-in api_backend must not inherit a non-messages endpoint default; inferring messages"
+            );
+            info.api_backend = ApiBackend::Messages;
+        } else {
+            tracing::debug!(
+                model = %info.model,
+                inherited = ?backend,
+                source = "endpoint-defaults",
+                "hydrated model at built-in api_backend, filling from endpoint defaults"
+            );
+            info.api_backend.clone_from(backend);
+        }
     }
     if info.context_window.get() == DEFAULT_CONTEXT_WINDOW
         && let Some(context_window) = endpoints.default_context_window.and_then(NonZeroU64::new)
@@ -3480,6 +3499,18 @@ fn fill_from_endpoint_defaults(entry: &mut ModelEntry, endpoints: &EndpointsConf
             "hydrated model without env_key, filling from endpoint defaults"
         );
         entry.env_key = Some(env_key.clone());
+    }
+
+    // ANTHROPIC-WIRE-1 (cut 2, defense in depth): any Anthropic row still on
+    // a non-messages backend after all fills (e.g. donor-inherited) is a
+    // fidelity break — warn, don't rewrite (downstream overrides are the
+    // operator's explicit choice).
+    if is_anthropic_model(&info.model) && info.api_backend != ApiBackend::Messages {
+        tracing::warn!(
+            model = %info.model,
+            api_backend = ?info.api_backend,
+            "defense in depth: Anthropic model resolved to a non-messages api_backend"
+        );
     }
 }
 /// Assemble the final model map. Priority (highest wins):
@@ -3714,6 +3745,9 @@ fn apply_global_scalar_defaults(
         if let Some(v) = models.stream_tool_calls {
             info.stream_tool_calls.get_or_insert(v);
         }
+        if let Some(v) = models.cache_ttl.clone() {
+            info.cache_ttl.get_or_insert(v);
+        }
     }
 }
 /// Built-in default models. Prefer `resolve_model_list()`.
@@ -3859,6 +3893,7 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 show_model_fingerprint: m.show_model_fingerprint,
                 stream_tool_calls: None,
                 laziness_detector: LazinessDetectorPerModelConfig::default(),
+                cache_ttl: None,
             };
             (key, config)
         })
@@ -3989,6 +4024,11 @@ pub struct ModelEntryConfig {
     /// Defaults to the all-disabled state via `#[serde(default)]`.
     #[serde(default, skip_serializing_if = "is_default_laziness_detector")]
     pub laziness_detector: LazinessDetectorPerModelConfig,
+    /// Messages-wire stable-head cache retention tier ("5m" or "1h");
+    /// `None` = the wire default 5m. Unknown values are refused (warned)
+    /// in `sampling_config_for_model` and map to the 5m default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_ttl: Option<String>,
 }
 /// Derives `PartialEq` on `f32`, which is fine for the current shape. Both `f32` fields default to `None`, so there's no parsed-vs-literal `0.7` float equality footgun.
 /// If a future default introduces `Some(0.7)`, this helper must be reworked (e.g. compare on tolerance, or switch to a bit-pattern compare).
@@ -4061,6 +4101,10 @@ pub struct ConfigModelOverride {
     pub compaction_at_tokens: Option<CompactionAtTokens>,
     pub show_model_fingerprint: Option<bool>,
     pub stream_tool_calls: Option<bool>,
+    /// Messages-wire stable-head cache retention tier ("5m" or "1h").
+    /// Absent = inherit (donor/prefetched, else `[models]` global, else
+    /// the wire default 5m).
+    pub cache_ttl: Option<String>,
 }
 impl ConfigModelOverride {
     pub(crate) fn apply(
@@ -4173,6 +4217,9 @@ impl ConfigModelOverride {
         if self.stream_tool_calls.is_some() {
             entry.info.stream_tool_calls = self.stream_tool_calls;
         }
+        if self.cache_ttl.is_some() {
+            entry.info.cache_ttl = self.cache_ttl.clone();
+        }
         if self.api_key.is_some() {
             entry.api_key.clone_from(&self.api_key);
         }
@@ -4281,6 +4328,10 @@ pub struct ModelInfo {
     /// See [`LazinessDetectorPerModelConfig`].
     #[serde(default)]
     pub laziness_detector: LazinessDetectorPerModelConfig,
+    /// Messages-wire stable-head cache retention tier ("5m" or "1h");
+    /// `None` = the wire default 5m.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_ttl: Option<String>,
 }
 impl ModelInfo {
     /// Minimal fallback descriptor for an unknown model slug.
@@ -4325,6 +4376,7 @@ impl ModelInfo {
             show_model_fingerprint: false,
             stream_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
+            cache_ttl: None,
         }
     }
     pub(crate) fn from_config(entry: &ModelEntryConfig) -> Self {
@@ -4367,6 +4419,7 @@ impl ModelInfo {
             show_model_fingerprint: entry.show_model_fingerprint,
             stream_tool_calls: entry.stream_tool_calls,
             laziness_detector: entry.laziness_detector.clone(),
+            cache_ttl: entry.cache_ttl.clone(),
         }
     }
     /// Whether `id` is one of the ids this model sends: its own, or the one it uses at some effort.
@@ -5115,11 +5168,12 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 compaction_at_tokens: None,
                 show_model_fingerprint: false,
                 stream_tool_calls: None,
-                laziness_detector: LazinessDetectorPerModelConfig::default(),
-            },
-            mtls_cert_dir: None,
-            api_key: Some(bearer),
-            env_key: None,
+            laziness_detector: LazinessDetectorPerModelConfig::default(),
+            cache_ttl: None,
+        },
+        mtls_cert_dir: None,
+        api_key: Some(bearer),
+        env_key: None,
             auth_provider: None,
             api_base_url: None,
         };
@@ -5230,6 +5284,21 @@ pub(crate) fn sampling_config_for_model(
         &credentials.base_url,
     );
     let api_backend = info.api_backend.clone();
+    // ANTHROPIC-WIRE-1 (cut 3): only "5m"/"1h" are wire tiers; any other
+    // value is a config typo — refuse it (warn) and fall back to the 5m
+    // default (None = no ttl field on the wire).
+    let cache_ttl = match info.cache_ttl.as_deref() {
+        Some("5m") | Some("1h") => info.cache_ttl.clone(),
+        Some(other) => {
+            tracing::warn!(
+                model = %model_name,
+                cache_ttl = other,
+                "unrecognized cache_ttl (expected \"5m\" or \"1h\"); using the 5m (no-ttl) default"
+            );
+            None
+        }
+        None => None,
+    };
     let extra_response_includes = response_include_extensions(
         info.supports_backend_search,
         &api_backend,
@@ -5244,6 +5313,7 @@ pub(crate) fn sampling_config_for_model(
         temperature,
         top_p,
         api_backend,
+        cache_ttl,
         auth_scheme: credentials.auth_scheme,
         extra_headers,
         extra_response_includes,
@@ -5342,6 +5412,7 @@ fn resolve_hidden_default_web_search_sampling_config(
             show_model_fingerprint: false,
             stream_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
+            cache_ttl: None,
         },
         mtls_cert_dir: None,
         api_key: None,

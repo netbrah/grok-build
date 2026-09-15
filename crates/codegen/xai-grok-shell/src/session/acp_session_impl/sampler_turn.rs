@@ -647,6 +647,7 @@ impl SessionActor {
                 context_window: std::num::NonZeroU64::new(256_000).unwrap(),
                 reasoning_effort: None,
                 stream_tool_calls: None,
+                cache_ttl: None,
             });
         let model_family = {
             let models = self.models_manager.models();
@@ -758,6 +759,7 @@ impl SessionActor {
             force_http1: false,
             max_retries: cfg.max_retries.or(Some(self.max_retries)),
             rate_limit_retry_threshold: cfg.rate_limit_retry_threshold,
+            cache_ttl: cfg.cache_ttl.clone(),
             stream_tool_calls: cfg.stream_tool_calls.unwrap_or(false),
             idle_timeout_secs: None,
             client_identifier: self.client_identifier.clone(),

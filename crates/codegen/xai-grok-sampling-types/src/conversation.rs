@@ -786,6 +786,10 @@ pub struct ConversationRequest {
     pub temperature: Option<f32>,
     /// Maximum output tokens
     pub max_output_tokens: Option<u32>,
+    /// Messages-wire stable-head cache retention tier ("5m" or "1h").
+    /// `None` (default) = the wire default 5m (no ttl field). Only "1h"
+    /// touches the wire; unknown values are refused at the config layer.
+    pub cache_ttl: Option<String>,
     /// Top-p sampling
     pub top_p: Option<f32>,
     /// Custom headers for xAI tracking

@@ -1088,6 +1088,10 @@ pub struct SamplingConfig {
     /// When true, inject `stream_tool_calls: true` into the Responses API request body so the upstream emits per-chunk argument deltas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_tool_calls: Option<bool>,
+    /// Messages-wire stable-head cache retention tier ("5m" or "1h");
+    /// `None` = the wire default 5m (no ttl field).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_ttl: Option<String>,
 }
 
 // ============ Responses API wrapper ============

@@ -82,6 +82,7 @@ impl ChatStateActor {
             model: Some(self.state.sampling_config.model.clone()),
             temperature: self.state.sampling_config.temperature,
             max_output_tokens: self.state.sampling_config.max_completion_tokens,
+            cache_ttl: self.state.sampling_config.cache_ttl.clone(),
             top_p: self.state.sampling_config.top_p,
             x_grok_conv_id: Some(conv_id),
             x_grok_req_id: Some(req_id),

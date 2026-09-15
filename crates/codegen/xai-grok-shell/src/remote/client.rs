@@ -824,6 +824,9 @@ pub(crate) fn parse_remote_model_value(
                 }
             })
             .unwrap_or_default(),
+        // Remote catalog rows carry no cache tier; operators set it in
+        // config.toml ([model.<id>] / [models] cache_ttl).
+        cache_ttl: None,
     })
 }
 fn get_string(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<String> {

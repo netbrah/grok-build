@@ -1887,6 +1887,19 @@ impl SamplingClient {
             request.inner.max_output_tokens = self.defaults.max_completion_tokens;
         }
 
+        // ANTHROPIC-WIRE-1 (cut 1, defense in depth on the raw responses
+        // path): the Responses wire must never serialize an omitted
+        // max_output_tokens — an omitted field takes the per-model upstream
+        // (proxy/LiteLLM) default (4,096 for claude-opus-5, probe A,
+        // 2026-09-15), consumed 100% by default-on reasoning. No budget
+        // after the model default: the alias-aware R5 table row, else the
+        // 64K floor.
+        if request.inner.max_output_tokens.is_none() {
+            let model = request.inner.model.as_deref().unwrap_or_default();
+            request.inner.max_output_tokens =
+                Some(xai_grok_sampling_types::responses_budget_fallback(model));
+        }
+
         // The API defaults `store` to true, which breaks ZDR compliance
         if request.inner.store.is_none() {
             request.inner.store = Some(false);
@@ -2884,6 +2897,18 @@ impl SamplingClient {
             request.max_output_tokens = self.defaults.max_completion_tokens;
         }
 
+        // ANTHROPIC-WIRE-1 (cut 1, probe A/B2 2026-09-15): the Responses wire
+        // must never serialize an omitted max_output_tokens — an omitted
+        // field takes the per-model upstream (proxy/LiteLLM) default, which
+        // for claude-opus-5 is exactly 4,096 and is consumed 100% by
+        // default-on reasoning (text_tokens 0). No budget after the model
+        // default: the alias-aware R5 table row, else the 64K floor.
+        if request.max_output_tokens.is_none() {
+            let model = request.model.as_deref().unwrap_or_default();
+            request.max_output_tokens =
+                Some(xai_grok_sampling_types::responses_budget_fallback(model));
+        }
+
         Ok(())
     }
 
@@ -3336,6 +3361,7 @@ mod tests {
             supports_backend_search: false,
             compactions_remaining: None,
             compaction_at_tokens: None,
+            cache_ttl: None,
             doom_loop_recovery: None,
             header_injector: None,
             model_family: None,
@@ -3607,6 +3633,143 @@ mod tests {
     fn new_with_minimal_config_succeeds() {
         let client = SamplingClient::new(minimal_config()).expect("client should construct");
         assert_eq!(client.api_backend(), ApiBackend::ChatCompletions);
+    }
+
+    /// ANTHROPIC-WIRE-1 (cut 1, probe A/B2 2026-09-15): the Responses wire
+    /// must never serialize an omitted max_output_tokens — an omitted field
+    /// takes the per-model upstream (proxy/LiteLLM) default, which for
+    /// claude-opus-5 is exactly 4,096 and is consumed 100% by default-on
+    /// reasoning (text_tokens 0), leaving the turn with no usable output.
+    /// A no-budget request must therefore carry an explicit cap: the
+    /// per-model `max_completion_tokens` config when set, else the
+    /// alias-aware R5 table row, else the 64K floor.
+    #[test]
+    fn no_budget_conversation_requests_carry_explicit_responses_caps() {
+        let cases: &[(&str, u32)] = &[
+            ("claude-opus-4-6", 128_000),
+            ("claude-sonnet-5", 128_000),
+            ("claude-haiku-4.5", 64_000),
+            ("some-unknown-slug", 64_000),
+        ];
+        for (model, expected) in cases {
+            let client = SamplingClient::new(SamplerConfig {
+                model: model.to_string(),
+                max_completion_tokens: None,
+                api_backend: ApiBackend::Responses,
+                ..minimal_config()
+            })
+            .expect("client should build");
+            let mut request = ConversationRequest {
+                model: Some(model.to_string()),
+                max_output_tokens: None,
+                ..Default::default()
+            };
+            client
+                .apply_conversation_defaults(&mut request)
+                .expect("defaults apply");
+            let created: rs::CreateResponse = (&request).into();
+            let json = serde_json::to_value(&created).expect("serialize");
+            assert_eq!(
+                json.get("max_output_tokens").and_then(|v| v.as_u64()),
+                Some(u64::from(*expected)),
+                "model {model}: an omitted max_output_tokens takes the \
+                 per-model upstream default — the wire must carry an explicit cap"
+            );
+        }
+
+        // A configured per-model budget still wins.
+        let client = SamplingClient::new(SamplerConfig {
+            max_completion_tokens: Some(999),
+            ..minimal_config()
+        })
+        .expect("client should build");
+        let mut request = ConversationRequest::default();
+        client
+            .apply_conversation_defaults(&mut request)
+            .expect("defaults apply");
+        let created: rs::CreateResponse = (&request).into();
+        let json = serde_json::to_value(&created).expect("serialize");
+        assert_eq!(
+            json.get("max_output_tokens").and_then(|v| v.as_u64()),
+            Some(999),
+            "a configured budget wins over the fallback"
+        );
+    }
+
+    /// ANTHROPIC-WIRE-1 (cut 5, pipeline level): every one of the 14 fleet
+    /// claude keys carries a NON-ZERO explicit cap after the client default
+    /// fill — the 12 config-pinned messages keys through
+    /// `apply_conversation_defaults` + `build_messages_request` (128000 via
+    /// table/alias, 64000 floor for the two no-row sonnet 4.5 spellings)
+    /// and the 2 opus-4.5 spellings on the responses wire (64000 floor).
+    /// The standalone builder keeps the pre-warm 0 for the no-row slugs;
+    /// the pipeline never does.
+    #[test]
+    fn no_budget_claude_matrix_keys_carry_nonzero_explicit_caps() {
+        let messages_cases: &[(&str, u64)] = &[
+            ("claude-sonnet-5", 128_000),
+            ("claude-opus-5", 128_000),
+            ("claude-sonnet-4.5", 64_000),
+            ("claude-sonnet-4.6", 128_000),
+            ("claude-opus-4.6", 128_000),
+            ("claude-opus-4.7", 128_000),
+            ("claude-opus-4.8", 128_000),
+            ("claude-sonnet-4-5", 64_000),
+            ("claude-sonnet-4-6", 128_000),
+            ("claude-opus-4-6", 128_000),
+            ("claude-opus-4-7", 128_000),
+            ("claude-opus-4-8", 128_000),
+        ];
+        for (model, expected) in messages_cases {
+            let client = SamplingClient::new(SamplerConfig {
+                model: model.to_string(),
+                max_completion_tokens: None,
+                api_backend: ApiBackend::Messages,
+                ..minimal_config()
+            })
+            .expect("client should build");
+            let mut request = ConversationRequest {
+                model: Some(model.to_string()),
+                max_output_tokens: None,
+                ..Default::default()
+            };
+            client
+                .apply_conversation_defaults(&mut request)
+                .expect("defaults apply");
+            let built = build_messages_request(&request);
+            assert_eq!(
+                built.max_tokens,
+                *expected as u32,
+                "model {model}: the messages wire must carry a non-zero explicit cap"
+            );
+        }
+
+        // The 2 opus-4.5 spellings on the responses wire: the 64K floor.
+        for model in ["claude-opus-4.5", "claude-opus-4-5"] {
+            let client = SamplingClient::new(SamplerConfig {
+                model: model.to_string(),
+                max_completion_tokens: None,
+                api_backend: ApiBackend::Responses,
+                ..minimal_config()
+            })
+            .expect("client should build");
+            let mut request = ConversationRequest {
+                model: Some(model.to_string()),
+                max_output_tokens: None,
+                ..Default::default()
+            };
+            client
+                .apply_conversation_defaults(&mut request)
+                .expect("defaults apply");
+            let created: rs::CreateResponse = (&request).into();
+            let json = serde_json::to_value(&created).expect("serialize");
+            assert_eq!(
+                json.get("max_output_tokens").and_then(|v| v.as_u64()),
+                Some(64_000),
+                "model {model}: no row in either spelling — the 64K floor \
+                 must still be explicit on the responses wire"
+            );
+        }
     }
 
     #[test]

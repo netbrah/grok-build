@@ -106,6 +106,7 @@ fn test_config(base_url: String, model: &str) -> SamplerConfig {
         header_injector: None,
         model_family: None,
         strict_responses_input: false,
+        cache_ttl: None,
     }
 }
 

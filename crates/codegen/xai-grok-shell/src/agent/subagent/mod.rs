@@ -818,6 +818,7 @@ async fn read_parent_sampling_config(
                 force_http1: false,
                 max_retries: cfg.max_retries.or(ctx.sampling_config.max_retries),
                 rate_limit_retry_threshold: cfg.rate_limit_retry_threshold,
+                cache_ttl: cfg.cache_ttl.clone(),
                 stream_tool_calls: cfg.stream_tool_calls.unwrap_or(false),
                 idle_timeout_secs: None,
                 client_identifier: ctx.sampling_config.client_identifier.clone(),

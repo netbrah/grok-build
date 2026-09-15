@@ -2248,6 +2248,7 @@ fn make_entry_config_with_id(
         show_model_fingerprint: false,
         stream_tool_calls: None,
         laziness_detector: config::LazinessDetectorPerModelConfig::default(),
+        cache_ttl: None,
         variants: Vec::new(),
     }
 }
