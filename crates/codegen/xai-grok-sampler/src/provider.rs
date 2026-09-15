@@ -19,6 +19,23 @@
 //!   so Responses→ChatCompletions shims (vLLM/SGLang) accept the request.
 //!
 //! Patches are additive and idempotent: they only rewrite fields they own.
+//!
+//! Provenance: R0 first-class responses catalog item (ledger §R0;
+//! reviews/R0-task-review.md §4) — a 3-donor ADAPTED port (adapted, not
+//! cherry-picked; the `Refs:` line on all four R0 commit bodies), donors
+//! pinned in grok/plans/donors.md:
+//! - open-grok@2a07373c — the Codex provider adapter: model_family
+//!   dispatch, Max/Ultra → "max" effort mapping, multi-agent v2 policy,
+//!   web_search external_web_access grant. Extracted from open-grok's
+//!   inline patch sites in its `client.rs` + `conversation.rs` (R0
+//!   review §4: 64-line overlap, longest run 5 lines).
+//! - netbrah/codex@b4d4b125cc — the wire shim: `normalize_content_types`
+//!   below (re-expression of `content_type_compat.rs`); the fork's
+//!   companion 197ea1642c namespace-tool flatten half was NOT ported
+//!   (0 hits in tree).
+//! The item's hyper-grok-build@d7e99eac / @2baedd03 / @4e0fad59
+//! decoder-side contribution lands in `sampler/src/client.rs` dialect
+//! machinery + `sampler/src/stream/responses.rs`, not this file.
 
 use serde_json::Value;
 use xai_grok_sampling_types::ReasoningEffort;
@@ -283,6 +300,7 @@ fn is_multi_agent_mode_item(item: &Value) -> bool {
     })
 }
 
+/// Provenance: netbrah/codex@b4d4b125cc codex-rs/codex-api/src/endpoint/content_type_compat.rs:16 :: normalize_content_types (re-expressed — the wire-shim half of the R0 item; the fork's companion 197ea1642c flatten half was NOT ported; ledger §R0)
 /// Rewrite `input_text`/`output_text` content part types to `"text"`.
 ///
 /// Ported from codex fork `content_type_compat.rs`. Providers such as vLLM

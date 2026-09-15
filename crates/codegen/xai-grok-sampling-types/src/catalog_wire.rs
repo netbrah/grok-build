@@ -13,6 +13,21 @@
 //! which consult the row's explicit `model_family` / `api_backend` /
 //! reasoning menu before any slug inference:
 //! row field > inference > endpoint defaults > built-in defaults.
+//!
+//! Provenance: R0 first-class responses catalog item (ledger §R0;
+//! reviews/R0-task-review.md §4) — this file is the catalog-row half of
+//! the item, new in R0 commit 9066f23. The R0 item is a 3-donor ADAPTED
+//! port (adapted, not cherry-picked; the `Refs:` line on all four R0
+//! commit bodies), donors pinned in grok/plans/donors.md:
+//! hyper-grok-build@d7e99eac / @2baedd03 / @4e0fad59 (decoder-side),
+//! open-grok@2a07373c (provider adapter / row-metadata concept — the
+//! model_family / api_backend / reasoning-effort menus this file reads),
+//! netbrah/codex@b4d4b125cc (wire shim — its contribution is confined to
+//! `sampler/src/provider.rs`; the fork's companion 197ea1642c
+//! namespace-tool flatten half was NOT ported, 0 hits in tree). The
+//! row-aware resolvers in this file are a P2.0 addition — fresh,
+//! implementing the open-grok invariant: wire by model_family, never
+//! slug/URL.
 
 use crate::{ApiBackend, ReasoningEffort, ReasoningEffortOption};
 

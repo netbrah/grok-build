@@ -44,6 +44,28 @@
 //! 8. **cache-control window** (MW-1 D5 stage 7,
 //!    [`apply_cache_breakpoints`]) — runs last, so its tip can land on the
 //!    synthetic sentinel user.
+//!
+//! Provenance: MW-1 messages-wire semantics + MW-2 builder strictness
+//! (grok/plans/MW-1-spec.md + MW-2-spec.md) — re-expressed, never
+//! copied; donors pinned in grok/plans/donors.md:
+//! - xli@3d4a08271e (primary) + xli@6d3784158c (audited-ledger), donor
+//!   file `codex-rs/provider-anthropic/src/wire.rs`: the MW-1 D5 stage
+//!   fns (line numbers as of this backfill) — `clean_orphaned_items`
+//!   :79, `clean_orphaned_blocks_by_adjacency` :136,
+//!   `strip_thinking_blocks` :266, `hoist_tool_results_to_front` :326,
+//!   `repair_trailing_assistant` :374, `apply_cache_breakpoints` :448 —
+//!   and MW-2 R1 same-role merge (xli `append_to_role`, wire.rs:1071,
+//!   verified at pin; the SHA-less inline refs in this doc resolve to
+//!   it).
+//! - hyper-grok-build@45e984f3 — MW-2 R8 model-identity thinking
+//!   suppression, re-expressing
+//!   `packages/ai/xai-grok-sampler/src/pi_messages.rs:1050`
+//!   (`identity_mismatch_falls_back_to_portable_text_and_tool_calls`;
+//!   endpoint-identity → model-id-identity divergence per MW-2-spec).
+//!   HY's MW-2 bedrock/pi wire-evidence tests sit in the sibling
+//!   `messages.rs` (8 markers), not this file.
+//! Before this header only the companion tests were SHA-marked
+//! (DESIGN-AUDIT-1 gap G3).
 
 use super::*;
 

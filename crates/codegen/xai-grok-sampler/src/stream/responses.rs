@@ -2,6 +2,22 @@
 //!
 //! Consumes a raw Responses stream and produces [`SamplingEvent`]s.
 //! Pure: no I/O, no shell coupling.
+//!
+//! Provenance: R0 first-class responses catalog item (ledger §R0;
+//! reviews/R0-task-review.md §4) — the R0 delta in this stock-upstream
+//! file (commit 73f19d1, "responses SSE decoder hardening") is the
+//! liveness-only-frame seam: `ResponsesStreamItem::{Event, Heartbeat}`
+//! boundary propagation through this layer-2 transform (the `Heartbeat`
+//! match arm + the `responses_event_has_meaningful_content` gate inside
+//! `stream_responses_tracked`). The R0 item is a 3-donor ADAPTED port
+//! (adapted, not cherry-picked; the `Refs:` line on all four R0 commit
+//! bodies), donors pinned in grok/plans/donors.md:
+//! hyper-grok-build@d7e99eac / @2baedd03 / @4e0fad59 (decoder-side —
+//! 4e0fad59 touched this file) + open-grok@2a07373c (Codex parity
+//! decoder — also touched this file) + netbrah/codex@b4d4b125cc (wire
+//! shim — confined to `sampler/src/provider.rs`, not this file; the
+//! fork's companion 197ea1642c flatten half was NOT ported). The dialect
+//! sequence synthesis lives in `sampler/src/client.rs`.
 
 use std::collections::BTreeMap;
 use std::sync::{

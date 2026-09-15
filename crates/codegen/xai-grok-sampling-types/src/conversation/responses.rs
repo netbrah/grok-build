@@ -1,3 +1,18 @@
+//! Responses-side conversation flattening (stock upstream,
+//! monorepo-synced at the R0 branch base).
+//!
+//! Provenance: P2.1 codex remote compaction v2 (ledger §P2.1) — the
+//! ported region in this file is the `rs::OutputItem::Compaction` arm of
+//! `response_to_conversation_items` (encrypted replacement →
+//! `CodexRawInput` carrier), added by commit 20d782d: verbatim from
+//! open-grok@240c99c9
+//! `crates/codegen/xai-grok-sampling-types/src/conversation.rs:3836`
+//! (donor-side monolithic conversation.rs; byte-identical, re-verified
+//! 2026-09-15; part of the item's 27/27 verbatim spot-checks — Sagan
+//! review, ledger §P2.1). The item's remaining P2.1 markers sit on the
+//! shell collector (`xai-grok-shell/src/session/compaction.rs`) and the
+//! test files; this header is this carrier file's surface.
+
 use super::*;
 
 /// Flatten `response.output` into `ConversationItem`s, preserving emission order.

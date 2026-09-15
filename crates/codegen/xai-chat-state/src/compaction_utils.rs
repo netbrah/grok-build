@@ -3,6 +3,22 @@
 //! These are stateless functions that operate on conversation data only —
 //! no I/O, no actor state. They live in `xai-chat-state` so that both
 //! this crate and `xai-grok-shell` can share them without duplication.
+//!
+//! Provenance: P2.1 codex remote compaction v2 (ledger §P2.1) — the
+//! ported region in this stock-upstream file is the contiguous
+//! `codex_remote_compaction_v2_*` family added by commit 20d782d (const
+//! `CODEX_REMOTE_COMPACTION_V2_RETAINED_USER_TOKENS` through
+//! `codex_remote_compaction_v2_interjections`, marked below): verbatim
+//! from open-grok@240c99c9
+//! `crates/codegen/xai-chat-state/src/compaction_utils.rs:557-732`
+//! (single surface diff: `SyntheticReason` import qualification;
+//! byte-checked 2026-09-15; part of the item's 27/27 verbatim
+//! spot-checks — Sagan review, ledger §P2.1). The donor file's
+//! image / `CustomToolOutput` arms are NOT ported (the worktree
+//! `ConversationItem` has no such fields). The item's remaining P2.1
+//! markers sit on the shell collector
+//! (`xai-grok-shell/src/session/compaction.rs`) and the test files; this
+//! header is this file's surface.
 use std::collections::BTreeSet;
 use xai_grok_sampling_types::{ContentPart, ConversationItem, SyntheticReason, ToolResultItem};
 pub const AGENT_MESSAGE_MODEL_LABEL: &str =
@@ -1054,6 +1070,8 @@ pub fn strip_displaced_tool_results(items: &mut Vec<ConversationItem>) -> Vec<St
     });
     stripped
 }
+
+// P2.1 ported region (open-grok@240c99c9 compaction_utils.rs:557 verbatim v2 family — see module header).
 
 /// Maximum real-user history retained alongside a Codex remote-compaction-v2
 /// item. This mirrors codex-rs's current retained-message budget.
