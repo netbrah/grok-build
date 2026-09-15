@@ -461,6 +461,31 @@ async fn apply_retry_decision(
             }
             true
         }
+        RetryDecision::RetryWithModelBoundStateStrip => {
+            let stripped = request.strip_model_bound_state();
+            if stripped == 0 {
+                // The classifier matched but the request carries no removable
+                // continuation state. Re-sending the same payload cannot help:
+                // fail closed instead of burning a retry that would re-fail.
+                let terminal_event_queued = emit_failed(event_tx, request_id, err);
+                send_completion(completion, Err(clone_error(err)), terminal_event_queued);
+                return false;
+            }
+            *retry_count += 1;
+            tracing::warn!(
+                stripped,
+                model = %config.model,
+                "model-bound history rejected; retrying with portable transcript"
+            );
+            emit_retrying(
+                event_tx,
+                request_id,
+                *retry_count,
+                max_retries.max(*retry_count),
+                err,
+            );
+            true
+        }
         RetryDecision::EmitToSession(emitted_err) => {
             let terminal_event_queued = emit_failed(event_tx, request_id, &emitted_err);
             send_completion(completion, Err(emitted_err), terminal_event_queued);
@@ -1524,6 +1549,132 @@ mod tests {
                 .result
                 .is_err()
         );
+    }
+
+    // CROSSWIRE-1 fixture: a request carrying one of each model-bound item
+    // (Reasoning + BackendToolCall) alongside portable user/assistant history.
+    fn model_bound_request() -> ConversationRequest {
+        use xai_grok_sampling_types as t;
+        let web_search: t::rs::WebSearchToolCall = serde_json::from_value(serde_json::json!({
+            "action": {"type": "search", "query": "opaque state"},
+            "id": "ws_mbs",
+            "status": "completed"
+        }))
+        .expect("valid web search fixture");
+        ConversationRequest {
+            items: vec![
+                t::ConversationItem::user("q1"),
+                t::ConversationItem::Reasoning(t::rs::ReasoningItem {
+                    id: "rs_mbs".to_string(),
+                    summary: vec![t::rs::SummaryPart::SummaryText(t::rs::SummaryTextContent {
+                        text: "private continuation".to_string(),
+                    })],
+                    content: None,
+                    encrypted_content: Some("provider-signature".to_string()),
+                    status: None,
+                }),
+                t::ConversationItem::BackendToolCall(t::BackendToolCallItem {
+                    kind: t::BackendToolKind::WebSearch(web_search),
+                }),
+                t::ConversationItem::assistant("a1"),
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_decision_model_bound_strip_retries_once_then_terminates() {
+        // CROSSWIRE-1: the reactive strip is a fail-closed ONE retry.
+        // Attempt 1: the classifier matched and the request carries model-bound
+        // items -> strip (>0) -> exactly one retry with the portable transcript.
+        // Attempt 2: the same rejection on the now-stripped request -> strip == 0
+        // -> terminal (no second retry; the loop cannot continue).
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (completion_tx, completion_rx) = oneshot::channel();
+        let mut completion = CompletionState::new(Some(completion_tx));
+        let mut retry_count = 0;
+        let mut request = model_bound_request();
+        let config = SamplerConfig {
+            base_url: "http://localhost".into(),
+            model: "test-model".into(),
+            ..Default::default()
+        };
+        let mut client = SamplingClient::new(config.clone()).expect("test client");
+        let err = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: "Invalid 'input[7].content': array too long. Expected an array with maximum length 0. code: array_above_max_length".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        let request_id = RequestId::from("mbs");
+        let cancel_token = CancellationToken::new();
+        let parent = tracing::Span::none();
+
+        // Attempt 1: strips the model-bound items and retries once.
+        let continue1 = apply_retry_decision(
+            &err,
+            &mut retry_count,
+            5,
+            &RetryPolicy::default(),
+            &event_tx,
+            &request_id,
+            &mut request,
+            &mut client,
+            &config,
+            &cancel_token,
+            &mut completion,
+            &parent,
+        )
+        .await;
+        assert!(
+            continue1,
+            "first model-bound rejection with strippable state retries"
+        );
+        assert_eq!(retry_count, 1, "exactly one retry is debited");
+        assert!(
+            request.items.iter().all(|i| {
+                !matches!(
+                    i,
+                    xai_grok_sampling_types::ConversationItem::Reasoning(_)
+                        | xai_grok_sampling_types::ConversationItem::BackendToolCall(_)
+                )
+            }),
+            "the retry carries the portable (stripped) transcript"
+        );
+        assert!(
+            matches!(event_rx.recv().await, Some(SamplingEvent::Retrying { .. })),
+            "a retrying event is emitted for the recovery retry"
+        );
+
+        // Attempt 2: the same rejection on the stripped request -> terminal.
+        let continue2 = apply_retry_decision(
+            &err,
+            &mut retry_count,
+            5,
+            &RetryPolicy::default(),
+            &event_tx,
+            &request_id,
+            &mut request,
+            &mut client,
+            &config,
+            &cancel_token,
+            &mut completion,
+            &parent,
+        )
+        .await;
+        assert!(
+            !continue2,
+            "a second rejection with nothing left to strip is terminal (cannot loop)"
+        );
+        assert_eq!(retry_count, 1, "no second retry is debited");
+        assert!(
+            matches!(event_rx.recv().await, Some(SamplingEvent::Failed { .. })),
+            "the terminal rejection emits a failed event"
+        );
+        let collected = completion_rx.await.expect("terminal completion sent");
+        assert!(collected.result.is_err(), "the turn fails with the original error");
     }
 
     #[tokio::test]

@@ -377,21 +377,78 @@ impl SamplingError {
         }
     }
 
-    /// The server rejected the request: the conversation history carries deployment-bound
-    /// reasoning/compaction ciphertext the current model (or deployment) cannot decrypt.
-    /// Matched on both wire phrasings: the parameterized field name (`encrypted_content`,
-    /// e.g. `Missing required parameter: 'input[2].encrypted_content'`) and Azure's
-    /// human-facing text ("The encrypted content for item ... could not be verified").
-    /// Never retryable: the user must start a new session.
-    pub fn is_encrypted_content_error(&self) -> bool {
-        matches!(
-            self,
-            SamplingError::Api {
-                status: StatusCode::BAD_REQUEST,
-                message,
-                ..
-            } if message.contains("encrypted_content") || message.contains("encrypted content")
-        )
+    /// The provider rejected opaque continuation state carried by conversation
+    /// history — a model-bound replay that a *different* model (or deployment)
+    /// cannot consume. The sampler may safely retry ONCE after removing only
+    /// the model-bound state; the portable transcript content stays intact
+    /// (see `ConversationRequest::strip_model_bound_state`). Matched on the
+    /// 400 error text, case-insensitive, across four observed phrasings:
+    ///
+    /// 1. Responses `encrypted_content` — both the parameterized field name
+    ///    (`Missing required parameter: 'input[2].encrypted_content'`) and
+    ///    Azure's human-facing text ("The encrypted content for item ... could
+    ///    not be verified"). This supersedes the legacy
+    ///    `is_encrypted_content_error` detector, which matched only this family.
+    /// 2. Anthropic-style thinking signatures (`thinking` + `signature`).
+    /// 3. Responses input item-id schema rejection (`input[` + `.id` + `invalid`).
+    /// 4. A rejected item id that was not persisted (`item` + `id` +
+    ///    `not found`/`does not exist`) — the `store=false` endpoint shape.
+    /// 5. (This-stack adaptation) Azure rejecting a verbatim reasoning item's
+    ///    `content` array under the strict input schema (maxItems:0):
+    ///    `input[N].content` + "array too long" (the `code` field is
+    ///    `array_above_max_length`). Observed live on the `store=false`
+    ///    endpoint (XREPLAY-1 map, point 1). The upstream reference's family 3
+    ///    targets `.id` and does not cover this shape, so a verbatim port would
+    ///    misclassify this rejection as Fatal.
+    ///
+    /// Pipeline note (CROSSWIRE-1 GREEN-run defect): the classifier sees the
+    /// message built by [`user_facing_api_error_message`], which caps the text
+    /// at [`MAX_USER_ERROR_BODY_CHARS`] (280). On the live wire shape that cut
+    /// lands just before the inner escaped `code` field, so the code-based
+    /// needle alone never matches; the Azure message text is the primary
+    /// needle and the code is kept as an OR for shapes that survive the cap.
+    ///
+    /// Status-gated to exactly 400: the same text on a 429/5xx is a different
+    /// class (rate-limit / transient) and must not trigger the destructive strip.
+    pub fn is_model_bound_history_error(&self) -> bool {
+        let SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message,
+            ..
+        } = self
+        else {
+            return false;
+        };
+        let normalized = message.to_ascii_lowercase();
+        // Family 1: opaque encrypted continuation content (field name or Azure phrasing).
+        let encrypted = normalized.contains("encrypted_content")
+            || normalized.contains("encrypted content");
+        // Family 2: Anthropic-style thinking signatures.
+        let thinking_signature =
+            normalized.contains("thinking") && normalized.contains("signature");
+        // Family 3: Responses input item-id schema rejection.
+        let input_id_invalid = normalized
+            .contains("input[")
+            && normalized.contains(".id")
+            && normalized.contains("invalid");
+        // Family 4: rejected item id (not persisted under store=false).
+        let item_id_missing = normalized.contains("item")
+            && normalized.contains("id")
+            && (normalized.contains("not found")
+                || normalized.contains("does not exist"));
+        // Family 5 (this-stack adaptation): the strict-schema content-array
+        // rejection. See the pipeline note on `is_model_bound_history_error`:
+        // match the surviving Azure message text, with the wire code as an OR
+        // for shapes where it survives the 280-char cap.
+        let azure_content_rejection =
+            normalized.contains("input[")
+                && (normalized.contains("array too long")
+                    || normalized.contains("array_above_max_length"));
+        encrypted
+            || thinking_signature
+            || input_id_invalid
+            || item_id_missing
+            || azure_content_rejection
     }
 
     /// The server rejected the request because an image could not be processed. [`INVALID_IMAGE_ERROR_CODE`] is the signal.
@@ -1558,7 +1615,7 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_content_400_is_detected() {
+    fn model_bound_encrypted_content_field_400_is_detected() {
         let err = SamplingError::Api {
             status: StatusCode::BAD_REQUEST,
             message: "Could not decrypt the provided encrypted_content. Ensure the value is the unmodified encrypted_content from a previous response.".into(),
@@ -1567,15 +1624,14 @@ mod tests {
             should_retry: None,
             error_code: None,
         };
-        assert!(err.is_encrypted_content_error());
         assert!(
-            !err.is_retryable(),
-            "encrypted_content errors must not be retried"
+            err.is_model_bound_history_error(),
+            "family 1 (encrypted_content field) must match"
         );
     }
 
     #[test]
-    fn encrypted_content_azure_phrasing_400_is_detected() {
+    fn model_bound_encrypted_content_azure_phrasing_400_is_detected() {
         let err = SamplingError::Api {
             status: StatusCode::BAD_REQUEST,
             message: "The encrypted content for item cmp_0123 could not be verified. Reason: Encrypted content could not be decrypted or parsed.".into(),
@@ -1584,15 +1640,15 @@ mod tests {
             should_retry: None,
             error_code: Some(ApiErrorCode::Other("invalid_encrypted_content".to_string())),
         };
-        assert!(err.is_encrypted_content_error());
         assert!(
-            !err.is_retryable(),
-            "Azure-phrasing encrypted-content 400s must not be retried"
+            err.is_model_bound_history_error(),
+            "family 1 (Azure 'encrypted content' phrasing, folded from the legacy detector) must match"
         );
     }
 
     #[test]
-    fn encrypted_content_wrong_status_not_detected() {
+    fn model_bound_wrong_status_not_detected() {
+        // Status must be exactly 400; the same text on a 500 is a different class.
         let err = SamplingError::Api {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: "encrypted_content decryption failed".into(),
@@ -1602,13 +1658,13 @@ mod tests {
             error_code: None,
         };
         assert!(
-            !err.is_encrypted_content_error(),
+            !err.is_model_bound_history_error(),
             "only 400 should match, not 500"
         );
     }
 
     #[test]
-    fn encrypted_content_unrelated_400_not_detected() {
+    fn model_bound_unrelated_400_not_detected() {
         let err = SamplingError::Api {
             status: StatusCode::BAD_REQUEST,
             message: "Invalid model parameter".into(),
@@ -1618,8 +1674,144 @@ mod tests {
             error_code: None,
         };
         assert!(
-            !err.is_encrypted_content_error(),
+            !err.is_model_bound_history_error(),
             "unrelated 400 errors must not match"
+        );
+    }
+
+    #[test]
+    fn model_bound_thinking_signature_400_is_detected() {
+        let err = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: "thinking block signature is invalid for this model".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(
+            err.is_model_bound_history_error(),
+            "family 2 (thinking + signature) must match"
+        );
+        // Near-miss: 'thinking' alone is not model-bound.
+        let thinking_only = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: "thinking effort is not supported".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(!thinking_only.is_model_bound_history_error());
+    }
+
+    #[test]
+    fn model_bound_input_item_id_invalid_400_is_detected() {
+        let err = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: "Invalid 'input[3].id': item identifier is not valid for this deployment".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(
+            err.is_model_bound_history_error(),
+            "family 3 (input[ + .id + invalid) must match"
+        );
+    }
+
+    #[test]
+    fn model_bound_item_id_not_found_400_is_detected() {
+        // The exact XREPLAY-2 shape: a stale rs_* id replayed onto a store=false endpoint.
+        let err = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: "Item with id 'rs_54ed3f3e8714491c84c6fca38bcbb44a' not found. Items are not persisted when `store` is set to false.".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(
+            err.is_model_bound_history_error(),
+            "family 4 (item + id + not found) must match"
+        );
+        // Near-miss: 'not found' without item+id is not model-bound.
+        let not_found_only = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: "model not found".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(!not_found_only.is_model_bound_history_error());
+    }
+
+    #[test]
+    fn model_bound_azure_content_array_too_long_400_is_detected() {
+        // The exact XREPLAY-1 shape: a verbatim reasoning item's content array
+        // rejected under the strict input schema (maxItems:0). This is the
+        // this-stack adaptation HY's family 3 (`.id`) does not cover.
+        let err = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: "litellm.BadRequestError: AzureException BadRequestError - {\"error\":{\"message\":\"Invalid 'input[7].content': array too long. Expected an array with maximum length 0, but got an array with length 1 instead.\",\"type\":\"invalid_request_error\",\"param\":\"input[7].content\",\"code\":\"array_above_max_length\"}}. Received Model Group=gpt-5.6-sol".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(
+            err.is_model_bound_history_error(),
+            "family 5 (input[ + array_above_max_length) must match the verbatim-reasoning rejection"
+        );
+    }
+
+    #[test]
+    fn model_bound_live_wire_azure_400_is_detected_through_user_facing_pipeline() {
+        // Verbatim wire body (resp-006.jsonl, report/20260915T022829Z/rt-xreplay1;
+        // identical in 20260914T230529Z). The classifier must match the message
+        // it ACTUALLY sees: the output of `user_facing_api_error_message`, capped
+        // at MAX_USER_ERROR_BODY_CHARS (280) — a cap that cuts the inner escaped
+        // `code: array_above_max_length` field. Keying family 5 on that code
+        // alone misclassified the live 400 as Fatal (CROSSWIRE-1 GREEN-run
+        // defect: both sol 400s went terminal, the strip never fired).
+        let body = r#"{"error":{"message":"litellm.BadRequestError: AzureException BadRequestError - {\n  \"error\": {\n    \"message\": \"Invalid 'input[7].content': array too long. Expected an array with maximum length 0, but got an array with length 1 instead.\",\n    \"type\": \"invalid_request_error\",\n    \"param\": \"input[7].content\",\n    \"code\": \"array_above_max_length\"\n  }\n}. Received Model Group=gpt-5.6-sol\nAvailable Model Group Fallbacks=None","type":null,"param":null,"code":"400"}}"#;
+        let message = user_facing_api_error_message(
+            StatusCode::BAD_REQUEST,
+            body.as_bytes(),
+        );
+        let seen = message.clone();
+        let err = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message,
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: parse_error_code(body.as_bytes()),
+        };
+        assert!(
+            err.is_model_bound_history_error(),
+            "live wire shape must classify model-bound; classifier saw: {}",
+            seen
+        );
+    }
+
+    #[test]
+    fn model_bound_429_with_model_bound_text_not_detected() {
+        // Status gate: a rate-limited 429 carrying model-bound text must NOT
+        // route to the strip (it is a rate-limit, handled by the retry budget).
+        let err = SamplingError::Api {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: "Item with id 'rs_x' not found".into(),
+            model_metadata: None,
+            retry_after_secs: Some(5),
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(
+            !err.is_model_bound_history_error(),
+            "429 with model-bound text must not match (status must be 400)"
         );
     }
 
@@ -1634,7 +1826,7 @@ mod tests {
             error_code: None,
         };
         assert!(err.is_image_processing_error());
-        assert!(!err.is_encrypted_content_error());
+        assert!(!err.is_model_bound_history_error());
     }
 
     #[test]

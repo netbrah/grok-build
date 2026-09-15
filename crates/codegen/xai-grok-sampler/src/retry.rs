@@ -87,6 +87,13 @@ pub enum RetryDecision {
         backoff: Duration,
     },
 
+    /// The provider rejected model-bound continuation state (stale
+    /// reasoning / thinking signatures / item ids / encrypted content). Strip
+    /// it and retry ONCE with the portable transcript; the request task fails
+    /// closed when there is nothing left to strip. Not gated by the transport
+    /// retry budget (classified before the `max_retries == 0` fatal gate).
+    RetryWithModelBoundStateStrip,
+
     EmitToSession(SamplingError),
 
     Fatal(SamplingError),
@@ -101,8 +108,17 @@ pub fn classify_error(
     if err.is_auth_error() {
         return RetryDecision::EmitToSession(clone_error(err));
     }
-    if err.is_encrypted_content_error() {
-        return RetryDecision::EmitToSession(clone_error(err));
+    // Opaque history is optional continuation state. When the provider rejects
+    // it, strip the model-bound state and retry the portable transcript once
+    // instead of forcing a new session after a model switch. The request task
+    // fails closed when there is nothing to strip. Deliberately placed BEFORE
+    // the `max_retries == 0` fatal gate (HY placement): a model-switch
+    // rejection is recoverable even when the transport retry budget is zero.
+    // This supersedes the legacy `is_encrypted_content_error -> EmitToSession`
+    // arm: encrypted content is one family of the model-bound class, and the
+    // sanitized transcript (post-strip) is portable and recoverable.
+    if err.is_model_bound_history_error() {
+        return RetryDecision::RetryWithModelBoundStateStrip;
     }
     if max_retries == 0 {
         return RetryDecision::Fatal(clone_error(err));
@@ -447,15 +463,83 @@ mod tests {
     }
 
     #[test]
-    fn classify_encrypted_content_emits_to_session() {
+    fn classify_model_bound_history_strips_state() {
+        // Sanctioned upgrade: an encrypted-content 400 was terminal
+        // (EmitToSession); it now routes to the reactive strip + one retry,
+        // because the stripped transcript is portable and recoverable.
         let err = api_err(
             StatusCode::BAD_REQUEST,
             "Could not decrypt the provided encrypted_content",
         );
-        match classify_error(&err, 0, 5, RATE_LIMIT_RETRY_THRESHOLD) {
-            RetryDecision::EmitToSession(_) => {}
-            other => panic!("expected EmitToSession, got {other:?}"),
-        }
+        assert!(
+            matches!(
+                classify_error(&err, 0, 5, RATE_LIMIT_RETRY_THRESHOLD),
+                RetryDecision::RetryWithModelBoundStateStrip
+            ),
+            "encrypted-content 400 must route to the model-bound strip (upgraded from terminal)"
+        );
+    }
+
+    #[test]
+    fn classify_model_bound_azure_content_rejection_strips_state() {
+        // The exact XREPLAY-1 shape: a verbatim reasoning item (content+id)
+        // rejected under the strict input schema. Must route to the strip so
+        // the reactive recovery fires instead of dying as a same-payload retry.
+        let err = api_err(
+            StatusCode::BAD_REQUEST,
+            "Invalid 'input[7].content': array too long. Expected an array with maximum length 0. code: array_above_max_length",
+        );
+        assert!(matches!(
+            classify_error(&err, 0, 5, RATE_LIMIT_RETRY_THRESHOLD),
+            RetryDecision::RetryWithModelBoundStateStrip
+        ));
+    }
+
+    #[test]
+    fn classify_model_bound_item_id_not_found_strips_state() {
+        // The exact XREPLAY-2 shape: a stale rs_* id replayed onto a
+        // store=false endpoint.
+        let err = api_err(
+            StatusCode::BAD_REQUEST,
+            "Item with id 'rs_54ed3f3e8714491c84c6fca38bcbb44a' not found. Items are not persisted when `store` is set to false",
+        );
+        assert!(matches!(
+            classify_error(&err, 0, 5, RATE_LIMIT_RETRY_THRESHOLD),
+            RetryDecision::RetryWithModelBoundStateStrip
+        ));
+    }
+
+    #[test]
+    fn classify_model_bound_is_not_gated_by_max_retries() {
+        // The model-bound arm sits BEFORE the max_retries==0 fatal gate
+        // (HY placement): a model switch rejection is recoverable even when
+        // the caller disabled the transport retry budget.
+        let err = api_err(
+            StatusCode::BAD_REQUEST,
+            "Could not decrypt the provided encrypted_content",
+        );
+        assert!(matches!(
+            classify_error(&err, 0, 0, RATE_LIMIT_RETRY_THRESHOLD),
+            RetryDecision::RetryWithModelBoundStateStrip
+        ));
+    }
+
+    #[test]
+    fn classify_model_bound_text_on_429_is_not_a_strip() {
+        // Status gate: model-bound text on a 429 is a rate-limit (handled by
+        // the retry budget), never the reactive strip.
+        let err = SamplingError::Api {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: "Item with id 'rs_x' not found".to_string(),
+            model_metadata: None,
+            retry_after_secs: Some(5),
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(!matches!(
+            classify_error(&err, 0, 5, RATE_LIMIT_RETRY_THRESHOLD),
+            RetryDecision::RetryWithModelBoundStateStrip
+        ));
     }
 
     #[test]

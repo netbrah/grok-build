@@ -816,6 +816,33 @@ impl ConversationRequest {
     pub fn strip_images(&mut self) -> Vec<Arc<str>> {
         strip_images_where(&mut self.items, |_| true)
     }
+
+    /// Remove provider/model-bound continuation state while retaining portable
+    /// user, assistant, and local-tool history. Used for the single recovery
+    /// attempt when a provider rejects stale reasoning / backend-tool items
+    /// after a model switch (see `SamplingError::is_model_bound_history_error`
+    /// and `RetryDecision::RetryWithModelBoundStateStrip`).
+    ///
+    /// Returns the number of items removed. `0` means there was no
+    /// continuation state to strip — the caller (the retry actor) treats that
+    /// as fail-closed and does NOT retry the same payload, which is what
+    /// makes the recovery a strict one-retry (cannot loop): a second call on
+    /// the already-stripped request always returns `0`.
+    ///
+    /// Adaptation from the upstream reference: it also clears the per-assistant
+    /// `provider_native_state` and drops a `Compaction` item. WT's
+    /// `AssistantItem` carries no opaque per-model state and `ConversationItem`
+    /// has no `Compaction` arm, so the port is a pure item retain.
+    pub fn strip_model_bound_state(&mut self) -> usize {
+        let before = self.items.len();
+        self.items.retain(|item| {
+            !matches!(
+                item,
+                ConversationItem::Reasoning(_) | ConversationItem::BackendToolCall(_)
+            )
+        });
+        before.saturating_sub(self.items.len())
+    }
 }
 
 /// Exact Responses input item that replaces the typed placeholder at
@@ -2470,6 +2497,102 @@ mod tests {
     use super::*;
     use crate::tool_overrides::*;
     use assert_matches::assert_matches;
+
+    // CROSSWIRE-1: the reactive model-bound state strip (ported from HY
+    // `ConversationRequest::strip_model_bound_state`). HY also clears the
+    // per-assistant `provider_native_state` and drops a `Compaction` item; WT's
+    // `AssistantItem` carries no opaque per-model state and `ConversationItem`
+    // has no `Compaction` arm, so the port is a pure item retain: it drops
+    // `Reasoning` + `BackendToolCall` and keeps the portable user/assistant/
+    // system/local-tool history. The returned count is the fail-closed signal
+    // the retry actor uses to decide whether a recovery retry is possible.
+    fn model_bound_history() -> Vec<ConversationItem> {
+        let web_search: rs::WebSearchToolCall = serde_json::from_value(serde_json::json!({
+            "action": {"type": "search", "query": "opaque state"},
+            "id": "ws_model_bound",
+            "status": "completed"
+        }))
+        .expect("valid web search fixture");
+        vec![
+            ConversationItem::user("question for source model"),
+            ConversationItem::Reasoning(rs::ReasoningItem {
+                id: "rs_model_bound".to_string(),
+                summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
+                    text: "private continuation".to_string(),
+                })],
+                content: None,
+                encrypted_content: Some("provider-signature".to_string()),
+                status: None,
+            }),
+            ConversationItem::BackendToolCall(BackendToolCallItem {
+                kind: BackendToolKind::WebSearch(web_search),
+            }),
+            ConversationItem::assistant("portable answer"),
+            ConversationItem::user("question for target model"),
+        ]
+    }
+
+    #[test]
+    fn strip_model_bound_state_keeps_portable_transcript() {
+        let mut req = ConversationRequest {
+            items: model_bound_history(),
+            ..Default::default()
+        };
+        assert_eq!(
+            req.strip_model_bound_state(),
+            2,
+            "the Reasoning + BackendToolCall items are dropped, portable items kept"
+        );
+        assert!(
+            req.items.iter().all(|item| {
+                !matches!(
+                    item,
+                    ConversationItem::Reasoning(_) | ConversationItem::BackendToolCall(_)
+                )
+            }),
+            "no model-bound items remain after the strip"
+        );
+        assert!(
+            req.items.iter().any(|item| matches!(
+                item,
+                ConversationItem::Assistant(a) if a.content.as_ref() == "portable answer"
+            )),
+            "the portable assistant text survives"
+        );
+        assert_eq!(req.items.len(), 3, "user + assistant + user");
+    }
+
+    #[test]
+    fn strip_model_bound_state_is_idempotent_fail_closed() {
+        // The cannot-loop property: a second strip on the already-stripped
+        // request finds nothing, so the actor's fail-closed gate terminates
+        // the recovery retry instead of looping.
+        let mut req = ConversationRequest {
+            items: model_bound_history(),
+            ..Default::default()
+        };
+        assert_eq!(req.strip_model_bound_state(), 2);
+        assert_eq!(
+            req.strip_model_bound_state(),
+            0,
+            "a second strip must find nothing (cannot loop)"
+        );
+    }
+
+    #[test]
+    fn strip_model_bound_state_on_portable_only_request_is_zero() {
+        // Fail-closed: a request with no model-bound items strips 0, so the
+        // actor terminates rather than re-sending the same payload.
+        let mut req = ConversationRequest {
+            items: vec![
+                ConversationItem::user("q"),
+                ConversationItem::assistant("a"),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(req.strip_model_bound_state(), 0);
+        assert_eq!(req.items.len(), 2, "portable items are untouched");
+    }
 
     /// Keeps `forwards_prompt_cache_key()` honest against each mapping: a key that never reaches the wire looks like a 0% cache hit, not a bug.
     #[test]

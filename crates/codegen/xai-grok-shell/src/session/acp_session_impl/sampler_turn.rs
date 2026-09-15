@@ -1295,7 +1295,12 @@ impl SessionActor {
         let detailed_message = error.message.clone();
 
         // 2. Encrypted-content mismatch: friendly error, no retry.
-        //    Detect via the BadRequest and "encrypted_content" message pattern that `SamplingError::is_encrypted_content_error` used in the legacy path
+        //    Detect via the BadRequest and "encrypted_content" message pattern
+        //    (one family of `SamplingError::is_model_bound_history_error`).
+        //    Layering (CROSSWIRE-1): the sampler now attempts a strip+retry-once
+        //    recovery for this class first; this is the terminal fallback when
+        //    that recovery does not land, so the user still gets the friendly
+        //    "start a new session" error.
         if encrypted_content_mismatch {
             self.signals_handle()
                 .record_error_typed("encrypted_content_mismatch");

@@ -1,0 +1,105 @@
+{
+  "id": "RT-CROSSWIRE1",
+  "title": "CROSSWIRE-1 subcase (i) responses->messages: qwen3.8-27b (responses wire, reasoning items) -> ACP switch -> claude-sonnet-5 (messages wire) -> 1 turn. The post-switch /v1/messages request replays the foreign qwen history; R8 PREEMPTIVE model-identity suppression must strip the foreign (qwen-identity) thinking blocks. Tolerant verdict (rt-xreplay1 discipline): the acceptance outcome is the FINDING — 200 (R8 sufficed, zero reactive-strip involvement) OR 400->strip+retry->200 (R8 missed something and the CROSSWIRE-1 reactive strip recovered). Both PASS; a retry storm (>=3 messages requests) or an unrecovered acp_error FAILs as a defect.",
+  "driver": "acp",
+  "model": "qwen3.8-27b",
+  "config_patch": {
+    "model/qwen3.8-27b/reasoning_effort": "medium",
+    "model/qwen3.8-27b/strict_responses_input": false
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-CW1-I-Q1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-CW1-I-Q2"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-CW1-I-Q3"
+    },
+    {
+      "op": "switch",
+      "model": "claude-sonnet-5",
+      "via": "acp"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: RT-CW1-I-C1"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 10,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "TURN COMPLETES: the post-switch messages turn did not die (200 directly, or 400 recovered by the reactive strip)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "any": true,
+        "grep": "\"type\": \"reasoning\"",
+        "label": "CONTROL (anti-vacuous pin): a pre-switch qwen request carried a reasoning INPUT item — real foreign reasoning exists to cross the wire. Without this the R8-suppression pin is vacuous."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "nth": 0,
+        "grep": "\"type\": \"thinking\"",
+        "absent": true,
+        "label": "R8 PREEMPTIVE (the messages-side net): the LAST post-switch messages request (nth=0 = newest claude request — the only request in the R8-sufficient branch, the strip-recovery request in the 400 branch; a static nth cannot express 'first-of-N' with N in {1,2}) carries NO thinking block. If a thinking block is present here, either R8 missed the foreign origin AND the upstream accepted it (1-request 200: the MSGTHINK-1 finding shape — a designed FAIL) or the strip did not mutate the re-sent request (2-request: a fix defect)."
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "min": 1,
+        "max": 2,
+        "label": "NO RETRY STORM: 1 messages request = R8 sufficed (200, zero reactive-strip involvement); 2 = R8 missed and the CROSSWIRE-1 reactive strip fired once (400->strip->200). >=3 = same-payload retry storm (the COMP-3 wart shape) or a strip loop -> defect."
+      },
+      {
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "POST-SWITCH ACCEPTED: the final messages request (R8-sufficient, or the reactive-strip recovery) reached 200."
+      },
+      {
+        "op": "recon",
+        "label": "CROSSWIRE-1 (i) VERDICT RECORD: last-captured wire response status line, verbatim (the recovered/accepted 200). The R8-sufficient vs reactive-strip finding is read from the count assert (1 vs 2) and the wire. recon op — always records, never fails.",
+        "base": "wire",
+        "file": "resp-*.jsonl",
+        "nth": 0,
+        "grep": "\"status\":"
+      }
+    ]
+  }
+}
