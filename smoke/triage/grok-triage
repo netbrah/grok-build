@@ -752,14 +752,15 @@ def card_lines(sess, meta, unified_attr, unified_window, wire, mcp_calls,
 
     if mcp_calls:
         L.append("")
-        L.append(f"mcp call files ({len(mcp_calls)}):")
+        L.append(f"mcp call hits ({len(mcp_calls)}):")
         for h in mcp_calls:
             L.append(f"  {h}")
 
     run_name, wire_rows = wire
     if wire_rows:
         L.append("")
-        L.append(f"wirecap ({run_name}):")
+        L.append(f"wirecap ({run_name}) — newest run on this home, not "
+                 "session-scoped; check against session time:")
         for row in wire_rows:
             L.append(f"  {row}")
 
@@ -949,6 +950,10 @@ def cmd_census(args, home, catalog_path, catalog, out_path):
         slug_have.append({"id": s["slug"]})
     if unknowns:
         cases_dir = Path(__file__).resolve().parent.parent / "redteam" / "cases"
+        if not cases_dir.is_dir():
+            L.append(f"notes: repro cases dir absent ({cases_dir}) — repro "
+                     "pointers unavailable on this install; run the repo "
+                     "copy of census for them")
         L.extend(repro_pointers(unknowns, cases_dir))
     if args.write_catalog and unknowns:
         new_rows = []
