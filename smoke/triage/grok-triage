@@ -413,16 +413,19 @@ def extract_chat_error(o):
 
 
 def harvest_unified(home, by_id):
-    """unified.jsonl single pass; lvl in {error, warn} only. Attribution:
+    """unified.jsonl single pass; lvl in {error, warn} only. Returns
+    (lines, first_ts, last_ts) — the first/last ts among parsed
+    error/warn lines (coverage-window approximation, F-R2-1). Attribution:
     top-level sid, else ctx.subagent_id (subagent's session dir, n-5)."""
     f = home / "logs" / "unified.jsonl"
     lines = []
+    first_ts = last_ts = None
     if not f.exists():
-        return lines
+        return lines, None, None
     try:
         fh = open(f, "r", errors="replace")
     except OSError:
-        return lines
+        return lines, None, None
     with fh:
         for line in fh:
             if not any(p in line for p in UNIFIED_PRESCREEN):
@@ -437,7 +440,12 @@ def harvest_unified(home, by_id):
                 sub = ctx.get("subagent_id")
                 sid = sub if isinstance(sub, str) and sub else None
             lines.append((o, by_id.get(sid) if sid else None))
-    return lines
+            ts = o.get("ts")
+            if isinstance(ts, str) and ts:
+                if first_ts is None:
+                    first_ts = ts
+                last_ts = ts
+    return lines, first_ts, last_ts
 
 
 def harvest_mcp_stderr(home, sigs):
@@ -873,7 +881,7 @@ def collect(home, catalog):
             local, meta = fut.result()
             merge_sigs(sigs, local)
             meta_by_sid[s["id"]] = meta
-    unified = harvest_unified(home, by_id)
+    unified, ufirst, ulast = harvest_unified(home, by_id)
     for o, sess in unified:
         ctx = o.get("ctx") if isinstance(o.get("ctx"), dict) else {}
         emsg = ctx.get("error") or ctx.get("message") or ""
@@ -882,6 +890,18 @@ def collect(home, catalog):
         add_sig(sigs, str(o.get("msg") or "?"), str(o.get("msg") or "?"), emsg,
                 o.get("ts"), (sess or {}).get("id"), (sess or {}).get("model"),
                 msg_in_key=False)
+    # F-R2-1: rotation detection — the harness rewrites logs/unified.jsonl
+    # (discarding pre-window events, no rotated sibling kept); when the
+    # unified window starts long after the oldest session, flag that
+    # unified-derived counts are lower bounds.
+    ufirst_e, ulast_e = ts_epoch(ufirst), ts_epoch(ulast)
+    oldest = min(((ts_epoch(s["created_at"]), s["created_at"]) for s in sessions
+                  if ts_epoch(s["created_at"])), default=None)
+    if ufirst_e and oldest and (ufirst_e - oldest[0]) > 3600:
+        index_notes.append(
+            f"unified.jsonl covers only {ufirst} -> {ulast} (oldest session "
+            f"{oldest[1]}): earlier unified events were rotated away by the "
+            "harness — unified-derived signature counts are lower bounds")
     stderr_servers = harvest_mcp_stderr(home, sigs)
     wire = wirecap_report(home)
     return sigs, sessions, {

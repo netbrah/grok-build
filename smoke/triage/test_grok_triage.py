@@ -340,6 +340,25 @@ def main():
           f"line={line7!r}")
     check("17c torn summary.json skipped with note, rc 0",
           "torn summary.json" in out and "sessions=2" in out, out[-600:])
+    # F-R2-1: rotation note — unified.jsonl window starts long after the
+    # oldest session (harness rotated/discarded earlier unified events)
+    rot = tmp / "rot-home"
+    rdir = (rot / "sessions" / "%2Frot%2Fproj"
+            / "dddddddd-1111-4222-8333-444455556666")
+    wjson(rdir / "summary.json", {
+        "info": {"id": "dddddddd-1111-4222-8333-444455556666",
+                 "cwd": "/rot/proj"},
+        "created_at": "2026-09-03T00:00:00.000000Z",
+        "last_active_at": "2026-09-03T00:10:00.000000Z"})
+    w(rot / "logs" / "unified.jsonl",
+      '{"ts":"2026-09-15T21:08:00.000Z","src":"shell","pid":1,"ver":"1.0",'
+      '"lvl":"error","msg":"disk_pressure","ctx":{"kind":"disk"}}\n')
+    prot = run(["scan"], rot)
+    check("17d rotation note: unified window later than oldest session",
+          prot.returncode == 0 and "rotated" in prot.stdout,
+          f"rc={prot.returncode}\nstdout={prot.stdout[-600:]}")
+    check("17e no rotation note on the main fixture (same-day window)",
+          "rotated" not in out, out[-400:])
 
     # ================= T1: show card =================
     pa = run(["show", SID_A], home)
