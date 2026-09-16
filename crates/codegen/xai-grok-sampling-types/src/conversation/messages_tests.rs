@@ -821,6 +821,7 @@ fn m_tool_result(id: &str) -> crate::messages::ContentBlock {
     crate::messages::ContentBlock::ToolResult {
         tool_use_id: id.to_string(),
         content: crate::messages::ToolResultContent::Text("out".to_string()),
+        is_error: false,
         cache_control: None,
     }
 }
@@ -2355,6 +2356,7 @@ fn tool_result_images_use_unified_source_parse() {
                     url: "https://example.com/pic.png".into(),
                 },
             ],
+            is_error: false,
         }),
     ])
     .with_model("claude-sonnet-5");
@@ -2753,5 +2755,81 @@ fn backend_toolcall_message_carrier_renders_labeled_plaintext() {
     assert!(
         !json.contains("msg_guard_1"),
         "R7: the raw carrier item (id) must not leak into the body: {json}"
+    );
+}
+
+// ============================================================================
+// (k) GAP-B4 — is_error on failed tool results (TOOLRES-ERROR-1)
+// ============================================================================
+
+/// Fresh-written: spec L3898-3902 (GAP-B4) — a failed tool result
+/// (`ToolResultItem.is_error == true`) projects `"is_error": true` on the
+/// wire `tool_result` block.
+#[test]
+fn tool_result_error_projects_is_error_true() {
+    let req = ConversationRequest::from_items(vec![
+        assistant_with_calls(&[("call_1", "t")]),
+        ConversationItem::ToolResult(ToolResultItem {
+            tool_call_id: "call_1".to_string(),
+            content: "boom".into(),
+            images: Vec::new(),
+            is_error: true,
+        }),
+    ])
+    .with_model("claude-sonnet-5");
+
+    let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    // Leading-assistant repair inserts a `[Continue]` user message, so the
+    // tool_result lands on messages[2] (house convention, cf.
+    // tool_result_images_use_unified_source_parse).
+    let tr_block = &json["messages"][2]["content"][0];
+    assert_eq!(tr_block["type"], "tool_result");
+    assert_eq!(
+        tr_block.get("is_error").and_then(serde_json::Value::as_bool),
+        Some(true),
+        "failed tool result must project is_error: true; got: {tr_block:#}"
+    );
+}
+
+/// Fresh-written: spec L3898-3902 (GAP-B4) — successful (and
+/// unspecified-success) tool results OMIT the `is_error` key entirely; the
+/// wire never emits `"is_error": false`. Structured check: parse the
+/// serialized request back, walk every user-message content block, and
+/// assert no `tool_result` block carries the `is_error` key (absent, not
+/// `false`) — no substring matching.
+#[test]
+fn success_tool_result_omits_is_error_key() {
+    let req = ConversationRequest::from_items(vec![
+        assistant_with_calls(&[("call_1", "t")]),
+        ConversationItem::tool_result("call_1", "all good"),
+    ])
+    .with_model("claude-sonnet-5");
+
+    let json = serde_json::to_string(&build_messages_request(&req)).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let mut tool_result_blocks = 0usize;
+    for msg in value["messages"].as_array().expect("request must carry a messages array") {
+        if msg["role"] != "user" {
+            continue;
+        }
+        let Some(blocks) = msg["content"].as_array() else {
+            continue;
+        };
+        for block in blocks {
+            if block["type"] == "tool_result" {
+                tool_result_blocks += 1;
+                assert!(
+                    !block
+                        .as_object()
+                        .expect("a content block must be an object")
+                        .contains_key("is_error"),
+                    "success-only tool_result block must omit the is_error key entirely: {block:?}"
+                );
+            }
+        }
+    }
+    assert!(
+        tool_result_blocks > 0,
+        "the walk must find the tool_result block it pins: {json}"
     );
 }

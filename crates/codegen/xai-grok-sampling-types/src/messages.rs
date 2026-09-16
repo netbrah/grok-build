@@ -128,6 +128,12 @@ pub fn cache_control_ttl(ttl: Option<&str>) -> Option<&str> {
     }
 }
 
+/// `skip_serializing_if` guard for `ContentBlock::ToolResult.is_error`:
+/// the wire omits the field on success (never emits `"is_error": false`).
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
 /// Content blocks used in both requests and responses
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -152,6 +158,11 @@ pub enum ContentBlock {
     ToolResult {
         tool_use_id: String,
         content: ToolResultContent,
+        /// Provenance: fresh — spec L3898-3902 (GAP-B4 is_error on failed
+        /// tool results). Wire invariant: emits `"is_error": true` or omits
+        /// the field; never serializes `"is_error": false`.
+        #[serde(default, skip_serializing_if = "is_false")]
+        is_error: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
@@ -211,6 +222,8 @@ impl<'de> Deserialize<'de> for ContentBlock {
             ToolResult {
                 tool_use_id: String,
                 content: ToolResultContent,
+                #[serde(default)]
+                is_error: bool,
                 cache_control: Option<CacheControl>,
             },
             Thinking {
@@ -252,10 +265,12 @@ impl<'de> Deserialize<'de> for ContentBlock {
             StrictBlock::ToolResult {
                 tool_use_id,
                 content,
+                is_error,
                 cache_control,
             } => ContentBlock::ToolResult {
                 tool_use_id,
                 content,
+                is_error,
                 cache_control,
             },
             StrictBlock::Thinking {

@@ -252,6 +252,11 @@ pub struct ToolResultItem {
     /// When non-empty, the API conversion layers embed these directly in the tool result message rather than in a separate follow-up user message.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ContentPart>,
+    /// Failed execution flag (ordinary/fatal tool error, cancelled outcome,
+    /// rejected pairing). Provenance: fresh — spec L3898-3902 (GAP-B4).
+    /// `serde(default)`: pre-existing session JSONL deserializes as success.
+    #[serde(default)]
+    pub is_error: bool,
 }
 
 /// A server-side tool call from the backend agentic sampler.
@@ -1515,6 +1520,7 @@ impl ConversationItem {
             tool_call_id: tool_call_id.into(),
             content: Arc::<str>::from(content.into()),
             images: Vec::new(),
+            is_error: false,
         })
     }
 
@@ -1530,6 +1536,33 @@ impl ConversationItem {
             tool_call_id: tool_call_id.into(),
             content: Arc::<str>::from(content.into()),
             images,
+            is_error: false,
+        })
+    }
+
+    /// Create a failed tool result message (wire: `"is_error": true`).
+    /// Provenance: fresh — spec L3898-3902 (GAP-B4).
+    pub fn tool_result_error(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::ToolResult(ToolResultItem {
+            tool_call_id: tool_call_id.into(),
+            content: Arc::<str>::from(content.into()),
+            images: Vec::new(),
+            is_error: true,
+        })
+    }
+
+    /// Create a failed tool result message with inline images
+    /// (wire: `"is_error": true`). Provenance: fresh — spec L3898-3902.
+    pub fn tool_result_error_with_images(
+        tool_call_id: impl Into<String>,
+        content: impl Into<String>,
+        images: Vec<ContentPart>,
+    ) -> Self {
+        Self::ToolResult(ToolResultItem {
+            tool_call_id: tool_call_id.into(),
+            content: Arc::<str>::from(content.into()),
+            images,
+            is_error: true,
         })
     }
 
@@ -2195,6 +2228,12 @@ pub enum DanglingToolCallReason {
 
 /// Insert synthetic `ToolResult` items for any tool calls that lack a result.
 /// The API rejects this with "No tool output found for function call …".
+///
+/// Every synthetic pairing is flagged `is_error == true` (via
+/// [`Self::tool_result_error`]): both [`DanglingToolCallReason`] variants are
+/// the spec's cancelled/fatal class (spec L3898-3902), so a resumed or
+/// aborted session must never present an unflagged success pairing for a
+/// tool call that never produced output.
 pub fn repair_dangling_tool_calls(
     conversation: &mut Vec<ConversationItem>,
     reason: DanglingToolCallReason,
@@ -2232,7 +2271,7 @@ pub fn repair_dangling_tool_calls(
                 .iter()
                 .filter(|(id, _)| !answered.contains(id.as_ref()))
                 .map(|(id, name)| {
-                    ConversationItem::tool_result(
+                    ConversationItem::tool_result_error(
                         id.as_ref(),
                         synthetic_dangling_result_text(name, reason),
                     )
@@ -3861,6 +3900,54 @@ mod tests {
             0
         );
         assert_eq!(conv.len(), 3);
+    }
+
+    /// GAP-B4 (spec L3898-3902): a dangling call repaired after user
+    /// cancellation is a cancelled outcome — the synthetic pairing must be
+    /// flagged so it reaches the Anthropic wire with `is_error: true`.
+    #[test]
+    fn test_repair_dangling_user_cancelled_marks_is_error() {
+        let mut conv = vec![
+            ConversationItem::user("hello"),
+            assistant_with_calls(&[("c1", "run_terminal_cmd")]),
+        ];
+        assert_eq!(
+            repair_dangling_tool_calls(&mut conv, DanglingToolCallReason::UserCancelled),
+            1
+        );
+        assert_matches!(&conv[2], ConversationItem::ToolResult(tr) => {
+            assert!(
+                tr.is_error,
+                "a UserCancelled dangling repair must synthesize an is_error-flagged pairing"
+            );
+        });
+    }
+
+    /// GAP-B4 (spec L3898-3902): a dangling call repaired after a harness
+    /// halt is a fatal outcome — the synthetic pairing must be flagged the
+    /// same way (this lane runs on the live request path, so resumed/aborted
+    /// sessions must not reach the wire unflagged).
+    #[test]
+    fn test_repair_dangling_harness_halted_marks_is_error() {
+        let mut conv = vec![
+            ConversationItem::user("hello"),
+            assistant_with_calls(&[("c1", "read_file")]),
+        ];
+        assert_eq!(
+            repair_dangling_tool_calls(
+                &mut conv,
+                DanglingToolCallReason::HarnessHalted {
+                    class: "internal_error",
+                },
+            ),
+            1
+        );
+        assert_matches!(&conv[2], ConversationItem::ToolResult(tr) => {
+            assert!(
+                tr.is_error,
+                "a HarnessHalted dangling repair must synthesize an is_error-flagged pairing"
+            );
+        });
     }
 
     #[test]

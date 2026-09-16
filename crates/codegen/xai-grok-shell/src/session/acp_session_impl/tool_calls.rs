@@ -351,6 +351,11 @@ pub(super) struct BridgeToolSuccess<'a> {
     pub model_id: &'a str,
     pub tool_parsed_args: &'a serde_json::Value,
     pub model_output_override: Option<String>,
+    /// True when this success result is the interrupted-wait synthesis
+    /// (wait aborted for a pending interjection): a cancelled outcome the
+    /// wire must mark as an error even though the output shape is not an
+    /// `is_error()` failure.
+    pub wait_aborted: bool,
 }
 impl SessionActor {
     /// Merge the canonical `x.ai/tool` identity envelope into a tool-call event's `_meta`, resolving the tool from the live toolset by wire name.
@@ -559,7 +564,10 @@ impl SessionActor {
                     }
                 };
                 self.chat_state_handle
-                    .push_tool_result(ConversationItem::tool_result(call.id.clone(), message));
+                    .push_tool_result(ConversationItem::tool_result_error(
+                        call.id.clone(),
+                        message,
+                    ));
                 continue;
             }
             self.emit_event(crate::session::events::Event::ToolStarted {
@@ -924,7 +932,7 @@ impl SessionActor {
                             "outcome": outcome,
                         })),
                     );
-                    (idx, result, duration_ms)
+                    (idx, result, duration_ms, wait_aborted)
                 }
             })
             .collect();
@@ -939,6 +947,7 @@ impl SessionActor {
             usize,
             Result<ToolRunResult, xai_tool_runtime::ToolError>,
             u64,
+            bool,
         )>();
         let drainer = tokio::spawn(
             async move {
@@ -951,7 +960,9 @@ impl SessionActor {
             .in_current_span(),
         );
         let _drainer_guard = crate::util::AbortOnDrop(drainer);
-        while let Some((idx, result, duration_ms)) = dispatch_rx.recv().await {
+        while let Some((idx, result, duration_ms, wait_aborted)) =
+            dispatch_rx.recv().await
+        {
             let prepared = approved_slots[idx]
                 .take()
                 .expect("dispatch index should match an approved slot exactly once");
@@ -1049,6 +1060,7 @@ impl SessionActor {
                             model_id: &prepared.model_id,
                             tool_parsed_args: &prepared.parsed_args,
                             model_output_override,
+                            wait_aborted,
                         })
                         .await;
                     if let Some(scrollback) = deferred_hook_scrollback {
@@ -1842,7 +1854,7 @@ impl SessionActor {
                         );
                         self.send_update(acp::SessionUpdate::ToolCallUpdate(tool_update), None)
                             .await;
-                        let tool_chat = ConversationItem::tool_result(call.id.clone(), message);
+                        let tool_chat = ConversationItem::tool_result_error(call.id.clone(), message);
                         self.chat_state_handle.push_tool_result(tool_chat);
                         return Ok(Err(ToolLoop::Continue));
                     }
@@ -1864,7 +1876,7 @@ impl SessionActor {
                         );
                         self.send_update(acp::SessionUpdate::ToolCallUpdate(tool_update), None)
                             .await;
-                        let tool_chat = ConversationItem::tool_result(call.id.clone(), message);
+                        let tool_chat = ConversationItem::tool_result_error(call.id.clone(), message);
                         self.chat_state_handle.push_tool_result(tool_chat);
                         return Ok(Err(ToolLoop::Continue));
                     }
@@ -2609,7 +2621,7 @@ impl SessionActor {
             None,
         )
         .await;
-        let tool_chat = ConversationItem::tool_result(call_id.to_string(), message);
+        let tool_chat = ConversationItem::tool_result_error(call_id.to_string(), message);
         self.chat_state_handle.push_tool_result(tool_chat);
         Ok(())
     }
@@ -2740,6 +2752,7 @@ impl SessionActor {
             model_id,
             tool_parsed_args,
             model_output_override,
+            wait_aborted,
         } = args;
         let (mut result, mut tool_layer_images) = drained.into_parts();
         let consumed_ids =
@@ -2859,7 +2872,21 @@ impl SessionActor {
             )
             .await
         };
-        let tool_chat = if inline_images.is_empty() {
+        // Provenance: fresh — spec L3898-3902 (GAP-B4): ordinary/fatal
+        // output errors and interrupted waits are failure outcomes; the
+        // pairing item carries the flag so the wire emits "is_error": true.
+        let failed_execution = wait_aborted || result.output.is_error();
+        let tool_chat = if failed_execution {
+            if inline_images.is_empty() {
+                ConversationItem::tool_result_error(call_id.to_string(), prompt_text)
+            } else {
+                ConversationItem::tool_result_error_with_images(
+                    call_id.to_string(),
+                    prompt_text,
+                    inline_images,
+                )
+            }
+        } else if inline_images.is_empty() {
             ConversationItem::tool_result(call_id.to_string(), prompt_text)
         } else {
             ConversationItem::tool_result_with_images(
@@ -3055,7 +3082,7 @@ impl SessionActor {
             None,
         )
         .await;
-        let tool_chat = ConversationItem::tool_result(call_id.to_string(), message);
+        let tool_chat = ConversationItem::tool_result_error(call_id.to_string(), message);
         self.chat_state_handle.push_tool_result(tool_chat);
         vec![]
     }
@@ -3093,7 +3120,7 @@ impl SessionActor {
         );
         self.send_update(acp::SessionUpdate::ToolCallUpdate(tool_update), None)
             .await;
-        let tool_chat = ConversationItem::tool_result(model_call_id.to_owned(), reason);
+        let tool_chat = ConversationItem::tool_result_error(model_call_id.to_owned(), reason);
         self.chat_state_handle.push_tool_result(tool_chat);
         Ok(())
     }

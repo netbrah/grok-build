@@ -55,6 +55,7 @@ impl From<ChatRequestMessage> for ConversationItem {
                     tool_call_id: msg.tool_call_id.unwrap_or_default(),
                     content: Arc::<str>::from(content),
                     images: Vec::new(),
+                    is_error: false,
                 })
             }
         }

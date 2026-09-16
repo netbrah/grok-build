@@ -2314,7 +2314,7 @@ impl SessionActor {
                 .filter(|tc| tc.name == STRUCTURED_OUTPUT_TOOL)
             {
                 self.chat_state_handle
-                    .push_tool_result(ConversationItem::tool_result(
+                    .push_tool_result(ConversationItem::tool_result_error(
                         tc.id.as_ref().to_owned(),
                         "Call StructuredOutput alone, exactly once, after all other tools finish.",
                     ));
@@ -2329,20 +2329,20 @@ impl SessionActor {
         {
             *retries += 1;
             self.chat_state_handle
-                .push_tool_result(ConversationItem::tool_result(
+                .push_tool_result(ConversationItem::tool_result_error(
                     call_id,
                     format!("{err}\nFix the arguments and call StructuredOutput again."),
                 ));
             return StructuredOutputStep::Retry;
         }
         self.chat_state_handle
-            .push_tool_result(ConversationItem::tool_result(
-                call_id,
-                match &validated {
-                    Ok(_) => "Structured output accepted.".to_string(),
-                    Err(err) => err.clone(),
-                },
-            ));
+            .push_tool_result(match &validated {
+                Ok(_) => ConversationItem::tool_result(
+                    call_id,
+                    "Structured output accepted.",
+                ),
+                Err(err) => ConversationItem::tool_result_error(call_id, err.clone()),
+            });
         StructuredOutputStep::Complete(validated)
     }
     /// Single shell tool call whose parsed command is `true` (via ToolBridge).

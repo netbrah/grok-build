@@ -163,6 +163,7 @@ mod tests {
                 tool_call_id: "tc-1".to_string(),
                 content: Arc::from("ok"),
                 images: Vec::new(),
+                is_error: false,
             }),
         ];
         assert!(!fork_crosses_model(&no_assistants, child, child));

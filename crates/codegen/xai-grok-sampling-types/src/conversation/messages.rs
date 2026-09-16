@@ -729,6 +729,9 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 pending_user.push(ContentBlock::ToolResult {
                     tool_use_id: sanitize_tool_call_id(&t.tool_call_id),
                     content,
+                    // Provenance: fresh — spec L3898-3902 (GAP-B4): failed
+                    // executions project as `"is_error": true`.
+                    is_error: t.is_error,
                     cache_control: None,
                 });
             }

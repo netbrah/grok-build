@@ -304,6 +304,7 @@ mod tests {
                 tool_call_id: "tc_1".to_string(),
                 content: "file written".into(),
                 images: Vec::new(),
+                is_error: false,
             }),
         ];
 

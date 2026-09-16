@@ -133,6 +133,7 @@ fn flatten_truncates_long_fields() {
         tool_call_id: "call-1".to_string(),
         content: long.into(),
         images: vec![],
+        is_error: false,
     })];
     let out = flatten_transcript_for_classifier(&items, true);
     assert!(
