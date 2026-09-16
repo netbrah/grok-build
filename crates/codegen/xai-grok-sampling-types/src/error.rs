@@ -8,6 +8,7 @@ use thiserror::Error;
 use xai_circuit_breaker::RetryPolicy;
 
 use crate::provider_error::{parse_provider_error, parse_provider_error_str};
+use crate::request_validation::RequestValidationError;
 
 pub type Result<T> = std::result::Result<T, SamplingError>;
 
@@ -188,6 +189,14 @@ pub enum SamplingError {
         triggers: Vec<String>,
         aborted_at_chunk: Option<u64>,
     },
+    /// Local pre-HTTP request validation failure (REQVALID-1 47a): the
+    /// request violates a hard local cap (message count, per-item token
+    /// estimate, encoded body bytes) or a two-pass encode invariant
+    /// (frozen spec N1/N2/N3). Never sent to the wire; non-retryable by
+    /// construction — re-encoding the same request cannot change the
+    /// outcome (the retry classifier falls through to its terminal Fatal arm).
+    #[error("request validation failed: {0}")]
+    RequestValidation(RequestValidationError),
 }
 
 /// Semantic `error.code` the server stamps on invalid-image rejections, on both non-stream error bodies and mid-stream SSE error events.
@@ -479,7 +488,8 @@ impl SamplingError {
             | SamplingError::IdleTimeout { .. }
             | SamplingError::EmptyResponse { .. }
             | SamplingError::MaxTokensTruncation
-            | SamplingError::DoomLoopDetected { .. } => false,
+            | SamplingError::DoomLoopDetected { .. }
+            | SamplingError::RequestValidation(_) => false,
         }
     }
 
@@ -497,6 +507,8 @@ impl SamplingError {
             SamplingError::EmptyResponse { .. } => true,
             SamplingError::MaxTokensTruncation => false,
             SamplingError::DoomLoopDetected { .. } => true,
+            // Local pre-HTTP cap violation: deterministic, never retry.
+            SamplingError::RequestValidation(_) => false,
         }
     }
 
@@ -561,7 +573,8 @@ impl SamplingError {
             | SamplingError::IdleTimeout { .. }
             | SamplingError::EmptyResponse { .. }
             | SamplingError::MaxTokensTruncation
-            | SamplingError::DoomLoopDetected { .. } => false,
+            | SamplingError::DoomLoopDetected { .. }
+            | SamplingError::RequestValidation(_) => false,
         }
     }
 
@@ -584,7 +597,8 @@ impl SamplingError {
             | SamplingError::IdleTimeout { .. }
             | SamplingError::EmptyResponse { .. }
             | SamplingError::MaxTokensTruncation
-            | SamplingError::DoomLoopDetected { .. } => false,
+            | SamplingError::DoomLoopDetected { .. }
+            | SamplingError::RequestValidation(_) => false,
         }
     }
 
@@ -637,7 +651,8 @@ impl SamplingError {
             | SamplingError::IdleTimeout { .. }
             | SamplingError::EmptyResponse { .. }
             | SamplingError::MaxTokensTruncation
-            | SamplingError::DoomLoopDetected { .. } => false,
+            | SamplingError::DoomLoopDetected { .. }
+            | SamplingError::RequestValidation(_) => false,
         }
     }
 }
@@ -652,6 +667,12 @@ impl From<serde_json::Error> for SamplingError {
     fn from(value: serde_json::Error) -> Self {
         tracing::debug!("Serde deserialization error: {:?}", &value);
         Self::Serialization(value)
+    }
+}
+
+impl From<RequestValidationError> for SamplingError {
+    fn from(value: RequestValidationError) -> Self {
+        Self::RequestValidation(value)
     }
 }
 

@@ -309,6 +309,9 @@ pub fn format_sampling_error(err: &SamplingError, retry_count: Option<u32>) -> S
                 triggers.join(", ")
             )
         }
+        SamplingError::RequestValidation(e) => {
+            format!("{}Request validation failed: {e}", retry_prefix)
+        }
     }
 }
 
@@ -364,6 +367,7 @@ pub(crate) fn clone_error(err: &SamplingError) -> SamplingError {
             triggers: triggers.clone(),
             aborted_at_chunk: *aborted_at_chunk,
         },
+        SamplingError::RequestValidation(e) => SamplingError::RequestValidation(e.clone()),
     }
 }
 
@@ -1176,5 +1180,43 @@ mod tests {
             classify_error(&err, 0, 15, RATE_LIMIT_RETRY_THRESHOLD),
             RetryDecision::Fatal(_)
         ));
+    }
+
+    /// T14b (REQVALID-1 47a): the retry actor's ACTUAL classifier must treat
+    /// `SamplingError::RequestValidation` as terminal — called with
+    /// `max_retries = 3 > 0` so the decision cannot be the universal
+    /// zero-budget Fatal gate. No retryable family (1-5), no 400-gate match,
+    /// no image-strip / veto / rate-limit / doom-loop arm may claim it.
+    #[test]
+    fn request_validation_error_is_terminal_in_retry_classifier() {
+        use xai_grok_sampling_types::request_validation::{ItemRef, RequestValidationError};
+        let variants = [
+            RequestValidationError::TooManyMessages { count: 100_001 },
+            RequestValidationError::ItemTokenLimitExceeded {
+                item: ItemRef::MessageItem(0),
+                estimated_tokens: 10_001,
+            },
+            RequestValidationError::EncodedBodyTooLarge { bytes: 32_000_001 },
+            RequestValidationError::CounterOverflow,
+            RequestValidationError::AllocationFailed { bytes: 4 },
+            RequestValidationError::PassLengthMismatch { counted: 5, actual: 6 },
+            RequestValidationError::ItemEncodingFailed { item: ItemRef::Tool(1) },
+        ];
+        for variant in variants {
+            let err = SamplingError::RequestValidation(variant);
+            let decision = classify_error(&err, 0, 3, RATE_LIMIT_RETRY_THRESHOLD);
+            assert!(
+                matches!(decision, RetryDecision::Fatal(_)),
+                "RequestValidation must classify Fatal (terminal), got: {decision:?}"
+            );
+            assert!(!err.is_retryable());
+            assert!(!err.is_model_bound_history_error());
+            assert!(!err.is_payload_too_large());
+            assert!(!err.is_byte_size_overflow_coded());
+            assert!(!err.is_retry_vetoed());
+            assert!(!err.is_deterministic_in_stream_error());
+            assert!(!err.is_rate_limited());
+            assert!(!err.is_image_processing_error());
+        }
     }
 }

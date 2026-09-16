@@ -12,6 +12,7 @@ pub mod messages;
 pub mod messages_model;
 pub mod provider_error;
 pub mod presence;
+pub mod request_validation;
 pub mod serde_helpers;
 pub mod tool_overrides;
 pub mod types;

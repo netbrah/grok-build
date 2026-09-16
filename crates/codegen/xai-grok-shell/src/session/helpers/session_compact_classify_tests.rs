@@ -384,3 +384,59 @@ fn compaction_outcome_as_str_is_stable() {
     assert_eq!(CompactionOutcome::Degenerate.as_ref(), "degenerate");
     assert_eq!(CompactionOutcome::Failed.as_ref(), "failed");
 }
+
+// ------------------------------------------------------------------
+// REQVALID-1 47a-fix (m-1, ruling R-2): the local pre-HTTP SIZE-FAMILY
+// RequestValidation violations (N1 message count, N2 encoded-body cap) are
+// ladder-recoverable — shrinking the compaction input shrinks the offending
+// request. The other variants stay Deterministic.
+// ------------------------------------------------------------------
+
+#[test]
+fn request_validation_too_many_messages_is_overflow() {
+    let failure = classify_sampling_error(SamplingError::RequestValidation(
+        xai_grok_sampling_types::request_validation::RequestValidationError::TooManyMessages {
+            count: 100_001,
+        },
+    ));
+    assert!(
+        is_overflow(&failure),
+        "N1 (too many messages) is size-family: the compaction input ladder must engage (R-2)"
+    );
+    assert!(!is_det(&failure));
+}
+
+#[test]
+fn request_validation_encoded_body_too_large_is_overflow() {
+    let failure = classify_sampling_error(SamplingError::RequestValidation(
+        xai_grok_sampling_types::request_validation::RequestValidationError::EncodedBodyTooLarge {
+            bytes: 32_000_001,
+        },
+    ));
+    assert!(
+        is_overflow(&failure),
+        "N2 (encoded body too large) is size-family: the compaction input ladder must engage (R-2)"
+    );
+    assert!(!is_det(&failure));
+}
+
+#[test]
+fn request_validation_item_token_limit_stays_deterministic() {
+    // R-2 boundary pin: shrinking other items cannot shrink the offending
+    // item, so it stays out of the ladder.
+    let failure = classify_sampling_error(SamplingError::RequestValidation(
+        xai_grok_sampling_types::request_validation::RequestValidationError::ItemTokenLimitExceeded {
+            item: xai_grok_sampling_types::request_validation::ItemRef::MessageItem(0),
+            estimated_tokens: 10_001,
+        },
+    ));
+    assert!(is_det(&failure));
+}
+
+#[test]
+fn request_validation_counter_overflow_stays_deterministic() {
+    let failure = classify_sampling_error(SamplingError::RequestValidation(
+        xai_grok_sampling_types::request_validation::RequestValidationError::CounterOverflow,
+    ));
+    assert!(is_det(&failure));
+}

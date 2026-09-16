@@ -120,12 +120,31 @@ pub(crate) use xai_grok_compaction::is_context_length_error;
 
 /// Classify an upstream `SamplingError` for the compaction retry loop.
 /// Size overflows (HTTP 413 by status, or size-worded error text) classify as [`CompactFailure::Overflow`] so the caller's input ladder engages.
+/// Local pre-HTTP size-family cap violations (N1 message count, N2 encoded-body size, REQVALID-1 47a-fix) classify the same way: shrinking the compaction input shrinks the offending request.
 /// Re-issuing the same request cannot change the outcome: auth state, config, payload shape, and stuck-model conditions all persist.
 fn classify_sampling_error(err: SamplingError) -> CompactFailure {
     let acp_err = acp::Error::internal_error().data(format!("{COMPACT_FAILED_PREFIX}{err}"));
     // Size beats the generic 4xx rule so the input ladder sees it; 413 matches by status because proxies send it with generic body text.
     // Deliberately not laddering on `is_likely_body_rejected()`: the same signal fires on real network resets.
-    if err.is_payload_too_large() || err.is_context_length_error() {
+    // Local pre-HTTP SIZE-FAMILY cap violations (N1 message count, N2 encoded-body cap — REQVALID-1 47a-fix R-2) are the same class:
+    // shrinking the compaction input shrinks the offending request, so they engage the ladder. The other RequestValidation
+    // variants stay deterministic: shrinking other items cannot shrink the offending item.
+    if err.is_payload_too_large()
+        || err.is_context_length_error()
+        || matches!(
+            &err,
+            SamplingError::RequestValidation(
+                xai_grok_sampling_types::request_validation::RequestValidationError::TooManyMessages
+                {
+                    ..
+                }
+                | xai_grok_sampling_types::request_validation::RequestValidationError::EncodedBodyTooLarge
+                {
+                    ..
+                }
+            )
+        )
+    {
         return CompactFailure::Overflow(acp_err);
     }
     // Deterministic in-stream text (opaque proxy failures / over-capacity):
@@ -140,7 +159,9 @@ fn classify_sampling_error(err: SamplingError) -> CompactFailure {
         | SamplingError::InvalidConfiguration(_)
         | SamplingError::MtlsConfiguration(_)
         | SamplingError::Serialization(_)
-        | SamplingError::IdleTimeout { .. } => true,
+        | SamplingError::IdleTimeout { .. }
+        // Local pre-HTTP cap violation: deterministic — re-sending cannot fix it.
+        | SamplingError::RequestValidation(_) => true,
         SamplingError::Api { status, .. } => {
             status.is_client_error()
                 && *status != StatusCode::REQUEST_TIMEOUT

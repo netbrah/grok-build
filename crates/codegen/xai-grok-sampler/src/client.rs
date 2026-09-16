@@ -2595,6 +2595,19 @@ impl SamplingClient {
         // Drop process-local trace data.
         request.trace.take();
 
+        // REQVALID-1 47a: hard local caps (N1 count / N3 per-item / N2
+        // two-pass body) after defaults and before body build — the encoded
+        // carrier is the exact wire body, and an over-cap request never
+        // reaches transport. Header parity note: `SamplingClient::new`
+        // already puts Content-Type: application/json in the default
+        // headers that `post()` applies, so no explicit header is added —
+        // reqwest's `.json()` (contains_key guard, request.rs:452-455 of
+        // 0.12.24) likewise skips inserting it here.
+        let encoded = xai_grok_sampling_types::request_validation::validate_and_encode_messages_request(
+            &request.inner,
+        )
+        .map_err(SamplingError::from)?;
+
         tracing::debug!("create_message: {:?}", &request.inner);
         tracing::debug!("endpoint: {:?}", self.endpoint("messages"));
 
@@ -2614,7 +2627,7 @@ impl SamplingClient {
             builder,
             sent_bearer,
         } = self.post(self.endpoint("messages"));
-        let http_request = grok_headers.apply(builder).json(&request.inner);
+        let http_request = grok_headers.apply(builder).body(encoded.as_bytes().to_vec());
 
         let response = http_request.send().await.map_err(|e| {
             tracing::debug!("HTTP request failed: {}", e);
@@ -2719,6 +2732,19 @@ impl SamplingClient {
         // Drop process-local trace data.
         request.trace.take();
 
+        // REQVALID-1 47a: hard local caps (N1 count / N3 per-item / N2
+        // two-pass body) after defaults and before body build — the encoded
+        // carrier is the exact wire body, and an over-cap request never
+        // reaches transport. Header parity note: `SamplingClient::new`
+        // already puts Content-Type: application/json in the default
+        // headers that `post()` applies, so no explicit header is added —
+        // reqwest's `.json()` (contains_key guard, request.rs:452-455 of
+        // 0.12.24) likewise skips inserting it here.
+        let encoded = xai_grok_sampling_types::request_validation::validate_and_encode_messages_request(
+            &request.inner,
+        )
+        .map_err(SamplingError::from)?;
+
         tracing::debug!(
             base_url = %self.base_url,
             model_id = model_id.as_str(),
@@ -2744,7 +2770,7 @@ impl SamplingClient {
         let http_request = grok_headers
             .apply(builder)
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"))
-            .json(&request.inner);
+            .body(encoded.as_bytes().to_vec());
 
         let built_request = http_request.build().map_err(|e| {
             tracing::error!("Failed to build HTTP request: {}", e);

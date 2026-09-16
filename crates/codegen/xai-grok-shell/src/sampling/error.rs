@@ -107,6 +107,7 @@ pub(crate) fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
             acp::Error::internal_error().data(format!("http client init failed: {e}"))
         }
         SamplingError::Serialization(_) => acp::Error::invalid_params().data(err.to_string()),
+        SamplingError::RequestValidation(_) => acp::Error::invalid_params().data(err.to_string()),
         SamplingError::Api {
             status, message, ..
         } => match status {

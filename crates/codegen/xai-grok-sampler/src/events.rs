@@ -295,6 +295,9 @@ impl From<&SamplingError> for SamplingErrorInfo {
             SamplingError::DoomLoopDetected { .. } => {
                 (SamplingErrorKind::DoomLoopDetected, None, None, None)
             }
+            // Local pre-HTTP cap violation: no wire status — same house
+            // pattern as the other local configuration errors.
+            SamplingError::RequestValidation(_) => (SamplingErrorKind::Api, None, None, None),
         };
 
         let empty_response_context = match err {

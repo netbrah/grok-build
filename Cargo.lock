@@ -14426,6 +14426,7 @@ dependencies = [
  "tracing",
  "xai-circuit-breaker",
  "xai-grok-compaction",
+ "xai-token-estimation",
  "xai-tool-types",
 ]
 
