@@ -3,7 +3,7 @@
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
-use crate::presence::RequestPresence;
+use crate::presence::{RequestPresence, WirePresence};
 
 // ============================================================================
 // Request Types
@@ -371,6 +371,12 @@ pub struct MessagesResponse {
     pub model: String,
     pub stop_reason: Option<StopReason>,
     pub usage: MessagesUsage,
+    /// Spec A0 L107 (Q6): required-nullable — Missing/Null/Value never collapse; the delta rule is retain-on-omission/null (§4.3).
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub container: WirePresence<serde_json::Value>,
+    /// Spec A0 L108 (Q7): required-nullable — preserved in the start event; the terminal delta REPLACES this field, never overlays it (L110, Q9).
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub stop_details: WirePresence<StopDetails>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -432,18 +438,18 @@ pub struct CacheCreation {
 pub struct MessagesUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
-    #[serde(default)]
-    pub cache_creation_input_tokens: u32,
-    #[serde(default)]
-    pub cache_read_input_tokens: u32,
-    /// Present on proxy responses carrying a thinking decomposition (pin
-    /// messages.ts:2423); absent on the majority, so `Option` + default.
-    #[serde(default)]
-    pub output_tokens_details: Option<OutputTokensDetails>,
-    /// Per-TTL cache-write breakdown (pin messages.ts:2388); absent on the
-    /// majority, so `Option` + default.
-    #[serde(default)]
-    pub cache_creation: Option<CacheCreation>,
+    /// Spec A0 L109 (Q8): required-nullable — preserve Missing/Null/Value independently (was bare u32+default: missing→0 AND null→error, second collapse class).
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub cache_creation_input_tokens: WirePresence<u32>,
+    /// Spec A0 L109 (Q8): required-nullable — preserve Missing/Null/Value independently (was bare u32+default: missing→0 AND null→error, second collapse class).
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub cache_read_input_tokens: WirePresence<u32>,
+    /// Spec A0 L109 (Q8): required-nullable — preserve Missing/Null/Value independently (pin messages.ts:2423; present on proxy responses carrying a thinking decomposition).
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub output_tokens_details: WirePresence<OutputTokensDetails>,
+    /// Spec A0 L109 (Q8) + L4257: required-nullable, start-only — not a delta field; retains its exact start state (pin messages.ts:2388).
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub cache_creation: WirePresence<CacheCreation>,
 }
 
 // ============================================================================
@@ -672,10 +678,12 @@ pub struct MessageDeltaBody {
     /// Optional so its absence never fails the terminal parse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_sequence: Option<String>,
-    /// Provider detail for the stop; on `refusal`, `explanation` carries the
-    /// reason the request was blocked (e.g. an Anthropic ToS auto-refusal).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stop_details: Option<StopDetails>,
+    /// Spec A0 L110 (Q9): terminal replacement — Missing → missing completed field, Null → explicit null, Value → that value; none retains the start value.
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub stop_details: WirePresence<StopDetails>,
+    /// Spec A0 L105 (Q4): omission and null retain the start container; a non-null value replaces it.
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub container: WirePresence<serde_json::Value>,
 }
 
 /// Detail for a terminal `message_delta`, e.g. `{"type":"refusal","category":"frontier_llm","explanation":"..."}`.
@@ -693,17 +701,18 @@ pub struct StopDetails {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MessageDeltaUsage {
     pub output_tokens: u32,
-    #[serde(default)]
-    pub input_tokens: Option<u32>,
-    #[serde(default)]
-    pub cache_read_input_tokens: Option<u32>,
-    #[serde(default)]
-    pub cache_creation_input_tokens: Option<u32>,
-    /// Terminal-delta thinking decomposition (pin messages.ts:2423); when
-    /// present it overrides the `message_start` value, else the start value is
-    /// preserved by the stream transform.
-    #[serde(default)]
-    pub output_tokens_details: Option<OutputTokensDetails>,
+    /// Spec A0 L104 (Q3): accept omission and explicit null and retain the corresponding `message_start` value; a present non-null value replaces it.
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub input_tokens: WirePresence<u32>,
+    /// Spec A0 L104 (Q3): accept omission and explicit null and retain the corresponding `message_start` value; a present non-null value replaces it.
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub cache_read_input_tokens: WirePresence<u32>,
+    /// Spec A0 L104 (Q3): accept omission and explicit null and retain the corresponding `message_start` value; a present non-null value replaces it.
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub cache_creation_input_tokens: WirePresence<u32>,
+    /// Spec A0 L104 (Q3): accept omission and explicit null and retain the corresponding `message_start` value; a present non-null value replaces it (pin messages.ts:2423; terminal-delta thinking decomposition).
+    #[serde(default, skip_serializing_if = "WirePresence::is_absent")]
+    pub output_tokens_details: WirePresence<OutputTokensDetails>,
 }
 
 /// Content delta within a content_block_delta event
@@ -818,7 +827,7 @@ mod tests {
         match event {
             MessageStreamEvent::MessageDelta { delta, usage } => {
                 assert!(matches!(delta.stop_reason, Some(StopReason::Refusal)));
-                assert!(delta.stop_details.is_none(), "no stop_details on the wire");
+                assert!(delta.stop_details.is_missing(), "no stop_details on the wire");
                 assert_eq!(usage.output_tokens, 5);
             }
             other => panic!("expected MessageDelta, got {other:?}"),
@@ -837,7 +846,7 @@ mod tests {
         match event {
             MessageStreamEvent::MessageDelta { delta, .. } => {
                 assert!(matches!(delta.stop_reason, Some(StopReason::Refusal)));
-                let details = delta.stop_details.expect("stop_details must be captured");
+                let details = delta.stop_details.as_ref().expect("stop_details must be captured");
                 assert_eq!(details.r#type.as_deref(), Some("refusal"));
                 assert_eq!(details.category.as_deref(), Some("frontier_llm"));
                 assert_eq!(
@@ -982,14 +991,14 @@ mod tests {
         .expect("proxy usage shape with detail objects must parse");
 
         assert_eq!(
-            usage.output_tokens_details,
-            Some(OutputTokensDetails {
+            usage.output_tokens_details.as_ref(),
+            Some(&OutputTokensDetails {
                 thinking_tokens: 31
             })
         );
         assert_eq!(
-            usage.cache_creation,
-            Some(CacheCreation {
+            usage.cache_creation.as_ref(),
+            Some(&CacheCreation {
                 ephemeral_5m_input_tokens: 8,
                 ephemeral_1h_input_tokens: 2
             })
@@ -1003,11 +1012,11 @@ mod tests {
     fn usage_detail_fields_default_to_none_when_absent() {
         let usage: MessagesUsage =
             serde_json::from_str(r#"{"input_tokens":1,"output_tokens":2}"#).unwrap();
-        assert_eq!(usage.output_tokens_details, None);
-        assert_eq!(usage.cache_creation, None);
+        assert!(usage.output_tokens_details.is_missing());
+        assert!(usage.cache_creation.is_missing());
 
         let delta: MessageDeltaUsage = serde_json::from_str(r#"{"output_tokens":7}"#).unwrap();
-        assert_eq!(delta.output_tokens_details, None);
+        assert!(delta.output_tokens_details.is_missing());
     }
 
     /// Fresh-written: the Q1 probe returned `thinking_tokens: 0` (claude-sonnet-5
@@ -1020,8 +1029,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            usage.output_tokens_details,
-            Some(OutputTokensDetails { thinking_tokens: 0 })
+            usage.output_tokens_details.as_ref(),
+            Some(&OutputTokensDetails { thinking_tokens: 0 })
         );
     }
 

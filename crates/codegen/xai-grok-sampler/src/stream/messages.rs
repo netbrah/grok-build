@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 use futures_util::stream::{BoxStream, Stream};
 
-use xai_grok_sampling_types::messages::{self, MessageStreamEvent};
+use xai_grok_sampling_types::messages::{self, MessageStreamEvent, StopDetails};
+use xai_grok_sampling_types::presence::WirePresence;
 use xai_grok_sampling_types::{
     AssistantItem, ConversationItem, ConversationResponse, ResponseModelMetadata, SamplingError,
     StopReason, TokenUsage, ToolCall, rs,
@@ -130,7 +131,8 @@ pub fn stream_messages<'a>(
         // real reasoning tokens like the responses wire (stream/responses.rs:635).
         let mut final_reasoning_tokens: u32 = 0;
         let mut final_stop_reason: Option<StopReason> = None;
-        let mut final_stop_message: Option<String> = None;
+        let mut final_stop_details: WirePresence<StopDetails> = WirePresence::missing();
+        let mut final_container: WirePresence<serde_json::Value> = WirePresence::missing();
         let mut final_message_id: Option<String> = None;
         let mut final_raw_stop_reason: Option<String> = None;
         // The provider sends the matched stop sequence in `message_delta.stop_sequence` on a `stop_sequence`-terminated turn
@@ -198,13 +200,24 @@ pub fn stream_messages<'a>(
                     final_input_tokens = message.usage.input_tokens;
                     prev_input_tokens = message.usage.input_tokens;
                     prev_output_tokens = message.usage.output_tokens;
-                    final_cache_read_input_tokens = message.usage.cache_read_input_tokens;
-                    final_cache_creation_input_tokens = message.usage.cache_creation_input_tokens;
+                    final_cache_read_input_tokens =
+                        message.usage.cache_read_input_tokens.as_ref().copied().unwrap_or(0);
+                    final_cache_creation_input_tokens =
+                        message.usage.cache_creation_input_tokens
+                            .as_ref()
+                            .copied()
+                            .unwrap_or(0);
                     final_reasoning_tokens = message
                         .usage
                         .output_tokens_details
+                        .as_ref()
                         .map(|d| d.thinking_tokens)
                         .unwrap_or(0);
+                    // L107/L108 (Q6/Q7): preserve the exact start state; the
+                    // terminal delta REPLACES both (container = non-null replace,
+                    // stop_details = whole-state terminal replace — §4.3).
+                    final_container = message.container.clone();
+                    final_stop_details = message.stop_details.clone();
                     // Yield the real id, model, and input usage before any content
                     // Partial-mode framing then emits them on the real `message_start` instead of a synthesized placeholder
                     yield SamplingEvent::ResponseStarted {
@@ -213,10 +226,20 @@ pub fn stream_messages<'a>(
                         model: message.model,
                         input_tokens: u64::from(message.usage.input_tokens),
                         cache_read_input_tokens: u64::from(
-                            message.usage.cache_read_input_tokens,
+                            message
+                                .usage
+                                .cache_read_input_tokens
+                                .as_ref()
+                                .copied()
+                                .unwrap_or(0),
                         ),
                         cache_creation_input_tokens: u64::from(
-                            message.usage.cache_creation_input_tokens,
+                            message
+                                .usage
+                                .cache_creation_input_tokens
+                                .as_ref()
+                                .copied()
+                                .unwrap_or(0),
                         ),
                     };
                 }
@@ -546,9 +569,13 @@ pub fn stream_messages<'a>(
                 }
 
                 MessageStreamEvent::MessageDelta { delta, usage } => {
-                    // Normalize the provider's stop detail to a plain message; the shell logs it when it shows a refusal
-                    if let Some(details) = delta.stop_details {
-                        final_stop_message = details.explanation;
+                    // L110 (Q9): terminal replacement — the delta's whole state
+                    // (Missing/Null/Value) replaces the start value; never overlays.
+                    final_stop_details = delta.stop_details.clone();
+                    // L105 (Q4): a non-null delta container replaces the start
+                    // value; omission or null retains the exact start state.
+                    if let Some(container) = delta.container.as_ref() {
+                        final_container = WirePresence::value(container.clone());
                     }
                     // Keep the exact wire string so consumers can echo it.
                     final_raw_stop_reason = delta
@@ -592,7 +619,7 @@ pub fn stream_messages<'a>(
                         }
                     });
                     let output_incoming = usage.output_tokens;
-                    let input_incoming = usage.input_tokens;
+                    let input_incoming = usage.input_tokens.as_ref().copied();
                     // R2: usage counters are monotonic across
                     // message_start → message_delta; a regressed counter is
                     // warned and SKIPPED (previous kept) — recoverable,
@@ -620,16 +647,19 @@ pub fn stream_messages<'a>(
                         prev_output_tokens = output_incoming;
                         final_output_tokens = output_incoming;
                     }
-                    // Optional on the delta; preserve message_start values when omitted.
-                    if let Some(cache_read) = usage.cache_read_input_tokens {
+                    // L4255 (Q14): a non-null value replaces the start value; omission
+                    // or JSON null retains the exact message_start state.
+                    if let Some(cache_read) = usage.cache_read_input_tokens.as_ref().copied() {
                         final_cache_read_input_tokens = cache_read;
                     }
-                    if let Some(cache_creation) = usage.cache_creation_input_tokens {
+                    if let Some(cache_creation) =
+                        usage.cache_creation_input_tokens.as_ref().copied()
+                    {
                         final_cache_creation_input_tokens = cache_creation;
                     }
                     // Override the message_start value when the terminal delta
                     // carries its own decomposition (preserve otherwise).
-                    if let Some(details) = usage.output_tokens_details {
+                    if let Some(details) = usage.output_tokens_details.as_ref() {
                         final_reasoning_tokens = details.thinking_tokens;
                     }
                 }
@@ -809,6 +839,12 @@ pub fn stream_messages<'a>(
         }
         drop(decode_region);
 
+        // OQ-2: the retained container state is held but NOT projected onto the
+        // port's ConversationResponse (no consumer) — the L105/L4258
+        // retain/replace rule is live code, pinned at the DTO level (G12/G13);
+        // the drop keeps the zero-new-warnings discipline.
+        drop(final_container);
+
         let response = ConversationResponse {
             items,
             stop_reason,
@@ -817,7 +853,7 @@ pub fn stream_messages<'a>(
             cost_usd_ticks: None,
             message_chunks_emitted: message_chunk_count,
             doom_loop_signals: Vec::new(),
-            stop_message: final_stop_message,
+            stop_message: final_stop_details.as_ref().and_then(|d| d.explanation.clone()),
             message_id: final_message_id,
             raw_stop_reason: final_raw_stop_reason,
             stop_sequence: final_stop_sequence,

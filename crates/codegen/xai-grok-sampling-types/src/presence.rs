@@ -30,10 +30,12 @@
 //!   bare Missing/Omitted serializes as `null` — the non-collapse guarantee is field-level,
 //!   where absence is representable.
 //!
-//! 46b scope: `RequestPresence` wired into `Metadata.user_id`, `OutputConfig.effort`,
-//! `OutputConfig.format` (the three PRESENT rows of the inventory gate); RED-1 active.
+//! 46c scope: 46b's `RequestPresence` rows unchanged (three PRESENT) + `WirePresence`
+//! wired into the 12 response-side A0 fields of `MessagesResponse`/`MessagesUsage`/
+//! `MessageDeltaBody`/`MessageDeltaUsage` (9 rewrites + 3 ADDs; §4.7 inventory totals
+//! 3 × RequestPresence / 12 × WirePresence / 0 × Option / 6 × ABSENT).
 //! Generic carrier holders need `#[serde(bound = "T: Serialize + DeserializeOwned")]` to
-//! derive (E0277/E0283); all 46b holders are concrete, so none does (46c may need it).
+//! derive (E0277/E0283); all holders are concrete, so none does (46c confirmed: no bound).
 
 use serde::de::Deserializer;
 use serde::ser::Serializer;
@@ -716,8 +718,9 @@ mod presence_tests {
 mod presence_goldens {
     use super::*;
     use crate::messages::{
-        CacheControl, Message, MessageContent, MessageRole, Metadata, MessagesRequest,
-        OutputConfig, OutputFormat,
+        CacheControl, CacheCreation, Message, MessageContent, MessageDeltaBody,
+        MessageDeltaUsage, MessageRole, Metadata, MessagesRequest, MessagesResponse,
+        OutputConfig, OutputFormat, OutputTokensDetails,
     };
     use serde_json::json;
 
@@ -739,6 +742,50 @@ mod presence_goldens {
     const EFFORT_NULL_BYTES: &str = r#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"output_config":{"effort":null}}"#;
     const FORMAT_VALUE_BYTES: &str = r#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"output_config":{"format":{"type":"json_schema","schema":{"type":"object"}}}}"#;
     const FORMAT_NULL_BYTES: &str = r#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"output_config":{"format":null}}"#;
+
+    // 46c response-side A0 pins (spec L104-110; 46c sub-SDD §6). Shared start
+    // base (the G13 base): member order = struct order; the ADDed
+    // `MessagesResponse` members are LAST so the pre-46c base stays a byte
+    // prefix of every pin.
+    const G1_START_BASE: &str = r#"{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1}}"#;
+    const G1_START_NULL: &str = r#"{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":null}}"#;
+    const G1_START_VALUE: &str = r#"{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":7}}"#;
+    const G11_DELTA_STOP_DETAILS_OMITTED: &str = r#"{"stop_reason":"refusal"}"#;
+    const G11_DELTA_STOP_DETAILS_NULL: &str = r#"{"stop_reason":"refusal","stop_details":null}"#;
+    const G11_DELTA_STOP_DETAILS_VALUE: &str = r#"{"stop_reason":"refusal","stop_details":{"type":"refusal","category":"frontier_llm","explanation":"This request was blocked."}}"#;
+    const G13_START_CONTAINER_NULL: &str = r#"{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1},"container":null}"#;
+    const G13_START_CONTAINER_VALUE: &str = r#"{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1},"container":{"kind":"sandbox"}}"#;
+    const G14_START_STOP_DETAILS_NULL: &str = r#"{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1},"stop_details":null}"#;
+    const G14_START_STOP_DETAILS_VALUE: &str = r#"{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1},"stop_details":{"type":"refusal","category":"frontier_llm","explanation":"This request was blocked."}}"#;
+    const G2_START_NULL: &str = r#"{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":null}}"#;
+    const G2_START_VALUE: &str = r#"{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":500}}"#;
+    const G3_START_NULL: &str = r#"{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1,"output_tokens_details":null}}"#;
+    const G3_START_VALUE: &str = r#"{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1,"output_tokens_details":{"thinking_tokens":9}}}"#;
+    const G4_START_NULL: &str = r#"{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation":null}}"#;
+    const G4_START_VALUE: &str = r#"{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":3,"ephemeral_1h_input_tokens":0}}}"#;
+    const G5_INPUT_MISSING: &str = r#"{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"output_tokens":1}}"#;
+    const G5_INPUT_NULL: &str = r#"{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":null,"output_tokens":1}}"#;
+    const G5_OUTPUT_MISSING: &str = r#"{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":1}}"#;
+    const G5_OUTPUT_NULL: &str = r#"{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"usage":{"input_tokens":1,"output_tokens":null}}"#;
+    const G6_DELTA_INPUT_OMITTED: &str = r#"{"output_tokens":1}"#;
+    const G6_DELTA_INPUT_NULL: &str = r#"{"output_tokens":1,"input_tokens":null}"#;
+    const G6_DELTA_INPUT_VALUE: &str = r#"{"output_tokens":1,"input_tokens":42}"#;
+    const G7_DELTA_CR_OMITTED: &str = r#"{"output_tokens":1}"#;
+    const G7_DELTA_CR_NULL: &str = r#"{"output_tokens":1,"cache_read_input_tokens":null}"#;
+    const G7_DELTA_CR_VALUE: &str = r#"{"output_tokens":1,"cache_read_input_tokens":500}"#;
+    const G8_DELTA_CC_INPUT_OMITTED: &str = r#"{"output_tokens":1}"#;
+    const G8_DELTA_CC_INPUT_NULL: &str = r#"{"output_tokens":1,"cache_creation_input_tokens":null}"#;
+    const G8_DELTA_CC_INPUT_VALUE: &str = r#"{"output_tokens":1,"cache_creation_input_tokens":200}"#;
+    const G9_DELTA_OTD_OMITTED: &str = r#"{"output_tokens":1}"#;
+    const G9_DELTA_OTD_NULL: &str = r#"{"output_tokens":1,"output_tokens_details":null}"#;
+    const G9_DELTA_OTD_VALUE: &str = r#"{"output_tokens":1,"output_tokens_details":{"thinking_tokens":9}}"#;
+    const G10_DELTA_OUTPUT_MISSING: &str = r#"{"input_tokens":1,"cache_read_input_tokens":1,"cache_creation_input_tokens":1,"output_tokens_details":{"thinking_tokens":1}}"#;
+    const G10_DELTA_OUTPUT_NULL: &str = r#"{"output_tokens":null,"input_tokens":1,"cache_read_input_tokens":1,"cache_creation_input_tokens":1,"output_tokens_details":{"thinking_tokens":1}}"#;
+    const G12_DELTA_CONTAINER_OMITTED: &str = r#"{"stop_reason":"end_turn"}"#;
+    const G12_DELTA_CONTAINER_NULL: &str = r#"{"stop_reason":"end_turn","container":null}"#;
+    const G12_DELTA_CONTAINER_VALUE: &str = r#"{"stop_reason":"end_turn","container":{"kind":"sandbox"}}"#;
+    const G15_TTL_NULL: &str = r#"{"type":"ephemeral","ttl":null}"#;
+    const G15_TTL_OMITTED_BYTES: &str = r#"{"type":"ephemeral"}"#;
 
     fn minimal_request() -> MessagesRequest {
         MessagesRequest {
@@ -885,6 +932,434 @@ mod presence_goldens {
         assert_eq!(
             serde_json::to_string(&back).expect("re-serialize"),
             FORMAT_NULL_BYTES
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // 46c response-side DTO goldens (spec A0 L104-110 + L4254-4260):
+    // 3-state byte pins on the real response DTOs. RED-C2 (46c sub-SDD §5):
+    // the byte pins are authored active on the UNCHANGED production tree —
+    // the carrier state asserts (is_missing/is_null/as_ref) compile only
+    // post cut A and are added with GREEN-DTO (no pin edit: the pins and
+    // byte asserts below are byte-identical between red and green).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn dto_golden_usage_cc_input_omitted_null_value() {
+        // omitted (L109 Q8: preserve Missing — the member must vanish)
+        let v: MessagesResponse = serde_json::from_str(G1_START_BASE).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G1_START_BASE,
+            "omitted state byte pin"
+        );
+        assert!(v.usage.cache_creation_input_tokens.is_missing());
+        // null (L109 Q8: preserve Null — an explicit null must not collapse)
+        let v: MessagesResponse = serde_json::from_str(G1_START_NULL).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G1_START_NULL,
+            "null state byte pin"
+        );
+        assert!(v.usage.cache_creation_input_tokens.is_null());
+        // value (L109 Q8: preserve Value — typed bytes unchanged)
+        let v: MessagesResponse = serde_json::from_str(G1_START_VALUE).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G1_START_VALUE,
+            "value state byte pin"
+        );
+        assert_eq!(v.usage.cache_creation_input_tokens.as_ref(), Some(&7u32));
+    }
+
+    #[test]
+    fn dto_golden_delta_stop_details_omitted_null_value() {
+        // omitted (L110 Q9: preserve Missing — the member must vanish)
+        let v: MessageDeltaBody =
+            serde_json::from_str(G11_DELTA_STOP_DETAILS_OMITTED).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G11_DELTA_STOP_DETAILS_OMITTED,
+            "omitted state byte pin"
+        );
+        assert!(v.stop_details.is_missing());
+        // null (L110 Q9: preserve Null — an explicit null must not collapse into omission)
+        let v: MessageDeltaBody = serde_json::from_str(G11_DELTA_STOP_DETAILS_NULL).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G11_DELTA_STOP_DETAILS_NULL,
+            "null state byte pin"
+        );
+        assert!(v.stop_details.is_null());
+        // value (L110 Q9: preserve Value — the terminal delta's own stop details)
+        let v: MessageDeltaBody =
+            serde_json::from_str(G11_DELTA_STOP_DETAILS_VALUE).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G11_DELTA_STOP_DETAILS_VALUE,
+            "value state byte pin"
+        );
+        let details = v.stop_details.as_ref().expect("stop_details must be Value");
+        assert_eq!(details.r#type.as_deref(), Some("refusal"));
+        assert_eq!(details.category.as_deref(), Some("frontier_llm"));
+        assert_eq!(
+            details.explanation.as_deref(),
+            Some("This request was blocked.")
+        );
+    }
+
+    #[test]
+    fn dto_golden_start_container_omitted_null_value() {
+        // omitted (L107 Q6: preserve Missing — the member must vanish)
+        let v: MessagesResponse = serde_json::from_str(G1_START_BASE).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G1_START_BASE,
+            "omitted state byte pin"
+        );
+        assert!(v.container.is_missing());
+        // null (L107 Q6: preserve Null — the ADDed member must not be dropped)
+        let v: MessagesResponse =
+            serde_json::from_str(G13_START_CONTAINER_NULL).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G13_START_CONTAINER_NULL,
+            "null state byte pin"
+        );
+        assert!(v.container.is_null());
+        // value (L107 Q6: preserve Value — the 46a mirror byte target)
+        let v: MessagesResponse =
+            serde_json::from_str(G13_START_CONTAINER_VALUE).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G13_START_CONTAINER_VALUE,
+            "value state byte pin"
+        );
+        assert_eq!(v.container.as_ref(), Some(&json!({"kind": "sandbox"})));
+    }
+
+    #[test]
+    fn dto_golden_start_stop_details_omitted_null_value() {
+        // omitted (L108 Q7: preserve Missing — the member must vanish)
+        let v: MessagesResponse = serde_json::from_str(G1_START_BASE).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G1_START_BASE,
+            "omitted state byte pin"
+        );
+        assert!(v.stop_details.is_missing());
+        // null (L108 Q7: preserve Null — the ADDed member must not be dropped)
+        let v: MessagesResponse =
+            serde_json::from_str(G14_START_STOP_DETAILS_NULL).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G14_START_STOP_DETAILS_NULL,
+            "null state byte pin"
+        );
+        assert!(v.stop_details.is_null());
+        // value (L108 Q7: preserve Value — the start event's own stop details)
+        let v: MessagesResponse =
+            serde_json::from_str(G14_START_STOP_DETAILS_VALUE).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G14_START_STOP_DETAILS_VALUE,
+            "value state byte pin"
+        );
+        let details = v.stop_details.as_ref().expect("stop_details must be Value");
+        assert_eq!(details.r#type.as_deref(), Some("refusal"));
+        assert_eq!(details.category.as_deref(), Some("frontier_llm"));
+        assert_eq!(
+            details.explanation.as_deref(),
+            Some("This request was blocked.")
+        );
+    }
+
+    #[test]
+    fn dto_golden_usage_cr_input_omitted_null_value() {
+        // omitted (L109 Q8: preserve Missing — the member must vanish)
+        let v: MessagesResponse = serde_json::from_str(G1_START_BASE).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G1_START_BASE,
+            "omitted state byte pin"
+        );
+        assert!(v.usage.cache_read_input_tokens.is_missing());
+        // null (L109 Q8: preserve Null — an explicit null must not collapse)
+        let v: MessagesResponse = serde_json::from_str(G2_START_NULL).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G2_START_NULL,
+            "null state byte pin"
+        );
+        assert!(v.usage.cache_read_input_tokens.is_null());
+        // value (L109 Q8: preserve Value — typed bytes unchanged)
+        let v: MessagesResponse = serde_json::from_str(G2_START_VALUE).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G2_START_VALUE,
+            "value state byte pin"
+        );
+        assert_eq!(v.usage.cache_read_input_tokens.as_ref(), Some(&500u32));
+    }
+
+    #[test]
+    fn dto_golden_usage_output_tokens_details_omitted_null_value() {
+        // omitted (L109 Q8: preserve Missing — the member must vanish)
+        let v: MessagesResponse = serde_json::from_str(G1_START_BASE).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G1_START_BASE,
+            "omitted state byte pin"
+        );
+        assert!(v.usage.output_tokens_details.is_missing());
+        // null (L109 Q8: preserve Null — an explicit null must not collapse)
+        let v: MessagesResponse = serde_json::from_str(G3_START_NULL).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G3_START_NULL,
+            "null state byte pin"
+        );
+        assert!(v.usage.output_tokens_details.is_null());
+        // value (L109 Q8: preserve Value — typed bytes unchanged)
+        let v: MessagesResponse = serde_json::from_str(G3_START_VALUE).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G3_START_VALUE,
+            "value state byte pin"
+        );
+        assert_eq!(
+            v.usage.output_tokens_details.as_ref(),
+            Some(&OutputTokensDetails { thinking_tokens: 9 })
+        );
+    }
+
+    #[test]
+    fn dto_golden_usage_cache_creation_omitted_null_value() {
+        // omitted (L109 Q8: preserve Missing — the member must vanish)
+        let v: MessagesResponse = serde_json::from_str(G1_START_BASE).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G1_START_BASE,
+            "omitted state byte pin"
+        );
+        assert!(v.usage.cache_creation.is_missing());
+        // null (L109 Q8: preserve Null — an explicit null must not collapse)
+        let v: MessagesResponse = serde_json::from_str(G4_START_NULL).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G4_START_NULL,
+            "null state byte pin"
+        );
+        assert!(v.usage.cache_creation.is_null());
+        // value (L109 Q8 + L4257: start-only — retains its exact start state)
+        let v: MessagesResponse = serde_json::from_str(G4_START_VALUE).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G4_START_VALUE,
+            "value state byte pin"
+        );
+        assert_eq!(
+            v.usage.cache_creation.as_ref(),
+            Some(&CacheCreation {
+                ephemeral_5m_input_tokens: 3,
+                ephemeral_1h_input_tokens: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn dto_golden_usage_input_output_tokens_required() {
+        // L109 Q8: input_tokens / output_tokens are REQUIRED bare u32 — absence and
+        // explicit null must both fail the parse (pin against a future default/Option
+        // drift).
+        assert!(
+            serde_json::from_str::<MessagesResponse>(G5_INPUT_MISSING).is_err(),
+            "input_tokens missing must fail"
+        );
+        assert!(
+            serde_json::from_str::<MessagesResponse>(G5_INPUT_NULL).is_err(),
+            "input_tokens null must fail"
+        );
+        assert!(
+            serde_json::from_str::<MessagesResponse>(G5_OUTPUT_MISSING).is_err(),
+            "output_tokens missing must fail"
+        );
+        assert!(
+            serde_json::from_str::<MessagesResponse>(G5_OUTPUT_NULL).is_err(),
+            "output_tokens null must fail"
+        );
+    }
+
+    #[test]
+    fn dto_golden_delta_usage_input_omitted_null_value() {
+        // omitted (L104 Q3: preserve Missing — retain the message_start value)
+        let v: MessageDeltaUsage = serde_json::from_str(G6_DELTA_INPUT_OMITTED).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G6_DELTA_INPUT_OMITTED,
+            "omitted state byte pin"
+        );
+        assert!(v.input_tokens.is_missing());
+        // null (L104 Q3: preserve Null — retain the message_start value)
+        let v: MessageDeltaUsage = serde_json::from_str(G6_DELTA_INPUT_NULL).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G6_DELTA_INPUT_NULL,
+            "null state byte pin"
+        );
+        assert!(v.input_tokens.is_null());
+        // value (L104 Q3: a present non-null value replaces the start value)
+        let v: MessageDeltaUsage = serde_json::from_str(G6_DELTA_INPUT_VALUE).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G6_DELTA_INPUT_VALUE,
+            "value state byte pin"
+        );
+        assert_eq!(v.input_tokens.as_ref(), Some(&42u32));
+    }
+
+    #[test]
+    fn dto_golden_delta_usage_cache_read_omitted_null_value() {
+        // omitted (L104 Q3: preserve Missing — retain the message_start value)
+        let v: MessageDeltaUsage = serde_json::from_str(G7_DELTA_CR_OMITTED).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G7_DELTA_CR_OMITTED,
+            "omitted state byte pin"
+        );
+        assert!(v.cache_read_input_tokens.is_missing());
+        // null (L104 Q3: preserve Null — retain the message_start value)
+        let v: MessageDeltaUsage = serde_json::from_str(G7_DELTA_CR_NULL).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G7_DELTA_CR_NULL,
+            "null state byte pin"
+        );
+        assert!(v.cache_read_input_tokens.is_null());
+        // value (L104 Q3: a present non-null value replaces the start value)
+        let v: MessageDeltaUsage = serde_json::from_str(G7_DELTA_CR_VALUE).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G7_DELTA_CR_VALUE,
+            "value state byte pin"
+        );
+        assert_eq!(v.cache_read_input_tokens.as_ref(), Some(&500u32));
+    }
+
+    #[test]
+    fn dto_golden_delta_usage_cache_creation_input_omitted_null_value() {
+        // omitted (L104 Q3: preserve Missing — retain the message_start value)
+        let v: MessageDeltaUsage =
+            serde_json::from_str(G8_DELTA_CC_INPUT_OMITTED).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G8_DELTA_CC_INPUT_OMITTED,
+            "omitted state byte pin"
+        );
+        assert!(v.cache_creation_input_tokens.is_missing());
+        // null (L104 Q3: preserve Null — retain the message_start value)
+        let v: MessageDeltaUsage = serde_json::from_str(G8_DELTA_CC_INPUT_NULL).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G8_DELTA_CC_INPUT_NULL,
+            "null state byte pin"
+        );
+        assert!(v.cache_creation_input_tokens.is_null());
+        // value (L104 Q3: a present non-null value replaces the start value)
+        let v: MessageDeltaUsage =
+            serde_json::from_str(G8_DELTA_CC_INPUT_VALUE).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G8_DELTA_CC_INPUT_VALUE,
+            "value state byte pin"
+        );
+        assert_eq!(v.cache_creation_input_tokens.as_ref(), Some(&200u32));
+    }
+
+    #[test]
+    fn dto_golden_delta_usage_output_tokens_details_omitted_null_value() {
+        // omitted (L104 Q3: preserve Missing — retain the message_start value)
+        let v: MessageDeltaUsage = serde_json::from_str(G9_DELTA_OTD_OMITTED).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G9_DELTA_OTD_OMITTED,
+            "omitted state byte pin"
+        );
+        assert!(v.output_tokens_details.is_missing());
+        // null (L104 Q3: preserve Null — retain the message_start value)
+        let v: MessageDeltaUsage = serde_json::from_str(G9_DELTA_OTD_NULL).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G9_DELTA_OTD_NULL,
+            "null state byte pin"
+        );
+        assert!(v.output_tokens_details.is_null());
+        // value (L104 Q3: a present non-null value replaces the start value)
+        let v: MessageDeltaUsage = serde_json::from_str(G9_DELTA_OTD_VALUE).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G9_DELTA_OTD_VALUE,
+            "value state byte pin"
+        );
+        assert_eq!(
+            v.output_tokens_details.as_ref(),
+            Some(&OutputTokensDetails { thinking_tokens: 9 })
+        );
+    }
+
+    #[test]
+    fn dto_golden_delta_usage_output_tokens_required() {
+        // L104 Q3 + L4254 Q14: output_tokens is REQUIRED and always replaces —
+        // absence and explicit null must both fail the parse.
+        assert!(
+            serde_json::from_str::<MessageDeltaUsage>(G10_DELTA_OUTPUT_MISSING).is_err(),
+            "output_tokens missing must fail"
+        );
+        assert!(
+            serde_json::from_str::<MessageDeltaUsage>(G10_DELTA_OUTPUT_NULL).is_err(),
+            "output_tokens null must fail"
+        );
+    }
+
+    #[test]
+    fn dto_golden_delta_container_omitted_null_value() {
+        // omitted (L105 Q4: preserve Missing — the member must vanish)
+        let v: MessageDeltaBody = serde_json::from_str(G12_DELTA_CONTAINER_OMITTED).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G12_DELTA_CONTAINER_OMITTED,
+            "omitted state byte pin"
+        );
+        assert!(v.container.is_missing());
+        // null (L105 Q4: preserve Null — the ADDed member must not be dropped)
+        let v: MessageDeltaBody = serde_json::from_str(G12_DELTA_CONTAINER_NULL).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G12_DELTA_CONTAINER_NULL,
+            "null state byte pin"
+        );
+        assert!(v.container.is_null());
+        // value (L105 Q4: preserve Value — the 46a mirror byte target)
+        let v: MessageDeltaBody = serde_json::from_str(G12_DELTA_CONTAINER_VALUE).expect("parse");
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G12_DELTA_CONTAINER_VALUE,
+            "value state byte pin"
+        );
+        assert_eq!(v.container.as_ref(), Some(&json!({"kind": "sandbox"})));
+    }
+
+    #[test]
+    fn dto_golden_cache_control_ttl_null_lenient() {
+        // §4.6 leniency pin: ttl STAYS `Option<String>` on the SHARED type — an
+        // explicit null parses as None and re-serializes as omission (any future
+        // strictening fails loudly here).
+        let v: CacheControl = serde_json::from_str(G15_TTL_NULL).expect("parse");
+        assert_eq!(v.ttl, None);
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            G15_TTL_OMITTED_BYTES,
+            "null ttl re-serializes as omission"
         );
     }
 
@@ -1149,6 +1624,7 @@ mod presence_goldens {
         #[allow(dead_code)]
         PresentOption,
         PresentRequestPresence,
+        PresentWirePresence,
         Absent,
     }
 
@@ -1190,7 +1666,7 @@ mod presence_goldens {
     }
 
     #[test]
-    fn dto_coverage_inventory_pins_46b_truth() {
+    fn dto_coverage_inventory_pins_46c_truth() {
         let src = include_str!("messages.rs");
         let rows: &[InventoryRow] = &[
             InventoryRow {
@@ -1256,14 +1732,101 @@ mod presence_goldens {
                 exact_decl: None,
                 expected: InventoryClass::Absent,
             },
+            // 46c response-side A0 closure (spec L103-111): 12 × PRESENT-WirePresence
+            // (9 carrier rewrites + 3 ADDs; §4.7 of the 46c sub-SDD).
+            InventoryRow {
+                spec_field: "message_start.message.usage.cache_creation_input_tokens",
+                struct_name: "MessagesUsage",
+                field: "cache_creation_input_tokens",
+                exact_decl: Some("pub cache_creation_input_tokens: WirePresence<u32>,"),
+                expected: InventoryClass::PresentWirePresence,
+            },
+            InventoryRow {
+                spec_field: "message_start.message.usage.cache_read_input_tokens",
+                struct_name: "MessagesUsage",
+                field: "cache_read_input_tokens",
+                exact_decl: Some("pub cache_read_input_tokens: WirePresence<u32>,"),
+                expected: InventoryClass::PresentWirePresence,
+            },
+            InventoryRow {
+                spec_field: "message_start.message.usage.output_tokens_details",
+                struct_name: "MessagesUsage",
+                field: "output_tokens_details",
+                exact_decl: Some("pub output_tokens_details: WirePresence<OutputTokensDetails>,"),
+                expected: InventoryClass::PresentWirePresence,
+            },
+            InventoryRow {
+                spec_field: "message_start.message.usage.cache_creation",
+                struct_name: "MessagesUsage",
+                field: "cache_creation",
+                exact_decl: Some("pub cache_creation: WirePresence<CacheCreation>,"),
+                expected: InventoryClass::PresentWirePresence,
+            },
+            InventoryRow {
+                spec_field: "message_delta.usage.input_tokens",
+                struct_name: "MessageDeltaUsage",
+                field: "input_tokens",
+                exact_decl: Some("pub input_tokens: WirePresence<u32>,"),
+                expected: InventoryClass::PresentWirePresence,
+            },
+            InventoryRow {
+                spec_field: "message_delta.usage.cache_read_input_tokens",
+                struct_name: "MessageDeltaUsage",
+                field: "cache_read_input_tokens",
+                exact_decl: Some("pub cache_read_input_tokens: WirePresence<u32>,"),
+                expected: InventoryClass::PresentWirePresence,
+            },
+            InventoryRow {
+                spec_field: "message_delta.usage.cache_creation_input_tokens",
+                struct_name: "MessageDeltaUsage",
+                field: "cache_creation_input_tokens",
+                exact_decl: Some("pub cache_creation_input_tokens: WirePresence<u32>,"),
+                expected: InventoryClass::PresentWirePresence,
+            },
+            InventoryRow {
+                spec_field: "message_delta.usage.output_tokens_details",
+                struct_name: "MessageDeltaUsage",
+                field: "output_tokens_details",
+                exact_decl: Some("pub output_tokens_details: WirePresence<OutputTokensDetails>,"),
+                expected: InventoryClass::PresentWirePresence,
+            },
+            InventoryRow {
+                spec_field: "message_delta.delta.stop_details",
+                struct_name: "MessageDeltaBody",
+                field: "stop_details",
+                exact_decl: Some("pub stop_details: WirePresence<StopDetails>,"),
+                expected: InventoryClass::PresentWirePresence,
+            },
+            InventoryRow {
+                spec_field: "message_delta.delta.container",
+                struct_name: "MessageDeltaBody",
+                field: "container",
+                exact_decl: Some("pub container: WirePresence<serde_json::Value>,"),
+                expected: InventoryClass::PresentWirePresence,
+            },
+            InventoryRow {
+                spec_field: "message_start.message.container",
+                struct_name: "MessagesResponse",
+                field: "container",
+                exact_decl: Some("pub container: WirePresence<serde_json::Value>,"),
+                expected: InventoryClass::PresentWirePresence,
+            },
+            InventoryRow {
+                spec_field: "message_start.message.stop_details",
+                struct_name: "MessagesResponse",
+                field: "stop_details",
+                exact_decl: Some("pub stop_details: WirePresence<StopDetails>,"),
+                expected: InventoryClass::PresentWirePresence,
+            },
         ];
         let mut present_option = 0usize;
         let mut present_request_presence = 0usize;
+        let mut present_wire_presence = 0usize;
         let mut absent = 0usize;
         for row in rows {
             let body = struct_body(src, row.struct_name).unwrap_or_else(|| {
                 panic!(
-                    "A1-lite inventory gate: struct `{}` moved or renamed in messages.rs — re-derive the 46b classification table",
+                    "A1-lite inventory gate: struct `{}` moved or renamed in messages.rs — re-derive the 46c classification table",
                     row.struct_name
                 )
             });
@@ -1272,22 +1835,33 @@ mod presence_goldens {
                 None => has_field_decl(body, row.field),
             };
             let matches = match row.expected {
-                InventoryClass::PresentOption | InventoryClass::PresentRequestPresence => present,
+                InventoryClass::PresentOption | InventoryClass::PresentRequestPresence
+                | InventoryClass::PresentWirePresence => present,
                 InventoryClass::Absent => !present,
             };
             assert!(
                 matches,
-                "A1-lite inventory gate: spec field `{}` (struct `{}`, field `{}`) expected {:?} but source says present={present} — the 46b truth table moved, or the declaration was renamed/moved/reformatted (re-derive against spec A0 L92-99)",
+                "A1-lite inventory gate: spec field `{}` (struct `{}`, field `{}`) expected {:?} but source says present={present} — the 46c truth table moved, or the declaration was renamed/moved/reformatted (re-derive against spec A0 L87-114, response half)",
                 row.spec_field, row.struct_name, row.field, row.expected
             );
             match row.expected {
                 InventoryClass::PresentOption => present_option += 1,
                 InventoryClass::PresentRequestPresence => present_request_presence += 1,
+                InventoryClass::PresentWirePresence => present_wire_presence += 1,
                 InventoryClass::Absent => absent += 1,
             }
         }
-        assert_eq!(present_request_presence, 3, "46b truth: 3 × PRESENT-RequestPresence");
-        assert_eq!(present_option, 0, "46b truth: 0 × PRESENT-Option");
-        assert_eq!(absent, 6, "46b truth: 6 × ABSENT");
+        assert_eq!(
+            present_request_presence,
+            3,
+            "46c truth: 3 × PRESENT-RequestPresence (46b, unchanged)"
+        );
+        assert_eq!(present_wire_presence, 12, "46c truth: 12 × PRESENT-WirePresence");
+        assert_eq!(present_option, 0, "46c truth: 0 × PRESENT-Option");
+        assert_eq!(
+            absent,
+            6,
+            "46c truth: 6 × ABSENT (46a request-side, unchanged)"
+        );
     }
 }

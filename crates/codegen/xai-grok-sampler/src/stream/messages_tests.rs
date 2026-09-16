@@ -6,8 +6,9 @@ use futures_util::stream;
 use std::pin::pin;
 use xai_grok_sampling_types::messages::{
     ContentBlock, MessageDeltaBody, MessageDeltaUsage, MessagesResponse, MessagesUsage,
-    OutputTokensDetails, StreamDelta, StreamError,
+    OutputTokensDetails, StopDetails, StreamDelta, StreamError,
 };
+use xai_grok_sampling_types::presence::WirePresence;
 
 fn rid() -> RequestId {
     RequestId::from("msg-test")
@@ -25,11 +26,127 @@ fn message_start() -> MessageStreamEvent {
             usage: MessagesUsage {
                 input_tokens: 10,
                 output_tokens: 0,
-                cache_creation_input_tokens: 0,
-                cache_read_input_tokens: 0,
-                output_tokens_details: None,
-                cache_creation: None,
+                cache_creation_input_tokens: WirePresence::missing(),
+                cache_read_input_tokens: WirePresence::missing(),
+                output_tokens_details: WirePresence::missing(),
+                cache_creation: WirePresence::missing(),
             },
+            container: WirePresence::missing(),
+            stop_details: WirePresence::missing(),
+        },
+    }
+}
+
+// ========================================================================
+// 46c WIREPRESENCE-1 (GAP-SA-1): response-side A0 closure helpers +
+// accumulator goldens G16-G25 (46c sub-SDD §6). RED-C6: authored against
+// the pre-cut-A tree — LABELED compile red: the start-side constructors
+// below name the ADDed `MessagesResponse` members (`container`,
+// `stop_details`), which do not exist before cut A. The carrier-parameter
+// `message_delta_with_cache` / `message_delta_with_thinking` signatures
+// (G21-G24) migrate with this batch; their existing call sites adapt with
+// GREEN-ACC.
+// ========================================================================
+
+/// The refusal stop-details value used by the G16-G19 terminal-replacement proofs.
+fn refusal_stop_details(explanation: &str) -> StopDetails {
+    StopDetails {
+        r#type: Some("refusal".to_owned()),
+        category: Some("frontier_llm".to_owned()),
+        explanation: Some(explanation.to_owned()),
+    }
+}
+
+/// 46c helper: base start event with the `stop_details` carrier varied; all other carriers missing.
+fn message_start_with_stop_details(
+    stop_details: WirePresence<StopDetails>,
+) -> MessageStreamEvent {
+    MessageStreamEvent::MessageStart {
+        message: MessagesResponse {
+            id: "msg_46c".into(),
+            r#type: "message".into(),
+            role: "assistant".into(),
+            content: vec![],
+            model: "messages-compatible-model".into(),
+            stop_reason: None,
+            usage: MessagesUsage {
+                input_tokens: 10,
+                output_tokens: 0,
+                cache_creation_input_tokens: WirePresence::missing(),
+                cache_read_input_tokens: WirePresence::missing(),
+                output_tokens_details: WirePresence::missing(),
+                cache_creation: WirePresence::missing(),
+            },
+            container: WirePresence::missing(),
+            stop_details,
+        },
+    }
+}
+
+/// 46c helper: base terminal delta with the `stop_details` carrier varied; all other carriers missing.
+fn message_delta_with_stop_details(
+    stop_details: WirePresence<StopDetails>,
+) -> MessageStreamEvent {
+    MessageStreamEvent::MessageDelta {
+        delta: MessageDeltaBody {
+            stop_reason: Some(messages::StopReason::EndTurn),
+            stop_sequence: None,
+            stop_details,
+            container: WirePresence::missing(),
+        },
+        usage: MessageDeltaUsage {
+            output_tokens: 1,
+            input_tokens: WirePresence::missing(),
+            cache_read_input_tokens: WirePresence::missing(),
+            cache_creation_input_tokens: WirePresence::missing(),
+            output_tokens_details: WirePresence::missing(),
+        },
+    }
+}
+
+/// 46c helper: base start event with the `container` carrier varied; all other carriers missing.
+fn message_start_with_container(
+    container: WirePresence<serde_json::Value>,
+) -> MessageStreamEvent {
+    MessageStreamEvent::MessageStart {
+        message: MessagesResponse {
+            id: "msg_46c".into(),
+            r#type: "message".into(),
+            role: "assistant".into(),
+            content: vec![],
+            model: "messages-compatible-model".into(),
+            stop_reason: None,
+            usage: MessagesUsage {
+                input_tokens: 10,
+                output_tokens: 0,
+                cache_creation_input_tokens: WirePresence::missing(),
+                cache_read_input_tokens: WirePresence::missing(),
+                output_tokens_details: WirePresence::missing(),
+                cache_creation: WirePresence::missing(),
+            },
+            container,
+            stop_details: WirePresence::missing(),
+        },
+    }
+}
+
+/// 46c helper: base terminal delta with the `container` carrier varied; all other carriers missing.
+fn message_delta_with_container(
+    container: WirePresence<serde_json::Value>,
+) -> MessageStreamEvent {
+    MessageStreamEvent::MessageDelta {
+        delta: MessageDeltaBody {
+            stop_reason: Some(messages::StopReason::EndTurn),
+            stop_sequence: None,
+            stop_details: WirePresence::missing(),
+            container,
+        },
+        usage: MessageDeltaUsage {
+            output_tokens: 1,
+            input_tokens: WirePresence::missing(),
+            cache_read_input_tokens: WirePresence::missing(),
+            cache_creation_input_tokens: WirePresence::missing(),
+            output_tokens_details: WirePresence::missing(),
         },
     }
 }
@@ -60,14 +177,15 @@ fn message_delta_with_stop(stop: messages::StopReason) -> MessageStreamEvent {
         delta: MessageDeltaBody {
             stop_reason: Some(stop),
             stop_sequence: None,
-            stop_details: None,
+            stop_details: WirePresence::missing(),
+            container: WirePresence::missing(),
         },
         usage: MessageDeltaUsage {
             output_tokens: 5,
-            input_tokens: Some(10),
-            cache_read_input_tokens: None,
-            cache_creation_input_tokens: None,
-            output_tokens_details: None,
+            input_tokens: WirePresence::value(10),
+            cache_read_input_tokens: WirePresence::missing(),
+            cache_creation_input_tokens: WirePresence::missing(),
+            output_tokens_details: WirePresence::missing(),
         },
     }
 }
@@ -78,18 +196,19 @@ fn message_delta_refusal_with_explanation(explanation: &str) -> MessageStreamEve
         delta: MessageDeltaBody {
             stop_reason: Some(messages::StopReason::Refusal),
             stop_sequence: None,
-            stop_details: Some(messages::StopDetails {
+            stop_details: WirePresence::value(StopDetails {
                 r#type: Some("refusal".to_string()),
                 category: Some("frontier_llm".to_string()),
                 explanation: Some(explanation.to_string()),
             }),
+            container: WirePresence::missing(),
         },
         usage: MessageDeltaUsage {
             output_tokens: 0,
-            input_tokens: Some(10),
-            cache_read_input_tokens: None,
-            cache_creation_input_tokens: None,
-            output_tokens_details: None,
+            input_tokens: WirePresence::value(10),
+            cache_read_input_tokens: WirePresence::missing(),
+            cache_creation_input_tokens: WirePresence::missing(),
+            output_tokens_details: WirePresence::missing(),
         },
     }
 }
@@ -727,33 +846,36 @@ fn message_start_with_cache(
             usage: MessagesUsage {
                 input_tokens: input,
                 output_tokens: 0,
-                cache_creation_input_tokens: cache_creation,
-                cache_read_input_tokens: cache_read,
-                output_tokens_details: None,
-                cache_creation: None,
+                cache_creation_input_tokens: WirePresence::value(cache_creation),
+                cache_read_input_tokens: WirePresence::value(cache_read),
+                output_tokens_details: WirePresence::missing(),
+                cache_creation: WirePresence::missing(),
             },
+            container: WirePresence::missing(),
+            stop_details: WirePresence::missing(),
         },
     }
 }
 
 fn message_delta_with_cache(
     output: u32,
-    input: Option<u32>,
-    cache_read: Option<u32>,
-    cache_creation: Option<u32>,
+    input: WirePresence<u32>,
+    cache_read: WirePresence<u32>,
+    cache_creation: WirePresence<u32>,
 ) -> MessageStreamEvent {
     MessageStreamEvent::MessageDelta {
         delta: MessageDeltaBody {
             stop_reason: Some(messages::StopReason::EndTurn),
             stop_sequence: None,
-            stop_details: None,
+            stop_details: WirePresence::missing(),
+            container: WirePresence::missing(),
         },
         usage: MessageDeltaUsage {
             output_tokens: output,
             input_tokens: input,
             cache_read_input_tokens: cache_read,
             cache_creation_input_tokens: cache_creation,
-            output_tokens_details: None,
+            output_tokens_details: WirePresence::missing(),
         },
     }
 }
@@ -785,7 +907,12 @@ async fn prompt_tokens_sums_all_three_anthropic_buckets() {
         text_block_start(0),
         text_delta(0, "ok"),
         block_stop(0),
-        message_delta_with_cache(7, None, None, None),
+        message_delta_with_cache(
+            7,
+            WirePresence::missing(),
+            WirePresence::missing(),
+            WirePresence::missing(),
+        ),
         MessageStreamEvent::MessageStop,
     ])
     .await;
@@ -802,7 +929,12 @@ async fn message_delta_cache_fields_override_message_start() {
     // Providers can report zero cache at message_start and emit the real values on the final delta; honor the delta when present
     let usage = usage_from_stream(vec![
         message_start_with_cache(10, 0, 0),
-        message_delta_with_cache(4, Some(10), Some(900), Some(50)),
+        message_delta_with_cache(
+            4,
+            WirePresence::value(10),
+            WirePresence::value(900),
+            WirePresence::value(50),
+        ),
         MessageStreamEvent::MessageStop,
     ])
     .await;
@@ -819,7 +951,12 @@ async fn pure_cache_hit_with_zero_uncached_still_emits_usage() {
     // Usage must still be emitted so callers see the cached cost
     let usage = usage_from_stream(vec![
         message_start_with_cache(0, 2500, 0),
-        message_delta_with_cache(1, None, None, None),
+        message_delta_with_cache(
+            1,
+            WirePresence::missing(),
+            WirePresence::missing(),
+            WirePresence::missing(),
+        ),
         MessageStreamEvent::MessageStop,
     ])
     .await;
@@ -843,28 +980,36 @@ fn message_start_with_thinking(input: u32, thinking_tokens: u32) -> MessageStrea
             usage: MessagesUsage {
                 input_tokens: input,
                 output_tokens: 0,
-                cache_creation_input_tokens: 0,
-                cache_read_input_tokens: 0,
-                output_tokens_details: Some(OutputTokensDetails { thinking_tokens }),
-                cache_creation: None,
+                cache_creation_input_tokens: WirePresence::missing(),
+                cache_read_input_tokens: WirePresence::missing(),
+                output_tokens_details: WirePresence::value(OutputTokensDetails {
+                    thinking_tokens,
+                }),
+                cache_creation: WirePresence::missing(),
             },
+            container: WirePresence::missing(),
+            stop_details: WirePresence::missing(),
         },
     }
 }
 
-fn message_delta_with_thinking(output: u32, thinking_tokens: u32) -> MessageStreamEvent {
+fn message_delta_with_thinking(
+    output: u32,
+    output_tokens_details: WirePresence<OutputTokensDetails>,
+) -> MessageStreamEvent {
     MessageStreamEvent::MessageDelta {
         delta: MessageDeltaBody {
             stop_reason: Some(messages::StopReason::EndTurn),
             stop_sequence: None,
-            stop_details: None,
+            stop_details: WirePresence::missing(),
+            container: WirePresence::missing(),
         },
         usage: MessageDeltaUsage {
             output_tokens: output,
-            input_tokens: None,
-            cache_read_input_tokens: None,
-            cache_creation_input_tokens: None,
-            output_tokens_details: Some(OutputTokensDetails { thinking_tokens }),
+            input_tokens: WirePresence::missing(),
+            cache_read_input_tokens: WirePresence::missing(),
+            cache_creation_input_tokens: WirePresence::missing(),
+            output_tokens_details,
         },
     }
 }
@@ -882,7 +1027,12 @@ async fn thinking_tokens_from_message_start_map_to_reasoning_tokens() {
         block_stop(0),
         // No detail object on the delta: the message_start value is preserved,
         // matching the existing cache-bucket preserve pattern.
-        message_delta_with_cache(7, None, None, None),
+        message_delta_with_cache(
+            7,
+            WirePresence::missing(),
+            WirePresence::missing(),
+            WirePresence::missing(),
+        ),
         MessageStreamEvent::MessageStop,
     ])
     .await;
@@ -901,7 +1051,10 @@ async fn thinking_tokens_delta_overrides_message_start() {
         text_block_start(0),
         text_delta(0, "ok"),
         block_stop(0),
-        message_delta_with_thinking(7, 40),
+        message_delta_with_thinking(
+            7,
+            WirePresence::value(OutputTokensDetails { thinking_tokens: 40 }),
+        ),
         MessageStreamEvent::MessageStop,
     ])
     .await;
@@ -919,7 +1072,12 @@ async fn missing_thinking_details_keep_reasoning_tokens_zero() {
         text_block_start(0),
         text_delta(0, "ok"),
         block_stop(0),
-        message_delta_with_cache(7, None, None, None),
+        message_delta_with_cache(
+            7,
+            WirePresence::missing(),
+            WirePresence::missing(),
+            WirePresence::missing(),
+        ),
         MessageStreamEvent::MessageStop,
     ])
     .await;
@@ -1155,9 +1313,19 @@ async fn usage_non_monotonic_deltas_keep_previous_values() {
         text_delta(0, "ok"),
         block_stop(0),
         // input regresses 100 -> 90 (skipped); output 0 -> 30 (applied)
-        message_delta_with_cache(30, Some(90), None, None),
+        message_delta_with_cache(
+            30,
+            WirePresence::value(90),
+            WirePresence::missing(),
+            WirePresence::missing(),
+        ),
         // output regresses 30 -> 20 (skipped); input 100 -> 110 (applied)
-        message_delta_with_cache(20, Some(110), None, None),
+        message_delta_with_cache(
+            20,
+            WirePresence::value(110),
+            WirePresence::missing(),
+            WirePresence::missing(),
+        ),
         MessageStreamEvent::MessageStop,
     ])
     .await;
@@ -1617,4 +1785,351 @@ async fn pending_stream_fails_idle_timeout_terminal() {
         }
         other => panic!("expected Failed(IdleTimeout) on a fully-pending stream, got {other:?}"),
     }
+}
+
+// ========================================================================
+// 46c WIREPRESENCE-1 (GAP-SA-1): accumulator-level goldens G16-G25
+// (46c sub-SDD §6; spec A0 L105/L107/L110 + L4254-4260).
+// ========================================================================
+
+#[tokio::test]
+async fn stop_details_start_value_delta_missing_replaces_to_missing() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start_with_stop_details(WirePresence::value(
+            refusal_stop_details("start-blocked"),
+        ))),
+        Ok(message_delta_with_stop_details(WirePresence::missing())),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            assert_eq!(response.stop_reason, Some(StopReason::Stop));
+            assert_eq!(
+                response.stop_message.as_deref(),
+                None,
+                "L110 Q9: a MISSING terminal-delta stop_details yields a missing completed field — the start value is NOT retained (terminal replacement, not overlay)"
+            );
+        }
+        other => panic!("expected Completed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn stop_details_start_value_delta_null_replaces_to_null() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start_with_stop_details(WirePresence::value(
+            refusal_stop_details("start-blocked"),
+        ))),
+        Ok(message_delta_with_stop_details(WirePresence::null())),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            assert_eq!(response.stop_reason, Some(StopReason::Stop));
+            assert_eq!(
+                response.stop_message.as_deref(),
+                None,
+                "L110 Q9: an explicit NULL terminal-delta stop_details yields null — the start value is NOT retained (the Missing-vs-Null distinction stays DTO-pinned at G11/G14; the port's Option<String> projects both to None — OQ-3)"
+            );
+        }
+        other => panic!("expected Completed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn stop_details_start_value_delta_value_replaces() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start_with_stop_details(WirePresence::value(
+            refusal_stop_details("start-blocked"),
+        ))),
+        Ok(message_delta_with_stop_details(WirePresence::value(
+            refusal_stop_details("delta-blocked"),
+        ))),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            assert_eq!(response.stop_reason, Some(StopReason::Stop));
+            assert_eq!(
+                response.stop_message.as_deref(),
+                Some("delta-blocked"),
+                "L110 Q9: a VALUE terminal-delta stop_details replaces the start value"
+            );
+        }
+        other => panic!("expected Completed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn stop_details_start_missing_delta_value_establishes() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start_with_stop_details(WirePresence::missing())),
+        Ok(message_delta_with_stop_details(WirePresence::value(
+            refusal_stop_details("delta-blocked"),
+        ))),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            assert_eq!(response.stop_reason, Some(StopReason::Stop));
+            assert_eq!(
+                response.stop_message.as_deref(),
+                Some("delta-blocked"),
+                "L110 Q9: the terminal delta establishes the completed field; nothing is retained from the (missing) start"
+            );
+        }
+        other => panic!("expected Completed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn container_start_crossed_with_missing_null_value_deltas() {
+    let sandbox = serde_json::json!({"kind": "sandbox"});
+    let start_states: [WirePresence<serde_json::Value>; 3] = [
+        WirePresence::missing(),
+        WirePresence::null(),
+        WirePresence::value(sandbox.clone()),
+    ];
+    let delta_states: [WirePresence<serde_json::Value>; 3] = [
+        WirePresence::missing(),
+        WirePresence::null(),
+        WirePresence::value(sandbox.clone()),
+    ];
+
+    // Container-less baseline: the acceptance + non-interference reference.
+    let base_events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start_with_container(WirePresence::missing())),
+        Ok(message_delta_with_container(WirePresence::missing())),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let base_evs = collect(stream_messages(
+        stream::iter(base_events).boxed(),
+        None,
+        rid(),
+        Duration::from_secs(60),
+    ))
+    .await;
+    let base = match base_evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => response,
+        other => panic!("expected Completed baseline, got {other:?}"),
+    };
+    assert_eq!(base.stop_reason, Some(StopReason::Stop));
+    let base_usage = base.usage.clone().expect("baseline usage present");
+
+    for start in &start_states {
+        for delta in &delta_states {
+            let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+                Ok(message_start_with_container(start.clone())),
+                Ok(message_delta_with_container(delta.clone())),
+                Ok(MessageStreamEvent::MessageStop),
+            ];
+            let evs = collect(stream_messages(
+                stream::iter(events).boxed(),
+                None,
+                rid(),
+                Duration::from_secs(60),
+            ))
+            .await;
+            match evs.last().unwrap() {
+                SamplingEvent::Completed { response, .. } => {
+                    // Non-interference: no container state perturbs a projected field.
+                    // The retained final_container is NOT projected (no port consumer —
+                    // 46c sub-SDD §4.3/OQ-2); the 9-combo golden pins acceptance +
+                    // non-interference, the retain/replace state logic is code-pinned
+                    // and DTO-pinned by G12/G13.
+                    assert_eq!(
+                        response.stop_reason,
+                        Some(StopReason::Stop),
+                        "start {start:?} x delta {delta:?}: the stream completes with a stop"
+                    );
+                    assert_eq!(
+                        response.stop_message, base.stop_message,
+                        "start {start:?} x delta {delta:?}: stop_message is container-independent"
+                    );
+                    let usage = response.usage.clone().expect("usage present");
+                    assert_eq!(
+                        (
+                            usage.prompt_tokens,
+                            usage.completion_tokens,
+                            usage.total_tokens,
+                            usage.reasoning_tokens,
+                            usage.cached_prompt_tokens,
+                            usage.cache_creation_prompt_tokens,
+                        ),
+                        (
+                            base_usage.prompt_tokens,
+                            base_usage.completion_tokens,
+                            base_usage.total_tokens,
+                            base_usage.reasoning_tokens,
+                            base_usage.cached_prompt_tokens,
+                            base_usage.cache_creation_prompt_tokens,
+                        ),
+                        "start {start:?} x delta {delta:?}: usage is container-independent"
+                    );
+                }
+                SamplingEvent::Failed { error, .. } => panic!(
+                    "start {start:?} x delta {delta:?}: the stream must complete, got Failed({error:?})"
+                ),
+                other => panic!(
+                    "start {start:?} x delta {delta:?}: expected Completed, got {other:?}"
+                ),
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn usage_overlay_input_tokens_missing_null_value() {
+    let cases: [(&str, WirePresence<u32>, u32); 3] = [
+        ("missing", WirePresence::missing(), 100),
+        ("null", WirePresence::null(), 100),
+        ("value", WirePresence::value(150), 150),
+    ];
+    for (label, input, want) in cases {
+        let usage = usage_from_stream(vec![
+            message_start_with_cache(100, 0, 0),
+            message_delta_with_cache(
+                1,
+                input.clone(),
+                WirePresence::missing(),
+                WirePresence::missing(),
+            ),
+            MessageStreamEvent::MessageStop,
+        ])
+        .await;
+        assert_eq!(
+            usage.prompt_tokens, want,
+            "delta input {label}: L4255 Q14 — Missing/Null retain the start state (100), Value replaces (150)"
+        );
+    }
+}
+
+#[tokio::test]
+async fn usage_overlay_cache_read_missing_null_value() {
+    let cases: [(&str, WirePresence<u32>, u32); 3] = [
+        ("missing", WirePresence::missing(), 5000),
+        ("null", WirePresence::null(), 5000),
+        ("value", WirePresence::value(7000), 7000),
+    ];
+    for (label, cache_read, want) in cases {
+        let usage = usage_from_stream(vec![
+            message_start_with_cache(0, 5000, 0),
+            message_delta_with_cache(
+                1,
+                WirePresence::missing(),
+                cache_read.clone(),
+                WirePresence::missing(),
+            ),
+            MessageStreamEvent::MessageStop,
+        ])
+        .await;
+        assert_eq!(
+            usage.cached_prompt_tokens, want,
+            "delta cache_read {label}: L4255 Q14 — Missing/Null retain the start state (5000), Value replaces (7000)"
+        );
+    }
+}
+
+#[tokio::test]
+async fn usage_overlay_cache_creation_input_missing_null_value() {
+    let cases: [(&str, WirePresence<u32>, u32); 3] = [
+        ("missing", WirePresence::missing(), 200),
+        ("null", WirePresence::null(), 200),
+        ("value", WirePresence::value(300), 300),
+    ];
+    for (label, cache_creation, want) in cases {
+        let usage = usage_from_stream(vec![
+            message_start_with_cache(0, 0, 200),
+            message_delta_with_cache(
+                1,
+                WirePresence::missing(),
+                WirePresence::missing(),
+                cache_creation.clone(),
+            ),
+            MessageStreamEvent::MessageStop,
+        ])
+        .await;
+        assert_eq!(
+            usage.cache_creation_prompt_tokens, want,
+            "delta cache_creation {label}: L4255 Q14 — Missing/Null retain the start state (200), Value replaces (300)"
+        );
+    }
+}
+
+#[tokio::test]
+async fn usage_overlay_output_tokens_details_missing_null_value() {
+    let cases: [(&str, WirePresence<OutputTokensDetails>, u32); 3] = [
+        ("missing", WirePresence::missing(), 40),
+        ("null", WirePresence::null(), 40),
+        (
+            "value",
+            WirePresence::value(OutputTokensDetails { thinking_tokens: 44 }),
+            44,
+        ),
+    ];
+    for (label, otd, want) in cases {
+        let usage = usage_from_stream(vec![
+            message_start_with_thinking(10, 40),
+            message_delta_with_thinking(1, otd.clone()),
+            MessageStreamEvent::MessageStop,
+        ])
+        .await;
+        assert_eq!(
+            usage.reasoning_tokens, want,
+            "delta output_tokens_details {label}: L4255 Q14 — Missing/Null retain the start state (40), Value replaces (44); present-zero stays a value (DTO-pinned at G3)"
+        );
+    }
+}
+
+#[tokio::test]
+async fn usage_delta_output_tokens_replaces_not_accumulates() {
+    // Inline start: the message_start_with_cache family hardcodes
+    // start output_tokens: 0 and cannot express start=1 (46c sub-SDD §6).
+    let start = MessageStreamEvent::MessageStart {
+        message: MessagesResponse {
+            id: "msg_46c".into(),
+            r#type: "message".into(),
+            role: "assistant".into(),
+            content: vec![],
+            model: "messages-compatible-model".into(),
+            stop_reason: None,
+            usage: MessagesUsage {
+                input_tokens: 10,
+                output_tokens: 1,
+                cache_creation_input_tokens: WirePresence::missing(),
+                cache_read_input_tokens: WirePresence::missing(),
+                output_tokens_details: WirePresence::missing(),
+                cache_creation: WirePresence::missing(),
+            },
+            container: WirePresence::missing(),
+            stop_details: WirePresence::missing(),
+        },
+    };
+    let usage = usage_from_stream(vec![
+        start,
+        message_delta_with_cache(
+            7,
+            WirePresence::missing(),
+            WirePresence::missing(),
+            WirePresence::missing(),
+        ),
+        MessageStreamEvent::MessageStop,
+    ])
+    .await;
+    assert_eq!(
+        usage.completion_tokens, 7,
+        "L4254 Q14: every message_delta usage.output_tokens REPLACES the current value — 7, neither accumulate (8) nor retain (1)"
+    );
 }

@@ -1,0 +1,64 @@
+{
+  "id": "RT-46C1",
+  "title": "WIREPRESENCE-1 46c live ingress check: one claude-sonnet-5 (messages wire) turn through the post-46c response DTO + stream accumulator. The 46c ingress change is parse-strictly-lenient (12 fields newly carry Missing/Null/Value; container/stop_details newly parsed; stop_details terminal replacement; usage overlays retain/replace by carrier state) — the live risk is BEHAVIORAL (accumulator projections on a real stream), not parse failure. Tolerant verdict (SDD 46c §7 / RT-CW2 discipline): PASS = the turn completes (no acp_error) AND the turn's wire capture shows message_start + message_delta + message_stop + usage. Any deviation is a FINDING recorded in the report (non-blocking; blocking only if the turn died).",
+  "driver": "acp",
+  "model": "claude-sonnet-5",
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: RT-46C1-Q1"
+  }
+ ],
+ "config_patch": {
+  "models/default_reasoning_effort": "xhigh"
+ },
+ "watchdog_s": 300,
+  "est_calls": 2,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "TURN COMPLETES: the messages-wire turn did not die through the post-46c response ingress."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "file": "resp-*.jsonl",
+        "any": true,
+        "grep": "message_start",
+        "label": "STREAM SHAPE: the real claude stream carried a message_start (the carrier start event whose usage/container/stop_details the 46c DTO now parses three-state)."
+      },
+      {
+        "kind": "grep",
+        "file": "resp-*.jsonl",
+        "any": true,
+        "grep": "message_delta",
+        "label": "STREAM SHAPE: the real claude stream carried a message_delta (the terminal delta whose stop_details whole-state replacement and usage overlays 46c changed)."
+      },
+      {
+        "kind": "grep",
+        "file": "resp-*.jsonl",
+        "any": true,
+        "grep": "message_stop",
+        "label": "STREAM SHAPE: the stream terminated with message_stop (completed, not truncated)."
+      },
+    {
+     "kind": "grep",
+     "file": "resp-*.jsonl",
+     "any": true,
+     "grep": "usage",
+     "label": "USAGE FLOW: the stream carried usage objects (the fields 46c re-carried — input/output/cache buckets + details — flowed through the changed accumulator). Bare 'usage' substring: the wiretap embeds each SSE frame escaped inside a frame record (\"usage\": in-file), so the exact-key form can never match the capture format."
+    },
+    {
+     "kind": "recon",
+     "label": "RT-46C1 VERDICT RECORD: newest-captured wire response status line, verbatim (machine-readable; recon reads the newest file by mtime). Disclosure: a parallel side call (grok-4.6 /v1/responses) may complete after the turn and therefore land newest — the turn response is the /v1/messages capture with message_start/message_stop frames. recon op — always records, never fails.",
+     "base": "wire",
+     "file": "resp-*.jsonl",
+     "nth": 0,
+     "grep": "\"status\":"
+    }
+    ]
+  }
+}
