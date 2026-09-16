@@ -447,6 +447,104 @@ fn parse_remote_model_value_no_laziness_detector_block_yields_default() {
         crate::agent::config::LazinessDetectorPerModelConfig::default()
     );
 }
+// ANTHROPIC-WIRE-2 cut 6: the proxy's v1 /models rows carry the real windows
+// as max_input_tokens / max_output_tokens. The fixture rows are verbatim
+// extracts of the pinned proxy list (grok/plans/pins/v1-models-20260912.json,
+// sha256 f3284e07b7c905f64d0aafd60269b4aeec09c5da46e68904cd2373f56e8e7bed).
+const V1_PIN_EXTRACT: &str = include_str!("../../tests/fixtures/v1-models-20260912-extract.json");
+
+fn v1_extract_row(id: &str) -> serde_json::Value {
+    let doc: serde_json::Value = serde_json::from_str(V1_PIN_EXTRACT).unwrap();
+    doc["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == id)
+        .cloned()
+        .unwrap_or_else(|| panic!("fixture row missing: {id}"))
+}
+
+#[test]
+fn parse_v1_pin_rows_ingest_proxy_window_fields() {
+    // id -> (proxy max_input_tokens, proxy max_output_tokens)
+    let expected: &[(&str, u64, Option<u32>)] = &[
+        ("claude-opus-4-6", 1_000_000, Some(128_000)),
+        ("gpt-5.6-sol", 922_000, Some(128_000)),
+        ("gemini-3.5-flash", 1_048_576, Some(65_535)),
+        ("qwen3.8-27b", 262_144, Some(128_000)),
+        ("grok-4.6", 500_000, Some(500_000)),
+    ];
+    for (id, context_window, max_completion) in expected {
+        let result = parse_remote_model_value(&v1_extract_row(id), "https://default.url").unwrap();
+        assert_eq!(
+            result.context_window.get(),
+            *context_window,
+            "{id}: the proxy-reported max_input_tokens must land on the catalog row, \
+             not the uniform {DEFAULT_CONTEXT_WINDOW} default"
+        );
+        assert_eq!(
+            result.max_completion_tokens, *max_completion,
+            "{id}: the proxy-reported max_output_tokens must land on the catalog row"
+        );
+    }
+}
+
+#[test]
+fn parse_v1_row_missing_output_tokens_keeps_none_budget() {
+    // Shape of the pin's embedding rows: max_input_tokens present,
+    // max_output_tokens absent.
+    let value = serde_json::json!({
+        "id": "text-embedding-ada-002",
+        "object": "model",
+        "created": 1677610602,
+        "owned_by": "openai",
+        "max_input_tokens": 8191
+    });
+    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    assert_eq!(result.context_window.get(), 8191);
+    assert_eq!(result.max_completion_tokens, None);
+}
+
+#[test]
+fn parse_v1_zero_or_absent_input_tokens_keep_default_window() {
+    // 0 is a guard, not a window: the row survives and keeps the default.
+    let value = serde_json::json!({
+        "id": "m-zero",
+        "object": "model",
+        "max_input_tokens": 0,
+        "max_output_tokens": 0
+    });
+    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    assert_eq!(result.context_window.get(), DEFAULT_CONTEXT_WINDOW);
+    // max_output_tokens has no >0 guard in the v2-style chain either: an
+    // explicit 0 maps to Some(0) exactly like an explicit
+    // maxCompletionTokens: 0 does today.
+    assert_eq!(result.max_completion_tokens, Some(0));
+    let value = serde_json::json!({
+        "id": "m-absent",
+        "object": "model"
+    });
+    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    assert_eq!(result.context_window.get(), DEFAULT_CONTEXT_WINDOW);
+    assert_eq!(result.max_completion_tokens, None);
+}
+
+#[test]
+fn parse_explicit_context_fields_beat_v1_window_fields() {
+    // Intra-catalog precedence: an explicit contextWindow /
+    // maxCompletionTokens (v2-style or meta) still wins over the v1 fields.
+    let value = serde_json::json!({
+        "id": "m",
+        "object": "model",
+        "contextWindow": 131_072,
+        "maxCompletionTokens": 8_192,
+        "max_input_tokens": 500_000,
+        "max_output_tokens": 64_000
+    });
+    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    assert_eq!(result.context_window.get(), 131_072);
+    assert_eq!(result.max_completion_tokens, Some(8_192));
+}
 #[test]
 fn parse_remote_model_value_parses_camelcase_key() {
     let value = serde_json::json!({

@@ -1805,7 +1805,7 @@ async fn build_request_uses_sampling_config() {
         context_window: NonZeroU64::new(128_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
-        cache_ttl: None,
+        cache_ttl: Some("1h".to_string()),
     };
     let h = TestHarness::with_config(vec![ConversationItem::user("hi")], config);
 
@@ -1819,6 +1819,9 @@ async fn build_request_uses_sampling_config() {
     assert_eq!(request.temperature, Some(0.7));
     assert_eq!(request.max_output_tokens, Some(8192));
     assert_eq!(request.top_p, Some(0.9));
+    // W1 review nit: close the request_builder.rs hop at value level —
+    // SamplerConfig.cache_ttl must land on the built ConversationRequest.
+    assert_eq!(request.cache_ttl, Some("1h".to_string()));
 }
 
 #[tokio::test]

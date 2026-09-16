@@ -1,0 +1,45 @@
+{
+  "data": [
+    {
+      "id": "claude-opus-4-6",
+      "object": "model",
+      "created": 1677610602,
+      "owned_by": "openai",
+      "max_input_tokens": 1000000,
+      "max_output_tokens": 128000
+    },
+    {
+      "id": "gemini-3.5-flash",
+      "object": "model",
+      "created": 1677610602,
+      "owned_by": "openai",
+      "max_input_tokens": 1048576,
+      "max_output_tokens": 65535
+    },
+    {
+      "id": "grok-4.6",
+      "object": "model",
+      "created": 1677610602,
+      "owned_by": "openai",
+      "max_input_tokens": 500000,
+      "max_output_tokens": 500000
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "object": "model",
+      "created": 1677610602,
+      "owned_by": "openai",
+      "max_input_tokens": 922000,
+      "max_output_tokens": 128000
+    },
+    {
+      "id": "qwen3.8-27b",
+      "object": "model",
+      "created": 1677610602,
+      "owned_by": "openai",
+      "max_input_tokens": 262144,
+      "max_output_tokens": 128000
+    }
+  ],
+  "object": "list"
+}

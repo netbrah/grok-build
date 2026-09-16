@@ -332,6 +332,14 @@ fn test_messages_request_cache_ttl_5m_and_unknown_serialize_no_ttl() {
 /// ANTHROPIC-WIRE-1 (cut 3, default-wire parity): with no tier configured
 /// the wire is byte-identical to pre-cut — no ttl key anywhere, no extra
 /// breakpoint on a no-system transcript.
+///
+/// W2 nit (W1 review finding 2): the frozen fixtures below are the exact
+/// serialized bytes of these two requests on the PRE-CUT commit (78a236f),
+/// captured via a scratch worktree of that commit — the pre-cut
+/// `build_messages_request` output, byte for byte. Any drift of the
+/// default (no-tier) wire from pre-cut now fails this test.
+const PRE_CUT_WIRE_WITH_SYSTEM: &str = r#"{"model":"messages-compatible-model","messages":[{"role":"user","content":[{"type":"text","text":"Fix the bug","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"done"}]},{"role":"user","content":[{"type":"text","text":"[Continue]","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"system":[{"type":"text","text":"You are a helpful assistant.","cache_control":{"type":"ephemeral"}}]}"#;
+const PRE_CUT_WIRE_NO_SYSTEM: &str = r#"{"model":"messages-compatible-model","messages":[{"role":"user","content":[{"type":"text","text":"Fix the bug","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"done"}]},{"role":"user","content":[{"type":"text","text":"[Continue]","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0}"#;
 #[test]
 fn test_messages_request_cache_ttl_unset_keeps_wire_byte_identical() {
     let req = ConversationRequest::from_items(vec![
@@ -341,6 +349,12 @@ fn test_messages_request_cache_ttl_unset_keeps_wire_byte_identical() {
     ])
     .with_model("messages-compatible-model");
     let json = serde_json::to_value(build_messages_request(&req)).unwrap();
+    assert_eq!(
+        serde_json::to_string(&json).unwrap(),
+        PRE_CUT_WIRE_WITH_SYSTEM,
+        "with-system no-tier wire must stay byte-identical to the frozen \
+         pre-cut fixture; {json:#}"
+    );
     assert!(
         !serde_json::to_string(&json).unwrap().contains("ttl"),
         "unset tier: no ttl field on the wire; {json:#}"
@@ -352,6 +366,12 @@ fn test_messages_request_cache_ttl_unset_keeps_wire_byte_identical() {
     ])
     .with_model("messages-compatible-model");
     let json = serde_json::to_value(build_messages_request(&no_system)).unwrap();
+    assert_eq!(
+        serde_json::to_string(&json).unwrap(),
+        PRE_CUT_WIRE_NO_SYSTEM,
+        "no-system no-tier wire must stay byte-identical to the frozen \
+         pre-cut fixture; {json:#}"
+    );
     let messages = json["messages"].as_array().unwrap();
     assert_eq!(
         messages[0]["content"]

@@ -667,6 +667,11 @@ pub(crate) fn parse_remote_model_value(
         .or_else(|| get_u64(obj, "context_window"))
         .or_else(|| meta.and_then(|m| get_u64(m, "contextWindow")))
         .or_else(|| meta.and_then(|m| get_u64(m, "totalContextTokens")))
+        // ANTHROPIC-WIRE-2 (cut 6): the proxy's v1 /models rows report the
+        // window as max_input_tokens. 0 means absent (a zero window would
+        // drop the row at the NonZeroU64 guard below), absent keeps the
+        // DEFAULT_CONTEXT_WINDOW fallback.
+        .or_else(|| get_u64(obj, "max_input_tokens").filter(|v| *v > 0))
         .unwrap_or(DEFAULT_CONTEXT_WINDOW);
     let context_window = std::num::NonZeroU64::new(context_window)?;
     let agent_type = get_string(obj, "systemPromptType")
@@ -696,6 +701,9 @@ pub(crate) fn parse_remote_model_value(
         description: get_string(obj, "description"),
         max_completion_tokens: get_u64(obj, "maxCompletionTokens")
             .or_else(|| get_u64(obj, "max_completion_tokens"))
+            // ANTHROPIC-WIRE-2 (cut 6): the proxy's v1 /models rows report
+            // the budget as max_output_tokens (absent stays None).
+            .or_else(|| get_u64(obj, "max_output_tokens"))
             .and_then(|v| u32::try_from(v).ok()),
         temperature: get_f64(obj, "temperature").map(|v| v as f32),
         top_p: get_f64(obj, "topP").or_else(|| get_f64(obj, "top_p")).map(|v| v as f32),
