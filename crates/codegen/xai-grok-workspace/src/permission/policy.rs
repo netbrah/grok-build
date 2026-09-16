@@ -1286,6 +1286,7 @@ mod tests {
             resume_from: None,
             cwd: None,
             model: None,
+            effort: None,
             task_id: None,
         }));
 

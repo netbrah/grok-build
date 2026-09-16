@@ -69,20 +69,24 @@ fn stop_sse(text: &str) -> ScriptedResponse {
     ScriptedResponse::sse(chat_completion_script_exact(text, "test"))
 }
 /// Build an actor wired to the mock server on the Chat Completions backend.
-async fn salvage_test_actor(server: &MockInferenceServer) -> Arc<SessionActor> {
-    salvage_test_actor_with_context(server, 0, 256_000).await
+/// `is_subagent` sets the subagent startup hint before the actor is Arc'd
+/// (ANTHROPIC-WIRE-2 cut 4 tests the subagent salvage tier on a real actor).
+async fn salvage_test_actor(server: &MockInferenceServer, is_subagent: bool) -> Arc<SessionActor> {
+    salvage_test_actor_with_context(server, 0, 256_000, is_subagent).await
 }
 /// [`salvage_test_actor`] with a seeded token total and context window, for the tests where salvage interacts with compaction.
 async fn salvage_test_actor_with_context(
     server: &MockInferenceServer,
     total_tokens: u64,
     context_window: u64,
+    is_subagent: bool,
 ) -> Arc<SessionActor> {
     salvage_test_actor_on_backend(
         server,
         total_tokens,
         context_window,
         xai_grok_sampling_types::ApiBackend::ChatCompletions,
+        is_subagent,
     )
     .await
 }
@@ -94,6 +98,7 @@ async fn salvage_test_actor_on_backend(
     total_tokens: u64,
     context_window: u64,
     backend: xai_grok_sampling_types::ApiBackend,
+    is_subagent: bool,
 ) -> Arc<SessionActor> {
     let sampling_cfg = xai_grok_sampler::SamplerConfig {
         api_key: Some("test-key".to_string()),
@@ -145,6 +150,12 @@ async fn salvage_test_actor_on_backend(
             None,
         )
         .expect("bind_local_session");
+    if is_subagent {
+        actor.startup_hints = crate::session::StartupHints {
+            is_subagent: true,
+            ..Default::default()
+        };
+    }
     let actor = Arc::new(actor);
     {
         let drainer = actor.clone();
@@ -242,7 +253,7 @@ fn default_agent_gate_off_hard_fails_on_length() {
         current_thread_local(async {
             let server = MockInferenceServer::start().await.expect("mock server");
             server.enqueue_response("/v1/chat/completions", length_sse("one, two, three,"));
-            let actor = salvage_test_actor(&server).await;
+            let actor = salvage_test_actor(&server, false).await;
             let outcome = run_prompt(&actor, "length-gate-off").await;
             let err = outcome.expect_err("gate off: Length must hard-fail the turn");
             let err_str = format!("{err:?}");
@@ -291,7 +302,7 @@ fn rate_limit_mid_continuation_stays_terminal() {
     block_on_session(|| {
         current_thread_local(async {
             let server = MockInferenceServer::start().await.expect("mock server");
-            let actor = salvage_test_actor(&server).await;
+            let actor = salvage_test_actor(&server, false).await;
             actor.chat_state_handle.push_user_message(
                 xai_grok_sampling_types::ConversationItem::user(
                     "enough history that the token estimate clears the tiny window",
@@ -326,7 +337,7 @@ fn suppressed_overflow_mid_continuation_still_completes_truncated() {
     block_on_session(|| {
         current_thread_local(async {
             let server = MockInferenceServer::start().await.expect("mock server");
-            let actor = salvage_test_actor(&server).await;
+            let actor = salvage_test_actor(&server, false).await;
             actor.chat_state_handle.push_user_message(
                 xai_grok_sampling_types::ConversationItem::user(
                     "enough history that the token estimate clears the tiny window",
@@ -454,4 +465,87 @@ fn messages_stop_sse(text: &str) -> ScriptedResponse {
             .map(|e| SseEvent::data(e.to_string()))
             .collect(),
     )
+}
+/// ANTHROPIC-WIRE-2 (cut 4): subagent turns default salvage on (budget 3) with
+/// no env gate and no remote budget — the .41 root-cause cell (hyphen claude
+/// subagent on a small cap, salvage off, hard-fail max_tokens_truncation) is
+/// closed: the turn completes through the continue.
+#[test]
+fn subagent_turns_default_salvage_on_without_env_or_remote() {
+    if xai_grok_config::env_bool("GROK_LENGTH_SALVAGE") == Some(true) {
+        panic!("ambient GROK_LENGTH_SALVAGE=1 would mask the subagent tier under test");
+    }
+    block_on_session(|| {
+        current_thread_local(async {
+            let server = MockInferenceServer::start().await.expect("mock server");
+            server.enqueue_response("/v1/chat/completions", length_sse("one, two,"));
+            server.enqueue_response("/v1/chat/completions", stop_sse("three, four."));
+            let actor = salvage_test_actor(&server, true).await;
+            assert_eq!(
+                actor.length_salvage_budget(),
+                Some(3),
+                "the subagent tier defaults on with the 3-attempt budget"
+            );
+            let outcome = run_prompt(&actor, "subagent-salvage-default").await;
+            outcome.expect("subagent salvage must complete the turn, not hard-fail");
+            let conv = actor.chat_state_handle.get_conversation().await;
+            let all_text: Vec<String> = conv.iter().map(|i| i.text_content()).collect();
+            assert!(
+                all_text.iter().any(|t| t.contains(REMINDER_MARKER)),
+                "the continue reminder marks the salvage retry: {all_text:#?}"
+            );
+        });
+    });
+}
+/// ANTHROPIC-WIRE-2 (cut 4): the first Length stop re-samples at the escalated
+/// cap — max(64K, the alias-aware R5 table row), here the 64K floor for the
+/// row-less "test" slug — OUTSIDE the continue budget; the initial sample kept
+/// the small configured cap, and one escalation continue is enough to finish
+/// the turn. (The remote tier outranking the subagent default is covered at
+/// unit level: `subagent_tier_loses_to_every_explicit_tier_and_kill`.)
+#[test]
+fn escalation_bumps_the_continuation_cap_outside_the_budget() {
+    if xai_grok_config::env_bool("GROK_LENGTH_SALVAGE") == Some(true) {
+        panic!("ambient GROK_LENGTH_SALVAGE=1 would mask the remote tier under test");
+    }
+    block_on_session(|| {
+        current_thread_local(async {
+            let server = MockInferenceServer::start().await.expect("mock server");
+            server.enqueue_response("/v1/chat/completions", length_sse("one, two,"));
+            server.enqueue_response("/v1/chat/completions", stop_sse("three, four."));
+            let actor = salvage_test_actor(&server, true).await;
+            assert_eq!(
+                actor.length_salvage_budget(),
+                Some(3),
+                "the subagent tier defaults on with the 3-attempt budget"
+            );
+            let mut cfg = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("test actor has sampling config");
+            cfg.max_completion_tokens = Some(64);
+            actor.chat_state_handle.update_sampling_config(cfg);
+            let outcome = run_prompt(&actor, "escalation-cap-bump").await;
+            outcome.expect("the escalated continuation must complete the turn");
+            let caps: Vec<u64> = server
+                .request_bodies()
+                .iter()
+                .filter_map(|b| b.get("max_tokens").and_then(|v| v.as_u64()))
+                .collect();
+            assert_eq!(
+                caps.first(),
+                Some(&64),
+                "the initial sample keeps the configured cap: {caps:?}"
+            );
+            assert!(
+                caps.iter().filter(|c| **c == 64_000).count() == 1,
+                "exactly one continuation carries the escalated 64K cap: {caps:?}"
+            );
+            assert!(
+                caps.windows(2).any(|w| w[0] == 64 && w[1] == 64_000),
+                "the escalation resample immediately follows the capped sample: {caps:?}"
+            );
+        });
+    });
 }

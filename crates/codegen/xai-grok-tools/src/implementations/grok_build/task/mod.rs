@@ -13,6 +13,8 @@
 //! - `SessionIdResource` — current session ID for parent scoping (optional)
 //! - `SubagentForegroundWait` — host wait-window guard factory (optional)
 //! - `TaskModelValidator` — validates explicit model slugs before spawn
+//! - `TaskEffortValidator` — validates explicit effort values against the
+//!   subagent's model catalog entry before spawn (ANTHROPIC-WIRE-2 cut 7)
 
 mod active_message;
 pub mod admission;
@@ -360,6 +362,7 @@ impl xai_tool_runtime::Tool for TaskTool {
             max_depth,
             backend,
             model_validator,
+            effort_validator,
             parent_session_id,
             parent_prompt_id,
             foreground_wait,
@@ -381,6 +384,8 @@ impl xai_tool_runtime::Tool for TaskTool {
 
             let model_validator = res.get::<TaskModelValidator>().cloned();
 
+            let effort_validator = res.get::<TaskEffortValidator>().cloned();
+
             let parent_session_id = res
                 .get::<SessionIdResource>()
                 .map(|s| s.0.clone())
@@ -397,6 +402,7 @@ impl xai_tool_runtime::Tool for TaskTool {
                 max_depth,
                 backend,
                 model_validator,
+                effort_validator,
                 parent_session_id,
                 parent_prompt_id,
                 foreground_wait,
@@ -449,6 +455,13 @@ impl xai_tool_runtime::Tool for TaskTool {
         } else {
             model
         };
+
+        // ANTHROPIC-WIRE-2 (cut 7): treat blank/sentinel effort as absent
+        // (models sometimes emit these). On resume the effort still applies
+        // to the resumed child (the pinned source model is the validation
+        // target of record — the spawn path re-checks the effective model
+        // and warn-ignores a mismatch).
+        let effort = xai_tool_types::sanitize_optional_arg(input.effort);
 
         // Treat blank/empty/"null" cwd as absent (models sometimes emit these).
         // Also strip stray surrounding quote characters and expand `~`.
@@ -566,6 +579,23 @@ impl xai_tool_runtime::Tool for TaskTool {
             }
         }
 
+        // ANTHROPIC-WIRE-2 (cut 7): validate the explicit effort against the
+        // subagent's effective model (requested model, or the inherited
+        // parent model) before spawn. Rejected model-visibly for models
+        // without a reasoning-effort menu (e.g. claude — their reasoning is
+        // controlled by the wire's thinking config, not this field).
+        if let Some(ref requested) = effort {
+            let validator = effort_validator.ok_or_else(|| {
+                xai_tool_runtime::ToolError::custom(
+                    "validation_unavailable",
+                    "Cannot validate Task.effort: model catalog validator is unavailable.",
+                )
+            })?;
+            if let Some(error) = validator.error_for(requested, model.as_deref()) {
+                return Err(xai_tool_runtime::ToolError::invalid_arguments(error));
+            }
+        }
+
         // 3. Build the subagent request
         let spawn_root_span = tracing::info_span!(
             parent: None,
@@ -608,7 +638,11 @@ impl xai_tool_runtime::Tool for TaskTool {
                 native_agent: native_agent.clone(),
                 model,
                 model_override_provenance: ModelOverrideProvenance::Tool,
-                reasoning_effort: None,
+                // ANTHROPIC-WIRE-2 (cut 7): the model-facing `effort`
+                // parameter (validated above); compat-harness adapters still
+                // populate it in-process, and `None` inherits the parent
+                // session's effort.
+                reasoning_effort: effort,
                 persona: None,
                 // JSON cannot set this field. Compat-harness adapters still
                 // populate it in-process; model-facing spawns stay `None`.
@@ -889,6 +923,7 @@ mod tests {
                 resume_from: None,
                 cwd: None,
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )
@@ -950,6 +985,7 @@ mod tests {
                 resume_from: None,
                 cwd: None,
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )
@@ -984,6 +1020,7 @@ mod tests {
                 resume_from: None,
                 cwd: None,
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )
@@ -1015,6 +1052,7 @@ mod tests {
                 resume_from: None,
                 cwd: None,
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )
@@ -1073,6 +1111,7 @@ mod tests {
                 resume_from: None,
                 cwd: None,
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )
@@ -1129,6 +1168,7 @@ mod tests {
                 resume_from: None,
                 cwd: None,
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )
@@ -1172,6 +1212,7 @@ mod tests {
                 resume_from: None,
                 cwd: None,
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )
@@ -1280,6 +1321,7 @@ mod tests {
             resume_from: None,
             cwd: None,
             model: None,
+            effort: None,
             task_id: None,
         }
     }
@@ -1291,6 +1333,7 @@ mod tests {
         resources.insert(SessionIdResource("parent-session".to_string()));
         resources.insert(CurrentPromptIdResource("prompt-123".to_string()));
         resources.insert(TaskModelValidator::new(|_| None));
+        resources.insert(TaskEffortValidator::new(|_effort, _model| None));
         resources
     }
 
@@ -1453,6 +1496,99 @@ mod tests {
             rx.try_recv().is_err(),
             "spawn must not reach the coordinator"
         );
+    }
+
+    /// ANTHROPIC-WIRE-2 (cut 7): an effort the subagent's model does not
+    /// support (no reasoning-effort menu — e.g. claude) rejects before spawn,
+    /// model-visibly, with the validator's message.
+    #[tokio::test]
+    async fn effort_rejected_for_no_menu_model_before_spawn() {
+        let (backend, mut rx) = make_backend();
+        let mut resources = resources_for_task(backend);
+        resources.insert(TaskEffortValidator::new(|effort, requested| {
+            (effort == "high" && requested == Some("claude-opus-5")).then(|| {
+                "Task.effort 'high' is not supported by model 'claude-opus-5': the model has no \
+                 reasoning-effort menu. Omit `effort` to inherit the parent session's effort."
+                    .to_string()
+            })
+        }));
+        let mut input = task_input("general-purpose", true);
+        input.model = Some("claude-opus-5".to_string());
+        input.effort = Some("high".to_string());
+
+        let result =
+            xai_tool_runtime::Tool::run(&TaskTool, test_ctx(resources.into_shared()), input).await;
+        let msg = result
+            .expect_err("effort for a no-menu model must reject before spawn")
+            .to_string();
+        assert!(
+            msg.contains("Task.effort 'high' is not supported by model 'claude-opus-5'"),
+            "{msg}"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "spawn must not reach the coordinator"
+        );
+    }
+
+    /// ANTHROPIC-WIRE-2 (cut 7): a valid effort plumbs into
+    /// `SubagentRuntimeOverrides.reasoning_effort` on the spawn request.
+    #[tokio::test]
+    async fn effort_plumbs_into_runtime_overrides_when_valid() {
+        let (backend, mut rx) = make_backend();
+        let mut resources = resources_for_task(backend);
+        resources.insert(TaskEffortValidator::new(|_effort, _model| None));
+        let mut input = task_input("general-purpose", true);
+        input.effort = Some("high".to_string());
+
+        let (captured_tx, captured_rx) = tokio::sync::oneshot::channel();
+        let drain = tokio::spawn(async move {
+            if let Some(SubagentEvent::Spawn(mut boxed)) = rx.recv().await {
+                let _ = captured_tx.send(boxed.request.runtime_overrides.clone());
+                boxed.notify_registered();
+            }
+        });
+
+        let result =
+            xai_tool_runtime::Tool::run(&TaskTool, test_ctx(resources.into_shared()), input).await
+                .expect("spawn with a valid effort should succeed");
+        let overrides = captured_rx.await.expect("spawn event delivered");
+        assert_eq!(
+            overrides.reasoning_effort.as_deref(),
+            Some("high"),
+            "the tool input must reach the runtime override"
+        );
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), drain).await;
+        let _ = result;
+    }
+
+    /// ANTHROPIC-WIRE-2 (cut 7): sentinel/blank effort values ("null") are
+    /// treated as absent — no validation, no override (inherit).
+    #[tokio::test]
+    async fn effort_sentinel_treated_as_absent() {
+        let (backend, mut rx) = make_backend();
+        let mut resources = resources_for_task(backend);
+        resources.insert(TaskEffortValidator::new(|_effort, _model| None));
+        let mut input = task_input("general-purpose", true);
+        input.effort = Some("null".to_string());
+
+        let (captured_tx, captured_rx) = tokio::sync::oneshot::channel();
+        let drain = tokio::spawn(async move {
+            if let Some(SubagentEvent::Spawn(mut boxed)) = rx.recv().await {
+                let _ = captured_tx.send(boxed.request.runtime_overrides.clone());
+                boxed.notify_registered();
+            }
+        });
+
+        let _result =
+            xai_tool_runtime::Tool::run(&TaskTool, test_ctx(resources.into_shared()), input).await
+                .expect("sentinel effort must be treated as absent, not an error");
+        let overrides = captured_rx.await.expect("spawn event delivered");
+        assert!(
+            overrides.reasoning_effort.is_none(),
+            "a sentinel effort must not set the override"
+        );
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), drain).await;
     }
 
     #[tokio::test]
@@ -1909,6 +2045,7 @@ mod tests {
             resume_from: None,
             cwd: None,
             model: Some("test-model".into()),
+            effort: None,
             task_id: Some("task-123".into()),
         };
         let json = serde_json::to_string(&input).unwrap();
@@ -2177,6 +2314,7 @@ mod tests {
             resume_from: None,
             cwd: None,
             model: None,
+            effort: None,
             task_id: None,
         })
         .unwrap();
@@ -2226,6 +2364,7 @@ mod tests {
                 resume_from: None,
                 cwd: None,
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )
@@ -2262,6 +2401,7 @@ mod tests {
             resume_from: None,
             cwd: None,
             model: None,
+            effort: None,
             task_id: None,
         };
         let json = serde_json::to_string(&input).unwrap();
@@ -2308,6 +2448,7 @@ mod tests {
                 resume_from: Some("prev-id".into()),
                 cwd: None,
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )
@@ -2374,6 +2515,7 @@ mod tests {
                     resume_from: Some(sentinel.into()),
                     cwd: None,
                     model: None,
+                    effort: None,
                     task_id: None,
                 },
             )
@@ -2420,6 +2562,7 @@ mod tests {
             resume_from: None,
             cwd: None,
             model: None,
+            effort: None,
             task_id: None,
         };
         let json = serde_json::to_string(&input).unwrap();
@@ -2448,6 +2591,7 @@ mod tests {
                 resume_from: None,
                 cwd: Some("/tmp".into()),
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )
@@ -2502,6 +2646,7 @@ mod tests {
                 resume_from: None,
                 cwd: Some("".into()),
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )
@@ -2552,6 +2697,7 @@ mod tests {
                 resume_from: None,
                 cwd: Some("null".into()),
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )
@@ -2602,6 +2748,7 @@ mod tests {
                 resume_from: None,
                 cwd: Some("  ".into()),
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )
@@ -2655,6 +2802,7 @@ mod tests {
                 resume_from: None,
                 cwd: Some("/nonexistent/path/that/does/not/exist".into()),
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )
@@ -2689,6 +2837,7 @@ mod tests {
                 resume_from: None,
                 cwd: Some("/nonexistent/path/that/does/not/exist".into()),
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )
@@ -2744,6 +2893,7 @@ mod tests {
                     resume_from: None,
                     cwd: Some(sentinel.into()),
                     model: None,
+                    effort: None,
                     task_id: None,
                 },
             )
@@ -2797,6 +2947,7 @@ mod tests {
                 resume_from: None,
                 cwd: Some("/tmp".into()),
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )
@@ -2854,6 +3005,7 @@ mod tests {
                 resume_from: None,
                 cwd: Some("\"/tmp".into()),
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )
@@ -2906,6 +3058,7 @@ mod tests {
                 resume_from: None,
                 cwd: Some("/tmp".into()),
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )
@@ -2954,6 +3107,7 @@ mod tests {
                 resume_from: Some("prev-id".into()),
                 cwd: Some("/tmp/some-dir".into()),
                 model: None,
+                effort: None,
                 task_id: None,
             },
         )

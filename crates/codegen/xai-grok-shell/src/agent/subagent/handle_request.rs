@@ -1002,22 +1002,37 @@ pub(crate) async fn run_shell_child(
         }
     }
     if let Some(raw) = effective_runtime.reasoning_effort.as_deref()
-        && ctx
-            .models_manager
-            .model_supports_reasoning_effort(effective_model_id.0.as_ref())
     {
-        match raw.parse::<ReasoningEffort>() {
-            Ok(eff) => ctx.models_manager.apply_supported_effort(
+        // ANTHROPIC-WIRE-2 (cut 7): value-level gate — the parsed effort must
+        // be carried by the effective model's `reasoning_efforts` menu
+        // (defense in depth: the task tool already rejected unsupported
+        // values model-visibly pre-spawn; in-process spawners get the
+        // warn-and-ignore). No-menu models — claude included, whose reasoning
+        // is controlled by the wire's thinking config, not this field (the
+        // W1 ruling) — land in the reject arm.
+        let error = ctx
+            .models_manager
+            .task_effort_error(raw, Some(effective_model_id.0.as_ref()));
+        match (error, raw.parse::<ReasoningEffort>()) {
+            (None, Ok(eff)) => ctx.models_manager.apply_supported_effort(
                 &mut effective_sampling_config,
                 Some(eff),
                 &acp::SessionId::new(request.id.clone()),
                 crate::sampling::EffortTarget::NewSession,
             ),
-            Err(err) => {
+            (_, Err(err)) => {
                 tracing::warn!(
                     value = raw,
                     error = %err,
                     "subagent reasoning_effort: parse failed, ignoring override"
+                )
+            }
+            (Some(error), Ok(_)) => {
+                tracing::warn!(
+                    value = raw,
+                    model = %effective_model_id.0,
+                    error = %error,
+                    "subagent reasoning_effort: not supported by the effective model; ignoring override"
                 )
             }
         }

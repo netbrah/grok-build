@@ -426,6 +426,42 @@ impl ModelsManager {
         task_model_error_for_catalog(requested, models, is_session_auth)
     }
 
+    /// ANTHROPIC-WIRE-2 (cut 7): error text for a model-facing `Task.effort`
+    /// argument, or `None` when valid. `requested_model` is the subagent's
+    /// explicit `model` argument; `None` resolves the current session model.
+    /// Rejected: unparseable values, and values the effective model's
+    /// `reasoning_efforts` menu does not carry — no-menu models (including
+    /// claude, whose reasoning is controlled by the wire's thinking config,
+    /// not this field — the W1 ruling) get a menu-specific message.
+    pub(crate) fn task_effort_error(
+        &self,
+        effort: &str,
+        requested_model: Option<&str>,
+    ) -> Option<String> {
+        let current_model = self.current_model_id();
+        let model = requested_model.unwrap_or_else(|| current_model.0.as_ref());
+        let Ok(parsed) = effort.parse::<ReasoningEffort>() else {
+            return Some(format!(
+                "Invalid Task.effort value '{effort}': expected one of none, minimal, low, \
+                 medium, high, xhigh, max, ultra."
+            ));
+        };
+        if self.model_supports_reasoning_effort_value(model, parsed) {
+            return None;
+        }
+        if xai_grok_sampling_types::is_anthropic_model(model) {
+            return Some(format!(
+                "Task.effort '{effort}' is not supported by model '{model}': claude models have \
+                 no reasoning-effort menu (their reasoning is controlled by the messages-wire \
+                 thinking config). Omit `effort` to inherit the parent session's effort."
+            ));
+        }
+        Some(format!(
+            "Task.effort '{effort}' is not supported by model '{model}'. Omit `effort` to \
+             inherit the parent session's effort."
+        ))
+    }
+
     pub fn current_model_id(&self) -> acp::ModelId {
         self.inner.current_model_id.read().clone()
     }

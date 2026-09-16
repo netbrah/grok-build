@@ -360,6 +360,7 @@ async fn spawn(mut ctx: ToolCallContext, input: SpawnAgentInput) -> Result<ToolO
                     .agent_type
                     .unwrap_or_else(|| "general-purpose".to_owned()),
                 model: input.model,
+                effort: None,
                 run_in_background: true,
                 resume_from: None,
                 cwd: None,

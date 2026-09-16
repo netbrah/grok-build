@@ -596,6 +596,60 @@ fn reasoning_effort_helpers_resolve_wire_name_to_catalog_key() {
     assert!(mgr.model_reasoning_efforts("missing-model").is_empty());
 }
 
+/// ANTHROPIC-WIRE-2 (cut 7): `task_effort_error` — the value-level gate for
+/// the model-facing `Task.effort` parameter. Menu values pass; off-menu,
+/// unparseable, and no-menu models (including claude, whose reasoning is
+/// controlled by the wire's thinking config) reject with an actionable
+/// message. `requested_model = None` resolves the current session model.
+#[test]
+fn task_effort_error_value_gate() {
+    let mgr = test_manager();
+
+    // A model with an explicit menu: only menu values pass.
+    let mut menu = make_model_entry("menu-slug");
+    menu.info.supports_reasoning_effort = true;
+    menu.info.reasoning_efforts = vec![ReasoningEffortOption {
+        id: "high".into(),
+        value: ReasoningEffort::High,
+        label: "High".into(),
+        description: None,
+        default: true,
+    }];
+    mgr.insert_test_entry("menu-key", menu);
+
+    // A no-menu claude model (the .41 root-cause population).
+    let claude = make_model_entry("claude-opus-5");
+    mgr.insert_test_entry("claude-opus-5", claude);
+
+    assert_eq!(
+        mgr.task_effort_error("high", Some("menu-key")),
+        None,
+        "a menu value for the effective model must pass"
+    );
+    let err = mgr
+        .task_effort_error("low", Some("menu-key"))
+        .expect("off-menu value rejected");
+    assert!(err.contains("menu-key"), "{err}");
+    assert!(err.contains("low"), "{err}");
+    let err = mgr
+        .task_effort_error("not-an-effort", Some("menu-key"))
+        .expect("unparseable value rejected");
+    assert!(err.contains("not-an-effort"), "{err}");
+
+    let err = mgr
+        .task_effort_error("high", Some("claude-opus-5"))
+        .expect("no-menu claude model rejected");
+    assert!(err.contains("claude-opus-5"), "{err}");
+    assert!(err.contains("thinking config"), "{err}");
+
+    // Inherited model: the test manager's current model ("default") has no
+    // catalog entry, so no menu, so reject.
+    let err = mgr
+        .task_effort_error("high", None)
+        .expect("inherited no-menu model rejected");
+    assert!(err.contains("default"), "{err}");
+}
+
 #[test]
 fn default_model_honors_allowlist_when_no_default_set() {
     let cfg = config_from_toml(

@@ -103,6 +103,21 @@ pub struct TaskToolInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 
+    /// Optional reasoning effort for this subagent (e.g. "low", "medium",
+    /// "high"). Validated against the subagent's model catalog entry before
+    /// spawn and rejected model-visibly for models without a
+    /// reasoning-effort menu (e.g. claude — their reasoning is controlled by
+    /// the wire's thinking config, not this field). Omitted: inherit the
+    /// parent session's effort.
+    #[schemars(
+        description = "Optional reasoning effort for this agent (e.g. \"low\", \"medium\", \
+            \"high\"). Must be a value the agent's model supports; it is rejected for models \
+            without a reasoning-effort menu (e.g. claude). If omitted, the agent inherits the \
+            parent session's reasoning effort."
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+
     /// Server-injected before execution. Becomes the subagent's session ID.
     #[schemars(skip)]
     #[serde(default)]
@@ -1538,6 +1553,44 @@ mod tests {
         assert_eq!(input.model.as_deref(), Some("grok-3"));
     }
 
+    /// ANTHROPIC-WIRE-2 (cut 7): the model-facing `effort` parameter is
+    /// optional — omitted it stays `None` (inherit the parent session's
+    /// effort), explicit values round-trip, and a `None` effort never
+    /// serializes.
+    #[test]
+    fn task_tool_input_effort_wire_contract() {
+        let input: TaskToolInput =
+            serde_json::from_str(r#"{"description": "d", "prompt": "p"}"#).unwrap();
+        assert!(
+            input.effort.is_none(),
+            "omitted effort must stay None (inherit the parent session's effort)"
+        );
+
+        let input: TaskToolInput =
+            serde_json::from_str(r#"{"description": "d", "prompt": "p", "effort": "high"}"#)
+                .unwrap();
+        assert_eq!(input.effort.as_deref(), Some("high"));
+
+        let input = TaskToolInput {
+            prompt: "p".into(),
+            description: "d".into(),
+            subagent_type: default_subagent_type(),
+            run_in_background: false,
+            capability_mode: None,
+            isolation: None,
+            resume_from: None,
+            cwd: None,
+            model: None,
+            effort: None,
+            task_id: None,
+        };
+        let value = serde_json::to_value(&input).unwrap();
+        assert!(
+            value.get("effort").is_none(),
+            "a None effort must not serialize"
+        );
+    }
+
     #[test]
     fn task_tool_input_model_none_skips_serialize() {
         let input = TaskToolInput {
@@ -1550,6 +1603,7 @@ mod tests {
             resume_from: None,
             cwd: None,
             model: None,
+            effort: None,
             task_id: None,
         };
         let value = serde_json::to_value(&input).unwrap();

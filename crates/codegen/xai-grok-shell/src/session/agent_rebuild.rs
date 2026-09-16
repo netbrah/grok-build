@@ -42,7 +42,9 @@ use xai_grok_tools::implementations::grok_build::app_builder::AppBuilderDeployer
 use xai_grok_tools::implementations::grok_build::ask_user_question::types::UserQuestionRequest;
 use xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig;
 use xai_grok_tools::implementations::grok_build::monitor::types::MonitorEventBuffer;
-use xai_grok_tools::implementations::grok_build::task::types::{SubagentEvent, TaskModelValidator};
+use xai_grok_tools::implementations::grok_build::task::types::{
+    SubagentEvent, TaskEffortValidator, TaskModelValidator,
+};
 use xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig;
 use xai_grok_tools::implementations::grok_build::web_fetch::WebFetchConfig;
 use xai_grok_tools::implementations::lsp::LspBackend;
@@ -418,6 +420,7 @@ impl AgentRebuildSpec {
         crate::waterfall::mark(session_id_str, crate::waterfall::stage::SB_BUILDER_DONE);
         let agent_build_elapsed = build_phase_start.elapsed();
         let model_validator = models_manager.clone();
+        let effort_model_validator = model_validator.clone();
         agent
             .tool_bridge()
             .update_resources_with(|resources| {
@@ -425,6 +428,15 @@ impl AgentRebuildSpec {
                     .insert(
                         TaskModelValidator::new(move |requested| {
                             model_validator.task_model_error(requested)
+                        }),
+                    );
+                // ANTHROPIC-WIRE-2 (cut 7): the model-facing `Task.effort`
+                // parameter, validated against the live catalog — requested
+                // model, or the inherited current session model when absent.
+                resources
+                    .insert(
+                        TaskEffortValidator::new(move |effort, requested| {
+                            effort_model_validator.task_effort_error(effort, requested)
                         }),
                     );
                 if let Some(event_tx) = subagent_event_tx.clone() {
@@ -712,6 +724,41 @@ mod tests {
                     .expect("Task model validator should be registered");
                 assert!(validator.error_for("alpha-public").is_none());
                 assert!(validator.error_for("private-hidden-model").is_some());
+                // ANTHROPIC-WIRE-2 (cut 7): the effort validator rides the
+                // same rebuild path and reads the live catalog.
+                use xai_grok_sampling_types::{ReasoningEffort, ReasoningEffortOption};
+                let effort_validator = first
+                    .tool_bridge()
+                    .toolset()
+                    .get_resource_cloned::<TaskEffortValidator>()
+                    .await
+                    .expect("Task effort validator should be registered");
+                assert!(
+                    effort_validator.error_for("high", Some("alpha-public")).is_some(),
+                    "a fallback entry has no effort menu"
+                );
+                assert!(
+                    effort_validator.error_for("high", None).is_some(),
+                    "the inherited (current) model has no effort menu"
+                );
+                let mut menu_model = model_entry("internal-menu");
+                menu_model.info.supports_reasoning_effort = true;
+                menu_model.info.reasoning_efforts = vec![ReasoningEffortOption {
+                    id: "high".into(),
+                    value: ReasoningEffort::High,
+                    label: "High".into(),
+                    description: None,
+                    default: true,
+                }];
+                models_manager.insert_test_entry("menu-public", menu_model);
+                assert!(
+                    effort_validator.error_for("high", Some("menu-public")).is_none(),
+                    "a menu value for the effective model must pass"
+                );
+                assert!(
+                    effort_validator.error_for("low", Some("menu-public")).is_some(),
+                    "an off-menu value must reject"
+                );
                 models_manager
                     .insert_test_entry("beta-public", model_entry("internal-beta"));
                 assert!(validator.error_for("beta-public").is_none());
@@ -725,6 +772,7 @@ mod tests {
                         "If the user explicitly asks for the model of a subagent/task, you may ONLY use model slugs from this list:\n\
                          - alpha-public\n\
                          - beta-public\n\
+                         - menu-public\n\
                          - zeta-public"
                     )
                 );

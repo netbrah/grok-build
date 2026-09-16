@@ -1321,6 +1321,38 @@ impl std::fmt::Debug for TaskModelValidator {
 
 register_resource!("grok_build", "TaskModelValidator", TaskModelValidator);
 
+/// Session-scoped validator for the model-facing `Task.effort` argument
+/// (ANTHROPIC-WIRE-2 cut 7). Returns an error message for an unsupported
+/// (effort, model) pair and `None` when valid. The closure reads the live
+/// model catalog so refreshes apply without rebuilding the tool bridge.
+/// `requested_model` is the subagent's explicit `model` argument; `None`
+/// means "inherit the parent session's model" — the closure resolves the
+/// effective model and checks it.
+type TaskEffortValidationFn = dyn Fn(&str, Option<&str>) -> Option<String> + Send + Sync;
+
+#[derive(Clone)]
+pub struct TaskEffortValidator(Arc<TaskEffortValidationFn>);
+
+impl TaskEffortValidator {
+    pub fn new(
+        validate: impl Fn(&str, Option<&str>) -> Option<String> + Send + Sync + 'static,
+    ) -> Self {
+        Self(Arc::new(validate))
+    }
+
+    pub fn error_for(&self, effort: &str, requested_model: Option<&str>) -> Option<String> {
+        (self.0)(effort, requested_model)
+    }
+}
+
+impl std::fmt::Debug for TaskEffortValidator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskEffortValidator").finish()
+    }
+}
+
+register_resource!("grok_build", "TaskEffortValidator", TaskEffortValidator);
+
 /// Carries the current session ID so TaskTool can set `parent_session_id`
 /// on the `SubagentRequest`.
 #[derive(Debug, Clone)]

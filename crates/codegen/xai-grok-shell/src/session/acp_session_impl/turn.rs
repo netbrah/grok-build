@@ -1301,8 +1301,16 @@ impl SessionActor {
             let mut round_trace = trace_gcs_config;
             let mut round_artifact = artifact_tracker;
             let mut stop_continuations_this_turn: u32 = 0;
+            let salvage_budget = self.length_salvage_budget();
             let mut salvage =
-                super::length_salvage::LengthSalvage::new(self.length_salvage_budget());
+                super::length_salvage::LengthSalvage::new(salvage_budget)
+                    // ANTHROPIC-WIRE-2 (cut 4): salvage turns escalate the
+                    // continuation cap to max(64K, the alias-aware R5 table row)
+                    // — the W1 `responses_budget_fallback` — applied outside the
+                    // continue budget (one free retry on the first Length stop).
+                    .with_escalation_target(salvage_budget.is_some().then(|| {
+                        xai_grok_sampling_types::responses_budget_fallback(&turn_model_id)
+                    }));
             loop {
                 if self.goal_harness_enabled() {
                     let goal_loop_active = self.goal_tracker.lock().status()
@@ -2860,12 +2868,27 @@ impl SessionActor {
                 request.json_schema = json_schema.clone();
             }
             request.hosted_tools = self.hosted_tools_for_turn();
-            request.max_output_tokens = self
+            // ANTHROPIC-WIRE-2 (cut 4): once the escalation fired, every
+            // continuation sample carries the bumped cap — max(64K, the
+            // alias-aware R5 table row). Applied BEFORE the workflow
+            // output-token clamp so the clamp still wins when set.
+            if let Some(target) = salvage.escalation_target()
+                && salvage.escalated()
+            {
+                request.max_output_tokens = Some(
+                    request
+                        .max_output_tokens
+                        .map_or(target, |cap| cap.max(target)),
+                );
+            }
+            let effective_cap = self
                 .tool_context
                 .clamp_task_model_request(request.max_output_tokens)
                 .map_err(|message| {
                     crate::sampling::error::local_error("max_output_tokens_clamp_failed", message)
                 })?;
+            salvage.note_sample_cap(effective_cap);
+            request.max_output_tokens = effective_cap;
             if salvage.enabled() {
                 request.length_policy = xai_grok_sampling_types::LengthPolicy::CompletePartial;
             }
@@ -3440,6 +3463,9 @@ impl SessionActor {
                             Some(serde_json::json!({
                                 "continue_attempts": salvage.continues(),
                                 "continue_budget": salvage.budget(),
+                                // ANTHROPIC-WIRE-2 (cut 4): the free escalation
+                                // retry reports 0 attempts against the budget.
+                                "escalated": salvage.escalated(),
                             })),
                         );
                         continue;
