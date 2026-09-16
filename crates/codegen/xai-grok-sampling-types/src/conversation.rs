@@ -2890,11 +2890,11 @@ mod tests {
         // Messages API: json_schema becomes output_config.format
         let msgs_req = build_messages_request(&req);
         let output_config = msgs_req.output_config.expect("output_config should be set");
-        let fmt = output_config.format.expect("format should be set");
+        let fmt = output_config.format.clone().into_value().expect("format should be set");
         let crate::messages::OutputFormat::JsonSchema { schema: s } = fmt;
         assert_eq!(s, schema);
         assert!(msgs_req.thinking.is_none());
-        assert!(output_config.effort.is_none());
+        assert!(output_config.effort.is_absent());
     }
 
     #[test]

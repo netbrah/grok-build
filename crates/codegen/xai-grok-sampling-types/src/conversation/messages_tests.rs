@@ -28,8 +28,8 @@ fn json_schema_and_reasoning_effort_are_orthogonal_in_output_config() {
 
     let msgs = build_messages_request(&req);
     let oc = msgs.output_config.expect("output_config present");
-    assert_eq!(oc.effort.as_deref(), Some("high"));
-    assert!(oc.format.is_some());
+    assert_eq!(oc.effort.as_ref(), Some(&"high".to_owned()));
+    assert!(oc.format.as_ref().is_some());
     assert!(
         msgs.thinking.is_some(),
         "thinking set when effort is present"

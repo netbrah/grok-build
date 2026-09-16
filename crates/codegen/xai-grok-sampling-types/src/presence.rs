@@ -30,9 +30,10 @@
 //!   bare Missing/Omitted serializes as `null` — the non-collapse guarantee is field-level,
 //!   where absence is representable.
 //!
-//! 46a scope: carriers + goldens only — NO production DTO changes. 46b wires
-//! `RequestPresence` into `Metadata.user_id`, `OutputConfig.effort`, `OutputConfig.format`
-//! (the three PRESENT-Option rows of the inventory gate) and un-ignores RED-1.
+//! 46b scope: `RequestPresence` wired into `Metadata.user_id`, `OutputConfig.effort`,
+//! `OutputConfig.format` (the three PRESENT rows of the inventory gate); RED-1 active.
+//! Generic carrier holders need `#[serde(bound = "T: Serialize + DeserializeOwned")]` to
+//! derive (E0277/E0283); all 46b holders are concrete, so none does (46c may need it).
 
 use serde::de::Deserializer;
 use serde::ser::Serializer;
@@ -310,19 +311,19 @@ where
 #[cfg(test)]
 mod presence_tests {
     use super::*;
-    use crate::messages::MessagesRequest;
+    use crate::messages::{MessagesRequest, OutputFormat};
 
     // ------------------------------------------------------------------
-    // RED-1 (inter-stage, SDD §5-1): authored ACTIVE, proven red on 25e94f5
-    // (/tmp/wirepresence-red.log), then ignored — the 46b wiring red→green.
+    // RED-1 (inter-stage, 46b SDD §5-1): authored ACTIVE, proven red on 25e94f5
+    // (/tmp/wirepresence-red.log), ignored through 46a. 46b (this stage): un-ignored;
+    // red re-captured at /tmp/wirepresence-46b-red1.log, green post-§4 wiring.
     // ------------------------------------------------------------------
 
     /// An explicit `"metadata": {"user_id": null}` member must survive a
-    /// deserialize → re-serialize round trip. Currently RED: `Metadata.user_id` is
-    /// `Option<String>` + `skip_serializing_if = Option::is_none`, so JSON null collapses
-    /// to `None` and the member vanishes (`"metadata": {}`). 46b wires
+    /// deserialize → re-serialize round trip. RED on 46a: `Metadata.user_id` was
+    /// `Option<String>` + `skip_serializing_if = Option::is_none`, so JSON null collapsed
+    /// to `None` and the member vanished (`"metadata": {}`). 46b wires
     /// `RequestPresence<String>` into the DTO and un-ignores this test.
-    #[ignore = "46b target: RequestPresence wiring (apex-ayl.46 stage 46b)"]
     #[test]
     fn metadata_user_id_null_survives_round_trip() {
         let raw = r#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"metadata":{"user_id":null}}"#;
@@ -435,6 +436,86 @@ mod presence_tests {
             assert_eq!(back.field, original, "state collapsed across round trip (bytes: {first})");
             assert_eq!(second, first, "serialization is not byte-stable");
         }
+    }
+
+    /// 46b SDD §4.6-2 (qwen NIT-4): generic T-cell holder — the same field
+    /// pattern as `ReqRoundTripHolder`, widened so the 46b DTO's T set (bool,
+    /// u32, tagged enum, nested struct) is round-trip-pinned.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(bound = "T: Serialize + DeserializeOwned")]
+    struct ReqTCellHolder<T: Serialize + DeserializeOwned> {
+        #[serde(default, skip_serializing_if = "RequestPresence::is_absent")]
+        field: RequestPresence<T>,
+    }
+
+    fn assert_req_round_trip<T>(original: RequestPresence<T>)
+    where
+        T: Clone + std::fmt::Debug + PartialEq + Serialize + DeserializeOwned,
+    {
+        let holder = ReqTCellHolder { field: original.clone() };
+        let first = serde_json::to_string(&holder).expect("serialize holder");
+        let back: ReqTCellHolder<T> = serde_json::from_str(&first).expect("deserialize holder");
+        let second = serde_json::to_string(&back).expect("re-serialize holder");
+        assert_eq!(back.field, original, "state collapsed across round trip (bytes: {first})");
+        assert_eq!(second, first, "serialization is not byte-stable");
+    }
+
+    #[test]
+    fn request_presence_bool_round_trip_never_collapses() {
+        assert_req_round_trip(RequestPresence::<bool>::omitted());
+        assert_req_round_trip(RequestPresence::<bool>::null());
+        assert_req_round_trip(RequestPresence::value(true));
+    }
+
+    #[test]
+    fn request_presence_u32_round_trip_never_collapses() {
+        assert_req_round_trip(RequestPresence::<u32>::omitted());
+        assert_req_round_trip(RequestPresence::<u32>::null());
+        assert_req_round_trip(RequestPresence::value(42));
+    }
+
+    #[test]
+    fn request_presence_tagged_enum_round_trip_never_collapses() {
+        // `OutputFormat` has no PartialEq derive, so this cell pins state +
+        // exact holder bytes instead of value equality.
+        for (original, expect) in [
+            (RequestPresence::<OutputFormat>::omitted(), r#"{}"#),
+            (RequestPresence::null(), r#"{"field":null}"#),
+            (
+                RequestPresence::value(OutputFormat::JsonSchema {
+                    schema: serde_json::json!({ "type": "object" }),
+                }),
+                r#"{"field":{"type":"json_schema","schema":{"type":"object"}}}"#,
+            ),
+        ] {
+            let holder = ReqTCellHolder { field: original.clone() };
+            let first = serde_json::to_string(&holder).expect("serialize holder");
+            let back: ReqTCellHolder<OutputFormat> =
+                serde_json::from_str(&first).expect("deserialize holder");
+            let second = serde_json::to_string(&back).expect("re-serialize holder");
+            assert_eq!(first, expect, "tagged-enum holder bytes drifted");
+            assert_eq!(
+                back.field.is_absent(),
+                original.is_absent(),
+                "state collapsed (bytes: {first})"
+            );
+            assert_eq!(
+                back.field.is_null(),
+                original.is_null(),
+                "state collapsed (bytes: {first})"
+            );
+            assert_eq!(second, first, "serialization is not byte-stable");
+        }
+    }
+
+    #[test]
+    fn request_presence_nested_struct_round_trip_never_collapses() {
+        assert_req_round_trip(RequestPresence::<Nested>::omitted());
+        assert_req_round_trip(RequestPresence::<Nested>::null());
+        assert_req_round_trip(RequestPresence::value(Nested {
+            alpha: "a".to_owned(),
+            beta: Some(2),
+        }));
     }
 
     #[test]
@@ -568,6 +649,67 @@ mod presence_tests {
             .and_then(|value| value.as_str());
         assert_eq!(user_id, Some("user-1"));
     }
+
+    // ------------------------------------------------------------------
+    // Explicit-null rejection (spec A0 L97-98; 46b SDD §4.3): one per struct
+    // touched — a wire `null` on an omission-only field is now a parse error.
+    // Direct fields and the internally-tagged `ThinkingConfig` path report the
+    // helper's custom message (serde 1.0.228 enum_internally.rs: variant errors
+    // propagate — verified against registry source); the untagged `SystemParam`
+    // path reports serde's generic fallthrough instead (enum_untagged.rs:
+    // all-variants-failed, per-variant errors NOT propagated — hence its
+    // Err-only assert).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn request_metadata_null_wrapper_rejected() {
+        let raw = r#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"metadata":null}"#;
+        let err = serde_json::from_str::<MessagesRequest>(raw).expect_err("null metadata must be rejected");
+        assert!(
+            err.to_string().contains("explicit null is not representable"),
+            "error should name the rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn request_output_config_null_wrapper_rejected() {
+        let raw = r#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"output_config":null}"#;
+        let err = serde_json::from_str::<MessagesRequest>(raw).expect_err("null output_config must be rejected");
+        assert!(
+            err.to_string().contains("explicit null is not representable"),
+            "error should name the rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn request_temperature_null_rejected() {
+        let raw = r#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"temperature":null}"#;
+        let err = serde_json::from_str::<MessagesRequest>(raw).expect_err("null temperature must be rejected");
+        assert!(
+            err.to_string().contains("explicit null is not representable"),
+            "error should name the rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn request_text_block_cache_control_null_rejected() {
+        let raw = r#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"system":[{"type":"text","text":"hi","cache_control":null}]}"#;
+        assert!(
+            serde_json::from_str::<MessagesRequest>(raw).is_err(),
+            "null cache_control in a system block must be rejected"
+        );
+    }
+
+    #[test]
+    fn request_thinking_display_null_rejected() {
+        let raw = r#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"thinking":{"type":"adaptive","display":null}}"#;
+        let err = serde_json::from_str::<MessagesRequest>(raw)
+            .expect_err("null thinking.display must be rejected");
+        assert!(
+            err.to_string().contains("explicit null is not representable"),
+            "internally-tagged path must propagate the helper's message: {err}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -590,10 +732,13 @@ mod presence_goldens {
     const USER_ID_OMITTED_BYTES: &str =
         r#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"metadata":{}}"#;
     const USER_ID_VALUE_BYTES: &str = r#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"metadata":{"user_id":"user-1"}}"#;
+    const USER_ID_NULL_BYTES: &str = r#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"metadata":{"user_id":null}}"#;
     const OUTPUT_CONFIG_OMITTED_BYTES: &str =
         r#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"output_config":{}}"#;
     const EFFORT_VALUE_BYTES: &str = r#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"output_config":{"effort":"high"}}"#;
+    const EFFORT_NULL_BYTES: &str = r#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"output_config":{"effort":null}}"#;
     const FORMAT_VALUE_BYTES: &str = r#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"output_config":{"format":{"type":"json_schema","schema":{"type":"object"}}}}"#;
+    const FORMAT_NULL_BYTES: &str = r#"{"model":"m-1","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"output_config":{"format":null}}"#;
 
     fn minimal_request() -> MessagesRequest {
         MessagesRequest {
@@ -625,10 +770,11 @@ mod presence_goldens {
 
     #[test]
     fn dto_golden_user_id_omitted_is_empty_metadata_object() {
-        // Current wire truth (46a pin): `Metadata { user_id: None }` re-serializes as an
-        // empty object — 46b's RequestPresence flips this row to member-omitted.
+        // Current wire truth (46a pin, byte-stable across 46b): an omitted
+        // `user_id` re-serializes as an empty `metadata` object — qwen NIT-7:
+        // it is the NULL row (USER_ID_NULL_BYTES) that 46b adds, not this one.
         let mut req = minimal_request();
-        req.metadata = Some(Metadata { user_id: None });
+        req.metadata = Some(Metadata { user_id: RequestPresence::omitted() });
         let bytes = serde_json::to_string(&req).expect("serialize");
         assert_eq!(bytes, USER_ID_OMITTED_BYTES);
     }
@@ -637,18 +783,35 @@ mod presence_goldens {
     fn dto_golden_user_id_value_bytes() {
         let mut req = minimal_request();
         req.metadata = Some(Metadata {
-            user_id: Some("user-1".to_owned()),
+            user_id: RequestPresence::value("user-1".to_owned()),
         });
         let bytes = serde_json::to_string(&req).expect("serialize");
         assert_eq!(bytes, USER_ID_VALUE_BYTES);
     }
 
     #[test]
+    fn dto_golden_user_id_null_bytes() {
+        let mut req = minimal_request();
+        req.metadata = Some(Metadata {
+            user_id: RequestPresence::null(),
+        });
+        let bytes = serde_json::to_string(&req).expect("serialize");
+        assert_eq!(bytes, USER_ID_NULL_BYTES);
+        let back: MessagesRequest =
+            serde_json::from_str(USER_ID_NULL_BYTES).expect("deserialize null row");
+        assert!(back.metadata.as_ref().expect("metadata present").user_id.is_null());
+        assert_eq!(
+            serde_json::to_string(&back).expect("re-serialize"),
+            USER_ID_NULL_BYTES
+        );
+    }
+
+    #[test]
     fn dto_golden_effort_omitted_is_empty_output_config_object() {
         let mut req = minimal_request();
         req.output_config = Some(OutputConfig {
-            effort: None,
-            format: None,
+            effort: RequestPresence::omitted(),
+            format: RequestPresence::omitted(),
         });
         let bytes = serde_json::to_string(&req).expect("serialize");
         assert_eq!(bytes, OUTPUT_CONFIG_OMITTED_BYTES);
@@ -658,8 +821,8 @@ mod presence_goldens {
     fn dto_golden_format_omitted_is_empty_output_config_object() {
         let mut req = minimal_request();
         req.output_config = Some(OutputConfig {
-            effort: None,
-            format: None,
+            effort: RequestPresence::omitted(),
+            format: RequestPresence::omitted(),
         });
         let bytes = serde_json::to_string(&req).expect("serialize");
         assert_eq!(bytes, OUTPUT_CONFIG_OMITTED_BYTES);
@@ -669,24 +832,60 @@ mod presence_goldens {
     fn dto_golden_effort_value_bytes() {
         let mut req = minimal_request();
         req.output_config = Some(OutputConfig {
-            effort: Some("high".to_owned()),
-            format: None,
+            effort: RequestPresence::value("high".to_owned()),
+            format: RequestPresence::omitted(),
         });
         let bytes = serde_json::to_string(&req).expect("serialize");
         assert_eq!(bytes, EFFORT_VALUE_BYTES);
     }
 
     #[test]
+    fn dto_golden_effort_null_bytes() {
+        let mut req = minimal_request();
+        req.output_config = Some(OutputConfig {
+            effort: RequestPresence::null(),
+            format: RequestPresence::omitted(),
+        });
+        let bytes = serde_json::to_string(&req).expect("serialize");
+        assert_eq!(bytes, EFFORT_NULL_BYTES);
+        let back: MessagesRequest =
+            serde_json::from_str(EFFORT_NULL_BYTES).expect("deserialize null row");
+        assert!(back.output_config.as_ref().expect("output_config present").effort.is_null());
+        assert_eq!(
+            serde_json::to_string(&back).expect("re-serialize"),
+            EFFORT_NULL_BYTES
+        );
+    }
+
+    #[test]
     fn dto_golden_format_value_bytes() {
         let mut req = minimal_request();
         req.output_config = Some(OutputConfig {
-            effort: None,
-            format: Some(OutputFormat::JsonSchema {
+            effort: RequestPresence::omitted(),
+            format: RequestPresence::value(OutputFormat::JsonSchema {
                 schema: json!({ "type": "object" }),
             }),
         });
         let bytes = serde_json::to_string(&req).expect("serialize");
         assert_eq!(bytes, FORMAT_VALUE_BYTES);
+    }
+
+    #[test]
+    fn dto_golden_format_null_bytes() {
+        let mut req = minimal_request();
+        req.output_config = Some(OutputConfig {
+            effort: RequestPresence::omitted(),
+            format: RequestPresence::null(),
+        });
+        let bytes = serde_json::to_string(&req).expect("serialize");
+        assert_eq!(bytes, FORMAT_NULL_BYTES);
+        let back: MessagesRequest =
+            serde_json::from_str(FORMAT_NULL_BYTES).expect("deserialize null row");
+        assert!(back.output_config.as_ref().expect("output_config present").format.is_null());
+        assert_eq!(
+            serde_json::to_string(&back).expect("re-serialize"),
+            FORMAT_NULL_BYTES
+        );
     }
 
     // ------------------------------------------------------------------
@@ -945,7 +1144,11 @@ mod presence_goldens {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum InventoryClass {
+        // 46b truth pins 0 × PRESENT-Option: no row constructs this variant
+        // anymore, but the total assert keeps it in the truth table.
+        #[allow(dead_code)]
         PresentOption,
+        PresentRequestPresence,
         Absent,
     }
 
@@ -953,7 +1156,7 @@ mod presence_goldens {
         spec_field: &'static str,
         struct_name: &'static str,
         field: &'static str,
-        /// Exact field-declaration line, for PRESENT-Option rows.
+        /// Exact field-declaration line, for PRESENT-* rows.
         exact_decl: Option<&'static str>,
         expected: InventoryClass,
     }
@@ -987,29 +1190,29 @@ mod presence_goldens {
     }
 
     #[test]
-    fn dto_coverage_inventory_pins_current_truth_46a() {
+    fn dto_coverage_inventory_pins_46b_truth() {
         let src = include_str!("messages.rs");
         let rows: &[InventoryRow] = &[
             InventoryRow {
                 spec_field: "Metadata.user_id",
                 struct_name: "Metadata",
                 field: "user_id",
-                exact_decl: Some("pub user_id: Option<String>,"),
-                expected: InventoryClass::PresentOption,
+                exact_decl: Some("pub user_id: RequestPresence<String>,"),
+                expected: InventoryClass::PresentRequestPresence,
             },
             InventoryRow {
                 spec_field: "OutputConfig.effort",
                 struct_name: "OutputConfig",
                 field: "effort",
-                exact_decl: Some("pub effort: Option<String>,"),
-                expected: InventoryClass::PresentOption,
+                exact_decl: Some("pub effort: RequestPresence<String>,"),
+                expected: InventoryClass::PresentRequestPresence,
             },
             InventoryRow {
                 spec_field: "OutputConfig.format",
                 struct_name: "OutputConfig",
                 field: "format",
-                exact_decl: Some("pub format: Option<OutputFormat>,"),
-                expected: InventoryClass::PresentOption,
+                exact_decl: Some("pub format: RequestPresence<OutputFormat>,"),
+                expected: InventoryClass::PresentRequestPresence,
             },
             InventoryRow {
                 spec_field: "Tool.cache_control",
@@ -1055,11 +1258,12 @@ mod presence_goldens {
             },
         ];
         let mut present_option = 0usize;
+        let mut present_request_presence = 0usize;
         let mut absent = 0usize;
         for row in rows {
             let body = struct_body(src, row.struct_name).unwrap_or_else(|| {
                 panic!(
-                    "A1-lite inventory gate: struct `{}` moved or renamed in messages.rs — re-derive the 46a classification table",
+                    "A1-lite inventory gate: struct `{}` moved or renamed in messages.rs — re-derive the 46b classification table",
                     row.struct_name
                 )
             });
@@ -1068,20 +1272,22 @@ mod presence_goldens {
                 None => has_field_decl(body, row.field),
             };
             let matches = match row.expected {
-                InventoryClass::PresentOption => present,
+                InventoryClass::PresentOption | InventoryClass::PresentRequestPresence => present,
                 InventoryClass::Absent => !present,
             };
             assert!(
                 matches,
-                "A1-lite inventory gate: spec field `{}` (struct `{}`, field `{}`) expected {:?} but source says present={present} — the 46a truth table moved",
+                "A1-lite inventory gate: spec field `{}` (struct `{}`, field `{}`) expected {:?} but source says present={present} — the 46b truth table moved, or the declaration was renamed/moved/reformatted (re-derive against spec A0 L92-99)",
                 row.spec_field, row.struct_name, row.field, row.expected
             );
             match row.expected {
                 InventoryClass::PresentOption => present_option += 1,
+                InventoryClass::PresentRequestPresence => present_request_presence += 1,
                 InventoryClass::Absent => absent += 1,
             }
         }
-        assert_eq!(present_option, 3, "46a truth: 3 × PRESENT-Option");
-        assert_eq!(absent, 6, "46a truth: 6 × ABSENT");
+        assert_eq!(present_request_presence, 3, "46b truth: 3 × PRESENT-RequestPresence");
+        assert_eq!(present_option, 0, "46b truth: 0 × PRESENT-Option");
+        assert_eq!(absent, 6, "46b truth: 6 × ABSENT");
     }
 }

@@ -3,6 +3,8 @@
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
+use crate::presence::RequestPresence;
+
 // ============================================================================
 // Request Types
 // ============================================================================
@@ -13,36 +15,38 @@ pub struct MessagesRequest {
     pub model: String,
     pub messages: Vec<Message>,
     pub max_tokens: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
     pub system: Option<SystemParam>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolParam>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoiceParam>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
     pub top_k: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
     pub stop_sequences: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
     pub output_config: Option<OutputConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Metadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub effort: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub format: Option<OutputFormat>,
+    /// Spec A0 (L92-99): optional-AND-nullable — Omitted/Null/Value never collapse.
+    #[serde(default, skip_serializing_if = "RequestPresence::is_absent")]
+    pub effort: RequestPresence<String>,
+    /// Spec A0 (L92-99): optional-AND-nullable — Omitted/Null/Value never collapse.
+    #[serde(default, skip_serializing_if = "RequestPresence::is_absent")]
+    pub format: RequestPresence<OutputFormat>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,7 +87,7 @@ pub struct TextBlock {
     #[serde(rename = "type")]
     pub r#type: String, // always "text"
     pub text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<CacheControl>,
 }
 
@@ -335,7 +339,7 @@ pub enum ThinkingConfig {
     Adaptive {
         // Newer thinking-capable models omit thinking content unless display = "summarized".
         // Older models ignore this field; skipping `None` keeps the old wire shape
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
         display: Option<ThinkingDisplay>,
     },
     Disabled,
@@ -343,8 +347,9 @@ pub enum ThinkingConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metadata {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub user_id: Option<String>,
+    /// Spec A0 (L92-99): optional-AND-nullable — Omitted/Null/Value never collapse.
+    #[serde(default, skip_serializing_if = "RequestPresence::is_absent")]
+    pub user_id: RequestPresence<String>,
 }
 
 // ============================================================================
@@ -909,11 +914,11 @@ mod tests {
         assert!(json.get("name").is_none());
 
         let config = OutputConfig {
-            effort: None,
-            format: Some(fmt),
+            effort: RequestPresence::omitted(),
+            format: RequestPresence::value(fmt),
         };
         let json = serde_json::to_value(&config).unwrap();
-        assert!(json.get("effort").is_none(), "effort omitted when None");
+        assert!(json.get("effort").is_none(), "effort Omitted state emits no member");
         assert_eq!(json["format"]["type"], "json_schema");
     }
     // ========================================================================

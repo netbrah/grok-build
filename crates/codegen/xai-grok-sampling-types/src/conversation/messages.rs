@@ -570,6 +570,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         ContentBlock, Message, MessageContent, MessageRole, MessagesRequest, OutputConfig,
         SystemParam, TextBlock, ToolChoiceParam, ToolParam, ToolResultContent,
     };
+    use crate::presence::RequestPresence;
 
     // D5 stage 1: item-level orphan cleanup, before translation.
     let items = clean_orphaned_items(&req.items);
@@ -870,7 +871,10 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     let thinking = crate::messages_model::messages_thinking_config(model, req.reasoning_effort);
 
     let output_config = if effort.is_some() || format.is_some() {
-        Some(OutputConfig { effort, format })
+        Some(OutputConfig {
+            effort: effort.map(RequestPresence::value).unwrap_or_default(),
+            format: format.map(RequestPresence::value).unwrap_or_default(),
+        })
     } else {
         None
     };
