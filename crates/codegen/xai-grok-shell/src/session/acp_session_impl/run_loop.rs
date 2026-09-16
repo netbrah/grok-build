@@ -1423,6 +1423,7 @@ pub(super) async fn run_session(
                         SessionCommand::InvalidateImageStripsForRewind { respond_to } => {
                             session.cancel_active_sampling_requests();
                             session.cancel_pending_image_strips_for_rewind();
+                            session.cancel_pending_model_bound_strips_for_rewind();
                             let _ = respond_to.send(());
                         }
                         SessionCommand::XaiSessionNotification { notification } => {

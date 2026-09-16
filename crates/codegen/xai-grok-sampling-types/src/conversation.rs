@@ -844,14 +844,7 @@ impl ConversationRequest {
     /// `AssistantItem` carries no opaque per-model state and `ConversationItem`
     /// has no `Compaction` arm, so the port is a pure item retain.
     pub fn strip_model_bound_state(&mut self) -> usize {
-        let before = self.items.len();
-        self.items.retain(|item| {
-            !matches!(
-                item,
-                ConversationItem::Reasoning(_) | ConversationItem::BackendToolCall(_)
-            )
-        });
-        before.saturating_sub(self.items.len())
+        drop_model_bound_items(&mut self.items)
     }
 }
 
@@ -924,6 +917,22 @@ pub fn codex_compact_output_to_conversation_items(
 /// Invariant: replaces parts in place, never adds or removes a `ConversationItem` (the `&mut [_]` signature cannot resize).
 pub fn strip_images_by_url(items: &mut [ConversationItem], urls: &[Arc<str>]) -> usize {
     strip_images_where(items, |url| urls.iter().any(|u| u.as_ref() == url)).len()
+}
+
+/// Item-level form of [`ConversationRequest::strip_model_bound_state`]: drops every
+/// model-bound item (`Reasoning` + `BackendToolCall`); returns the count dropped.
+/// Single source of truth for what is model-bound: the sampler's in-flight request
+/// strip and the chat-state's persisted strip (XSWITCH-1, apex-ayl.58) must never
+/// diverge. `0` on an already-stripped slice makes both call sites fail closed.
+pub fn drop_model_bound_items(items: &mut Vec<ConversationItem>) -> usize {
+    let before = items.len();
+    items.retain(|item| {
+        !matches!(
+            item,
+            ConversationItem::Reasoning(_) | ConversationItem::BackendToolCall(_)
+        )
+    });
+    before.saturating_sub(items.len())
 }
 
 /// Replaces a stripped user image.
@@ -2636,6 +2645,30 @@ mod tests {
         };
         assert_eq!(req.strip_model_bound_state(), 0);
         assert_eq!(req.items.len(), 2, "portable items are untouched");
+    }
+
+    #[test]
+    fn drop_model_bound_items_is_the_shared_strip_definition() {
+        // XSWITCH-1 (apex-ayl.58): the persisted chat-state strip calls this
+        // free fn directly; it must drop exactly what the request-level strip
+        // drops, be idempotent, and keep the portable transcript.
+        let mut items = model_bound_history();
+        assert_eq!(drop_model_bound_items(&mut items), 2);
+        assert_eq!(items.len(), 3, "user + assistant + user survive");
+        assert!(
+            items.iter().all(|item| {
+                !matches!(
+                    item,
+                    ConversationItem::Reasoning(_) | ConversationItem::BackendToolCall(_)
+                )
+            }),
+            "no model-bound items remain"
+        );
+        assert_eq!(
+            drop_model_bound_items(&mut items),
+            0,
+            "idempotent: already-stripped history strips 0 (fail-closed, cannot loop)"
+        );
     }
 
     /// Keeps `forwards_prompt_cache_key()` honest against each mapping: a key that never reaches the wire looks like a 0% cache hit, not a bug.

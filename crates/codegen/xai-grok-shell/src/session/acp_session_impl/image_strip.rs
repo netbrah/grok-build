@@ -123,6 +123,13 @@ impl SessionActor {
             })
             .timed_out = true;
         enforce_pending_image_strip_bound(&mut pending, Some(request_id));
+        // XSWITCH-1: a buffered model-bound strip for this request outlives the waiter
+        // timeout so its late terminal can still resolve the persist. No placeholder is
+        // inserted: without a buffered strip event there is nothing to persist.
+        let mut pending = self.pending_model_bound_strip.lock();
+        if let Some(strip) = pending.get_mut(request_id) {
+            strip.timed_out = true;
+        }
     }
 
     /// Relinquish normal stream ownership immediately when cancellation claims a turn.
@@ -131,6 +138,10 @@ impl SessionActor {
         self.close_stream_apply_span_any();
         self.turn_stream_drained.lock().clear();
         self.pending_image_strip
+            .lock()
+            .retain(|_, strip| strip.timed_out || strip.applying);
+        // XSWITCH-1: the model-bound pending strip follows the same lifecycle.
+        self.pending_model_bound_strip
             .lock()
             .retain(|_, strip| strip.timed_out || strip.applying);
     }

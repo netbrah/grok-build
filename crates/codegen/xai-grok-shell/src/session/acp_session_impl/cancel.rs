@@ -371,6 +371,7 @@ impl SessionActor {
             let _strip_guard = self.prepare_image_strips_for_rewind().await;
             self.cancel_active_sampling_requests();
             self.cancel_pending_image_strips_for_rewind();
+            self.cancel_pending_model_bound_strips_for_rewind();
             self.notify_turn_abort(epoch, xai_agent_lifecycle::TurnAbortReason::Interrupted)
                 .await;
             let total_tokens = self.chat_state_handle.get_total_tokens().await;
@@ -871,6 +872,7 @@ impl SessionActor {
             let _strip_guard = self.prepare_image_strips_for_rewind().await;
             self.cancel_active_sampling_requests();
             self.cancel_pending_image_strips_for_rewind();
+            self.cancel_pending_model_bound_strips_for_rewind();
             let result = Ok(PromptTurnOk {
                 stop_reason: acp::StopReason::Cancelled,
                 total_tokens,

@@ -281,6 +281,25 @@ impl ChatStateActor {
                     }
                 }
             }
+            ChatStateCommand::StripModelBoundHistory { reply } => {
+                match self.strip_model_bound_history() {
+                    None => {
+                        let _ = reply.send(crate::StripOutcome::NoMatch);
+                    }
+                    Some((stripped, ack_rx)) => {
+                        // Same off-actor ack discipline as StripConversationImages.
+                        tokio::spawn(async move {
+                            let outcome = match ack_rx.await {
+                                Ok(Ok(())) => crate::StripOutcome::Applied { stripped },
+                                Ok(Err(_)) | Err(_) => {
+                                    crate::StripOutcome::WriteFailed { stripped }
+                                }
+                            };
+                            let _ = reply.send(outcome);
+                        });
+                    }
+                }
+            }
             ChatStateCommand::ReplaceSystemHead { prompt, reply } => {
                 let changed = self.replace_system_head(&prompt);
                 let _ = reply.send(changed);

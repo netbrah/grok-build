@@ -939,6 +939,97 @@ async fn strip_conversation_images_is_a_noop_without_images() {
 }
 
 #[tokio::test]
+async fn strip_model_bound_history_drops_reasoning_and_backend_tool_call() {
+    // XSWITCH-1 (apex-ayl.58): the persisted form of the sampler's in-flight
+    // model-bound strip. The recoverability contract mirrors the image strip:
+    // the rewrite goes through the single backup-gated, disk-acked flavor.
+    let web_search: xai_grok_sampling_types::rs::WebSearchToolCall =
+        serde_json::from_value(serde_json::json!({
+            "action": {"type": "search", "query": "opaque state"},
+            "id": "ws_mbs",
+            "status": "completed"
+        }))
+        .expect("valid web search fixture");
+    let mut h = TestHarness::with_conversation(vec![
+        ConversationItem::user("q1"),
+        ConversationItem::Reasoning(xai_grok_sampling_types::rs::ReasoningItem {
+            id: "rs_mbs".to_string(),
+            summary: vec![xai_grok_sampling_types::rs::SummaryPart::SummaryText(
+                xai_grok_sampling_types::rs::SummaryTextContent {
+                    text: "private continuation".to_string(),
+                },
+            )],
+            content: None,
+            encrypted_content: Some("provider-signature".to_string()),
+            status: None,
+        }),
+        ConversationItem::BackendToolCall(xai_grok_sampling_types::BackendToolCallItem {
+            kind: xai_grok_sampling_types::BackendToolKind::WebSearch(web_search),
+        }),
+        ConversationItem::assistant("a1"),
+    ]);
+
+    let outcome = h.handle.strip_model_bound_history().await;
+    assert_eq!(
+        outcome,
+        crate::StripOutcome::Applied { stripped: 2 },
+        "ack must carry the disk-applied count"
+    );
+
+    let conv = h.handle.get_conversation().await; // sync point
+    assert_eq!(
+        conv.len(),
+        2,
+        "the portable user + assistant items survive the strip"
+    );
+    assert!(
+        conv.iter().all(|item| {
+            !matches!(
+                item,
+                ConversationItem::Reasoning(_) | ConversationItem::BackendToolCall(_)
+            )
+        }),
+        "no model-bound items remain in stored history"
+    );
+
+    let records = h.drain_persistence();
+    assert!(
+        records
+            .iter()
+            .any(|r| matches!(r, PersistenceRecord::ReplaceHistoryForStrip(_))),
+        "the strip must persist via the backup-gated flavor, got {records:?}"
+    );
+    assert!(
+        !records
+            .iter()
+            .any(|r| matches!(r, PersistenceRecord::ReplaceHistory(_))),
+        "the strip must not use the unguarded replace, got {records:?}"
+    );
+}
+
+#[tokio::test]
+async fn strip_model_bound_history_is_a_noop_without_model_bound_items() {
+    // XSWITCH-1: an already-portable history (e.g. a rewind replaced it after the
+    // strip event was buffered) must not write or ack.
+    let mut h = TestHarness::with_conversation(vec![
+        ConversationItem::user("q"),
+        ConversationItem::assistant("a"),
+    ]);
+    let outcome = h.handle.strip_model_bound_history().await;
+    assert_eq!(
+        outcome,
+        crate::StripOutcome::NoMatch,
+        "no match must be typed, not a fake success"
+    );
+    let conv = h.handle.get_conversation().await; // sync point
+    assert_eq!(conv.len(), 2);
+    assert!(
+        h.drain_persistence().is_empty(),
+        "a no-match strip must not persist"
+    );
+}
+
+#[tokio::test]
 async fn compaction_reseed_carries_provider_overhead() {
     let h = TestHarness::new();
     // ~1k estimated tokens; provider reports 51k → 50k overhead.

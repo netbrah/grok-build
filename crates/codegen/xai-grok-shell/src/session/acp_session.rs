@@ -123,6 +123,8 @@ mod tool_calls;
 use post_tool_use_delivery::*;
 #[path = "acp_session_impl/image_strip.rs"]
 mod image_strip;
+#[path = "acp_session_impl/model_bound_strip.rs"]
+mod model_bound_strip;
 #[path = "acp_session_impl/interjection.rs"]
 mod interjection;
 #[path = "acp_session_impl/sampling_events.rs"]
@@ -647,6 +649,13 @@ pub(crate) struct PendingImageStrip {
     pub(crate) timed_out: bool,
     pub(crate) applying: bool,
 }
+/// A confirmed model-bound strip (XSWITCH-1, apex-ayl.58) awaiting its request's terminal.
+/// The mutation is unconditional (drop every Reasoning + BackendToolCall item), so the
+/// pending entry only carries the lifecycle flags; the dropped count is telemetry-only.
+pub(crate) struct PendingModelBoundStrip {
+    pub(crate) timed_out: bool,
+    pub(crate) applying: bool,
+}
 pub(crate) struct ImageStripRewriteBarrier {
     gate: std::sync::Arc<tokio::sync::RwLock<()>>,
     strips: std::sync::Arc<tokio::sync::Mutex<()>>,
@@ -1105,6 +1114,13 @@ pub(crate) struct SessionActor {
     /// They persist to stored history only when that request's `Completed` arrives, and drop on `Failed`.
     pub(crate) pending_image_strip: parking_lot::Mutex<
         std::collections::HashMap<xai_grok_sampler::RequestId, PendingImageStrip>,
+    >,
+    /// A server-confirmed model-bound strip (XSWITCH-1, apex-ayl.58) awaiting its
+    /// request's terminal (`Completed` or `Failed`), buffered by request id on
+    /// `ModelBoundStateStripped`. Persists via the same disk-acked seam as the
+    /// image strip so the next turn does not re-send the encitem markers.
+    pub(crate) pending_model_bound_strip: parking_lot::Mutex<
+        std::collections::HashMap<xai_grok_sampler::RequestId, PendingModelBoundStrip>,
     >,
     /// Serializes durable image-strip writes with conversation rewinds.
     pub(crate) image_strip_rewrite_barrier: ImageStripRewriteBarrier,
@@ -1926,6 +1942,9 @@ mod idle_resume_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/image_strip_tests.rs"]
 mod image_strip_tests;
+#[cfg(test)]
+#[path = "acp_session_tests/model_bound_strip_tests.rs"]
+mod model_bound_strip_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/inline_auto_compact_flow_tests.rs"]
 mod inline_auto_compact_flow_tests;

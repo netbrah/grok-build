@@ -169,6 +169,13 @@ pub enum ChatStateCommand {
         reply: tokio::sync::oneshot::Sender<crate::StripOutcome>,
     },
 
+    /// Persist the model-bound history strip (XSWITCH-1, apex-ayl.58): drop every
+    /// `Reasoning` + `BackendToolCall` item. In-actor so it serializes with turn pushes.
+    /// Replies with [`crate::StripOutcome`] after the disk ack: `Applied` means backup and rewrite both landed.
+    StripModelBoundHistory {
+        reply: tokio::sync::oneshot::Sender<crate::StripOutcome>,
+    },
+
     /// Atomically align the leading `System` message with `prompt`, persisting inside the actor.
     /// Serializes with turn pushes so a mid-turn reconnect cannot lose updates the way RMW would.
     /// A changed head re-bases `total_tokens`; acceptable because it invalidates the KV prefix anyway.

@@ -39,6 +39,15 @@ pub(super) enum HistoryRewrite {
     /// (`strip_images_by_url`'s invariant), token totals untouched so the
     /// provider-reported total survives. Backup-gated, disk-acked persist.
     ImageStrip,
+    /// Server-confirmed model-bound strip: `Reasoning` + `BackendToolCall`
+    /// items dropped (XSWITCH-1, apex-ayl.58 — the persisted form of
+    /// `ConversationRequest::strip_model_bound_state`). Item count shrinks
+    /// ahead of the active capture's boundary → snapshot + rebase. Token
+    /// totals are not reseeded: the stripped retry's provider-reported usage
+    /// re-anchors them within the same turn (a `Failed` terminal leaves a
+    /// transient overestimate, corrected on the next response). Backup-gated,
+    /// disk-acked persist, same seam as `ImageStrip`.
+    ModelBoundStrip,
 }
 
 impl ChatStateActor {
@@ -53,7 +62,8 @@ impl ChatStateActor {
         usize,
         Option<tokio::sync::oneshot::Receiver<std::io::Result<()>>>,
     ) {
-        let snapshots_capture = matches!(kind, HistoryRewrite::IntegrityRepair);
+        let snapshots_capture =
+            matches!(kind, HistoryRewrite::IntegrityRepair | HistoryRewrite::ModelBoundStrip);
         if snapshots_capture {
             self.snapshot_turn_slice();
         }
@@ -64,7 +74,7 @@ impl ChatStateActor {
                 HistoryRewrite::IntegrityRepair | HistoryRewrite::RetainedPrune => {
                     self.persistence.replace_history(&self.state.conversation);
                 }
-                HistoryRewrite::ImageStrip => {
+                HistoryRewrite::ImageStrip | HistoryRewrite::ModelBoundStrip => {
                     disk_ack = Some(
                         self.persistence
                             .replace_history_for_strip_and_ack(&self.state.conversation),
@@ -188,6 +198,28 @@ impl ChatStateActor {
                     tracing::warn!(
                         stripped,
                         "stripped server-rejected image(s) from stored conversation"
+                    );
+                }
+                stripped
+            });
+        disk_ack.map(|ack| (stripped, ack))
+    }
+
+    /// Persisted form of the sampler's in-flight model-bound strip
+    /// (XSWITCH-1, apex-ayl.58): drop every `Reasoning` + `BackendToolCall`
+    /// item via the shared [`xai_grok_sampling_types::drop_model_bound_items`]
+    /// definition, as [`HistoryRewrite::ModelBoundStrip`].
+    /// `None` when nothing matched, else dropped count + disk ack.
+    pub(super) fn strip_model_bound_history(
+        &mut self,
+    ) -> Option<(usize, tokio::sync::oneshot::Receiver<std::io::Result<()>>)> {
+        let (stripped, disk_ack) =
+            self.rewrite_history(HistoryRewrite::ModelBoundStrip, |conversation| {
+                let stripped = xai_grok_sampling_types::drop_model_bound_items(conversation);
+                if stripped > 0 {
+                    tracing::warn!(
+                        stripped,
+                        "stripped model-bound items from stored conversation"
                     );
                 }
                 stripped

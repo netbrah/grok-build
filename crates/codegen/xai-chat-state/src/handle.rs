@@ -284,6 +284,16 @@ impl ChatStateHandle {
         .unwrap_or(crate::StripOutcome::ActorUnavailable)
     }
 
+    /// See [`ChatStateCommand::StripModelBoundHistory`] (XSWITCH-1, apex-ayl.58).
+    /// Outcome is typed and disk-acknowledged like the image strip.
+    pub async fn strip_model_bound_history(&self) -> crate::StripOutcome {
+        self.query("StripModelBoundHistory", |reply| {
+            ChatStateCommand::StripModelBoundHistory { reply }
+        })
+        .await
+        .unwrap_or(crate::StripOutcome::ActorUnavailable)
+    }
+
     /// Out-of-band history repair (`x.ai/session/repair`); see
     /// [`ChatStateCommand::RepairHistory`]. Returns `None` if the actor is
     /// dead, `Some(Err(_))` if a turn was in flight at processing time.

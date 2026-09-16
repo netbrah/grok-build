@@ -347,6 +347,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 current_turn_span_id: parking_lot::Mutex::new(None),
                 turn_stream_drained: parking_lot::Mutex::new(std::collections::HashMap::new()),
                 pending_image_strip: parking_lot::Mutex::new(std::collections::HashMap::new()),
+                pending_model_bound_strip: parking_lot::Mutex::new(HashMap::new()),
                 image_strip_rewrite_barrier: ImageStripRewriteBarrier::new(),
                 sampler_handle: xai_grok_sampler::SamplerHandle::noop(),
                 sampling_gate: None,
@@ -970,6 +971,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 current_turn_span_id: parking_lot::Mutex::new(None),
                 turn_stream_drained: parking_lot::Mutex::new(std::collections::HashMap::new()),
                 pending_image_strip: parking_lot::Mutex::new(std::collections::HashMap::new()),
+                pending_model_bound_strip: parking_lot::Mutex::new(HashMap::new()),
                 image_strip_rewrite_barrier: ImageStripRewriteBarrier::new(),
                 sampler_handle: xai_grok_sampler::SamplerHandle::noop(),
                 sampling_gate: None,
@@ -1323,6 +1325,9 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                     std::collections::HashMap::new(),
                 ),
                 pending_image_strip: parking_lot::Mutex::new(
+                    std::collections::HashMap::new(),
+                ),
+                pending_model_bound_strip: parking_lot::Mutex::new(
                     std::collections::HashMap::new(),
                 ),
                 image_strip_rewrite_barrier: ImageStripRewriteBarrier::new(),
@@ -2907,6 +2912,9 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                     std::collections::HashMap::new(),
                 ),
                 pending_image_strip: parking_lot::Mutex::new(
+                    std::collections::HashMap::new(),
+                ),
+                pending_model_bound_strip: parking_lot::Mutex::new(
                     std::collections::HashMap::new(),
                 ),
                 image_strip_rewrite_barrier: ImageStripRewriteBarrier::new(),

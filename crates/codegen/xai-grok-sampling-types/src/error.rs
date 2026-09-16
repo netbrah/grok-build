@@ -392,7 +392,8 @@ impl SamplingError {
     /// cannot consume. The sampler may safely retry ONCE after removing only
     /// the model-bound state; the portable transcript content stays intact
     /// (see `ConversationRequest::strip_model_bound_state`). Matched on the
-    /// 400 error text, case-insensitive, across four observed phrasings:
+    /// 400 error text (family 1 additionally on 503, see the 503 arm below),
+    /// case-insensitive, across five observed phrasings:
     ///
     /// 1. Responses `encrypted_content` — both the parameterized field name
     ///    (`Missing required parameter: 'input[2].encrypted_content'`) and
@@ -418,21 +419,37 @@ impl SamplingError {
     /// needle alone never matches; the Azure message text is the primary
     /// needle and the code is kept as an OR for shapes that survive the cap.
     ///
-    /// Status-gated to exactly 400: the same text on a 429/5xx is a different
-    /// class (rate-limit / transient) and must not trigger the destructive strip.
+    /// Status-gated to exactly 400, with one 503 exception: the same text on a
+    /// 429/5xx is a different class (rate-limit / transient) and must not
+    /// trigger the destructive strip — except family 1 on 503, where litellm's
+    /// EncryptedContentAffinityCheck rejects the replayed `encitem_` ciphertext
+    /// pointers (double-keyed arm below, so generic overload 503s keep the
+    /// plain backoff retry path).
     pub fn is_model_bound_history_error(&self) -> bool {
-        let SamplingError::Api {
-            status: StatusCode::BAD_REQUEST,
-            message,
-            ..
-        } = self
-        else {
+        let SamplingError::Api { status, message, .. } = self else {
             return false;
         };
         let normalized = message.to_ascii_lowercase();
         // Family 1: opaque encrypted continuation content (field name or Azure phrasing).
         let encrypted = normalized.contains("encrypted_content")
             || normalized.contains("encrypted content");
+        if *status == StatusCode::SERVICE_UNAVAILABLE {
+            // XSWITCH-1 (apex-ayl.58): litellm
+            // `router_utils/pre_call_checks/encrypted_content_affinity_check.py`
+            // decodes the `encitem_`/`litellm_enc:` marker on the next request
+            // and pins the request to the deployment that minted it; a cooled
+            // down / cross-group deployment answers 503 with this phrasing
+            // (wire evidence:
+            // ~/.grok/dogfood/20260916T191948Z/wire/resp-003.jsonl).
+            // Double-keyed (encrypted + unavailable/boundary) so a plain
+            // deployment 503 keeps the generic backoff retry path.
+            return encrypted
+                && (normalized.contains("unavailable")
+                    || normalized.contains("boundary"));
+        }
+        if *status != StatusCode::BAD_REQUEST {
+            return false;
+        }
         // Family 2: Anthropic-style thinking signatures.
         let thinking_signature =
             normalized.contains("thinking") && normalized.contains("signature");
@@ -1834,6 +1851,117 @@ mod tests {
         assert!(
             !err.is_model_bound_history_error(),
             "429 with model-bound text must not match (status must be 400)"
+        );
+    }
+
+    // XSWITCH-1 (apex-ayl.58): the 503 encryption-boundary family. Verbatim
+    // resp-003 message from the live wire evidence at
+    // ~/.grok/dogfood/20260916T191948Z/wire/resp-003.jsonl (SDD §1); no key
+    // material in the text.
+    const MODEL_BOUND_503_MESSAGE: &str = "litellm.ServiceUnavailableError: The deployment that produced this encrypted_content is currently unavailable (likely cooled down), and no deployment on the same encryption boundary is configured. Retry later or configure a deployment with the same (api_base, api_key).. Received Model Group=qwen3.8-27b";
+
+    #[test]
+    fn model_bound_503_encryption_boundary_full_message() {
+        let err = SamplingError::Api {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: MODEL_BOUND_503_MESSAGE.into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(
+            err.is_model_bound_history_error(),
+            "XSWITCH-1: the litellm EncryptedContentAffinityCheck 503 must route to the model-bound strip"
+        );
+    }
+
+    #[test]
+    fn model_bound_503_encryption_boundary_truncated_280() {
+        // The classifier sees the user-facing message capped at
+        // MAX_USER_ERROR_BODY_CHARS (280); "encrypted_content" sits at char 67
+        // and "unavailable"/"boundary" survive the cap, so the truncated shape
+        // must classify too.
+        let err = SamplingError::Api {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: MODEL_BOUND_503_MESSAGE[..280].to_string(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(
+            err.is_model_bound_history_error(),
+            "XSWITCH-1: the 280-char capped shape must still classify (needles survive the cap)"
+        );
+    }
+
+    #[test]
+    fn generic_503_overload_is_not_model_bound() {
+        // Invariant: a plain deployment 503 keeps the generic backoff retry
+        // path — only the encryption-boundary family routes to the strip.
+        let err = SamplingError::Api {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "litellm.ServiceUnavailableError: No deployments available for model qwen3.8-27b".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(
+            !err.is_model_bound_history_error(),
+            "generic 503 (no encrypted-boundary text) must NOT trigger the destructive strip"
+        );
+    }
+
+    #[test]
+    fn model_bound_503_with_encrypted_word_but_no_unavailable_boundary() {
+        // The 503 arm is double-keyed: "encrypted" text alone (without
+        // "unavailable" or "boundary") must not match — another provider's 503
+        // phrasing that mentions encrypted_content is not the affinity check.
+        // (Name adapts SDD §2.1 test 4: a Rust identifier cannot start with a
+        // digit.)
+        let err = SamplingError::Api {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "encrypted_content field rejected by upstream gateway; please retry".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(
+            !err.is_model_bound_history_error(),
+            "503 with encrypted text but no unavailable/boundary wording must not match"
+        );
+    }
+
+    #[test]
+    fn model_bound_existing_400_families_unaffected() {
+        // Guard: the 503 extension must leave the 400 families byte-identical
+        // (family 1 encrypted + family 2 thinking-signature re-asserted).
+        let encrypted_400 = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: "Could not decrypt the provided encrypted_content. Ensure the value is the unmodified encrypted_content from a previous response.".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(
+            encrypted_400.is_model_bound_history_error(),
+            "family 1 (encrypted 400) must still match after the 503 extension"
+        );
+        let thinking_400 = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: "thinking block signature is invalid for this model".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(
+            thinking_400.is_model_bound_history_error(),
+            "family 2 (thinking-signature 400) must still match after the 503 extension"
         );
     }
 

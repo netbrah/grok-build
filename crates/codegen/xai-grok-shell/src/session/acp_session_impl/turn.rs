@@ -809,6 +809,7 @@ impl SessionActor {
         };
         *self.doom_loop_turn_tally.lock() = Default::default();
         self.retain_timed_out_image_strips_for_new_turn();
+        self.retain_timed_out_model_bound_strips_for_new_turn();
         self.turn_stream_drained.lock().clear();
         self.events.begin_turn();
         let model_id = self.current_model_id().await;

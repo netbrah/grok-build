@@ -116,6 +116,10 @@ impl SessionActor {
             .pending_image_strip
             .lock()
             .contains_key(event.request_id());
+        let owns_pending_model_bound_strip = self
+            .pending_model_bound_strip
+            .lock()
+            .contains_key(event.request_id());
         // Presence in `turn_stream_drained` means the turn still owns every FIFO event for this request.
         // `None` only means the ordering waiter timed out; queued chunks stay valid until the terminal event or a turn boundary removes the entry.
         // A pending image strip admits only its own strip and terminal events.
@@ -126,7 +130,12 @@ impl SessionActor {
                 reason,
                 ..
             } => owns_pending_strip && Self::should_defer_image_strip(stripped_urls, reason),
-            SamplingEvent::Completed { .. } | SamplingEvent::Failed { .. } => owns_pending_strip,
+            // XSWITCH-1: a pending model-bound strip admits its own (late) strip event and
+            // the request's terminal events.
+            SamplingEvent::ModelBoundStateStripped { .. } => owns_pending_model_bound_strip,
+            SamplingEvent::Completed { .. } | SamplingEvent::Failed { .. } => {
+                owns_pending_strip || owns_pending_model_bound_strip
+            }
             _ => false,
         };
         if matches!(
@@ -315,6 +324,8 @@ impl SessionActor {
                 // Persist before the drain waiter is released so the next prompt cannot
                 // reread the rejected image, and LocalSet shutdown cannot abort the write.
                 self.apply_pending_image_strip(&request_id).await;
+                // XSWITCH-1: same ordering guarantee for the model-bound strip persist.
+                self.apply_pending_model_bound_strip(&request_id).await;
                 // The awaited result is the authoritative source for which doom-loop signals fired
                 // This merge on the event side keeps direct-event tests working, and it is request-bound so a late event cannot enter the next turn
                 if request_updates_turn {
@@ -401,6 +412,10 @@ impl SessionActor {
                 self.handle_images_stripped(request_id, stripped_urls, reason)
                     .await;
             }
+            SamplingEvent::ModelBoundStateStripped { request_id, stripped } => {
+                // Policy lives in `acp_session_impl/model_bound_strip.rs`.
+                self.handle_model_bound_stripped(request_id, stripped).await;
+            }
             SamplingEvent::Retrying {
                 request_id,
                 attempt,
@@ -466,6 +481,8 @@ impl SessionActor {
             SamplingEvent::Failed { request_id, error } => {
                 // Persist before releasing the drain waiter / waking the turn.
                 self.apply_pending_image_strip(&request_id).await;
+                // XSWITCH-1: same ordering guarantee for the model-bound strip persist.
+                self.apply_pending_model_bound_strip(&request_id).await;
                 if !request_owned {
                     self.turn_stream_drained.lock().remove(&request_id);
                     return;

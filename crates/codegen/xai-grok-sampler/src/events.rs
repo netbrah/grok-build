@@ -105,6 +105,17 @@ pub enum SamplingEvent {
         reason: StripReason,
     },
 
+    /// Model-bound history items (Reasoning + BackendToolCall) were stripped
+    /// from the in-flight request before the recovery retry
+    /// (`RetryDecision::RetryWithModelBoundStateStrip`). XSWITCH-1
+    /// (apex-ayl.58): persist the strip to stored history when the request
+    /// terminals, so the next turn does not re-send the markers and re-fail.
+    ModelBoundStateStripped {
+        request_id: RequestId,
+        /// Items actually dropped from this request.
+        stripped: usize,
+    },
+
     /// Request is being retried.
     Retrying {
         request_id: RequestId,
@@ -164,6 +175,7 @@ impl SamplingEvent {
             | Self::Completed { request_id, .. }
             | Self::DoomLoopSignals { request_id, .. }
             | Self::ImagesStripped { request_id, .. }
+            | Self::ModelBoundStateStripped { request_id, .. }
             | Self::Retrying { request_id, .. }
             | Self::Failed { request_id, .. }
             | Self::ModelMetadata { request_id, .. }

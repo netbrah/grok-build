@@ -385,6 +385,7 @@ impl SessionActor {
 
             self.cancel_active_sampling_requests();
             self.cancel_pending_image_strips_for_rewind();
+            self.cancel_pending_model_bound_strips_for_rewind();
             self.chat_state_handle.replace_conversation(conversation);
             // Use a snapshot to set the correct prompt_index and truncated prompt_texts.
             // The actor's TruncateToPromptIndex doesn't apply here because the conversation was already truncated locally

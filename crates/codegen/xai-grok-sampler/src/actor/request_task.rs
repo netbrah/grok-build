@@ -478,6 +478,9 @@ async fn apply_retry_decision(
                 model = %config.model,
                 "model-bound history rejected; retrying with portable transcript"
             );
+            // XSWITCH-1 (apex-ayl.58): the consumer persists this strip to stored
+            // history when the request terminals (house seam of ImagesStripped).
+            emit_model_bound_stripped(event_tx, request_id, stripped);
             emit_retrying(
                 event_tx,
                 request_id,
@@ -981,6 +984,17 @@ fn emit_images_stripped(
         request_id: request_id.clone(),
         stripped_urls,
         reason,
+    });
+}
+
+fn emit_model_bound_stripped(
+    event_tx: &mpsc::UnboundedSender<SamplingEvent>,
+    request_id: &RequestId,
+    stripped: usize,
+) {
+    let _ = event_tx.send(SamplingEvent::ModelBoundStateStripped {
+        request_id: request_id.clone(),
+        stripped,
     });
 }
 
@@ -1644,6 +1658,13 @@ mod tests {
                 )
             }),
             "the retry carries the portable (stripped) transcript"
+        );
+        assert!(
+            matches!(
+                event_rx.recv().await,
+                Some(SamplingEvent::ModelBoundStateStripped { stripped, .. }) if stripped == 2
+            ),
+            "XSWITCH-1: the strip event carries both model-bound items and precedes the retry"
         );
         assert!(
             matches!(event_rx.recv().await, Some(SamplingEvent::Retrying { .. })),

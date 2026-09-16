@@ -519,6 +519,7 @@ async fn create_test_actor_inner(
         current_turn_span_id: parking_lot::Mutex::new(None),
         turn_stream_drained: parking_lot::Mutex::new(std::collections::HashMap::new()),
         pending_image_strip: parking_lot::Mutex::new(HashMap::new()),
+        pending_model_bound_strip: parking_lot::Mutex::new(HashMap::new()),
         image_strip_rewrite_barrier: ImageStripRewriteBarrier::new(),
         sampler_handle: xai_grok_sampler::SamplerHandle::noop(),
         sampling_gate: None,
