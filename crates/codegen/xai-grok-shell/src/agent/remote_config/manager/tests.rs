@@ -642,6 +642,34 @@ fn task_effort_error_value_gate() {
     assert!(err.contains("claude-opus-5"), "{err}");
     assert!(err.contains("thinking config"), "{err}");
 
+    // EFFORT-SEAM-1 (apex-ayl.59) A8 pin: a no-menu model that auto-supports effort (the real
+    // claude catalog shape: messages backend) validates against the shared
+    // LEGACY_REASONING_EFFORTS 6-set — max/ultra flipped from rejected (the pre-.59 4-set) to
+    // accepted, wire-harmless (the messages wire maps every level except none/minimal);
+    // power-user none stays rejected.
+    let mut auto = make_model_entry("claude-auto");
+    auto.info.supports_reasoning_effort = true;
+    mgr.insert_test_entry("claude-auto", auto);
+    assert_eq!(
+        mgr.task_effort_error("max", Some("claude-auto")),
+        None,
+        "post-.59: max is accepted on a no-menu auto-supported model"
+    );
+    assert_eq!(
+        mgr.task_effort_error("ultra", Some("claude-auto")),
+        None,
+        "post-.59: ultra is accepted on a no-menu auto-supported model"
+    );
+    assert_eq!(
+        mgr.task_effort_error("high", Some("claude-auto")),
+        None,
+        "pre-existing: high stays accepted"
+    );
+    let err = mgr
+        .task_effort_error("none", Some("claude-auto"))
+        .expect("power-user none stays rejected on a no-menu model");
+    assert!(err.contains("claude-auto"), "{err}");
+
     // Inherited model: the test manager's current model ("default") has no
     // catalog entry, so no menu, so reject.
     let err = mgr
@@ -2553,5 +2581,295 @@ fn personal_offline_boot_does_not_emit_a_managed_degraded_warn() {
         degraded_log_level(LaunchProfile::Managed),
         LogLevel::Warn,
         "a managed degraded start stays a WARN: settings can gate the client",
+    );
+}
+
+// ── EFFORT-SEAM-1 (apex-ayl.59) — SDD §3.1/§3.2: `project_effort` + `LEGACY_REASONING_EFFORTS` ──
+
+fn effort_option(value: ReasoningEffort, default: bool) -> ReasoningEffortOption {
+    ReasoningEffortOption {
+        id: value.as_ref().to_string(),
+        value,
+        label: value.as_ref().to_string(),
+        description: None,
+        default,
+    }
+}
+
+fn insert_menu_model(
+    mgr: &ModelsManager,
+    id: &str,
+    supports: bool,
+    menu: Vec<ReasoningEffortOption>,
+) {
+    let mut entry = ModelEntry::fallback(id, &config::EndpointsConfig::default());
+    entry.info.supports_reasoning_effort = supports;
+    entry.info.reasoning_efforts = menu;
+    mgr.insert_test_entry(id, entry);
+}
+
+#[test]
+fn project_identity_in_menu() {
+    let mgr = test_manager();
+    // qwen shape: xhigh (default), medium, low
+    insert_menu_model(
+        &mgr,
+        "qwen-shape",
+        true,
+        vec![
+            effort_option(ReasoningEffort::Xhigh, true),
+            effort_option(ReasoningEffort::Medium, false),
+            effort_option(ReasoningEffort::Low, false),
+        ],
+    );
+    // glm shape: high (default), medium, low
+    insert_menu_model(
+        &mgr,
+        "glm-shape",
+        true,
+        vec![
+            effort_option(ReasoningEffort::High, true),
+            effort_option(ReasoningEffort::Medium, false),
+            effort_option(ReasoningEffort::Low, false),
+        ],
+    );
+    // sol shape: 5-set, NO `default` flag
+    insert_menu_model(
+        &mgr,
+        "sol-shape",
+        true,
+        vec![
+            effort_option(ReasoningEffort::Low, false),
+            effort_option(ReasoningEffort::Medium, false),
+            effort_option(ReasoningEffort::High, false),
+            effort_option(ReasoningEffort::Max, false),
+            effort_option(ReasoningEffort::Ultra, false),
+        ],
+    );
+    // Every advertised level projects to itself, on all three shipped menu shapes
+    assert_eq!(
+        mgr.project_effort("qwen-shape", ReasoningEffort::Xhigh),
+        Some(ReasoningEffort::Xhigh)
+    );
+    assert_eq!(
+        mgr.project_effort("qwen-shape", ReasoningEffort::Medium),
+        Some(ReasoningEffort::Medium)
+    );
+    assert_eq!(
+        mgr.project_effort("qwen-shape", ReasoningEffort::Low),
+        Some(ReasoningEffort::Low)
+    );
+    assert_eq!(
+        mgr.project_effort("glm-shape", ReasoningEffort::High),
+        Some(ReasoningEffort::High)
+    );
+    assert_eq!(
+        mgr.project_effort("sol-shape", ReasoningEffort::Ultra),
+        Some(ReasoningEffort::Ultra)
+    );
+    assert_eq!(
+        mgr.project_effort("sol-shape", ReasoningEffort::Max),
+        Some(ReasoningEffort::Max)
+    );
+    assert_eq!(
+        mgr.project_effort("sol-shape", ReasoningEffort::Low),
+        Some(ReasoningEffort::Low)
+    );
+}
+
+#[test]
+fn project_out_of_menu_anchors_to_default_flag() {
+    let mgr = test_manager();
+    insert_menu_model(
+        &mgr,
+        "qwen-shape",
+        true,
+        vec![
+            effort_option(ReasoningEffort::Xhigh, true),
+            effort_option(ReasoningEffort::Medium, false),
+            effort_option(ReasoningEffort::Low, false),
+        ],
+    );
+    // Levels the menu does not advertise anchor to the `default` flag — the codex rule,
+    // not nearest-neighbor (High is closer to Ultra than Xhigh is, and must NOT win)
+    assert_eq!(
+        mgr.project_effort("qwen-shape", ReasoningEffort::Ultra),
+        Some(ReasoningEffort::Xhigh)
+    );
+    assert_eq!(
+        mgr.project_effort("qwen-shape", ReasoningEffort::Max),
+        Some(ReasoningEffort::Xhigh)
+    );
+    assert_eq!(
+        mgr.project_effort("qwen-shape", ReasoningEffort::High),
+        Some(ReasoningEffort::Xhigh)
+    );
+}
+
+#[test]
+fn project_no_default_flag_anchors_to_first() {
+    let mgr = test_manager();
+    // sol shape: no `default` flag anywhere → the first entry is the anchor (derive_reasoning_effort_fields rule)
+    insert_menu_model(
+        &mgr,
+        "sol-shape",
+        true,
+        vec![
+            effort_option(ReasoningEffort::Low, false),
+            effort_option(ReasoningEffort::Medium, false),
+            effort_option(ReasoningEffort::High, false),
+            effort_option(ReasoningEffort::Max, false),
+            effort_option(ReasoningEffort::Ultra, false),
+        ],
+    );
+    assert_eq!(
+        mgr.project_effort("sol-shape", ReasoningEffort::Xhigh),
+        Some(ReasoningEffort::Low)
+    );
+    assert_eq!(
+        mgr.project_effort("sol-shape", ReasoningEffort::None),
+        Some(ReasoningEffort::Low)
+    );
+}
+
+#[test]
+fn project_unsupported_model_is_none() {
+    let mgr = test_manager();
+    // gemini shape: chat_completions backend, no effort support
+    insert_menu_model(&mgr, "gemini-shape", false, vec![]);
+    assert_eq!(mgr.project_effort("gemini-shape", ReasoningEffort::High), None);
+    assert_eq!(mgr.project_effort("gemini-shape", ReasoningEffort::Low), None);
+    // A model absent from the catalog is unsupported too
+    assert_eq!(
+        mgr.project_effort("absent-model", ReasoningEffort::High),
+        None
+    );
+}
+
+#[test]
+fn project_menuless_supported_uses_legacy_const() {
+    let mgr = test_manager();
+    // claude shape: auto-supports effort, advertises no per-model menu
+    insert_menu_model(&mgr, "claude-shape", true, vec![]);
+    // R2: the legacy const carries max + ultra, so every const member projects to identity
+    for &effort in crate::sampling::types::LEGACY_REASONING_EFFORTS {
+        assert_eq!(
+            mgr.project_effort("claude-shape", effort),
+            Some(effort),
+            "legacy const member {effort:?} must project to identity on a menu-less model"
+        );
+    }
+    // Power-user levels outside the const project to nothing
+    assert_eq!(mgr.project_effort("claude-shape", ReasoningEffort::None), None);
+    assert_eq!(
+        mgr.project_effort("claude-shape", ReasoningEffort::Minimal),
+        None
+    );
+}
+
+#[test]
+fn legacy_const_manager_membership() {
+    let mgr = test_manager();
+    insert_menu_model(&mgr, "claude-shape", true, vec![]);
+    // The manager's menu-less value check must be exactly the shared const — no private copy (B3/B4)
+    for &effort in crate::sampling::types::LEGACY_REASONING_EFFORTS {
+        assert!(
+            mgr.model_supports_reasoning_effort_value("claude-shape", effort),
+            "legacy const member {effort:?} must pass the menu-less value check"
+        );
+    }
+    assert!(
+        !mgr.model_supports_reasoning_effort_value("claude-shape", ReasoningEffort::None),
+        "none stays from_str-only, never in the built-in set"
+    );
+    assert!(
+        !mgr
+            .model_supports_reasoning_effort_value("claude-shape", ReasoningEffort::Minimal),
+        "minimal stays from_str-only, never in the built-in set"
+    );
+}
+
+#[test]
+fn switch_carry_projects_to_target_menu() {
+    // EFFORT-SEAM-1 (apex-ayl.59) test 7 — B1 dogfood: a sol-class session at ultra switches to a
+    // qwen-shape model; the carried hint (SwitchEffort::Preserve arm) must land on the target's
+    // menu default (xhigh) through the gate, not carry raw ultra (wire: 400, or the max remap).
+    use crate::sampling::EffortTarget;
+    let mgr = test_manager();
+    insert_menu_model(
+        &mgr,
+        "sol-shape",
+        true,
+        vec![
+            effort_option(ReasoningEffort::Low, false),
+            effort_option(ReasoningEffort::Medium, false),
+            effort_option(ReasoningEffort::High, false),
+            effort_option(ReasoningEffort::Max, false),
+            effort_option(ReasoningEffort::Ultra, false),
+        ],
+    );
+    insert_menu_model(
+        &mgr,
+        "qwen-shape",
+        true,
+        vec![
+            effort_option(ReasoningEffort::Xhigh, true),
+            effort_option(ReasoningEffort::Medium, false),
+            effort_option(ReasoningEffort::Low, false),
+        ],
+    );
+    let sid = acp::SessionId::new("switch-carry-sess");
+    // The switch handler builds the target model's config and applies the session's carried effort through the gate
+    let mut target_cfg = crate::sampling::SamplerConfig {
+        model: "qwen-shape".to_string(),
+        ..Default::default()
+    };
+    mgr.apply_supported_effort(
+        &mut target_cfg,
+        Some(ReasoningEffort::Ultra),
+        &sid,
+        EffortTarget::ModelSwitch,
+    );
+    assert_eq!(
+        target_cfg.reasoning_effort,
+        Some(ReasoningEffort::Xhigh),
+        "carried ultra must project to the qwen-shape default (xhigh), not carry raw"
+    );
+    // The persistence write (PersistenceMsg::CurrentModel, acp model_switch.rs:141) copies this
+    // same field downstream — asserting the gate's output here pins the upstream of the carry.
+}
+
+#[test]
+fn fresh_session_global_default_projects_to_model_menu() {
+    // EFFORT-SEAM-1 (apex-ayl.59) test 8 — B2 dogfood: the global cursor (xhigh, from
+    // [models].default_reasoning_effort) on a fresh glm-shape session must land on the model's
+    // menu default (high) through the gate, not 400 on turn 1 with raw xhigh.
+    use crate::sampling::EffortTarget;
+    let mgr = test_manager();
+    insert_menu_model(
+        &mgr,
+        "glm-shape",
+        true,
+        vec![
+            effort_option(ReasoningEffort::High, true),
+            effort_option(ReasoningEffort::Medium, false),
+            effort_option(ReasoningEffort::Low, false),
+        ],
+    );
+    // The manager's global cursor initializes from [models].default_reasoning_effort (manager/mod.rs:196)
+    mgr.set_current_reasoning_effort(Some(ReasoningEffort::Xhigh));
+    // The NewSession arm carries exactly this cursor value (resolve_new_session_effort_hint)
+    let hint = mgr.current_reasoning_effort();
+    assert_eq!(hint, Some(ReasoningEffort::Xhigh), "global cursor seeded");
+    let sid = acp::SessionId::new("fresh-glm-sess");
+    let mut cfg = crate::sampling::SamplerConfig {
+        model: "glm-shape".to_string(),
+        ..Default::default()
+    };
+    mgr.apply_supported_effort(&mut cfg, hint, &sid, EffortTarget::NewSession);
+    assert_eq!(
+        cfg.reasoning_effort,
+        Some(ReasoningEffort::High),
+        "global xhigh cursor must project to the glm-shape default (high), not carry raw"
     );
 }

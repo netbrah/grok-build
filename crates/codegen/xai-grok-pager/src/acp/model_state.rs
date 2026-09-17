@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn reasoning_effort_options_falls_back_to_builtin_menu() {
-        // Supported but no server list falls back to today's four-row built-in menu
+        // Supported but no server list falls back to today's six-row built-in menu
         let state = state_with_meta(Some(serde_json::json!({
             "supportsReasoningEffort": true,
         })));
@@ -393,7 +393,7 @@ mod tests {
             .into_iter()
             .map(|o| o.id)
             .collect();
-        assert_eq!(ids, ["xhigh", "high", "medium", "low"]);
+        assert_eq!(ids, ["ultra", "max", "xhigh", "high", "medium", "low"]);
     }
 
     #[test]
@@ -412,7 +412,7 @@ mod tests {
                 .into_iter()
                 .map(|o| o.id)
                 .collect();
-            assert_eq!(ids, ["xhigh", "high", "medium", "low"], "for meta {meta}");
+            assert_eq!(ids, ["ultra", "max", "xhigh", "high", "medium", "low"], "for meta {meta}");
         }
     }
 

@@ -839,6 +839,19 @@ pub fn parse_canonical_effort_token(token: &str) -> Option<ReasoningEffort> {
     token.parse().ok()
 }
 
+/// Built-in effort scale for models that advertise no per-model menu
+/// (strongest first). Single owner: the pager legacy menu and the shell's
+/// menu-less value check consume this const (EFFORT-SEAM-1 / apex-ayl.59).
+/// `none`/`minimal` stay power-user `from_str`-only, as today.
+pub const LEGACY_REASONING_EFFORTS: &[ReasoningEffort] = &[
+    ReasoningEffort::Ultra,
+    ReasoningEffort::Max,
+    ReasoningEffort::Xhigh,
+    ReasoningEffort::High,
+    ReasoningEffort::Medium,
+    ReasoningEffort::Low,
+];
+
 pub const REASONING_EFFORT_META_KEY: &str = "reasoningEffort";
 pub const SUPPORTS_REASONING_EFFORT_META_KEY: &str = "supportsReasoningEffort";
 

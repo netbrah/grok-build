@@ -17,7 +17,9 @@ use super::{
 use crate::agent::config::{self, ModelEntry, resolve_credentials, sampling_config_for_model};
 use crate::sampling::SamplerConfig as SamplingConfig;
 use xai_grok_login::{AuthManager, GrokAuth, GrokComConfig};
-use xai_grok_sampling_types::{ReasoningEffort, ReasoningEffortOption};
+use xai_grok_sampling_types::{
+    LEGACY_REASONING_EFFORTS, ReasoningEffort, ReasoningEffortOption,
+};
 
 #[derive(Clone)]
 pub struct ModelsManager {
@@ -555,15 +557,42 @@ impl ModelsManager {
         let options = self.model_reasoning_efforts(model_id);
         if options.is_empty() {
             return self.model_supports_reasoning_effort(model_id)
-                && matches!(
-                    effort,
-                    ReasoningEffort::Low
-                        | ReasoningEffort::Medium
-                        | ReasoningEffort::High
-                        | ReasoningEffort::Xhigh
-                );
+                && LEGACY_REASONING_EFFORTS.contains(&effort);
         }
         options.iter().any(|option| option.value == effort)
+    }
+
+    /// Anchor `effort` to the model's advertised menu (EFFORT-SEAM-1 / apex-ayl.59, porting the
+    /// codex rule, `codex-rs/tui/src/chatwidget/reasoning_shortcuts.rs:9-14`): identity when the
+    /// menu advertises `effort`; the model default (`default` flag, else first entry — the
+    /// `derive_reasoning_effort_fields` rule) when the menu is non-empty and `effort` is not
+    /// advertised; `LEGACY_REASONING_EFFORTS` membership for menu-less supported models;
+    /// `None` for unsupported models. No ordinal arithmetic: a level the menu excludes anchors
+    /// to the model's own default, never to its nearest neighbor.
+    pub(crate) fn project_effort(
+        &self,
+        model_id: &str,
+        effort: ReasoningEffort,
+    ) -> Option<ReasoningEffort> {
+        if !self.model_supports_reasoning_effort(model_id) {
+            return None;
+        }
+        let options = self.model_reasoning_efforts(model_id);
+        if options.is_empty() {
+            return if LEGACY_REASONING_EFFORTS.contains(&effort) {
+                Some(effort)
+            } else {
+                None
+            };
+        }
+        if options.iter().any(|option| option.value == effort) {
+            return Some(effort);
+        }
+        options
+            .iter()
+            .find(|option| option.default)
+            .or_else(|| options.first())
+            .map(|option| option.value)
     }
 
     pub(crate) fn model_supports_backend_search(&self, model_id: &str) -> bool {

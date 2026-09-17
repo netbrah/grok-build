@@ -294,15 +294,17 @@ mod tests {
             current_title: None,
         };
         // The args query has a trailing space, so this is the effort phase
-        // Items come out ordered xhigh to low (strongest first) per EFFORT_LEVELS
+        // Items come out ordered ultra to low (strongest first) per EFFORT_LEVELS
         let items = cmd.suggest_args(&ctx, "Reasoning X ").unwrap();
-        assert_eq!(items.len(), 4);
-        assert_eq!(items[0].insert_text, "Reasoning X xhigh");
-        assert_eq!(items[1].insert_text, "Reasoning X high");
-        assert_eq!(items[2].insert_text, "Reasoning X medium");
-        assert_eq!(items[3].insert_text, "Reasoning X low");
+        assert_eq!(items.len(), 6);
+        assert_eq!(items[0].insert_text, "Reasoning X ultra");
+        assert_eq!(items[1].insert_text, "Reasoning X max");
+        assert_eq!(items[2].insert_text, "Reasoning X xhigh");
+        assert_eq!(items[3].insert_text, "Reasoning X high");
+        assert_eq!(items[4].insert_text, "Reasoning X medium");
+        assert_eq!(items[5].insert_text, "Reasoning X low");
         // Display is just the level so the user sees a clean column.
-        assert_eq!(items[0].display, "xhigh");
+        assert_eq!(items[0].display, "ultra");
         // match_text carries the sort-key prefix that forces the matcher's alphabetical tiebreak to render rows in EFFORT_LEVELS order
         assert!(items[0].match_text.starts_with("a "));
         assert!(items[3].match_text.starts_with("d "));
@@ -329,7 +331,7 @@ mod tests {
         };
         // Still in effort phase; the matcher upstream narrows to high and xhigh
         let items = cmd.suggest_args(&ctx, "Reasoning X h").unwrap();
-        assert_eq!(items.len(), 4);
+        assert_eq!(items.len(), 6);
     }
 
     #[test]

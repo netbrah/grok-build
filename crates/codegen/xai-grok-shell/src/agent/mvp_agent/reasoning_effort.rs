@@ -1,4 +1,4 @@
-//! Applies a reasoning-effort hint only when the model supports it; shared by session creation, model switch, and the summary client.
+//! Resolves a reasoning-effort hint against the model's advertised menu (EFFORT-SEAM-1 / apex-ayl.59 projection: identity when advertised, the model default when not) and applies it only when the model supports it; shared by session creation, model switch, and the summary client.
 
 use agent_client_protocol as acp;
 use xai_grok_sampler::SamplerConfig;
@@ -35,6 +35,22 @@ impl ModelsManager {
         if let Some(routed) = self.model_for_effort(&sampling.model, effort) {
             sampling.model = routed;
         }
+        // Project the carried hint onto the POST-routing model's advertised menu (codex anchor rule,
+        // `project_effort`): identity when the menu advertises it, the model default when it does not.
+        // A level the model offers nothing for is left unset — the config must not carry a value the
+        // wire would remap or the runtime would 400 on.
+        let Some(projected) = self.project_effort(&sampling.model, effort) else {
+            // SummaryClient stays quiet; the spawn or switch that carried this effort already warned about it
+            if matches!(target, EffortTarget::NewSession | EffortTarget::ModelSwitch) {
+                tracing::warn!(
+                    session_id = %session_id.0,
+                    model = %sampling.model,
+                    effort = %effort,
+                    "reasoning_effort: effort projects to no level the model offers; leaving it unset"
+                );
+            }
+            return;
+        };
         // Same fields at every target; only the level differs
         // tracing bakes the level into a static callsite, so match a const level per arm
         macro_rules! log_applied {
@@ -43,7 +59,7 @@ impl ModelsManager {
                     $level,
                     session_id = %session_id.0,
                     model = %sampling.model,
-                    effort = %effort,
+                    effort = %projected,
                     target = %target.as_ref(),
                     "reasoning_effort: applied effort"
                 )
@@ -55,7 +71,33 @@ impl ModelsManager {
             }
             EffortTarget::SummaryClient => log_applied!(tracing::Level::DEBUG),
         }
-        sampling.reasoning_effort = Some(effort);
+        // The projection event {model, from, to} fires only when the value moved — this is what
+        // makes "stayed on ultra" visible instead of silent
+        if projected != effort {
+            match target {
+                EffortTarget::NewSession | EffortTarget::ModelSwitch => {
+                    tracing::info!(
+                        session_id = %session_id.0,
+                        model = %sampling.model,
+                        from = %effort,
+                        to = %projected,
+                        target = %target.as_ref(),
+                        "reasoning_effort: projected carried effort to the model's menu"
+                    )
+                }
+                EffortTarget::SummaryClient => {
+                    tracing::debug!(
+                        session_id = %session_id.0,
+                        model = %sampling.model,
+                        from = %effort,
+                        to = %projected,
+                        target = %target.as_ref(),
+                        "reasoning_effort: projected carried effort to the model's menu"
+                    )
+                }
+            }
+        }
+        sampling.reasoning_effort = Some(projected);
     }
 }
 

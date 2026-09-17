@@ -6,12 +6,8 @@ use crate::slash::command::ArgItem;
 
 /// Effort levels in the built-in fallback menu (strongest first).
 /// `none`/`minimal` are still accepted by `ReasoningEffort::from_str` for power users.
-pub(crate) const EFFORT_LEVELS: &[ReasoningEffort] = &[
-    ReasoningEffort::Xhigh,
-    ReasoningEffort::High,
-    ReasoningEffort::Medium,
-    ReasoningEffort::Low,
-];
+pub(crate) const EFFORT_LEVELS: &[ReasoningEffort] =
+    xai_grok_shell::sampling::types::LEGACY_REASONING_EFFORTS;
 
 pub(crate) fn effort_description(level: ReasoningEffort) -> &'static str {
     match level {
@@ -68,4 +64,26 @@ pub(crate) fn build_effort_arg_items(
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// EFFORT-SEAM-1 (apex-ayl.59) test 6 (pager half): the built-in menu consumes the shared
+    /// `LEGACY_REASONING_EFFORTS` const in order — single owner, no private copy (B3).
+    #[test]
+    fn legacy_menu_consumes_shared_const_in_order() {
+        let const_levels: &[ReasoningEffort] =
+            xai_grok_shell::sampling::types::LEGACY_REASONING_EFFORTS;
+        assert_eq!(EFFORT_LEVELS, const_levels);
+        let options = legacy_effort_options();
+        assert_eq!(options.len(), const_levels.len());
+        for (option, &level) in options.iter().zip(const_levels.iter()) {
+            assert_eq!(option.value, level);
+            assert_eq!(option.id, level.as_ref().to_string());
+            assert!(option.description.is_some());
+            assert!(!option.default);
+        }
+    }
 }
