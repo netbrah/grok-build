@@ -1303,6 +1303,58 @@ class NoEvidenceTest(unittest.TestCase):
         self.assertEqual(info["evidence_violations"], [])
 
 
+class RowSkipExemptionTest(unittest.TestCase):
+    """apex-ayl.62 (sw1e M6 rig defect): the auto-emitted wire.row-skip
+    record (a catalog row filtered out by --rows) is a recon record —
+    it makes no per-file claim, so the D-8 require_wire_evidence audit
+    must not downgrade the case to BLOCKED/NO-EVIDENCE, and recon
+    records must not populate the vacuous_if pin map. Pre-fix RED:
+    row-skip carried recon=False + cite=None, so every --rows run
+    BLOCKed on uncitable 'scored' records (sw1e: RT-M6 BLOCKED with
+    42 row-skip records)."""
+
+    def _wire_dir(self):
+        tmp = tempfile.mkdtemp(prefix="rt-rowskip-")
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        with open(os.path.join(tmp, "req-001.json"), "w") as fh:
+            json.dump({"method": "POST", "path": "/v1/responses",
+                       "body": {"model": "m1"}}, fh, indent=2)
+        return tmp
+
+    def _scored_pass(self, wire_dir):
+        spec = {"id": "model_ride", "kind": "grep", "file": "req-*.json",
+                "where": {"body.model": "m1"},
+                "any": True, "grep": '"model": "m1"'}
+        r = run.check_wire(spec, wire_dir)
+        self.assertTrue(r.ok, r.detail)
+        return r
+
+    def _rowskip(self):
+        return run.AssertResult(
+            {"id": "model_ride_row", "kind": "grep", "file": "req-*.json",
+             "where": {"body.model": "m2"}, "any": True,
+             "grep": '"model": "m1"'},
+            "wire.row-skip", True,
+            "row m2 not in this run (filtered by --rows)",
+            "wire: skipped", recon=True)
+
+    def test_rowskip_excluded_from_evidence_audit(self):
+        wire_dir = self._wire_dir()
+        case = {"scoring": {"require_wire_evidence": True}}
+        results = [self._scored_pass(wire_dir), self._rowskip()]
+        self.assertEqual(run.audit_wire_evidence(case, results,
+                                                 wire_dir=wire_dir), [])
+
+    def test_rowskip_only_verdict_not_blocked(self):
+        wire_dir = self._wire_dir()
+        case = {"scoring": {"require_wire_evidence": True}}
+        results = [self._scored_pass(wire_dir), self._rowskip()]
+        status, info = run.finalize_verdict(case, "PASS", results,
+                                            wire_dir=wire_dir)
+        self.assertEqual(status, "PASS")
+        self.assertIsNone(info["blocked_reason"])
+
+
 class CapsBlockTest(unittest.TestCase):
     """T-V3 (apex-ayl.22 D-3): caps block shape + counts in report.json
     (blocked/vacuous/finding) + the extended status order. Pre-fix

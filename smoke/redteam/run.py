@@ -2082,6 +2082,8 @@ def finalize_verdict(case, pre_status, results, wire_dir=None):
         return pre_status, info
     pin_results = {}
     for r in results:
+        if r.recon:
+            continue
         sid = (r.spec or {}).get("id")
         if isinstance(sid, str):
             pin_results.setdefault(sid, r)
@@ -2644,7 +2646,7 @@ def _finish(case, run_dir, ctx, results, status, started, wt, home, args,
                 results.append(AssertResult(
                     spec, "wire.row-skip", True,
                     "row %s not in this run (filtered by --rows)" % rm,
-                    "wire: skipped"))
+                    "wire: skipped", recon=True))
                 continue
             if rm:
                 spec = dict(spec)

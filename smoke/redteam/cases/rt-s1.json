@@ -18,11 +18,11 @@
     {
       "op": "turn",
       "prompt": "Spawn the echo subagent and ask it to reply with exactly: CHILD-OK. After it completes, reply with exactly: PARENT-DONE",
-      "timeout_s": 300
+      "timeout_s": 900
     }
   ],
-  "watchdog_s": 300,
-  "est_calls": 4,
+  "watchdog_s": 900,
+  "est_calls": 16,
   "assert": {
     "exit": 0,
     "ndjson": [
@@ -48,7 +48,8 @@
       {
         "file": "compaction_checkpoints/*.json",
         "op": "count",
-        "min": 1
+        "min": 3,
+        "max": 8
       },
       {
         "file": "compaction_requests/*.json",

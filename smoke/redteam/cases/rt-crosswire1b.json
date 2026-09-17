@@ -1,6 +1,6 @@
 {
   "id": "RT-CROSSWIRE1B",
-  "title": "CROSSWIRE-1 subcase (ii) messages->responses — the genuinely unproven seam: claude-sonnet-5 (messages wire, thinking blocks) -> ACP switch -> qwen3.8-27b (responses wire, strict_responses_input=false so NO preemptive REPLAY-1 projection) -> 1 turn. Foreign claude thinking is stored as sibling Reasoning items and must ride VERBATIM as reasoning INPUT items on the post-switch /v1/responses request (no preemptive strip on the responses side — pinned). Tolerant verdict (rt-xreplay1 discipline): 200 (upstream ACCEPTED the foreign reasoning) OR 400->reactive-strip+retry->200 (the reactive strip is the ONLY recovery on this wire). Both PASS; the fix claim is that a rejection is recovered (last request 200, turn completes), not that the upstream rejects.",
+  "title": "CROSSWIRE-1 subcase (ii) messages->responses \u2014 the genuinely unproven seam: claude-sonnet-5 (messages wire, thinking blocks) -> ACP switch -> qwen3.8-27b (responses wire, strict_responses_input=false so NO preemptive REPLAY-1 projection) -> 1 turn. Foreign claude thinking is stored as sibling Reasoning items and must ride VERBATIM as reasoning INPUT items on the post-switch /v1/responses request (no preemptive strip on the responses side \u2014 pinned). Tolerant verdict (rt-xreplay1 discipline): 200 (upstream ACCEPTED the foreign reasoning) OR 400->reactive-strip+retry->200 (the reactive strip is the ONLY recovery on this wire). Both PASS; the fix claim is that a rejection is recovered (last request 200, turn completes), not that the upstream rejects. (Amended 2026-09-17 per .62 adjudication: M1/M2 are now thinking-eliciting stimuli (bat-and-ball, mislabeled-jars) so the claude row has a real chance to emit thinking; NEW premise pin think_premise (a thinking_delta event in any captured response \u2014 claude-sonnet-5 is the only messages-wire model in this case, so the unscoped resp grep is claude-scoped by construction: the qwen responses-wire stream carries no thinking_delta); scoring.vacuous_if \u2014 think_premise 0-hit = VACUOUS (class model): claude-no-thinking-through-this-proxy is recorded model/proxy temperament (B-ii doctrine), not a product defect. All pins carry ids.)",
   "driver": "acp",
   "model": "claude-sonnet-5",
   "config_patch": {
@@ -10,11 +10,11 @@
   "steps": [
     {
       "op": "turn",
-      "prompt": "Reply with exactly: RT-CW1B-M1"
+      "prompt": "A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. Think step by step about the price of the ball, then end your reply with exactly: RT-CW1B-M1"
     },
     {
       "op": "turn",
-      "prompt": "Reply with exactly: RT-CW1B-M2"
+      "prompt": "Two jars have lids mislabeled: one lid says APPLES, the other says ORANGES, and both lids are wrong. You may draw exactly one piece of fruit from one jar of your choice. Think step by step about which jar to open and how that identifies both labels, then end your reply with exactly: RT-CW1B-M2"
     },
     {
       "op": "switch",
@@ -33,7 +33,7 @@
       {
         "op": "absent",
         "event": "acp_error",
-        "label": "TURN COMPLETES: the post-switch responses turn did not die (200 directly, or 400 recovered by the reactive strip — the only recovery on this wire)."
+        "label": "TURN COMPLETES: the post-switch responses turn did not die (200 directly, or 400 recovered by the reactive strip \u2014 the only recovery on this wire)."
       }
     ],
     "wire": [
@@ -47,7 +47,16 @@
         },
         "any": true,
         "grep": "\"type\": \"thinking\"",
-        "label": "CONTROL (anti-vacuous pin): a claude messages request carried a thinking block — real foreign thinking exists to cross the wire (stored as sibling Reasoning items). Without this the verbatim-ride pin is vacuous."
+        "label": "CONTROL (anti-vacuous pin): a claude messages request carried a thinking block \u2014 real foreign thinking exists to cross the wire (stored as sibling Reasoning items). Without this the verbatim-ride pin is vacuous.",
+        "id": "control"
+      },
+      {
+        "id": "think_premise",
+        "kind": "grep",
+        "file": "resp-*.jsonl",
+        "any": true,
+        "grep": "thinking_delta",
+        "label": "PREMISE (thinking-eliciting, anti-vacuous): claude emitted thinking through this proxy \u2014 a thinking_delta event in some captured response stream. claude-sonnet-5 is the only messages-wire model in this case, so an unscoped resp grep is claude-scoped by construction (the qwen responses-wire stream carries no thinking_delta). 0-hit = the ride premise is false -> VACUOUS (model class), see scoring.vacuous_if."
       },
       {
         "kind": "grep",
@@ -58,8 +67,9 @@
           "body.model": "qwen3.8-27b"
         },
         "grep": "\"type\": \"reasoning\"",
-        "label": "VERBATIM RIDE (the unproven seam, no preemptive strip): at least one post-switch responses request (any:true over the qwen requests — fail-closed on an empty set; a static nth cannot express 'the first-of-N with N in {1,2}' and would break in the 1-request accepted branch) CARRIES a reasoning INPUT item — foreign claude thinking rode onto the responses wire. strict_responses_input=false keeps the REPLAY-1 projection OFF, so there is no preemptive strip on this wire; if no request carries a reasoning item, the premise (foreign thinking rides) is false and the probe is meaningless.",
-        "any": true
+        "label": "VERBATIM RIDE (the unproven seam, no preemptive strip): at least one post-switch responses request (any:true over the qwen requests \u2014 fail-closed on an empty set; a static nth cannot express 'the first-of-N with N in {1,2}' and would break in the 1-request accepted branch) CARRIES a reasoning INPUT item \u2014 foreign claude thinking rode onto the responses wire. strict_responses_input=false keeps the REPLAY-1 projection OFF, so there is no preemptive strip on this wire; if no request carries a reasoning item, the premise (foreign thinking rides) is false and the probe is meaningless.",
+        "any": true,
+        "id": "ride"
       },
       {
         "kind": "count",
@@ -71,7 +81,8 @@
         },
         "min": 1,
         "max": 2,
-        "label": "NO RETRY STORM: 1 responses request = upstream accepted the foreign reasoning (200, the finding); 2 = upstream rejected (400) and the CROSSWIRE-1 reactive strip is the ONLY recovery (400->strip->200). >=3 = same-payload retry storm or strip loop -> defect."
+        "label": "NO RETRY STORM: 1 responses request = upstream accepted the foreign reasoning (200, the finding); 2 = upstream rejected (400) and the CROSSWIRE-1 reactive strip is the ONLY recovery (400->strip->200). >=3 = same-payload retry storm or strip loop -> defect.",
+        "id": "no_retry_storm"
       },
       {
         "kind": "resp_status",
@@ -85,15 +96,26 @@
         "status_in": [
           200
         ],
-        "label": "RECOVERED/ACCEPTED (the fix claim): the final responses request reached 200 — either the upstream accepted the foreign reasoning, or the reactive strip recovered the rejection. This is the CROSSWIRE-1 acceptance on the responses side."
+        "label": "RECOVERED/ACCEPTED (the fix claim): the final responses request reached 200 \u2014 either the upstream accepted the foreign reasoning, or the reactive strip recovered the rejection. This is the CROSSWIRE-1 acceptance on the responses side.",
+        "id": "last_200"
       },
       {
         "op": "recon",
-        "label": "CROSSWIRE-1 (ii) VERDICT RECORD: last-captured wire response status line, verbatim (the recovered/accepted 200). The accepted-vs-reactive-strip finding is read from the count assert (1 vs 2) and the wire. recon op — always records, never fails.",
+        "label": "CROSSWIRE-1 (ii) VERDICT RECORD: last-captured wire response status line, verbatim (the recovered/accepted 200). The accepted-vs-reactive-strip finding is read from the count assert (1 vs 2) and the wire. recon op \u2014 always records, never fails.",
         "base": "wire",
         "file": "resp-*.jsonl",
         "nth": 0,
         "grep": "\"status\":"
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true,
+    "vacuous_if": [
+      {
+        "pin": "think_premise",
+        "class": "model",
+        "note": "claude emitted no thinking through this proxy (no thinking_delta in any captured response, despite the step-by-step stimulus) \u2014 the verbatim-ride premise is false; VACUOUS records model/proxy temperament, not a product defect (B-ii doctrine: claude rows 0/3 thinking)."
       }
     ]
   }
