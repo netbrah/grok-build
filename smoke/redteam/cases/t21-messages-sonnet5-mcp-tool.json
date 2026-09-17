@@ -1,0 +1,226 @@
+{
+  "schema_version": 1,
+  "id": "T21-MSG-S5-MCP-TOOL",
+  "title": ".21 per-row tool-path coverage, MESSAGES wire (claude-sonnet-5, the only frontier messages-wire class in the slim set): two headless turns in one session. Turn 1 = baseline reply (carries the MCP server announcement). Turn 2 = the coverage turn: a REAL codegraph MCP round-trip (use_tool -> codegraph__codegraph_explore against the worktree index) AND a REAL plain tool round-trip (run_terminal_command echo). Messages-wire shape: tool calls are tool_use content blocks (name/input, id toolu_*) with the input as a REAL JSON object (single-level quotes — the discriminating pin form differs from the responses/cc escaped-JSON form); results are tool_result blocks (tool_use_id). Verdict semantics (discriminating-pin design): harness-premise pin (MCP announcement) 0-hit => BLOCKED; model-premise pins (tool_use use_tool+declared target / declared query args / declared echo command) 0-hit => VACUOUS; with premises held, round-trip + reply-payload pins decide PASS/FAIL — the payload proof is container-agnostic (reply must carry the classify_error defining file path from the real index result). NOTE (B-ii anti-vacuous doctrine carried): claude rows emit ZERO thinking in the observed scored runs (0/3) — any thinking-premise probe on this row must keep its control pin, and a 0-hit control on claude-thinking premises is VACUOUS-by-design (the pin working is the correct behavior); this case has no thinking premise and is unaffected.",
+  "bead": "apex-ayl.21",
+  "suite": "mcp-tool",
+  "tier": "slim",
+  "driver": "headless",
+  "model": "claude-sonnet-5",
+  "wire": "messages",
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "output_format": "streaming-json",
+  "watchdog_s": 300,
+  "est_calls": 5,
+  "wirecap": true,
+  "mcp_calls": [
+    {
+      "id": "cg1",
+      "server": "codegraph",
+      "tool": "codegraph_explore",
+      "expect_name": "codegraph__codegraph_explore",
+      "via": "search_tool_use_tool",
+      "args": {
+        "query": "strip_model_bound_state classify_error",
+        "maxFiles": 2,
+        "projectPath": "/Users/palanisd/Projects/upstream/wt/grok-build-responses"
+      },
+      "premise": "model",
+      "output_contains": "strip_model_bound_state"
+    }
+  ],
+  "tool_calls": [
+    {
+      "id": "sh1",
+      "tool": "run_terminal_command",
+      "args": {
+        "command": "echo T21-MSG-S5-ECHO"
+      },
+      "premise": "model",
+      "output_contains": "T21-MSG-S5-ECHO"
+    }
+  ],
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: T21-MSG-S5-OK"
+    },
+    {
+      "op": "turn",
+      "prompt": "Perform exactly these two tool calls, in this order, and no other tools: (1) use the use_tool tool to call the codegraph explore tool (qualified name codegraph__codegraph_explore) with arguments query 'strip_model_bound_state classify_error', maxFiles 2, projectPath /Users/palanisd/Projects/upstream/wt/grok-build-responses; (2) use the run_terminal_command tool to run the command: echo T21-MSG-S5-ECHO. After both tool results are in hand, reply with exactly three lines: line 1: T21-MSG-S5-DONE; line 2: the exact text the echo command printed; line 3: the repo-relative file path of the file that defines classify_error, exactly as reported in the explore result."
+    }
+  ],
+  "assert": {
+    "ndjson": [
+      {
+        "id": "term",
+        "op": "present",
+        "event": "end",
+        "label": "TURN COMPLETES: the merged event stream reached the end terminal (the tool-bearing turn did not die through the messages wire)."
+      },
+      {
+        "id": "done",
+        "op": "text_contains",
+        "value": "T21-MSG-S5-DONE",
+        "label": "MODEL DELIVERED: the final reply carries the DONE nonce (the model finished the turn and answered the reply protocol; the nonce is model-generated output, not prompt text, so it cannot be pre-seeded)."
+      },
+      {
+        "id": "echo_nd",
+        "op": "text_contains",
+        "value": "T21-MSG-S5-ECHO",
+        "label": "PLAIN ROUND-TRIP PAYLOAD (container-agnostic): the reply's line 2 carries the echo output the model read from the run_terminal_command result (the prompt names the command, so the wire grep alone cannot separate a real result from a parroted one; the sh_call discriminating pin plus this reply pin together close the loop)."
+      },
+      {
+        "id": "path_nd",
+        "op": "text_contains",
+        "value": "xai-grok-sampler/src/retry.rs",
+        "label": "MCP ROUND-TRIP PAYLOAD (container-agnostic, real-index proof): the reply's line 3 carries the classify_error defining file path as reported by the explore result. The path is NOT in the prompt and the crate is private (no training prior); the model can only produce it if the real index content flowed result -> model -> reply. 0 hits = the MCP result never carried real content (stale/empty index, wrong args, or server error) even if the call was emitted."
+      }
+    ],
+    "wire": [
+      {
+        "id": "cg_ann",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "any": true,
+        "grep": "- codegraph (",
+        "label": "CONTROL (harness premise, anti-vacuous pin): the codegraph MCP server's turn-boundary announcement ('MCP server(s) connected: - codegraph (N tools): ...') actually reached the row's wire — the rig offered the MCP tool. Pin is count-agnostic across codegraph builds (the 2026-09-14 capture read '(1 tool)', current build single-tool era; both match). 0 hits = BLOCKED/HARNESS (server never announced: startup failure, missing binary, config not inherited), not VACUOUS — no model conclusion is possible without the offer."
+      },
+      {
+        "id": "cg_call",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "any": true,
+        "grep": "\"tool_name\": \"codegraph__codegraph_explore\"",
+        "label": "CONTROL (model premise, anti-vacuous pin, DISCRIMINATING FORM): a tool_use block named use_tool with tool_name = the DECLARED FQ target — on the messages wire the tool_use input is a real JSON object (single-level quotes), so the key+value line matches only a real call; the tools input_schema property line is \"tool_name\": { (object value) and cannot match, and the prompt carries the name plain. 0 hits = VACUOUS (the use_tool call was never issued for the declared target)."
+      },
+      {
+        "id": "cg_tgt",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "any": true,
+        "grep": "\"query\": \"strip_model_bound_state classify_error\"",
+        "label": "CONTROL (model premise, anti-vacuous pin, ARG-FIDELITY): the DECLARED query argument reached the call — the tool_input query value as a single-level key+value line; the prompt carries the query plain (no JSON form) so only a real tool_use block matches. 0 hits = VACUOUS (the call, if any, carried different arguments than the declared probe)."
+      },
+      {
+        "id": "sh_call",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "any": true,
+        "grep": "\"command\": \"echo T21-MSG-S5-ECHO\"",
+        "label": "CONTROL (model premise, anti-vacuous pin, DISCRIMINATING FORM): the DECLARED echo command was issued as a tool_use input command — single-level key+value matches only a real call (schema line is \"command\": {; prompt carries the command plain). 0 hits = VACUOUS."
+      },
+      {
+        "id": "cg_rt",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "any": true,
+        "grep": "\"type\": \"tool_result\"",
+        "label": "SHAPE (messages round-trip close): at least one tool_result content block on the row wire (Anthropic shape, tool_use_id pairing) — a tool round-trip CLOSED on the messages wire. Container-agnostic which tool closed; per-tool attribution via the single-level key+value call pins + the reply payload pins."
+      },
+      {
+        "id": "model_f",
+        "kind": "field",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "nth": 0,
+        "path": "$.body.model",
+        "eq": "claude-sonnet-5",
+        "label": "MODEL ECHO (RT-M5 lineage): the NEWEST matched row request (nth=0 = newest under the runner's mtime-sorted glob) carries the row's own model id — no cross-model misrouting on the messages wire. The session-title side call also matches the where filter (same body.model), so it cannot false-fail this pin."
+      },
+      {
+        "id": "status_rec",
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "which": "last",
+        "label": "VERDICT RECORD (evidence-only, machine-readable): the upstream HTTP status of the LAST matched row request, paired to its resp-NNN.jsonl by capture sequence. No status_in — a 400 on the tool round-trip is a tool-path FINDING surfaced by the round-trip pins (cg_rt/echo_nd/path_nd), and the session-title side call (it carries the row's body.model, so it passes the where filter; .29: it 500s proxy-side, sessions unaffected) may be the last match, so an assertive status_in would false-fail. Messages wire: same title-side-call caveat as responses (evidence-only by design)."
+      },
+      {
+        "kind": "recon",
+        "file": "resp-*.jsonl",
+        "base": "wire",
+        "nth": 0,
+        "grep": "message_start",
+        "label": "VERDICT RECORD (stream shape): the NEWEST captured messages response stream (nth=0 = newest) carried message_start (RT-46C1 stream-shape lineage) — recon op, always records, never fails."
+      }
+    ]
+  },
+  "timeouts": {
+    "turn_s": 300,
+    "mcp_startup_s": 30
+  },
+  "retry": {
+    "on_status": [
+      404,
+      502,
+      503
+    ],
+    "max_attempts": 1,
+    "backoff_s": 30,
+    "recheck_models": true
+  },
+  "scoring": {
+    "require_wire_evidence": true,
+    "vacuous_if": [
+      {
+        "pin": "cg_ann",
+        "class": "harness",
+        "note": "MCP server never announced on the row wire — rig failed (startup/config/binary); no model conclusion is possible without the offer. Title-call safe: the announcement is server-derived text, so a title-call hit would still prove harness MCP works."
+      },
+      {
+        "pin": "cg_call",
+        "class": "model",
+        "note": "no tool_use block named use_tool with the declared tool_name target on the messages wire — model did not take the MCP-call path; probe meaningless for this cell."
+      },
+      {
+        "pin": "cg_tgt",
+        "class": "model",
+        "note": "the declared query argument never reached a tool_use input on the messages wire — the declared MCP probe arguments were never sent; probe meaningless."
+      },
+      {
+        "pin": "sh_call",
+        "class": "model",
+        "note": "the declared echo command was never issued as a tool_use input on the messages wire — plain tool path not exercised; probe meaningless."
+      }
+    ]
+  },
+  "env": {
+    "store": false,
+    "home": "hermetic",
+    "launcher": "runner"
+  }
+}

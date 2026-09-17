@@ -1,0 +1,927 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://apex.local/grok-build/redteam/case.schema.json",
+  "title": "GroK-build v2 smoke matrix case (redteam runner, schema v1)",
+  "description": "JSON schema (draft-07, self-contained) for one case file of the grok-build v2 smoke matrix (beads apex-ayl.21 / apex-ayl.22). Superset of the in-tree runner contract (smoke/redteam/run.py validate_case_file) plus the campaign additions: suite/tier/bead identity, declared MCP and tool calls with anti-vacuous premise pins, timeouts with the OTEL cold-start budget, env assumptions, retry policy for environmental transients, and scoring semantics (VACUOUS vs PASS/FAIL, per-assert wire evidence). The runner's hand-rolled validator must implement exactly the keyword subset used here: type, properties, required, items, enum, pattern, minimum, maximum, additionalProperties, anyOf, description. No external $refs, no $defs, no patternProperties.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "title",
+    "suite",
+    "tier",
+    "driver"
+  ],
+  "anyOf": [
+    {
+      "required": [
+        "assert"
+      ]
+    },
+    {
+      "required": [
+        "rows"
+      ]
+    }
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1,
+      "description": "Case schema version. 1 = this schema. Pre-version case files (RT-C1..RT-M11, no schema_version) are accepted by the runner for back-compat but fail the NEW-case gate: every file added after the drop-in must carry schema_version=1."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9._-]{2,63}$",
+      "description": "Uppercase case id, unique across the case set (run dir name is the lowercased id). Conventions: RT-* = pre-v1 redteam cases; T21-* = .21 tool/MCP coverage cells; M5-*/M6-* = matrix rows; XW-* = cross-wire switch cells."
+    },
+    "title": {
+      "type": "string",
+      "description": "Human-readable one-paragraph statement of what the case proves, including the verdict semantics (which outcome is PASS, which is a FINDING, which is a defect). Existing cases set the bar: the title is the case's contract."
+    },
+    "bead": {
+      "type": "string",
+      "description": "Campaign bead id this case belongs to (e.g. 'apex-ayl.21'). Optional only for legacy pre-v1 files; required in practice for every schema_version=1 case (the NEW-case gate checks it)."
+    },
+    "suite": {
+      "type": "string",
+      "enum": [
+        "wire-shape",
+        "tool-call",
+        "mcp-call",
+        "mcp-tool",
+        "cross-wire",
+        "compaction",
+        "salvage",
+        "recon"
+      ],
+      "description": "Case type in the matrix. wire-shape = model echo + backend path only (RT-M5/RT-M6 row asserts). tool-call = a real plain builtin tool round-trip. mcp-call = a real MCP server tool round-trip (codegraph). mcp-tool = one case exercising both (the .21 default for per-row coverage cells). cross-wire = mid-session ACP model switch across wire backends (RT-CROSSWIRE1/1B, RT-XREPLAY1/2 lineage). compaction = seeded auto-compact probe (RT-C3/COMP-3 lineage). salvage = truncation/400-recovery probe (XREPLAY-1 strip-retry lineage). recon = record-only case (never fails)."
+    },
+    "tier": {
+      "type": "string",
+      "enum": [
+        "slim",
+        "full"
+      ],
+      "description": "Matrix slice. slim = the .36 6-row gate set (runs every gate); full = full-catalog sweep cells (sign-off moments only, very last). Slim and full are two slices of ONE matrix: a full-tier case must use the same wire/assert vocabulary as its slim twin."
+    },
+    "model": {
+      "type": "string",
+      "description": "Session model id (exact catalog spelling). Required for driver=acp cases and for non-rows step cases; row-based cases (rows[]) may omit it. Must match an enabled row in the live ~/.grok/config.toml catalog at run time."
+    },
+    "wire": {
+      "type": "string",
+      "enum": [
+        "responses",
+        "messages",
+        "chat_completions"
+      ],
+      "description": "Declared expected wire backend for the session model (the live config api_backend row value). Wire pins target the matching request path: /v1/responses | /v1/messages (both OBSERVED in campaign captures; rt-m5 row pins) | /v1/chat/completions (PREDICTED from base_url + endpoint convention; NO cc request has been captured to date — the T21-CC case keeps its where-filter path-agnostic and ratifies the observed path via a path_rec recon pin; RED-CLEARED promotion discipline). Declaring the wire also drives the runner's per-wire expectations (container shapes, count_wire_model_calls path list — gap G1)."
+    },
+    "driver": {
+      "type": "string",
+      "enum": [
+        "headless",
+        "acp"
+      ],
+      "default": "headless",
+      "description": "Driver mode. headless = one binary process per turn (-p/--resume/--output-format/--always-approve); ACP = one long-lived 'grok agent stdio' NDJSON-RPC session (promptId-correlated step machine). tool/MCP cells use headless (the proven vehicle: RT-M8 wire evidence; ACP would additionally need a session/request_permission responder the runner does not have yet — gap G7)."
+    },
+    "cwd": {
+      "type": "string",
+      "description": "ABSOLUTE session working directory override (runner gap G4: currently the cwd is a hardcoded temp dir under the run dir). REQUIRED for mcp-call/mcp-tool suites whose MCP server resolves its project by the session cwd (codegraph uses the client rootUri / an explicit projectPath arg): point it at the indexed repo (e.g. the worktree root containing .codegraph/). The runner launches the binary there read-only; it never writes the tree. The MCP server process itself must be hermetic (runner injects --no-watch for codegraph — gap G12) so the file watcher cannot write .codegraph/ during a case."
+    },
+    "config_patch": {
+      "type": "object",
+      "description": "Dotted section/key -> scalar patches applied to the COPIED live config.toml in the hermetic home (applied after the harness-invariant features/turn_summary=false patch, so a case can re-enable it). Values must be TOML scalars (bool/int/float/string); arrays/objects are rejected by the runner validator.",
+      "additionalProperties": {
+        "type": [
+          "boolean",
+          "integer",
+          "number",
+          "string"
+        ]
+      }
+    },
+    "seed": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "History seeder (R-2 pinned chat_history.jsonl schema): pre-seed a session with synthetic history so compaction/truncation thresholds fire deterministically. Only for compaction/salvage suites.",
+      "properties": {
+        "hist_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Target estimated tokens of the seeded history (4 chars/token heuristic)."
+        },
+        "hist_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Target byte size of the seeded history; takes precedence over hist_tokens when both are set."
+        }
+      }
+    },
+    "output_format": {
+      "type": "string",
+      "enum": [
+        "streaming-json",
+        "streaming-messages-json",
+        "json"
+      ],
+      "default": "streaming-json",
+      "description": "Headless --output-format value (ndjson pseudo-event stream the assert.ndjson ops evaluate). Ignored for driver=acp (fmt is forced to 'acp')."
+    },
+    "agents_json": {
+      "type": "object",
+      "description": "Optional --agents JSON (echo/agent definitions for headless turns; RT-M5-era subagent cells)."
+    },
+    "watchdog_s": {
+      "type": "number",
+      "minimum": 1,
+      "default": 300,
+      "description": "Per-turn watchdog timeout in seconds (step timeout_s overrides per step). Default 300 = the in-tree watchdog default; MCP-carrying cells keep 300 (cold MCP init is 7-30s per B-ii desync forensics; codegraph_explore on a 3.2k-file index is seconds)."
+    },
+    "est_calls": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 3,
+      "description": "Estimated model-call cost of the case, used by the runner budget gate (budget.used + est_calls > --budget => SKIP). tool/MCP cells cost ~2 calls per tool-bearing turn (call turn + answer turn) + 1 per plain turn + side calls."
+    },
+    "wirecap": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable wiretap loopback capture for this case (the per-request wire evidence is how the campaign proves claims; scored cases keep it true). runner --no-wirecap still wins globally."
+    },
+    "disabled": {
+      "type": "boolean",
+      "description": "When true the case is SKIPped with reason/unblocks_at as the skip note (disabled cases are still schema-validated by the offline gate)."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Why the case is disabled (paired with disabled=true)."
+    },
+    "unblocks_at": {
+      "type": "string",
+      "description": "Bead/condition that re-enables the case (paired with disabled=true)."
+    },
+    "recon": {
+      "type": "boolean",
+      "description": "Record-only case: every assert is recon-class (always records, never fails); the row reports RECON instead of PASS/FAIL."
+    },
+    "expected_red": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Pre-registered red (RT-M1 lineage): a case whose FAIL is the expected evidence for a known defect. FAIL -> RED-EXPECTED(id), PASS -> RED-CLEARED(id) (promote the pin to a hard assert).",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The finding/bead id the red is registered against."
+        }
+      }
+    },
+    "tolerant": {
+      "type": "boolean",
+      "default": false,
+      "description": "Tolerant-verdict flag (CROSSWIRE-1 / rt-xreplay1 discipline): when true, a scored-pin FAIL is reported as FINDING (the row is FINDING-PASS with the failed pin listed as a finding) instead of FAIL, and the title must enumerate which outcomes are acceptable findings vs defects. Use only where the acceptance claim is 'the rejection is recovered / the shape is recorded', never to hide a dead turn."
+    },
+    "mcp_calls": {
+      "type": "array",
+      "description": "DECLARED expected MCP tool calls (bead .21): each entry is a contract that this case must produce a real round-trip to a real MCP server tool — not a wire-shape assert about tool definitions. The runner scores them in two stages: premise (control) pins first (did the server announce / did the model call it?), then shape pins (did the round-trip close with the right wire shape?). An mcp-call/mcp-tool suite case with an empty mcp_calls is rejected by the NEW-case gate.",
+      "items": {
+        "$ref": "#/definitions/mcp_call"
+      }
+    },
+    "tool_calls": {
+      "type": "array",
+      "description": "DECLARED expected plain builtin tool calls (bead .21): the per-model tool-path coverage. Same two-stage scoring as mcp_calls. A tool-call/mcp-tool suite case with an empty tool_calls is rejected by the NEW-case gate. Canonical plain tool: run_terminal_command with a write-free command (echo NONCE) — idempotent, no network, no worktree writes.",
+      "items": {
+        "$ref": "#/definitions/tool_call"
+      }
+    },
+    "steps": {
+      "type": "array",
+      "description": "Ordered step machine (mutually exclusive with rows). ACP driver: steps run inside ONE session (promptId-correlated). Headless driver: each turn/switch step is one binary process (-m/-p, --resume chaining for session steps).",
+      "items": {
+        "$ref": "#/definitions/step"
+      }
+    },
+    "rows": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Row-based matrix case (headless only, RT-M5/RT-M6 shape): one fresh headless turn per row, scored by row_asserts (per-row where-filters so nth resolves within the row's own requests). runner --rows a,b filters which rows execute (the case file is the universe).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Exact catalog model id for this row."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Row prompt (default in runner: 'Reply with exactly: HT1-OK')."
+          }
+        },
+        "required": [
+          "model"
+        ]
+      }
+    },
+    "assert": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Case-level assert block, evaluated after all steps/rows. Lists are independent; order is presentation only. Every scored assert SHOULD carry an 'id' (required for any pin named in scoring.vacuous_if) and a 'label' (the label is the assert's contract, copied into the report).",
+      "properties": {
+        "ndjson": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ndjson_assert"
+          },
+          "description": "Asserts over the merged ndjson pseudo-event stream (headless output or ACP synthesized events)."
+        },
+        "artifact": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/artifact_assert"
+          },
+          "description": "Asserts over session-dir artifacts (chat_history.jsonl, compaction_requests/, ...; copied under <case>/session/ in the report)."
+        },
+        "wire": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/wire_assert"
+          },
+          "description": "Asserts over the wiretap captures (<case>/wire/req-NNN.json + resp-NNN.jsonl). The per-request wire evidence is first-class: every scored wire assert records its matched file(s) + request n in the report row."
+        },
+        "exit": {
+          "type": "integer",
+          "description": "Expected final process exit code (honest-failure pins, e.g. exit=1 for the OVERCAP-1 turn-death class)."
+        }
+      }
+    },
+    "row_asserts": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Row-based cases only: per-row wire asserts. Each entry is scoped to a row via row_model (legacy, takes precedence) or where['$.body.model'] (preferred form, RT-M6 regeneration); the runner evaluates it once per executed row, scoping nth to that row's own requests (default nth=0 = newest of the row). A row not executed (--rows filter) yields a wire.row-skip recon record.",
+      "properties": {
+        "wire": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/wire_assert"
+          }
+        }
+      }
+    },
+    "timeouts": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Timeout budget block (apex-ayl.32 cold-window strategy). Every ACP-facing budget is case-visible because the 424 BPS cold window (EDR/auditd per-syscall heat + 30s OTEL fleet-policy startup wait) makes fixed budgets environment-sensitive: the 26,001B init line takes 61.3s at the plateau (in-tree fix: 180s init + chunked read; 2.94x margin).",
+      "properties": {
+        "acp_init_s": {
+          "type": "number",
+          "minimum": 1,
+          "default": 180,
+          "description": "ACP initialize + session/new budget (in-tree ACP_INIT_TIMEOUT_S=180). Raise for first-in-cold-window cells (e.g. 240) when the run is the first ACP launch after a machine cool-down."
+        },
+        "acp_set_model_s": {
+          "type": "number",
+          "minimum": 1,
+          "default": 180,
+          "description": "ACP session/set_model budget. The in-tree value is hardcoded 60 (run.py:981) — a gap (G6): 60s is inside the 424 BPS plateau budget for a 26KB-class response; the schema default is 180 and the drop-in makes the in-tree constant case-overridable."
+        },
+        "turn_s": {
+          "type": "number",
+          "minimum": 1,
+          "default": 300,
+          "description": "Per-turn watchdog (aliases the case-level watchdog_s when that is set; this field wins when both are present)."
+        },
+        "mcp_startup_s": {
+          "type": "number",
+          "minimum": 1,
+          "default": 30,
+          "description": "Expected MCP server startup budget (binary default 30s per mcp_servers startup_timeout_sec). Informational for the harness-premise control pin: a case whose MCP announcement never lands inside turn 1's budget is BLOCKED/HARNESS, not VACUOUS."
+        }
+      }
+    },
+    "retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Environmental-transient retry policy (B-ii run-1 lesson: a transient qwen model-group 404 recovered <5min; 404 != model-bound 400). Retries the WHOLE case with a fresh hermetic home. NEVER retries a model-bound 400: a 400 with a schema/model-bound error body is the assertion surface (XREPLAY-1: the 400 is the probe).",
+      "properties": {
+        "on_status": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "default": [
+            404,
+            502,
+            503
+          ],
+          "description": "HTTP statuses that mark a turn ENV-TRANSIENT when they are the LAST response for the row model (404 model-group flap, 502/503 proxy hiccups)."
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2,
+          "default": 1,
+          "description": "Extra full-case attempts after the first failure (0 = no retry, the in-tree behavior; the .22 runner default for slim-gate cells is 1)."
+        },
+        "backoff_s": {
+          "type": "number",
+          "minimum": 0,
+          "default": 30,
+          "description": "Sleep before the retry attempt."
+        },
+        "recheck_models": {
+          "type": "boolean",
+          "default": true,
+          "description": "Before retrying, re-list GET /v1/models through the wiretap: if the model id is GONE from the catalog the 404 is a catalog change, not a flap -> the case FAILs (a matrix signal) instead of retrying."
+        }
+      }
+    },
+    "scoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Scoring semantics block (the B-ii anti-vacuous rule). The runner evaluates premise (control) pins FIRST: a control pin that finds no expected artifact means the probe's premise did not hold. premise class model -> the row is VACUOUS (the probe is meaningless for this model; recorded with the 0-hit evidence, NOT PASS and NOT FAIL — this is the rt-xreplay2/B-ii behavior promoted from label to status). premise class harness -> the row is BLOCKED (the test rig failed: server never announced, binary missing; no model conclusion). A control pin that passes lets the scored pins decide PASS/FAIL. Both a control miss AND a scored fail -> FAIL (a real defect dominates a missing premise; the report lists both).",
+      "properties": {
+        "vacuous_if": {
+          "type": "array",
+          "description": "Premise (control) pins: asserts whose 0-hit flips the row out of PASS/FAIL. Each names an assert id (an 'id' on a wire.grep/field/count or ndjson assert, or an mcp_calls/tool_calls entry id).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "pin": {
+                "type": "string",
+                "description": "The assert id (or mcp_call/tool_call id) acting as the premise control."
+              },
+              "class": {
+                "type": "string",
+                "enum": [
+                  "model",
+                  "harness"
+                ],
+                "default": "model",
+                "description": "model = the MODEL did not produce the premise artifact (tool/MCP round-trip never issued) -> VACUOUS (temperament or capability gap; recorded, retriable under retry.policy only for env classes). harness = the RIG did not produce the premise (MCP server never announced on the wire) -> BLOCKED/HARNESS."
+              },
+              "note": {
+                "type": "string",
+                "description": "One-line statement of what premise this pin guards (copied into the report next to the VACUOUS/BLOCKED verdict)."
+              }
+            },
+            "required": [
+              "pin"
+            ]
+          }
+        },
+        "require_wire_evidence": {
+          "type": "boolean",
+          "default": true,
+          "description": "Every scored (non-recon) assert that PASSes must cite its wire evidence: the report row carries per-assert {evidence_file, request_n} for wire asserts and {event_line} for ndjson asserts. A PASS with an uncitable scored wire assert is downgraded to BLOCKED/NO-EVIDENCE by the report writer (the campaign proves claims by per-request wire evidence; a claim without a file is not a claim)."
+        }
+      }
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Declared environment assumptions of the case (the L1 env contract + wire-level invariants). The runner records the effective values in the report header; a mismatch between declaration and observation is a report anomaly (e.g. a case declaring store=false while a captured request carries store=true is a wire-shape finding).",
+      "properties": {
+        "store": {
+          "type": "boolean",
+          "default": false,
+          "description": "Expected 'store' field on /v1/responses requests (the deployment runs store=false: reasoning items are NOT persisted upstream — the Azure rejection class 'items are not persisted when store is false', XREPLAY-1 pin (3/3))."
+        },
+        "home": {
+          "type": "string",
+          "enum": [
+            "hermetic",
+            "temp"
+          ],
+          "default": "hermetic",
+          "description": "GROK_HOME mode. hermetic = tempdir copy of the live config with the harness invariants (turn_summary off, base_url rewritten to wiretap, aligned models_cache) — the in-tree default; new sessions never touch ~/.grok. temp = a bare temp home (only for rig-level cells that must not inherit the live catalog)."
+        },
+        "launcher": {
+          "type": "string",
+          "enum": [
+            "runner",
+            "dogfood"
+          ],
+          "default": "runner",
+          "description": "Which launcher drives the binary: runner = smoke/redteam/run.py (the .22 target); dogfood = ~/.grok/bin/grok-dogfood (v2 staged launcher: env -u provider vars, GROK_AUTH_EXPIRED=1, RUST_LOG scope, optional wirecap). Declared for provenance; the runner records the effective one."
+        },
+        "provider_vars_unset": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL"
+          ],
+          "description": "Provider env vars the launcher must UNSET (L1 env contract: ambient CODEX_LLM_PROXY_KEY only, never a second provider identity)."
+        }
+      }
+    }
+  },
+  "definitions": {
+    "mcp_call": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One declared MCP tool call. Scoring: (1) announcement control — the server's 'MCP server connected' system-reminder must appear on the session wire (harness premise); (2) call control — a function_call/tool_use with name use_tool targeting the qualified tool must appear (model premise, unless via=direct); (3) shape pins — the round-trip closes (a function_call_output / tool_result / tool-role message carrying the result) on the declared wire shape.",
+      "required": [
+        "id",
+        "server",
+        "tool"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{1,31}$",
+          "description": "Case-unique id for this declared call (nameable in scoring.vacuous_if)."
+        },
+        "server": {
+          "type": "string",
+          "description": "MCP server name exactly as configured in [mcp_servers.<name>] (e.g. 'codegraph')."
+        },
+        "tool": {
+          "type": "string",
+          "description": "MCP tool name as exposed by the server (e.g. 'codegraph_explore')."
+        },
+        "expect_name": {
+          "type": "string",
+          "description": "The fully-qualified name the use_tool call must target (server__tool, e.g. 'codegraph__codegraph_explore'). Defaults to server + '__' + tool when omitted."
+        },
+        "via": {
+          "type": "string",
+          "enum": [
+            "search_tool_use_tool",
+            "direct"
+          ],
+          "default": "search_tool_use_tool",
+          "description": "How the binary surfaces the MCP tool. search_tool_use_tool = the current shape: MCP tools are NOT in the request tools[] array; the server's tools arrive as turn-boundary <system-reminder> announcement appends and are invoked via the builtin search_tool (BM25 discovery) + use_tool (fully-qualified target). direct = a future/alternate shape where the MCP tool is inlined into tools[] and called by its bare name — only valid when the model-config audit confirms the binary change."
+        },
+        "args": {
+          "type": "object",
+          "description": "Expected call arguments (informational contract + the prompt text is generated from them by the drop-in case template). For codegraph_explore: {query: <symbols/file names>, maxFiles?: int, projectPath?: <abs path of the indexed repo>}."
+        },
+        "premise": {
+          "type": "string",
+          "enum": [
+            "model",
+            "harness"
+          ],
+          "default": "model",
+          "description": "Premise class of the CALL control pin (announcement is always harness-class). model: the model chose not to call the tool -> VACUOUS. harness: the rig could not offer the tool (e.g. via=direct on a binary that still defers MCP tools) -> BLOCKED."
+        },
+        "output_contains": {
+          "type": "string",
+          "description": "Substring that must appear in the tool result payload of the round-trip (e.g. a symbol name from the codegraph answer). A shape pin: 0 hits = FAIL (the call happened but returned nothing useful — server error, empty index, or model passed wrong args)."
+        }
+      }
+    },
+    "tool_call": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One declared plain builtin tool call (the per-model tool-path coverage). Scoring: call control (a function_call/tool_use with the declared tool name appears on the wire — model premise) then shape pins (the round-trip closes with a matching output on the declared wire shape).",
+      "required": [
+        "id",
+        "tool"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{1,31}$",
+          "description": "Case-unique id (nameable in scoring.vacuous_if)."
+        },
+        "tool": {
+          "type": "string",
+          "description": "Builtin tool name exactly as advertised in the request tools[] array (from the 31-name inventory: run_terminal_command, read_file, search_replace, list_dir, grep, write, todo_write, ...). Canonical choice: run_terminal_command with a write-free echo command."
+        },
+        "args": {
+          "type": "object",
+          "description": "Expected call arguments (e.g. {command: 'echo T21-...-ECHO'}). The command must be idempotent and write-free (no worktree writes, no network): the matrix may run with cwd set to the live worktree."
+        },
+        "premise": {
+          "type": "string",
+          "enum": [
+            "model"
+          ],
+          "default": "model",
+          "description": "Premise class of the call control pin. Plain builtin tools are always offered by the binary, so a missing call is a model-temperament VACUOUS, never harness."
+        },
+        "output_contains": {
+          "type": "string",
+          "description": "Substring that must appear in the tool result (e.g. the echo nonce). A shape pin: proves the round-trip carried the real output back to the model."
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One step of the case step machine (in-tree STEP_OPS: turn, switch, kill, compact, idle, recon_note). The ACP driver correlates every turn's completion by client-chosen promptId (apex-ayl.28; the prompt_id of each acp_turn is recorded in the report turns[]).",
+      "anyOf": [
+        {
+          "required": [
+            "op",
+            "prompt"
+          ]
+        },
+        {
+          "required": [
+            "op",
+            "model"
+          ]
+        },
+        {
+          "required": [
+            "op"
+          ]
+        }
+      ],
+      "properties": {
+        "op": {
+          "type": "string",
+          "enum": [
+            "turn",
+            "switch",
+            "kill",
+            "compact",
+            "idle",
+            "recon_note"
+          ]
+        },
+        "prompt": {
+          "type": "string",
+          "description": "turn: the prompt text. The drop-in template appends the declared mcp_calls/tool_calls instruction block so the prompt and the contract cannot drift."
+        },
+        "model": {
+          "type": "string",
+          "description": "turn (optional, defaults to the case model) / switch (required): target model id."
+        },
+        "via": {
+          "type": "string",
+          "enum": [
+            "acp",
+            "resume"
+          ],
+          "default": "acp",
+          "description": "switch: acp = session/set_model inside the ACP session; resume = headless --resume a new session of the target model."
+        },
+        "timeout_s": {
+          "type": "number",
+          "minimum": 1,
+          "description": "turn/compact: per-step watchdog override."
+        },
+        "kill_after_s": {
+          "type": "number",
+          "minimum": 0.1,
+          "description": "turn: kill the process after N seconds (tools-dark probes, RT-S2 shape)."
+        },
+        "expect_kill": {
+          "type": "boolean",
+          "description": "turn: true (default) = a kill is the expected terminal (no FAIL); false = a kill FAILs the case."
+        },
+        "after_s": {
+          "type": "number",
+          "minimum": 0.1,
+          "description": "kill: kill delay in seconds."
+        },
+        "s": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "idle: seconds to sleep (long-idle resume probes, RT-R3 shape)."
+        },
+        "note": {
+          "type": "string",
+          "description": "recon_note: free-text note appended to the report turns[]."
+        }
+      }
+    },
+    "ndjson_assert": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Assert over the merged ndjson pseudo-event stream (in-tree check_ndjson ops: count, absent, present, eq, ne, text_contains, tools_absent, tools_present, recon).",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{1,31}$",
+          "description": "Assert id (nameable in scoring.vacuous_if; required on control pins)."
+        },
+        "op": {
+          "type": "string",
+          "enum": [
+            "count",
+            "absent",
+            "present",
+            "eq",
+            "ne",
+            "text_contains",
+            "tools_absent",
+            "tools_present",
+            "recon"
+          ]
+        },
+        "event": {
+          "type": "string",
+          "description": "Event type to match (count/absent/present/eq/ne): acp_error, acp_end, acp_message, end, available_commands, ..."
+        },
+        "min": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "count: minimum event count."
+        },
+        "max": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "count: maximum event count."
+        },
+        "which": {
+          "type": "string",
+          "enum": [
+            "first",
+            "last"
+          ],
+          "description": "eq/ne: which matching event to read the field from."
+        },
+        "field": {
+          "type": "string",
+          "description": "eq/ne: dot path into the event (e.g. 'stopReason', 'data.sessionId')."
+        },
+        "value": {
+          "type": [
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ],
+          "description": "text_contains: substring the merged text must contain; eq/ne: the expected (or forbidden, for ne) value."
+        },
+        "names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "tools_absent/tools_present: tool names checked against the union of all advertised tool lists (available_commands)."
+        },
+        "absent_ok": {
+          "type": "boolean",
+          "description": "present: absence is accepted ONLY on an error terminal (the honest-failure pin shape; a silent no-terminal run still FAILs)."
+        },
+        "label": {
+          "type": "string",
+          "description": "The assert's contract in one paragraph (copied into report.md). Control pins use the 'CONTROL (anti-vacuous pin): ...' convention."
+        }
+      },
+      "required": [
+        "op"
+      ]
+    },
+    "artifact_assert": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Assert over session-dir artifacts (in-tree check_artifact: glob + count, grep, JSON field eq/ne/ne_null). Artifacts are copied into the report under <case>/session/ (chat_history.jsonl, summary.json, events.jsonl, compaction*, subagents).",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{1,31}$"
+        },
+        "op": {
+          "type": "string",
+          "enum": [
+            "count",
+            "grep"
+          ],
+          "description": "Omitted op = JSON-field read of the first/last matched file."
+        },
+        "file": {
+          "type": "string",
+          "description": "Glob relative to the session dir (e.g. 'compaction_requests/*.json')."
+        },
+        "which": {
+          "type": "string",
+          "enum": [
+            "first",
+            "last"
+          ],
+          "default": "last",
+          "description": "JSON-field read: which matched file."
+        },
+        "field": {
+          "type": "string",
+          "description": "JSON-field read: dot path (e.g. 'summary', 'attempts')."
+        },
+        "eq": {
+          "description": "Expected field value."
+        },
+        "ne": {
+          "description": "Field must differ from this value."
+        },
+        "ne_null": {
+          "type": "boolean",
+          "description": "Field must be non-null."
+        },
+        "absent_ok": {
+          "type": "boolean",
+          "description": "No matching files is accepted."
+        },
+        "grep": {
+          "type": "string",
+          "description": "op=grep: substring to count across all matched files."
+        },
+        "min_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "op=grep: minimum occurrences."
+        },
+        "max_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "op=grep: maximum occurrences."
+        },
+        "min": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "op=count: minimum file count."
+        },
+        "max": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "op=count: maximum file count."
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "file"
+      ]
+    },
+    "wire_assert": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Assert over wiretap captures (in-tree check_wire kinds: field, grep, size_lt, count, resp_status, recon). PIN FORMS and the count-tolerance lesson: 'nth' selects within the WHERE-FILTERED set sorted by capture time (nth=0 = NEWEST); a static nth breaks when the actual match count N differs from the pin's assumption (the B-i case bug: nth:1 out-of-range at N=1 -> case FAIL that was a case bug, not a product defect). Count-tolerant forms: 'any: true' = passes if ANY matched file matches (fail-closed on an empty set — the anti-vacuous default for premise/control pins), 'last: N' = Nth-from-oldest (nth = len-1-N), and a companion 'count' assert (min/max) that makes nth selections unambiguous (XREPLAY-1's 'exactly two requests' pin). Rule for new cases: NEVER pin a static nth >= 1 without a sibling count assert that bounds N; premise pins use any: true.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{1,31}$",
+          "description": "Assert id (nameable in scoring.vacuous_if; required on control pins)."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "field",
+            "grep",
+            "size_lt",
+            "count",
+            "resp_status",
+            "recon"
+          ]
+        },
+        "file": {
+          "type": "string",
+          "description": "Glob of capture files relative to <case>/wire/ (req-*.json for requests, resp-*.jsonl for responses)."
+        },
+        "where": {
+          "type": "object",
+          "description": "Filter applied to each candidate request body BEFORE nth/any selection: JSON-path keys (bare 'method', 'path', dotted 'body.model'; '$.' prefix accepted) mapped to scalars, or to {prefix: str} / {not_prefix: str} for prefix matching (COMP-3: distinguishing xai-compact-* tagged requests). REQUIRED on every scored wire assert — unscoped filters catch the grok-4.6 session-title side call (.29: it lands on /v1/responses in every ACP run and 500s proxy-side) and any other foreign request.",
+          "additionalProperties": true
+        },
+        "path": {
+          "type": "string",
+          "description": "kind=field: dot path into the request JSON (e.g. '$.body.model', '$.path')."
+        },
+        "eq": {
+          "description": "kind=field: expected value at path."
+        },
+        "ne": {
+          "description": "kind=field: value that must NOT be at path."
+        },
+        "grep": {
+          "type": "string",
+          "description": "kind=grep: substring over the file's raw text. kind=recon: the line-filter for the recorded slice. Captures are pretty-printed JSON (2-space indent), so grep JSON shapes with the spaced form: '\"name\": \"use_tool\"', '\"type\": \"function_call_output\"'."
+        },
+        "absent": {
+          "type": "boolean",
+          "description": "kind=grep: true = the substring must be ABSENT from the selected file(s) (the negative pin; with any: true it means 'no matched file carries it')."
+        },
+        "nth": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Selection index into the filtered, time-sorted set (0 = newest). See the count-tolerance lesson in the kind description."
+        },
+        "last": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Selection Nth-from-OLDEST (equivalent to nth = len-1-N in the newest-first sorted set: last:0 = oldest filtered request, last:N-1 = newest); mutually informative with nth for the 1-vs-2 request tolerant-verdict cases. Doc corrected 2026-09-17 (was 'Nth-from-newest'; the code is nth=len-1-N with nth=0=newest)."
+        },
+        "any": {
+          "type": "boolean",
+          "description": "true = pass if ANY filtered file matches (grep presence, or the absent=absent form); fail-closed on an empty filtered set. The standard form for premise/control pins."
+        },
+        "all": {
+          "type": "boolean",
+          "description": "true = the grep must be ABSENT from every filtered file (MA-3 form); requires absent:true (rejected without it); an empty filtered set is a fail-closed harness failure. Complement of any:true."
+        },
+        "row_model": {
+          "type": "string",
+          "description": "Row-based cases only (legacy form): exact catalog model id scoping this wire assert to one row's requests. Preferred form: scope via where['$.body.model'] (RT-M6 regeneration); the runner accepts both (row_model takes precedence)."
+        },
+        "min": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "kind=count: minimum number of filtered files (e.g. NO-RETRY-STORM pins: min 1 max 2)."
+        },
+        "max": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "kind=count: maximum number of filtered files."
+        },
+        "which": {
+          "type": "string",
+          "enum": [
+            "first",
+            "last"
+          ],
+          "default": "first",
+          "description": "kind=resp_status: which filtered request to look up the response for (default = the capture-order first = oldest; 'last' = the final request of the tolerant-verdict pair)."
+        },
+        "status_in": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "kind=resp_status: acceptable HTTP statuses for the paired resp-NNN.jsonl (e.g. [200])."
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "kind=size_lt: the selected file must be smaller than this many bytes (salvage/truncation budget pins)."
+        },
+        "base": {
+          "type": "string",
+          "enum": [
+            "wire",
+            "session"
+          ],
+          "default": "wire",
+          "description": "kind=recon: glob base dir (wire captures or the session copy)."
+        },
+        "label": {
+          "type": "string",
+          "description": "The assert's contract in one paragraph. Control pins use the 'CONTROL (anti-vacuous pin): ...' convention; the recon verdict pin uses the 'VERDICT RECORD' convention with a disclosure of any parallel side call that may land newest."
+        },
+        "field": {
+          "type": "string",
+          "description": "kind=recon only: path (get_path form) of the value to record from the selected capture file, e.g. '$.path' (runner check_recon field extraction)."
+        },
+        "op": {
+          "type": "string",
+          "enum": [
+            "recon"
+          ],
+          "description": "kind=recon alternative form: op=recon + what=final-text records the ndjson final-text head without a capture file (runner check_recon)."
+        },
+        "what": {
+          "type": "string",
+          "enum": [
+            "final-text"
+          ],
+          "description": "Paired with op=recon."
+        },
+        "event": {
+          "type": "string",
+          "description": "kind=recon alternative form: record the field of the LAST ndjson event of this type (runner check_recon event form)."
+        },
+        "value": {
+          "type": [
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ],
+          "description": "kind=recon literal value form: record this constant as the verdict record (runner check_recon)."
+        }
+      },
+      "required": [
+        "kind",
+        "file"
+      ]
+    }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "steps"
+      ]
+    },
+    {
+      "required": [
+        "rows"
+      ]
+    }
+  ]
+}

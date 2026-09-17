@@ -73,6 +73,19 @@
     ],
     "wire": [
       {
+        "id": "c4_marker_presence",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "$.body.model": "qwen3.8-27b"
+        },
+        "any": true,
+        "grep": "This session is being continued from a previous conversation that ran out of context"
+      },
+      {
+        "id": "c4_marker_recency",
         "kind": "grep",
         "file": "req-*.json",
         "where": {
@@ -81,17 +94,6 @@
           "$.body.model": "qwen3.8-27b"
         },
         "nth": 0,
-        "grep": "This session is being continued from a previous conversation that ran out of context"
-      },
-      {
-        "kind": "grep",
-        "file": "req-*.json",
-        "where": {
-          "method": "POST",
-          "path": "/v1/responses",
-          "$.body.model": "qwen3.8-27b"
-        },
-        "nth": 1,
         "grep": "This session is being continued from a previous conversation that ran out of context"
       }
     ]

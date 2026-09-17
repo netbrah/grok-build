@@ -1,11 +1,10 @@
 {
   "id": "RT-C6",
-  "title": "256k policy window on 1M-capable model (claude-sonnet-5, messages wire): auto-compact at ~218k DESPITE 1M capability",
-  "expected_red": {
-    "id": "CONTEXT-1",
-    "reason": "documented red (pass-4 adjudicated): auto-compact did NOT fire for claude-sonnet-5 under the [endpoints] default_context_window=256000 policy (no per-row window in the hermetic config) - ~222k-token seed completed a clean turn with zero compaction artifacts; CONTEXT-1 audit pending"
-  },
+  "title": "256k pinned window on 1M-capable model (claude-sonnet-5, messages wire): auto-compact at ~218k DESPITE 1M capability (config_patch pins the model-row context_window=256000: the case's own math — 222k seed vs the 85% threshold = ~217.6k -> window 256000, as in the 2026-09-14 green baseline at 86% usage. The catalog row drifted 256k->1M operator-intentionally and beats the [endpoints] default by documented resolver design, so the premise now rides the config tier — SWEEPFIX-VERIFY, F-COMP adjudication)",
   "model": "claude-sonnet-5",
+  "config_patch": {
+    "model/claude-sonnet-5/context_window": 256000
+  },
   "seed": {
     "hist_tokens": 222000,
     "hist_bytes": 1073400

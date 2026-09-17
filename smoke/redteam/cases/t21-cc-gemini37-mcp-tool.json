@@ -1,0 +1,237 @@
+{
+  "schema_version": 1,
+  "id": "T21-CC-GE37-MCP-TOOL",
+  "title": ".21 per-row tool-path coverage, CHAT_COMPLETIONS wire (gemini-3.7-flash, the slim cc-wire row; live config api_backend=chat_completions, known open-compat issue family per .20/.35): two headless turns in one session. Turn 1 = baseline reply (carries the MCP server announcement). Turn 2 = the coverage turn: a REAL codegraph MCP round-trip (use_tool -> codegraph__codegraph_explore against the worktree index) AND a REAL plain tool round-trip (run_terminal_command echo). FIRST-OBSERVATION DISCIPLINE: the campaign's wire evidence contains NO chat_completions request capture yet (gen-matrix.py has no cc path; count_wire_model_calls misses it \u2014 gaps G1/G2), so the cc container shapes (tool_calls[] on the assistant turn, role:tool result message) AND the request path are RECON verdict pins here, not hard pins \u2014 they record the first live shapes for the .36 sweep to ratify (promote to hard pins after the first confirmed run, the RED-CLEARED promotion discipline). The where-filter is path-agnostic for the same reason. The DISCRIMINATING container-agnostic pins still force the real round-trips: the escaped-JSON-form use_tool call (arguments is a JSON-encoded string on the cc wire too \u2014 the same discriminating form as responses), the declared codegraph target, the declared echo command, and the reply-side payload proofs (echo output + classify_error file path from the real index result) \u2014 whatever container the LiteLLM cc layer puts the calls in.",
+  "bead": "apex-ayl.21",
+  "suite": "mcp-tool",
+  "tier": "slim",
+  "driver": "headless",
+  "model": "gemini-3.7-flash",
+  "wire": "chat_completions",
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "output_format": "streaming-json",
+  "watchdog_s": 300,
+  "est_calls": 5,
+  "wirecap": true,
+  "mcp_calls": [
+    {
+      "id": "cg1",
+      "server": "codegraph",
+      "tool": "codegraph_explore",
+      "expect_name": "codegraph__codegraph_explore",
+      "via": "search_tool_use_tool",
+      "args": {
+        "query": "strip_model_bound_state classify_error",
+        "maxFiles": 2,
+        "projectPath": "/Users/palanisd/Projects/upstream/wt/grok-build-responses"
+      },
+      "premise": "model",
+      "output_contains": "strip_model_bound_state"
+    }
+  ],
+  "tool_calls": [
+    {
+      "id": "sh1",
+      "tool": "run_terminal_command",
+      "args": {
+        "command": "echo T21-CC-GE37-ECHO"
+      },
+      "premise": "model",
+      "output_contains": "T21-CC-GE37-ECHO"
+    }
+  ],
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: T21-CC-GE37-OK"
+    },
+    {
+      "op": "turn",
+      "prompt": "Perform exactly these two tool calls, in this order, and no other tools: (1) use the use_tool tool to call the codegraph explore tool (qualified name codegraph__codegraph_explore) with arguments query 'strip_model_bound_state classify_error', maxFiles 2, projectPath /Users/palanisd/Projects/upstream/wt/grok-build-responses; (2) use the run_terminal_command tool to run the command: echo T21-CC-GE37-ECHO. After both tool results are in hand, reply with exactly three lines: line 1: T21-CC-GE37-DONE; line 2: the exact text the echo command printed; line 3: the repo-relative file path of the file that defines classify_error, exactly as reported in the explore result."
+    }
+  ],
+  "assert": {
+    "ndjson": [
+      {
+        "id": "term",
+        "op": "present",
+        "event": "end",
+        "label": "TURN COMPLETES: the merged event stream reached the end terminal (the tool-bearing turn did not die through the chat_completions wire)."
+      },
+      {
+        "id": "done",
+        "op": "text_contains",
+        "value": "T21-CC-GE37-DONE",
+        "label": "MODEL DELIVERED: the final reply carries the DONE nonce (the model finished the turn and answered the reply protocol; the nonce is model-generated output, not prompt text, so it cannot be pre-seeded)."
+      },
+      {
+        "id": "echo_nd",
+        "op": "text_contains",
+        "value": "T21-CC-GE37-ECHO",
+        "label": "PLAIN ROUND-TRIP PAYLOAD (container-agnostic): the reply's line 2 carries the echo output the model read from the run_terminal_command result (the prompt names the command, so the wire grep alone cannot separate a real result from a parroted one; the sh_call discriminating pin plus this reply pin together close the loop)."
+      },
+      {
+        "id": "path_nd",
+        "op": "text_contains",
+        "value": "xai-grok-sampler/src/retry.rs",
+        "label": "MCP ROUND-TRIP PAYLOAD (container-agnostic, real-index proof): the reply's line 3 carries the classify_error defining file path as reported by the explore result. The path is NOT in the prompt and the crate is private (no training prior); the model can only produce it if the real index content flowed result -> model -> reply. 0 hits = the MCP result never carried real content (stale/empty index, wrong args, or server error) even if the call was emitted."
+      }
+    ],
+    "wire": [
+      {
+        "id": "cg_ann",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gemini-3.7-flash"
+        },
+        "any": true,
+        "grep": "- codegraph (",
+        "label": "CONTROL (harness premise, anti-vacuous pin): the codegraph MCP server's turn-boundary announcement ('MCP server(s) connected: - codegraph (N tools): ...') actually reached the row's wire \u2014 the rig offered the MCP tool. Pin is count-agnostic across codegraph builds (the 2026-09-14 capture read '(1 tool)', current build single-tool era; both match). 0 hits = BLOCKED/HARNESS (server never announced: startup failure, missing binary, config not inherited), not VACUOUS \u2014 no model conclusion is possible without the offer."
+      },
+      {
+        "id": "cg_call",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gemini-3.7-flash"
+        },
+        "any": true,
+        "grep": "\\\"tool_name\\\":",
+        "label": "CONTROL (model premise, anti-vacuous pin, DISCRIMINATING FORM): a use_tool call was actually ISSUED \u2014 the pattern is the escaped-JSON form of the tool_name key (arguments is a JSON-encoded string on the responses/cc wire), which appears only in a real function_call's arguments; the tools[] schema entry (single-level quotes) and the prompt (plain text) cannot match it. Only use_tool carries a tool_name parameter (31-tool set verified, rt-m8 req-004). 0 hits = VACUOUS."
+      },
+      {
+        "id": "cg_tgt",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gemini-3.7-flash"
+        },
+        "any": true,
+        "grep": "\\\"codegraph__codegraph_explore\\\"",
+        "label": "CONTROL (model premise, anti-vacuous pin, DISCRIMINATING FORM): a use_tool call targeted the DECLARED fully-qualified tool codegraph__codegraph_explore \u2014 the escaped-JSON form of the FQ name appears only in a real call's arguments; the prompt carries the name plain (single-level, unquoted) and the MCP announcement text carries NO FQ names at all (current codegraph build server-instructions verified: 0 'codegraph__' occurrences; the 2026-09-14 capture announce lists bare codegraph_explore). 0 hits = VACUOUS (wrong/absent target)."
+      },
+      {
+        "id": "sh_call",
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gemini-3.7-flash"
+        },
+        "any": true,
+        "grep": "\\\"command\\\": \\\"echo T21-CC-GE37-ECHO\\\"",
+        "label": "CONTROL (model premise, anti-vacuous pin, DISCRIMINATING FORM): the DECLARED echo command was actually issued \u2014 the escaped-JSON form of command+value appears only in a real call's arguments (the prompt carries the command plain; the tools[] schema line is \"command\": {). Matches run_terminal_command or monitor with that exact command; the prompt forbids other tools, and either shell tool proves the plain builtin round-trip path. 0 hits = VACUOUS."
+      },
+      {
+        "id": "model_f",
+        "kind": "field",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gemini-3.7-flash"
+        },
+        "nth": 0,
+        "path": "$.body.model",
+        "eq": "gemini-3.7-flash",
+        "label": "MODEL ECHO (RT-M5 lineage): the NEWEST matched row request (nth=0 = newest under the runner's mtime-sorted glob) carries the row's own model id \u2014 no cross-model misrouting on the chat_completions wire. The session-title side call also matches the where filter (same body.model), so it cannot false-fail this pin."
+      },
+      {
+        "id": "status_rec",
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gemini-3.7-flash"
+        },
+        "which": "last",
+        "label": "VERDICT RECORD (evidence-only, machine-readable): the upstream HTTP status of the LAST matched row request, paired to its resp-NNN.jsonl by capture sequence. No status_in \u2014 a 400 on the tool round-trip is a tool-path FINDING surfaced by the round-trip pins (cg_rt/echo_nd/path_nd), and the session-title side call (it carries the row's body.model, so it passes the where filter; .29: it 500s proxy-side, sessions unaffected) may be the last match, so an assertive status_in would false-fail. Cc wire: first-observation \u2014 the last matched request's status is recorded as evidence; no acceptivity assertion until the first run ratifies the shape (RED-CLEARED promotion)."
+      },
+      {
+        "id": "path_rec",
+        "kind": "field",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gemini-3.7-flash"
+        },
+        "nth": 0,
+        "field": "$.path",
+        "label": "RATIFIED hard pin (first-observation 20260917T102912Z campaign, t21-cc-ge37-mcp-tool wire req-004/006/007/008: all four gemini-3.7-flash model requests on /v1/chat/completions, HTTP 200; Q2/Q3 ratify-then-pin pre-authorization, observed = predicted): the cc wire's exact request path.",
+        "path": "$.path",
+        "eq": "/v1/chat/completions"
+      },
+      {
+        "id": "cc_shape",
+        "kind": "grep",
+        "file": "req-*.json",
+        "grep": "\"tool_calls\"",
+        "label": "RATIFIED hard pin (first-observation 20260917T102912Z req-007/008; stream-side container = resp-006/007 delta.tool_calls frames, escaped-frame text): the cc tool-call container is present on the request wire for this row (replayed assistant tool_calls[] history).",
+        "where": {
+          "method": "POST",
+          "body.model": "gemini-3.7-flash"
+        },
+        "any": true
+      },
+      {
+        "id": "cc_toolres",
+        "kind": "grep",
+        "file": "req-*.json",
+        "grep": "\"role\": \"tool\"",
+        "label": "RATIFIED hard pin (first-observation 20260917T102912Z req-007/008): the tool result returns on the cc wire as a role:tool message carrying tool_call_id + content (observed 'exit: 0' + echo marker).",
+        "where": {
+          "method": "POST",
+          "body.model": "gemini-3.7-flash"
+        },
+        "any": true
+      }
+    ]
+  },
+  "timeouts": {
+    "turn_s": 300,
+    "mcp_startup_s": 30
+  },
+  "retry": {
+    "on_status": [
+      404,
+      502,
+      503
+    ],
+    "max_attempts": 1,
+    "backoff_s": 30,
+    "recheck_models": true
+  },
+  "scoring": {
+    "require_wire_evidence": true,
+    "vacuous_if": [
+      {
+        "pin": "cg_ann",
+        "class": "harness",
+        "note": "MCP server never announced on the row wire \u2014 rig failed (startup/config/binary); no model conclusion is possible without the offer. Title-call safe: the announcement is server-derived text, so a title-call hit would still prove harness MCP works."
+      },
+      {
+        "pin": "cg_call",
+        "class": "model",
+        "note": "use_tool never issued on the cc wire (escaped-form 0-hit \u2014 the tools[] schema presence of use_tool does NOT count) \u2014 model did not take the MCP-call path; probe meaningless for this cell."
+      },
+      {
+        "pin": "cg_tgt",
+        "class": "model",
+        "note": "no use_tool call targeted codegraph__codegraph_explore (escaped FQ-name 0-hit \u2014 the prompt's plain mention does NOT count) \u2014 the declared MCP target was never called; probe meaningless."
+      },
+      {
+        "pin": "sh_call",
+        "class": "model",
+        "note": "the declared echo command was never issued (escaped command 0-hit) \u2014 plain tool path not exercised; probe meaningless."
+      }
+    ]
+  },
+  "env": {
+    "store": false,
+    "home": "hermetic",
+    "launcher": "runner"
+  }
+}

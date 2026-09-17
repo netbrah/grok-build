@@ -74,14 +74,15 @@
       {
         "kind": "grep",
         "file": "req-*.json",
-        "grep": "\"thinking\"",
+        "grep": "\"type\": \"thinking\"",
         "absent": true,
         "where": {
           "method": "POST",
           "path": "/v1/messages"
         },
         "nth": 0,
-        "last": 0
+        "last": 0,
+        "label": "R8 suppression pin, re-scoped (SWEEPFIX-VERIFY, F-THINK CASE-STALE): the /v1/messages request must carry NO type=thinking CONTENT BLOCK in the replayed qwen-identity history (0 of the 7 replayed blocks on 2026-09-17 — suppression intact). The raw '\"thinking\"' grep red is the request's own TOP-LEVEL thinking param {type: adaptive, display: summarized} — BY DESIGN: the messages_thinking_config seam (422d702) emits it for any reasoning effort other than None/Minimal, triggered by the live default_reasoning_effort=xhigh; that param is intentionally unpinned."
       }
     ]
   }

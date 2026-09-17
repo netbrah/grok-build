@@ -75,8 +75,10 @@
       {
         "op": "grep",
         "file": "chat_history.jsonl",
-        "grep": "RT-R1-T1",
-        "max_count": 6
+        "grep": "RT-R1 T1: Reply with exactly: RT-R1-T1",
+        "min_count": 1,
+        "max_count": 1,
+        "label": "Structural resume pin (SWEEPFIX-VERIFY, F-HIST CASE-STALE): exactly ONE user-role line carries the T1 prompt — the full prompt text appears exactly once in chat_history.jsonl (verified 2026-09-17: the only occurrence is the user line; the assistant echoes only the marker). Replaces the raw 'RT-R1-T1' max_count=6 pin, whose 8-occurrence red was ONE pre-kill xhigh reasoning item re-storing the same 446-char summary in summary[]+content[] (marker x3 per field) — legitimate by-design storage, not history duplication; the raw marker count is reasoning-effort-dependent and is intentionally unpinned. A count != 1 here means the user turn was re-appended/duplicated (the resume defect this case exists to catch)."
       },
       {
         "op": "count",
