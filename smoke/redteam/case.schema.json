@@ -13,18 +13,6 @@
     "tier",
     "driver"
   ],
-  "anyOf": [
-    {
-      "required": [
-        "assert"
-      ]
-    },
-    {
-      "required": [
-        "rows"
-      ]
-    }
-  ],
   "properties": {
     "schema_version": {
       "type": "integer",
