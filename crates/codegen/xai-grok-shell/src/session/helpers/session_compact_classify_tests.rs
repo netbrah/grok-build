@@ -440,3 +440,52 @@ fn request_validation_counter_overflow_stays_deterministic() {
     ));
     assert!(is_det(&failure));
 }
+
+// ------------------------------------------------------------------
+// REQVALID-1 47b, T24b: the 9 V1 invariant variants stay
+// `Deterministic` in the compact classifier. The R-2 carve-out above
+// covers only TooManyMessages | EncodedBodyTooLarge (the size-family
+// pair); the deterministic arm catches every other V1 variant —
+// shrinking the compaction input cannot fix a role-order / pairing /
+// mutual-exclusion / budget / cache-marker / stream invariant. GREEN in
+// RED-2 by construction: the variants exist since RED-1 and
+// `classify_sampling_error` is unchanged, so this records honestly.
+// ------------------------------------------------------------------
+
+#[test]
+fn v1_variants_compact_classify_deterministic() {
+    use xai_grok_sampling_types::messages::MessageRole;
+    use xai_grok_sampling_types::request_validation::RequestValidationError;
+    let variants = [
+        RequestValidationError::MissingRequiredField { field: "model" },
+        RequestValidationError::InvalidRoleOrder {
+            index: 0,
+            role: MessageRole::Assistant,
+        },
+        RequestValidationError::UnpairedToolResult {
+            id: "toolu_47b".into(),
+        },
+        RequestValidationError::UnansweredToolUse {
+            id: "toolu_47b".into(),
+        },
+        RequestValidationError::MutuallyExclusiveFields {
+            a: "thinking",
+            b: "top_k",
+        },
+        RequestValidationError::ThinkingBudgetExceedsMaxTokens {
+            budget: 1,
+            max_tokens: 0,
+        },
+        RequestValidationError::CacheMarkerCountExceeded { count: 5 },
+        RequestValidationError::CacheMarkerMisplaced { at: 0 },
+        RequestValidationError::StreamFieldInvalid { value: false },
+    ];
+    for variant in variants {
+        let description = format!("{variant:?}");
+        let failure = classify_sampling_error(SamplingError::RequestValidation(variant));
+        assert!(
+            is_det(&failure),
+            "V1 invariant violations are client-side deterministic (the R-2 carve-out excludes them), got: {failure:?} for {description}"
+        );
+    }
+}

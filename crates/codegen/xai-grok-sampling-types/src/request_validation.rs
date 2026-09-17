@@ -23,13 +23,14 @@
 
 use std::fmt;
 use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
 use xai_token_estimation::{BYTES_PER_TOKEN, estimate_tokens, estimate_image_tokens};
 
 use crate::messages::{
-    ContentBlock, ImageSource, Message, MessageContent, MessagesRequest, SystemParam,
-    ToolResultContent,
+    ContentBlock, ImageSource, Message, MessageContent, MessageRole, MessagesRequest,
+    SystemParam, ToolResultContent,
 };
 
 /// N1 (spec L1863): "The request `messages` array contains at most 100,000
@@ -91,6 +92,48 @@ pub enum RequestValidationError {
     /// failures map here with `ItemRef::MessageItem(0)` as the request-level
     /// marker.
     ItemEncodingFailed { item: ItemRef },
+    // ----------------------------------------------------------------
+    // V1 invariant variants (REQVALID-1 47b, spec B4 closed set — D-7).
+    // Every variant is non-retryable by construction (client-side,
+    // deterministic — re-encoding the same request cannot change the
+    // outcome) and NONE is size-family: shrinking other items cannot
+    // shrink the offending item (R-2 boundary — the compact classifier
+    // stays Deterministic for all of them, pinned by T24b). Display
+    // phrasings are verified (T14a sweep + T24/T24b through the real
+    // classifiers) to match no retryable classifier family.
+    // ----------------------------------------------------------------
+    /// V1: a required request field is unset or empty (model non-empty).
+    MissingRequiredField { field: &'static str },
+    /// V1: role-order invariant — the first message must be user.
+    /// Empty-messages case (m-11, named): `index == 0` with the sentinel
+    /// `role == User` means the array is empty — no message exists at all
+    /// (a leading-assistant violation always carries `role == Assistant`,
+    /// so the two conditions are unambiguous from the fields alone).
+    InvalidRoleOrder { index: usize, role: MessageRole },
+    /// V1: a tool_result block whose `tool_use_id` has no preceding
+    /// matching tool_use block.
+    UnpairedToolResult { id: String },
+    /// V1: a final assistant tool_use block with no following tool_result.
+    UnansweredToolUse { id: String },
+    /// V1: mutually exclusive fields (closed set, pinned protocol — no
+    /// slug guessing): thinking (Enabled|Adaptive) × top_k;
+    /// thinking (Enabled|Adaptive) × top_p.
+    MutuallyExclusiveFields { a: &'static str, b: &'static str },
+    /// V1: STRICT `budget < max_tokens` (thinking Enabled only — the
+    /// budget field exists only there; pin messages.ts:1830). Rejects
+    /// `budget >= max_tokens`, including every budget at `max_tokens == 0`.
+    ThinkingBudgetExceedsMaxTokens { budget: u32, max_tokens: u32 },
+    /// V1: more than 4 cache_control markers across system + message blocks.
+    CacheMarkerCountExceeded { count: usize },
+    /// V1: a cache_control marker on a non-last markable block of its
+    /// block list (markable = Text/Image/ToolUse/ToolResult; Thinking /
+    /// RedactedThinking / Unknown blocks never carry markers). Mirrors the
+    /// pipeline's `mark_message_cache_breakpoint_with` semantics, so every
+    /// live `apply_cache_breakpoints` placement passes (47b pins — §6.4).
+    CacheMarkerMisplaced { at: usize },
+    /// V1: `stream` must be omitted or `true` (PIPE L3937-3938: transport
+    /// always requests streaming output; OQ-2 default ruling).
+    StreamFieldInvalid { value: bool },
 }
 
 impl fmt::Display for RequestValidationError {
@@ -127,6 +170,57 @@ impl fmt::Display for RequestValidationError {
                 f,
                 "context item {item} could not be serialized (non-retryable, local)"
             ),
+            RequestValidationError::MissingRequiredField { field } => write!(
+                f,
+                "messages request is missing required field '{field}' (non-retryable, local)"
+            ),
+            RequestValidationError::InvalidRoleOrder { index, role } => {
+                if *role == MessageRole::User {
+                    // Empty-messages case (m-11): the sentinel role cannot
+                    // arise from the leading-assistant check, so the
+                    // phrasing is unambiguous.
+                    write!(
+                        f,
+                        "messages array is empty; the first message must be user (non-retryable, local)"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "message[{index}] is {role:?}; the first message must be user (non-retryable, local)"
+                    )
+                }
+            }
+            RequestValidationError::UnpairedToolResult { id } => write!(
+                f,
+                "tool_result for tool_use '{id}' has no preceding matching tool_use (non-retryable, local)"
+            ),
+            RequestValidationError::UnansweredToolUse { id } => write!(
+                f,
+                "tool_use '{id}' has no following tool_result (non-retryable, local)"
+            ),
+            RequestValidationError::MutuallyExclusiveFields { a, b } => write!(
+                f,
+                "fields '{a}' and '{b}' are mutually exclusive (non-retryable, local)"
+            ),
+            RequestValidationError::ThinkingBudgetExceedsMaxTokens {
+                budget,
+                max_tokens,
+            } => write!(
+                f,
+                "thinking budget {budget} must be strictly less than max_tokens {max_tokens} (non-retryable, local)"
+            ),
+            RequestValidationError::CacheMarkerCountExceeded { count } => write!(
+                f,
+                "request carries {count} cache_control markers; limit is 4 (non-retryable, local)"
+            ),
+            RequestValidationError::CacheMarkerMisplaced { at } => write!(
+                f,
+                "cache_control marker at block index {at} must sit on the last markable block of its block list (non-retryable, local)"
+            ),
+            RequestValidationError::StreamFieldInvalid { value } => write!(
+                f,
+                "stream must be omitted or true; got {value} (non-retryable, local)"
+            ),
         }
     }
 }
@@ -134,7 +228,11 @@ impl fmt::Display for RequestValidationError {
 impl std::error::Error for RequestValidationError {}
 
 /// The N2 encoded carrier: exactly the bytes that reach transport. Debug is
-/// manual (byte count only) so the body never leaks into logs.
+/// manual (byte count only) so the body never leaks into logs. REQVALID-1
+/// 47b (D-5): `Clone` so the retry-loop carrier can ride a `Clone`d
+/// `ConversationRequest` (the T25 Debug pin is unchanged — the clone is a
+/// byte copy, the Debug render stays length-only).
+#[derive(Clone)]
 pub struct EncodedMessagesRequest(Vec<u8>);
 
 impl EncodedMessagesRequest {
@@ -206,6 +304,23 @@ fn reserve_body(count: u64) -> Result<Vec<u8>, RequestValidationError> {
     Ok(buf)
 }
 
+/// REQVALID-1 47b (D-5): encode-call counter — every two-pass encode
+/// (the only encode path in the crate) increments this, so the cached-
+/// carrier tests can observe re-encode vs reuse through the REAL actor
+/// (T20/T22/T23). Test seam: `reset_encode_call_count` before a scenario,
+/// `encode_call_count` after.
+static ENCODE_CALLS: AtomicU64 = AtomicU64::new(0);
+
+/// The encode-call counter value (D-5 observability).
+pub fn encode_call_count() -> u64 {
+    ENCODE_CALLS.load(Ordering::SeqCst)
+}
+
+/// Reset the encode-call counter to zero (test seam).
+pub fn reset_encode_call_count() {
+    ENCODE_CALLS.store(0, Ordering::SeqCst);
+}
+
 /// N2 two-pass encode: count (checked_add, no buffer) → cap check →
 /// try_reserve_exact → second-pass serialize → pass-length equality. The
 /// serializer is parameterized: the spec path passes the compact-JSON
@@ -214,6 +329,7 @@ fn encode_two_pass<S: FnMut(&mut dyn Write) -> std::io::Result<()>>(
     mut serialize: S,
     cap: u64,
 ) -> Result<Vec<u8>, RequestValidationError> {
+    ENCODE_CALLS.fetch_add(1, Ordering::SeqCst);
     let mut counting = CountingWriter::default();
     serialize(&mut counting).map_err(|_| {
         RequestValidationError::ItemEncodingFailed {
@@ -332,19 +448,36 @@ fn image_stats_in_blocks(blocks: &[ContentBlock]) -> (u64, u64) {
 pub fn validate_and_encode_messages_request(
     request: &MessagesRequest,
 ) -> Result<EncodedMessagesRequest, RequestValidationError> {
+    // 47b D-1 split, GREEN: the combined 47a entry point runs the V1
+    // invariant gate (closed obligations set) FIRST with zero
+    // serialization, then the 47a caps engine (N1 → N3 (R-1) → N2) — the
+    // same gate order as the 47b `validate`→`encode` split, so every
+    // byte-identity pin (T8/T9/T13/T19) stays load-bearing on both paths.
+    crate::request_builder::validate_messages_request_invariants(
+        request,
+        &crate::request_builder::RequestObligations::closed_set(),
+    )?;
+    encode_caps(request)
+}
+
+/// The 47a caps engine — gate order N1 → N3 (R-1 image pricing) → N2,
+/// unchanged by the 47b split (D-1). Shared by the combined 47a entry
+/// point and `ValidatedMessagesRequest::encode` (the 47b typestate path),
+/// so every byte-identity pin (T8/T9/T13/T19) stays load-bearing on both.
+pub(crate) fn encode_caps(request: &MessagesRequest) -> Result<EncodedMessagesRequest, RequestValidationError> {
     // Gate 1 (N1, spec L1863): message count — zero serialization.
-    if request.messages.len() > MAX_MESSAGES_REQUEST_ITEMS {
+    if request.messages().len() > MAX_MESSAGES_REQUEST_ITEMS {
         return Err(RequestValidationError::TooManyMessages {
-            count: request.messages.len(),
+            count: request.messages().len(),
         });
     }
     // Gate 2 (N3, spec L1883): per-item token cap over the final projected
     // form — every element of `messages` (post-coalesce form), each system
     // item, each complete tool definition.
-    for (i, message) in request.messages.iter().enumerate() {
+    for (i, message) in request.messages().iter().enumerate() {
         check_message_tokens(message, ItemRef::MessageItem(i))?;
     }
-    if let Some(system) = &request.system {
+    if let Some(system) = request.system() {
         match system {
             // Text(s) → ONE item (base instructions); Blocks(v) → ONE item
             // per TextBlock (stage SDD §2.1 enumeration).
@@ -356,7 +489,7 @@ pub fn validate_and_encode_messages_request(
             }
         }
     }
-    if let Some(tools) = &request.tools {
+    if let Some(tools) = request.tools() {
         // ONE item per complete ToolParam: the input schema is a
         // byte-subset of the whole definition and the estimator is monotone
         // in byte count, so the definition subsumes the schema-alone row
@@ -387,9 +520,8 @@ mod tests {
     use crate::error::{SamplingError, is_context_length_error, is_deterministic_in_stream_message};
     use crate::messages::{
         CacheControl, ContentBlock, ImageSource, Message, MessageContent, MessageRole,
-        MessagesRequest,
-        Metadata, OutputConfig, SystemParam, TextBlock, ThinkingConfig, ToolChoiceParam, ToolParam,
-        ToolResultContent,
+        MessagesRequest, MessagesRequestParts, Metadata, OutputConfig, SystemParam, TextBlock,
+        ThinkingConfig, ToolChoiceParam, ToolParam, ToolResultContent,
     };
     use crate::presence::RequestPresence;
     use xai_token_estimation::{estimate_tokens, IMAGE_TOKEN_ESTIMATE};
@@ -414,27 +546,35 @@ mod tests {
     }
 
     fn minimal_request(messages: Vec<Message>) -> MessagesRequest {
-        MessagesRequest {
+        MessagesRequest::from_parts(MessagesRequestParts {
             model: "m".to_string(),
             messages,
             max_tokens: 1,
             ..Default::default()
-        }
+        })
     }
 
     fn request_with_system(
         messages: Vec<Message>,
         system: Option<SystemParam>,
     ) -> MessagesRequest {
-        let mut request = minimal_request(messages);
-        request.system = system;
-        request
+        MessagesRequest::from_parts(MessagesRequestParts {
+            model: "m".to_string(),
+            messages,
+            max_tokens: 1,
+            system,
+            ..Default::default()
+        })
     }
 
     fn request_with_tools(messages: Vec<Message>, tools: Vec<ToolParam>) -> MessagesRequest {
-        let mut request = minimal_request(messages);
-        request.tools = Some(tools);
-        request
+        MessagesRequest::from_parts(MessagesRequestParts {
+            model: "m".to_string(),
+            messages,
+            max_tokens: 1,
+            tools: Some(tools),
+            ..Default::default()
+        })
     }
 
     /// T3/T4 fixture: a request whose compact JSON body is exactly
@@ -480,7 +620,7 @@ mod tests {
     }
 
     fn rich_control_request() -> MessagesRequest {
-        let mut request = minimal_request(vec![
+        let messages = vec![
             text_message(MessageRole::User, "use the tool"),
             Message {
                 role: MessageRole::Assistant,
@@ -506,49 +646,61 @@ mod tests {
                     cache_control: None,
                 }]),
             },
-        ]);
-        request.system = Some(SystemParam::Blocks(vec![
-            TextBlock {
-                r#type: "text".to_string(),
-                text: "base instructions".to_string(),
-                cache_control: Some(CacheControl::ephemeral_with_ttl("1h")),
-            },
-            TextBlock {
-                r#type: "text".to_string(),
-                text: "more instructions".to_string(),
-                cache_control: None,
-            },
-        ]));
-        request.tools = Some(vec![
-            ToolParam {
-                name: "lookup".to_string(),
-                description: Some("look things up".to_string()),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": { "key": { "type": "integer" } }
-                }),
-            },
-            ToolParam {
-                name: "plain".to_string(),
-                description: None,
-                input_schema: serde_json::json!({ "type": "object" }),
-            },
-        ]);
-        request.tool_choice = Some(ToolChoiceParam::Tool { name: "lookup".to_string() });
-        request.temperature = Some(0.7);
-        request.top_p = Some(0.9);
-        request.top_k = Some(40);
-        request.stream = Some(true);
-        request.stop_sequences = Some(vec!["\n".to_string()]);
-        request.thinking = Some(ThinkingConfig::Enabled { budget_tokens: 1024 });
-        request.output_config = Some(OutputConfig {
-            effort: RequestPresence::value("high".to_string()),
-            format: RequestPresence::omitted(),
-        });
-        request.metadata = Some(Metadata {
-            user_id: RequestPresence::value("user-1".to_string()),
-        });
-        request
+        ];
+        // M-2R amendment (47b): the old fixture was D-7-non-compliant in
+        // three classes (thinking Enabled × top_p × top_k; budget 1024 vs
+        // max_tokens 1; cache_control on the FIRST of two system blocks).
+        // Amended minimally per the coordinator ruling: max_tokens → 8192,
+        // top_p → None, top_k → None, cache_control → last system block.
+        // The excluded combinations get dedicated negative tests (the real
+        // coverage); the old 47a goldens (1509 B) are archived by reference
+        // in the 47b report.
+        MessagesRequest::from_parts(MessagesRequestParts {
+            model: "m".to_string(),
+            messages,
+            max_tokens: 8192,
+            system: Some(SystemParam::Blocks(vec![
+                TextBlock {
+                    r#type: "text".to_string(),
+                    text: "base instructions".to_string(),
+                    cache_control: None,
+                },
+                TextBlock {
+                    r#type: "text".to_string(),
+                    text: "more instructions".to_string(),
+                    cache_control: Some(CacheControl::ephemeral_with_ttl("1h")),
+                },
+            ])),
+            tools: Some(vec![
+                ToolParam {
+                    name: "lookup".to_string(),
+                    description: Some("look things up".to_string()),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": { "key": { "type": "integer" } }
+                    }),
+                },
+                ToolParam {
+                    name: "plain".to_string(),
+                    description: None,
+                    input_schema: serde_json::json!({ "type": "object" }),
+                },
+            ]),
+            tool_choice: Some(ToolChoiceParam::Tool { name: "lookup".to_string() }),
+            temperature: Some(0.7),
+            top_p: None,
+            top_k: None,
+            stream: Some(true),
+            stop_sequences: Some(vec!["\n".to_string()]),
+            thinking: Some(ThinkingConfig::Enabled { budget_tokens: 1024 }),
+            output_config: Some(OutputConfig {
+                effort: RequestPresence::value("high".to_string()),
+                format: RequestPresence::omitted(),
+            }),
+            metadata: Some(Metadata {
+                user_id: RequestPresence::value("user-1".to_string()),
+            }),
+        })
     }
 
     /// fixture_f-style conversation from the existing sampling-types test
@@ -591,6 +743,35 @@ mod tests {
             RequestValidationError::AllocationFailed { bytes: 4 },
             RequestValidationError::PassLengthMismatch { counted: 5, actual: 6 },
             RequestValidationError::ItemEncodingFailed { item: ItemRef::Tool(1) },
+            // 47b V1 invariant variants — the T14a sweep (Display phrasing
+            // vs every retryable classifier family + non-retryable
+            // predicates) covers them too (STOP §6.2 audit).
+            RequestValidationError::MissingRequiredField { field: "model" },
+            RequestValidationError::InvalidRoleOrder {
+                index: 0,
+                role: MessageRole::Assistant,
+            },
+            RequestValidationError::InvalidRoleOrder {
+                index: 0,
+                role: MessageRole::User,
+            },
+            RequestValidationError::UnpairedToolResult {
+                id: "call_1".into(),
+            },
+            RequestValidationError::UnansweredToolUse {
+                id: "call_2".into(),
+            },
+            RequestValidationError::MutuallyExclusiveFields {
+                a: "thinking",
+                b: "top_p",
+            },
+            RequestValidationError::ThinkingBudgetExceedsMaxTokens {
+                budget: 1024,
+                max_tokens: 1024,
+            },
+            RequestValidationError::CacheMarkerCountExceeded { count: 5 },
+            RequestValidationError::CacheMarkerMisplaced { at: 0 },
+            RequestValidationError::StreamFieldInvalid { value: false },
         ]
     }
 
@@ -937,8 +1118,12 @@ mod tests {
     #[test]
     fn max_tokens_zero_and_max_accept() {
         for max_tokens in [0u32, u32::MAX] {
-            let mut request = minimal_request(vec![text_message(MessageRole::User, "hi")]);
-            request.max_tokens = max_tokens;
+            let request = MessagesRequest::from_parts(MessagesRequestParts {
+                model: "m".to_string(),
+                messages: vec![text_message(MessageRole::User, "hi")],
+                max_tokens,
+                ..Default::default()
+            });
             let encoded = validate_and_encode_messages_request(&request)
                 .expect(&format!("max_tokens {max_tokens} must be accepted (N4)"));
             assert!(!encoded.is_empty());
@@ -1021,7 +1206,7 @@ mod tests {
         };
         let request = build_messages_request(&conv);
         assert_eq!(
-            request.messages.len(),
+            request.messages().len(),
             1,
             "adjacent same-role fragments must coalesce into one item"
         );
@@ -1040,7 +1225,7 @@ mod tests {
                 "pre-coalesce fragment must be under-cap"
             );
         }
-        let coalesced_est = est(&serde_json::to_vec(&request.messages[0]).unwrap());
+        let coalesced_est = est(&serde_json::to_vec(&request.messages()[0]).unwrap());
         assert!(
             coalesced_est > MAX_MODEL_CONTEXT_ITEM_TOKENS,
             "coalesced item must be over-cap: {coalesced_est}"

@@ -30,9 +30,11 @@ use xai_grok_sampling_types::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ConversationRequest,
     ConversationResponse, CreateResponseWrapper, DEFAULT_EXACT_REPETITION_MIN_TOKENS,
     DOOM_LOOP_CHECK_HEADER, EXACT_REPETITION_CHECK_HEADER, MessagesRequestWrapper, ReasoningEffort,
-    ResponseModelMetadata, Result, SamplingError, SentCredential, build_messages_request,
+    ResponseModelMetadata, Result, SamplingError, SentCredential,
+    build_messages_request,
     is_check_event, messages, rs,
 };
+use xai_grok_sampling_types::request_validation::EncodedMessagesRequest;
 
 use crate::config::{AuthScheme, OriginClientInfo, SamplerConfig};
 use crate::events::SamplingErrorInfo;
@@ -2552,26 +2554,46 @@ impl SamplingClient {
     // =========================================================================
 
     fn apply_message_defaults(&self, request: &mut MessagesRequestWrapper) -> Result<()> {
-        if request.inner.model.is_empty() {
-            request.inner.model = self.defaults.model.clone();
-        }
-
-        if request.inner.max_tokens == 0 {
-            request.inner.max_tokens = self
-                .defaults
+        request.inner.fill_model(self.defaults.model.clone());
+        request.inner.fill_max_tokens(
+            self.defaults
                 .max_completion_tokens
-                .unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS);
-        }
-
-        if request.inner.temperature.is_none() {
-            request.inner.temperature = self.defaults.temperature;
-        }
-
-        if request.inner.top_p.is_none() {
-            request.inner.top_p = self.defaults.top_p;
-        }
+                .unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS),
+        );
+        request.inner.fill_temperature(self.defaults.temperature);
+        request.inner.fill_top_p(self.defaults.top_p);
 
         Ok(())
+    }
+
+    /// REQVALID-1 47b (D-5): encode the conversation request for the
+    /// messages wire ONCE, up front, exactly as the stream funnel would
+    /// (conversation defaults → `build_messages_request` → the four
+    /// message-default fills → `stream = Some(true)` → validate + caps
+    /// encode). The retry loop (the encode owner across the attempt
+    /// boundary, SP-2) caches the returned carrier on the shared request
+    /// and reuses its exact bytes on backoff retries; any request
+    /// mutation after encode invalidates the carrier.
+    pub fn encode_conversation_messages(
+        &self,
+        request: &ConversationRequest,
+    ) -> std::result::Result<EncodedMessagesRequest, SamplingError> {
+        let mut request = request.clone();
+        self.apply_conversation_defaults(&mut request)?;
+        let mut messages_request = build_messages_request(&request);
+        messages_request.fill_model(self.defaults.model.clone());
+        messages_request.fill_max_tokens(
+            self.defaults
+                .max_completion_tokens
+                .unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS),
+        );
+        messages_request.fill_temperature(self.defaults.temperature);
+        messages_request.fill_top_p(self.defaults.top_p);
+        messages_request.set_stream(Some(true));
+        xai_grok_sampling_types::request_validation::validate_and_encode_messages_request(
+            &messages_request,
+        )
+        .map_err(SamplingError::from)
     }
 
     /// Create a message using the Anthropic Messages API (non-streaming).
@@ -2583,7 +2605,7 @@ impl SamplingClient {
 
         let x_grok_conv_id = request.x_grok_conv_id.as_deref().unwrap_or_default();
         let x_grok_req_id = request.x_grok_req_id.as_deref().unwrap_or_default();
-        let model_id = request.inner.model.clone();
+        let model_id = request.inner.model().to_string();
 
         let request_region = crate::span_timing::Region::from_span(tracing::info_span!(
             "sampling.nonstream_request",
@@ -2690,9 +2712,14 @@ impl SamplingClient {
     }
 
     /// Create a streaming message using the Anthropic Messages API.
-    pub async fn create_message_stream(
+    /// REQVALID-1 47b (D-5, SP-2): the messages send site with the
+    /// retry-loop carrier. `Some` reuses the exact encoded bytes (backoff
+    /// retries never re-encode); `None` keeps the pre-HTTP validation call
+    /// at the send site (T26).
+    async fn create_message_stream_with_carrier(
         &self,
         request: MessagesRequestWrapper,
+        carrier: Option<EncodedMessagesRequest>,
     ) -> Result<(
         BoxStream<'static, Result<messages::MessageStreamEvent>>,
         Option<ResponseModelMetadata>,
@@ -2700,50 +2727,68 @@ impl SamplingClient {
         let region = crate::span_timing::stream_span!(
             "http.create_message_stream",
             endpoint = %self.endpoint("messages"),
-            model_id = request.inner.model.as_str(),
+            model_id = request.inner.model(),
         );
         if region.span().is_disabled() {
-            self.create_message_stream_inner(request, region).await
+            self.create_message_stream_inner(request, carrier, region).await
         } else {
             let span = region.span().clone();
-            self.create_message_stream_inner(request, region)
+            self.create_message_stream_inner(request, carrier, region)
                 .instrument(span)
                 .await
         }
     }
 
+    pub async fn create_message_stream(
+        &self,
+        request: MessagesRequestWrapper,
+    ) -> Result<(
+        BoxStream<'static, Result<messages::MessageStreamEvent>>,
+        Option<ResponseModelMetadata>,
+    )> {
+        self.create_message_stream_with_carrier(request, None).await
+    }
+
     async fn create_message_stream_inner(
         &self,
         mut request: MessagesRequestWrapper,
+        carrier: Option<EncodedMessagesRequest>,
         region: crate::span_timing::Region,
     ) -> Result<(
         BoxStream<'static, Result<messages::MessageStreamEvent>>,
         Option<ResponseModelMetadata>,
     )> {
         let mut span_timing = StreamSpanTiming::start(region);
-        self.apply_message_defaults(&mut request)?;
-
-        request.inner.stream = Some(true);
-
-        let x_grok_conv_id = request.x_grok_conv_id.as_deref().unwrap_or_default();
-        let x_grok_req_id = request.x_grok_req_id.as_deref().unwrap_or_default();
-        let model_id = request.inner.model.clone();
 
         // Drop process-local trace data.
         request.trace.take();
 
-        // REQVALID-1 47a: hard local caps (N1 count / N3 per-item / N2
-        // two-pass body) after defaults and before body build — the encoded
-        // carrier is the exact wire body, and an over-cap request never
-        // reaches transport. Header parity note: `SamplingClient::new`
+        // REQVALID-1 47b (D-5, SP-2): the retry loop is the encode owner
+        // across the attempt boundary — a cached carrier reuses its exact
+        // bytes (NIT-2). Without one, the send site keeps the pre-HTTP
+        // validation call (T26): hard local caps (N1 count / N3 per-item /
+        // N2 two-pass body) after defaults and before body build — the
+        // encoded carrier is the exact wire body, and an over-cap request
+        // never reaches transport. Header parity note: `SamplingClient::new`
         // already puts Content-Type: application/json in the default
         // headers that `post()` applies, so no explicit header is added —
         // reqwest's `.json()` (contains_key guard, request.rs:452-455 of
         // 0.12.24) likewise skips inserting it here.
-        let encoded = xai_grok_sampling_types::request_validation::validate_and_encode_messages_request(
-            &request.inner,
-        )
-        .map_err(SamplingError::from)?;
+        let encoded = match carrier {
+            Some(carrier) => carrier,
+            None => {
+                self.apply_message_defaults(&mut request)?;
+                request.inner.set_stream(Some(true));
+                xai_grok_sampling_types::request_validation::validate_and_encode_messages_request(
+                    &request.inner,
+                )
+                .map_err(SamplingError::from)?
+            }
+        };
+
+        let x_grok_conv_id = request.x_grok_conv_id.as_deref().unwrap_or_default();
+        let x_grok_req_id = request.x_grok_req_id.as_deref().unwrap_or_default();
+        let model_id = request.inner.model().to_string();
 
         tracing::debug!(
             base_url = %self.base_url,
@@ -3082,6 +3127,11 @@ impl SamplingClient {
     )> {
         self.apply_conversation_defaults(&mut request)?;
 
+        // REQVALID-1 47b (D-5): a carrier cached by the retry loop (the
+        // encode owner, SP-2) rides the request in — the wrapper rebuild
+        // below only feeds headers/debug, never the wire body.
+        let carrier = request.encoded.take();
+
         let trace = request.trace.take();
         let x_grok_conv_id = request.x_grok_conv_id.clone();
         let x_grok_req_id = request.x_grok_req_id.clone();
@@ -3104,7 +3154,7 @@ impl SamplingClient {
             wrapper.trace = Some(trace);
         }
 
-        self.create_message_stream(wrapper).await
+        self.create_message_stream_with_carrier(wrapper, carrier).await
     }
 
     /// Send a conversation request using the Anthropic Messages API (non-streaming).
@@ -3764,7 +3814,7 @@ mod tests {
                 .expect("defaults apply");
             let built = build_messages_request(&request);
             assert_eq!(
-                built.max_tokens,
+                built.max_tokens(),
                 *expected as u32,
                 "model {model}: the messages wire must carry a non-zero explicit cap"
             );

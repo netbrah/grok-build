@@ -862,11 +862,11 @@ fn over_budget_recap_serializes_to_well_formed_messages_request() {
     let req = ConversationRequest::from_items(items);
     let msg = xai_grok_sampling_types::build_messages_request(&req);
 
-    assert!(msg.system.is_some(), "system prompt must be preserved");
+    assert!(msg.system().is_some(), "system prompt must be preserved");
 
     // Flatten every content block across all messages (each message's content is a `Blocks` vec here)
     let all_blocks: Vec<ContentBlock> = msg
-        .messages
+        .messages()
         .iter()
         .flat_map(|m| match &m.content {
             MessageContent::Blocks(b) => b.clone(),
@@ -882,7 +882,7 @@ fn over_budget_recap_serializes_to_well_formed_messages_request() {
     );
 
     // Last message is the appended user instruction: role user, text-only.
-    let last = msg.messages.last().expect("messages must be non-empty");
+    let last = msg.messages().last().expect("messages must be non-empty");
     assert!(matches!(last.role, MessageRole::User));
     assert!(
         matches!(&last.content, MessageContent::Blocks(b)

@@ -719,8 +719,8 @@ mod presence_goldens {
     use super::*;
     use crate::messages::{
         CacheControl, CacheCreation, Message, MessageContent, MessageDeltaBody,
-        MessageDeltaUsage, MessageRole, Metadata, MessagesRequest, MessagesResponse,
-        OutputConfig, OutputFormat, OutputTokensDetails,
+        MessageDeltaUsage, MessageRole, Metadata, MessagesRequest, MessagesRequestParts,
+        MessagesResponse, OutputConfig, OutputFormat, OutputTokensDetails,
     };
     use serde_json::json;
 
@@ -788,25 +788,27 @@ mod presence_goldens {
     const G15_TTL_OMITTED_BYTES: &str = r#"{"type":"ephemeral"}"#;
 
     fn minimal_request() -> MessagesRequest {
-        MessagesRequest {
+        minimal_request_with(None, None)
+    }
+
+    /// 47b migration: the DTO goldens set one optional member per test —
+    /// construction routes through the in-crate from_parts seam (the
+    /// struct fields are private to the messages module).
+    fn minimal_request_with(
+        metadata: Option<Metadata>,
+        output_config: Option<OutputConfig>,
+    ) -> MessagesRequest {
+        MessagesRequest::from_parts(MessagesRequestParts {
             model: "m-1".to_owned(),
             messages: vec![Message {
                 role: MessageRole::User,
                 content: MessageContent::Text("hi".to_owned()),
             }],
             max_tokens: 1,
-            system: None,
-            tools: None,
-            tool_choice: None,
-            temperature: None,
-            top_p: None,
-            top_k: None,
-            stream: None,
-            stop_sequences: None,
-            thinking: None,
-            output_config: None,
-            metadata: None,
-        }
+            metadata,
+            output_config,
+            ..Default::default()
+        })
     }
 
     #[test]
@@ -820,33 +822,30 @@ mod presence_goldens {
         // Current wire truth (46a pin, byte-stable across 46b): an omitted
         // `user_id` re-serializes as an empty `metadata` object — qwen NIT-7:
         // it is the NULL row (USER_ID_NULL_BYTES) that 46b adds, not this one.
-        let mut req = minimal_request();
-        req.metadata = Some(Metadata { user_id: RequestPresence::omitted() });
+        let req = minimal_request_with(Some(Metadata { user_id: RequestPresence::omitted() }), None);
         let bytes = serde_json::to_string(&req).expect("serialize");
         assert_eq!(bytes, USER_ID_OMITTED_BYTES);
     }
 
     #[test]
     fn dto_golden_user_id_value_bytes() {
-        let mut req = minimal_request();
-        req.metadata = Some(Metadata {
+        let req = minimal_request_with(Some(Metadata {
             user_id: RequestPresence::value("user-1".to_owned()),
-        });
+        }), None);
         let bytes = serde_json::to_string(&req).expect("serialize");
         assert_eq!(bytes, USER_ID_VALUE_BYTES);
     }
 
     #[test]
     fn dto_golden_user_id_null_bytes() {
-        let mut req = minimal_request();
-        req.metadata = Some(Metadata {
+        let req = minimal_request_with(Some(Metadata {
             user_id: RequestPresence::null(),
-        });
+        }), None);
         let bytes = serde_json::to_string(&req).expect("serialize");
         assert_eq!(bytes, USER_ID_NULL_BYTES);
         let back: MessagesRequest =
             serde_json::from_str(USER_ID_NULL_BYTES).expect("deserialize null row");
-        assert!(back.metadata.as_ref().expect("metadata present").user_id.is_null());
+        assert!(back.metadata().expect("metadata present").user_id.is_null());
         assert_eq!(
             serde_json::to_string(&back).expect("re-serialize"),
             USER_ID_NULL_BYTES
@@ -855,49 +854,45 @@ mod presence_goldens {
 
     #[test]
     fn dto_golden_effort_omitted_is_empty_output_config_object() {
-        let mut req = minimal_request();
-        req.output_config = Some(OutputConfig {
+        let req = minimal_request_with(None, Some(OutputConfig {
             effort: RequestPresence::omitted(),
             format: RequestPresence::omitted(),
-        });
+        }));
         let bytes = serde_json::to_string(&req).expect("serialize");
         assert_eq!(bytes, OUTPUT_CONFIG_OMITTED_BYTES);
     }
 
     #[test]
     fn dto_golden_format_omitted_is_empty_output_config_object() {
-        let mut req = minimal_request();
-        req.output_config = Some(OutputConfig {
+        let req = minimal_request_with(None, Some(OutputConfig {
             effort: RequestPresence::omitted(),
             format: RequestPresence::omitted(),
-        });
+        }));
         let bytes = serde_json::to_string(&req).expect("serialize");
         assert_eq!(bytes, OUTPUT_CONFIG_OMITTED_BYTES);
     }
 
     #[test]
     fn dto_golden_effort_value_bytes() {
-        let mut req = minimal_request();
-        req.output_config = Some(OutputConfig {
+        let req = minimal_request_with(None, Some(OutputConfig {
             effort: RequestPresence::value("high".to_owned()),
             format: RequestPresence::omitted(),
-        });
+        }));
         let bytes = serde_json::to_string(&req).expect("serialize");
         assert_eq!(bytes, EFFORT_VALUE_BYTES);
     }
 
     #[test]
     fn dto_golden_effort_null_bytes() {
-        let mut req = minimal_request();
-        req.output_config = Some(OutputConfig {
+        let req = minimal_request_with(None, Some(OutputConfig {
             effort: RequestPresence::null(),
             format: RequestPresence::omitted(),
-        });
+        }));
         let bytes = serde_json::to_string(&req).expect("serialize");
         assert_eq!(bytes, EFFORT_NULL_BYTES);
         let back: MessagesRequest =
             serde_json::from_str(EFFORT_NULL_BYTES).expect("deserialize null row");
-        assert!(back.output_config.as_ref().expect("output_config present").effort.is_null());
+        assert!(back.output_config().expect("output_config present").effort.is_null());
         assert_eq!(
             serde_json::to_string(&back).expect("re-serialize"),
             EFFORT_NULL_BYTES
@@ -906,29 +901,27 @@ mod presence_goldens {
 
     #[test]
     fn dto_golden_format_value_bytes() {
-        let mut req = minimal_request();
-        req.output_config = Some(OutputConfig {
+        let req = minimal_request_with(None, Some(OutputConfig {
             effort: RequestPresence::omitted(),
             format: RequestPresence::value(OutputFormat::JsonSchema {
                 schema: json!({ "type": "object" }),
             }),
-        });
+        }));
         let bytes = serde_json::to_string(&req).expect("serialize");
         assert_eq!(bytes, FORMAT_VALUE_BYTES);
     }
 
     #[test]
     fn dto_golden_format_null_bytes() {
-        let mut req = minimal_request();
-        req.output_config = Some(OutputConfig {
+        let req = minimal_request_with(None, Some(OutputConfig {
             effort: RequestPresence::omitted(),
             format: RequestPresence::null(),
-        });
+        }));
         let bytes = serde_json::to_string(&req).expect("serialize");
         assert_eq!(bytes, FORMAT_NULL_BYTES);
         let back: MessagesRequest =
             serde_json::from_str(FORMAT_NULL_BYTES).expect("deserialize null row");
-        assert!(back.output_config.as_ref().expect("output_config present").format.is_null());
+        assert!(back.output_config().expect("output_config present").format.is_null());
         assert_eq!(
             serde_json::to_string(&back).expect("re-serialize"),
             FORMAT_NULL_BYTES

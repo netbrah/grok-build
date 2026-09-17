@@ -27,11 +27,11 @@ fn json_schema_and_reasoning_effort_are_orthogonal_in_output_config() {
     req.reasoning_effort = Some(crate::ReasoningEffort::High);
 
     let msgs = build_messages_request(&req);
-    let oc = msgs.output_config.expect("output_config present");
+    let oc = msgs.output_config().expect("output_config present");
     assert_eq!(oc.effort.as_ref(), Some(&"high".to_owned()));
     assert!(oc.format.as_ref().is_some());
     assert!(
-        msgs.thinking.is_some(),
+        msgs.thinking().is_some(),
         "thinking set when effort is present"
     );
 }
@@ -73,11 +73,11 @@ fn test_messages_request_omits_output_config_when_no_supported_effort() {
         let req = messages_test_request(input);
         let msgs = build_messages_request(&req);
         assert!(
-            msgs.output_config.is_none(),
+            msgs.output_config().is_none(),
             "input {input:?} must not produce output_config",
         );
         assert!(
-            msgs.thinking.is_none(),
+            msgs.thinking().is_none(),
             "input {input:?} must not auto-pair thinking",
         );
     }
@@ -542,9 +542,7 @@ fn test_tool_result_with_images_to_anthropic() {
     let messages_req = build_messages_request(&req);
 
     // Find the user message that contains the tool result (the Messages API wraps tool results in user messages)
-    let tool_result_msg = messages_req
-        .messages
-        .iter()
+    let tool_result_msg = messages_req.messages().iter()
         .find(|m| {
             if let crate::messages::MessageContent::Blocks(blocks) = &m.content {
                 blocks
@@ -755,19 +753,19 @@ fn d6_golden_f_invariants() {
     );
     let msgs = build_messages_request(&req);
     assert_eq!(
-        msgs.max_tokens, 4096,
+        msgs.max_tokens(), 4096,
         "max_tokens carries the request value"
     );
     assert!(
-        !msgs.messages.is_empty()
+        !msgs.messages().is_empty()
             && matches!(
-                msgs.messages.last().unwrap().role,
+                msgs.messages().last().unwrap().role,
                 crate::messages::MessageRole::User
             ),
         "F does not end on assistant (no repair expected)"
     );
-    assert_adjacency_invariant(&msgs.messages);
-    for (i, msg) in msgs.messages.iter().enumerate() {
+    assert_adjacency_invariant(msgs.messages());
+    for (i, msg) in msgs.messages().iter().enumerate() {
         if let crate::messages::MessageContent::Blocks(blocks) = &msg.content {
             for block in blocks {
                 assert!(
@@ -980,12 +978,12 @@ fn orphan_cleanup_integration_with_translation() {
     ]);
     let msgs = build_messages_request(&req);
     assert_eq!(
-        msgs.messages.len(),
+        msgs.messages().len(),
         1,
         "after orphan removal only the user message survives"
     );
     assert!(matches!(
-        msgs.messages[0].role,
+        msgs.messages()[0].role,
         crate::messages::MessageRole::User
     ));
 }
@@ -999,9 +997,7 @@ fn s021_adjacent_pair_preserved() {
         ConversationItem::tool_result("tc1", "files"),
     ]);
     let msgs = build_messages_request(&req);
-    let asst_idx = msgs
-        .messages
-        .iter()
+    let asst_idx = msgs.messages().iter()
         .position(|m| {
             matches!(
                 &m.content,
@@ -1010,7 +1006,7 @@ fn s021_adjacent_pair_preserved() {
             )
         })
         .expect("must have an assistant message with tool_use");
-    let next = &msgs.messages[asst_idx + 1];
+    let next = &msgs.messages()[asst_idx + 1];
     assert!(matches!(next.role, crate::messages::MessageRole::User));
     let crate::messages::MessageContent::Blocks(blocks) = &next.content else {
         panic!("tool result message must carry blocks");
@@ -1021,7 +1017,7 @@ fn s021_adjacent_pair_preserved() {
             .any(|b| matches!(b, crate::messages::ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "tc1")),
         "adjacent tool_result tc1 must survive"
     );
-    assert_adjacency_invariant(&msgs.messages);
+    assert_adjacency_invariant(msgs.messages());
 }
 
 /// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/src/wire.rs :: s021_non_adjacent_tool_use_stripped (adapted)
@@ -1132,9 +1128,7 @@ fn s021_e2e_resume_parallel_calls_aborted() {
     ]);
     let msgs = build_messages_request(&req);
     // user("run both") -> asst(tcA) -> user(tcA) -> asst(tcB) -> user(tcB)
-    let roles: Vec<&str> = msgs
-        .messages
-        .iter()
+    let roles: Vec<&str> = msgs.messages().iter()
         .map(|m| match m.role {
             crate::messages::MessageRole::User => "user",
             crate::messages::MessageRole::Assistant => "assistant",
@@ -1145,7 +1139,7 @@ fn s021_e2e_resume_parallel_calls_aborted() {
         vec!["user", "assistant", "user", "assistant", "user"],
         "all paired turns survive: {roles:?}"
     );
-    assert_adjacency_invariant(&msgs.messages);
+    assert_adjacency_invariant(msgs.messages());
 }
 
 /// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/src/wire.rs :: s021_empty_messages_removed_after_stripping (adapted)
@@ -1222,9 +1216,9 @@ fn messages_wire_satisfies_adjacency_invariant_for_any_input() {
         }
         let req = ConversationRequest::from_items(items).with_model("fuzz-model");
         let msgs = build_messages_request(&req);
-        match check_adjacency_invariant(&msgs.messages) {
+        match check_adjacency_invariant(msgs.messages()) {
             Ok(()) => {}
-            Err(err) => panic!("items={:?} messages={:?}: {err}", req.items, msgs.messages),
+            Err(err) => panic!("items={:?} messages={:?}: {err}", req.items, msgs.messages()),
         }
     }
 }
@@ -1256,9 +1250,7 @@ fn test_thinking_stripped_from_earlier_assistant_messages() {
     let msgs = build_messages_request(&req);
 
     // First assistant message: thinking stripped, only tool_use remains
-    let first_assistant = msgs
-        .messages
-        .iter()
+    let first_assistant = msgs.messages().iter()
         .find(|m| {
             matches!(
                 &m.content,
@@ -1278,9 +1270,7 @@ fn test_thinking_stripped_from_earlier_assistant_messages() {
     }
 
     // Last assistant message keeps its (verbatim, signed) thinking
-    let last_assistant = msgs
-        .messages
-        .iter()
+    let last_assistant = msgs.messages().iter()
         .rfind(|m| matches!(m.role, crate::messages::MessageRole::Assistant))
         .unwrap();
     let crate::messages::MessageContent::Blocks(blocks) = &last_assistant.content else {
@@ -1309,7 +1299,7 @@ fn test_empty_assistant_messages_removed_after_stripping() {
         ConversationItem::assistant("A2"),
     ]);
     let msgs = build_messages_request(&req);
-    for (i, msg) in msgs.messages.iter().enumerate() {
+    for (i, msg) in msgs.messages().iter().enumerate() {
         if matches!(msg.role, crate::messages::MessageRole::Assistant) {
             let crate::messages::MessageContent::Blocks(blocks) = &msg.content else {
                 continue;
@@ -1331,9 +1321,7 @@ fn test_single_assistant_message_thinking_preserved() {
         ConversationItem::assistant("Answer"),
     ]);
     let msgs = build_messages_request(&req);
-    let last = msgs
-        .messages
-        .iter()
+    let last = msgs.messages().iter()
         .rfind(|m| matches!(m.role, crate::messages::MessageRole::Assistant))
         .expect("assistant message must exist");
     let crate::messages::MessageContent::Blocks(blocks) = &last.content else {
@@ -1369,9 +1357,7 @@ fn test_opus47_empty_thinking_with_signature_dropped() {
     let msgs = build_messages_request(&req);
     // Both items coalesce into one assistant message; the empty-thinking
     // block must be absent so only the text block survives.
-    let last = msgs
-        .messages
-        .iter()
+    let last = msgs.messages().iter()
         .rfind(|m| matches!(m.role, crate::messages::MessageRole::Assistant))
         .expect("assistant message must exist");
     let crate::messages::MessageContent::Blocks(blocks) = &last.content else {
@@ -1406,9 +1392,7 @@ fn test_unsigned_thinking_stripped_from_latest_assistant() {
         ConversationItem::assistant("Final answer"),
     ]);
     let msgs = build_messages_request(&req);
-    let last = msgs
-        .messages
-        .iter()
+    let last = msgs.messages().iter()
         .rfind(|m| matches!(m.role, crate::messages::MessageRole::Assistant))
         .expect("assistant message must exist");
     let crate::messages::MessageContent::Blocks(blocks) = &last.content else {
@@ -1441,7 +1425,7 @@ fn test_unsigned_reasoning_only_latest_assistant_removed() {
         mk_reasoning("Deep thoughts", None),
     ]);
     let msgs = build_messages_request(&req);
-    for (i, msg) in msgs.messages.iter().enumerate() {
+    for (i, msg) in msgs.messages().iter().enumerate() {
         if let crate::messages::MessageContent::Blocks(blocks) = &msg.content {
             for block in blocks {
                 assert!(
@@ -1456,12 +1440,10 @@ fn test_unsigned_reasoning_only_latest_assistant_removed() {
         }
     }
     assert!(
-        !msgs
-            .messages
-            .iter()
+        !msgs.messages().iter()
             .any(|m| matches!(m.role, crate::messages::MessageRole::Assistant)),
         "the emptied assistant message must be removed: {:#?}",
-        msgs.messages
+        msgs.messages()
     );
 }
 
@@ -1478,9 +1460,7 @@ fn test_verbatim_pair_survives_but_unsigned_dropped_in_latest() {
         mk_reasoning("reconstructed thinking", None),
     ]);
     let msgs = build_messages_request(&req);
-    let last = msgs
-        .messages
-        .iter()
+    let last = msgs.messages().iter()
         .rfind(|m| matches!(m.role, crate::messages::MessageRole::Assistant))
         .expect("assistant message must exist");
     let crate::messages::MessageContent::Blocks(blocks) = &last.content else {
@@ -1520,11 +1500,11 @@ fn trailing_plain_text_assistant_gets_continue_sentinel() {
     .with_model("messages-compatible-model");
     let msgs = build_messages_request(&req);
     assert_eq!(
-        msgs.messages.len(),
+        msgs.messages().len(),
         3,
         "user + assistant + synthetic user: {msgs:?}"
     );
-    let last = msgs.messages.last().unwrap();
+    let last = msgs.messages().last().unwrap();
     assert!(
         matches!(last.role, crate::messages::MessageRole::User),
         "the appended sentinel must be a user message"
@@ -1575,11 +1555,11 @@ fn forked_conversation_ending_with_assistant_gets_sentinel() {
     .with_model("messages-compatible-model");
     let msgs = build_messages_request(&req);
     assert_eq!(
-        msgs.messages.len(),
+        msgs.messages().len(),
         3,
         "forked assistant-ending conv needs a sentinel: {msgs:?}"
     );
-    let last = msgs.messages.last().unwrap();
+    let last = msgs.messages().last().unwrap();
     assert!(matches!(last.role, crate::messages::MessageRole::User));
     assert_eq!(sentinel_text(last), "[Continue]");
 }
@@ -1615,9 +1595,9 @@ fn no_synthetic_user_when_ending_on_user() {
     let req = ConversationRequest::from_items(vec![ConversationItem::user("hello")])
         .with_model("messages-compatible-model");
     let msgs = build_messages_request(&req);
-    assert_eq!(msgs.messages.len(), 1, "no synthetic message needed");
+    assert_eq!(msgs.messages().len(), 1, "no synthetic message needed");
     assert!(matches!(
-        msgs.messages[0].role,
+        msgs.messages()[0].role,
         crate::messages::MessageRole::User
     ));
 }
@@ -1635,7 +1615,7 @@ fn no_synthetic_user_after_tool_result() {
     ])
     .with_model("messages-compatible-model");
     let msgs = build_messages_request(&req);
-    let last = msgs.messages.last().unwrap();
+    let last = msgs.messages().last().unwrap();
     assert!(
         matches!(last.role, crate::messages::MessageRole::User),
         "tool_result is role:user — no synthetic needed"
@@ -1775,19 +1755,19 @@ fn s022_e2e_warning_injected_between_tool_use_and_result() {
     // its own message, split the pair, and the message-level strip removed
     // both sides) — this is exactly the S-022 shape the hoist was written
     // for.
-    assert_eq!(msgs.messages.len(), 3, "{:?}", msgs.messages);
+    assert_eq!(msgs.messages().len(), 3, "{:?}", msgs.messages());
     assert!(
-        blocks_of(&msgs.messages[1])
+        blocks_of(&msgs.messages()[1])
             .iter()
             .any(|b| matches!(b, crate::messages::ContentBlock::ToolUse { .. })),
         "the now-adjacent tool_use must survive: {:?}",
-        msgs.messages
+        msgs.messages()
     );
     // The load-bearing wire invariant (S-022) is unchanged: any
     // tool_result-bearing message must lead with its tool_result — the
     // hoist puts the result ahead of the warning text inside the merged
     // message.
-    for (i, msg) in msgs.messages.iter().enumerate() {
+    for (i, msg) in msgs.messages().iter().enumerate() {
         let blocks = blocks_of(msg);
         if blocks
             .iter()
@@ -1802,7 +1782,7 @@ fn s022_e2e_warning_injected_between_tool_use_and_result() {
             );
         }
     }
-    let merged = &msgs.messages[2];
+    let merged = &msgs.messages()[2];
     assert!(
         blocks_of(merged)
             .first()
@@ -1815,7 +1795,7 @@ fn s022_e2e_warning_injected_between_tool_use_and_result() {
             )),
         "the merged user message is [tool_result, warning text]: {merged:?}"
     );
-    assert_adjacency_invariant(&msgs.messages);
+    assert_adjacency_invariant(msgs.messages());
 }
 
 // ============================================================================
@@ -1838,7 +1818,7 @@ fn d4_max_tokens_combination_arms() {
             max_output_tokens,
             ..Default::default()
         };
-        build_messages_request(&req).max_tokens
+        build_messages_request(&req).max_tokens()
     }
     assert_eq!(
         built_max("claude-sonnet-5", Some(4096)),
@@ -2117,7 +2097,7 @@ fn post_build_messages_never_contain_consecutive_same_role() {
         ])
         .with_model("claude-sonnet-5"),
     );
-    assert_alternates(&a.messages, "(a)");
+    assert_alternates(a.messages(), "(a)");
 
     // (b) [U(text), A(tool_use x2), TR, TR]
     let b = build_messages_request(
@@ -2129,7 +2109,7 @@ fn post_build_messages_never_contain_consecutive_same_role() {
         ])
         .with_model("claude-sonnet-5"),
     );
-    assert_alternates(&b.messages, "(b)");
+    assert_alternates(b.messages(), "(b)");
 
     // (c) [A(text), A(tool_use)] — the orphaned call is cleaned pre-translation
     let c = build_messages_request(
@@ -2139,7 +2119,7 @@ fn post_build_messages_never_contain_consecutive_same_role() {
         ])
         .with_model("claude-sonnet-5"),
     );
-    assert_alternates(&c.messages, "(c)");
+    assert_alternates(c.messages(), "(c)");
 
     // (d) [TR, U, A, TR]
     let d = build_messages_request(
@@ -2151,7 +2131,7 @@ fn post_build_messages_never_contain_consecutive_same_role() {
         ])
         .with_model("claude-sonnet-5"),
     );
-    assert_alternates(&d.messages, "(d)");
+    assert_alternates(d.messages(), "(d)");
 
     // (e) system-only prefix
     let e = build_messages_request(
@@ -2162,14 +2142,14 @@ fn post_build_messages_never_contain_consecutive_same_role() {
         ])
         .with_model("claude-sonnet-5"),
     );
-    assert_alternates(&e.messages, "(e)");
+    assert_alternates(e.messages(), "(e)");
 
     // (f) the D2 double-sentinel [A] case
     let f = build_messages_request(
         &ConversationRequest::from_items(vec![ConversationItem::assistant("lone assistant")])
             .with_model("claude-sonnet-5"),
     );
-    assert_alternates(&f.messages, "(f)");
+    assert_alternates(f.messages(), "(f)");
 }
 
 // ============================================================================
@@ -2591,11 +2571,11 @@ fn d6_golden_g_invariants() {
     let json = serde_json::to_string(&req_built).unwrap();
 
     assert_eq!(
-        req_built.max_tokens, 4096,
+        req_built.max_tokens(), 4096,
         "max_tokens carries the request value"
     );
     assert_eq!(
-        req_built.messages.len(),
+        req_built.messages().len(),
         3,
         "R1 merge: user / assistant / merged user — {req_built:?}"
     );
@@ -2619,10 +2599,10 @@ fn d6_golden_g_invariants() {
         json.contains("iVBORw0KGgoAAAANSUhEUg=="),
         "R3: the base64 image data is preserved in the bytes"
     );
-    assert_adjacency_invariant(&req_built.messages);
+    assert_adjacency_invariant(req_built.messages());
     // MW-1 invariants (A4): no thinking (rule 2), not ending on assistant
     // (rule 3), tool_result hoisted to the front of the merged user message.
-    let last = req_built.messages.last().unwrap();
+    let last = req_built.messages().last().unwrap();
     assert!(
         matches!(last.role, crate::messages::MessageRole::User),
         "G does not end on assistant"

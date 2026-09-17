@@ -1219,4 +1219,68 @@ mod tests {
             assert!(!err.is_image_processing_error());
         }
     }
+
+    /// T24 (REQVALID-1 47b): ALL 16 `RequestValidationError` variants —
+    /// the 7 47a caps variants plus the 9 V1 invariant variants — must be
+    /// terminal in the retry actor's ACTUAL classifier, and none may match
+    /// a retryable classifier family (STOP-2 phrasing sweep, classifier
+    /// half). GREEN in RED-2 by construction: the V1 variants exist since
+    /// RED-1 and the classifier is unchanged (the RequestValidation arm
+    /// hits the default Fatal branch), so this records honestly rather
+    /// than pinning new behavior.
+    #[test]
+    fn v1_variants_terminal_in_retry_classifier() {
+        use xai_grok_sampling_types::messages::MessageRole;
+        use xai_grok_sampling_types::request_validation::{ItemRef, RequestValidationError};
+        let variants = [
+            RequestValidationError::TooManyMessages { count: 100_001 },
+            RequestValidationError::ItemTokenLimitExceeded {
+                item: ItemRef::MessageItem(0),
+                estimated_tokens: 10_001,
+            },
+            RequestValidationError::EncodedBodyTooLarge { bytes: 32_000_001 },
+            RequestValidationError::CounterOverflow,
+            RequestValidationError::AllocationFailed { bytes: 4 },
+            RequestValidationError::PassLengthMismatch { counted: 5, actual: 6 },
+            RequestValidationError::ItemEncodingFailed { item: ItemRef::Tool(1) },
+            RequestValidationError::MissingRequiredField { field: "model" },
+            RequestValidationError::InvalidRoleOrder {
+                index: 0,
+                role: MessageRole::Assistant,
+            },
+            RequestValidationError::UnpairedToolResult {
+                id: "toolu_47b".into(),
+            },
+            RequestValidationError::UnansweredToolUse {
+                id: "toolu_47b".into(),
+            },
+            RequestValidationError::MutuallyExclusiveFields {
+                a: "thinking",
+                b: "top_k",
+            },
+            RequestValidationError::ThinkingBudgetExceedsMaxTokens {
+                budget: 1,
+                max_tokens: 0,
+            },
+            RequestValidationError::CacheMarkerCountExceeded { count: 5 },
+            RequestValidationError::CacheMarkerMisplaced { at: 0 },
+            RequestValidationError::StreamFieldInvalid { value: false },
+        ];
+        for variant in variants {
+            let err = SamplingError::RequestValidation(variant);
+            let decision = classify_error(&err, 0, 3, RATE_LIMIT_RETRY_THRESHOLD);
+            assert!(
+                matches!(decision, RetryDecision::Fatal(_)),
+                "RequestValidation must classify Fatal (terminal), got: {decision:?} for {err}"
+            );
+            assert!(!err.is_retryable());
+            assert!(!err.is_model_bound_history_error());
+            assert!(!err.is_payload_too_large());
+            assert!(!err.is_byte_size_overflow_coded());
+            assert!(!err.is_retry_vetoed());
+            assert!(!err.is_deterministic_in_stream_error());
+            assert!(!err.is_rate_limited());
+            assert!(!err.is_image_processing_error());
+        }
+    }
 }

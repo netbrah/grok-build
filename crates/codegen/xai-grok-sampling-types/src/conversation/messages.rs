@@ -567,8 +567,9 @@ fn image_source_or_fallback(url: &str) -> Result<crate::messages::ImageSource, S
 
 pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::MessagesRequest {
     use crate::messages::{
-        ContentBlock, Message, MessageContent, MessageRole, MessagesRequest, OutputConfig,
-        SystemParam, TextBlock, ToolChoiceParam, ToolParam, ToolResultContent,
+        ContentBlock, Message, MessageContent, MessageRole, MessagesRequest,
+        MessagesRequestParts, OutputConfig, SystemParam, TextBlock, ToolChoiceParam, ToolParam,
+        ToolResultContent,
     };
     use crate::presence::RequestPresence;
 
@@ -879,7 +880,11 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         None
     };
 
-    MessagesRequest {
+    // REQVALID-1 47b (D-4): the trusted pipeline producer builds through
+    // the in-crate from_parts seam (the struct fields are private to the
+    // messages module; the empty-model output stays legal here — the
+    // client funnel's fill_model seam is the pre-fill contract).
+    MessagesRequest::from_parts(MessagesRequestParts {
         model: req.model.clone().unwrap_or_default(),
         messages,
         max_tokens: match req.max_output_tokens {
@@ -916,7 +921,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         thinking,
         output_config,
         metadata: None,
-    }
+    })
 }
 
 /// `Thinking` is dropped because this `From` returns a single item; the streaming consumer emits the sibling `Reasoning` item instead.

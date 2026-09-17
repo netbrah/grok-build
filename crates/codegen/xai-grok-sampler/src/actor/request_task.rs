@@ -137,6 +137,24 @@ pub(crate) async fn run_request_task(
             return request_id;
         }
 
+        // REQVALID-1 47b (D-5, SP-2): the retry loop owns the messages-wire
+        // encode across the attempt boundary — encode once (pre-HTTP
+        // validation included) and reuse the exact carrier bytes on backoff
+        // retries; every post-encode request mutation calls
+        // `invalidate_encoded` so a mutated request re-encodes next
+        // iteration. A pre-HTTP validation failure is terminal, same as a
+        // classifier Fatal for an invalid request.
+        if client.api_backend() == ApiBackend::Messages && request.encoded.is_none() {
+            match client.encode_conversation_messages(&request) {
+                Ok(carrier) => request.encoded = Some(carrier),
+                Err(err) => {
+                    let terminal_event_queued = emit_failed(&event_tx, &request_id, &err);
+                    send_completion(&mut completion, Err(err), terminal_event_queued);
+                    return request_id;
+                }
+            }
+        }
+
         // Once the resample budget is spent, the attempt runs with the abort disarmed so it can complete and be accepted as-is
         let doom_check = doom_policy.filter(|_| doom_retry_count < doom_max_retries);
         let outcome = run_one_attempt(
@@ -276,6 +294,8 @@ pub(crate) async fn run_request_task(
                     };
                     completion.record_recovery_attempt(recovery_triggers, aborted_at_chunk);
                     append_recovery_context(&mut request, recovery_items);
+                    // The reminder item changed the request: the cached carrier is stale.
+                    request.invalidate_encoded();
                     tracing::warn!(
                         target: crate::sampling_log::TARGET,
                         reason = %error,
@@ -380,6 +400,8 @@ async fn apply_retry_decision(
     if will_retry && err.is_likely_body_rejected() {
         let stripped_urls = request.strip_images();
         if !stripped_urls.is_empty() {
+            // The request changed: the cached carrier is stale.
+            request.invalidate_encoded();
             tracing::warn!(
                 stripped = stripped_urls.len(),
                 "stripped {} image(s) before retry (likely nginx 413 via connection reset)",
@@ -423,6 +445,8 @@ async fn apply_retry_decision(
                 send_completion(completion, Err(clone_error(err)), terminal_event_queued);
                 return false;
             }
+            // The request changed: the cached carrier is stale.
+            request.invalidate_encoded();
             let reason = strip_reason_for_image_error(err);
             tracing::warn!(
                 stripped = stripped_urls.len(),
@@ -472,6 +496,8 @@ async fn apply_retry_decision(
                 send_completion(completion, Err(clone_error(err)), terminal_event_queued);
                 return false;
             }
+            // The request changed: the cached carrier is stale.
+            request.invalidate_encoded();
             *retry_count += 1;
             tracing::warn!(
                 stripped,

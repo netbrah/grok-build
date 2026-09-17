@@ -99,6 +99,9 @@ impl ChatStateActor {
             // Execute completed tool calls on a Length-truncated turn instead
             // of failing it; text-only salvage stays behind `CompletePartial`.
             length_policy: xai_grok_sampling_types::LengthPolicy::CompleteToolCalls,
+            // The retry actor (sampler) owns the cached messages-wire carrier
+            // (REQVALID-1 47b D-5); chat-state always starts a request fresh.
+            encoded: None,
         }
     }
 }

@@ -12,31 +12,189 @@ use crate::presence::{RequestPresence, WirePresence};
 /// POST /v1/messages request body
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MessagesRequest {
-    pub model: String,
-    pub messages: Vec<Message>,
-    pub max_tokens: u32,
+    // REQVALID-1 47b RED-3: fields are private; the getter surface and the
+    // MessagesRequestBuilder are the only construction/read paths outside
+    // this crate (serde keeps field-level attrs for wire parity).
+    model: String,
+    messages: Vec<Message>,
+    max_tokens: u32,
     #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
-    pub system: Option<SystemParam>,
+    system: Option<SystemParam>,
     #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<ToolParam>>,
+    tools: Option<Vec<ToolParam>>,
     #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
-    pub tool_choice: Option<ToolChoiceParam>,
+    tool_choice: Option<ToolChoiceParam>,
     #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
-    pub temperature: Option<f32>,
+    temperature: Option<f32>,
     #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
-    pub top_p: Option<f32>,
+    top_p: Option<f32>,
     #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
-    pub top_k: Option<u32>,
+    top_k: Option<u32>,
     #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
-    pub stream: Option<bool>,
+    stream: Option<bool>,
     #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
-    pub stop_sequences: Option<Vec<String>>,
+    stop_sequences: Option<Vec<String>>,
     #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<ThinkingConfig>,
+    thinking: Option<ThinkingConfig>,
     #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
-    pub output_config: Option<OutputConfig>,
+    output_config: Option<OutputConfig>,
     #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Metadata>,
+    metadata: Option<Metadata>,
+}
+
+impl MessagesRequest {
+    // REQVALID-1 47b (D-4): the pub getter surface. The RED-3 privacy flip
+    // turns these into the only in-crate read path; the fill seams below
+    // are the only in-crate write path for the client message-defaults
+    // funnel (mirroring `apply_message_defaults` semantics exactly).
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub fn messages(&self) -> &[Message] {
+        &self.messages
+    }
+
+    pub fn max_tokens(&self) -> u32 {
+        self.max_tokens
+    }
+
+    pub fn system(&self) -> Option<&SystemParam> {
+        self.system.as_ref()
+    }
+
+    pub fn tools(&self) -> Option<&[ToolParam]> {
+        self.tools.as_deref()
+    }
+
+    pub fn tool_choice(&self) -> Option<&ToolChoiceParam> {
+        self.tool_choice.as_ref()
+    }
+
+    pub fn temperature(&self) -> Option<f32> {
+        self.temperature
+    }
+
+    pub fn top_p(&self) -> Option<f32> {
+        self.top_p
+    }
+
+    pub fn top_k(&self) -> Option<u32> {
+        self.top_k
+    }
+
+    pub fn stream(&self) -> Option<bool> {
+        self.stream
+    }
+
+    pub fn stop_sequences(&self) -> Option<&[String]> {
+        self.stop_sequences.as_deref()
+    }
+
+    pub fn thinking(&self) -> Option<&ThinkingConfig> {
+        self.thinking.as_ref()
+    }
+
+    pub fn output_config(&self) -> Option<&OutputConfig> {
+        self.output_config.as_ref()
+    }
+
+    pub fn metadata(&self) -> Option<&Metadata> {
+        self.metadata.as_ref()
+    }
+
+    /// Message-defaults fill: set `model` when empty (the
+    /// `apply_message_defaults` seam — an explicit empty model is
+    /// indistinguishable from unset here by design).
+    pub fn fill_model(&mut self, model: String) {
+        if self.model.is_empty() {
+            self.model = model;
+        }
+    }
+
+    /// Message-defaults fill: set `max_tokens` when 0 (N4: 0 means unset;
+    /// the full u32 range incl. 0 is a VALID validated value, the default
+    /// funnel simply never leaves it at 0).
+    pub fn fill_max_tokens(&mut self, max_tokens: u32) {
+        if self.max_tokens == 0 {
+            self.max_tokens = max_tokens;
+        }
+    }
+
+    /// Message-defaults fill: set `temperature` when unset.
+    pub fn fill_temperature(&mut self, temperature: Option<f32>) {
+        if self.temperature.is_none() {
+            self.temperature = temperature;
+        }
+    }
+
+    /// Message-defaults fill: set `top_p` when unset.
+    pub fn fill_top_p(&mut self, top_p: Option<f32>) {
+        if self.top_p.is_none() {
+            self.top_p = top_p;
+        }
+    }
+
+    /// Transport seam: the messages-wire funnel always streams
+    /// (`create_message_stream_inner` parity — unconditional, not a
+    /// default fill).
+    pub fn set_stream(&mut self, stream: Option<bool>) {
+        self.stream = stream;
+    }
+}
+
+// ============================================================================
+// REQVALID-1 47b (D-4): in-crate construction seam
+// ============================================================================
+
+/// REQVALID-1 47b (D-4): the in-crate construction parts for
+/// `MessagesRequest`. The fields of `MessagesRequest` are private to this
+/// module; the two sanctioned in-crate producers —
+/// `request_builder::MessagesRequestBuilder::build` and the trusted
+/// pipeline `build_messages_request` — route through
+/// [`MessagesRequest::from_parts`]. Construction outside the crate stays a
+/// compile error (the T3 D-6 fixture pins it).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MessagesRequestParts {
+    pub(crate) model: String,
+    pub(crate) messages: Vec<Message>,
+    pub(crate) max_tokens: u32,
+    pub(crate) system: Option<SystemParam>,
+    pub(crate) tools: Option<Vec<ToolParam>>,
+    pub(crate) tool_choice: Option<ToolChoiceParam>,
+    pub(crate) temperature: Option<f32>,
+    pub(crate) top_p: Option<f32>,
+    pub(crate) top_k: Option<u32>,
+    pub(crate) stream: Option<bool>,
+    pub(crate) stop_sequences: Option<Vec<String>>,
+    pub(crate) thinking: Option<ThinkingConfig>,
+    pub(crate) output_config: Option<OutputConfig>,
+    pub(crate) metadata: Option<Metadata>,
+}
+
+impl MessagesRequest {
+    /// REQVALID-1 47b (D-4): in-crate construction from parts (see
+    /// [`MessagesRequestParts`]). The only way in-crate code outside this
+    /// module builds a `MessagesRequest`.
+    pub(crate) fn from_parts(parts: MessagesRequestParts) -> Self {
+        Self {
+            model: parts.model,
+            messages: parts.messages,
+            max_tokens: parts.max_tokens,
+            system: parts.system,
+            tools: parts.tools,
+            tool_choice: parts.tool_choice,
+            temperature: parts.temperature,
+            top_p: parts.top_p,
+            top_k: parts.top_k,
+            stream: parts.stream,
+            stop_sequences: parts.stop_sequences,
+            thinking: parts.thinking,
+            output_config: parts.output_config,
+            metadata: parts.metadata,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

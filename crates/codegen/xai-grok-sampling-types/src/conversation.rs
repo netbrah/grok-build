@@ -818,12 +818,27 @@ pub struct ConversationRequest {
     pub prompt_cache_key: Option<String>,
     /// What the sampler does when the response stops with `Length`.
     pub length_policy: LengthPolicy,
+    /// REQVALID-1 47b (D-5): the cached encoded carrier for the messages
+    /// wire — the exact wire bytes produced by the retry loop's up-front
+    /// encode (the encode owner across the attempt boundary, SP-2).
+    /// `None` (default) = encode on demand in the funnel; a backoff retry
+    /// of an UNMUTATED request reuses the bytes verbatim (NIT-2); every
+    /// post-encode request mutation clears it via [`Self::invalidate_encoded`].
+    pub encoded: Option<crate::request_validation::EncodedMessagesRequest>,
 }
 
 impl ConversationRequest {
     /// Strip every image; returns the stripped URLs.
     pub fn strip_images(&mut self) -> Vec<Arc<str>> {
         strip_images_where(&mut self.items, |_| true)
+    }
+
+    /// REQVALID-1 47b (D-5): invalidate the cached encoded carrier. The
+    /// retry actor calls this at every post-encode request mutation
+    /// (image strip, model-bound state strip, doom-loop recovery append)
+    /// so the next attempt re-encodes the mutated request.
+    pub fn invalidate_encoded(&mut self) {
+        self.encoded = None;
     }
 
     /// Provenance: hyper-grok-build@45e984f3 packages/ai/xai-grok-sampling-types/src/conversation.rs:1005 :: strip_model_bound_state (adapted; two struct absences documented below — ledger §CROSSWIRE-1)
@@ -2922,11 +2937,14 @@ mod tests {
 
         // Messages API: json_schema becomes output_config.format
         let msgs_req = build_messages_request(&req);
-        let output_config = msgs_req.output_config.expect("output_config should be set");
+        let output_config = msgs_req
+            .output_config()
+            .expect("output_config should be set")
+            .clone();
         let fmt = output_config.format.clone().into_value().expect("format should be set");
         let crate::messages::OutputFormat::JsonSchema { schema: s } = fmt;
         assert_eq!(s, schema);
-        assert!(msgs_req.thinking.is_none());
+        assert!(msgs_req.thinking().is_none());
         assert!(output_config.effort.is_absent());
     }
 

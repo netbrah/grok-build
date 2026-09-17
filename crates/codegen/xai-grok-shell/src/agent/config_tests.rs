@@ -9315,3 +9315,410 @@ fn model_row_multi_agent_v2_serde_states() {
         "absent should stay None (dark)"
     );
 }
+
+// ============================================================================
+// REQVALID-1 47b: messages-wire model binding gate (T27-T33)
+//
+// The 47b gate (`bind_messages_wire_model`) must bind a messages-wire model
+// by EXACT `info.model` only, label every authority field with the tier
+// that last set it, and never fetch proxy metadata per operation. The
+// RED-2 stub (alias-tolerant, all-BuiltIn labels, empty branch list) makes
+// the label/alias/duplicate/rejection assertions red; the effective-value
+// guard pins stay green in both phases (Option C must change no model's
+// effective metadata — STOP-4).
+// ============================================================================
+
+/// 47b test fixture: a raw prefetched (remote-hydrated) catalog row at its
+/// built-in-default state (ModelInfo::fallback placeholders, no explicit
+/// fields).
+fn prefetched_row(slug: &str) -> ModelEntry {
+    ModelEntry {
+        info: ModelInfo::fallback(slug),
+        mtls_cert_dir: None,
+        api_key: None,
+        env_key: None,
+        auth_provider: None,
+        api_base_url: None,
+    }
+}
+
+fn empty_cfg() -> Config {
+    let empty: toml::Value = toml::Value::Table(toml::map::Map::new());
+    Config::new_from_toml_cfg(&empty).expect("empty config parses")
+}
+
+/// T27 (47b): exact `info.model` binding. The dotted<->hyphen alias,
+/// prefix/suffix, and duplicate-sibling cases must NOT bind (RED-2 red:
+/// the stub's tolerance binds them); an absent slug is a typed rejection
+/// (green both phases).
+#[test]
+fn exact_slug_binding_match() {
+    let cfg = empty_cfg();
+
+    // exact slug binds in both phases
+    let mut prefetched = IndexMap::new();
+    prefetched.insert("claude-opus-4.6".to_string(), prefetched_row("claude-opus-4.6"));
+    let view = bind_messages_wire_model(&cfg, Some(prefetched), "claude-opus-4.6")
+        .expect("exact slug must bind");
+    assert_eq!(view.model, "claude-opus-4.6");
+
+    // dotted<->hyphen alias must NOT bind (RED-2 red: the stub bridge binds)
+    let mut alias_prefetched = IndexMap::new();
+    alias_prefetched.insert(
+        "claude-opus-4-6".to_string(),
+        prefetched_row("claude-opus-4-6"),
+    );
+    assert!(
+        bind_messages_wire_model(&cfg, Some(alias_prefetched), "claude-opus-4.6").is_err(),
+        "dotted<->hyphen alias must not bind (47b gate: exact match only)"
+    );
+
+    // prefix / suffix must NOT bind (green both phases)
+    let mut row_prefetched = IndexMap::new();
+    row_prefetched.insert(
+        "claude-opus-4.6".to_string(),
+        prefetched_row("claude-opus-4.6"),
+    );
+    assert!(
+        bind_messages_wire_model(&cfg, Some(row_prefetched.clone()), "claude-opus-4").is_err(),
+        "prefix of the slug must not bind"
+    );
+    assert!(
+        bind_messages_wire_model(&cfg, Some(row_prefetched), "opus-4.6").is_err(),
+        "suffix of the slug must not bind"
+    );
+
+    // absent slug => typed rejection (green both phases)
+    let err = bind_messages_wire_model(&cfg, Some(IndexMap::new()), "no-such-model")
+        .expect_err("absent slug must be rejected");
+    assert!(
+        matches!(err, SamplingError::InvalidConfiguration(_)),
+        "absent slug must be a typed InvalidConfiguration, got: {err:?}"
+    );
+
+    // duplicate siblings (two keys sharing one info.model) => duplicate
+    // rejection (RED-2 red: the stub binds the first match)
+    let mut dup_prefetched = IndexMap::new();
+    dup_prefetched.insert("a".to_string(), prefetched_row("m-dup"));
+    dup_prefetched.insert("b".to_string(), prefetched_row("m-dup"));
+    assert!(
+        bind_messages_wire_model(&cfg, Some(dup_prefetched), "m-dup").is_err(),
+        "duplicate info.model must be rejected at the binding gate"
+    );
+}
+
+/// T28 (47b): the m-6 FULL per-field precedence table. Effective-value
+/// guard pins stay green in both phases (STOP-4); the tier labels are the
+/// RED-2 red pins (the stub labels everything BuiltIn).
+#[test]
+fn per_field_precedence_table() {
+    let toml_src = r#"
+[endpoints]
+default_api_backend = "responses"
+default_context_window = 777000
+
+[model.cfg-explicit]
+model = "cfg-explicit"
+context_window = 123456
+api_backend = "messages"
+model_family = "explicitfam"
+max_completion_tokens = 999
+reasoning_efforts = [{ id = "low", value = "low", label = "Low", default = true }]
+cache_ttl = "1h"
+"#;
+    let cfg = Config::new_from_toml_cfg(&toml::from_str(toml_src).unwrap()).expect("config parses");
+
+    // ProxyRow tier: explicit cw/backend/max_completion on an xai slug,
+    // family left for catalog inference.
+    let mut proxy = prefetched_row("grok-proxy-explicit-1");
+    proxy.info.context_window = NonZeroU64::new(313_000).unwrap();
+    proxy.info.api_backend = ApiBackend::Responses;
+    proxy.info.max_completion_tokens = Some(5_000);
+    // Donor tier: baked grok-4.6 (Responses, 500000) — the row sits at the
+    // remote-hydration 256k placeholder so the donor seam fires (the
+    // ModelInfo::fallback 200k placeholder would not).
+    let mut donor_row = prefetched_row("grok-4.6");
+    donor_row.info.context_window = NonZeroU64::new(256_000).unwrap();
+    // EndpointDefaults tier: Other-family slug at built-in defaults; 256k
+    // placeholder cw so the endpoint-default seam fills it.
+    let mut endpoint_row = prefetched_row("my-model-9");
+    endpoint_row.info.context_window = NonZeroU64::new(256_000).unwrap();
+
+    let mut prefetched = IndexMap::new();
+    prefetched.insert("proxy-explicit-1".to_string(), proxy);
+    prefetched.insert("grok-4.6".to_string(), donor_row);
+    prefetched.insert("my-model-9".to_string(), endpoint_row);
+
+    let resolved = resolve_model_list(&cfg, Some(prefetched.clone()));
+
+    // Guard pins (green both phases): the view's effective values must
+    // equal the real resolve_model_list output (Option C changes no
+    // currently-working model's effective metadata — STOP-4).
+    for (slug, key) in [
+        ("cfg-explicit", "cfg-explicit"),
+        ("grok-proxy-explicit-1", "proxy-explicit-1"),
+        ("grok-4.6", "grok-4.6"),
+        ("my-model-9", "my-model-9"),
+    ] {
+        let view = bind_messages_wire_model(&cfg, Some(prefetched.clone()), slug)
+            .unwrap_or_else(|err| panic!("bind {slug}: {err:?}"));
+        let entry = resolved.get(key).unwrap_or_else(|| panic!("resolved {key}"));
+        assert_eq!(view.model, entry.info.model, "{slug} model");
+        assert_eq!(
+            view.context_window.value,
+            entry.info.context_window,
+            "{slug} context_window"
+        );
+        assert_eq!(
+            view.api_backend.value, entry.info.api_backend,
+            "{slug} api_backend"
+        );
+        assert_eq!(
+            view.model_family.value, entry.info.model_family,
+            "{slug} model_family"
+        );
+        assert_eq!(
+            view.max_completion_tokens.value, entry.info.max_completion_tokens,
+            "{slug} max_completion_tokens"
+        );
+        assert_eq!(
+            view.reasoning_efforts.value, entry.info.reasoning_efforts,
+            "{slug} reasoning_efforts"
+        );
+        assert_eq!(view.cache_ttl.value, entry.info.cache_ttl, "{slug} cache_ttl");
+    }
+
+    // Tier labels (RED-2 red: the stub labels everything BuiltIn).
+    let cfg_view = bind_messages_wire_model(&cfg, Some(prefetched.clone()), "cfg-explicit")
+        .expect("cfg-explicit binds");
+    for (label, source) in [
+        ("context_window", cfg_view.context_window.source),
+        ("api_backend", cfg_view.api_backend.source),
+        ("model_family", cfg_view.model_family.source),
+        ("max_completion_tokens", cfg_view.max_completion_tokens.source),
+        ("reasoning_efforts", cfg_view.reasoning_efforts.source),
+        ("cache_ttl", cfg_view.cache_ttl.source),
+    ] {
+        assert!(
+            matches!(source, FieldSource::Config),
+            "cfg-explicit {label} must be Config-tier, got: {source:?}"
+        );
+    }
+
+    let proxy_view =
+        bind_messages_wire_model(&cfg, Some(prefetched.clone()), "grok-proxy-explicit-1")
+            .expect("proxy row binds");
+    assert!(matches!(proxy_view.context_window.source, FieldSource::ProxyRow));
+    assert!(matches!(proxy_view.api_backend.source, FieldSource::ProxyRow));
+    assert!(matches!(proxy_view.max_completion_tokens.source, FieldSource::ProxyRow));
+    assert!(matches!(proxy_view.model_family.source, FieldSource::CatalogInference));
+    assert!(matches!(proxy_view.reasoning_efforts.source, FieldSource::CatalogInference));
+    assert!(matches!(proxy_view.cache_ttl.source, FieldSource::BuiltIn));
+
+    let donor_view = bind_messages_wire_model(&cfg, Some(prefetched.clone()), "grok-4.6")
+        .expect("grok-4.6 binds");
+    assert!(matches!(donor_view.context_window.source, FieldSource::Donor));
+    assert!(matches!(donor_view.api_backend.source, FieldSource::Donor));
+    assert!(matches!(donor_view.model_family.source, FieldSource::CatalogInference));
+    assert!(matches!(donor_view.max_completion_tokens.source, FieldSource::BuiltIn));
+    assert!(matches!(donor_view.cache_ttl.source, FieldSource::BuiltIn));
+
+    let endpoint_view =
+        bind_messages_wire_model(&cfg, Some(prefetched.clone()), "my-model-9").expect("my-model-9 binds");
+    assert!(matches!(endpoint_view.context_window.source, FieldSource::EndpointDefaults));
+    assert!(matches!(endpoint_view.api_backend.source, FieldSource::EndpointDefaults));
+    assert!(matches!(endpoint_view.model_family.source, FieldSource::BuiltIn));
+    assert_eq!(endpoint_view.model_family.value, None, "Other slug has no inferred family");
+    assert!(matches!(endpoint_view.reasoning_efforts.source, FieldSource::BuiltIn));
+    assert!(endpoint_view.reasoning_efforts.value.is_empty());
+    assert!(matches!(endpoint_view.max_completion_tokens.source, FieldSource::BuiltIn));
+    assert!(matches!(endpoint_view.cache_ttl.source, FieldSource::BuiltIn));
+}
+
+/// T29 (47b): the messages-wire binding must require an EXPLICIT
+/// api_backend authority. The endpoint-defaults inference-to-messages
+/// branch produces a Messages backend with non-explicit source and must be
+/// rejected (RED-2 red: the stub returns Ok); an explicitly-messages row
+/// binds (green both phases) and its view enumerates the inference
+/// branches (m-2; RED-2 red: the stub returns an empty list).
+#[test]
+fn messages_wire_requires_explicit_api_backend() {
+    let toml_src = r#"
+[endpoints]
+default_api_backend = "chat_completions"
+"#;
+    let cfg = Config::new_from_toml_cfg(&toml::from_str(toml_src).unwrap()).expect("config parses");
+
+    // inference-to-messages (endpoint-defaults branch) is not explicit
+    let mut inferred_prefetched = IndexMap::new();
+    inferred_prefetched.insert(
+        "claude-opus-4.6".to_string(),
+        prefetched_row("claude-opus-4.6"),
+    );
+    let err = bind_messages_wire_model(&cfg, Some(inferred_prefetched), "claude-opus-4.6")
+        .expect_err("inferred messages backend must be rejected (no explicit authority)");
+    assert!(
+        matches!(err, SamplingError::InvalidConfiguration(_)),
+        "got: {err:?}"
+    );
+
+    // explicit api_backend = Messages binds (green both phases)
+    let mut explicit_row = prefetched_row("claude-sonnet-4.6");
+    explicit_row.info.api_backend = ApiBackend::Messages;
+    let mut explicit_prefetched = IndexMap::new();
+    explicit_prefetched.insert("claude-sonnet-4.6".to_string(), explicit_row);
+    let view = bind_messages_wire_model(&cfg, Some(explicit_prefetched), "claude-sonnet-4.6")
+        .expect("explicit messages backend must bind");
+    assert_eq!(view.api_backend.value, ApiBackend::Messages);
+
+    // m-2: the view enumerates every inference branch; the
+    // endpoint-defaults inference-to-messages branch is always reachable
+    // for messages (RED-2 red: the stub returns an empty list)
+    assert!(
+        !view.inference_branches.is_empty(),
+        "inference branches must be enumerated"
+    );
+    assert!(
+        view.inference_branches.iter().any(|branch| {
+            branch.name == "endpoint-defaults-inference-to-messages"
+                && branch.reachable_for_messages
+        }),
+        "endpoint-defaults inference-to-messages branch must be enumerated, got: {:?}",
+        view.inference_branches
+    );
+}
+
+/// T30 (47b, m-7 structural pin): `resolve_model_list` returns an owned
+/// snapshot by value; re-resolving with different inputs must not touch the
+/// earlier snapshot (no shared `Arc<ModelInfo>` mutation surface in the
+/// tree). Green in both phases by value semantics.
+#[test]
+fn operation_snapshot_immutable() {
+    let cfg_a = empty_cfg();
+    let mut prefetched_a = IndexMap::new();
+    prefetched_a.insert("claude-opus-4.6".to_string(), prefetched_row("claude-opus-4.6"));
+    let snapshot = resolve_model_list(&cfg_a, Some(prefetched_a));
+
+    let toml_src = r#"
+[model.other]
+context_window = 42
+"#;
+    let cfg_b = Config::new_from_toml_cfg(&toml::from_str(toml_src).unwrap()).expect("config parses");
+    let mut row = prefetched_row("claude-opus-4.6");
+    row.info.context_window = NonZeroU64::new(999_999).unwrap();
+    let mut prefetched_b = IndexMap::new();
+    prefetched_b.insert("claude-opus-4.6".to_string(), row);
+    let _re_resolved = resolve_model_list(&cfg_b, Some(prefetched_b));
+
+    let entry = snapshot
+        .get("claude-opus-4.6")
+        .expect("snapshot row present");
+    assert_eq!(entry.info.model, "claude-opus-4.6");
+    assert_eq!(
+        entry.info.context_window,
+        NonZeroU64::new(200_000).unwrap(),
+        "the earlier snapshot must be untouched by later resolutions"
+    );
+}
+
+/// T31 (47b): the binding gate must never fetch proxy metadata per
+/// operation. (a) source audit: the gate body references none of the
+/// startup fetch machinery; (b) behavior: with prefetched rows the gate
+/// makes zero requests to the configured models endpoint. Green both
+/// phases (the gate is in-memory; the OaiModelSource fetch is startup-only).
+#[test]
+fn no_per_operation_proxy_metadata_fetch() {
+    // (a) source audit over the gate body.
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/agent/config.rs");
+    let source = std::fs::read_to_string(path).expect("agent/config.rs readable");
+    let start = source
+        .find("fn bind_messages_wire_model")
+        .expect("gate fn present");
+    let body = &source[start..start + source[start..].find("\n}\n").expect("fn close") + 3];
+    for token in ["OaiModelSource", "fetch_models", "model_source"] {
+        assert!(
+            !body.contains(token),
+            "binding gate body references {token} (per-operation fetch risk)"
+        );
+    }
+
+    // (b) behavior: zero requests to the configured models endpoint.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("local addr");
+    let hits = Arc::new(AtomicU64::new(0));
+    let counter = Arc::clone(&hits);
+    std::thread::spawn(move || {
+        use std::io::Read as _;
+        for stream in listener.incoming() {
+            if let Ok(mut stream) = stream {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let mut sink = [0u8; 1024];
+                while stream.read(&mut sink).map(|n| n != 0).unwrap_or(false) {}
+                drop(stream);
+            }
+        }
+    });
+    let toml_src = format!(
+        r#"
+[endpoints]
+models_base_url = "http://{addr}"
+"#
+    );
+    let cfg = Config::new_from_toml_cfg(&toml::from_str(&toml_src).unwrap()).expect("config parses");
+    let mut prefetched = IndexMap::new();
+    prefetched.insert("claude-opus-4.6".to_string(), prefetched_row("claude-opus-4.6"));
+    bind_messages_wire_model(&cfg, Some(prefetched), "claude-opus-4.6")
+        .expect("prefetched binding succeeds");
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "the binding gate must never fetch proxy metadata per operation"
+    );
+}
+
+/// T32 (47b): two prefetched rows with an identical `info.model` must be
+/// rejected at the binding gate as a typed duplicate error (RED-2 red:
+/// the stub binds the first match).
+#[test]
+fn duplicate_slug_rejected() {
+    let cfg = empty_cfg();
+    let mut prefetched = IndexMap::new();
+    prefetched.insert("dup-1".to_string(), prefetched_row("m-dup"));
+    prefetched.insert("dup-2".to_string(), prefetched_row("m-dup"));
+    let err = bind_messages_wire_model(&cfg, Some(prefetched), "m-dup")
+        .expect_err("duplicate info.model must be rejected at the binding gate");
+    assert!(
+        matches!(err, SamplingError::InvalidConfiguration(_)),
+        "got: {err:?}"
+    );
+}
+
+/// T33 (47b): `DEFAULT_CONTEXT_WINDOW` is the 256k remote-row hydration
+/// placeholder, and `[endpoints] default_context_window` is honored through
+/// the real resolver. OQ-5 (record-only): the 200_000 in the
+/// `tracing::debug!("... defaulting to 200000 ...")` line in
+/// `resolve_model_list` is the `ModelInfo::fallback` placeholder for brand-
+/// new `[model.X]` entries — a different mechanism, not a mismatch
+/// (cross-ref 46-series W-LAT). Green both phases.
+#[test]
+fn context_window_default_pin() {
+    assert_eq!(crate::remote::DEFAULT_CONTEXT_WINDOW, 256_000);
+
+    let toml_src = r#"
+[endpoints]
+default_context_window = 777000
+"#;
+    let cfg = Config::new_from_toml_cfg(&toml::from_str(toml_src).unwrap()).expect("config parses");
+    let mut row = prefetched_row("my-model-9");
+    row.info.context_window = NonZeroU64::new(256_000).unwrap();
+    let mut prefetched = IndexMap::new();
+    prefetched.insert("my-model-9".to_string(), row);
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    assert_eq!(
+        resolved.get("my-model-9").expect("row").info.context_window,
+        NonZeroU64::new(777000).unwrap(),
+        "[endpoints] default_context_window must fill the hydration placeholder"
+    );
+}

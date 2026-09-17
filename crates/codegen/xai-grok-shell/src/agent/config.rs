@@ -17,6 +17,7 @@ use xai_grok_sampler::{AuthScheme, SamplerConfig};
 use xai_grok_sampling_types::{
     CatalogFamily, CompactionAtTokens, CompactionsRemaining, REASONING_EFFORT_META_KEY,
     REASONING_EFFORTS_META_KEY, ReasoningEffort, ReasoningEffortOption,
+    SamplingError,
     is_anthropic_model,
     reasoning_effort_meta_value, reasoning_efforts_meta_value, resolve_api_backend, resolve_family,
     resolve_reasoning_efforts,
@@ -3766,6 +3767,423 @@ pub(crate) fn find_model_by_id<'a>(
     models
         .get(model_id)
         .or_else(|| models.values().find(|m| m.info.has_model_id(model_id)))
+}
+/// 47b: the tier that last set a model field during binding replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FieldSource {
+    BuiltIn,
+    ProxyRow,
+    Donor,
+    CatalogInference,
+    EndpointDefaults,
+    Config,
+    SiblingInheritance,
+}
+
+/// 47b: a model field value plus the authority that last set it.
+#[derive(Debug, Clone)]
+pub(crate) struct FieldAuthority<T> {
+    pub value: T,
+    pub source: FieldSource,
+}
+
+/// 47b: one inference branch the resolver may have fired, enumerated on the
+/// authority view so tests can pin reachability (m-2).
+#[derive(Debug, Clone)]
+pub(crate) struct InferenceBranch {
+    pub name: &'static str,
+    pub reachable_for_messages: bool,
+    pub fired: bool,
+}
+
+/// 47b: the per-field authority snapshot of a bound messages-wire model.
+#[derive(Debug, Clone)]
+pub(crate) struct ModelAuthorityView {
+    pub model: String,
+    pub context_window: FieldAuthority<NonZeroU64>,
+    pub api_backend: FieldAuthority<ApiBackend>,
+    pub model_family: FieldAuthority<Option<String>>,
+    pub max_completion_tokens: FieldAuthority<Option<u32>>,
+    pub reasoning_efforts: FieldAuthority<Vec<ReasoningEffortOption>>,
+    pub cache_ttl: FieldAuthority<Option<String>>,
+    pub inference_branches: Vec<InferenceBranch>,
+}
+
+/// REQVALID-1 47b (Option C): the per-field authority replay behind the
+/// strict binding gate. The VALUES are read straight off the real
+/// `resolve_model_list` output (the STOP-4 guard pins compare them 1:1);
+/// the SOURCES replay the 6-tier chain
+/// `config > donor > explicit row field > catalog inference > endpoint
+/// defaults > built-in` in seam order, where every seam writes only
+/// fields still at their built-in default, so "the tier that last set it"
+/// is well-defined:
+/// - a prefetched key replays the per-key donor seam (bundled default at
+///   the same key), the P2.0 catalog-inference seam, and the P1
+///   endpoint-default seam on the raw row, in that order;
+/// - a key without a prefetched row starts from its bundled default (or
+///   the `ModelEntry::fallback` base), which the built-in tier owns —
+///   no seam ever runs on non-prefetched entries;
+/// - the `[model.<key>]` config tier runs last (highest).
+/// The post-resolve sibling-slug pass and the `[models]` global scalar
+/// defaults are NOT part of the 6-tier chain: Option C retires the sibling
+/// pass as a messages-wire binding authority (it stays in the effective
+/// resolver, STOP-4). The global scalar fills are config-file authority,
+/// so they label as Config.
+fn model_authority_view(
+    cfg: &Config,
+    key: &str,
+    prefetched: &Option<IndexMap<String, ModelEntry>>,
+    resolved: &ModelEntry,
+) -> ModelAuthorityView {
+    let endpoints = &cfg.endpoints;
+    let override_cfg = cfg.config_models.get(key);
+    let row = prefetched.as_ref().and_then(|rows| rows.get(key));
+    let bundled = if endpoints.has_custom_endpoint() {
+        None
+    } else {
+        Some(default_model_entries(endpoints))
+    };
+    let donor = bundled.as_ref().and_then(|entries| entries.get(key));
+    let info = &resolved.info;
+
+    // ---- api_backend: donor seam -> catalog inference -> endpoint
+    // defaults -> config tier (each step only when still at the built-in
+    // default, mirroring the seam order in `resolve_model_list`).
+    let mut api_backend = donor
+        .map(|d| d.info.api_backend.clone())
+        .unwrap_or_default();
+    let mut api_backend_source = FieldSource::BuiltIn;
+    let mut endpoint_inference_fired = false;
+    if let Some(row) = row {
+        if row.info.api_backend != ApiBackend::default() {
+            api_backend = row.info.api_backend.clone();
+            api_backend_source = FieldSource::ProxyRow;
+        } else {
+            if let Some(donor) = donor {
+                api_backend = donor.info.api_backend.clone();
+                api_backend_source = FieldSource::Donor;
+            }
+            if api_backend == ApiBackend::default()
+                && matches!(
+                    resolve_family(row.info.model_family.as_deref(), &row.info.model),
+                    CatalogFamily::Xai | CatalogFamily::OpenAi
+                )
+            {
+                let inferred = resolve_api_backend(None, &row.info.model);
+                if inferred != api_backend {
+                    api_backend = inferred;
+                    api_backend_source = FieldSource::CatalogInference;
+                }
+            }
+            if api_backend == ApiBackend::default()
+                && let Some(backend) = &endpoints.default_api_backend
+            {
+                if is_anthropic_model(&row.info.model) && backend != &ApiBackend::Messages {
+                    api_backend = ApiBackend::Messages;
+                    api_backend_source = FieldSource::EndpointDefaults;
+                    endpoint_inference_fired = true;
+                } else {
+                    api_backend = backend.clone();
+                    api_backend_source = FieldSource::EndpointDefaults;
+                }
+            }
+        }
+    }
+    if let Some(backend) = override_cfg.and_then(|ov| ov.api_backend.as_ref()) {
+        api_backend = backend.clone();
+        api_backend_source = FieldSource::Config;
+    }
+    debug_assert_eq!(
+        api_backend,
+        info.api_backend,
+        "api_backend replay diverged from the resolver for {key:?}"
+    );
+
+    // ---- context_window: donor cw seam (256k placeholder only) -> P1
+    // endpoint cw fill (256k placeholder only) -> config tier. The 200k
+    // `ModelInfo::fallback` placeholder is an explicit row value for seam
+    // purposes (only the 256k hydration placeholder is seam-eligible).
+    let fallback_cw = endpoints
+        .default_context_window
+        .and_then(NonZeroU64::new)
+        .unwrap_or_else(|| NonZeroU64::new(200_000).expect("200000 is non-zero"));
+    let mut context_window = donor
+        .map(|d| d.info.context_window)
+        .unwrap_or(fallback_cw);
+    let mut context_window_source = FieldSource::BuiltIn;
+    if let Some(row) = row {
+        context_window = row.info.context_window;
+        if row.info.context_window.get() == DEFAULT_CONTEXT_WINDOW {
+            if let Some(donor) = donor
+                && donor.info.context_window.get() != DEFAULT_CONTEXT_WINDOW
+            {
+                context_window = donor.info.context_window;
+                context_window_source = FieldSource::Donor;
+            }
+            if context_window.get() == DEFAULT_CONTEXT_WINDOW
+                && let Some(cw) = endpoints.default_context_window.and_then(NonZeroU64::new)
+            {
+                context_window = cw;
+                context_window_source = FieldSource::EndpointDefaults;
+            }
+        } else {
+            context_window_source = FieldSource::ProxyRow;
+        }
+    }
+    if let Some(cw) = override_cfg
+        .and_then(|ov| ov.context_window.and_then(NonZeroU64::new))
+    {
+        context_window = cw;
+        context_window_source = FieldSource::Config;
+    }
+    debug_assert_eq!(
+        context_window,
+        info.context_window,
+        "context_window replay diverged from the resolver for {key:?}"
+    );
+
+    // ---- model_family: explicit row field -> catalog inference (Xai ->
+    // "xai", OpenAi -> "codex") -> P1 endpoint family fill -> config tier.
+    let mut model_family = donor
+        .map(|d| d.info.model_family.clone())
+        .unwrap_or_default();
+    let mut model_family_source = FieldSource::BuiltIn;
+    if let Some(row) = row {
+        if let Some(family) = &row.info.model_family {
+            model_family = Some(family.clone());
+            model_family_source = FieldSource::ProxyRow;
+        } else {
+            match resolve_family(None, &row.info.model) {
+                CatalogFamily::Xai => {
+                    model_family = Some("xai".to_owned());
+                    model_family_source = FieldSource::CatalogInference;
+                }
+                CatalogFamily::OpenAi => {
+                    model_family = Some("codex".to_owned());
+                    model_family_source = FieldSource::CatalogInference;
+                }
+                CatalogFamily::Anthropic | CatalogFamily::Other => {}
+            }
+            if model_family.is_none()
+                && let Some(family) = &endpoints.default_model_family
+                && !family.eq_ignore_ascii_case("codex")
+            {
+                model_family = Some(family.clone());
+                model_family_source = FieldSource::EndpointDefaults;
+            }
+        }
+    }
+    if let Some(family) = override_cfg.and_then(|ov| ov.model_family.as_ref()) {
+        model_family = Some(family.clone());
+        model_family_source = FieldSource::Config;
+    }
+    debug_assert_eq!(
+        model_family,
+        info.model_family,
+        "model_family replay diverged from the resolver for {key:?}"
+    );
+
+    // ---- max_completion_tokens: explicit row field -> [model.<key>] ->
+    // [models] global (config-file authority); no donor/catalog/P1 seam
+    // touches this field.
+    let mut max_completion_tokens = donor
+        .map(|d| d.info.max_completion_tokens)
+        .unwrap_or_default();
+    let mut max_completion_tokens_source = FieldSource::BuiltIn;
+    if let Some(row) = row {
+        max_completion_tokens = row.info.max_completion_tokens;
+        if row.info.max_completion_tokens.is_some() {
+            max_completion_tokens_source = FieldSource::ProxyRow;
+        }
+    }
+    if let Some(tokens) = override_cfg.and_then(|ov| ov.max_completion_tokens) {
+        max_completion_tokens = Some(tokens);
+        max_completion_tokens_source = FieldSource::Config;
+    } else if max_completion_tokens.is_none()
+        && let Some(tokens) = cfg.models.max_completion_tokens
+    {
+        max_completion_tokens = Some(tokens);
+        max_completion_tokens_source = FieldSource::Config;
+    }
+    debug_assert_eq!(
+        max_completion_tokens,
+        info.max_completion_tokens,
+        "max_completion_tokens replay diverged from the resolver for {key:?}"
+    );
+
+    // ---- reasoning_efforts: explicit row field -> catalog inference ->
+    // [model.<key>] config tier (a non-empty override wins even over a
+    // row menu).
+    let mut reasoning_efforts = donor
+        .map(|d| d.info.reasoning_efforts.clone())
+        .unwrap_or_default();
+    let mut reasoning_efforts_source = FieldSource::BuiltIn;
+    if let Some(row) = row {
+        reasoning_efforts = row.info.reasoning_efforts.clone();
+        if !row.info.reasoning_efforts.is_empty() {
+            reasoning_efforts_source = FieldSource::ProxyRow;
+        } else {
+            let inferred = resolve_reasoning_efforts(None, &row.info.model);
+            if !inferred.is_empty() {
+                reasoning_efforts = inferred;
+                reasoning_efforts_source = FieldSource::CatalogInference;
+            }
+        }
+    }
+    if let Some(override_cfg) = override_cfg
+        && !override_cfg.reasoning_efforts.is_empty()
+    {
+        reasoning_efforts = override_cfg.reasoning_efforts.clone();
+        reasoning_efforts_source = FieldSource::Config;
+    }
+    debug_assert_eq!(
+        reasoning_efforts,
+        info.reasoning_efforts,
+        "reasoning_efforts replay diverged from the resolver for {key:?}"
+    );
+
+    // ---- cache_ttl: explicit row field -> [model.<key>] -> [models]
+    // global (config-file authority); no seam touches this field.
+    let mut cache_ttl = donor
+        .map(|d| d.info.cache_ttl.clone())
+        .unwrap_or_default();
+    let mut cache_ttl_source = FieldSource::BuiltIn;
+    if let Some(row) = row {
+        cache_ttl = row.info.cache_ttl.clone();
+        if row.info.cache_ttl.is_some() {
+            cache_ttl_source = FieldSource::ProxyRow;
+        }
+    }
+    if let Some(ttl) = override_cfg.and_then(|ov| ov.cache_ttl.as_ref()) {
+        cache_ttl = Some(ttl.clone());
+        cache_ttl_source = FieldSource::Config;
+    } else if cache_ttl.is_none() && let Some(ttl) = &cfg.models.cache_ttl {
+        cache_ttl = Some(ttl.clone());
+        cache_ttl_source = FieldSource::Config;
+    }
+    debug_assert_eq!(
+        cache_ttl,
+        info.cache_ttl,
+        "cache_ttl replay diverged from the resolver for {key:?}"
+    );
+
+    // ---- m-2: enumerate every inference branch that can produce a
+    // Messages backend, with honest reachability/fired flags.
+    let inference_branches = vec![
+        InferenceBranch {
+            name: "catalog-inference-to-messages",
+            reachable_for_messages: row.is_some_and(|r| {
+                r.info.api_backend == ApiBackend::default()
+                    && matches!(
+                        resolve_family(r.info.model_family.as_deref(), &r.info.model),
+                        CatalogFamily::Xai | CatalogFamily::OpenAi
+                    )
+                    && resolve_api_backend(None, &r.info.model) == ApiBackend::Messages
+            }),
+            fired: api_backend_source == FieldSource::CatalogInference
+                && api_backend == ApiBackend::Messages,
+        },
+        InferenceBranch {
+            name: "donor-inheritance-to-messages",
+            reachable_for_messages: row
+                .is_some_and(|r| r.info.api_backend == ApiBackend::default())
+                && donor.is_some_and(|d| d.info.api_backend == ApiBackend::Messages),
+            fired: api_backend_source == FieldSource::Donor
+                && api_backend == ApiBackend::Messages,
+        },
+        InferenceBranch {
+            name: "endpoint-defaults-inference-to-messages",
+            // ANTHROPIC-WIRE-1 (cut 2) refusal branch: an anthropic row
+            // meeting a non-messages endpoint default is the shape that
+            // always reaches it for the messages wire (T29 m-2).
+            reachable_for_messages: is_anthropic_model(&info.model)
+                && endpoints
+                    .default_api_backend
+                    .as_ref()
+                    .is_some_and(|b| b != &ApiBackend::Messages),
+            fired: endpoint_inference_fired,
+        },
+    ];
+
+    ModelAuthorityView {
+        model: info.model.clone(),
+        context_window: FieldAuthority {
+            value: context_window,
+            source: context_window_source,
+        },
+        api_backend: FieldAuthority {
+            value: api_backend,
+            source: api_backend_source,
+        },
+        model_family: FieldAuthority {
+            value: model_family,
+            source: model_family_source,
+        },
+        max_completion_tokens: FieldAuthority {
+            value: max_completion_tokens,
+            source: max_completion_tokens_source,
+        },
+        reasoning_efforts: FieldAuthority {
+            value: reasoning_efforts,
+            source: reasoning_efforts_source,
+        },
+        cache_ttl: FieldAuthority {
+            value: cache_ttl,
+            source: cache_ttl_source,
+        },
+        inference_branches,
+    }
+}
+
+/// REQVALID-1 47b (Option C): the strict messages-wire model binding
+/// gate. A requested slug binds by EXACT `info.model` equality over the
+/// resolved catalog — the 47a `alias_slug` version-separator bridge and
+/// the sibling-slug inheritance pass are retired as binding authorities
+/// here (the alias bridge survives only inside the R5 max_output table as
+/// a documented exception; the sibling pass stays in the effective
+/// resolver, out of the 6-tier authority chain). Zero exact matches is a
+/// typed absence rejection; more than one is a typed duplicate
+/// rejection. On a bound entry, a Messages `api_backend` additionally
+/// requires an EXPLICIT authority (an explicit row field or a
+/// `[model.<id>]` config entry) — a Messages backend that arrived by
+/// inference (donor, catalog, or endpoint defaults — including the
+/// anthropic endpoint-default inference-to-messages branch) fails closed
+/// with a typed rejection. In-memory only: the gate performs no proxy
+/// metadata fetch per operation (T31) and no `ModelInfo::fallback`-shaped
+/// binding.
+pub(crate) fn bind_messages_wire_model(
+    cfg: &Config,
+    prefetched: Option<IndexMap<String, ModelEntry>>,
+    requested_slug: &str,
+) -> Result<ModelAuthorityView, SamplingError> {
+    let models = resolve_model_list(cfg, prefetched.clone());
+    let matches: Vec<(String, &ModelEntry)> = models
+        .iter()
+        .filter(|(_, entry)| entry.info.model == requested_slug)
+        .map(|(key, entry)| (key.clone(), entry))
+        .collect();
+    let (key, entry) = match matches.as_slice() {
+        [(key, entry)] => (key, *entry),
+        [] => {
+            return Err(SamplingError::InvalidConfiguration(
+                "messages-wire binding failed: no catalog model with an exact info.model slug match (the 47b gate is exact-match only; the dotted/hyphen alias and prefix bridges are retired)",
+            ))
+        }
+        _ => {
+            return Err(SamplingError::InvalidConfiguration(
+                "messages-wire binding failed: more than one catalog model shares the exact same info.model slug (duplicate rows are rejected at the binding gate)",
+            ))
+        }
+    };
+    let view = model_authority_view(cfg, key, &prefetched, entry);
+    if view.api_backend.value == ApiBackend::Messages
+        && !matches!(view.api_backend.source, FieldSource::Config | FieldSource::ProxyRow)
+    {
+        return Err(SamplingError::InvalidConfiguration(
+            "messages-wire binding failed: a Messages api_backend requires an explicit authority (an explicit row api_backend field or a [model.<id>] config entry); an inferred messages backend fails closed",
+        ));
+    }
+    Ok(view)
 }
 /// Whether the EFFECTIVE Auto-mode classifier model supports reasoning effort. That is the model actually routed to (`aux_model` when the aux sampler resolved), else the session model the worker falls back to.
 /// A model not found in the catalog resolves `false` (conservative; also covers the Tier-2 synthetic proxy entry). Drives the built-in `low` effort default.
