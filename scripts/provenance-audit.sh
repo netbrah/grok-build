@@ -42,6 +42,22 @@
 #      sk- keys in the quoted material (marker lines, campaign plans docs,
 #      scripts/). Canary strings in the xai-grok-otel / xai-grok-secrets
 #      redaction unit tests are a known, non-gated class (reported only).
+#   5) construct-ledger row validation (bead apex-ayl.61 — the ruling's
+#      "row-validation pass"; numbered 5, not 3: passes 1-4 are the
+#      established contract — donorsliving1-61-sdd.md §7 OQ-1). Every
+#      donors.md '## Construct ledger' row must still resolve: R1 shape
+#      (7 cells / bead form / PENDING self-consistency / unique SLUG),
+#      R2 our-file existence (missing file = FAIL; a glob token needs
+#      >=1 match; 'git show --stat <sha>' shas resolve), R3 commit
+#      resolution (PENDING-<bead> informational — no bd access offline),
+#      R4 donor_ref (code pins via the CHECKOUTS table; full 64-hex
+#      on-disk spec digests recomputed, 16-hex grandfathered
+#      informational; spec paths resolve against the netbrah/codex
+#      checkout of record — checkout-relative, or with the checkout's
+#      own basename stripped if that is what they are written relative
+#      to; docs exist in the plans dir), R5 row<->marker
+#      linkage (a code-donor row's files carry >=1 marker citing the
+#      donor). Gaps fold into GAPS_TOTAL; exit contract unchanged.
 #
 # Provenance: fresh — DESIGN-AUDIT-1 §2/§4 (gap G4); ledger §DESIGN-AUDIT-1
 set -u
@@ -233,14 +249,248 @@ CANARY_N=$(printf '%s' "$CANARY" | grep -c . || true)
 echo "  informational: $CANARY_N tree files contain the sk- pattern (redaction-test canaries, non-gated):"
 printf '%s\n' "$CANARY" | sed 's/^/    /'
 
+# ---------------------------------------------------------------- pass 5 ---
+echo
+echo "PASS 5 — construct-ledger row validation (donors.md '## Construct ledger' rows)"
+P5_N=0; ROWS_N=0; DESIGN_N=0; P5_SHAPE_OK=0
+P5_FILES_OK=0; P5_FILES_BAD=0; P5_GLOBS_OK=0; P5_GLOBS_BAD=0
+P5_STATSHAS_OK=0; P5_STATSHAS_BAD=0; P5_COMMIT_OK=0; P5_COMMIT_BAD=0
+P5_PAIRS_OK=0; P5_PAIRS_BAD=0; P5_DOCS_OK=0; P5_DOCS_BAD=0
+P5_R5_OK=0; P5_R5_BAD=0; P5_PENDING_N=0; P5_ABBREV_N=0
+PENDING_SLUGS=""; ABBREV_SLUGS=""; SLUG_SEEN=""
+# OQ-6: ANY worktree-relative path token is gated (crates/, smoke/,
+# scripts/, third_party/ — the worktree's source-bearing top-level dirs).
+WORKTREE_PREFIX_RE='(crates|smoke|scripts|third_party)/[A-Za-z0-9._/*-]+'
+REGISTRY_DONORS="open-grok hyper-grok-build xli netbrah/codex xai-org HY"
+if [ -f "$DONORS_MD" ]; then
+  # Rows between the '## Construct ledger' header and the next '## '
+  # (or EOF); the first two pipe lines are the table header + separator.
+  TABLE=$(awk '/^## Construct ledger/ {insec=1; next} insec && /^## / {exit} insec && /^\|/ {print}' "$DONORS_MD")
+  ROWS=$(printf '%s\n' "$TABLE" | sed -n '3,$p')
+  while IFS= read -r row; do
+    [ -z "$row" ] && continue
+    ROWS_N=$((ROWS_N + 1))
+    nf=$(printf '%s\n' "$row" | awk -F'|' '{print NF}')
+    c1=$(printf '%s\n' "$row" | cut -d'|' -f2 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    c2=$(printf '%s\n' "$row" | cut -d'|' -f3 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    c3=$(printf '%s\n' "$row" | cut -d'|' -f4 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    c4=$(printf '%s\n' "$row" | cut -d'|' -f5 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    c5=$(printf '%s\n' "$row" | cut -d'|' -f6 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    c6=$(printf '%s\n' "$row" | cut -d'|' -f7 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    # R1 — shape: 7 cells, bead form, PENDING self-consistency, unique SLUG
+    slug=$(printf '%s' "$c1" | sed 's/ — .*//;s/[[:space:]]*$//')
+    [ -z "$slug" ] && slug="row-$ROWS_N (no construct cell)"
+    shape_ok=1
+    if [ "$nf" -ne 9 ]; then
+      echo "    GAP [P5-SHAPE] $slug: expected 7 cells, found $((nf - 2))"
+      P5_N=$((P5_N + 1)); shape_ok=0
+    fi
+    if ! printf '%s' "$c5" | grep -qE '^(apex-ayl\.[0-9]+$|no-bead \([^)]*\)( \+ apex-ayl\.[0-9]+ \([^)]*\))?$)'; then
+      echo "    GAP [P5-SHAPE] $slug: bead cell form not recognized: $c5"
+      P5_N=$((P5_N + 1)); shape_ok=0
+    fi
+    if printf '%s' "$c6" | grep -qE '^PENDING-apex-ayl\.[0-9]+$'; then
+      pend=${c6#PENDING-}
+      if printf '%s' "$c5" | grep -qE '^apex-ayl\.[0-9]+$'; then
+        bt=$c5
+      else
+        bt=$(printf '%s' "$c5" | grep -oE 'apex-ayl\.[0-9]+' | tail -1)
+      fi
+      if [ "${bt:-}" != "$pend" ]; then
+        echo "    GAP [P5-SHAPE] $slug: commit PENDING-$pend does not match bead cell: $c5"
+        P5_N=$((P5_N + 1)); shape_ok=0
+      fi
+    fi
+    if [ -n "$SLUG_SEEN" ] && printf '%s\n' "$SLUG_SEEN" | grep -Fxq "$slug"; then
+      echo "    GAP [P5-DUP] $slug: SLUG already used by an earlier row"
+      P5_N=$((P5_N + 1)); shape_ok=0
+    fi
+    SLUG_SEEN="$SLUG_SEEN$slug
+"
+    [ "$shape_ok" -eq 1 ] && P5_SHAPE_OK=$((P5_SHAPE_OK + 1))
+    # R2 — our-file existence (worktree-relative path tokens; line refs
+    # accepted and ignored — "line drift OK; missing file = FAIL")
+    design=0
+    printf '%s' "$c4" | grep -q '^— (design' && design=1
+    [ "$design" -eq 1 ] && DESIGN_N=$((DESIGN_N + 1))
+    tokens=""
+    if [ "$design" -eq 0 ]; then
+      tokens=$(printf '%s' "$c4" | grep -oE "$WORKTREE_PREFIX_RE" || true)
+    fi
+    set -f # no pathname expansion: glob tokens are handled explicitly
+    for t in $tokens; do
+      case "$t" in
+        *'*'*)
+          if compgen -G "$t" >/dev/null 2>&1; then
+            P5_GLOBS_OK=$((P5_GLOBS_OK + 1))
+          else
+            echo "    GAP [P5-FILE] $slug: no worktree file matches glob: $t"
+            P5_N=$((P5_N + 1)); P5_GLOBS_BAD=$((P5_GLOBS_BAD + 1))
+          fi
+          ;;
+        *)
+          if [ -f "$t" ] || [ -d "$t" ]; then
+            P5_FILES_OK=$((P5_FILES_OK + 1))
+          else
+            echo "    GAP [P5-FILE] $slug: missing file: $t"
+            P5_N=$((P5_N + 1)); P5_FILES_BAD=$((P5_FILES_BAD + 1))
+          fi
+          ;;
+      esac
+    done
+    for s in $(printf '%s' "$c4" | grep -oE 'git show --stat [0-9a-f]{7,40}' | awk '{print $NF}'); do
+      if git -C "$REPO_ROOT" cat-file -e "${s}^{commit}" 2>/dev/null; then
+        P5_STATSHAS_OK=$((P5_STATSHAS_OK + 1))
+      else
+        echo "    GAP [P5-FILE] $slug: 'git show --stat' sha does not resolve in worktree: $s"
+        P5_N=$((P5_N + 1)); P5_STATSHAS_BAD=$((P5_STATSHAS_BAD + 1))
+      fi
+    done
+    # R3 — commit resolution (PENDING = the only sanctioned pre-close state)
+    if printf '%s' "$c6" | grep -qE '^PENDING-apex-ayl\.[0-9]+$'; then
+      P5_PENDING_N=$((P5_PENDING_N + 1))
+      PENDING_SLUGS="$PENDING_SLUGS$slug; "
+    elif printf '%s' "$c6" | grep -qE '^[0-9a-f]{7,40}$'; then
+      if git -C "$REPO_ROOT" cat-file -e "${c6}^{commit}" 2>/dev/null; then
+        P5_COMMIT_OK=$((P5_COMMIT_OK + 1))
+      else
+        echo "    GAP [P5-COMMIT] $slug: commit does not resolve in worktree: $c6"
+        P5_N=$((P5_N + 1)); P5_COMMIT_BAD=$((P5_COMMIT_BAD + 1))
+      fi
+    else
+      echo "    GAP [P5-COMMIT] $slug: commit cell is neither a sha nor a PENDING sentinel: $c6"
+      P5_N=$((P5_N + 1)); P5_COMMIT_BAD=$((P5_COMMIT_BAD + 1))
+    fi
+    # R4 — donor_ref: (a) code pins via CHECKOUTS, (b) spec digests, (c) docs
+    pairs=$(printf '%s' "$c3" | grep -ohE "$DONOR_SHA_RE" | tr -d ' \t`' | awk -F'@' '{n=$1; s=$2; if (n=="HY") n="hyper-grok-build"; if (s!="") print n"@"s}' || true)
+    for pair in $pairs; do
+      d=${pair%%@*}; s=${pair#*@}
+      dpath=$(printf '%s\n' "$CHECKOUTS" | awk -F'\t' -v n="$d" '$1==n' | head -1 | cut -f2)
+      if [ -n "$dpath" ] && git -C "$dpath" cat-file -e "${s}^{commit}" 2>/dev/null; then
+        P5_PAIRS_OK=$((P5_PAIRS_OK + 1))
+      else
+        echo "    GAP [P5-DONOR] $slug: $pair does not resolve via the donors.md registry"
+        P5_N=$((P5_N + 1)); P5_PAIRS_BAD=$((P5_PAIRS_BAD + 1))
+      fi
+    done
+    if printf '%s' "$c3" | grep -qE 'body digest|on-disk'; then
+      specpath=$(printf '%s' "$c3" | sed -E 's/ r[0-9]+ \(.*$//;s/ \(.*$//;s/^[[:space:]]+//;s/[[:space:]]+$//')
+      cocd=$(printf '%s\n' "$CHECKOUTS" | awk -F'\t' '$1=="netbrah/codex" {print $2; exit}')
+      specfile=""
+      if [ -n "$cocd" ]; then
+        if [ -f "$cocd/$specpath" ]; then
+          specfile="$cocd/$specpath"
+        else
+          # spec paths may be written relative to the checkout's parent
+          # dir (prefixed with the checkout's own basename): try stripped
+          cb=$(basename "$cocd")
+          case "$specpath" in
+            "$cb"/*)
+              if [ -f "$cocd/${specpath#"$cb"/}" ]; then
+                specfile="$cocd/${specpath#"$cb"/}"
+              fi
+              ;;
+          esac
+        fi
+      fi
+      if [ -z "$specfile" ]; then
+        echo "    GAP [P5-DIGEST] $slug: spec file not found in the netbrah/codex checkout of record: $specpath"
+        P5_N=$((P5_N + 1)); P5_DOCS_BAD=$((P5_DOCS_BAD + 1))
+      else
+        ondisk=$(printf '%s' "$c3" | grep -oE 'on-disk *`?[0-9a-f]{7,64}' | grep -oE '[0-9a-f]{7,64}$')
+        body=$(printf '%s' "$c3" | grep -oE 'body digest *`?[0-9a-f]{7,64}' | grep -oE '[0-9a-f]{7,64}$')
+        if [ "${#ondisk}" -eq 64 ]; then
+          actual=$(shasum -a 256 "$specfile" | awk '{print $1}')
+          if [ "$(printf '%s' "$ondisk" | tr 'A-F' 'a-f')" != "$actual" ]; then
+            echo "    GAP [P5-DIGEST] $slug: on-disk sha256 mismatch for $specpath (claimed ${ondisk:0:16}…, actual ${actual:0:16}…)"
+            P5_N=$((P5_N + 1)); P5_DOCS_BAD=$((P5_DOCS_BAD + 1))
+          else
+            P5_DOCS_OK=$((P5_DOCS_OK + 1))
+          fi
+        elif [ -n "$ondisk" ]; then
+          P5_ABBREV_N=$((P5_ABBREV_N + 1))
+          ABBREV_SLUGS="$ABBREV_SLUGS$slug; "
+        fi
+        if [ "${#body}" -eq 64 ]; then
+          echo "  informational: $slug — full body digest not recomputed offline (the frozen body line count lives in the SDD of record, not the row)"
+        fi
+      fi
+    else
+      docs=$(printf '%s' "$c3" | grep -oE '(grok/plans/)?[A-Za-z0-9._/-]+\.(md|json|txt|rst)' || true)
+      for doc in $docs; do
+        doc=${doc#grok/plans/}
+        if [ -f "$PLANS_DIR/$doc" ]; then
+          P5_DOCS_OK=$((P5_DOCS_OK + 1))
+        else
+          echo "    GAP [P5-DOC] $slug: doc not found in the plans dir: $doc"
+          P5_N=$((P5_N + 1)); P5_DOCS_BAD=$((P5_DOCS_BAD + 1))
+        fi
+      done
+    fi
+    # R5 — row<->marker linkage (code-donor rows with path tokens only)
+    donor1=$(printf '%s' "$c2" | awk '{print $1}')
+    isreg=0
+    for r in $REGISTRY_DONORS; do
+      if [ "$donor1" = "$r" ]; then isreg=1; break; fi
+    done
+    if [ "$isreg" -eq 1 ] && [ "$design" -eq 0 ] && [ -n "$tokens" ]; then
+      found=0
+      for t in $tokens; do
+        case "$t" in
+          */) pfx="$t" ;;
+          *) pfx="$t:" ;;
+        esac
+        if [ "$donor1" = "HY" ]; then
+          hit=$(printf '%s\n' "$MARKERS" | grep -F "$pfx" | grep -E 'HY @|hyper-grok-build' || true)
+        else
+          hit=$(printf '%s\n' "$MARKERS" | grep -F "$pfx" | grep -F "$donor1" || true)
+        fi
+        if [ -n "$hit" ]; then found=1; break; fi
+      done
+      if [ "$found" -eq 1 ]; then
+        P5_R5_OK=$((P5_R5_OK + 1))
+      else
+        echo "    GAP [P5-MARKER] $slug: no marker in the row's files cites donor $donor1"
+        P5_N=$((P5_N + 1)); P5_R5_BAD=$((P5_R5_BAD + 1))
+      fi
+    fi
+    set +f
+  done <<P5ROW
+$ROWS
+P5ROW
+  nshape=$((ROWS_N - P5_SHAPE_OK))
+  nfiles=$((P5_FILES_BAD + P5_GLOBS_BAD + P5_STATSHAS_BAD))
+  ndocs=$((P5_PAIRS_BAD + P5_DOCS_BAD))
+  n1=""; [ "$nshape" -gt 0 ] && n1=" — $nshape gap(s) above"
+  n2=""; [ "$nfiles" -gt 0 ] && n2=" — $nfiles gap(s) above"
+  n3=""; [ "$P5_COMMIT_BAD" -gt 0 ] && n3=" — $P5_COMMIT_BAD gap(s) above"
+  n4=""; [ "$ndocs" -gt 0 ] && n4=" — $ndocs gap(s) above"
+  n5=""; [ "$P5_R5_BAD" -gt 0 ] && n5=" — $P5_R5_BAD gap(s) above"
+  echo "  rows=$ROWS_N (design rows: $DESIGN_N — R2/R5 N/A)"
+  echo "  R1: $P5_SHAPE_OK/$ROWS_N rows shape-OK (7 cells · bead form · PENDING self-consistency · unique SLUG)$n1"
+  echo "  R2: $P5_FILES_OK file tokens + $P5_GLOBS_OK glob tokens + $P5_STATSHAS_OK git-show-stat shas exist$n2"
+  echo "  R3: $P5_COMMIT_OK commit shas resolve in worktree$n3"
+  echo "  R4: $P5_PAIRS_OK code pins resolve via the registry · $P5_DOCS_OK docs/digests verified$n4"
+  echo "  R5: $P5_R5_OK code-donor rows marker-linked$n5"
+  if [ "$P5_PENDING_N" -gt 0 ]; then
+    echo "  informational: PENDING sentinels=$P5_PENDING_N (${PENDING_SLUGS%; }) — pre-close state, not gated offline (glm seat classifies ref-stale)"
+  fi
+  if [ "$P5_ABBREV_N" -gt 0 ]; then
+    echo "  informational: abbreviated 16-hex spec digests (grandfathered, OQ-7)=$P5_ABBREV_N (${ABBREV_SLUGS%; }) — full digest in the SDD of record, not gated"
+  fi
+  echo "  P5 census: rows=$ROWS_N · gating gaps=$P5_N · PENDING informational=$P5_PENDING_N · abbreviated-digest informational=$P5_ABBREV_N"
+else
+  echo "  note: donors.md not found at $DONORS_MD — row validation skipped (pass 2 gates the registry absence)"
+fi
+
 # ---------------------------------------------------------------- summary --
 REG_GAP=0
 [ "$REG_OK" -eq 1 ] || REG_GAP=1
-GAPS_TOTAL=$((P1B_N + P2_GAPS + P3_N + P4_N + REG_GAP))
+GAPS_TOTAL=$((P1B_N + P2_GAPS + P3_N + P4_N + P5_N + REG_GAP))
 echo
-echo "== summary: pass1=$P1B_N pass2=$((P2_GAPS + REG_GAP)) pass3=$P3_N pass4=$P4_N — total=$GAPS_TOTAL gap(s)"
+echo "== summary: pass1=$P1B_N pass2=$((P2_GAPS + REG_GAP)) pass3=$P3_N pass4=$P4_N pass5=$P5_N — total=$GAPS_TOTAL gap(s)"
 if [ "$GAPS_TOTAL" -gt 0 ]; then
   echo "RESULT: FAIL — gaps listed above (G1/G3-class backfill gaps expected until closed)"
   exit 1
 fi
-echo "RESULT: PASS — all 4 passes clean"
+echo "RESULT: PASS — all 5 passes clean"
