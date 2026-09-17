@@ -69,13 +69,9 @@ tool_timeout_sec = 60
 PYTHONUNBUFFERED = "1"
 
 [mcp_servers.pyrefly]
-command = "${PYREFLY_INDEX_BIN}"
+url = "${PYREFLY_MCP_URL}"
 startup_timeout_sec = 60
 tool_timeout_sec = 60
-
-[mcp_servers.pyrefly.env]
-RUST_LOG = "warn"
-PYREFLY_INDEX_ADDR = "${PYREFLY_INDEX_ADDR}"
 
 [mcp_servers.brewbot]
 command = "python3"
@@ -130,21 +126,9 @@ tool_timeout_sec = 300
 X-Mastra-Auth-Token = "${MASTRA_CREDENTIAL}"
 
 [mcp_servers.clangd-rs]
-command = "${CLANGD_BIN}"
+url = "${CLANGD_MCP_URL}"
 startup_timeout_sec = 180
 tool_timeout_sec = 180
-
-[mcp_servers.clangd-rs.env]
-CLANGD_LIVE_IDLE_SECS = "120"
-RUST_LOG = "warn"
-CLANGD_MEMORY_LIMIT_MB = "2048"
-CLANGD_COMPILE_COMMANDS_DIR = "/x/eng/rlse/DOT/devN"
-CLANGD_INDEX_ADDR = "http://clangd.rtp.eng.netapp.com:50051"
-CLANGD_REQUEST_TIMEOUT_SECS = "30"
-CLANGD_INITIALIZE_TIMEOUT_SECS = "300"
-CLANGD_PROJECT_ROOT = "/x/eng/rlse/DOT/devN"
-SOMAP_DIR = "/u/palanisd/somap-db"
-CLANGD_EXECUTABLE = "/x/eng/rlse/DOT/devN/third_party/open_source/clangd/bedrock/export/common/btool/clangd"
 
 [mcp_servers.confluence]
 command = "${CONFLUENCE_MCP_BIN}"
@@ -208,6 +192,11 @@ url = "${LORE_HTTP_URL}"
 startup_timeout_sec = 300
 tool_timeout_sec = 300
 
+[mcp_servers.fleet-skills]
+url = "${APEX_FLEET_COGNEE_MCP_URL}"
+startup_timeout_sec = 300
+tool_timeout_sec = 300
+
 [disabled_mcp_tools]
 ghe = [
     "gh_cli_raw",
@@ -235,3 +224,4 @@ cit = [
     "pr_gate_runbook",
     "cross_release_regression_runbook",
 ]
+fleet-skills = ["recall"]

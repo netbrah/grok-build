@@ -38,7 +38,7 @@ with open(source_path, encoding="utf-8") as fh:
 
 expected_names = {
     "activeiq", "asup", "brewbot", "cit", "clangd-rs", "confluence",
-    "coretool", "coverage-rs", "ghe", "jira-ngage", "lore",
+    "coretool", "coverage-rs", "fleet-skills", "ghe", "jira-ngage", "lore",
     "mastra-search", "ontap-cluster", "ontap-dev", "ontap-sdk",
     "presubmit-validate", "pyrefly", "reviewboard", "smartsolve",
 }
@@ -103,7 +103,7 @@ for name, server in actual.items():
             if credential_name.search(key) and key not in allowed_literal_paths:
                 assert isinstance(value, str) and value.startswith("${"), (name, key)
 
-print("structured config parity: 19 MCPs, timeouts, env, headers, and deny lists")
+print("structured config parity: 20 MCPs, timeouts, env, headers, and deny lists")
 PY
 
 tmp_root=$(mktemp -d "${TMPDIR:-/tmp}/apexai-config-test.XXXXXX")
@@ -129,7 +129,6 @@ export JIRA_TOKEN=dummy
 export MASTRA_CREDENTIAL='Bearer dummy'
 export REVIEWBOARD_API_TOKEN=dummy
 export CIT_MCP_BIN=/bin/true
-export CLANGD_BIN=/bin/true
 export CONFLUENCE_MCP_BIN=/bin/true
 export CORETOOL_BIN=/bin/true
 export COVERAGE_BIN=/bin/true
@@ -137,12 +136,13 @@ export GHE_MCP_BIN=/bin/true
 export JIRA_NGAGE_MCP_BIN=/bin/true
 export ONTAP_DEV_BIN=/bin/true
 export PRESUBMIT_VALIDATE_MCP_BIN=/bin/true
-export PYREFLY_INDEX_BIN=/bin/true
 export REVIEWBOARD_MCP_BIN=/bin/true
 export SMARTSOLVE_FLEET_BIN=/bin/true
-export PYREFLY_INDEX_ADDR=http://127.0.0.1:1
 export LORE_HTTP_URL=http://127.0.0.1:2/mcp
 export MASTRA_HTTP_URL=http://127.0.0.1:3/mcp
+export APEX_FLEET_COGNEE_MCP_URL=http://127.0.0.1:4/mcp
+export CLANGD_MCP_URL=http://127.0.0.1:5/mcp
+export PYREFLY_MCP_URL=http://127.0.0.1:1/mcp
 
 inspect_json="$tmp_root/inspect.json"
 if [[ -n "${APEXAI_TEST_BIN:-}" ]]; then
@@ -151,7 +151,7 @@ else
     cargo run --quiet -p xai-grok-pager-bin -- inspect --json > "$inspect_json"
 fi
 
-jq -e '.mcpServers | length == 19' "$inspect_json" >/dev/null || fail 'runtime did not load 19 MCP servers'
+jq -e '.mcpServers | length == 20' "$inspect_json" >/dev/null || fail 'runtime did not load 20 MCP servers'
 jq -e '.mcpConfigProblems // [] | length == 0' "$inspect_json" >/dev/null || fail 'runtime reported invalid MCP configuration'
 jq -e --arg path "$config" '.configSources.layers[] | select(.role == "managed-path" and .path == $path)' "$inspect_json" >/dev/null \
     || fail 'inspect did not report the launcher-selected managed config'
