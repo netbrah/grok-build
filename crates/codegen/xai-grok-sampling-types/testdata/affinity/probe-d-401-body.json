@@ -1,0 +1,1 @@
+{"error":{"message":"Not allowed to access model due to tags configuration. Passed model=gpt-5.6-sol and tags=['East US 2']","type":"internal_server_error","param":null,"code":"401"}}

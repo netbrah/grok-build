@@ -412,6 +412,21 @@ impl SamplingError {
     ///    targets `.id` and does not cover this shape, so a verbatim port would
     ///    misclassify this rejection as Fatal.
     ///
+    /// 6. (AFFINITY-POLICY-1, apex-ayl.75) The gateway's 401 tags-config
+    ///    fail-fast: `Not allowed to access model due to tags configuration.
+    ///    Passed model=<m> and tags=[...]` — litellm 1.93.0
+    ///    `EncryptedContentAffinityCheck` rejecting a marker-origin
+    ///    deployment whose tag set excludes the request tag (ws8 probe D;
+    ///    wire evidence testdata/affinity/probe-d-401-body.json). Message-
+    ///    keyed (the verbatim prefix, case-insensitive) on BOTH shapes: the
+    ///    `Auth` variant (the harness client maps EVERY 401 to Auth, so the
+    ///    live wire shape is `Auth { message: "Unauthorized (401) ...:
+    ///    <this text>" }`) and the `Api` 401 shape (defensive symmetry with
+    ///    the 503 exception; no current client site emits it). A genuine
+    ///    credential 401 can never carry this phrasing, so the status alone
+    ///    never widens the class — key-refresh flows keep the auth-gate
+    ///    terminal path.
+    ///
     /// Pipeline note (CROSSWIRE-1 GREEN-run defect): the classifier sees the
     /// message built by [`user_facing_api_error_message`], which caps the text
     /// at [`MAX_USER_ERROR_BODY_CHARS`] (280). On the live wire shape that cut
@@ -424,8 +439,19 @@ impl SamplingError {
     /// trigger the destructive strip — except family 1 on 503, where litellm's
     /// EncryptedContentAffinityCheck rejects the replayed `encitem_` ciphertext
     /// pointers (double-keyed arm below, so generic overload 503s keep the
-    /// plain backoff retry path).
+    /// plain backoff retry path), and except family 6 on 401, where the same
+    /// affinity check fails fast on tag exclusion (message-keyed arm, so
+    /// genuine credential 401s keep the auth-gate terminal path).
     pub fn is_model_bound_history_error(&self) -> bool {
+        // Family 6 (AFFINITY-POLICY-1, apex-ayl.75): the gateway 401
+        // tags-config fail-fast. The client maps every 401 to Auth, so the
+        // live wire shape is the Auth variant with the verbatim gateway
+        // message wrapped by the user-facing builder; key on the message
+        // prefix, never on the status alone.
+        if let SamplingError::Auth { message, .. } = self {
+            let normalized = message.to_ascii_lowercase();
+            return normalized.contains("not allowed to access model due to tags");
+        }
         let SamplingError::Api { status, message, .. } = self else {
             return false;
         };
@@ -446,6 +472,13 @@ impl SamplingError {
             return encrypted
                 && (normalized.contains("unavailable")
                     || normalized.contains("boundary"));
+        }
+        // Family 6, Api shape (defensive; symmetric to the 503 exception): a
+        // wire shape that maps the tags-config 401 to Api instead of Auth
+        // classifies on the same message needle, so the class never depends
+        // on the variant. No current client site emits this shape.
+        if *status == StatusCode::UNAUTHORIZED {
+            return normalized.contains("not allowed to access model due to tags");
         }
         if *status != StatusCode::BAD_REQUEST {
             return false;
@@ -1962,6 +1995,157 @@ mod tests {
         assert!(
             thinking_400.is_model_bound_history_error(),
             "family 2 (thinking-signature 400) must still match after the 503 extension"
+        );
+    }
+
+    // AFFINITY-POLICY-1 (apex-ayl.75): the 401 tags-config fail-fast family
+    // (ws8 probe D). Verbatim incident body frozen at
+    // testdata/affinity/probe-d-401-body.json (mint: ws8 probe-2 D round,
+    // provenance/proxy-capability-matrix.md §2 L33-35 + §3 L44; protected
+    // copy grok/plans/provenance/fixtures/ws8/). The harness client maps
+    // EVERY 401 to SamplingError::Auth (client.rs UNAUTHORIZED arms, 7 sites),
+    // wrapping the user-facing message as
+    // "Unauthorized (401) from <endpoint>: <server_message>" — so this
+    // family keys on the MESSAGE, never on the status alone: a genuine
+    // credential 401 can never carry the gateway's verbatim phrasing.
+
+    /// Build the probe-D wire shape exactly as the client's 401 arm emits it:
+    /// `SamplingError::Auth` whose message wraps
+    /// [`user_facing_api_error_message`] over the verbatim incident body.
+    fn probe_d_401_auth_error() -> SamplingError {
+        let body = include_str!("../testdata/affinity/probe-d-401-body.json");
+        let server_message =
+            user_facing_api_error_message(StatusCode::UNAUTHORIZED, body.as_bytes());
+        SamplingError::Auth {
+            message: format!(
+                "Unauthorized (401) from https://llm-proxy-api.ai.eng.netapp.com/v1/responses: {server_message}"
+            ),
+            credential: SentCredential::Sent,
+        }
+    }
+
+    #[test]
+    fn probe_d_401_tags_config_wire_shape_is_model_bound() {
+        // RED (TDD): the incident's verbatim 401 body, in the exact wire shape
+        // the client emits (Auth variant, wrapped user-facing message), must
+        // classify as model-bound history — ONE classified strip+retry
+        // (retry-once-then-terminate per the .58 contract) instead of a
+        // terminal auth error. Today's behavior = UNCLASSIFIED (blind-retry
+        // class, the .58 failure shape): the Auth variant is declined by the
+        // classifier and the auth gate terminates the request.
+        let err = probe_d_401_auth_error();
+        assert!(
+            err.is_model_bound_history_error(),
+            "probe-D 401 tags-config wire shape must classify as model-bound \
+             history; observed UNCLASSIFIED (today = terminal auth error)"
+        );
+    }
+
+    #[test]
+    fn probe_d_401_tags_config_api_shape_is_model_bound() {
+        // Defensive symmetric arm (analog of the 503 exception to the 400
+        // gate): a wire shape that maps the 401 to the Api variant must
+        // classify on the same message needle. No current harness client site
+        // emits this shape — the client maps every 401 to Auth — but a
+        // pass-through proxy that does must not fall out of the class.
+        let body = include_str!("../testdata/affinity/probe-d-401-body.json");
+        let err = SamplingError::Api {
+            status: StatusCode::UNAUTHORIZED,
+            message: user_facing_api_error_message(StatusCode::UNAUTHORIZED, body.as_bytes()),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(
+            err.is_model_bound_history_error(),
+            "probe-D 401 body on the Api variant must classify (message-keyed)"
+        );
+    }
+
+    #[test]
+    fn genuine_401_auth_rejection_is_not_model_bound() {
+        // Guard (green before AND after the cut): a real credential 401 keeps
+        // the auth-gate terminal path. The needle is the verbatim gateway
+        // phrasing, never a status match — a broadened 401 arm that matched
+        // the status would break key-refresh flows.
+        let err = SamplingError::auth_unknown("Invalid or expired credentials");
+        assert!(
+            !err.is_model_bound_history_error(),
+            "a genuine credential 401 must NOT trigger the destructive strip"
+        );
+        let api_401 = SamplingError::Api {
+            status: StatusCode::UNAUTHORIZED,
+            message: "Incorrect API key provided".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(
+            !api_401.is_model_bound_history_error(),
+            "a genuine credential 401 (Api shape) must NOT trigger the destructive strip"
+        );
+    }
+
+    #[test]
+    fn probe_c_same_boundary_keep_shape_is_pinned() {
+        // Cut (b): the probe-C shape (id + field markers intact, untagged,
+        // store=false; 3/3 200, pin held) is the APPROVED same-boundary
+        // continuation default. Pin: the markers round-trip through the typed
+        // ReasoningItem unchanged — KEEP at the request layer; nothing in
+        // this crate silently drops the id or the field. The field-only
+        // variant (OQ-1b) is NOT approved — the fixture's ruling line keeps
+        // that boundary explicit.
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!(
+                "../testdata/affinity/probe-c-same-boundary-keep.json"
+            ))
+            .expect("probe-C pin fixture must parse");
+        let input = fixture["request_shape"]["body"]["input"]
+            .as_array()
+            .expect("pin fixture must carry the continuation input array");
+        let reasoning_items: Vec<crate::rs::ReasoningItem> = input
+            .iter()
+            .filter(|item| item["type"] == "reasoning")
+            .map(|item| {
+                serde_json::from_value(item.clone())
+                    .expect("reasoning marker item must deserialize into the typed item")
+            })
+            .collect();
+        assert_eq!(
+            reasoning_items.len(),
+            1,
+            "probe-C carries exactly one reasoning marker item"
+        );
+        let marker = &reasoning_items[0];
+        assert!(
+            marker.id.starts_with("encitem_"),
+            "KEEP pin: the id marker survives the typed round trip (got {:?})",
+            marker.id
+        );
+        let field = marker
+            .encrypted_content
+            .as_deref()
+            .expect("KEEP pin: the encrypted_content field marker survives");
+        assert!(
+            field.starts_with("litellm_enc:"),
+            "KEEP pin: the field keeps its litellm_enc: scheme (got {field:?})"
+        );
+        let reserialized =
+            serde_json::to_value(marker).expect("marker must re-serialize");
+        assert_eq!(
+            reserialized["id"], marker.id,
+            "re-serialized id is byte-identical (KEEP)"
+        );
+        assert_eq!(
+            reserialized["encrypted_content"], field,
+            "re-serialized field is byte-identical (KEEP)"
+        );
+        let ruling = fixture["ruling"].as_str().expect("ruling pinned in fixture");
+        assert!(
+            ruling.contains("NOT approved"),
+            "the field-only variant must stay unpinned (OQ-1b owed)"
         );
     }
 

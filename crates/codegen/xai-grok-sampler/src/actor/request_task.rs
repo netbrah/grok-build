@@ -386,7 +386,21 @@ async fn apply_retry_decision(
     let rate_limit_threshold = config
         .rate_limit_retry_threshold
         .unwrap_or(retry_policy.rate_limit_retry_threshold);
-    let decision = classify_error(err, *retry_count, max_retries, rate_limit_threshold);
+    // AFFINITY-POLICY-1 (apex-ayl.75): the gateway's 401 tags-config
+    // fail-fast arrives as SamplingError::Auth (the client maps every 401 to
+    // Auth), which classify_error's leading auth gate would terminate before
+    // the model-bound arm is consulted. A message-keyed model-bound 401 is
+    // recoverable — strip + retry-once-then-terminate — even though the wire
+    // shape is auth-shaped, so the model-bound check runs first (mirror of
+    // the HY placement inside classify_error: model-bound before the fatal
+    // gates). For every non-model-bound error this is a no-op, and a genuine
+    // credential 401 never matches the needle — it keeps the auth-gate
+    // terminal path (key refresh).
+    let decision = if err.is_model_bound_history_error() {
+        RetryDecision::RetryWithModelBoundStateStrip
+    } else {
+        classify_error(err, *retry_count, max_retries, rate_limit_threshold)
+    };
 
     // Connection-reset / broken-pipe on body upload often means nginx rejected an oversized payload before responding 413
     // Strip images proactively before any retry of those errors so we don't burn budget re-uploading the same large body
@@ -1721,6 +1735,168 @@ mod tests {
         assert!(
             matches!(event_rx.recv().await, Some(SamplingEvent::Failed { .. })),
             "the terminal rejection emits a failed event"
+        );
+        let collected = completion_rx.await.expect("terminal completion sent");
+        assert!(collected.result.is_err(), "the turn fails with the original error");
+    }
+
+    #[tokio::test]
+    async fn retry_decision_auth_shaped_401_tags_config_strips_and_retries_once_then_terminates() {
+        // AFFINITY-POLICY-1 (apex-ayl.75): the gateway 401 tags-config
+        // fail-fast arrives as SamplingError::Auth (the client maps every
+        // 401 to Auth). The model-bound check must be consulted BEFORE the
+        // auth gate so this one recoverable shape gets the .58 contract:
+        // strip + retry-once-then-terminate.
+        // Attempt 1: classifier matched (message-keyed needle) + the request
+        // carries model-bound items -> strip (>0) -> exactly one retry.
+        // Attempt 2: same rejection on the stripped request -> strip == 0
+        // -> terminal (fail closed, no loop).
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (completion_tx, completion_rx) = oneshot::channel();
+        let mut completion = CompletionState::new(Some(completion_tx));
+        let mut retry_count = 0;
+        let mut request = model_bound_request();
+        let config = SamplerConfig {
+            base_url: "http://localhost".into(),
+            model: "gpt-5.6-sol".into(),
+            ..Default::default()
+        };
+        let mut client = SamplingClient::new(config.clone()).expect("test client");
+        // Verbatim probe-D wire shape: the incident body through the client's
+        // user-facing message builder, wrapped as the 401 arm emits it.
+        let body = r#"{"error":{"message":"Not allowed to access model due to tags configuration. Passed model=gpt-5.6-sol and tags=['East US 2']","type":"internal_server_error","param":null,"code":"401"}}"#;
+        let server_message =
+            xai_grok_sampling_types::user_facing_api_error_message(
+                StatusCode::UNAUTHORIZED,
+                body.as_bytes(),
+            );
+        let err = SamplingError::Auth {
+            message: format!(
+                "Unauthorized (401) from {}/v1/responses: {server_message}",
+                "https://llm-proxy-api.ai.eng.netapp.com"
+            ),
+            credential: xai_grok_sampling_types::SentCredential::Sent,
+        };
+        let request_id = RequestId::from("aff401");
+        let cancel_token = CancellationToken::new();
+        let parent = tracing::Span::none();
+
+        // Attempt 1: the auth-SHAPED error must still take the model-bound
+        // strip arm (classified before the auth gate), not EmitToSession.
+        let continue1 = apply_retry_decision(
+            &err,
+            &mut retry_count,
+            5,
+            &RetryPolicy::default(),
+            &event_tx,
+            &request_id,
+            &mut request,
+            &mut client,
+            &config,
+            &cancel_token,
+            &mut completion,
+            &parent,
+        )
+        .await;
+        assert!(
+            continue1,
+            "the 401 tags-config rejection with strippable state must retry once \
+             (classified model-bound, not a terminal auth error)"
+        );
+        assert_eq!(retry_count, 1, "exactly one retry is debited");
+        assert!(
+            request.items.iter().all(|i| {
+                !matches!(
+                    i,
+                    xai_grok_sampling_types::ConversationItem::Reasoning(_)
+                        | xai_grok_sampling_types::ConversationItem::BackendToolCall(_)
+                )
+            }),
+            "the retry carries the portable (stripped) transcript"
+        );
+        assert!(
+            matches!(
+                event_rx.recv().await,
+                Some(SamplingEvent::ModelBoundStateStripped { stripped, .. }) if stripped == 2
+            ),
+            "the strip event carries both model-bound items and precedes the retry"
+        );
+        assert!(
+            matches!(event_rx.recv().await, Some(SamplingEvent::Retrying { .. })),
+            "a retrying event is emitted for the recovery retry"
+        );
+
+        // Attempt 2: the same rejection on the stripped request -> terminal.
+        let continue2 = apply_retry_decision(
+            &err,
+            &mut retry_count,
+            5,
+            &RetryPolicy::default(),
+            &event_tx,
+            &request_id,
+            &mut request,
+            &mut client,
+            &config,
+            &cancel_token,
+            &mut completion,
+            &parent,
+        )
+        .await;
+        assert!(
+            !continue2,
+            "a second 401 with nothing left to strip is terminal (fail closed, cannot loop)"
+        );
+        assert_eq!(retry_count, 1, "no second retry is debited");
+        assert!(
+            matches!(event_rx.recv().await, Some(SamplingEvent::Failed { .. })),
+            "the terminal rejection emits a failed event"
+        );
+        let collected = completion_rx.await.expect("terminal completion sent");
+        assert!(collected.result.is_err(), "the turn fails with the original error");
+    }
+
+    #[tokio::test]
+    async fn retry_decision_genuine_auth_401_stays_terminal() {
+        // Guard (green before AND after the cut): a genuine credential 401
+        // (no model-bound needle) keeps the auth-gate terminal path — the
+        // pre-auth model-bound precheck must not swallow key-refresh flows.
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let (completion_tx, completion_rx) = oneshot::channel();
+        let mut completion = CompletionState::new(Some(completion_tx));
+        let mut retry_count = 0;
+        let mut request = model_bound_request();
+        let config = SamplerConfig {
+            base_url: "http://localhost".into(),
+            model: "test-model".into(),
+            ..Default::default()
+        };
+        let mut client = SamplingClient::new(config.clone()).expect("test client");
+        let err = SamplingError::auth_unknown("Invalid or expired credentials");
+        let request_id = RequestId::from("auth401");
+        let cancel_token = CancellationToken::new();
+        let parent = tracing::Span::none();
+
+        let continue1 = apply_retry_decision(
+            &err,
+            &mut retry_count,
+            5,
+            &RetryPolicy::default(),
+            &event_tx,
+            &request_id,
+            &mut request,
+            &mut client,
+            &config,
+            &cancel_token,
+            &mut completion,
+            &parent,
+        )
+        .await;
+        assert!(!continue1, "a genuine credential 401 is terminal (no retry)");
+        assert_eq!(retry_count, 0, "no retry is debited");
+        assert_eq!(
+            request.items.len(),
+            4,
+            "a genuine credential 401 does NOT strip the request"
         );
         let collected = completion_rx.await.expect("terminal completion sent");
         assert!(collected.result.is_err(), "the turn fails with the original error");

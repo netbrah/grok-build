@@ -1,0 +1,50 @@
+{
+  "pin": "same-boundary continuation default = KEEP id + field markers (probe-C shape)",
+  "bead": "apex-ayl.75 (AFFINITY-POLICY-1, cut b)",
+  "mint_source": "ws8 probe-2 C round (2026-09-17, non-streaming R1 + replay rounds); request shape reconstructed from /tmp/C-r1.json response output items replayed as input; matrix cite provenance/proxy-capability-matrix.md §3 L43 (C = markers intact (id + field replayed), untagged, 3/3 200, 7ff02 ×3, PIN held, store=false); full verbatim evidence frozen at grok/plans/provenance/fixtures/ws8/ (raw /tmp/C-r*.json|sse)",
+  "request_shape": {
+    "method": "POST",
+    "path": "/v1/responses",
+    "tag_header": null,
+    "body": {
+      "model": "gpt-5.6-sol",
+      "store": false,
+      "max_output_tokens": 256,
+      "reasoning": { "effort": "high" },
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [{ "type": "input_text", "text": "<math prompt round 1 — REDACTED>" }]
+        },
+        {
+          "type": "reasoning",
+          "id": "encitem_bGl0ZWxsbTptb2RlbF9pZDo3ZmYwMmJiYWI0OGJjMTczMTFkYzlhMzdmMGQzZjE3YjMzYWNlODg2MTZjYjcwYTY5ZTY0OTRkZDAzYjM5Y2Y7aXRlbV9pZDpyc18wZWJiYzM3Y2E3ODk2MDc2MDE2YWFiOWZmYWQ4NDA4MTk3YTU2Mzc3YzdkMTgzOGRh",
+          "summary": [{ "type": "summary_text", "text": "<reasoning summary — REDACTED>" }],
+          "encrypted_content": "litellm_enc:bW9kZWxfaWQ6N2ZmMDJiYmFhYjQ4YmMxNzMxMWRjOWEzN2YwZDNmMTdiMzNhY2U4ODYxNmNiNzBhNjllNjQ5NGRkMDNiMzljZg==;gAAAAABq…REDACTED (2744-char deployment-bound ciphertext; full bytes only in the frozen ws8 evidence)"
+        },
+        {
+          "type": "message",
+          "id": "msg_0ebbc37ca7896076016aaba01e0960819796fbf5e89b2b932e",
+          "role": "assistant",
+          "status": "completed",
+          "content": [{ "type": "output_text", "text": "<answer round 1 — REDACTED>" }]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [{ "type": "input_text", "text": "<math prompt round 2>" }]
+        }
+      ]
+    }
+  },
+  "observed": {
+    "rounds": "C-R1..C-R3",
+    "http_status": [200, 200, 200],
+    "serving_boundary_per_round": ["7ff02bbaab48", "7ff02bbaab48", "7ff02bbaab48"],
+    "pin_held": true,
+    "store": false,
+    "note": "untagged 3-boundary pool (391598459afc EU2 / 7ff02bbaab48 Sweden Central / 2564e9d80eeb South Central US, matrix §1); markers pin the exact origin deployment — the KEEP shape is the routing guarantee AND the fidelity win (encrypted_content round-trips, provider-side reasoning continuity)"
+  },
+  "ruling": "KEEP with id + field markers is the APPROVED same-boundary default (OQ-1 closed for the id+field variant by this probe). The field-only variant (keep encrypted_content, drop id) is NOT approved — OQ-1b probe owed, matrix §5 L79; do not build."
+}
