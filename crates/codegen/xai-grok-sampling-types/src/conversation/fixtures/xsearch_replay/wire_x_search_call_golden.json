@@ -1,0 +1,12 @@
+{
+  "type": "x_search_call",
+  "id": "xs_123",
+  "status": "completed",
+  "call_id": "xs_123",
+  "name": "x_search",
+  "arguments": "{\"type\":\"search\",\"query\":\"Open Grok\"}",
+  "action": {
+    "type": "search",
+    "query": "Open Grok"
+  }
+}

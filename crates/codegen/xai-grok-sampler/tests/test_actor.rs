@@ -1934,7 +1934,9 @@ async fn codex_remote_compaction_v2_uses_responses_stream_contract() {
     assert_eq!(usage.input_tokens_details.cached_tokens, 123);
     assert_eq!(usage.output_tokens_details.reasoning_tokens, 7);
     let replay = ConversationRequest::from_items(vec![result.compaction_item])
-        .raw_codex_input_replacements();
+        .raw_responses_input_replacements(
+            xai_grok_sampling_types::ResponsesReplayDialect::Codex,
+        );
     assert_eq!(replay[0].value["encrypted_content"], "opaque-v2-summary");
     assert!(
         replay[0].value.get("id").is_none(),

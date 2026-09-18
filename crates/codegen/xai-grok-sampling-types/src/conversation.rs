@@ -871,6 +871,57 @@ pub struct RawInputItemReplacement {
     pub value: serde_json::Value,
 }
 
+/// The Responses wire dialect the next request will be sent on. Keys which
+/// provider-native history items are restored into the serialized input (see
+/// [`ConversationRequest::raw_responses_input_replacements`]): each dialect
+/// restores only its own native items, so foreign opaque carriers never
+/// cross providers; `Other` restores nothing at all (fail-closed).
+///
+/// The dialect authority is the catalog `model_family` (resolved by the
+/// sampler client from its provider defaults), never the model slug — the
+/// wire is keyed by `model_family` (`catalog_wire` invariant).
+/// (apex-ayl.76; donor parity: open-grok@049664b5
+/// `ModelProvider::profile().responses_dialect()`.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponsesReplayDialect {
+    /// Codex Responses (gpt-5.6 sol/terra/luna on the llm-proxy): restores
+    /// the exact opaque `CodexRawInput` items (remote compaction v2).
+    Codex,
+    /// xAI Responses (grok rows): restores the native `x_search_call` item
+    /// for `XSearch` carriers.
+    Xai,
+    /// Every other Responses endpoint (the Strict family and
+    /// user-supplied vanilla endpoints): no provider-native restore.
+    Other,
+}
+
+/// Reconstruct xAI's current provider-native hosted X-search item for
+/// replay. The typed dependency only knows the older `CustomToolCall`
+/// carrier, so the sampler splices this value back into the serialized
+/// input at the same flattened index.
+/// (apex-ayl.76; verbatim from open-grok@049664b5
+/// xai-grok-sampling-types/src/conversation.rs:2168-2186.)
+fn x_search_call_wire_value(call: &rs::CustomToolCall) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "type": "x_search_call",
+        "id": call.id,
+        "status": "completed",
+    });
+    if !call.call_id.is_empty() {
+        value["call_id"] = serde_json::Value::String(call.call_id.clone());
+    }
+    if !call.name.is_empty() {
+        value["name"] = serde_json::Value::String(call.name.clone());
+    }
+    if !call.input.is_empty() {
+        value["arguments"] = serde_json::Value::String(call.input.clone());
+        if let Ok(action) = serde_json::from_str::<serde_json::Value>(&call.input) {
+            value["action"] = action;
+        }
+    }
+    value
+}
+
 /// Preserve the exact replacement history returned by Codex remote
 /// compaction (the `compaction` output item over the streaming `/responses`
 /// endpoint).
@@ -1944,21 +1995,46 @@ impl ConversationRequest {
     }
 
     /// Ordered `(flattened input position, exact provider item)` splices for
-    /// the next Codex turn. The sampler replaces the typed placeholders at
-    /// these positions after request serialization — only for the Codex wire
-    /// dialect, so non-Codex clients never receive the opaque items
-    /// (fail-closed cross-provider behavior).
-    pub fn raw_codex_input_replacements(&self) -> Vec<RawInputItemReplacement> {
+    /// the next turn on `dialect`. The sampler replaces the typed
+    /// placeholders at these positions after request serialization — each
+    /// dialect restores only its own provider-native history, so foreign
+    /// opaque carriers never cross providers and unknown dialects splice
+    /// nothing (fail-closed cross-provider behavior).
+    ///
+    /// xAI arm (apex-ayl.76): `XSearch` carriers replay as the native
+    /// `x_search_call` wire item; on every other dialect the bounded
+    /// provider-neutral placeholder the flattener emitted stays on the wire.
+    pub fn raw_responses_input_replacements(
+        &self,
+        dialect: ResponsesReplayDialect,
+    ) -> Vec<RawInputItemReplacement> {
         let mut replacements = Vec::new();
         let mut input_item_index = 0usize;
         for item in &self.items {
-            if let ConversationItem::BackendToolCall(backend) = item
-                && let BackendToolKind::CodexRawInput(raw) = &backend.kind
-            {
-                replacements.push(RawInputItemReplacement {
-                    input_item_index,
-                    value: raw.raw.clone(),
-                });
+            if let ConversationItem::BackendToolCall(backend) = item {
+                let value = match (dialect, &backend.kind) {
+                    (
+                        ResponsesReplayDialect::Codex,
+                        BackendToolKind::CodexRawInput(raw),
+                    ) => Some(raw.raw.clone()),
+                    (ResponsesReplayDialect::Xai, BackendToolKind::XSearch(call)) => {
+                        Some(x_search_call_wire_value(call))
+                    }
+                    // Cross-dialect pairs (an xAI carrier on the Codex wire,
+                    // a Codex carrier on the xAI wire) and every `Other`
+                    // dialect have no provider-native history they may
+                    // receive; keep the match explicit so new dialects fail
+                    // closed until their replay contract is defined.
+                    // (donor parity: open-grok@049664b5
+                    // conversation.rs:1766-1781.)
+                    _ => None,
+                };
+                if let Some(value) = value {
+                    replacements.push(RawInputItemReplacement {
+                        input_item_index,
+                        value,
+                    });
+                }
             }
             input_item_index += responses::conversation_item_to_input_items(item).len();
         }
@@ -5330,7 +5406,7 @@ mod tests {
                 .contains("opaque-server-summary"),
             "typed fallback input must never expose encrypted compact JSON"
         );
-        let replacements = request.raw_codex_input_replacements();
+        let replacements = request.raw_responses_input_replacements(ResponsesReplayDialect::Codex);
         assert_eq!(replacements.len(), 2);
         assert_eq!(replacements[0].input_item_index, 0);
         assert_eq!(replacements[0].value, output[0]);
@@ -5402,7 +5478,7 @@ mod tests {
         assert!(raw.raw.get("id").is_none());
 
         let request = ConversationRequest::from_items(items);
-        let replay = request.raw_codex_input_replacements();
+        let replay = request.raw_responses_input_replacements(ResponsesReplayDialect::Codex);
         assert_eq!(replay.len(), 1);
         assert!(replay[0].value.get("id").is_none());
     }
@@ -5427,7 +5503,7 @@ mod tests {
             assistant,
             compact,
         ]);
-        let replacements = request.raw_codex_input_replacements();
+        let replacements = request.raw_responses_input_replacements(ResponsesReplayDialect::Codex);
         // One assistant message + one function call precede the raw item.
         assert_eq!(replacements[0].input_item_index, 2);
         assert_eq!(replacements[0].value, raw);
@@ -5451,7 +5527,7 @@ mod tests {
             compaction.clone(),
         ])
         .unwrap();
-        let replacements = ConversationRequest::from_items(items).raw_codex_input_replacements();
+        let replacements = ConversationRequest::from_items(items).raw_responses_input_replacements(ResponsesReplayDialect::Codex);
         assert_eq!(replacements.len(), 1);
         assert_eq!(replacements[0].value, compaction);
     }
@@ -5493,7 +5569,7 @@ mod tests {
         let safe_input = input_items_json(&request);
         assert!(safe_input[0].to_string().contains("latest request"));
         assert!(!safe_input[0].to_string().contains("opaque-server-summary"));
-        assert_eq!(request.raw_codex_input_replacements()[0].value, raw);
+        assert_eq!(request.raw_responses_input_replacements(ResponsesReplayDialect::Codex)[0].value, raw);
     }
 
     /// Provenance: hyper-grok-build@45e984f3 packages/ai/xai-grok-sampling-types/src/conversation.rs:4734 :: codex_compaction_item_persists_and_replays_only_on_its_route (adapted)
@@ -5524,7 +5600,7 @@ mod tests {
         let request = ConversationRequest::from_items(vec![restored]);
 
         // Same route (Codex dialect): exact ordered raw replay, id intact.
-        let replay = request.raw_codex_input_replacements();
+        let replay = request.raw_responses_input_replacements(ResponsesReplayDialect::Codex);
         assert_eq!(replay.len(), 1);
         assert_eq!(replay[0].value, raw);
         assert_eq!(
@@ -5543,6 +5619,157 @@ mod tests {
         assert!(
             !placeholders[0].to_string().contains("opaque-state"),
             "the foreign route must never see the encrypted provider payload"
+        );
+    }
+
+    // apex-ayl.76 (XSEARCH-REPLAY-DIALECT): on the Codex wire dialect, xAI
+    // provider-native search history must replay as the bounded
+    // provider-neutral placeholder — never the raw carrier, never the query
+    // payload. Provenance: open-grok@049664b5 conversation.rs:14333-14364
+    // (`codex_x_search_history_replays_as_bounded_provider_neutral_context`).
+    // RED stage A: runtime red — the current projection emits the raw
+    // CustomToolCall carrier (wires as `custom_tool_call`, undeclared).
+    #[test]
+    fn xsearch76_codex_dialect_keeps_bounded_summary_and_never_leaks() {
+        let call: rs::CustomToolCall =
+            serde_json::from_str(include_str!(
+                "conversation/fixtures/xsearch_replay/carrier_xs_123.json"
+            ))
+            .unwrap();
+        let request = ConversationRequest::from_items(vec![
+            ConversationItem::assistant("visible answer based on earlier search"),
+            ConversationItem::BackendToolCall(BackendToolCallItem {
+                kind: BackendToolKind::XSearch(call),
+            }),
+        ]);
+        let input = input_items_json(&request);
+        let replayed = &input[1];
+        assert_eq!(replayed["type"], "message");
+        assert_eq!(replayed["role"], "assistant");
+        assert!(
+            replayed["content"].as_str().unwrap().chars().count() < 128,
+            "cross-provider search context must remain bounded: {replayed:?}"
+        );
+        let wire = serde_json::to_string(&input).unwrap();
+        for leak in [
+            "custom_tool_call",
+            "x_search",
+            "xs_123",
+            "Open Grok",
+        ] {
+            assert!(
+                !wire.contains(leak),
+                "Codex Responses input leaked {leak:?}: {wire}"
+            );
+        }
+    }
+
+    // apex-ayl.76 (XSEARCH-REPLAY-DIALECT): donor-parity triad for the
+    // dialect-keyed provider-native history restore.
+    // Provenance: open-grok@049664b5 conversation.rs:14224-14364 (triad) +
+    // :2162-2186 (PROVIDER_NATIVE_SEARCH_REPLAY_SUMMARY +
+    // x_search_call_wire_value). RED stage B: compile red —
+    // `raw_responses_input_replacements(ResponsesReplayDialect)` does not
+    // exist yet (today: `raw_codex_input_replacements()`, no dialect, no xAI
+    // arm — the donor gap this bead closes).
+    #[test]
+    fn xsearch76_xai_dialect_splices_native_x_search_call_replay() {
+        let call: rs::CustomToolCall =
+            serde_json::from_str(include_str!(
+                "conversation/fixtures/xsearch_replay/carrier_xs_123.json"
+            ))
+            .unwrap();
+        let request = ConversationRequest::from_items(vec![
+            ConversationItem::assistant("visible answer from the earlier search"),
+            ConversationItem::BackendToolCall(BackendToolCallItem {
+                kind: BackendToolKind::XSearch(call),
+            }),
+        ]);
+
+        let replacements =
+            request.raw_responses_input_replacements(ResponsesReplayDialect::Xai);
+        assert_eq!(
+            replacements.len(),
+            1,
+            "the xAI dialect restores its provider-native search item"
+        );
+        assert_eq!(replacements[0].input_item_index, 1);
+        let golden: serde_json::Value = serde_json::from_str(include_str!(
+            "conversation/fixtures/xsearch_replay/wire_x_search_call_golden.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            replacements[0].value, golden,
+            "donor-parity x_search_call wire value (byte-pinned)"
+        );
+        assert_eq!(golden["type"], "x_search_call");
+        assert_eq!(golden["status"], "completed");
+        assert_eq!(golden["action"]["query"], "Open Grok");
+
+        // Body level: the flattened placeholder slot is spliced exactly, as
+        // the client's patch_raw_input_replacements does post-serialization.
+        let input = input_items_json(&request);
+        let mut spliced = input;
+        for r in &replacements {
+            spliced[r.input_item_index] = r.value.clone();
+        }
+        assert_eq!(spliced[1], golden);
+
+        // Acceptance: xAI provider-native search history never crosses to
+        // the Codex dialect (no splice there — the placeholder stays).
+        assert!(
+            request
+                .raw_responses_input_replacements(ResponsesReplayDialect::Codex)
+                .is_empty(),
+            "xAI provider-native search history must never cross to Codex"
+        );
+    }
+
+    #[test]
+    fn xsearch76_other_dialects_fail_closed_no_provider_native_replay() {
+        let call: rs::CustomToolCall =
+            serde_json::from_str(include_str!(
+                "conversation/fixtures/xsearch_replay/carrier_xs_123.json"
+            ))
+            .unwrap();
+        let codex_raw = serde_json::json!({
+            "type": "compaction",
+            "encrypted_content": "opaque-codex-history"
+        });
+        let request = ConversationRequest::from_items(vec![
+            ConversationItem::BackendToolCall(BackendToolCallItem {
+                kind: BackendToolKind::XSearch(call),
+            }),
+            ConversationItem::BackendToolCall(BackendToolCallItem {
+                kind: BackendToolKind::CodexRawInput(CodexRawInputItem {
+                    id: "codex76".to_string(),
+                    raw: codex_raw,
+                    cross_provider_fallback: None,
+                }),
+            }),
+        ]);
+
+        // xAI dialect: only the x_search splice — the Codex opaque item
+        // never crosses to xAI.
+        let xai = request.raw_responses_input_replacements(ResponsesReplayDialect::Xai);
+        assert_eq!(xai.len(), 1, "Xai must select only its native item");
+        assert_eq!(xai[0].input_item_index, 0);
+        assert_eq!(xai[0].value["type"], "x_search_call");
+
+        // Codex dialect: only the CodexRawInput splice — no x_search splice.
+        let codex =
+            request.raw_responses_input_replacements(ResponsesReplayDialect::Codex);
+        assert_eq!(codex.len(), 1, "Codex must select only its native item");
+        assert_eq!(codex[0].input_item_index, 1);
+        assert_eq!(codex[0].value["type"], "compaction");
+
+        // Other (Strict family) dialects: fail closed — no provider-native
+        // splice at all (donor parity: DeepSeek/Meta/OpenAi arms).
+        assert!(
+            request
+                .raw_responses_input_replacements(ResponsesReplayDialect::Other)
+                .is_empty(),
+            "non-Codex/non-xAI Responses must not replay provider-native history"
         );
     }
 }

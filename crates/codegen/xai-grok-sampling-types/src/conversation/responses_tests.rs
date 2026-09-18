@@ -1616,3 +1616,40 @@ fn serialized_body_contains_no_placeholder_strings() {
         "both reasoning siblings must be present"
     );
 }
+
+// apex-ayl.76 (XSEARCH-REPLAY-DIALECT): x_search history must survive a turn
+// boundary on every model dialect instead of replaying as an undeclared
+// custom_tool_call. The flattener today emits the raw CustomToolCall carrier,
+// which serializes as `{"type":"custom_tool_call",...}` — no `custom` tool is
+// ever declared on any dialect (x_search rides as a raw hosted entry), so the
+// item is undeclared on the wire. Acceptance (donor parity, open-grok@049664b5
+// conversation.rs:4436-4446): a bounded provider-neutral placeholder message.
+// RED stage A: runtime red on the current projection.
+// Fixture provenance: fixtures/xsearch_replay/PROVENANCE.md (donor-derived).
+#[test]
+fn xsearch76_carrier_projects_to_bounded_placeholder_never_custom_tool_call() {
+    let call: rs::CustomToolCall =
+        serde_json::from_str(include_str!("fixtures/xsearch_replay/carrier_xs_123.json")).unwrap();
+    let request = ConversationRequest::from_items(vec![
+        ConversationItem::assistant("visible answer from the earlier search"),
+        ConversationItem::BackendToolCall(BackendToolCallItem {
+            kind: BackendToolKind::XSearch(call),
+        }),
+    ]);
+    let input = super::test_support::input_items_json(&request);
+    let replayed = &input[1];
+    assert_ne!(
+        replayed.get("type").and_then(serde_json::Value::as_str),
+        Some("custom_tool_call"),
+        "x_search history replayed as undeclared custom_tool_call (apex-ayl.76 hazard): {replayed:?}"
+    );
+    let golden: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/xsearch_replay/wire_placeholder_golden.json"
+    ))
+    .unwrap();
+    assert_eq!(replayed, &golden, "donor-parity placeholder (byte-pinned)");
+    assert!(
+        golden["content"].as_str().unwrap().chars().count() < 128,
+        "cross-provider search context must remain bounded"
+    );
+}

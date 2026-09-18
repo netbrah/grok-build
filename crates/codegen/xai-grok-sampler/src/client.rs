@@ -559,8 +559,8 @@ fn insert_json_default(
 }
 
 /// Restore opaque provider-native input items after async-openai serializes
-/// their typed placeholders. This is used only for Codex replacement history
-/// returned by remote compaction v2.
+/// their typed placeholders. Dialect-keyed (apex-ayl.76): Codex replacement
+/// history (remote compaction v2) and the xAI native `x_search_call` restore.
 fn patch_raw_input_replacements(
     request_body: &mut serde_json::Value,
     replacements: &[xai_grok_sampling_types::RawInputItemReplacement],
@@ -583,6 +583,19 @@ fn patch_raw_input_replacements(
         *slot = replacement.value.clone();
     }
     Ok(())
+}
+
+/// Map the client's wire dialect to the sampling-types replay dialect
+/// (apex-ayl.76). The Strict family has no provider-native history
+/// contract — fail closed.
+fn replay_dialect_for(dialect: ResponsesWireDialect) -> xai_grok_sampling_types::ResponsesReplayDialect {
+    match dialect {
+        ResponsesWireDialect::Codex => {
+            xai_grok_sampling_types::ResponsesReplayDialect::Codex
+        }
+        ResponsesWireDialect::Xai => xai_grok_sampling_types::ResponsesReplayDialect::Xai,
+        ResponsesWireDialect::Strict => xai_grok_sampling_types::ResponsesReplayDialect::Other,
+    }
 }
 
 /// 14-field allowlist for a remote-compaction-v2 request body: everything
@@ -2358,7 +2371,9 @@ impl SamplingClient {
         instructions: &str,
     ) -> Result<serde_json::Value> {
         let extra_tool_entries = xai_grok_sampling_types::extra_tool_entries(&request.hosted_tools);
-        let raw_input_replacements = request.raw_codex_input_replacements();
+        let raw_input_replacements = request.raw_responses_input_replacements(
+            xai_grok_sampling_types::ResponsesReplayDialect::Codex,
+        );
 
         let mut inner: rs::CreateResponse = request.into();
         inner.instructions = (!instructions.is_empty()).then(|| instructions.to_owned());
@@ -3044,13 +3059,14 @@ impl SamplingClient {
         let extra_tools = xai_grok_sampling_types::extra_tool_entries(&request.hosted_tools);
 
         // Codex compaction carriers splice their opaque provider items back in
-        // only on the codex wire dialect; every other route keeps the typed
-        // placeholder (fail-closed cross-provider behavior).
+        // back in per wire dialect (apex-ayl.76): Codex restores the opaque
+        // compaction items, xAI restores the native `x_search_call`, every
+        // other route keeps the typed placeholder (fail-closed
+        // cross-provider behavior).
         let raw_input_replacements =
-            (responses_wire_dialect_for_model_family(self.defaults.model_family.as_deref())
-                == ResponsesWireDialect::Codex)
-                .then(|| request.raw_codex_input_replacements())
-                .unwrap_or_default();
+            request.raw_responses_input_replacements(replay_dialect_for(
+                responses_wire_dialect_for_model_family(self.defaults.model_family.as_deref()),
+            ));
 
         let responses_request: rs::CreateResponse = (&request).into();
 
@@ -3090,13 +3106,14 @@ impl SamplingClient {
         let extra_tools = xai_grok_sampling_types::extra_tool_entries(&request.hosted_tools);
 
         // Codex compaction carriers splice their opaque provider items back in
-        // only on the codex wire dialect; every other route keeps the typed
-        // placeholder (fail-closed cross-provider behavior).
+        // back in per wire dialect (apex-ayl.76): Codex restores the opaque
+        // compaction items, xAI restores the native `x_search_call`, every
+        // other route keeps the typed placeholder (fail-closed
+        // cross-provider behavior).
         let raw_input_replacements =
-            (responses_wire_dialect_for_model_family(self.defaults.model_family.as_deref())
-                == ResponsesWireDialect::Codex)
-                .then(|| request.raw_codex_input_replacements())
-                .unwrap_or_default();
+            request.raw_responses_input_replacements(replay_dialect_for(
+                responses_wire_dialect_for_model_family(self.defaults.model_family.as_deref()),
+            ));
 
         let responses_request: rs::CreateResponse = (&request).into();
 
@@ -5126,7 +5143,9 @@ mod tests {
         assert_eq!(result.response_id, "resp_completed");
         assert_eq!(result.usage.unwrap().total_tokens, 128);
         let request = ConversationRequest::from_items(vec![result.compaction_item]);
-        let replay = request.raw_codex_input_replacements();
+        let replay = request.raw_responses_input_replacements(
+            xai_grok_sampling_types::ResponsesReplayDialect::Codex,
+        );
         assert_eq!(replay[0].value["encrypted_content"], "opaque");
         assert!(replay[0].value.get("id").is_none());
     }

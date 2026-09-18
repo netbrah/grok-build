@@ -15,6 +15,12 @@
 
 use super::*;
 
+/// Bounded provider-neutral context used until the selected transport
+/// restores a provider-native search item, if that provider supports one.
+/// (apex-ayl.76; donor parity: open-grok@049664b5 conversation.rs:2161-2163.)
+pub(super) const PROVIDER_NATIVE_SEARCH_REPLAY_SUMMARY: &str =
+    "[A provider-native search was completed earlier in the conversation.]";
+
 /// Flatten `response.output` into `ConversationItem`s, preserving emission order.
 /// Replaying that order byte for byte on the next turn is what keeps the server-side prefix cache hot.
 pub fn response_to_conversation_items(response: rs::Response) -> Vec<ConversationItem> {
@@ -324,9 +330,25 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                 BackendToolKind::WebSearch(ws) => {
                     rs::InputItem::Item(rs::Item::WebSearchCall(ws.clone()))
                 }
-                BackendToolKind::XSearch(ct) => {
-                    rs::InputItem::Item(rs::Item::CustomToolCall(ct.clone()))
-                }
+                // `CustomToolCall` is only a persistence carrier for xAI's
+                // backend-executed X Search. Letting that carrier serialize
+                // directly would create an orphan client custom-tool call —
+                // no `custom` tool is ever declared on any dialect — so the
+                // item would be undeclared on the wire (apex-ayl.76 hazard).
+                // Keep the generic typed request provider-neutral and
+                // bounded; the xAI transport restores this exact flattened
+                // slot with the native `x_search_call` wire item after
+                // serialization (`x_search_call_wire_value`), and every other
+                // dialect keeps the placeholder (fail-closed).
+                // (apex-ayl.76; donor parity: open-grok@049664b5
+                // conversation.rs:4436-4446.)
+                BackendToolKind::XSearch(_) => rs::InputItem::EasyMessage(rs::EasyInputMessage {
+                    r#type: rs::MessageType::Message,
+                    role: rs::Role::Assistant,
+                    content: rs::EasyInputContent::Text(
+                        PROVIDER_NATIVE_SEARCH_REPLAY_SUMMARY.to_owned(),
+                    ),
+                }),
                 BackendToolKind::CodeInterpreter(ci) => {
                     rs::InputItem::Item(rs::Item::CodeInterpreterCall(ci.clone()))
                 }

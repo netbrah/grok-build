@@ -1,0 +1,6 @@
+{
+  "call_id": "xs_123",
+  "input": "{\"type\":\"search\",\"query\":\"Open Grok\"}",
+  "name": "x_search",
+  "id": "xs_123"
+}
