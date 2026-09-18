@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "id": "XW-AZ-AZ",
+  "title": "XW-FIXTURES GREEN-PIN GUARD case, cell az-az (switch_model op, RULING 3 GO 3 (a), 2026-09-18 \u2014 corpus lane, ratchet \u2461; runner-visible copy in redteam/cases/): the runner seeds the session with the byte-pinned synthetic canonical sol-phase history (10 records; 2 reasoning items id=encitem_* + content:[] + encrypted_content (SYNTH-AZ-CIPHERTEXT placeholders) + summary text; 2 tool pairs; assistant model_id gpt-5.6-sol \u2014 byte-identical reuse of the cells/az-vxm pre, sha256:12 379ade4065e6), switches gpt-5.6-sol -> gpt-5.6-terra MID-SESSION (ACP session/set_model \u2014 NO preemptive wall: (codex,codex) same-family pair, is_family_switch requires (Some(a),Some(b)) with a!=b (model_switch.rs:60-69) so no family switch and no lossy compact), then one post-switch turn. PREDICTED OUTCOME (RULING 3 (a): predicted-clean, the no-wall same-wire guard): (i) storage diff AT SWITCH TIME PASSES = T0 (no projector in-tree and no wall -> the switch rewrites nothing in storage; expected.json byte-identical to pre_switch, the az-vxm T0 pattern); (ii) the first post-switch /v1/responses request (body.model=gpt-5.6-terra) carries the 2 rides in the post-strict-projection summary-only shape (provider.rs:263-280 strips id + content at send on the strict row; D-ENC provider.rs:187-208 ungated strips encrypted_content on every /responses send) \u2014 summary text byte-verbatim from the seed, zero encitem_ ids, zero '\"id\": \"\"' occurrences, zero ciphertext; (iii) 200 on the final terra request, no storm (count 1..2). Verdict semantics (A1): GREEN-BY-CONSTRUCTION guard \u2014 all asserts PASSing today is the correct outcome. ANY failing assert = a regression beyond the documented surface (a naive .71 T1 storage re-key REDs the storage T0 pin; a serializer emitting array content or a strict-projection regression REDs the wire pins) -> report-and-stop. NEVER edit expected.json or a pin to fit.",
+  "bead": "apex-ayl.70",
+  "suite": "cross-wire",
+  "tier": "slim",
+  "driver": "acp",
+  "model": "gpt-5.6-sol",
+  "wirecap": true,
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "steps": [
+    {
+      "op": "switch_model",
+      "model": "gpt-5.6-terra",
+      "via": "acp",
+      "cell": "smoke/xwfix/cells/az-az",
+      "assert_form": "storage"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: XW-AZ-AZ-POSTSW1"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 2,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "TURN COMPLETES: the post-switch terra turn did not die (no wall, no compact; a set_model/turn error = regression -> report-and-stop)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "any": true,
+        "grep": "\"text\": \"cargo check compiles without emitting artifacts and reports type errors if any. Single call; interpret exit code 0 as a clean build and quote the first error line otherwise.\"",
+        "label": "GREEN-PIN (RULING 3 (a)) RIDE-1 VERBATIM: the first seeded ride's summary text crosses the terra wire byte-verbatim in the post-strict-projection shape (summary-only item, provider.rs:263-280) \u2014 'verbatim' here = the projected summary text, NOT the seed byte form (id/content/encrypted_content are stripped at send). Absent = the projected ride did not cross -> strict-projection regression -> report-and-stop."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "any": true,
+        "grep": "\"text\": \"TODOs are source comments; grep -rn TODO src is the direct probe. Filter to the src tree only so generated artifacts do not pollute the count.\"",
+        "label": "GREEN-PIN (RULING 3 (a)) RIDE-2 VERBATIM: the second seeded ride's summary text crosses the terra wire byte-verbatim in the post-strict-projection shape. Absent = report-and-stop (see ride-1 pin)."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "encitem_",
+        "label": "GREEN-PIN (RULING 3 (a)) NO RAW RIDE: no seeded encitem_ id crosses the terra wire \u2014 the strict row strips the ride id at send (provider.rs:263-280), so a raw ride of the seeded ids would only exist if the serializer stopped projecting. Present = serializer regression -> report-and-stop."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "SYNTH-AZ-CIPHERTEXT",
+        "label": "GREEN-PIN (RULING 3 (a)) D-ENC INVARIANT: no seed ciphertext crosses the wire (D-ENC strips encrypted_content on every /responses send, provider.rs:187-208 ungated). Present = D-ENC regression -> report-and-stop."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"id\": \"\"",
+        "label": "GREEN-PIN (RULING 3 (a)) NO EMPTY-ID (hardened strict row, vxm-az DRAFT promotion convention): the strict terra row strips the id key entirely at send \u2014 a '\"id\": \"\"' occurrence means the row lost strict_responses_input or the serializer started empty-stringing ids -> config/serializer regression -> report-and-stop."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"encrypted_content\":",
+        "label": "GREEN-PIN (RULING 3 (a)) D-ENC FIELD INVARIANT: no encrypted_content FIELD in any terra request (the needle is field-form with the colon so the 'include: [reasoning.escaped_content]' request parameter and escaped text mentions cannot false-hit; verified safe on this seed: 0 escaped-field occurrences in pre_switch). Present = D-ENC regression -> report-and-stop."
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "min": 1,
+        "max": 2,
+        "label": "NO-STORM BAND (no wall, no compact): 1 = clean single post-switch request (run-1 precedent, same terra row); 2 = one retry observed before 200 (record the branch); >2 = retry-storm beyond documented semantics -> defect (report-and-stop)."
+      },
+      {
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "POST-SWITCH ACCEPTED: the FINAL terra request reached 200 (strict-projected rides are shape-legal for the codex row \u2014 run-1 precedent: direct 200, count=1). A non-200 final = BRICK/unclassified wire-error shape -> report-and-stop."
+      },
+      {
+        "kind": "recon",
+        "file": "req-003.json",
+        "field": "$.body.model",
+        "label": "VERDICT RECORD: the model of wire request #3 (expected gpt-5.6-terra \u2014 the first post-switch model call; req-001/002 are the harness probe calls with string bodies and no model field, observed in all six prior runs). Recon is always-ok (non-scoring)."
+      },
+      {
+        "kind": "recon",
+        "file": "req-003.json",
+        "grep": "\"type\": \"reasoning\"",
+        "label": "VERDICT RECORD: line count of '\"type\": \"reasoning\"' occurrences in the first post-switch request (expected 2 \u2014 the 2 seeded rides, projected to the summary-only shape; 0 would corroborate a strict-projection drop, >2 a ride duplication). Recon is always-ok (non-scoring)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

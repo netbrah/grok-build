@@ -1,0 +1,66 @@
+{
+  "cell": "az-vxm",
+  "flip": {
+    "from": {
+      "family": "AZ",
+      "model": "gpt-5.6-sol",
+      "wire": "/v1/responses (litellm proxy, Azure deployment class)"
+    },
+    "to": {
+      "family": "VX-M",
+      "model": "claude-sonnet-5",
+      "wire": "/v1/messages (vertex/litellm)"
+    }
+  },
+  "status": "PORTED (R8 identity suppression + thinking-strip on the messages side); storage tier for foreign reasoning items DESIGN-PROPOSED (.68 RECON ratifies)",
+  "recipe": {
+    "evidence": "synthetic canonical sol-phase records (shape modeled verbatim on the .58 pinned instance 01a09d0e pre-strip: encitem_ ids, encrypted_content, content=[], summary, assistant model_id gpt-5.6-sol, reasoning_effort max); ported behavior pinned from code file:line \u2014 no live capture needed for the code pin",
+    "code_pins": {
+      "r8_model_identity_suppression (an assistant item whose model_id mismatches the request model slug suppresses its sibling Reasoning items' Thinking blocks until the next Assistant/System flush)": "crates/codegen/xai-grok-sampling-types/src/conversation/messages.rs:14-16 (doc), :587-595 (flag init), :660 (System clears), :678-679 (Assistant sets/clears), :751-760 (Reasoning gate: thinking=reasoning_item_text(r), signature=encrypted_content, suppressed while flag set)",
+      "stage6_three_part_thinking_strip (non-latest assistant loses ALL thinking blocks; latest keeps only the verbatim (text, signature) pair; signature-only and RedactedThinking dropped; emptied assistants removed)": "crates/codegen/xai-grok-sampling-types/src/conversation/messages.rs:266-305 (strip_thinking_blocks)",
+      "reactive_net_backstop (persists strip_model_bound_state to chat_history.jsonl only after a classified error; XSWITCH-1 shell policy)": "crates/codegen/xai-grok-shell/src/session/acp_session_impl/model_bound_strip.rs:1-16 (doc), strip at crates/codegen/xai-grok-sampling-types/src/conversation.rs:861-863/942",
+      "denc_is_responses_only (the encrypted_content wire strip is a /responses send-path seam; the /messages path maps reasoning encrypted_content -> Thinking signature instead, with no foreignness gate)": "crates/codegen/xai-grok-sampler/src/provider.rs:187-208 + client.rs:1981,2148,2406 (responses seams) vs messages.rs:751-755 (signature mapping)"
+    }
+  },
+  "pre_switch": {
+    "file": "pre_switch.json",
+    "records": 10,
+    "composition": {
+      "system": 1,
+      "user": 3,
+      "reasoning": 2,
+      "assistant": 2,
+      "tool_result": 2
+    },
+    "note": "SYNTHETIC canonical sol-phase history: 2 encrypted reasoning items (encitem_ synthetic markers + SYNTH ciphertext placeholders + non-empty summaries, content=[]) + 2 tool pairs, terminal user prompt (the canonical multi-turn shape in which the ported build path is fully pinned \u2014 see wire_projection). assistant model_id gpt-5.6-sol (mismatched vs the claude-sonnet-5 request slug), tool pairing intact (2/2)"
+  },
+  "expected": {
+    "file": "expected.json",
+    "records": 10,
+    "projection": {
+      "all 10 records (storage form)": "T0 storage: the ported path rewrites NOTHING in storage \u2014 expected.json is byte-identical to pre_switch. R8 + the stage-6 strip are request-BUILD rules (messages.rs), not storage rewrites; the reactive net (model_bound_strip.rs) rewrites storage only after a classified error. A naive T1 re-key (xw_ id + encrypted_content strip) would RED against this cell \u2014 the projector needs no storage rewrite for this flip.",
+      "reasoning x2 (wire projection \u2014 the ported behavior)": "ZERO contribution to the first post-switch /v1/messages request: reasoning#1 (no preceding assistant -> R8 flag false at translation) lands a Thinking block on assistant#1, but assistant#1 is non-latest -> stage 6 drops all its thinking (messages.rs:266-305); reasoning#2 is translated while the R8 flag is set by assistant#1 (model_id gpt-5.6-sol != claude-sonnet-5, messages.rs:678-679) -> suppressed at :751-760. Net: zero thinking blocks, assistant text + tool_use + tool_results intact."
+    }
+  },
+  "design_proposed": [
+    {
+      "class": "sol reasoning item sibling of the LATEST assistant at session end (single-turn edge: history ends [..., reasoning, assistant] with no later assistant)",
+      "current_behavior": "the R8 flag is false when the first reasoning of a session is translated (no preceding assistant; messages.rs:595 init) -> a Thinking block is emitted with signature = the foreign AZ encrypted_content (messages.rs:751-755); stage 6 KEEPS the verbatim (text, signature) pair on the latest assistant (messages.rs:266-305) -> the foreign ciphertext rides the signature field into the /v1/messages request \u2014 violates invariant 2 (no foreign encrypted_content survives into the target request). D-ENC cannot save this path: its strip is a /responses-only seam (provider.rs:187-208).",
+      "proposed_rule": "projector: at switch time into a VX-M target, treat reasoning items whose encrypted_content originates from a non-Anthropic family as non-replayable -> T3 drop (or T2: signature stripped, summary kept \u2014 unsigned thinking is dropped by stage 6 anyway, so T2 and T3 are wire-equivalent here; T3 preferred for the cleaner transcript). Applies BEFORE the messages build so the latest-assistant verbatim-pair rule can never ship a foreign signature.",
+      "ratify": "apex-ayl.68 RECON (crosswire matrix, VX-M column)"
+    }
+  ],
+  "invariants": [
+    "no record with id == ''",
+    "zero thinking blocks in the first post-switch /v1/messages request (ported build, this canonical shape)",
+    "no foreign encrypted_content in the first post-switch request (holds for this shape via R8 + stage 6; the latest-assistant edge is the DESIGN-PROPOSED gap above, NOT in this cell's pre_switch)",
+    "every tool_result has a matching assistant tool_call (2/2)",
+    "expected.json byte-identical to pre_switch (ported path: no storage rewrite)"
+  ],
+  "red_tests": [
+    "switch_model case op (DRAFT) seeds this cell, drives sol->sonnet via ACP set_model, asserts: zero thinking blocks + 200 on the first post-switch /v1/messages request (rt-crosswire1 tolerant verdict: 1 request = the port sufficed; 2 = the reactive net recovered a miss; >=3 = retry-storm defect)",
+    "storage-form cell diff: expected == pre_switch \u2014 asserts the .71 projector performs NO storage rewrite for this flip (a T1 re-key implementation REDs here)"
+  ,
+    "run 1 (20260918T034309Z, case XW-AZ-VXM, report smoke/redteam/report-r2/xw-az-vxm): ATTEMPTED - INVALID EVIDENCE; no valid run of this case has occurred. (a) Runner defect blocks the run itself: ACP session/load params missing the required mcpServers field (run.py:2706-2707 sends only {sessionId, cwd}; agent-client-protocol-schema-0.11.4 LoadSessionRequest requires mcpServers; verbatim agent error: -32602 Invalid params, missing field mcpServers at line 1 column 121) - the seeded 10-rec history never entered the actor's in-memory state (turn1 snapshot 8 lines vs seeded 10), while the op's storage score read the seeded on-disk files - every assert of that run is INVALID pending the one-line .22-lane fix (coordinator adjudication pending; this lane did not modify run.py). (b) My case-contract bug surfaced by that run: the 2 negative wire pins used any:true+absent:true, which the runner rejects at evaluation (any:true requires presence (absent not allowed), run.py:1870; supported negative form all:true+absent:true, run.py:1828) - fixed to all+absent in BOTH corpus DRAFT (smoke/xwfix/cases/az-vxm.switch_model.json) and runner copy (smoke/redteam/cases/xw-az-vxm.json); selftest re-run PASS (73/73). Case-contract fix, NOT a RED fit. See manifest red_runs_r2 + grok/plans/xwire/r2-report-qwen-20260918.md."
+  ]
+}

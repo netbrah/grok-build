@@ -1,0 +1,87 @@
+[
+  {
+    "type": "system",
+    "content": "You are Grok released by xAI. You are an interactive CLI tool that helps users with software engineering tasks.\n\n[xwfix synthetic canonical cell vxm-vxg: deterministic pre-switch history; see cell.json recipe.]"
+  },
+  {
+    "type": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "<user_info>\nOS Version: macos\nShell: /zsh\nWorkspace Path: /synthetic/vxm-vxg\nToday's date: 2026-09-18\n</user_info>\n\n<user_query>\nRead the first 20 lines of README.md and summarize what the project does.\n</user_query>"
+      }
+    ]
+  },
+  {
+    "type": "reasoning",
+    "id": "xw_8da223f40d38f3b81de0e7e2",
+    "summary": [
+      {
+        "type": "summary_text",
+        "text": "README first-20-lines probe: head -n 20 README.md is the direct read; a single call, then summarize the purpose line and the primary usage section if present within the first 20 lines."
+      }
+    ]
+  },
+  {
+    "type": "assistant",
+    "content": "Reading the README now.",
+    "tool_calls": [
+      {
+        "id": "toolu_syn_vxmvxg_01readfile",
+        "name": "read_file",
+        "arguments": "{\"target_file\": \"README.md\", \"limit\": 20}"
+      }
+    ],
+    "model_id": "claude-sonnet-5"
+  },
+  {
+    "type": "tool_result",
+    "tool_call_id": "toolu_syn_vxmvxg_01readfile",
+    "content": "1!92# Synthetic Project\n2!92\n3!92A deterministic fixture vehicle for cross-wire switch cells.\n4!92\n5!92## Usage\n6!92\n7!92Run the smoke suite; no network required.\n8!92\n9!92## Notes\n10!92\n11!92See smoke/ for the harness layout.\n12!92\n13!92The project ships no external services.\n14!92\n15!92Contributions follow the workspace conventions.\n16!92\n17!92Tests are hermetic by design.\n18!92\n19!92The README is the source of truth for layout.\n20!92\n21!92That is all the first twenty lines say."
+  },
+  {
+    "type": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "Now run git status --short and count the changed files."
+      }
+    ]
+  },
+  {
+    "type": "reasoning",
+    "id": "xw_d308f76c1af22dd6a4b2c192",
+    "summary": [
+      {
+        "type": "summary_text",
+        "text": "git status --short is the direct probe; count non-empty lines in the output and report the number, mapping M/A/D/? prefixes to changed/added/deleted/untracked."
+      }
+    ]
+  },
+  {
+    "type": "assistant",
+    "content": "Checking the working tree.",
+    "tool_calls": [
+      {
+        "id": "toolu_syn_vxmvxg_02gittest",
+        "name": "run_terminal_command",
+        "arguments": "{\"command\": \"git status --short\", \"description\": \"List changed files\"}"
+      }
+    ],
+    "model_id": "claude-sonnet-5"
+  },
+  {
+    "type": "tool_result",
+    "tool_call_id": "toolu_syn_vxmvxg_02gittest",
+    "content": "(clean: no output)"
+  },
+  {
+    "type": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "Summarize both results."
+      }
+    ]
+  }
+]

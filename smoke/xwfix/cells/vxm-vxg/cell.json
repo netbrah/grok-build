@@ -1,0 +1,96 @@
+{
+  "cell": "vxm-vxg",
+  "flip": {
+    "from": {
+      "family": "VX-M",
+      "model": "claude-sonnet-5",
+      "wire": "/v1/messages (vertex/litellm)"
+    },
+    "to": {
+      "family": "VX-G",
+      "model": "gemini-3-pro-preview",
+      "wire": "/v1/responses (litellm) -> vertex /generateContent passthrough (structurally text-capped)"
+    }
+  },
+  "status": "UNPROVEN — P6 probe (minted 2026-09-18 (Z) as CATCH candidate per r2-spec §2; DEMOTED to UNPROVEN inventory / empirical P6 probe by Amendment A1.2 — the wire failure mode is UNKNOWN pre-run ('text-capped' premise is void for the client wire per glm concordance §1), so this cell does NOT satisfy §2(b) as the CATCH; the CATCH of record is vxm-vlq; the .71-class storage RED stands and runs live this cycle — see amendment_a1 + red_tests[2])",
+  "mint": {
+    "date": "2026-09-18 (Z)",
+    "lane": "ratchet ② (apex-ayl.70 corpus)",
+    "spec": "r2-spec.md §2 (mint ONE fresh CATCH cell from the family-unset raw-ride rows)",
+    "row_class": "post-16:30Z-terraluna-hardening, the family-UNSET rows are the ones that bypass the preemptive wall and raw-ride (qwen preplan finding 1); the incident's row class (terra, now strict) is covered by send-time projection"
+  },
+  "amendment_a1": {
+    "date": "2026-09-18 (Z)",
+    "source": "r2-spec.md Amendment A1.2 (coordinator first-hand adjudication of r2-concord-glm-20260918.md, SAFE-WITH-NITS)",
+    "ruling": "demoted from CATCH candidate to UNPROVEN inventory / empirical P6 probe: the 'text-capped' premise is void for the CLIENT wire — grok sends a /v1/responses request; the vertex /generateContent transform is litellm-SIDE and its reasoning-item handling (400 phrasing / silent drop / text mapping) is UNKNOWN pre-run — so the wire failure mode is not code-derivable and the cell does not satisfy r2-spec §2(b) as the CATCH",
+    "kept": "cell + recipe + T3 expected.json (the .71-class storage RED is valid — 10 records with the 2 id:'' rides vs the 8-record T3 golden — and runs live this cycle); the candidate_evaluation provenance stands as the corpus record of the gemini evaluation",
+    "live_run": "this cycle as empirical P6 probe (case XW-VXM-VXG): the outcome is RECORDED, not the CATCH validation; ANY 400 phrasing observed = potential new failure class -> report-and-stop discipline (triage-catalog row + bead; coordinator files per JIG §2 new-failure-class rule)",
+    "catch_of_record": "vxm-vlq (sonnet -> qwen3.8-27b) — same sonnet pre_switch (pre-switch storage is target-independent), code-derivable class-(a) vLLM pydantic dotted-id 400 -> F1-F5 needle miss (tdd-74 §1 walk) -> Fatal -> BRICK (L1801 live fragment sha256:1f591ef070d9)"
+  },
+  "recipe": {
+    "evidence": "SYNTHETIC canonical claude-phase (VX-M) history, deterministic; the ride is the PROVEN VX-M empty-id persist class — 2 reasoning items with id:\"\" + encrypted_content (Anthropic signature carrier) + summary_text, shape modeled verbatim on the incident 01a0b046 pre-strip records (cells/vxm-az/pre_switch.json, 5x id:'' rides; the .69 XW-EMPTYID-1 persist gap, stream/messages.rs:543-549 id: String::new() with the signature in encrypted_content) and on the cells/az-vxm synthetic-canonical convention (marker style, composition system 1 / user 3 / reasoning 2 / assistant 2 / tool_result 2, terminal user prompt)",
+    "synth_markers": "SYNTH-VX-CIPHERTEXT-vxmvxg-000{1,2} deterministic placeholders for the real thinking signatures (real ciphertext intentionally not reproduced, az-vxm convention); tool_call ids toolu_syn_vxmvxg_* deterministic",
+    "target_row": "gemini-3-pro-preview (first of the five family-unset gemini rows in ~/.grok/config.toml; row-class-identical siblings gemini-3.1-flash-lite-preview / gemini-3.1-pro-preview / gemini-3.5-flash / gemini-3.7-flash — all api_backend=\"responses\", no model_family, no strict_responses_input). The config row is api_backend=responses since the 15:43->16:30 config edit of 2026-09-17 (diff config.toml.bak-20260917 vs config.toml.bak-20260917-terraluna shows all five rows chat_completions->responses) — the qwen preplan family legend (VX-G = chat_completions) is STALE against the live config; the vertex /generateContent passthrough characterization (r2-spec §2) stands on the litellm-side transform of a /v1/responses request for a gemini model",
+    "run_precondition": "the gemini-3-pro-preview model must be routable through the LLM proxy (operational availability check at RED-run time — the CATCH MECHANISM below is shape-determined and carries no live-proxy STATE dependency; a model-not-found 400/404 would be a NEW unclassified shape -> report-and-stop per house rule, not absorbed)"
+  },
+  "catch_criteria": {
+    "(a) foreign-reasoning ride in the pre-switch history": "HOLD — 2 reasoning items carry id:\"\" + encrypted_content (the carrier the target cannot keep: vertex /generateContent has no encrypted-reasoning concept; the litellm responses->generateContent transform is structurally text-capped — manifest deferred_cells any-vxg: 'nothing replayable on /generateContent'). Ride class proven: incident 01a0b046 (5x id:'' rides persisted and wire-400'd) + .69 persist gap (stream/messages.rs:543-549)",
+    "(b) target row family-unset OR non-strict, current code yields classifier-400 (BRICK or model-bound retry) or silent T3 strip": "HOLD — verified by code/config read (base ef5192b): (1) target row family-UNSET and NON-STRICT: ~/.grok/config.toml [model.gemini-3-pro-preview] = {api_backend=\"responses\", max_completion_tokens=65535} only — no model_family (-> None) and no strict_responses_input (-> serde default false, config.rs:80); first-hand read 2026-09-18 (Z). (2) No preemptive wall: is_family_switch = matches!((old,new),(Some(a),Some(b)) if a != b) (agent/handlers/model_switch.rs:60-69) — (None,None) is false, so the acp_session_impl/model_switch.rs:148-163 preemptive lossy compact NEVER fires for claude(None)->gemini(None) — the row raw-rides (qwen preplan finding 1). (3) No grok-side T3 exists in-tree: no .71 projector; the reactive net rewrites storage only AFTER a classified error (model_bound_strip.rs; drop_model_bound_items conversation.rs:942-951). (4) Send path: the /responses builder passes the id verbatim (conversation/responses.rs:262-267); project_strict_responses_input is a no-op on non-strict rows (provider.rs:263-278, strict_dialect gate) so the id:\"\" RIDE; D-ENC strips the encrypted_content FIELD on every /responses send (provider.rs:187-208 called at client.rs:1981/2148/2406, ungated — glm2 H-4). Wire item = {type:\"reasoning\", id:\"\", summary:[...]} with no encrypted_content. (5) Outcome branches (all three are the documented CATCH class; the exact branch settles at the RED run): (i) the proxy/vertex 400s the reasoning shape -> classifier is_model_bound_history_error (error.rs:428-479, 400-gated, needles F1-F5, 280-char cap) is PREDICTED to MISS all five on a gemini error body (no input[N] bracket phrasing, no encrypted_content text — already stripped, no thinking+signature pair, no array-too-long) -> RetryDecision::Fatal (retry.rs:186; 400 non-retryable error.rs:885) -> BRICK: terminal, persistent 400 on every later prompt until compaction (qwen preplan finding 2, I-B CONFIRMED); (ii) if the litellm-normalized 400 body happens to carry OpenAI-shaped input[N].id...invalid phrasing -> F3 hit -> model-bound retry with T3-all strip -> 200 (reactive catch, still lossy all-or-nothing); (iii) if the litellm responses->generateContent transform silently drops/maps the reasoning item -> 200 with silent loss (T3-equivalent, no 400 at all — the silent-loss class of qwen preplan finding 3). BRANCH (i) is the CATCH in its purest form (the BRICK gap on family-unset rows); (ii)/(iii) are the reactive/silent sub-classes. This cell CATCHes whichever branch the live run shows.",
+    "(c) RED reproducible in the hermetic home (no live-proxy state dependency)": "HOLD — the mechanism is request-SHAPE-determined: the claude ride carries id:\"\" + a signature (not an encitem_ litellm affinity pointer), so no EncryptedContentAffinityCheck deployment-pinning state (the .58 503 class) is involved; no deployment-cooldown, no proxy session state, no live-config mutation. HermeticHome (run.py:286-341) copies the live config (the gemini row is present; base_urls rewritten to the local wiretap) + the catalog cache is scope-aligned (run.py:342-360) — the switch + first post-switch request replay identically per run. The ONLY live dependency is model ROUTABILITY (operational), not state — recorded as the run precondition above."
+  },
+  "candidate_evaluation": {
+    "order": "per r2-spec §2: gemini (vertex /generateContent passthrough, structurally text-capped — VX-G) first, then claude->non-anthropic flips",
+    "selected": "vxm-vxg (claude-sonnet-5 -> gemini-3-pro-preview): the proven VX-M empty-id ride (incident 01a0b046 + .69 persist gap) x the family-unset non-strict target row (bypasses the preemptive wall — qwen finding 1) x the structurally text-capped wire. Cleanest repro: state-independent (no encitem_ pointer), deterministic ride shape, all three failure branches inside the documented CATCH class.",
+    "rejected": [
+      {
+        "candidate": "az->vxg (e.g. gpt-5.6-sol -> gemini): AZ-encoded ride (encitem_ litellm affinity pointers + encrypted_content)",
+        "why": "the encitem_ pointers make the failure LIVE-PROXY-STATE-DEPENDENT (litellm EncryptedContentAffinityCheck pins the request to the deployment that minted the pointer; the .58 incident 01a09d0e 503 is the cooled-down-deployment class) — violates criterion (c) hermetic reproducibility. The claude ride (id:\"\" + signature) is state-independent. Also D-ENC already strips the encrypted fields, leaving the affinity pointer as the sole state hook — precisely the .58 mechanism this cell must avoid."
+      },
+      {
+        "candidate": "vxm-vlq (claude-sonnet-5 -> qwen3.8-27b): claude->non-anthropic, fallback order",
+        "why": "the qwen row is family-SET (model_family=\"qwen\", verified live config) — not the family-unset row class this CATCH targets; and REPLAY-1 (ledger L693ff; glm2 adjudication #1) ruled the lenient vLLM shim ACCEPTS empty ids (KEEP, 200 OK) — the ride produces no classifier 400, no BRICK, no grok-side strip: only a .71 fidelity gap, no CATCH teeth. (is_family_switch (None, Some(qwen)) is also false — no wall — but the absence of a 400/strip means no RED.)"
+      },
+      {
+        "candidate": "vxm-vxr (claude-sonnet-5 -> grok-4.6): claude->non-anthropic, fallback order",
+        "why": "the grok-4.6 row is family-SET (model_family=\"xai\") — not the family-unset row class; the claude->xAI encrypted-boundary failure shape is UNCHARTED (it would itself mint a new wire-error shape needing separate triage before it could be a cell pin); and grok-4.6 is the session-title side-call model (fork_secondary_model) — its /v1/responses title-refresh side calls ride body.model=grok-4.6 and pollute the where:{body.model:<target>} scope (the known hazard, JIG §7) — not the cleanest repro."
+      },
+      {
+        "candidate": "vxm-xm-opus (claude-sonnet-5 -> claude-opus-4.8): cross-model, manifest deferred_cells",
+        "why": "same-wire same-boundary (messages->messages, Anthropic boundary): the target CAN keep the carrier (thinking signatures replay within the family) — T0/T1 replay class, not a CATCH row. (Also both rows family-unset — no wall — but nothing breaks; the manifest already parks it at priority 3 as 'thinking-signature class, family 2'.)"
+      }
+    ]
+  },
+  "pre_switch": {
+    "file": "pre_switch.json",
+    "records": 10,
+    "composition": {
+      "system": 1,
+      "user": 3,
+      "reasoning": 2,
+      "assistant": 2,
+      "tool_result": 2
+    },
+    "note": "SYNTHETIC canonical claude-phase (VX-M) history: 2 reasoning items with id:\"\" + encrypted_content (SYNTH-VX-CIPHERTEXT markers) + non-empty summary_text (the proven VX-M persist-gap ride, .69) + 2 tool pairs (2/2 intact) + terminal user prompt; assistant model_id claude-sonnet-5 (the from-model slug)"
+  },
+  "expected": {
+    "file": "expected.json",
+    "records": 8,
+    "projection": {
+      "reasoning x2": "T3 DROP: the item is removed, portable transcript intact. Tier justification: the target wire (vertex /generateContent via the litellm responses passthrough) is structurally text-capped — 'nothing replayable on /generateContent' (manifest deferred_cells any-vxg, PREDICTED) — so the highest tier the target tolerates is T3 (no summary-text reasoning tolerance is claimed for this wire absent wire evidence). T1 re-keying (xw_ id + summary kept) is explicitly NOT the golden for this cell.",
+      "all other 8 records": "T0: parsed-equal (byte-identical modulo json re-serialization) to pre_switch — verified exp == [r for r in pre if r.type != 'reasoning']"
+    },
+    "branch_conditional_recut": "IF the live RED run (branch (iii)) shows the litellm ->generateContent transform REPLAYS the summary text (200 with the reasoning content surfaced as text parts), the target tolerates T2/T1 and expected.json must be RE-CUT to that tier with wire evidence (sha256:12 req/resp) — tier floors ratchet UP only (JIG §1 goal 1). Until that evidence lands, T3 stands as the corpus pin."
+  },
+  "invariants": [
+    "no record with id == '' (the 2 rides are dropped, not re-keyed — T3)",
+    "no encrypted_content anywhere in expected.json",
+    "every tool_result has a matching assistant tool_call (2/2 — the dropped items are reasoning siblings, pair-safe)",
+    "compaction carrier items survive projection opaquely (none present in this synthetic recipe)",
+    "the 8 non-reasoning records parsed-equal to pre_switch"
+  ],
+  "red_tests": [
+    "switch_model case (op + assert_form=storage) seeds this cell and drives claude-sonnet-5 -> gemini-3-pro-preview via ACP session/set_model; storage diff AT SWITCH TIME expected to FAIL (RED): actual storage keeps the 10 records with the 2 id:'' rides, expected is the 8-record T3 golden — no proactive projector in-tree (.71). RED-EXPECTED id = apex-ayl.71. Run spec (queued — runs AFTER the four .70 existing-cell RED runs are adjudicated, same binary of record + hermetic home + store=false): python3 smoke/redteam/run.py XW-VXM-VXG --bin <binary-of-record> --out <report-dir>; run precondition = gemini-3-pro-preview routable through the proxy (a model-not-found shape = NEW wire error -> report-and-stop, triage-catalog row, do not absorb)",
+    "wire branch pin (captured on the first RED run, then re-pinned per the adjudicated branch — the cell ships UNPROVEN so no branch is pinned yet): first post-switch /v1/responses request where body.model=gemini-3-pro-preview — expected branches: (i) 400 + no needle match (F1-F5, error.rs:428-479) + acp_error / Fatal + no recovery = BRICK CATCH (the pure form); (ii) 400 F3-shaped + T3-all strip + retry 200 = reactive catch (lossy); (iii) 200 with the reasoning item dropped/transformed by the ->generateContent adapter = silent T3-equivalent loss. Record the branch VERBATIM (req/resp sha256:12) in this cell's evidence; the branch decides (a) whether a .74 classifier arm is owed for this shape and (b) the expected.json tier re-cut above",
+    "r2 live P6 probe (2026-09-18 (Z), THIS CYCLE — case XW-VXM-VXG, per Amendment A1.2): storage diff AT SWITCH TIME expected to FAIL (.71-class RED: actual 10 records with the 2 id:'' rides vs the 8-record T3 golden — no proactive projector in-tree); wire branch RECORDED AS A P6 FINDING (not a CATCH pin — the failure mode is unknown pre-run): first post-switch /v1/responses request (body.model=gemini-3-pro-preview) lands 200 (silent transform loss) or 400 (class-X — verbatim phrasing quoted in this cell's evidence from the resp capture) or BRICK (400 + Fatal + turn dies); ANY 400 phrasing observed = potential new failure class -> report-and-stop (A1.2 + house rule). Run: python3 smoke/redteam/run.py XW-VXM-VXG --bin target/release/grok-responses (sha256:12 39f836e8633d, binary of record per campaign ledger) --out smoke/redteam/report-r2/xw-vxm-vxg (hermetic home, store=false, proxy key from env — never echoed)"
+  ]
+}

@@ -1,6 +1,6 @@
 {
  "id": "RT-M5",
- "title": "Slim regression matrix: one frontier model per wire/handler class - responses wire: qwen3.8-27b (vLLM), glm-5.2 (vLLM), gpt-5.6-sol (Azure OpenAI), grok-4.6 (Vertex xai, gemini-format), gemini-3.7-flash (Vertex gemini, known-issue family); messages wire: claude-sonnet-5 (only messages-wire class). Full catalog sweep = generated RT-M6 (gen-matrix.py). Row asserts filter wire requests by body.model so nth resolution is per-row.",
+ "title": "Slim regression matrix: one frontier model per wire/handler class - responses wire: qwen3.8-27b (vLLM), glm-5.2 (vLLM), gpt-5.6-sol (Azure OpenAI), grok-4.6 (Vertex xai, gemini-format), gemini-3.7-flash (Vertex gemini, known-issue family), gemini-3-pro-preview (Vertex gemini pro); messages wire: claude-sonnet-5 (only messages-wire class). Full catalog sweep = generated RT-M6 (gen-matrix.py). Row asserts filter wire requests by body.model so nth resolution is per-row.",
  "rows": [
   {
    "model": "qwen3.8-27b",
@@ -25,10 +25,14 @@
   {
    "model": "gemini-3.7-flash",
    "prompt": "Reply with exactly: HT1-OK"
+  },
+  {
+   "model": "gemini-3-pro-preview",
+   "prompt": "Reply with exactly: HT1-OK"
   }
  ],
  "watchdog_s": 300,
- "est_calls": 6,
+ "est_calls": 7,
  "row_asserts": {
   "wire": [
    {
@@ -144,6 +148,17 @@
    {
     "kind": "field",
     "file": "req-*.json",
+    "path": "$.body.model",
+    "eq": "gemini-3.7-flash",
+    "where": {
+     "method": "POST",
+     "$.body.model": "gemini-3.7-flash"
+    },
+    "row_model": "gemini-3.7-flash"
+   },
+   {
+    "kind": "field",
+    "file": "req-*.json",
     "path": "$.path",
     "eq": "/v1/responses",
     "where": {
@@ -156,12 +171,23 @@
     "kind": "field",
     "file": "req-*.json",
     "path": "$.body.model",
-    "eq": "gemini-3.7-flash",
+    "eq": "gemini-3-pro-preview",
     "where": {
      "method": "POST",
-     "$.body.model": "gemini-3.7-flash"
+     "$.body.model": "gemini-3-pro-preview"
     },
-    "row_model": "gemini-3.7-flash"
+    "row_model": "gemini-3-pro-preview"
+   },
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "path": "$.path",
+    "eq": "/v1/responses",
+    "where": {
+     "method": "POST",
+     "$.body.model": "gemini-3-pro-preview"
+    },
+    "row_model": "gemini-3-pro-preview"
    }
   ]
  }

@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "id": "XW-VXM-VLQ-V2",
+  "title": "XW-FIXTURES GUARD case (qwen GUARD, RULING 3 GO 3 (c), 2026-09-18 \u2014 corpus lane, ratchet \u2461; runner-visible copy in redteam/cases/): the runner seeds the session with the byte-pinned synthetic canonical claude-phase history (10 records; 2 reasoning items id:'' + encrypted_content (SYNTH-VX-CIPHERTEXT placeholders) + summary \u2014 the proven VX-M empty-id persist ride; 2 tool pairs; assistant model_id claude-sonnet-5 \u2014 cell vxm-vlq-v2 pre_switch (byte copy of the vxm-vlq pre; == vxm-vxg pre), sha256:12 84602c521864), switches claude-sonnet-5 -> qwen3.8-27b MID-SESSION (ACP session/set_model \u2014 NO preemptive wall: the claude row is family-unset so is_family_switch (model_switch.rs:60-69, (Some(a),Some(b)) a!=b) is false and the rides raw-ride), then one post-switch turn. CORRECTED PREMISE (RULING 2 \u00a72 + RULING 3 \u00a73(c), supersedes the v1 CATCH premise \u2014 the v1 case xw-vxm-vlq.json 5cfe1497cdbb0 STAYS in the corpus as the PREMISE-INVALID-OUTCOME RECON artifact, untouched): the class-(a) 400 is model-specific and non-reproducible on the qwen3.8-27b row as deployed today (run 4 20260918T061419Z: the id:'' rides crossed the qwen wire verbatim and the backend returned 200 \u2014 openai/qwen3.8-27b @ inference.gitops-inf-onprem-cls-01 native OpenAI-compatible upstream, header-verified first-hand). PREDICTED OUTCOME: (i) storage diff AT SWITCH TIME FAILS = the documented .71 failing-field RED (actual=10 expected=10 first_diff_index=2 type=reasoning \u2014 the 2 id:'' rides persist in storage vs the T1 golden; no projector in-tree; validated run 4 + run 5) \u2014 expected_red apex-ayl.71; (ii) the first post-switch /v1/responses request (body.model=qwen3.8-27b) carries the 2 id:'' rides VERBATIM (keys [id,summary,type], id='') with the seed summary texts byte-verbatim AND ZERO array-content items \u2014 the class-(a)-unreachability invariant (grok-responses requests carry string content + summary-only reasoning; the 09-17 400's 39 array-content codex-combined messages cannot be produced by this serializer \u2014 RULING 3 drift leg (b)); (iii) final qwen 200 (qwen native-accepts, run 4 ground truth), no storm (count 1..4). Verdict semantics (A1): the storage RED failing EXACTLY as documented + all GREEN pins PASSing = the correct outcome. Teeth: a regression that strips id on the lenient row (or reshapes the summary array) REDs the id:''/verbatim pins; a serializer change emitting array content REDs the all+absent pins; a qwen deployment regression back to a rejecting shim REDs the 200 pin -> report-and-stop -> the .74 net catches the 400 in-flight (post-green). ANY other failing surface = STOP (A1.4: a RED not failing as documented = defect in cell/op). NEVER edit expected.json or a pin to fit.",
+  "bead": "apex-ayl.70",
+  "suite": "cross-wire",
+  "tier": "slim",
+  "driver": "acp",
+  "model": "claude-sonnet-5",
+  "wirecap": true,
+  "expected_red": {
+    "id": "apex-ayl.71"
+  },
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "steps": [
+    {
+      "op": "switch_model",
+      "model": "qwen3.8-27b",
+      "via": "acp",
+      "cell": "smoke/xwfix/cells/vxm-vlq-v2",
+      "assert_form": "storage"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: XW-VXM-VLQ-V2-POSTSW1"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 4,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "TURN SURVIVES: the post-switch qwen turn did not die. If the qwen deployment regresses back to a rejecting shim the class-(a) 400 surfaces as Fatal (no model-bound retry arm) -> acp_error + the 200 pin REDs together (the .74 net's in-flight 400, post-green)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "any": true,
+        "grep": "\"id\": \"\"",
+        "label": "GREEN-PIN (RULING 3 (c) tooth #1): a post-switch qwen request ships the seeded id:'' reasoning items VERBATIM (non-strict row: project_strict_responses_input no-op, provider.rs:268-284 @dbf9441 == :263-280 @40ffad1; the wire ride keys are [id,summary,type] \u2014 D-ENC strips encrypted_content ungated, provider.rs:209-214; summary text byte-verbatim, first-hand run 4 req-003). ABSENT = a regression stripped the id on a lenient row or reshaped the ride -> RED -> report-and-stop (NEVER fit the pin)."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"reasoning_text\"",
+        "label": "GREEN-PIN (RULING 3 (c) tooth #2 \u2014 class-(a)-unreachability, half 1): ZERO reasoning-content-array items on the qwen wire. A reasoning item with a content array serializes its elements as {\"type\":\"reasoning_text\",...}; 0 raw occurrences in the run-4 capture (needle-safety first-hand). PRESENT = a serializer change emits the codex-combined array shape the 09-17 class-(a) 400 validated -> RED -> report-and-stop (the .74 net's shape-regression alarm)."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"content\": [",
+        "label": "GREEN-PIN (RULING 3 (c) tooth #3 \u2014 class-(a)-unreachability, half 2): ZERO array-content items of ANY type on the qwen wire (RULING 3 drift leg (b): the 09-17 400 carried 39 array-content codex-combined messages; grok-responses requests carry ZERO \u2014 string content on every message item; run-4 req-003 first-hand: 16 items, 0 with array content; needle-safety: 0 raw occurrences). PRESENT = any item serializes content as an array -> RED -> report-and-stop."
+      },
+      {
+        "kind": "recon",
+        "file": "req-003.json",
+        "field": "$.body.model",
+        "label": "VERDICT RECORD: the model of wire request #3 (expected qwen3.8-27b \u2014 the first post-switch /v1/responses call; req-001/002 are harness probe calls with string bodies). Recon is always-ok (non-scoring).",
+        "base": "wire"
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "any": true,
+        "grep": "README first-20-lines probe: head -n 20 README.md is the direct read; a single call, then summarize the purpose line and the primary usage section if present within the first 20 lines.",
+        "label": "SUMMARY-VERBATIM RECON (tooth #1 companion, always-ok): the FIRST seeded ride's summary text rides the qwen wire byte-verbatim (seed cells/vxm-vlq/pre_switch.json record [2]). 0 lines = the summary was rewritten/dropped -> ride-reshaping evidence (the scored id:'' pin is the alarm; this records the shape).",
+        "base": "wire"
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "any": true,
+        "grep": "git status --short is the direct probe; count non-empty lines in the output and report the number, mapping M/A/D/? prefixes to changed/added/deleted/untracked.",
+        "label": "SUMMARY-VERBATIM RECON (tooth #1 companion, always-ok): the SECOND seeded ride's summary text rides the qwen wire byte-verbatim (seed record [6]). Same semantics as the first.",
+        "base": "wire"
+      },
+      {
+        "kind": "recon",
+        "file": "resp-*.jsonl",
+        "any": true,
+        "grep": "validation errors for ChatCompletionRequest",
+        "label": "CATCH-PHRASING EVIDENCE (recon, always-ok): record any ChatCompletionRequest-validation lines from the response captures (the v1 CATCH phrasing surface, kept as evidence). EXPECTED 0 \u2014 if a 400 body appears (deployment regression) the verbatim phrasing is compared against the L1801 fragment (sha256:1f591ef070d9): MATCH = documented class-(a) returning; MISMATCH = NEW class -> triage-catalog row + xwfix cell + bead, same session (JIG \u00a72 report-and-stop).",
+        "base": "wire"
+      },
+      {
+        "kind": "recon",
+        "file": "resp-*.jsonl",
+        "any": true,
+        "grep": "openai/qwen3.8-27b",
+        "label": "ACCEPTANCE-CLASS EVIDENCE (recon, always-ok): the litellm upstream header for the qwen row (run-4 first-hand: X-Litellm-Model-Name openai/qwen3.8-27b @ https://inference.gitops-inf-onprem-cls-01.cls.eng.netapp.com/v1 \u2014 native OpenAI-compatible on-prem upstream; the qwen=native-accepts deployment-class row of the RULING 3 all-acceptance map). 0 lines = the route moved (record the new class from the resp headers; pairs with the 200 pin).",
+        "base": "wire"
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "min": 1,
+        "max": 4,
+        "label": "NO-STORM BAND (RULING 3 (c) tooth #4; qwen lenient row): 1 = clean single post-switch request (run-4 ground truth); 2-4 = retry-recovery pattern (the known on-prem proxy artifact family \u2014 run-6 glm precedent: in-stream 500 'Timeout on reading data from socket' -> empty 200 -> full 200; machine-side, not BRICK semantics \u2014 RULING 3); >4 = retry-storm beyond documented semantics -> defect (report-and-stop)."
+      },
+      {
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "POST-SWITCH ACCEPTED (RULING 3 (c) tooth #5): the FINAL qwen request reached 200 \u2014 qwen natively accepts the responses dialect as deployed today (run-4 ground truth; openai/qwen3.8-27b @ cls-01). A non-200 final = DEPLOYMENT REGRESSION back to a rejecting shim (the in-flight 400 class of the .74 net) or a new unclassified wire-error shape -> report-and-stop (teeth of (c)+(d) per RULING 3)."
+      },
+      {
+        "kind": "recon",
+        "file": "chat_history.jsonl",
+        "base": "session",
+        "any": true,
+        "grep": "\"id\":\"\"",
+        "label": "STORAGE .71-SURFACE RECON (always-ok): the 2 seeded id:'' rides PERSIST in the post-turn storage (the binary serializes persisted history COMPACT \u2014 needle is the no-space form; the runner-seeded space form is replaced at load) (run-4 ground truth: 16 records, 2 id:'' lines \u2014 the documented .71 gap the scored storage RED asserts at switch time). 0 lines = the rides were stripped from storage (a projector landed -> the .71 gap closed -> this guard's RED premise moves; recorded, the scored storage assert adjudicates)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

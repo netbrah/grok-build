@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "id": "XW-VXM-VXG",
+  "title": "XW-FIXTURES P6 probe case, cell vxm-vxg (switch_model op, DRAFT — corpus lane, ratchet ② 2026-09-18 per Amendment A1.2 demotion; runner-visible copy lands in redteam/cases/): the runner seeds the session with the byte-pinned synthetic canonical claude-phase history (10 records; 2 reasoning items id:'' + encrypted_content + summary; 2 tool pairs; assistant model_id claude-sonnet-5), switches claude-sonnet-5 -> gemini-3-pro-preview MID-SESSION (ACP session/set_model — NO preemptive wall: both rows family-unset so is_family_switch is false and the ride raw-rides), then one post-switch turn. P6 PROBE SEMANTICS (A1.2): the wire failure mode is UNKNOWN pre-run — the /v1/responses CLIENT wire is what grok sends; the vertex /generateContent transform is litellm-SIDE and its reasoning-item handling (400 phrasing / silent drop / text mapping) is not code-derivable from this tree — so the wire outcome is RECORDED, not pinned, and this run is NOT the CATCH validation (the CATCH of record is vxm-vlq). Scored surface: the .71-class storage RED (expected_red apex-ayl.71 — valid per A1.2: actual 10 records with the 2 id:'' rides vs the 8-record T3 golden) + the anti-vacuous ride pin + a diagnostic count band. The recon wire assert records any error-surface slice from the response captures for the P6 finding. STOP discipline: ANY 400 phrasing observed = potential new failure class -> report-and-stop (triage-catalog row + bead; coordinator files per JIG §2).",
+  "bead": "apex-ayl.70",
+  "suite": "cross-wire",
+  "tier": "slim",
+  "driver": "acp",
+  "model": "claude-sonnet-5",
+  "wirecap": true,
+  "expected_red": {
+    "id": "apex-ayl.71"
+  },
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "steps": [
+    {
+      "op": "switch_model",
+      "model": "gemini-3-pro-preview",
+      "via": "acp",
+      "cell": "smoke/xwfix/cells/vxm-vxg",
+      "assert_form": "storage"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: XW-VXM-VXG-POSTSW1"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 4,
+  "assert": {
+    "wire": [
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gemini-3-pro-preview"
+        },
+        "any": true,
+        "grep": "\"id\": \"\"",
+        "label": "ANTI-VACUOUS (P6): a post-switch gemini request carries the seeded id:'' ride — the family-unset non-strict row raw-rides (no wall, no send-time strip). A MISS means the ride did not cross the wire -> the probe premise is void -> report the void premise (not a fixture edit)."
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gemini-3-pro-preview"
+        },
+        "min": 1,
+        "max": 6,
+        "label": "DIAGNOSTIC BAND (P6 — no storm pin): 1 = single request (200-or-400, recorded from the resp capture); 2 = one retry; >=3 = repeated attempts (record the branch); >=7 = storm beyond any documented band -> defect (report-and-stop)."
+      },
+      {
+        "kind": "recon",
+        "file": "resp-*.jsonl",
+        "grep": "rror",
+        "label": "P6 FINDING SURFACE (recon, non-scoring): record any error-surface lines from the response captures (a 400 body would surface here; a clean 200 SSE stream records no 'rror' lines beyond headers) — the verbatim phrasing (if any) is quoted in the cell evidence for the new-failure-class adjudication."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

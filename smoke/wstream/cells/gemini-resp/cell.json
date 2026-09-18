@@ -1,0 +1,40 @@
+{
+  "cell": "gemini-resp",
+  "model": "gemini-3.1-pro-preview",
+  "api_backend": "responses",
+  "backend_class": "native",
+  "wire": "responses",
+  "turns": 1,
+  "prompt": "Compute 7^8432 mod 5557 using modular exponentiation. Show each squaring step briefly, then state the final remainder on its own line. Do not use any tools.",
+  "invariants": {
+    "status": 200,
+    "route": "responses",
+    "n_model_calls_min": 1
+  },
+  "observe": [
+    "route",
+    "status",
+    "n_model_calls",
+    "all_stream",
+    "any_stream",
+    "req_stream_values",
+    "reasoning_present",
+    "reasoning_frames",
+    "reasoning_encrypted_content",
+    "reasoning_thinking_block",
+    "reasoning_thought_signature",
+    "reasoning_sample",
+    "finish",
+    "budget_trap",
+    "final_text_nonempty",
+    "final_text_len",
+    "usage"
+  ],
+  "open_questions": [
+    "OQ-2"
+  ],
+  "notes": "vertex-gemini reasoning content IN STREAMING (non-streaming: rtok 243, no items). bridge vs native on the responses wire?",
+  "priority": 1,
+  "enabled": true,
+  "owner": "coordinator (wstream suite, 2026-09-17)"
+}

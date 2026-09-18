@@ -1,0 +1,40 @@
+{
+  "cell": "grok-chat",
+  "model": "grok-4.6",
+  "api_backend": "chat_completions",
+  "backend_class": "override",
+  "wire": "chat/completions",
+  "turns": 1,
+  "prompt": "Compute 7^8432 mod 5557 using modular exponentiation. Show each squaring step briefly, then state the final remainder on its own line. Do not use any tools.",
+  "invariants": {
+    "status": 200,
+    "route": "chat/completions",
+    "n_model_calls_min": 1
+  },
+  "observe": [
+    "route",
+    "status",
+    "n_model_calls",
+    "all_stream",
+    "any_stream",
+    "req_stream_values",
+    "reasoning_present",
+    "reasoning_frames",
+    "reasoning_encrypted_content",
+    "reasoning_thinking_block",
+    "reasoning_thought_signature",
+    "reasoning_sample",
+    "finish",
+    "budget_trap",
+    "final_text_nonempty",
+    "final_text_len",
+    "usage"
+  ],
+  "open_questions": [
+    "OQ-7"
+  ],
+  "notes": "OVERRIDE grok onto the /chat/completions wire: reasoning_content IN STREAMING (non-streaming: rtok 390).",
+  "priority": 3,
+  "enabled": true,
+  "owner": "coordinator (wstream suite, 2026-09-17)"
+}

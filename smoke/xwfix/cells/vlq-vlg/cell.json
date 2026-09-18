@@ -1,0 +1,60 @@
+{
+  "cell": "vlq-vlg",
+  "flip": {
+    "from": {
+      "family": "VL-qwen",
+      "model": "qwen3.8-27b",
+      "wire": "/v1/responses (litellm proxy)"
+    },
+    "to": {
+      "family": "VL-glm",
+      "model": "glm-5.2",
+      "wire": "/v1/responses (litellm proxy)"
+    }
+  },
+  "status": "UNPROVEN (predicted clean: no encryption, same strictness profile)",
+  "recipe": {
+    "evidence": "synthetic recipe \u2014 dogfood capture pending (operator instrumented cell)",
+    "vehicle": "grok harness, driver=acp (one long-lived ACP session) or headless resume chain; wirecap capture enabled, store=false MANDATORY",
+    "steps": [
+      "1. Fresh session in a scratch cwd, model qwen3.8-27b (ACP session/new modelId=qwen3.8-27b; headless: -m qwen3.8-27b). config_patch: model/qwen3.8-27b/reasoning_effort=medium (elicits reasoning items deterministically).",
+      "2. Turn A: 'Read the first 30 lines of README.md in the workspace and summarize what it says.' \u2014 emits qwen reasoning (non-empty id, summary text, NO encrypted_content) + read_file tool pair.",
+      "3. Turn B: 'Now run git status --short and tell me how many files are changed.' \u2014 second reasoning + run_terminal_command tool pair.",
+      "4. Turn C: 'Summarize both results in one short paragraph.' \u2014 text-only close (no reasoning required).",
+      "5. Switch: ACP session/set_model modelId=glm-5.2 (leader/server.rs:830 extract_model_id_from_set_model; :1737 pending_new_model); headless equivalent: resume -m glm-5.2.",
+      "6. Turn D (one turn only): 'Reply with exactly: XW-VLG-VLG-POSTSW1' \u2014 drives the FIRST POST-SWITCH request; wirecap captures req/resp."
+    ],
+    "capture": "first post-switch /v1/responses request (body.model=glm-5.2) + its response; quote as sha256:12; store=false (no server-side persistence of the probe traffic)",
+    "promote": "capture lands -> replace pre_switch.json with the real qwen-phase records (shape must match this synthetic canonical: reasoning non-empty-id / no encrypted_content / tool pairs) or note the divergence in cell.json; expected.json re-derived (T0 set) and the wire-form byte pin (expected_wire.json) cut from the capture"
+  },
+  "pre_switch": {
+    "file": "pre_switch.json",
+    "records": 11,
+    "composition": {
+      "system": 1,
+      "user": 3,
+      "reasoning": 2,
+      "assistant": 3,
+      "tool_result": 2
+    },
+    "note": "SYNTHETIC canonical qwen-phase history (no live capture exists): reasoning items with NON-empty rs_-shaped ids, NO encrypted_content key (qwen mints no provider-side encryption continuation \u2014 litellm only mints encitem_ pointers when encrypted content exists, the .58 mechanism), summary text present, assistant model_id qwen3.8-27b, tool pairing intact (2/2)"
+  },
+  "expected": {
+    "file": "expected.json",
+    "records": 11,
+    "projection": {
+      "all 11 records": "T0: byte-identical to pre_switch. Justification: same litellm /responses send path and strictness class for qwen and glm \u2014 both non-OpenAI families get the identical content-type normalization (provider.rs:102,107-112 is_openai_family, :311 normalize_content_types) and the identical D-ENC seam (provider.rs:187-208); qwen-native reasoning ids carry no encitem_/litellm_enc: marker, so litellm's EncryptedContentAffinityCheck cannot pin them to a foreign deployment (mechanism pinned at error.rs:436-447 comment + xswitch1-58-sdd.md)",
+      "glm-foreign fields": "none pinned in the canonical. If the dogfood capture shows glm rejecting any qwen-phase shape (e.g. a reasoning field or content-part type), the .68 matrix downgrades that item class to T2/T3 with wire evidence (sha256:12)"
+    }
+  },
+  "invariants": [
+    "no record with id == ''",
+    "no encrypted_content anywhere (qwen phase mints none \u2014 the premise of the T0 prediction)",
+    "every tool_result has a matching assistant tool_call (2/2)",
+    "expected.json byte-identical (T0 all) to pre_switch"
+  ],
+  "red_tests": [
+    "switch_model case op (DRAFT, smoke/xwfix/switch_model_op.patch) seeds this cell, drives qwen->glm, captures the first post-switch /v1/responses request (wirecap), diffs vs this cell (storage form now; wire form when the byte pin lands) \u2014 expectation GREEN (predicted clean); a failure is a new UNPROVEN finding for the .68 matrix, not a fixture defect",
+    "anti-vacuous control: at least one pre-switch /v1/responses request (body.model=qwen3.8-27b) carries a reasoning input item \u2014 without it the T0 replay claim is vacuous"
+  ]
+}

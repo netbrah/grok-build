@@ -1,0 +1,71 @@
+{
+  "cell": "vxm-vlq",
+  "flip": {
+    "from": {
+      "family": "VX-M",
+      "model": "claude-sonnet-5",
+      "wire": "/v1/messages (vertex/litellm)"
+    },
+    "to": {
+      "family": "VL-qwen",
+      "model": "qwen3.8-27b",
+      "wire": "/v1/responses (litellm) -> vLLM Responses->ChatCompletions shim"
+    }
+  },
+  "status": "UNPROVEN — CATCH of record (minted 2026-09-18 (Z) per Amendment A1.2; recipe provenance-complete; live RED run THIS CYCLE as case XW-VXM-VLQ — expected: storage RED + class-(a) 400 BRICK on the wire)",
+  "mint": {
+    "date": "2026-09-18 (Z)",
+    "lane": "ratchet ② (apex-ayl.70 corpus)",
+    "spec": "r2-spec.md Amendment A1.2 (coordinator first-hand adjudication of r2-concord-glm-20260918.md): 'mint vxm-vlq (sonnet->qwen) as the CATCH of record — same sonnet pre_switch as vxm-vxg (pre-switch storage is target-independent), expected = projected golden per the house projection rules; live run expected RED on storage AND class-(a) 400 BRICK on the wire. A live 400 phrasing on the qwen run that differs from the L1801 fragment = new failure class -> report-and-stop.'",
+    "row_class": "non-strict vLLM Responses->ChatCompletions shim target row (the class-(a) deployment class, L1801) reached through a family-unset SOURCE row that bypasses the preemptive wall (qwen preplan finding 1) and raw-rides the proven VX-M empty-id persist"
+  },
+  "recipe": {
+    "evidence": "SYNTHETIC canonical claude-phase (VX-M) history — BYTE-IDENTICAL to cells/vxm-vxg/pre_switch.json (A1.2: pre-switch storage is target-independent; verified sha-equal at mint). The ride: 2 reasoning items with id:\"\" + encrypted_content (SYNTH-VX-CIPHERTEXT markers) + summary_text — the PROVEN VX-M empty-id persist class (incident 01a0b046, 5x id:'' rides persisted and wire-400'd; the .69 XW-EMPTYID-1 persist gap, stream/messages.rs:543-549: id String::new() with the signature in encrypted_content). Composition system 1 / user 3 / reasoning 2 / assistant 2 / tool_result 2, terminal user prompt; assistant model_id claude-sonnet-5; tool pairing 2/2.",
+    "target_row_verified_first_hand": "2026-09-18 (Z) read of ~/.grok/config.toml: [model.\"qwen3.8-27b\"] = {multi_agent_v2=true, base_url=<llm-proxy>/v1, api_backend=\"responses\", env_key, model_family=\"qwen\", max_completion_tokens=128000, supports_reasoning_effort=true, reasoning_efforts=[xhigh(default),medium,low]} — NO strict_responses_input key -> strict_dialect=false (serde default, config.rs:80) -> NON-STRICT: the criterion (b) disjunction 'family-unset OR non-strict' holds via the NON-STRICT branch (model_family IS set to \"qwen\" — cited precisely, not elided). glm concordance §1 characterization: 'the qwen target row is family-unset/non-strict on the vLLM Responses->ChatCompletions shim' — the shim is the same litellm deployment class where class-(a) was LIVE-observed (L1801: glm-5.2 group, no fallbacks; qwen3.8-27b rides the identical shim family).",
+    "wall_analysis": "NO preemptive compact: is_family_switch = matches!((old,new),(Some(a),Some(b)) if a != b) (agent/handlers/model_switch.rs:60-69); the claude-sonnet-5 row carries NO model_family (None) -> (None, Some(qwen)) does not match -> the acp_session_impl/model_switch.rs:148-163 preemptive lossy compact does NOT fire; the family-unset source row raw-rides (qwen preplan finding 1, I-A CONFIRMED)."
+  },
+  "catch_criteria": {
+    "(a) foreign-reasoning ride in the pre-switch history": "HOLD — 2 reasoning items with id:\"\" + encrypted_content (the proven VX-M persist ride; the carrier the target storage must be projected off). Identical to vxm-vxg (same pre_switch byte-for-byte).",
+    "(b) target row family-unset OR non-strict, current code yields classifier-400 (BRICK or model-bound retry) or silent T3 strip — CODE-DERIVABLE (A1.3: a CATCH may not carry a non-code-derivable predicted failure)": "HOLD — the failure is code-derivable end-to-end (verified by code/config read, base ef5192b): (1) target row NON-STRICT (first-hand cite above; no strict_responses_input -> project_strict_responses_input is a no-op, provider.rs:263-278, so the id:\"\" is NOT removed at send time — unlike the hardened terra/luna rows). (2) The /responses builder passes the persisted id verbatim (conversation/responses.rs:262-267: passes id through, only clears status) -> the first post-switch request to qwen carries 2 reasoning items with id:\"\". (3) D-ENC strips the encrypted_content FIELD on every /responses send (provider.rs:187-208, called ungated at client.rs:1981/2148/2406) -> the wire items are {type:\"reasoning\", id:\"\", summary:[...]}. (4) The vLLM Responses->ChatCompletions shim validates the request with pydantic: the empty-id reasoning content shape fails string validation -> 400 in the class-(a) dotted phrasing — LIVE-observed 2026-09-17, verbatim fragment sha256:1f591ef070d9 (tdd-74-orphan.md §1; quoted in crosswire-preplan-glm-20260917.md §VI.3; ledger L1801, session 01a0b07a 400'd 17:47Z, TRIGGER-DEPENDENT re-mint; L1881 third independent BRICK instance): 'litellm.BadRequestError: OpenAIException - {\"error\":{\"message\":\"39 validation errors for ChatCompletionRequest messages.8.ChatCompletionMessageGenericParam.content.str Input should be a valid string [type=string_type, input_value=[{...'. (5) Needle walk (tdd-74 §1, base arms error.rs:434-473, lowercased, 280-char cap per :780/:814-817): F1 encrypted_content/encrypted content MISS (field already stripped by D-ENC; not in the pydantic body) · F2 thinking+signature MISS · F3 input[+.id+invalid MISS (the body has 'input_value', NO bracket, NO '.id', NO 'invalid') · F4 item+id+not found/does not exist MISS · F5 input[+array too long MISS (no bracket) -> NO FAMILY -> RetryDecision::Fatal (retry.rs:186 fallthrough; classify_error retry.rs:103 consults is_model_bound_history_error at :121-122, the model-bound arm :121-122 never engages) -> a 400 is not retryable (error.rs:885 is_retryable_api_status = 429+5xx minus 525/526) -> **BRICK: terminal, persistent 400 on every later prompt until compaction** (the session dies on the first post-switch turn — acp_error surface). crosswire-matrix.md §4.2 item 2: 'FRESH-CATCH-eligible, so a live BRICK here is not hypothetical — it is the next likely incident shape.'",
+    "(c) RED reproducible in the hermetic home (no live-proxy state dependency)": "HOLD — the mechanism is request-SHAPE-determined: the pydantic validation of the id:\"\" reasoning content shape fires on the request body itself (no deployment-affinity state — the claude ride carries id:\"\" + a signature, NOT an encitem_ litellm affinity pointer, so no EncryptedContentAffinityCheck/cooldown state of the .58 class); no proxy session state, no live-config mutation. HermeticHome (run.py:286-341) copies the live config (the qwen row present; base_urls rewritten to the local wiretap) + scope-aligned catalog cache (run.py:342-360) -> deterministic replay per run. The L1801 observation was itself a hermetic-class forensics capture (cross-harness, same shim, no fallbacks)."
+  },
+  "expected_derivation": {
+    "tier": "T1 (re-keyed)",
+    "derivation": "House projection rules (README): the projected history sits at the HIGHEST tier the target wire tolerates, subject to the invariants at EVERY tier. (1) T0 (byte-identical, rides stay) is BANNED by invariant 1 ('no record/item with id == \"\"') — the 2 id:\"\" rides must move regardless of target leniency (REPLAY-1's KEEP ruling — lenient shims accept empty ids — governs the wire 200, not the storage invariant). (2) T1 = the vxm-az expected pattern applied: xw_ synth id per the README synthesis rule (id = \"xw_\" + sha256(\"{cell}|{reasoning_index}|{json(content,sorted)}|{json(summary,sorted)}\").hexdigest()[:24]; cell=vxm-vlq; 0-based reasoning index; absent content canonicalized to [] — rule verified 5/5 against the vxm-az reference in this cycle), encrypted_content key REMOVED (the foreign Anthropic signature carrier; D-ENC already strips it at send time, so the storage projection matches the wire truth), summary kept (the target tolerates summary-text reasoning — the lenient vLLM /responses dialect carries it). (3) All 8 non-reasoning records T0 (parsed-equal to pre_switch — verified). NOT T3 (unlike vxm-vxg): the qwen target wire is the same /responses dialect family that carries re-keyed reasoning items (no ->generateContent text-cap), so dropping the ride loses replayable fidelity (JIG §1 goal 1: highest tier the target tolerates).",
+    "ids": {
+      "reasoning#1 (record index 2)": "xw_8da223f40d38f3b81de0e7e2",
+      "reasoning#2 (record index 6)": "xw_d308f76c1af22dd6a4b2c192"
+    }
+  },
+  "pre_switch": {
+    "file": "pre_switch.json",
+    "records": 10,
+    "composition": {
+      "system": 1,
+      "user": 3,
+      "reasoning": 2,
+      "assistant": 2,
+      "tool_result": 2
+    },
+    "note": "byte-identical to cells/vxm-vxg/pre_switch.json (A1.2: pre-switch storage is target-independent): 2 id:\"\" rides (SYNTH-VX-CIPHERTEXT markers) + 2 tool pairs (2/2) + terminal user prompt; assistant model_id claude-sonnet-5"
+  },
+  "expected": {
+    "file": "expected.json",
+    "records": 10,
+    "projection": {
+      "reasoning x2": "T1: id = xw_ synth (ids above), encrypted_content REMOVED, summary kept — the vxm-az pattern (see expected_derivation)",
+      "all other 8 records": "T0: parsed-equal to pre_switch (verified)"
+    }
+  },
+  "invariants": [
+    "no record with id == '' (the 2 rides re-keyed to xw_ — T1)",
+    "no encrypted_content anywhere in expected.json (foreign Anthropic signature carrier removed)",
+    "every tool_result has a matching assistant tool_call (2/2)",
+    "compaction carrier items survive projection opaquely (none present in this synthetic recipe)",
+    "the 8 non-reasoning records parsed-equal to pre_switch"
+  ],
+  "red_tests": [
+    "r2 live CATCH run (2026-09-18 (Z), THIS CYCLE — case XW-VXM-VLQ, binary of record target/release/grok-responses sha256:12 39f836e8633d, hermetic home, store=false): PREDICTED OUTCOME (A1.2): (i) storage diff AT SWITCH TIME FAILS = the .71-class RED (actual 10 records with the 2 id:\"\" rides vs the 10-record T1 golden — no proactive projector in-tree; the switch rewrites no storage); (ii) wire: first post-switch /v1/responses request (body.model=qwen3.8-27b) 400s in the class-(a) vLLM pydantic dotted phrasing (L1801 fragment sha256:1f591ef070d9) -> F1-F5 needle miss -> Fatal -> BRICK (turn dies, acp_error, no recovery, persistent until compaction). RED-EXPECTED id = apex-ayl.71 (the storage RED). **STOP discipline (A1.2 + house rule): if the live 400 phrasing DIFFERS from the L1801 fragment (different validation shape / different shim rendering / a classified family engages / a 200) = NEW failure class or predicted-outcome miss -> report-and-stop with the verbatim phrasing (sha256:12) — never edit expected.json or a pin to fit.** Run: python3 smoke/redteam/run.py XW-VXM-VLQ --bin target/release/grok-responses --out smoke/redteam/report-r2/xw-vxm-vlq",
+    "post-RED (green era, .71): storage diff GREEN (projector re-keys the 2 rides to T1 at switch time) + first post-switch request 200 on attempt 1 + no id:\"\" on the wire (re-pin the case's TODAY-era pins at RED-CLEARED promotion per the vxm-az DRAFT convention)"
+  ]
+}

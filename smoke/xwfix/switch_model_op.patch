@@ -1,0 +1,353 @@
+# ============================================================================
+# DRAFT — apex-ayl.70 XW-FIXTURES-1 switch_model op (xwfix_qwen driver seat,
+# 2026-09-17). NOT MERGED: the .22 lane owns smoke/redteam/run.py; this patch
+# is the minimal op the smoke/xwfix golden corpus needs (see
+# smoke/xwfix/README.md + grok/plans/xwfix-driver-20260917.md §5).
+#
+# Applies to: smoke/redteam/run.py @ feat/first-class-responses-catalog
+#             (worktree wt/grok-build-responses, clean run.py at b745593/4fb487f)
+# Apply with: git apply -p1 smoke/xwfix/switch_model_op.patch  (from repo root;
+#             strip the header lines above first, or use the raw hunk file
+#             generated alongside this note — .22 lane call)
+#
+# What it adds:
+#   - STEP_OPS += "switch_model"; validation (model, via acp|resume, cell,
+#     assert_form storage|wire).
+#   - Cell seeding: a switch_model step with a cell seeds the fresh session
+#     with <cell>/pre_switch.json VERBATIM (headless: at case start; ACP:
+#     re-materialized under the session/new-minted session dir before the
+#     first prompt — VERIFY item for .22: actor must re-read persisted
+#     history at first prompt, else route via session/load, server.rs:607).
+#   - switch_model dispatch: drives the switch exactly like `switch` (ACP
+#     session/set_model, leader/server.rs:830/1737; headless resume -m), then
+#     scores the STORAGE-FORM cell diff AT SWITCH TIME (persisted
+#     chat_history.jsonl vs <cell>/expected.json) so the post-switch turn
+#     cannot contaminate the pinned history.
+#   - Wirecap hook: WIRE-FORM cell diff (first captured request to the target
+#     model vs <cell>/expected_wire.json, key-sorted input normalization) —
+#     active once a cell's expected_wire.json byte pin lands (none yet;
+#     storage form is the active RED).
+#   - check_wire kind "cell_diff": declarative pin only (the scored result is
+#     appended by the op; avoids double-counting in the assert loop).
+#
+# Schema delta (frozen smoke/redteam/case.schema.json, .22 promotion
+# package): step op enum += "switch_model"; step fields "cell"/"assert_form";
+# wire assert kind "cell_diff" (fields: cell, form, model, label).
+# Case delivered: smoke/xwfix/cases/vxm-az.switch_model.json.
+#
+# RED assertion (bead apex-ayl.70 RED TEST): the op exists, drives the
+# mid-session switch, captures the first post-switch request (wirecap), and
+# diffs vs the cell expected (storage form now; wire form when the byte pin
+# lands). Today the diff FAILs = the documented defect under test
+# (no proactive projector: storage untouched at switch, 400 + T3-all
+# reactive strip); after XW-PROJECT-1 (apex-ayl.71) it is green.
+# ============================================================================
+
+--- a/smoke/redteam/run.py
++++ b/smoke/redteam/run.py
+@@ -1504,10 +1504,156 @@
+                     "grep": oc,
+                     "synth": True})
+     return out
++
++
++# ---------------------------------------------------------------------------
++# DRAFT (apex-ayl.70, xwfix_qwen driver seat, 2026-09-17) — switch_model op +
++# XW-FIXTURES cell RED diff. The .22 lane owns the run.py merge; this is the
++# minimal op the smoke/xwfix golden corpus needs (smoke/xwfix/README.md).
++# Frozen-schema delta for the .22 promotion package: step op enum +=
++# "switch_model" + step fields cell/assert_form; wire assert kind "cell_diff"
++# (declarative pin; the scored result is appended by the op).
++# ---------------------------------------------------------------------------
++
++XWFIX_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
++    os.path.abspath(__file__))))
++
++
++def _xwfix_cell_dir(cell):
++    return (cell if os.path.isabs(cell)
++            else os.path.join(XWFIX_REPO_ROOT, cell))
++
++
++def xwfix_seed_from_cell(home, cwd, sid, model, cell_dir):
++    """Seed a fresh session with the cell's pre_switch.json VERBATIM (one
++    compact JSON record per line) + a seed_history-style summary.json. The
++    records are the byte-pinned foreign pre-switch history — no token-count
++    filler. Returns (session_dir, n_lines, total_bytes) or None."""
++    pre = os.path.join(cell_dir, "pre_switch.json")
++    if not os.path.isfile(pre):
++        return None
++    with open(pre) as fh:
++        records = json.load(fh)
++    sdir = home.session_dir_for(cwd, sid)
++    os.makedirs(sdir, mode=0o700, exist_ok=True)
++    lines = [json.dumps(r) for r in records]
++    history_path = os.path.join(sdir, "chat_history.jsonl")
++    with open(history_path, "w") as fh:
++        fh.write("\n".join(lines) + "\n")
++    now = datetime.now(timezone.utc).isoformat()
++    summary = {
++        "info": {"id": sid, "cwd": cwd},
++        "agent_id": "ag1.xwfixcellseed0000000000000000",
++        "session_summary": "xwfix cell-seeded history (%d records)"
++                           % len(records),
++        "created_at": now,
++        "updated_at": now,
++        "num_messages": len(lines),
++        "num_chat_messages": len(lines),
++        "current_model_id": model,
++        "chat_format_version": 1,
++        "grok_home": home.home,
++        "agent_name": "xwfix-cell-seed",
++    }
++    with open(os.path.join(sdir, "summary.json"), "w") as fh:
++        json.dump(summary, fh, indent=2)
++    return sdir, len(lines), os.path.getsize(history_path)
++
++
++def xwfix_cell_diff_storage(cell_dir, session_dir):
++    """Storage-form RED diff (evaluated AT SWITCH TIME, before the
++    post-switch turn appends records): the persisted chat_history.jsonl must
++    equal the cell's expected.json (record array, order-sensitive deep
++    equality). RED today: the switch rewrites no storage (or the reactive
++    net rewrites to T3-all). GREEN after XW-PROJECT-1 (apex-ayl.71)
++    projects at switch time."""
++    spec = {"op": "xwfix_cell_diff", "form": "storage",
++            "cell": os.path.basename(cell_dir)}
++    exp_p = os.path.join(cell_dir, "expected.json")
++    hist_p = os.path.join(session_dir or "", "chat_history.jsonl")
++    if not (os.path.isfile(exp_p) and os.path.isfile(hist_p)):
++        return AssertResult(
++            spec, "xwfix_cell_diff.storage", False,
++            "missing expected.json or session chat_history.jsonl",
++            "cell_dir=%s session_dir=%r" % (cell_dir, session_dir))
++    with open(exp_p) as fh:
++        expected = json.load(fh)
++    with open(hist_p) as fh:
++        actual = [json.loads(l) for l in fh if l.strip()]
++    if actual == expected:
++        return AssertResult(
++            spec, "xwfix_cell_diff.storage", True,
++            "%d records match the cell golden (post-switch storage == "
++            "expected)" % len(expected),
++            "storage form; byte pin %s" % exp_p)
++    first = next((i for i in range(min(len(actual), len(expected)))
++                  if actual[i] != expected[i]),
++                 min(len(actual), len(expected)))
++    t = (actual[first].get("type") if first < len(actual) else "<EOF>")
++    return AssertResult(
++        spec, "xwfix_cell_diff.storage", False,
++        "post-switch stored history != cell golden: actual=%d expected=%d "
++        "first_diff_index=%d (type=%s) — the documented pre-projector "
++        "behavior (RED)" % (len(actual), len(expected), first, t),
++        "storage form; byte pin %s" % exp_p)
+ 
+ 
++def xwfix_cell_diff_wire(cell_dir, capture_dir, model):
++    """Wire-form RED diff (active once the cell's expected_wire.json byte
++    pin lands): the FIRST captured request to the target model must match
++    the golden input array (key-sorted JSON normalization). Evaluated at
++    wirecap time, after the post-switch turn has driven the request."""
++    spec = {"op": "xwfix_cell_diff", "form": "wire",
++            "cell": os.path.basename(cell_dir), "model": model}
++    exp_p = os.path.join(cell_dir, "expected_wire.json")
++    if not os.path.isfile(exp_p):
++        return AssertResult(
++            spec, "xwfix_cell_diff.wire", True,
++            "expected_wire.json absent — wire-form byte pin not cut yet "
++            "(storage form is the active RED)",
++            "skipped (no byte pin)")
++    with open(exp_p) as fh:
++        expected = json.load(fh)
++    paths = _wire_filter(
++        globmod.glob(os.path.join(capture_dir or "", "req-*.json")),
++        {"method": "POST", "body.model": model})
++    if not paths:
++        return AssertResult(
++            spec, "xwfix_cell_diff.wire", False,
++            "no captured request to model=%s" % model, "wire form")
++    first_path = min(paths, key=os.path.basename)  # req-NNN.json: lex == capture order
++    with open(first_path) as fh:
++        first = json.load(fh)
++    actual = first.get("body", {}).get("input")
++
++    def _norm(v):
++        return json.dumps(v, sort_keys=True)
++
++    if _norm(actual) == _norm(expected):
++        return AssertResult(
++            spec, "xwfix_cell_diff.wire", True,
++            "first post-switch request matches the golden wire pin",
++            "wire form; %s" % os.path.basename(first_path),
++            cite=_wire_cite(first_path))
++    return AssertResult(
++        spec, "xwfix_cell_diff.wire", False,
++        "first post-switch request != golden wire pin (the documented "
++        "pre-projector behavior, RED)",
++        "wire form; %s" % os.path.basename(first_path),
++        cite=_wire_cite(first_path))
++
++
+ def check_wire(spec, capture_dir):
+     kind = spec.get("kind")
++    if kind == "cell_diff":
++        # DRAFT apex-ayl.70: declarative pin only — the scored XW-FIXTURES
++        # cell diff is appended by the switch_model op (storage form at
++        # switch time; wire form at wirecap time once expected_wire.json
++        # lands). Re-evaluating here would double-count.
++        return AssertResult(
++            spec, "wire.cell_diff", True,
++            "cell diff scored by the switch_model op (see results[])",
++            "deferred to op")
+     base = capture_dir if capture_dir else os.devnull
+     if kind == "field":
+         paths = _resolve_glob(spec.get("file", ""), base)
+@@ -2286,6 +2432,32 @@
+                                               seed["hist_tokens"]))
+             snapshot_history(ctx, "seed", home, case_cwd)
+ 
++        # DRAFT apex-ayl.70: a switch_model step with a cell seeds the fresh
++        # session with the cell's pre_switch.json VERBATIM at case start
++        # (headless: each turn process re-reads chat_history.jsonl at start,
++        # so this is the proven seeder ordering). The ACP re-materialization
++        # happens after session/new, below.
++        _xw_cell = next((s.get("cell") for s in case.get("steps", [])
++                         if s.get("op") == "switch_model"
++                         and s.get("cell")), None)
++        if _xw_cell and case.get("driver", "headless") == "headless" \
++                and not (seed and seed.get("hist_tokens")):
++            _xw_sid = str(uuid.uuid4())
++            ctx.session_id = _xw_sid
++            _xw = xwfix_seed_from_cell(home, case_cwd, _xw_sid, cur_model,
++                                       _xwfix_cell_dir(_xw_cell))
++            if _xw:
++                ctx.session_dir = _xw[0]
++                log("  %s: xwfix cell-seeded %s records=%d bytes=%d "
++                    "(cell=%s)" % (cid, _xw_sid, _xw[1], _xw[2],
++                                   _xw_cell))
++                snapshot_history(ctx, "xwfix_seed", home, case_cwd)
++            else:
++                mark("BLOCKED", "xwfix cell seed failed: unreadable "
++                                "pre_switch.json for %s" % _xw_cell)
++                return _finish(case, run_dir, ctx, results, status,
++                               started, wt, home, args, budget)
++
+         driver = case.get("driver", "headless")
+         if driver == "acp":
+             acp = AcpSession(args.bin, home.home, case_cwd, cur_model,
+@@ -2301,6 +2473,29 @@
+                                                    cur_model))
+             ctx.session_id = acp.session_id
+             ctx.session_dir = home.session_dir_for(case_cwd, acp.session_id)
++            # DRAFT apex-ayl.70: for ACP the session id is minted by
++            # session/new, so the cell seed is (re)materialized under the
++            # real ACP session dir before the first prompt. VERIFY (for the
++            # .22 lane): the grok session actor must read the persisted
++            # history at the first prompt after session/new; if it snapshots
++            # at session/new, route the cell seed through session/load
++            # instead (leader supports it: server.rs:607; seam
++            # run.py:792-798).
++            if _xw_cell:
++                _xw = xwfix_seed_from_cell(home, case_cwd, acp.session_id,
++                                           cur_model,
++                                           _xwfix_cell_dir(_xw_cell))
++                if _xw:
++                    log("  %s: xwfix cell-seeded ACP session %s records=%d "
++                        "(cell=%s)" % (cid, acp.session_id, _xw[1],
++                                       _xw_cell))
++                    snapshot_history(ctx, "xwfix_seed", home, case_cwd)
++                else:
++                    mark("BLOCKED", "xwfix cell seed failed (ACP): "
++                                    "unreadable pre_switch.json for %s"
++                                    % _xw_cell)
++                    return _finish(case, run_dir, ctx, results, status,
++                                   started, wt, home, args, budget)
+             ctx.fmt = "acp"
+         extra = []
+         if case.get("agents_json"):
+@@ -2468,6 +2663,40 @@
+                 else:
+                     ctx.turns.append({"op": "switch", "step": si,
+                                       "model": cur_model, "via": "resume"})
++            elif op == "switch_model":
++                # DRAFT apex-ayl.70: mid-session switch + XW-FIXTURES cell
++                # RED diff. Drives the switch exactly like `switch`, then
++                # scores the storage-form cell diff AT SWITCH TIME so the
++                # post-switch turn cannot contaminate the pinned history
++                # (the wire-form diff is scored at wirecap time below).
++                cur_model = step["model"]
++                cell = step.get("cell", "")
++                form = step.get("assert_form", "storage")
++                cell_dir = _xwfix_cell_dir(cell) if cell else None
++                if step.get("via", "acp") == "acp" and driver == "acp":
++                    resp = acp.set_model(cur_model)
++                    ctx.turns.append({"op": "switch_model", "step": si,
++                                      "model": cur_model,
++                                      "resp": str(resp)[:200]})
++                    ctx.events.append({"type": "acp_set_model",
++                                       "model": cur_model, "_line": 0})
++                    if "error" in resp:
++                        ctx.events.append({"type": "acp_error",
++                                           "error": resp["error"],
++                                           "model": cur_model})
++                        mark("FAIL", "acp set_model error: %s"
++                             % str(resp["error"])[:120])
++                else:
++                    ctx.turns.append({"op": "switch_model", "step": si,
++                                      "model": cur_model, "via": "resume"})
++                snapshot_history(ctx, "switch_model", home, case_cwd)
++                if cell_dir:
++                    ctx.xwfix_wire_pending = (cell_dir, cur_model, form)
++                    if form == "storage":
++                        results.append(xwfix_cell_diff_storage(
++                            cell_dir, ctx.session_dir))
++                    ctx.turns[-1]["cell"] = cell
++                    ctx.turns[-1]["assert_form"] = form
+             elif op == "compact":
+                 model = step.get("model", cur_model)
+                 if driver == "acp":
+@@ -2522,6 +2751,16 @@
+             ctx.model_calls = sum(
+                 1 for t in ctx.turns
+                 if t.get("op") in ("turn", "row") and t.get("exit") == 0)
++
++        # DRAFT apex-ayl.70: wire-form cell diff — the first post-switch
++        # request is captured by wirecap only after the post-switch turn, so
++        # it is scored here (the storage form was scored at switch time).
++        if wirecap and getattr(ctx, "xwfix_wire_pending", None):
++            _xw_cd, _xw_m, _xw_f = ctx.xwfix_wire_pending
++            if _xw_f == "wire" or os.path.isfile(
++                    os.path.join(_xw_cd, "expected_wire.json")):
++                results.append(xwfix_cell_diff_wire(
++                    _xw_cd, os.path.join(run_dir, "wire"), _xw_m))
+ 
+         _copy_session_evidence(home, ctx, run_dir)
+         assert_block = case.get("assert", {})
+@@ -3085,7 +3324,8 @@
+ # CaseContractTest; also `python3 smoke/redteam/run.py --selftest`).
+ # ---------------------------------------------------------------------------
+ 
+-STEP_OPS = ("turn", "switch", "kill", "compact", "idle", "recon_note")
++STEP_OPS = ("turn", "switch", "switch_model", "kill", "compact", "idle",
++            "recon_note")
+ NDJSON_OPS = ("count", "absent", "present", "eq", "ne", "text_contains",
+               "tools_absent", "tools_present", "recon")
+ WIRE_KINDS = ("field", "grep", "size_lt", "count", "resp_status", "recon")
+@@ -3135,6 +3375,17 @@
+             errs.append("%s: switch needs a string 'model'" % ctx)
+         if st.get("via", "acp") not in ("acp", "resume"):
+             errs.append("%s: switch 'via' must be acp|resume" % ctx)
++    if op == "switch_model":
++        if not isinstance(st.get("model"), str):
++            errs.append("%s: switch_model needs a string 'model'" % ctx)
++        if st.get("via", "acp") not in ("acp", "resume"):
++            errs.append("%s: switch_model 'via' must be acp|resume" % ctx)
++        if not isinstance(st.get("cell"), str) or not st.get("cell"):
++            errs.append("%s: switch_model needs a string 'cell' "
++                        "(smoke/xwfix/cells/<cell>)" % ctx)
++        if st.get("assert_form", "storage") not in ("storage", "wire"):
++            errs.append("%s: switch_model 'assert_form' must be "
++                        "storage|wire" % ctx)
+     if op == "idle":
+         if not (isinstance(st.get("s"), int) and st["s"] > 0):
+             errs.append("%s: idle needs a positive int 's'" % ctx)

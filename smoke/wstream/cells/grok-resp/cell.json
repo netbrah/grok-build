@@ -1,0 +1,40 @@
+{
+  "cell": "grok-resp",
+  "model": "grok-4.6",
+  "api_backend": "responses",
+  "backend_class": "native",
+  "wire": "responses",
+  "turns": 1,
+  "prompt": "Compute 7^8432 mod 5557 using modular exponentiation. Show each squaring step briefly, then state the final remainder on its own line. Do not use any tools.",
+  "invariants": {
+    "status": 200,
+    "route": "responses",
+    "n_model_calls_min": 1
+  },
+  "observe": [
+    "route",
+    "status",
+    "n_model_calls",
+    "all_stream",
+    "any_stream",
+    "req_stream_values",
+    "reasoning_present",
+    "reasoning_frames",
+    "reasoning_encrypted_content",
+    "reasoning_thinking_block",
+    "reasoning_thought_signature",
+    "reasoning_sample",
+    "finish",
+    "budget_trap",
+    "final_text_nonempty",
+    "final_text_len",
+    "usage"
+  ],
+  "open_questions": [
+    "OQ-7"
+  ],
+  "notes": "PILOT. vertex-xai thinking content IN STREAMING. EXPECTED reasoning_present=false on this run: KNOWN deployment issue \u2014 grok-4.6's Vertex deployment suppresses reasoning on the STREAMING path (llm-proxy branch bugfix/grok-4.6-reasoning-flags). Non-streaming probe (W10-B) got rtok 594; harness streaming turn got rtok 0. Cross-ref: llm-proxy bugfix/grok-4.6-reasoning-flags. The suite still captures the streaming SSE frames + the side-call behavior regardless.",
+  "priority": 1,
+  "enabled": true,
+  "owner": "coordinator (wstream suite, 2026-09-17)"
+}

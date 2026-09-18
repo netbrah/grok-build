@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "id": "XW-VXM-AZ",
+  "title": "XW-FIXTURES RED case, cell vxm-az (switch_model op, DRAFT \u2014 the .22 lane lifts it into redteam/cases/ with the run.py merge): the runner seeds the session with the byte-pinned incident pre-switch history (36 records, 5 reasoning items id:'' + encrypted_content, session 01a0b046), switches claude-sonnet-5 -> gpt-5.6-terra MID-SESSION (ACP session/set_model, leader/server.rs:830/1737), then one post-switch turn. Verdict semantics (RED-first; apex-ayl.71 is the defect under test, registered via expected_red): the xwfix_cell_diff (storage form) pin FAILs TODAY = RED-EXPECTED \u2014 the switch rewrites no storage, so the 5 id:'' items persist, the first post-switch terra request 400s on input[N].id invalid (classifier family 3, error.rs:449-451), the CROSSWIRE-1 reactive strip drops ALL 5 (T3-all, 33 records), retry 200. RED-CLEARED after XW-PROJECT-1 (apex-ayl.71): the projector re-keys the 5 items to T1 at switch time (xw_ synth ids, encrypted_content stripped, summary kept) \u2014 storage diff green, first post-switch request 200 on attempt 1 (count=1), no id:'' item rides the wire (re-pin the id:'' grep to absent at promotion). Tolerant recovery (rt-xreplay1 discipline): the final terra request must reach 200 with at most 2 terra requests \u2014 >=3 is a same-payload retry storm / strip loop and FAILs as a defect even in the RED era.",
+  "bead": "apex-ayl.70",
+  "suite": "cross-wire",
+  "tier": "slim",
+  "driver": "acp",
+  "model": "claude-sonnet-5",
+  "wirecap": true,
+  "expected_red": {
+    "id": "apex-ayl.71"
+  },
+  "steps": [
+    {
+      "op": "switch_model",
+      "model": "gpt-5.6-terra",
+      "via": "acp",
+      "cell": "smoke/xwfix/cells/vxm-az",
+      "assert_form": "storage"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: XW-VXM-AZ-POSTSW1"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 4,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "TURN COMPLETES: the post-switch terra turn did not die (200 directly post-.71, or 400->reactive-strip->200 today)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "cell_diff",
+        "cell": "smoke/xwfix/cells/vxm-az",
+        "form": "storage",
+        "model": "gpt-5.6-terra",
+        "label": "XW RED (storage form, the core pin): the persisted post-switch history must equal the T1 golden (36 records; 5 reasoning items re-keyed to xw_ ids; zero encrypted_content). Evaluated by the switch_model op AT SWITCH TIME (before the post-switch turn appends records). TODAY: the switch rewrites no storage (5 id:'' items persist) -> mismatch = the defect under test (RED-EXPECTED); the reactive strip's later T3-all rewrite (33 records) would also mismatch, which is the documented pre-projector behavior, not a fixture defect. POST-.71: projection at switch time -> green."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "any": true,
+        "grep": "\"type\": \"reasoning\"",
+        "label": "CONTROL (anti-vacuous, era-stable): a post-switch terra request carried a reasoning INPUT item \u2014 the foreign (seeded) history actually crossed the wire. Today the 400'd first attempt carries all 5; post-.71 the single 200 request carries the 5 re-keyed items."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "any": true,
+        "grep": "\"id\": \"\"",
+        "label": "XW RED (wire shape, TODAY only): a post-switch terra request ships the seeded id:'' reasoning items (the 400 trigger). Post-.71 this flips to absent \u2014 RE-PIN to absent:true at RED-CLEARED promotion; do not carry the present-pin forward."
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "min": 1,
+        "max": 2,
+        "label": "NO RETRY STORM: 1 terra request = the .71 projector sufficed (RED-CLEARED era); 2 = today's 400->reactive-strip->200 recovery; >=3 = same-payload storm or strip loop -> defect in either era."
+      },
+      {
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "POST-SWITCH ACCEPTED: the final terra request reached 200 (reactive-strip recovery today; first attempt post-.71)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  },
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses"
+}

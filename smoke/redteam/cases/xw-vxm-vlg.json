@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "id": "XW-VXM-VLG",
+  "title": "XW-FIXTURES CATCH-GLM case \u2014 THE CATCH OF RECORD (.74 lane), cell vxm-vlg (switch_model op, DRAFT \u2014 corpus lane, ratchet \u2461 2026-09-18 per coordinator RULING 2; runner-visible copy lands in redteam/cases/): the runner seeds the session with the byte-pinned synthetic canonical claude-phase history (10 records; 2 reasoning items id:'' + encrypted_content + summary \u2014 the proven VX-M empty-id persist ride, REUSED from the vxm-vlq seed per RULING 2; 2 tool pairs; assistant model_id claude-sonnet-5), switches claude-sonnet-5 -> glm-5.2 MID-SESSION (ACP session/set_model \u2014 NO preemptive wall: (None,glm) \u2014 is_family_switch requires (Some(a),Some(b)) with a!=b (model_switch.rs:60-69) so the family-unset claude source row raw-rides), then one post-switch turn. PREDICTED OUTCOME (RULING 2, deployment-class evidence 2026-09-17 tdd-74 \u00a71 \u2014 DEPLOYMENT-EVIDENCE-BASED, not code-derivable; the v1 vxm-vlq cell erred by generalizing this GLM observation to qwen, which natively accepts): (i) storage diff AT SWITCH TIME FAILS = the .71-class RED (no projector in-tree \u2014 the 2 id:'' rides persist vs the T1 golden); (ii) the first post-switch /v1/responses request (body.model=glm-5.2) carries the id:'' rides VERBATIM (lenient row: NO strict_responses_input on glm-5.2 -> project_strict_responses_input no-op, provider.rs:263-280); (iii) the glm-5.2 group's Responses->ChatCompletions shim path (deployment state, harness-independent \u2014 the 09-17 capture was cross-harness, the group config is proxy-side) rejects the array-shaped reasoning content -> class-(a) pydantic 400 in the dotted phrasing (L1801 live fragment sha256:1f591ef070d9; F3 needle: has input_value, NO bracket, NO .id, NO 'invalid' -> no family at 40ffad1) -> RetryDecision::Fatal (retry.rs:186) -> BRICK: the turn dies (terminal 400, acp_error surface, stop_reason=error, no model-bound retry arm, persistent until compaction \u2014 every later prompt re-sends the same history). STOP discipline (RULING 2): the 400 phrasing is adjudicated verbatim against L1801 \u2014 MATCH = documented class-(a) RED (this cell becomes the CATCH of record); MISMATCH = NEW failure class -> triage-catalog row + bead note, same session; a 200 = DEPLOYMENT DRIFT (group no longer shims, or the shim was updated to accept) -> report-and-stop BEFORE minting (first-class .62 matrix finding: deployment-class map qwen=native-accepts (run 4), gemini=native-accepts (run 5), glm=? (this run decides)). NEVER edit expected.json or a pin to fit.",
+  "bead": "apex-ayl.70",
+  "suite": "cross-wire",
+  "tier": "slim",
+  "driver": "acp",
+  "model": "claude-sonnet-5",
+  "wirecap": true,
+  "expected_red": {
+    "id": "apex-ayl.71"
+  },
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "steps": [
+    {
+      "op": "switch_model",
+      "model": "glm-5.2",
+      "via": "acp",
+      "cell": "smoke/xwfix/cells/vxm-vlg",
+      "assert_form": "storage"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: XW-VXM-VLG-POSTSW1"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 4,
+  "assert": {
+    "wire": [
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "glm-5.2"
+        },
+        "any": true,
+        "grep": "\"id\": \"\"",
+        "label": "CATCH PIN (RULING 2): a post-switch glm request ships the seeded id:'' reasoning items VERBATIM \u2014 the lenient row (NO strict_responses_input on glm-5.2) does not strip them at send time (provider.rs:263-280 no-op), so the foreign ride crosses the wire (the BRICK trigger). Absent = the predicted ride did not cross -> predicted-outcome miss -> report-and-stop."
+      },
+      {
+        "kind": "recon",
+        "file": "resp-*.jsonl",
+        "any": true,
+        "grep": "validation errors for ChatCompletionRequest",
+        "label": "CATCH PHRASING EVIDENCE (recon, non-scoring \u2014 resp captures are JSONL and cannot carry a G10 where, so the phrasing is RECORDED, not scored): record any ChatCompletionRequest-validation lines from the response captures. The verbatim 400 phrasing is quoted in the cell evidence + report for the L1801 adjudication (fragment sha256:1f591ef070d9) \u2014 MATCH = documented class-(a) RED; DIFFERS = NEW failure class -> triage-catalog row + bead note, same session (never absorb)."
+      },
+      {
+        "kind": "recon",
+        "file": "acp.log",
+        "base": "session",
+        "any": true,
+        "grep": "\"stop_reason\":\"error\"",
+        "label": "FATAL/BRICK EVIDENCE (recon, non-scoring): record the turn-death surface from session/acp.log (stop_reason=error on the post-switch turn). The no-recovery-on-retry semantics is SCORED by the count band + the terminal-400 pin below: 1 request = clean BRICK (RetryDecision::Fatal, error.rs:885 400 non-retryable, retry.rs:186); 2 = one retry observed before terminal (record the branch); >=3 = same-payload storm -> defect (report-and-stop)."
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "glm-5.2"
+        },
+        "min": 1,
+        "max": 4,
+        "label": "BRICK DIAGNOSTIC: 1 = clean BRICK (one 400, Fatal tail retry.rs:186 \u2014 no retry at all); 2 = one retry observed before terminal (record the branch); >=3 = same-payload storm beyond the documented Fatal semantics -> defect (report-and-stop)."
+      },
+      {
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "glm-5.2"
+        },
+        "which": "last",
+        "status_in": [
+          400
+        ],
+        "label": "CATCH PIN (RULING 2): the FINAL glm request is a 400 \u2014 the BRICK (the 09-17 live glm-5.2 group shim evidence). A 200 final = DEPLOYMENT DRIFT (group no longer shims, or the shim was updated to accept) -> report-and-stop BEFORE minting \u2014 first-class .62 matrix finding (deployment-class map: qwen=native-accepts, gemini=native-accepts, glm=?)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

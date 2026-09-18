@@ -1,0 +1,66 @@
+{
+  "cell": "az-vlq",
+  "flip": {
+    "from": {
+      "family": "AZ",
+      "model": "gpt-5.6-sol",
+      "wire": "/v1/responses (litellm proxy, Azure deployment class)"
+    },
+    "to": {
+      "family": "VL-qwen",
+      "model": "qwen3.8-27b",
+      "wire": "/v1/responses (litellm proxy, strict)"
+    }
+  },
+  "status": "PROVEN-REACTIVE",
+  "incident": {
+    "session": "01a09d0e-1ccf-7790-877e-f1b4a5893ef7",
+    "date": "2026-09-16",
+    "source_dir": "~/.grok/sessions/%2FUsers%2Fpalanisd%2FProjects%2Fbitbucket/01a09d0e-1ccf-7790-877e-f1b4a5893ef7/",
+    "files": [
+      "chat_history.jsonl.pre-strip (53 recs, canonical pre-switch sol phase)",
+      "chat_history.jsonl (post-strip head = first 46 recs: verified byte-identical to pre-strip minus the 7 reasoning items; qwen-era records follow)"
+    ],
+    "behavior": "first post-switch qwen request 503 (litellm EncryptedContentAffinityError: the 7 encitem_ ciphertext-pointer ids pin the request to the cooled-down AZ deployment that minted them; D-ENC had already stripped the encrypted_content FIELDS on the wire, so the ids alone triggered the 503) -> XSWITCH-1 double-keyed 503 arm classified it model-bound -> strip_model_bound_state dropped ALL 7 reasoning items (all-or-nothing T3) -> retry 200 -> stripped history persisted to storage",
+    "evidence": {
+      "dogfood_wire_dir": "~/.grok/dogfood/20260916T191948Z/wire/",
+      "req-003.json (73 input items, zero encrypted_content fields, all 7 reasoning items id=encitem_*)": "sha256:12 9524de54a992",
+      "resp-003.jsonl (503 litellm.ServiceUnavailableError, verbatim message mirrored at error.rs:1861 MODEL_BOUND_503_MESSAGE)": "sha256:12 85211ba47d70",
+      "sdd": "grok/plans/xswitch1-58-sdd.md",
+      "xswitch1_double_keyed_503_arm": "crates/codegen/xai-grok-sampling-types/src/error.rs:436-448 (503 arm: encrypted && (unavailable || boundary); double-keyed so plain deployment 503s keep the generic backoff retry)",
+      "reactive_strip": "crates/codegen/xai-grok-sampling-types/src/conversation.rs:861-863 (strip_model_bound_state) / :942 (drop_model_bound_items: all Reasoning + BackendToolCall)",
+      "denc_wire_seam (strips encrypted_content from reasoning input items on all three /responses send paths)": "crates/codegen/xai-grok-sampler/src/provider.rs:187-208 (strip_encrypted_content_input) called at crates/codegen/xai-grok-sampler/src/client.rs:1981,2148,2406"
+    }
+  },
+  "pre_switch": {
+    "file": "pre_switch.json",
+    "records": 53,
+    "composition": {
+      "system": 1,
+      "user": 17,
+      "reasoning": 7,
+      "assistant": 5,
+      "tool_result": 23
+    },
+    "note": "verbatim storage-form records from chat_history.jsonl.pre-strip; the 7 reasoning items all carry id=encitem_<b64('litellm:model_id:391598459afc...;item_id:rs_0f164f...')> + encrypted_content (1.7-5.0KB) + content=[] + summary (3 items non-empty: ord 3 has 2 summary blocks, ord 4 and ord 6 have 1; 4 items empty) \u2014 the .58 incident's double-keyed trigger set (foreign ids present, encrypted fields already stripped by D-ENC at request build). assistant model_id gpt-5.6-sol, reasoning_effort max; tool pairing intact (23/23)"
+  },
+  "expected": {
+    "file": "expected.json",
+    "records": 53,
+    "projection": {
+      "reasoning x7": "T1: id = xw_ synth (README synthesis rule, verified 5/5 against the vxm-az reference before application), encrypted_content stripped, summary + content kept. 4 of 7 are empty-summary shells (T1 applied mechanically: the item carries no visible payload beyond the re-keyed id) \u2014 the .68 matrix should note the empty-summary sub-class",
+      "all other 46 records": "T0: byte-identical to pre_switch (verified parsed-equal)"
+    }
+  },
+  "invariants": [
+    "no record with id == ''",
+    "no encrypted_content anywhere in expected.json",
+    "every tool_result has a matching assistant tool_call (23/23)",
+    "46 non-reasoning records byte-identical (parsed-equal) to pre_switch",
+    "7 T1 ids deterministic per the README synthesis rule (recomputed from file, match)"
+  ],
+  "red_tests": [
+    ".71 XW-PROJECT-1: projection(pre_switch) == expected \u2014 RED today: the current reactive path (503 double-keyed arm + strip) yields T3-all (46 records, verified: session post-strip head == pre-strip minus 7 reasoning, byte-identical), not the T1 golden (53 records)",
+    "wire form (byte pin lands with the switch_model op capture): first post-switch /v1/responses request input == expected wire form \u2014 no encitem_ ids, no encrypted_content fields, 7 re-keyed reasoning items"
+  ]
+}

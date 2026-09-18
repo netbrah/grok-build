@@ -55,5 +55,9 @@
         "nth": 0
       }
     ]
+  },
+  "config_patch": {
+    "features/multi_agent_v2": false,
+    "model/qwen3.8-27b/multi_agent_v2": false
   }
 }

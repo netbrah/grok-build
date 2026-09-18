@@ -112,6 +112,89 @@ def redact(text: str, secrets) -> str:
     return text
 
 
+# apex-ayl.70 R2-RED (coordinator adjudication 2026-09-18): the agent's
+# _x.ai/mcp/servers_updated notification carries LIVE MCP server env
+# values (credentials). They are scrubbed at acp.log write time (name
+# kept — not sensitive; value redacted) and the final redaction sweep
+# carries a backstop for the class.
+MCP_ENV_REDACTED = "***REDACTED***"
+# Coordinator ruling 2026-09-18 (marker unification): the canonical
+# write-time marker is ***REDACTED***; the legacy [REDACTED] (the
+# coordinator's 106-file historical scrub) is ALSO a redaction
+# marker — the sweep backstop must not flag it as a live value. New
+# write-time scrubs emit the canonical form only.
+LEGACY_REDACTED_MARKER = "[REDACTED]"
+REDACTED_MARKERS = (MCP_ENV_REDACTED, LEGACY_REDACTED_MARKER)
+SERVERS_UPDATED_METHOD = "_x.ai/mcp/servers_updated"
+
+
+def redact_mcp_env_values(line: str) -> str:
+    """Write-time scrub for one acp.log line: redact every env entry's
+    "value" in a _x.ai/mcp/servers_updated notification. Any other line
+    (and a servers_updated line that is not complete parseable JSON)
+    passes through byte-identical."""
+    body = line[6:] if line.startswith("SEND: ") else line
+    if SERVERS_UPDATED_METHOD not in body:
+        return line
+    try:
+        obj = json.loads(body)
+    except Exception:
+        return line
+    servers = (obj.get("params") or {}).get("mcpServers")
+    if not isinstance(servers, list):
+        return line
+    changed = False
+    for server in servers:
+        env = server.get("env") if isinstance(server, dict) else None
+        if not isinstance(env, list):
+            continue
+        for entry in env:
+            if isinstance(entry, dict) and "value" in entry:
+                entry["value"] = MCP_ENV_REDACTED
+                changed = True
+    if not changed:
+        return line
+    out = json.dumps(obj, separators=(",", ":"))
+    if line.startswith("SEND: "):
+        out = "SEND: " + out
+    if line.endswith("\n"):
+        out += "\n"
+    return out
+
+
+class _AcpLogRedactor:
+    """Line-buffered write filter wrapping the acp.log file handle.
+
+    The receive path (AcpSession._iter_lines) mirrors raw read1() chunks,
+    so a servers_updated notification can straddle chunk boundaries —
+    the scrub must see COMPLETE lines: buffer until newline, scrub each
+    complete line, write through. A pending partial line is never emitted
+    on flush() (it may still complete into a scrub target on the next
+    chunk); it is written (scrubbed best-effort) only on close()."""
+
+    def __init__(self, fh):
+        self._fh = fh
+        self._buf = ""
+
+    def write(self, text):
+        self._buf += text
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            self._fh.write(redact_mcp_env_values(line + "\n"))
+
+    def flush(self):
+        # Underlying buffer only — never emit the pending partial line.
+        self._fh.flush()
+
+    def close(self):
+        try:
+            if self._buf:
+                self._fh.write(redact_mcp_env_values(self._buf))
+            self._fh.flush()
+        finally:
+            self._fh.close()
+
+
 def encode_cwd_dirname(cwd: str) -> str:
     """Mirror xai-grok-config paths.rs encode_cwd_dirname (short form)."""
     return urllib.parse.quote(cwd, safe="")
@@ -730,7 +813,8 @@ def _effective_set_model_timeout(case):
 class AcpSession:
     def __init__(self, bin_path, home, cwd, model, log_path,
                  timeout_s=180, init_timeout_s=None,
-                 set_model_timeout_s=None, extra_unset=None):
+                 set_model_timeout_s=None, extra_unset=None,
+                 load_first_sid=None):
         self.bin_path = bin_path
         self.home = home
         self.cwd = cwd
@@ -751,7 +835,16 @@ class AcpSession:
         self.proc = None
         self._id = 0
         self.session_id = None
-        self.log = open(log_path, "w")
+        # apex-ayl.70 R2-RED stage-2 (coordinator ruling 2026-09-18,
+        # Option A APPROVED): load-first entry for cell-seeded cases —
+        # the sid is pre-minted + pre-seeded on disk BEFORE the ACP
+        # connect; start() enters via session/load (no session/new) so
+        # the actor spawns COLD from disk (session_setup.rs:1023:
+        # disk restore only for non-resident sessions). None = legacy
+        # session/new entry (non-cell cases).
+        self.load_first_sid = load_first_sid
+        self.load_result = None
+        self.log = _AcpLogRedactor(open(log_path, "w"))
         self.updates = []  # all session/update params, in order
         # apex-ayl.28: promptIds already consumed as a turn completion,
         # for the lifetime of this session. A completion notification
@@ -790,6 +883,28 @@ class AcpSession:
                          timeout=self.init_timeout_s)
         if "result" not in resp:
             raise RuntimeError("ACP initialize failed: %s" % resp)
+        if self.load_first_sid:
+            # apex-ayl.70 R2-RED stage-2 (coordinator ruling 2026-09-18,
+            # Option A): enter via session/load on the PRE-MINTED sid —
+            # the seeded dir is already on disk at the canonical
+            # persistence location (home/sessions/<enc-cwd>/<sid>/), so
+            # the session is non-resident and the actor spawns cold
+            # from disk with the seeded history in memory. NO
+            # session/new: new→seed→load made the session resident at
+            # load time and silently discarded the seed (FINDING A).
+            # The load result carries models.currentModelId (the
+            # seeded pre-switch model) — adopted as the actor's model
+            # state (the mechanism, recorded per the ruling).
+            ld = self.call(
+                "session/load",
+                {"sessionId": self.load_first_sid, "cwd": self.cwd,
+                 "mcpServers": []},
+                timeout=self.init_timeout_s)
+            if "result" not in ld:
+                raise RuntimeError("ACP session/load failed: %s" % ld)
+            self.session_id = self.load_first_sid
+            self.load_result = ld["result"]
+            return self
         ns = self.call("session/new",
                        {"cwd": self.cwd, "mcpServers": [],
                         "_meta": {"modelId": self.model}},
@@ -836,8 +951,9 @@ class AcpSession:
             r, _, _ = self._select.select([self.proc.stdout], [], [],
                                           max(0.1, end - time.time()))
             if not r:
-                # Slow-line heartbeat (console only — acp.log mirrors
-                # the raw transcript and must stay byte-identical).
+                # Slow-line heartbeat (console only — acp.log mirrors the
+                # raw transcript; sole deviation: servers_updated env
+                # values are scrubbed at write time, apex-ayl.70 R2-RED).
                 now = time.time()
                 if (line_bytes >= SLOW_LINE_BYTES
                         and now - last_beat >= SLOW_LINE_LOG_INTERVAL_S):
@@ -2672,6 +2788,38 @@ def _run_case_once(case, args, budget, run_dir, attempt):
                                started, wt, home, args, budget)
 
         driver = case.get("driver", "headless")
+        # apex-ayl.70 R2-RED stage-2 (coordinator ruling 2026-09-18,
+        # Option A APPROVED): cell-seeded ACP cases enter LOAD-FIRST —
+        # the session id is pre-minted HERE and the cell history is
+        # pre-seeded on disk at the canonical persistence location
+        # (home/sessions/<enc-cwd>/<sid>/) BEFORE the ACP connect, then
+        # the session is entered via session/load (no session/new).
+        # session/load re-hydrates from disk ONLY for non-resident
+        # sessions (session_setup.rs:1023); the old new→seed→load flow
+        # made the session resident at load time and silently
+        # discarded the seed (FINDING A — voided ② run-1/run-2). Same
+        # two-file layout (chat_history.jsonl + summary.json) the
+        # proven headless cold seeder uses; only the entry path
+        # changes.
+        _xw_load_sid = None
+        _xw_pre = None
+        if _xw_cell and driver == "acp":
+            _xw_load_sid = str(uuid.uuid4())
+            ctx.session_id = _xw_load_sid
+            _xw_pre = xwfix_seed_from_cell(
+                home, case_cwd, _xw_load_sid, cur_model,
+                _xwfix_cell_dir(_xw_cell))
+            if not _xw_pre:
+                mark("BLOCKED", "xwfix cell seed failed (pre-connect): "
+                                "unreadable pre_switch.json for %s"
+                                % _xw_cell)
+                return _finish(case, run_dir, ctx, results, status,
+                               started, wt, home, args, budget)
+            ctx.session_dir = _xw_pre[0]
+            log("  %s: xwfix cell pre-seeded BEFORE connect %s "
+                "records=%d bytes=%d (cell=%s; load-first entry)"
+                % (cid, _xw_load_sid, _xw_pre[1], _xw_pre[2], _xw_cell))
+            snapshot_history(ctx, "xwfix_seed", home, case_cwd)
         if driver == "acp":
             acp = AcpSession(args.bin, home.home, case_cwd, cur_model,
                              os.path.join(run_dir, "acp.log"),
@@ -2679,50 +2827,41 @@ def _run_case_once(case, args, budget, run_dir, attempt):
                                  case),
                              set_model_timeout_s=
                              _effective_set_model_timeout(case),
-                             extra_unset=extra_unset)
+                             extra_unset=extra_unset,
+                             load_first_sid=_xw_load_sid)
             acp.start()
             ctx.acp = acp
-            log("  %s: ACP session %s model=%s" % (cid, acp.session_id,
-                                                   cur_model))
+            if _xw_load_sid:
+                # Model state (Option A): the seeded summary.json
+                # carries the pre-switch model; the load result
+                # carries models.currentModelId — ADOPTED as the
+                # actor's model state (the mechanism, recorded per the
+                # ruling). Never a raw session/new on this path.
+                _xw_ld_model = ((acp.load_result or {}).get("models")
+                                or {}).get("currentModelId")
+                ctx.events.append({"type": "acp_session_load",
+                                   "sessionId": acp.session_id,
+                                   "currentModelId": _xw_ld_model,
+                                   "case_model": cur_model, "_line": 0})
+                log("  %s: xwfix load-first session %s "
+                    "currentModelId=%s (case model=%s; records=%d "
+                    "pre-seeded)" % (cid, acp.session_id, _xw_ld_model,
+                                     cur_model, _xw_pre[1]))
+                if _xw_ld_model and _xw_ld_model != cur_model:
+                    mark("FAIL", "load result currentModelId %s != case "
+                                 "model %s (seed not honored?)"
+                         % (_xw_ld_model, cur_model))
+                elif not _xw_ld_model:
+                    log("  %s: NOTE — load result carries no "
+                        "currentModelId; pre-switch model taken from "
+                        "the seeded summary.json (case model=%s)"
+                        % (cid, cur_model))
+            else:
+                log("  %s: ACP session %s model=%s" % (cid, acp.session_id,
+                                                       cur_model))
             ctx.session_id = acp.session_id
-            ctx.session_dir = home.session_dir_for(case_cwd, acp.session_id)
-            if _xw_cell:
-                # apex-ayl.70 (XW-FIXTURES-1) + ratchet ① adjudication
-                # (NIT-1): the ACP session id is minted by session/new,
-                # so the cell seed is materialized under the real ACP
-                # session dir and then routed through session/load —
-                # the actor loads ONLY summary.json at session/new and
-                # does NOT re-read chat_history.jsonl at the first
-                # prompt (persistence init_session), so re-materializing
-                # the files alone would leave an empty in-memory
-                # history; session/load (load_light) is the path that
-                # puts the seeded history in memory before the first
-                # prompt (leader seam server.rs:607).
-                _xw = xwfix_seed_from_cell(home, case_cwd, acp.session_id,
-                                           cur_model,
-                                           _xwfix_cell_dir(_xw_cell))
-                if _xw:
-                    _xw_resp = acp.call(
-                        "session/load",
-                        {"sessionId": acp.session_id, "cwd": case_cwd},
-                        timeout=acp.init_timeout_s)
-                    if isinstance(_xw_resp, dict) \
-                            and "error" in _xw_resp:
-                        ctx.events.append({"type": "acp_error",
-                                           "error": _xw_resp["error"],
-                                           "model": cur_model})
-                        mark("FAIL", "acp session/load error: %s"
-                             % str(_xw_resp["error"])[:120])
-                    log("  %s: xwfix cell-seeded ACP session %s "
-                        "records=%d (cell=%s, via session/load)"
-                        % (cid, acp.session_id, _xw[1], _xw_cell))
-                    snapshot_history(ctx, "xwfix_seed", home, case_cwd)
-                else:
-                    mark("BLOCKED", "xwfix cell seed failed (ACP): "
-                                    "unreadable pre_switch.json for %s"
-                                    % _xw_cell)
-                    return _finish(case, run_dir, ctx, results, status,
-                                   started, wt, home, args, budget)
+            ctx.session_dir = home.session_dir_for(case_cwd,
+                                                   acp.session_id)
             ctx.fmt = "acp"
         extra = []
         if case.get("agents_json"):
@@ -3345,6 +3484,34 @@ KEY_HEURISTIC = re.compile(
     r'|user=[A-Za-z0-9]+:[A-Za-z0-9+/=]{20,}@)')
 
 
+def unredacted_mcp_env_values(text):
+    """Yield (line_no, env_name) for every env value in a servers_updated
+    notification that is not the redaction marker — the sweep-side
+    backstop for the write-time scrub (apex-ayl.70 R2-RED)."""
+    out = []
+    for i, line in enumerate(text.splitlines(), 1):
+        body = line[6:] if line.startswith("SEND: ") else line
+        if SERVERS_UPDATED_METHOD not in body:
+            continue
+        try:
+            obj = json.loads(body)
+        except Exception:
+            continue
+        servers = (obj.get("params") or {}).get("mcpServers")
+        if not isinstance(servers, list):
+            continue
+        for server in servers:
+            env = server.get("env") if isinstance(server, dict) else None
+            if not isinstance(env, list):
+                continue
+            for entry in env:
+                if (isinstance(entry, dict)
+                        and entry.get("value") not in
+                        (None,) + REDACTED_MARKERS):
+                    out.append((i, entry.get("name", "?")))
+    return out
+
+
 def redaction_sweep(root: str, ambient_key: str, files=None):
     """Grep the run dir (or the named files within it) for the ambient key
     + key-like heuristics. Returns (hits, details)."""
@@ -3372,6 +3539,12 @@ def redaction_sweep(root: str, ambient_key: str, files=None):
                 hits += 1
                 details.append("%s: key-heuristic %r"
                                % (os.path.relpath(p, root), frag[:40]))
+            for i, name in unredacted_mcp_env_values(text):
+                hits += 1
+                details.append(
+                    "%s:%d: mcp env value NOT redacted in "
+                    "servers_updated (name=%s)"
+                    % (os.path.relpath(p, root), i, name))
     return hits, details
 
 
@@ -4624,6 +4797,124 @@ def resolve_bin_path(raw):
     return os.path.join(REPO_ROOT, raw)
 
 
+def selftest_contract_pins():
+    """Offline contract pins (apex-ayl.70 R2-RED; coordinator adjudication
+    2026-09-18, first-hand verified):
+    (1) every ACP session/load call in this runner passes "mcpServers": []
+        — the field is REQUIRED by agent-client-protocol-schema
+        (LoadSessionRequest, no serde default); its absence made every
+        cell-seeded run INVALID (run 1, 20260918T034309Z).
+    (2) the servers_updated env-value redaction: a synthetic notification
+        with a live-looking hex value is scrubbed at write time (name
+        kept, marker applied) AND the final redaction_sweep would flag an
+        unredacted copy (backstop) while the scrubbed copy passes; the
+        legacy [REDACTED] marker (coordinator's 106-file historical
+        scrub, ruling 2026-09-18) is a REDACTION MARKER, not a live
+        value, and must not be flagged.
+    (3) load-first entry (Option A, ruling 2026-09-18): AcpSession.
+        start() reaches session/load BEFORE session/new (the
+        load_first_sid branch), the case runner's AcpSession
+        construction passes load_first_sid=, and the FINDING-A
+        resident-path reseed (seed under acp.session_id) is gone.
+    Returns a list of failure strings (empty = green)."""
+    failures = []
+    try:
+        with open(os.path.join(HERE, "run.py"), errors="replace") as fh:
+            src_lines = fh.read().splitlines()
+    except Exception as e:
+        return ["pin 1: cannot read own source: %s" % e]
+    load_sites = [i for i, l in enumerate(src_lines)
+                  if l.strip().startswith('"session/load"')]
+    if not load_sites:
+        failures.append("pin 1: no ACP session/load call found in run.py")
+    for i in load_sites:
+        window = "\n".join(src_lines[i:i + 5])
+        if '"mcpServers"' not in window or "[]" not in window:
+            failures.append("pin 1: session/load params at run.py:%d lack "
+                            '"mcpServers": [] (required field)' % (i + 1))
+    probe_value = "0123456789abcdef0123456789abcdef"
+    probe = ('{"jsonrpc":"2.0","method":"%s","params":{"mcpServers":['
+             '{"name":"probe-mcp","type":"stdio","env":[{"name":'
+             '"PROBE_SECRET","value":"%s"}]}]}}'
+             % (SERVERS_UPDATED_METHOD, probe_value))
+    scrubbed = redact_mcp_env_values(probe + "\n")
+    if probe_value in scrubbed:
+        failures.append("pin 2: write-time scrub left the env value in "
+                        "place")
+    if '"name":"PROBE_SECRET"' not in scrubbed.replace(" ", ""):
+        failures.append("pin 2: write-time scrub dropped/renamed the env "
+                        "name")
+    if MCP_ENV_REDACTED not in scrubbed:
+        failures.append("pin 2: write-time scrub did not apply the marker")
+    tmp = tempfile.mkdtemp(prefix="ht1-pins-")
+    try:
+        with open(os.path.join(tmp, "acp.log"), "w") as fh:
+            fh.write(probe + "\n")
+        with open(os.path.join(tmp, "acp_scrubbed.log"), "w") as fh:
+            fh.write(scrubbed)
+        # marker-unification ruling: the legacy [REDACTED] value (the
+        # coordinator's historical scrub) must pass the sweep.
+        with open(os.path.join(tmp, "acp_legacy.log"), "w") as fh:
+            fh.write(probe.replace(probe_value,
+                                   LEGACY_REDACTED_MARKER) + "\n")
+        _, det = redaction_sweep(tmp, ambient_key="")
+        flagged = [d for d in det if "mcp env value NOT redacted" in d]
+        if not any(d.startswith("acp.log") for d in flagged):
+            failures.append("pin 2: redaction_sweep did not flag the raw "
+                            "servers_updated env value (backstop broken)")
+        if any(d.startswith("acp_scrubbed.log") for d in flagged):
+            failures.append("pin 2: redaction_sweep flagged the SCRUBBED "
+                            "probe (false positive)")
+        if any(d.startswith("acp_legacy.log") for d in flagged):
+            failures.append("pin 2: redaction_sweep flagged the LEGACY "
+                            "marker [REDACTED] (ruling: it is a "
+                            "redaction marker, not a live value)")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    # (3) load-first entry contract (Option A):
+    start_idx = next((i for i, l in enumerate(src_lines)
+                      if l.strip() == "def start(self):"), -1)
+    if start_idx < 0:
+        failures.append("pin 3a: AcpSession.start() not found")
+    else:
+        end_idx = next((i for i in range(start_idx + 1, len(src_lines))
+                        if src_lines[i].startswith("    def ")),
+                       len(src_lines))
+        block = src_lines[start_idx:end_idx]
+        block_src = "\n".join(block)
+        # substring (quoted) match: the session/new call is inline
+        # (ns = self.call("session/new", ...)) while the load-first
+        # call puts the method on its own line.
+        load_pos = next((j for j, l in enumerate(block)
+                         if '"session/load"' in l), -1)
+        new_pos = next((j for j, l in enumerate(block)
+                        if '"session/new"' in l), -1)
+        if (load_pos < 0 or new_pos < 0 or load_pos > new_pos
+                or "self.load_first_sid" not in block_src):
+            failures.append(
+                "pin 3a: AcpSession.start() must enter via "
+                "session/load (self.load_first_sid branch) BEFORE "
+                "session/new")
+    ctor_idx = next((i for i, l in enumerate(src_lines)
+                     if l.strip().startswith("acp = AcpSession(")),
+                    -1)
+    if ctor_idx < 0:
+        failures.append("pin 3b: AcpSession construction not found in "
+                        "_run_case_once")
+    elif "load_first_sid=" not in "\n".join(
+            src_lines[ctor_idx:ctor_idx + 10]):
+        failures.append("pin 3b: the AcpSession construction does not "
+                        "pass load_first_sid= (load-first entry broken)")
+    # split literal: the pattern must not appear contiguously in this
+    # pin's own source (self-match would make the pin unsatisfiable).
+    _res_pat = "xwfix_seed_from_cell(home, case_cwd, " + "acp.session_id"
+    if any(_res_pat in l for l in src_lines):
+        failures.append("pin 3c: FINDING-A resident-path reseed (seed "
+                        "under acp.session_id) is back — cell seeds "
+                        "must be pre-connected + load-first")
+    return failures
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="HT-1 L3 red-team runner")
     p.add_argument("case_ids", nargs="*",
@@ -4695,6 +4986,15 @@ def main(argv=None):
         if schema_failures or contract_failures:
             log("selftest: FAIL — schema/contract gate has violations")
             return 1
+        pin_failures = selftest_contract_pins()
+        for e in pin_failures:
+            log("  pin: %s" % e)
+        if pin_failures:
+            log("selftest: FAIL — contract pin violation")
+            return 1
+        log("selftest: contract pins OK (session/load mcpServers; "
+            "servers_updated env redaction: write-time + sweep backstop "
+            "[canonical + legacy markers]; load-first entry Option A)")
         import unittest
         if HERE not in sys.path:
             sys.path.insert(0, HERE)

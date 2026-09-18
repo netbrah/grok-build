@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "id": "XW-VXM-VLQ",
+  "title": "XW-FIXTURES CATCH-of-record case, cell vxm-vlq (switch_model op, DRAFT \u2014 corpus lane, ratchet \u2461 2026-09-18 per Amendment A1.2; runner-visible copy lands in redteam/cases/): the runner seeds the session with the byte-pinned synthetic canonical claude-phase history (10 records; 2 reasoning items id:'' + encrypted_content + summary \u2014 the proven VX-M empty-id persist ride; 2 tool pairs; assistant model_id claude-sonnet-5), switches claude-sonnet-5 -> qwen3.8-27b MID-SESSION (ACP session/set_model \u2014 NO preemptive wall: the claude row is family-unset so is_family_switch is false and the ride raw-rides), then one post-switch turn. PREDICTED OUTCOME (Amendment A1.2, code-derivable): (i) storage diff AT SWITCH TIME FAILS = the .71-class RED (no projector in-tree \u2014 the 2 id:'' rides persist in storage vs the T1 golden); (ii) the first post-switch /v1/responses request (body.model=qwen3.8-27b) carries the id:'' rides (non-strict row: project_strict_responses_input is a no-op, provider.rs:263-278) -> vLLM Responses->ChatCompletions shim pydantic 400 in the class-(a) dotted phrasing (L1801 live fragment sha256:1f591ef070d9, tdd-74 \u00a71) -> F1-F5 needle miss (F3 needs input[ + .id + invalid; the body has input_value, no bracket, no .id, no invalid) -> RetryDecision::Fatal (retry.rs:186) -> BRICK: the turn dies (terminal 400, no model-bound retry arm, persistent until compaction). The wire pins below are TODAY-era CATCH pins (re-pinned at RED-CLEARED/.71 promotion per the vxm-az DRAFT convention). STOP discipline (A1.2 + house rule): a live 400 phrasing that DIFFERS from the L1801 fragment, a classified-family recovery, or a 200 = new failure class or predicted-outcome miss -> report-and-stop with the verbatim phrasing; NEVER edit expected.json or a pin to fit.",
+  "bead": "apex-ayl.70",
+  "suite": "cross-wire",
+  "tier": "slim",
+  "driver": "acp",
+  "model": "claude-sonnet-5",
+  "wirecap": true,
+  "expected_red": {
+    "id": "apex-ayl.71"
+  },
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "steps": [
+    {
+      "op": "switch_model",
+      "model": "qwen3.8-27b",
+      "via": "acp",
+      "cell": "smoke/xwfix/cells/vxm-vlq",
+      "assert_form": "storage"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: XW-VXM-VLQ-POSTSW1"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 4,
+  "assert": {
+    "wire": [
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "any": true,
+        "grep": "\"id\": \"\"",
+        "label": "CATCH PIN (TODAY only \u2014 re-pin to absent:true at RED-CLEARED promotion): a post-switch qwen request ships the seeded id:'' reasoning items \u2014 the non-strict row does not strip them at send time (provider.rs:263-278 no-op; responses.rs:262-267 pass-through), so the foreign ride crosses the wire (the BRICK trigger). Absent = the predicted ride did not cross -> predicted-outcome miss -> report-and-stop."
+      },
+      {
+        "kind": "recon",
+        "file": "resp-*.jsonl",
+        "any": true,
+        "grep": "validation errors for ChatCompletionRequest",
+        "label": "CATCH PHRASING EVIDENCE (recon, non-scoring \u2014 the scored CATCH surface is the last-400 pin + the id:'' ride pin + the count band; resp captures are JSONL and cannot carry a G10 where, so the phrasing is RECORDED, not scored): record any ChatCompletionRequest-validation lines from the response captures. The verbatim 400 phrasing is quoted in the cell evidence + report for the A1.2 class adjudication \u2014 if it DIFFERS from the L1801 fragment (sha256:1f591ef070d9) = new failure class -> report-and-stop (driver discipline; never absorb)."
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "min": 1,
+        "max": 4,
+        "label": "BRICK DIAGNOSTIC: 1 = clean BRICK (one 400, Fatal tail retry.rs:186 \u2014 no retry at all); 2 = one retry observed before terminal (record the branch); >=3 = same-payload storm beyond the documented Fatal semantics -> defect (report-and-stop). >=5 would shadow the COMP-3 class which does not apply to the post-switch turn path (that class is the compact path, .82)."
+      },
+      {
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "which": "last",
+        "status_in": [
+          400
+        ],
+        "label": "CATCH PIN (TODAY only \u2014 re-pin to 200 at RED-CLEARED promotion): the FINAL qwen request is a 400 \u2014 the BRICK (no recovery: Fatal, not RetryWithModelBoundStateStrip; error.rs:885 400 non-retryable). A 200 final = the shim accepted the ride or the reactive net engaged (a classified family the needle walk says should miss) -> predicted-outcome miss -> report-and-stop."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

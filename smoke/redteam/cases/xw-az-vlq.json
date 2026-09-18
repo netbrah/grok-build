@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "id": "XW-AZ-VLQ",
+  "title": "XW-FIXTURES RED case, cell az-vlq (switch_model op, DRAFT \u2014 corpus lane, ratchet \u2461 2026-09-18; runner-visible copy lands in redteam/cases/ for the live run): the runner seeds the session with the byte-pinned .58 incident pre-switch history (53 records, 7 reasoning items id=encitem_* + encrypted_content, session 01a09d0e), switches gpt-5.6-sol -> qwen3.8-27b MID-SESSION (ACP session/set_model), then one post-switch turn. Verdict semantics (RED-first; apex-ayl.71 is the defect under test, registered via expected_red): the xwfix cell diff (storage form, scored by the op AT SWITCH TIME) FAILs TODAY = RED-EXPECTED \u2014 no proactive projector in-tree: actual storage keeps the 7 encitem_ rides (53 records) vs the T1 golden (53 records, xw_ ids, zero encrypted_content); the reactive path's later T3-all rewrite (46 records, the .58 strip) would also mismatch (documented pre-projector behavior, not a fixture defect). KNOWN LIVE BEHAVIOR (qwen preplan finding 1 + I-A, first-hand model_switch.rs:148-163): sol(family=codex) -> qwen(family=qwen) is a family-switch (both set+distinct) with model-minted history and no turn in flight -> the preemptive lossy compact fires BEFORE the first post-switch request; the compact request (body.model=qwen3.8-27b) rides the encitem_ ids and the compact path has NO model-bound retry arm (.82 DOCUMENTED-RED: 15x same-payload compact storm class, max_retries=15). The count pin below bounds that band (1..18) so the COMP-3 class is recorded, not masked; a storm beyond 18 or a non-200 FINAL request is a new defect (report-and-stop). RED-CLEARED after .71: projection at switch time -> storage green, first post-switch request 200 on attempt 1.",
+  "bead": "apex-ayl.70",
+  "suite": "cross-wire",
+  "tier": "slim",
+  "driver": "acp",
+  "model": "gpt-5.6-sol",
+  "wirecap": true,
+  "expected_red": {
+    "id": "apex-ayl.71"
+  },
+  "steps": [
+    {
+      "op": "switch_model",
+      "model": "qwen3.8-27b",
+      "via": "acp",
+      "cell": "smoke/xwfix/cells/az-vlq",
+      "assert_form": "storage"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: XW-AZ-VLQ-POSTSW1"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 8,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "TURN COMPLETES: the post-switch qwen turn did not die (the preemptive compact failing is logged 'switching anyway', not an ACP error; the post-switch 400/503 recovers via the reactive strip)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "any": true,
+        "grep": "encitem_",
+        "label": "CONTROL (anti-vacuous, era-stable): a qwen request carried the seeded encitem_ rides \u2014 the foreign history actually crossed the wire (the .58 double-keyed trigger set: ids present, encrypted_content fields already stripped by D-ENC at request build, provider.rs:187-208). Present on the preemptive-compact request and/or the first post-switch 400; absent only if a .71-era projector re-keyed them first (RED-CLEARED era \u2014 re-pin then)."
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "min": 1,
+        "max": 18,
+        "label": "NO STORM BEYOND THE DOCUMENTED BAND: 2 = clean reactive path (first post-switch 400/503 + retry 200, compact succeeded silently or absent); 3 = compact 200 + 400 + 200; 4..17 = the .82 COMP-3 class (same-payload compact retry storm, max_retries=15, +2 post-switch) \u2014 recorded, not masked; >=18 = defect beyond the documented band (report-and-stop)."
+      },
+      {
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "POST-SWITCH ACCEPTED: the FINAL qwen request in scope reached 200 (reactive-strip recovery today; first attempt post-.71). A non-200 final = BRICK/unclassified-shape -> report-and-stop (new wire-error shape, house rule)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  },
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses"
+}

@@ -1,0 +1,52 @@
+{
+  "cell": "vlq-vlg-WS",
+  "flip": {
+    "from": {
+      "family": "VL-qwen",
+      "model": "qwen3.8-27b",
+      "wire": "/v1/responses (litellm proxy)"
+    },
+    "to": {
+      "family": "VL-glm",
+      "model": "glm-5.2",
+      "wire": "/v1/responses (litellm proxy; native OpenAI-compatible on-prem upstream post-drift \u2014 run 6)"
+    }
+  },
+  "families": "VL-qwen -> VL-glm",
+  "status": "PREDICTED-WALL \u2014 GO 3 (b) mint (2026-09-18): premise = the wall fires. The wall is a CLIENT-side mechanism (model_switch.rs:148-163, family pair (qwen,glm): both set+distinct -> is_family_switch true -> preemptive lossy compact BEFORE the first post-switch request; strip_reasoning_blocks, compaction_utils.rs:89-94) \u2014 the run-6 glm route drift does NOT affect it. Scoring surface = the wire pins (compact input carries 0 seeded reasoning items \u2014 the ruling's tooth); the post-compact storage form is recon-recorded by shape (the deep-equality storage engine has no wildcard mechanism; the model-generated compact-summary record embeds the run-specific session path => not byte-reproducible \u2014 RULING 3 (b) contingency realized).",
+  "mint": {
+    "date": "2026-09-18 (Z)",
+    "driver": "ratchet 2 (corpus lane)",
+    "basis": "coordinator RULING 3 (2026-09-18) GO 3 (b); run 3 (XW-VLG-VLG 20260918T055005Z seal 7d17374a5067) is the first-hand wall artifact: the retired v1 cell (vlq-vlg, T0 premise) failed exactly because the wall fired \u2014 its post-compact storage form is the (b) baseline (8 records post-turn / 6 at switch time / 0 reasoning / head ab2f16001537 5696B on disk this session \u2014 see report \u00a73S.11 note on the 829e036cb921 cite)"
+  },
+  "recipe": "SYNTHETIC canonical qwen-phase history (11 records) \u2014 byte-identical reuse of cells/vlq-vlg/pre_switch.json (sha256:12 4fe324106aca): 2 reasoning items with NON-empty rs_-shaped ids + content:[] + non-empty summary_text, NO encrypted_content (qwen mints no provider ciphertext); 2 tool pairs; 3 assistant (model_id qwen3.8-27b); terminal prompt 'Summarize both results in one short paragraph.'",
+  "pre_switch": {
+    "file": "pre_switch.json",
+    "records": 11,
+    "composition": {
+      "system": 1,
+      "user": 3,
+      "reasoning": 2,
+      "assistant": 3,
+      "tool_result": 2
+    },
+    "note": "byte-identical to cells/vlq-vlg/pre_switch.json (sha256:12 4fe324106aca)"
+  },
+  "expected": {
+    "file": null,
+    "records": null,
+    "projection": {
+      "NONE (deliberate)": "In the wall case the switch-time storage form is the POST-COMPACT form, not the seed (run-3 artifact: 6 records at switch time \u2014 canonical head + user_info (compaction_meta) + user_query + model-generated compact summary (compaction_meta) + skills system-reminder + MCP system-reminder; 0 reasoning; +2 post-turn = 8 total, 41075B on disk). The model-generated compact-summary record references the run-specific session path (\u2026/<sid>/compaction/segment_*.md) and the MCP-connection system-reminder is timing state => the form is NOT byte-reproducible. RULING 3 (b): 'shape-pin the summary record if not byte-reproducible, byte-pin everything else' \u2014 realized as recon shape-pins (always-ok, non-scoring) because the storage deep-equality engine (run.py xwfix_cell_diff_storage: full-array parsed equality, no wildcard) cannot express a mixed byte/shape golden. The case therefore runs assert_form=wire (the storage diff is not scored; the wire hook notes expected_wire.json absent and skips \u2014 expected_wire.json is also NOT cut: the compact/turn request bodies embed the same non-reproducible summary text). The scoring teeth remain the ruling's: the all+absent '\"type\": \"reasoning\"' pin over all glm /v1/responses requests \u2014 'a projector that pre-rewrites rides before the wall changes the compact input -> RED'."
+    }
+  },
+  "invariants": [
+    "zero reasoning items in every glm /v1/responses request (compact + turn) \u2014 the wall's preemption",
+    "zero seeded rs_ ride ids in the post-compact storage (the rides are eaten by strip_reasoning_blocks; recon records any survival as wall-regression evidence, the wire pin scores it)",
+    "post-compact storage carries the compaction_meta carrier records (user_info + summary) \u2014 corpus README invariant 4 (carrier survival)",
+    "the glm turn completes 200 (glm native-accepts post-drift; run 6 evidence) with no storm (count 1..4)"
+  ],
+  "red_tests": [
+    "GREEN-PIN guard (RULING 3 (b)): the switch_model case op seeds this cell, drives qwen->glm via ACP set_model (assert_form=wire), and asserts (all must PASS today): all+absent '\"type\": \"reasoning\"' across all glm /v1/responses requests (the wall-preemption tooth); no-storm count band 1..4; final glm 200; 0 acp_error. Recon (always-ok) records the post-compact storage shape: canonical head present, 2 compaction_meta records, 0 seeded rs_ ids, turn prompt + exact reply.",
+    "Any scored pin failing = the premise broke: the wall did not fire (a projector pre-rewrote rides into the compact input, or the family-pair check changed) OR glm stopped accepting (deployment regression back to a rejecting shim \u2014 the .74 net's in-flight 400) -> report-and-stop (A1)."
+  ]
+}

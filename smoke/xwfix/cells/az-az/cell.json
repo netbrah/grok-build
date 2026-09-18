@@ -1,0 +1,54 @@
+{
+  "cell": "az-az",
+  "flip": {
+    "from": {
+      "family": "AZ",
+      "model": "gpt-5.6-sol",
+      "wire": "/v1/responses (litellm proxy, Azure deployment class)"
+    },
+    "to": {
+      "family": "AZ",
+      "model": "gpt-5.6-terra",
+      "wire": "/v1/responses (litellm proxy, Azure deployment class, strict_responses_input=true per the 16:30Z hardening)"
+    }
+  },
+  "families": "AZ -> AZ (codex, same wire)",
+  "status": "PREDICTED-CLEAN \u2014 no-wall same-wire guard (RULING 3 GO 3 (a), 2026-09-18): (codex,codex) same-family pair -> is_family_switch false (model_switch.rs:60-69 requires Some(a),Some(b) with a!=b) -> NO preemptive wall/compact; no projector in-tree -> storage stays T0 at switch time; the wire carries the 2 rides in the post-strict-projection summary-only shape (provider.rs:263-280). Recon run validates; clean => GREEN-PIN.",
+  "mint": {
+    "date": "2026-09-18 (Z)",
+    "driver": "ratchet 2 (corpus lane)",
+    "basis": "coordinator RULING 3 (2026-09-18) GO 3 (a); seed = byte-identical reuse of the az-vxm sol-phase seed (target-independent pre-switch storage, A1.2)"
+  },
+  "recipe": "SYNTHETIC canonical sol-phase history (10 records): 2 reasoning items id=encitem_* + content:[] + encrypted_content (SYNTH-AZ-CIPHERTEXT deterministic placeholders, real ciphertext intentionally not reproduced) + non-empty summary_text; 2 tool pairs; assistant model_id gpt-5.6-sol; 209B interactive system head. Byte-identical to cells/az-vxm/pre_switch.json (sha256:12 379ade4065e6).",
+  "pre_switch": {
+    "file": "pre_switch.json",
+    "records": 10,
+    "composition": {
+      "system": 1,
+      "user": 3,
+      "reasoning": 2,
+      "assistant": 2,
+      "tool_result": 2
+    },
+    "note": "byte-identical to cells/az-vxm/pre_switch.json (sha256:12 379ade4065e6)"
+  },
+  "expected": {
+    "file": "expected.json",
+    "records": 10,
+    "projection": {
+      "all 10 records (storage form)": "T0 storage: no projector in-tree AND (codex,codex) no-wall -> the switch rewrites NOTHING in storage \u2014 expected.json is byte-identical to pre_switch (the az-vxm T0 pattern: cells/az-vxm/cell.json expected.projection; red_tests[2] 'a T1 re-key implementation REDs here'). RULING 3 (a) teeth: a naive .71 T1 re-key (xw_ ids written to storage at switch time) REDs this pin.",
+      "reasoning x2 (wire projection)": "post-strict-projection summary-only shape (provider.rs:263-280): on the strict terra row the send-time projection strips id + content; D-ENC (provider.rs:187-208, ungated on every /responses send) strips encrypted_content. The 2 rides cross the first post-switch /v1/responses request as {summary, type} items with the seed summary text byte-verbatim. Ground truth (first-hand): run-1 capture smoke/redteam/report-r2/xw-vxm-az/xw-vxm-az/wire/req-003.json \u2014 the 5 seeded reasoning items serialize with keys [summary, type] only, 0 'encitem_', 0 '\"id\": \"\"' occurrences in the raw capture."
+    }
+  },
+  "invariants": [
+    "no record with id == '' (the seed rides carry encitem_ ids; the post-switch wire carries NO ids at all on the strict row)",
+    "no encitem_ id and no SYNTH-AZ-CIPHERTEXT ciphertext survive into the target request (strict projection + D-ENC)",
+    "no 'id': '' occurrence in any terra request (hardened strict row: id stripped at send, not empty-stringed)",
+    "pairing integrity: every tool_result has a matching assistant tool_call (2/2)",
+    "expected.json byte-identical to pre_switch (no-wall same-wire: no storage rewrite)"
+  ],
+  "red_tests": [
+    "GREEN-PIN guard (RULING 3 (a)): the switch_model case op seeds this cell, drives sol->terra via ACP set_model, and asserts (all must PASS today): storage T0 at switch time; the 2 projected rides byte-verbatim on the first post-switch /v1/responses request (post-strict-projection summary-only shape); zero encitem_ / zero ciphertext / zero 'id': '' on the wire; final terra request 200; count 1..2 (no storm).",
+    "Any failing assert = a regression beyond the documented surface -> report-and-stop (A1: a RED not failing as documented = STOP). Documented teeth: a naive .71 T1 storage re-key REDs the storage T0 pin; a serializer emitting array content or a strict-projection regression REDs the wire pins."
+  ]
+}

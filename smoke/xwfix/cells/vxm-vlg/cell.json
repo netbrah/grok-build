@@ -1,0 +1,72 @@
+{
+  "cell": "vxm-vlg",
+  "flip": {
+    "from": {
+      "family": "VX-M",
+      "model": "claude-sonnet-5",
+      "wire": "/v1/messages (vertex/litellm)"
+    },
+    "to": {
+      "family": "GL-glm",
+      "model": "glm-5.2",
+      "wire": "/v1/responses (litellm) -> Responses->ChatCompletions shim (glm-5.2 group; deployment state, proxy-side)"
+    }
+  },
+  "status": "GUARD \u2014 RULING 3 GO 3 (d) (2026-09-18; supersedes the CATCH-OF-RECORD status, preserved under superseded_status): the 09-17 class-(a) 400 premise was overtaken by DEPLOYMENT DRIFT CONFIRMED DUAL-FACTOR (RULING 3: the glm-5.2 group as deployed is a native OpenAI-compatible on-prem upstream openai/glm-5.2 @ inference.gitops-inf-onprem-cls-01 \u2014 all-accepts, header-verified first-hand in run 6 20260918T065636Z). The operational pin moved to GUARD case XW-VXM-VLG-GUARD (redteam/cases/xw-vxm-vlg-guard.json 7ecd91ff043f); the recon artifact case xw-vxm-vlg.json 80a8b5219026 stays UNTOUCHED with its UNVALIDATED 400 pin. Guard evidence \u2014 all runs RED-EXPECTED (apex-ayl.71) EXACTLY (storage actual=10 expected=10 first_diff_index=2 (type=reasoning)) + every wire pin GREEN (id:'' rides verbatim, 0 reasoning_text, 0 array-content, 0 acp_error, glm 200, count 1 in band 1..4, acceptance-class header openai/glm-5.2 @ cls-01): d-r1 20260918T085156Z seal 2eca9097cb7b (bin 39f836e8633d = 40ffad1 build; concurrent lane) \u00b7 d-r2b 20260918T090515Z seal 294365503b5e (bin e635d5d7f2fe = dbf9441 build; concurrent-lane session 12a78115) \u00b7 d-r2 20260918T091354Z seal 294365503b5e (bin e635d5d7f2fe = dbf9441 build; this lane) \u2014 the .71 gap is ALIVE on both binaries; post-turn ride-persistence recon 2 lines on dbf9441 (d-r2b + d-r2). expected/pre goldens UNCHANGED (0ac32a433409 / 84602c521864). Post-.71-green: these three runs flip to storage-GREEN (exact RED command = green-verification command, tdd74 spec) and the case promotes expected_red -> hard assert.",
+  "superseded_status": "UNPROVEN \u2014 CATCH OF RECORD (.74 lane) \u2014 minted 2026-09-18 (Z) per coordinator RULING 2 (first-hand): the redcycle CATCH slot moves HERE from vxm-vlq (v1 stays in the corpus as a PREMISE-INVALID-OUTCOME artifact \u2014 its 400 pin was a model-specific premise error: the class-(a) 400 is a GLM deployment-class observation from 2026-09-17 (tdd-74 \u00a71, fragment sha256:1f591ef070d9; L1801 + L1881) that was generalized to qwen without basis; qwen3.8-27b natively ACCEPTS the full Responses shape \u2014 M1 req-005 pin + run 4 live 200). Expected live outcome: storage RED (.71 gap) + class-(a) 400 BRICK on the wire per the 09-17 live glm evidence; 200 = DEPLOYMENT DRIFT -> report-and-stop BEFORE minting.",
+  "mint": {
+    "date": "2026-09-18 (Z)",
+    "lane": "ratchet \u2461 (apex-ayl.70 corpus)",
+    "spec": "coordinator RULING 2 (2026-09-18, first-hand): 'NEW CATCH of record: XW-VXM-VLG (sonnet->glm) \u2014 this is where class-(a) can actually BRICK: (None,glm) -> NO wall; glm row lenient -> the seeded rides (id:\"\" + summary arrays) ride verbatim onto the glm request; the glm-5.2 group's Responses->ChatCompletions shim path (deployment state, harness-independent \u2014 the 09-17 capture was cross-harness but the group config is proxy-side) is predicted to reject the array-shaped reasoning content -> class-(a) 400 per the 09-17 live evidence -> needle walk per tdd-74 (F3 misses: has input_value, NO bracket, NO .id, NO invalid) -> no family at 40ffad1 -> Fatal -> persistent BRICK (terminal: every later prompt re-sends the same history). Seed recipe: REUSE the vxm-vlq seed (same sonnet-phase history; glm as target). Pins: 400 with phrasing recon recorded (L1801 verbatim comparison \u2014 MATCH = documented class-(a) RED; MISMATCH = new class -> triage-catalog row + bead note, same session) + Fatal/BRICK evidence (acp_error surface, no recovery on retry) + storage RED intact. If glm returns 200: DEPLOYMENT DRIFT (group no longer shims, or the shim was updated to accept) -> report-and-stop BEFORE minting; that is itself a first-class finding for the .62 matrix (deployment-class map: qwen=native-accepts, glm=?)'",
+    "row_class": "lenient Responses-dialect target row (glm-5.2: api_backend responses, model_family glm, NO strict_responses_input \u2014 verified first-hand in the run-home config.toml per RULING 2) on the glm-5.2 group's Responses->ChatCompletions shim (the deployment class where class-(a) was LIVE-observed 2026-09-17, L1801) reached through a family-unset SOURCE row that bypasses the preemptive wall and raw-rides the proven VX-M empty-id persist"
+  },
+  "recipe": {
+    "evidence": "SYNTHETIC canonical claude-phase (VX-M) history \u2014 BYTE-IDENTICAL to cells/vxm-vlq/pre_switch.json (sha256:12 84602c521864; RULING 2 seed reuse: 'same sonnet-phase history; glm as target'). The ride: 2 reasoning items with id:\"\" + encrypted_content (SYNTH-VX-CIPHERTEXT markers) + summary_text \u2014 the PROVEN VX-M empty-id persist class. Composition system 1 / user 3 / reasoning 2 / assistant 2 / tool_result 2, terminal user prompt; assistant model_id claude-sonnet-5; tool pairing 2/2.",
+    "target_row_verified_first_hand": "2026-09-18 (Z) read of the run-home config.toml (per RULING 2's first-hand config verification; re-verified this session from report-r2/xw-vxm-vxg home): [model.\"glm-5.2\"] = {multi_agent_v2=true, base_url=<llm-proxy>/v1, api_backend=\"responses\", model_family=\"glm\", env_key=CODEX_LLM_PROXY_KEY, context_window=128000, max_completion_tokens=128000, supports_backend_search=false, supports_reasoning_effort=true, reasoning_efforts=[high(default),medium,low]} \u2014 NO strict_responses_input key -> strict_dialect=false (serde default, config.rs:80) -> LENIENT: the seeded rides are NOT projected at send time (project_strict_responses_input is a no-op, provider.rs:263-280) and ship verbatim onto the glm /v1/responses request \u2014 the same verbatim ride shape qwen just accepted (run 4). strict_responses_input=true ONLY on sol/terra/luna (the codex rows).",
+    "wall_analysis": "NO preemptive compact: is_family_switch = matches!((old,new),(Some(a),Some(b)) if a != b) (model_switch.rs:60-69); the claude-sonnet-5 row carries NO model_family (None) -> (None, Some(glm)) does not match -> the model_switch.rs:148-163 preemptive lossy compact does NOT fire; the family-unset source row raw-rides. Consistent with the ruling's four-cell table (run 4: no wall on (None,qwen); run 5: no wall on (None,None))."
+  },
+  "catch_criteria": {
+    "(a) foreign-reasoning ride in the pre-switch history": "HOLD \u2014 2 reasoning items with id:\"\" + encrypted_content (the proven VX-M persist ride). Byte-identical to the vxm-vlq seed (RULING 2 seed reuse).",
+    "(b) predicted wire failure \u2014 DEPLOYMENT-EVIDENCE-BASED, NOT code-derivable (the RULING 2 lesson, recorded precisely so the v1 premise error is not repeated)": "HOLD \u2014 the glm-5.2 group's Responses->ChatCompletions shim REJECTED the array-shaped reasoning content LIVE on 2026-09-17 (tdd-74 \u00a71: 'litellm Responses->ChatCompletions shim, glm-5.2 group, no fallbacks; cross-harness forensics, codex-combined seat capture'; pydantic 'messages.N.content: Input should be a valid string [type=string_type, input_value=[{...' \u2014 fragment sha256:1f591ef070d9; ledger L1801 + L1881, third independent BRICK instance). The shim's validation behavior is deployment state (proxy-side), NOT code-derivable from this tree \u2014 the Family 7/8 classifier arms are NOT in-tree at 40ffad1. v1 (vxm-vlq) erred by treating this GLM observation as qwen-applicable; qwen3.8-27b natively accepts (M1 req-005 + run 4 live 200). This cell therefore pins the 400 as a CATCH pin + verbatim phrasing RECON, with the RULING 2 classification matrix: L1801 verbatim MATCH = documented class-(a) RED (this cell becomes the CATCH of record); MISMATCH = NEW failure class -> triage-catalog row + bead note, same session; 200 = DEPLOYMENT DRIFT -> report-and-stop BEFORE minting (first-class .62 matrix finding: deployment-class map qwen=native-accepts (run 4), gemini=native-accepts (run 5), glm=? (this cell decides)).",
+    "(c) Fatal/BRICK mechanics on the 400 (in-tree, code-derivable at 40ffad1)": "HOLD \u2014 needle walk per tdd-74 \u00a71: F3 misses (the pydantic body has 'input_value', NO bracket, NO '.id', NO 'invalid'); F1/F2/F4/F5 miss as in v1 -> NO FAMILY -> RetryDecision::Fatal (retry.rs:186 fallthrough) -> the 400 is not retryable (error.rs:885) -> the turn dies (acp_error surface, stop_reason=error) with NO recovery on retry -> persistent BRICK: every later prompt re-sends the same history until compaction."
+  },
+  "expected_derivation": {
+    "tier": "T1 (re-keyed)",
+    "derivation": "Same house projection rules and derivation as cells/vxm-vlq/expected.json (identical seed lineage, target-independent T1 form): the 10 seeded records with the 2 rides re-keyed per the README synthesis rule id = \"xw_\" + sha256(\"{cell}|{reasoning_index}|{json(content,sorted)}|{json(summary,sorted)}\").hexdigest()[:24] \u2014 HERE cell=vxm-vlg (the cell name IS a hash input; re-derived this mint: ride@2 = xw_c31a0629e9a38c0595ac875f, ride@6 = xw_b74afc936de49752e78eb1f1; rule re-verified 2/2 against the vxm-vlq recorded ids before re-derivation), encrypted_content key REMOVED, summary kept; the 8 non-reasoning records T0 (parsed-equal to pre_switch). The .71 failing field at 40ffad1 is target-independent: storage keeps the id:\"\" rides (no proactive projector in-tree) -> first_diff_index=2 vs the T1 golden.",
+    "ids": {
+      "reasoning#1 (record index 2)": "xw_c31a0629e9a38c0595ac875f",
+      "reasoning#2 (record index 6)": "xw_b74afc936de49752e78eb1f1"
+    }
+  },
+  "pre_switch": {
+    "file": "pre_switch.json",
+    "records": 10,
+    "composition": {
+      "system": 1,
+      "user": 3,
+      "reasoning": 2,
+      "assistant": 2,
+      "tool_result": 2
+    },
+    "note": "byte-identical to cells/vxm-vlq/pre_switch.json (sha256:12 84602c521864; RULING 2 seed reuse): 2 id:\"\" rides (SYNTH-VX-CIPHERTEXT markers) + 2 tool pairs (2/2) + terminal user prompt; assistant model_id claude-sonnet-5"
+  },
+  "expected": {
+    "file": "expected.json",
+    "records": 10,
+    "projection": {
+      "reasoning x2": "T1: id = xw_ synth (cell=vxm-vlg ids above), encrypted_content REMOVED, summary kept (see expected_derivation)",
+      "all other 8 records": "T0: parsed-equal to pre_switch (verified; identical to the vxm-vlq golden)"
+    }
+  },
+  "invariants": [
+    "no record with id == '' (the 2 rides re-keyed to xw_ \u2014 T1)",
+    "no encrypted_content anywhere in expected.json (foreign Anthropic signature carrier removed)",
+    "every tool_result has a matching assistant tool_call (2/2)",
+    "compaction carrier items survive projection opaquely (none present in this synthetic recipe)",
+    "the 8 non-reasoning records parsed-equal to pre_switch"
+  ],
+  "red_tests": [
+    "r2 live CATCH run (2026-09-18 (Z), THIS CYCLE \u2014 case XW-VXM-VLG, binary of record target/release/grok-responses sha256:12 39f836e8633d, hermetic home, store=false): PREDICTED OUTCOME (RULING 2): (i) storage diff AT SWITCH TIME FAILS = the .71-class RED (actual 10 records with the 2 id:\"\" rides vs the 10-record T1 golden \u2014 no proactive projector in-tree); (ii) wire: the first post-switch /v1/responses request (body.model=glm-5.2) carries the 2 id:\"\" rides VERBATIM (lenient row \u2014 no send-time strip); (iii) the glm-5.2 group shim rejects the array-shaped reasoning content -> class-(a) pydantic 400 (09-17 live evidence, fragment sha256:1f591ef070d9) -> F3 needle miss -> NO FAMILY -> Fatal (retry.rs:186) -> BRICK: the turn dies (acp_error surface, stop_reason=error), no recovery on retry, persistent until compaction. RED-EXPECTED id = apex-ayl.71 (the storage RED). **STOP discipline (RULING 2): 400 phrasing vs the L1801 fragment \u2014 MATCH = documented class-(a) RED (this cell IS the CATCH of record); MISMATCH = NEW failure class -> triage-catalog row + bead note, same session; 200 = DEPLOYMENT DRIFT -> report-and-stop BEFORE minting. Never edit expected.json or a pin to fit.** Run: python3 smoke/redteam/run.py XW-VXM-VLG --bin target/release/grok-responses --out smoke/redteam/report-r2/xw-vxm-vlg",
+    "post-RED (green era, .71): storage diff GREEN (projector re-keys the 2 rides to the T1 cell=vxm-vlg ids at switch time) + first post-switch glm request 200 on attempt 1 + no id:\"\" on the wire (re-pin the case's TODAY-era pins at RED-CLEARED promotion per the vxm-az DRAFT convention); if the glm deployment flips to shim-reject before the .71 green cut ships, the 400 surfaces at RED-CLEARED validation -> re-mint per RULING 2 (the .74 green cut is NOT shipped at 40ffad1 \u2014 the Family 7/8 classifier arms are not in-tree)"
+  ]
+}

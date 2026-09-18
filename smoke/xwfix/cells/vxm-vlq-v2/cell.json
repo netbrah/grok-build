@@ -1,0 +1,72 @@
+{
+  "cell": "vxm-vlq-v2",
+  "flip": {
+    "from": {
+      "family": "VX-M",
+      "model": "claude-sonnet-5",
+      "wire": "/v1/messages (vertex/litellm)"
+    },
+    "to": {
+      "family": "VL-qwen",
+      "model": "qwen3.8-27b",
+      "wire": "/v1/responses (litellm) -> vLLM Responses->ChatCompletions shim"
+    }
+  },
+  "status": "GUARD (minted 2026-09-18 (Z) per RULING 3 GO 3 (c) \u2014 promoted guard on the CATCH-of-record flip (sonnet->qwen): scores the documented .71 failing-field RED (expected_red apex-ayl.71) and locks the qwen lenient-row wire surface at the post-drift native-accepts truth (id:\"\" verbatim x2 + ZERO array-content + final 200 + band 1..4). The CATCH cell vxm-vlq (expected 71a5d52e7f09; the run-4 CATCH evidence) stands untouched \u2014 as does the 80a8b5219026 recon case lineage. Post-.71-fix contract (guard_criteria iii): storage GREEN only on the v2-derived keys below \u2014 a wrong-key or partial re-key keeps the storage RED and the guard catches it.)",
+  "mint": {
+    "date": "2026-09-18 (Z)",
+    "lane": "ratchet \u2461 (apex-ayl.70 corpus)",
+    "spec": "RULING 3 (coordinator /root, 2026-09-18) GO 3 (c): 'vxm-vlq-v2 qwen GUARD \u2014 storage RED .71 + id:'' verbatim + ZERO array-content + resp 200 + band'. The CATCH of record (vxm-vlq; run 4: 200 where the CATCH pinned 400 \u2014 deployment drift, dual-factor confirmed in RULING 3, CATCH closed by evidence) is promoted to a GUARD on this cell: the .71 failing-field RED stays scored (expected_red apex-ayl.71) and the qwen wire surface is locked at the post-drift native-accepts truth (runs 4 + 5 ground truth).",
+    "id_rederivation": "T1 v2 golden = the vxm-vlq T1 golden (71a5d52e7f09) with the 2 ride ids re-derived for cell='vxm-vlq-v2' under the house synthesis rule (id = 'xw_' + sha256('{cell}|{reasoning_index}|{json.dumps(content,sort_keys=True)}|{json.dumps(summary,sort_keys=True)}').hexdigest()[:24]; 0-based reasoning index; absent content canonicalized to json.dumps([])). SANITY GATE (passed before derivation, first-hand this session): cell='vxm-vlq' reproduces xw_8da223f40d38f3b81de0e7e2 / xw_d308f76c1af22dd6a4b2c192 (== the vxm-vlq expected.json on disk) and cell='vxm-vlg' reproduces xw_c31a0629e9a38c0595ac875f / xw_b74afc936de49752e78eb1f1 (== the vxm-vlg expected.json on disk, re-verified 2/2) \u2014 only then the v2 ids were derived. Result: reasoning#1 (record index 2) = xw_6447c85f887eb664ebf69b9a; reasoning#2 (record index 6) = xw_7a54c97ce8ac678a68f38fe1.",
+    "row_class": "non-strict vLLM Responses->ChatCompletions shim target row \u2014 post-drift NATIVE-ACCEPTS (RULING 3 dual-factor drift: the class-(a) 400 is non-reproducible by the grok harness wire shape on every deployed model; runs 4/5/6 ground truth). The guard's 200 pin is the regression net for a shim regression on the qwen row."
+  },
+  "recipe": {
+    "evidence": "SYNTHETIC canonical claude-phase (VX-M) history \u2014 BYTE-IDENTICAL to cells/vxm-vlq/pre_switch.json (== cells/vxm-vxg pre; sha256:12 84602c521864; pre-switch storage is target-independent; verified sha-equal at mint). The ride: 2 reasoning items with id:\"\" + encrypted_content (SYNTH-VX-CIPHERTEXT markers) + summary_text \u2014 the PROVEN VX-M empty-id persist class (incident 01a0b046, 5x id:'' rides persisted and wire-400'd; the .69 XW-EMPTYID-1 persist gap, stream/messages.rs:543-549: id String::new() with the signature in encrypted_content). Composition system 1 / user 3 / reasoning 2 / assistant 2 / tool_result 2, terminal user prompt; assistant model_id claude-sonnet-5; tool pairing 2/2.",
+    "target_row_verified_first_hand": "2026-09-18 (Z) read of ~/.grok/config.toml: [model.\"qwen3.8-27b\"] = {multi_agent_v2=true, base_url=<llm-proxy>/v1, api_backend=\"responses\", env_key, model_family=\"qwen\", max_completion_tokens=128000, supports_reasoning_effort=true, reasoning_efforts=[xhigh(default),medium,low]} \u2014 NO strict_responses_input key -> strict_dialect=false (serde default, config.rs:80) -> NON-STRICT: the criterion (b) disjunction 'family-unset OR non-strict' holds via the NON-STRICT branch (model_family IS set to \"qwen\" \u2014 cited precisely, not elided). glm concordance \u00a71 characterization: 'the qwen target row is family-unset/non-strict on the vLLM Responses->ChatCompletions shim' \u2014 the shim is the same litellm deployment class where class-(a) was LIVE-observed (L1801: glm-5.2 group, no fallbacks; qwen3.8-27b rides the identical shim family).",
+    "wall_analysis": "NO preemptive compact: is_family_switch = matches!((old,new),(Some(a),Some(b)) if a != b) (agent/handlers/model_switch.rs:60-69); the claude-sonnet-5 row carries NO model_family (None) -> (None, Some(qwen)) does not match -> the acp_session_impl/model_switch.rs:148-163 preemptive lossy compact does NOT fire; the family-unset source row raw-rides (qwen preplan finding 1, I-A CONFIRMED)."
+  },
+  "guard_criteria": {
+    "(i) storage diff AT SWITCH TIME = the documented .71 failing-field RED (expected_red apex-ayl.71)": "EXPECTED-RED-LOCKED: actual storage at switch time = the 10-record seed form with the 2 id:\"\" rides persisting (no proactive projector in-tree at 40ffad1) vs the 10-record T1 v2 golden -> first_diff_index=2 (type=reasoning), the documented .71 re-key gap surface (runs 1/4/5/6 precedent: actual=10 expected=10 first_diff_index=2). Any OTHER failing field (index != 2, type != reasoning, count mismatch) = outside the documented .71 surface -> report-and-stop.",
+    "(ii) wire (qwen lenient row, runs 4+5 ground truth)": "id:\"\" rides VERBATIM on the qwen /v1/responses request (any-grep '\"id\": \"\"' \u2014 the lenient row keeps the empty id at 40ffad1; run-4: exactly 2 occurrences; TODAY-era pin, re-cut to absent at RED-CLEARED promotion) + ZERO array-content (all+absent '\"content\": [' \u2014 the zero-array-content invariant: 0 occurrences in both '\"content\": [' and '\"content\":[' forms on the run-4 qwen + run-6 glm captures; capture writer is the indent-2 space form) + FINAL 200 (qwen native-accepts post-drift; a non-200 final = class-(a) shim regression or a NEW 400 phrasing \u2014 compare against the L1801 fragment sha256:12 1f591ef070d9; a new phrasing = triage-catalog row + report-and-stop) + count band 1..4 (no storm; run-6 3-request retry-recovery precedent).",
+    "(iii) post-RED contract (green era, .71)": "storage diff GREEN ONLY if the in-tree projector re-keys the 2 rides to the v2-derived ids (xw_6447c85f887eb664ebf69b9a / xw_7a54c97ce8ac678a68f38fe1) \u2014 a wrong-key or partial re-key keeps the storage RED (the guard catches it); the wire pins then flip (the id:'' any-grep must miss; the zero-array-content pin stands). Re-pin the case at RED-CLEARED promotion per the vxm-az DRAFT convention."
+  },
+  "expected_derivation": {
+    "tier": "T1 (re-keyed)",
+    "derivation": "House projection rules (README): the projected history sits at the HIGHEST tier the target wire tolerates, subject to the invariants at EVERY tier. (1) T0 (byte-identical, rides stay) is BANNED by invariant 1 ('no record/item with id == \"\"') \u2014 the 2 id:\"\" rides must move regardless of target leniency (REPLAY-1's KEEP ruling \u2014 lenient shims accept empty ids \u2014 governs the wire 200, not the storage invariant). (2) T1 = the vxm-az expected pattern applied: xw_ synth id per the README synthesis rule (id = \"xw_\" + sha256(\"{cell}|{reasoning_index}|{json(content,sorted)}|{json(summary,sorted)}\").hexdigest()[:24]; cell=vxm-vlq-v2; 0-based reasoning index; absent content canonicalized to [] \u2014 rule verified 5/5 against the vxm-az reference in this cycle, plus the resume-time sanity gate: vxm-vlq 2/2 + vxm-vlg 2/2 recomputed against the on-disk goldens before the v2 derivation), encrypted_content key REMOVED (the foreign Anthropic signature carrier; D-ENC already strips it at send time, so the storage projection matches the wire truth), summary kept (the target tolerates summary-text reasoning \u2014 the lenient vLLM /responses dialect carries it). (3) All 8 non-reasoning records T0 (parsed-equal to pre_switch \u2014 verified). NOT T3 (unlike vxm-vxg): the qwen target wire is the same /responses dialect family that carries re-keyed reasoning items (no ->generateContent text-cap), so dropping the ride loses replayable fidelity (JIG \u00a71 goal 1: highest tier the target tolerates).",
+    "ids": {
+      "reasoning#1 (record index 2)": "xw_6447c85f887eb664ebf69b9a",
+      "reasoning#2 (record index 6)": "xw_7a54c97ce8ac678a68f38fe1"
+    }
+  },
+  "pre_switch": {
+    "file": "pre_switch.json",
+    "records": 10,
+    "composition": {
+      "system": 1,
+      "user": 3,
+      "reasoning": 2,
+      "assistant": 2,
+      "tool_result": 2
+    },
+    "note": "byte-identical to cells/vxm-vlq/pre_switch.json (== cells/vxm-vxg pre; sha256:12 84602c521864; pre-switch storage is target-independent): 2 id:\"\" rides (SYNTH-VX-CIPHERTEXT markers) + 2 tool pairs (2/2) + terminal user prompt; assistant model_id claude-sonnet-5"
+  },
+  "expected": {
+    "file": "expected.json",
+    "records": 10,
+    "projection": {
+      "reasoning x2": "T1: id = xw_ synth (ids above), encrypted_content REMOVED, summary kept \u2014 the vxm-az pattern (see expected_derivation)",
+      "all other 8 records": "T0: parsed-equal to pre_switch (verified)"
+    }
+  },
+  "invariants": [
+    "no record with id == '' (the 2 rides re-keyed to xw_ \u2014 T1)",
+    "no encrypted_content anywhere in expected.json (foreign Anthropic signature carrier removed)",
+    "every tool_result has a matching assistant tool_call (2/2)",
+    "compaction carrier items survive projection opaquely (none present in this synthetic recipe)",
+    "the 8 non-reasoning records parsed-equal to pre_switch"
+  ],
+  "red_tests": [
+    "GO 3 (c) live GUARD run (2026-09-18 (Z) \u2014 case XW-VXM-VLQ-V2, binary of record target/release/grok-responses sha256:12 39f836e8633d = 40ffad1 code (git-stamp caveat: sibling INGRESS-NORMALIZE-1 dbf9441 committed 08:02:16Z before the run window; no cargo from this lane), hermetic home, store=false): EXPECTED = the documented RED shape: (i) xwfix_cell_diff.storage FAILS at the ride index (actual 10 records, the 2 id:\"\" rides persist vs the 10-record T1 v2 golden \u2014 first_diff_index=2 (type=reasoning), the .71 re-key gap; expected_red id = apex-ayl.71); (ii) wire GREEN: id:\"\" verbatim x2 on the qwen request + 0 array-content + final 200 + count 1..4; (iii) 0 acp_error. Any deviation (a 200-pin RED on the guard, a failing field outside the documented .71 surface, a NEW 400 phrasing != the L1801 fragment) -> report-and-stop \u2014 never edit expected.json or a pin to fit. Run: python3 smoke/redteam/run.py XW-VXM-VLQ-V2 --bin target/release/grok-responses --out smoke/redteam/report-r2/xw-vxm-vlq-v2 --budget 40 --campaign-id apex-ayl.70-r2 --wave R2-RED",
+    "post-RED (green era, .71): see guard_criteria (iii) \u2014 storage GREEN only on the v2-derived keys; the case's wire pins are re-cut at RED-CLEARED promotion (the id:\"\" any-grep becomes an absent-pin; the band may tighten)."
+  ]
+}

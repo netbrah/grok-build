@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "id": "XW-VLG-VLG",
+  "title": "XW-FIXTURES case, cell vlq-vlg (switch_model op, DRAFT \u2014 corpus lane, ratchet \u2461 2026-09-18; runner-visible copy lands in redteam/cases/): the runner seeds the session with the byte-pinned synthetic canonical qwen-phase history (11 records; 2 reasoning items with NON-empty rs_-shaped ids, NO encrypted_content, summary text; 2 tool pairs; assistant model_id qwen3.8-27b), switches qwen3.8-27b -> glm-5.2 MID-SESSION (ACP session/set_model), then one post-switch turn. Verdict semantics (documented PREDICTED-CLEAN \u2014 no expected_red): expected.json is T0 (byte-identical to pre_switch) on the premise 'same litellm /responses send path and strictness class for qwen and glm; qwen-native ids carry no encitem_ marker so no EncryptedContentAffinity pin' (cell.json expected.projection). KNOWN LIVE BEHAVIOR THE PREDICTION DOES NOT COVER (qwen preplan finding 1 + I-A, first-hand model_switch.rs:148-163): qwen(family=qwen) -> glm(family=glm) IS a family switch (both set+distinct) with model-minted history and no turn in flight -> the preemptive lossy compact fires BEFORE the first post-switch request and EATS the ride (strip_reasoning_blocks, compaction_utils.rs:89-94 \u2014 silent-loss class, finding 3). IF the compact succeeds, storage at switch time = compacted history != the T0 golden -> the storage diff FAILs and, per cell.json red_tests[0], 'a failure is a new UNPROVEN finding for the .68 matrix, not a fixture defect' \u2014 record it as such (the wall ate the ride); do NOT re-cut expected.json in this cycle. If the compact 400s, the COMP-3 storm class (.82, max_retries=15) applies \u2014 the count band bounds it. The anti-vacuous control below is the SEED-FLOW adaptation of cell.json red_tests[1] (the cell's 'pre-switch request carries a reasoning item' control presupposes a live pre-switch turn; the switch_model seed flow has none \u2014 the storage is seeded verbatim, no pre-switch model call): the first post-switch glm request must carry the seeded reasoning items, unless the wall's compact already stripped them (a pin failure here is therefore wall evidence, recorded with the storage-diff outcome).",
+  "bead": "apex-ayl.70",
+  "suite": "cross-wire",
+  "tier": "slim",
+  "driver": "acp",
+  "model": "qwen3.8-27b",
+  "wirecap": true,
+  "steps": [
+    {
+      "op": "switch_model",
+      "model": "glm-5.2",
+      "via": "acp",
+      "cell": "smoke/xwfix/cells/vlq-vlg",
+      "assert_form": "storage"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: XW-VLG-VLG-POSTSW1"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 4,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "TURN COMPLETES: the post-switch glm turn did not die (a compact failure is logged 'switching anyway', not an ACP error; a post-switch 400 on a clean ride would be a NEW unclassified shape -> report-and-stop)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "glm-5.2"
+        },
+        "any": true,
+        "grep": "\"type\": \"reasoning\"",
+        "label": "ANTI-VACUOUS (seed-flow adaptation, see title): a post-switch glm request carried a reasoning INPUT item \u2014 the seeded qwen-phase history actually crossed the wire (without it the T0 replay claim is vacuous). A MISS is expected when the preemptive family-switch compact ate the ride (wall evidence \u2014 pair this pin's outcome with the storage-diff outcome in the report; both = the documented 'wall ate the ride' UNPROVEN finding)."
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "glm-5.2"
+        },
+        "min": 1,
+        "max": 16,
+        "label": "NO STORM BEYOND THE DOCUMENTED BAND: 2 = clean (compact 200 + post-switch 200) or compact-absent + direct 200; 3..15 = the .82 COMP-3 compact-storm class (max_retries=15) + post-switch; >=16 = defect beyond the documented band -> report-and-stop."
+      },
+      {
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "glm-5.2"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "POST-SWITCH ACCEPTED: the FINAL glm request in scope reached 200 (predicted clean: the ride is shape-legal for the lenient vLLM shim \u2014 REPLAY-1 KEEP ruling class). A non-200 final on a CLEAN ride (no encitem_, non-empty ids) = NEW unclassified wire-error shape -> report-and-stop."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  },
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses"
+}

@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "id": "XW-AZ-VXM",
+  "title": "XW-FIXTURES case, cell az-vxm (switch_model op, DRAFT \u2014 corpus lane, ratchet \u2461 2026-09-18; runner-visible copy lands in redteam/cases/): the runner seeds the session with the byte-pinned synthetic canonical sol-phase history (10 records; 2 encrypted reasoning items encitem_ ids + encrypted_content + content=[], 2 tool pairs, assistant model_id gpt-5.6-sol), switches gpt-5.6-sol -> claude-sonnet-5 MID-SESSION (ACP session/set_model), then one post-switch turn. Verdict semantics (documented GREEN \u2014 this cell is the ported-path NEGATIVE CONTROL, NOT an expected_red case): the ported build (CROSSWIRE-1 .68: R8 model-identity suppression + stage-6 thinking strip on the /v1/messages side) rewrites NOTHING in storage for this flip and emits ZERO thinking blocks in the first post-switch request for this canonical shape (cell.json recipe code_pins, messages.rs:14-16/587-595/660/678-679/751-760 + :266-305), so the storage-form cell diff (scored by the op AT SWITCH TIME, expected.json == pre_switch byte-identical) PASSES today \u2014 the .71 projector must perform NO storage rewrite for this flip (a naive T1 re-key implementation REDs here: that is the pin's teeth). A FAIL of ANY pin in this case is a defect or a new wire-error shape -> report-and-stop (never edit expected.json to fit). No preemptive wall: sol(family=codex) -> sonnet(family=None) is NOT a family switch (is_family_switch requires both Some+distinct, model_switch.rs:60-69).",
+  "bead": "apex-ayl.70",
+  "suite": "cross-wire",
+  "tier": "slim",
+  "driver": "acp",
+  "model": "gpt-5.6-sol",
+  "wirecap": true,
+  "steps": [
+    {
+      "op": "switch_model",
+      "model": "claude-sonnet-5",
+      "via": "acp",
+      "cell": "smoke/xwfix/cells/az-vxm",
+      "assert_form": "storage"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: XW-AZ-VXM-POSTSW1"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 4,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "TURN COMPLETES: the post-switch sonnet turn did not die (ported build: 200 directly \u2014 the R8 + stage-6 build rules make this canonical shape clean on attempt 1; 400 here = a new wire-error shape -> report-and-stop)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"type\": \"thinking\"",
+        "label": "PORTED BUILD PIN (the cell's documented wire behavior): ZERO thinking BLOCKS in any post-switch /v1/messages request \u2014 reasoning#1's Thinking block lands on a non-latest assistant (stage 6 drops it, messages.rs:266-305) and reasoning#2 is suppressed by the R8 flag (assistant model_id gpt-5.6-sol != claude-sonnet-5, messages.rs:678-679, gate :751-760). A thinking block here = the port regressed (defect, not a RED) -> report-and-stop. PIN-PRECISION FIX 20260918T042742Z (run 2, session 01a0b2c5): the original substring 'thinking' hit the always-present request PARAMETER body.thinking={\"type\":\"adaptive\",\"display\":\"summarized\"} (verified byte-level: exactly 1 occurrence, no block form anywhere in the request) \u2014 the pin now targets the block form; the compact-serialization companion pin follows."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"type\":\"thinking\"",
+        "label": "Companion of the spaced-form thinking-block pin (compact serialization variant): ZERO thinking blocks in any post-switch /v1/messages request (same cell contract; see the spaced-form pin label for the code pins + the 20260918T042742Z overbreadth fix)."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "encrypted_content",
+        "label": "INVARIANT 2 (this canonical shape): no foreign AZ encrypted_content rides the /v1/messages request \u2014 the messages path maps reasoning encrypted_content -> Thinking signature (messages.rs:751-755) but BOTH reasoning items are suppressed/dropped by R8 + stage 6 for this shape, so no signature (and no encrypted_content string) reaches the wire. (The latest-assistant single-turn edge where the foreign signature WOULD ride is the cell's DESIGN-PROPOSED gap \u2014 NOT in this cell's pre_switch.) A hit = invariant violation -> report-and-stop."
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "min": 1,
+        "max": 2,
+        "label": "NO RETRY: exactly 1 sonnet request expected (200 on attempt 1 \u2014 ported build, clean shape); 2 = one classified retry (record); >=3 = retry-storm defect -> report-and-stop."
+      },
+      {
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "POST-SWITCH ACCEPTED: the final sonnet request reached 200. Non-200 = new wire-error shape on the ported path -> report-and-stop."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  },
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses"
+}

@@ -904,7 +904,9 @@ class DualValidatorTest(unittest.TestCase):
         verdicts = self._engine_verdicts(tmp)
         slim = [n for n in verdicts if n.startswith("t21-")]
         self.assertGreaterEqual(
-            len(slim), 6, "the 6 slim drop-in cases must be in the tree")
+            len(slim), 5, "the slim drop-in cases must be in the tree "
+                         "(was 6; t21-cc-gemini37 retired 2026-09-17 — "
+                         "gemini family cc->responses reversal)")
         for name, (pa, pb) in sorted(verdicts.items()):
             self.assertEqual(
                 pa, pb,
@@ -929,7 +931,9 @@ class DualValidatorTest(unittest.TestCase):
 class NewCaseGateTest(unittest.TestCase):
     """T-S2 (apex-ayl.22 D-2): NEW-case gate pass/fail split.
 
-    6 slim pass; a legacy case (no schema_version) skips the NEW rules;
+    5 slim pass (was 6; t21-cc-gemini37 retired 2026-09-17 — gemini
+    family cc->responses reversal); a legacy case (no schema_version)
+    skips the NEW rules;
     a schema_version=1 case failing a NEW rule is rejected with the
     rule named. Pre-fix RED: the gate does not exist — every mutation
     below validates clean."""
@@ -945,8 +949,9 @@ class NewCaseGateTest(unittest.TestCase):
         self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
         slim = sorted(run.globmod.glob(
             os.path.join(run.CASES_DIR, "t21-*.json")))
-        self.assertGreaterEqual(len(slim), 6,
-                                "slim drop-in set must be in the tree")
+        self.assertGreaterEqual(len(slim), 5,
+                                "slim drop-in set must be in the tree "
+                                "(was 6; t21-cc-gemini37 retired 2026-09-17)")
         for path in slim:
             self.assertEqual(run.validate_case_file(path), [],
                              os.path.basename(path))

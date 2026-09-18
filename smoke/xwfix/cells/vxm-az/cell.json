@@ -1,0 +1,65 @@
+{
+  "cell": "vxm-az",
+  "flip": {
+    "from": {
+      "family": "VX-M",
+      "model": "claude-sonnet-5",
+      "wire": "vertex /messages via litellm"
+    },
+    "to": {
+      "family": "AZ",
+      "model": "gpt-5.6-terra",
+      "wire": "/v1/responses (Azure strict)"
+    }
+  },
+  "status": "PREDICTED-CLEAN",
+  "status_flip": {
+    "date": "2026-09-18 (Z)",
+    "from_status": "PROVEN-REACTIVE",
+    "to_status": "PREDICTED-CLEAN",
+    "original_incident_cite": "session 01a0b046-50ad-7070-925d-738c2b154db3 (2026-09-16), source_dir ~/.grok/sessions/%2FUsers%2Fpalanisd%2FProjects%2Fbitbucket/01a0b046-50ad-7070-925d-738c2b154db3/ — preserved VERBATIM in the 'incident' block below (append-only flip: the historical 400->F3->T3-all-strip->200 behavior stands as the incident record)",
+    "why": "the proven 400 mechanism (non-strict target riding empty-id foreign reasoning; classifier family-3 needle F3 -> drop_model_bound_items T3-all -> retry 200) no longer applies to the target row: gpt-5.6-terra (and -luna) now carry strict_responses_input=true + model_family=\"codex\" + context_window=262144, so the EXISTING send-time projection (project_strict_responses_input, provider.rs:263-278; strict_dialect gate; config.rs:80 default false) removes the id (and content) of type==\"reasoning\" items before the wire sees them — no new code owed for this row class (glm2 I-F verdict: mechanism CONFIRMED, premise STALE)",
+    "config_backup": "config.toml.bak-20260917-terraluna",
+    "verified_first_hand": "2026-09-18 (Z) read of ~/.grok/config.toml: [model.\"gpt-5.6-terra\"] and [model.\"gpt-5.6-luna\"] both carry model_family = \"codex\", strict_responses_input = true, context_window = 262144 (plus max_completion_tokens = 128000; base_url/env_key inherited from [endpoints]); backup config.toml.bak-20260917-terraluna present in ~/.grok (mtime 2026-09-17 16:30 local, 5952 B); diff backup->live shows exactly the two hardening blocks (model_family + strict_responses_input + context_window on each row) and the [models] default/default_reasoning_effort lines — nothing else"
+  },
+  "incident": {
+    "session": "01a0b046-50ad-7070-925d-738c2b154db3",
+    "date": "2026-09-16",
+    "source_dir": "~/.grok/sessions/%2FUsers%2Fpalanisd%2FProjects%2Fbitbucket/01a0b046-50ad-7070-925d-738c2b154db3/",
+    "files": [
+      "chat_history.jsonl.pre-strip (36 recs, canonical pre-switch)",
+      "chat_history.jsonl (33 recs, post-strip: all 5 reasoning dropped)"
+    ],
+    "behavior": "first post-switch terra request 400 (Invalid input[N].id '') -> classifier family-3 -> drop_model_bound_items removed ALL 5 reasoning items (all-or-nothing) -> retry 200"
+  },
+  "pre_switch": {
+    "file": "pre_switch.json",
+    "records": 36,
+    "composition": {
+      "system": 1,
+      "user": 12,
+      "reasoning": 5,
+      "assistant": 8,
+      "tool_result": 10
+    },
+    "note": "verbatim storage-form records; the 5 reasoning items all carry id:'' + encrypted_content + summary_text (VX-M persist gap)"
+  },
+  "expected": {
+    "file": "expected.json",
+    "records": 36,
+    "projection": {
+      "reasoning x5": "T1: id = xw_ synth (README rule), encrypted_content stripped, summary kept, content kept",
+      "all other 31 records": "T0: byte-identical to pre_switch"
+    }
+  },
+  "invariants": [
+    "no record with id == ''",
+    "no encrypted_content anywhere",
+    "every tool_result has a matching assistant tool_call",
+    "31 non-reasoning records byte-identical to pre_switch"
+  ],
+  "red_tests": [
+    ".69 XW-EMPTYID-1: pre_switch through current request builder emits id:'' reasoning items (RED today)",
+    ".71 XW-PROJECT-1: projection(pre_switch) == expected (RED today: current reactive path yields T3-all, 33 records)"
+  ]
+}
