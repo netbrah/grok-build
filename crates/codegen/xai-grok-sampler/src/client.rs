@@ -2506,7 +2506,9 @@ impl SamplingClient {
 
     /// Serialize a remote-compaction-v2 request body: the full conversation
     /// as provider-visible input, the active instructions, native tool
-    /// controls, and the trailing `compaction_trigger` input item.
+    /// controls, and — unless `include_compaction_trigger` is `false`
+    /// (COMPACT-BOUNDARM-1, apex-ayl.82) — the trailing
+    /// `compaction_trigger` input item.
     ///
     /// Explicit instructions are authoritative: a redundant base system
     /// prompt input item is stripped so the model cannot see two conflicting
@@ -2516,6 +2518,7 @@ impl SamplingClient {
         &self,
         request: &ConversationRequest,
         instructions: &str,
+        include_compaction_trigger: bool,
     ) -> Result<serde_json::Value> {
         let extra_tool_entries = xai_grok_sampling_types::extra_tool_entries(&request.hosted_tools);
         let raw_input_replacements = request.raw_responses_input_replacements(
@@ -2584,13 +2587,22 @@ impl SamplingClient {
             request_body["tool_choice"] = serde_json::Value::String("auto".to_owned());
         }
         retain_codex_remote_compaction_v2_request_fields(&mut request_body)?;
-        request_body
+        let input = request_body
             .get_mut("input")
             .and_then(serde_json::Value::as_array_mut)
             .ok_or(SamplingError::InvalidConfiguration(
                 "Codex remote compaction v2 request requires an input array",
-            ))?
-            .push(serde_json::json!({"type": "compaction_trigger"}));
+            ))?;
+        // COMPACT-BOUNDARM-1 (apex-ayl.82): the trailing trigger item is the
+        // Codex-native remote_compaction_v2 protocol marker. A proxy that
+        // does not model it 400s the request with `Unsupported Responses
+        // API input item type: "compaction_trigger"` (Family 9); the v2
+        // retry path re-issues with `include_compaction_trigger = false`
+        // after the one model-bound strip (the incident compact-400 storm:
+        // the same failing shape retried 15x before giving up).
+        if include_compaction_trigger {
+            input.push(serde_json::json!({"type": "compaction_trigger"}));
+        }
         Ok(request_body)
     }
 
@@ -2606,6 +2618,7 @@ impl SamplingClient {
         &self,
         mut request: ConversationRequest,
         instructions: &str,
+        include_compaction_trigger: bool,
     ) -> Result<CodexRemoteCompactionV2Result> {
         if responses_wire_dialect_for_model_family(self.defaults.model_family.as_deref())
             != ResponsesWireDialect::Codex
@@ -2622,7 +2635,13 @@ impl SamplingClient {
         }
 
         self.apply_conversation_defaults(&mut request)?;
-        let request_body = self.codex_compaction_request_body(&request, instructions)?;
+        // XW-ORPHAN-1 (apex-ayl.74): send-boundary orphan cleanup — drop
+        // dangling `ToolResult`s before the body builder computes splice
+        // indexes against the typed item positions (before any
+        // `raw_responses_input_replacements` computation / `into()`).
+        request.drop_orphaned_tool_results();
+        let request_body =
+            self.codex_compaction_request_body(&request, instructions, include_compaction_trigger)?;
         let endpoint = self.endpoint("responses");
         let mut beta_headers = HeaderMap::new();
         beta_headers.insert(
@@ -3207,6 +3226,11 @@ impl SamplingClient {
         let x_grok_transient_retry = request.x_grok_transient_retry.clone();
         let x_grok_agent_id = request.x_grok_agent_id.clone();
 
+        // XW-ORPHAN-1 (apex-ayl.74): send-boundary orphan cleanup — drop
+        // dangling `ToolResult`s before the splice-index computation below
+        // (carrier splice indexes derive from the typed item positions).
+        request.drop_orphaned_tool_results();
+
         // The hosted tools travel as raw JSON, spliced in after serialization by `splice_extra_tool_entries`, whose doc explains why each one does
         let extra_tools = xai_grok_sampling_types::extra_tool_entries(&request.hosted_tools);
 
@@ -3253,6 +3277,11 @@ impl SamplingClient {
         let x_grok_turn_idx = request.x_grok_turn_idx.clone();
         let x_grok_transient_retry = request.x_grok_transient_retry.clone();
         let x_grok_agent_id = request.x_grok_agent_id.clone();
+
+        // XW-ORPHAN-1 (apex-ayl.74): send-boundary orphan cleanup — drop
+        // dangling `ToolResult`s before the splice-index computation below
+        // (carrier splice indexes derive from the typed item positions).
+        request.drop_orphaned_tool_results();
 
         // The hosted tools travel as raw JSON, spliced in by `create_response` via `splice_extra_tool_entries`, whose doc explains why
         let extra_tools = xai_grok_sampling_types::extra_tool_entries(&request.hosted_tools);
@@ -5398,7 +5427,7 @@ mod tests {
             xai_grok_sampling_types::ConversationItem::user("hello"),
         ]);
         let body = client
-            .codex_compaction_request_body(&request, "authoritative compact instructions")
+            .codex_compaction_request_body(&request, "authoritative compact instructions", true)
             .unwrap();
         assert_eq!(body["instructions"], "authoritative compact instructions");
         let input = body["input"].as_array().unwrap();
@@ -5412,6 +5441,60 @@ mod tests {
         assert!(
             input.iter().any(|item| item["role"] == "user"),
             "the user input must survive the strip: {input:?}"
+        );
+    }
+
+    /// COMPACT-BOUNDARM-1 (apex-ayl.82): the incident shape — the proxy
+    /// rejects the trailing `compaction_trigger` item with
+    /// `Unsupported Responses API input item type: "compaction_trigger"`.
+    /// The v2 model-bound retry re-issues with `include_compaction_trigger
+    /// = false`; this pin asserts the wire forms on both sides: the default
+    /// body carries exactly one trigger item, the suppressed body carries
+    /// none (and nothing else changes).
+    #[test]
+    fn codex_compaction_trigger_item_is_conditional_on_the_retry_flag() {
+        let client = codex_compaction_body_test_client();
+        let request = ConversationRequest::from_items(vec![
+            xai_grok_sampling_types::ConversationItem::system("base"),
+            xai_grok_sampling_types::ConversationItem::user("compact me"),
+        ]);
+        let count_triggers = |body: &serde_json::Value| {
+            body["input"]
+                .as_array()
+                .map(|input| {
+                    input
+                        .iter()
+                        .filter(|item| item["type"] == "compaction_trigger")
+                        .count()
+                })
+                .unwrap_or(0)
+        };
+        let default_body = client
+            .codex_compaction_request_body(&request, "", true)
+            .unwrap();
+        assert_eq!(
+            count_triggers(&default_body),
+            1,
+            "the default remote-compaction-v2 body carries exactly one trailing compaction_trigger item: {default_body:?}"
+        );
+        let suppressed_body = client
+            .codex_compaction_request_body(&request, "", false)
+            .unwrap();
+        assert_eq!(
+            count_triggers(&suppressed_body),
+            0,
+            "the model-bound retry body must omit the compaction_trigger item entirely: {suppressed_body:?}"
+        );
+        // Nothing else may change: with the trigger removed, the two bodies
+        // are identical.
+        let mut expected = default_body.clone();
+        expected["input"]
+            .as_array_mut()
+            .expect("default body has an input array")
+            .retain(|item| item["type"] != "compaction_trigger");
+        assert_eq!(
+            expected, suppressed_body,
+            "suppressing the trigger must change ONLY the trigger item"
         );
     }
 

@@ -67,6 +67,11 @@ pub enum SampleRetryError {
         /// Whether the failure was a context-length overflow (a deterministic
         /// signal the grok-build host uses to step down its input size).
         context_overflow: bool,
+        /// Whether the failure was a model-bound history rejection
+        /// (COMPACT-BOUNDARM-1, apex-ayl.82) — the signal the grok-build
+        /// host uses to strip the model-bound state once and re-issue.
+        /// Always deterministic: set only on the deterministic short-circuit.
+        model_bound: bool,
         /// Total attempts made.
         attempts: u32,
     },
@@ -144,6 +149,11 @@ where
                 let message = e.to_string();
                 // Structured overflow from the host, or size-worded text fallback.
                 let context_overflow = e.is_context_overflow() || is_context_length_error(&message);
+                // Model-bound history rejection (COMPACT-BOUNDARM-1,
+                // apex-ayl.82): deterministic for the same payload, but the
+                // product host may strip the model-bound state once and
+                // re-issue — it learns that from this structured flag.
+                let model_bound = e.is_model_bound();
                 // A context overflow is deterministic for *this* input — retrying
                 // the same payload cannot help.
                 let deterministic = e.is_deterministic() || context_overflow;
@@ -162,16 +172,21 @@ where
                         message,
                         deterministic: true,
                         context_overflow,
+                        model_bound,
                         attempts: attempt,
                     });
                 }
                 if !will_retry {
                     // Overflow implies deterministic, which returned above.
                     debug_assert!(!context_overflow);
+                    // A model-bound error is deterministic, which returned
+                    // above — a transient exhaustion is never model-bound.
+                    debug_assert!(!model_bound);
                     return Err(SampleRetryError::Failure {
                         message,
                         deterministic: false,
                         context_overflow: false,
+                        model_bound: false,
                         attempts: attempt,
                     });
                 }

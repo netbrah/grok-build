@@ -808,6 +808,11 @@ fn compaction_sample_error_to_intra(err: CompactionSampleError) -> IntraCompacti
         CompactionSampleError::Build(msg) => IntraCompactionError::SamplerBuild(msg),
         CompactionSampleError::Start(msg) => IntraCompactionError::SamplerStart(msg),
         CompactionSampleError::ContextOverflow(msg) => IntraCompactionError::ContextOverflow(msg),
+        // Deterministic (is_deterministic = true): the legacy summarizer has
+        // no model-bound strip arm, so it maps like the other deterministic
+        // sampler failures — no retry. (The grok-build host, which owns the
+        // compact retry loop, maps it to the one bounded strip + re-issue.)
+        CompactionSampleError::ModelBoundHistory(msg) => IntraCompactionError::SamplerBuild(msg),
         CompactionSampleError::EmptyResponse => IntraCompactionError::EmptyResponse,
         CompactionSampleError::Other(e) => {
             let msg = e.to_string();

@@ -861,6 +861,14 @@ impl ConversationRequest {
     pub fn strip_model_bound_state(&mut self) -> usize {
         drop_model_bound_items(&mut self.items)
     }
+
+    /// Request-level form of [`drop_orphaned_tool_results`] (XW-ORPHAN-1,
+    /// apex-ayl.74): drop dangling `ToolResult`s before the owned /responses
+    /// send entry serializes the request — the responses-wire orphan cleanup
+    /// at the send boundary (before any splice-index computation).
+    pub fn drop_orphaned_tool_results(&mut self) -> usize {
+        drop_orphaned_tool_results(&mut self.items)
+    }
 }
 
 /// Exact Responses input item that replaces the typed placeholder at
@@ -1038,16 +1046,75 @@ pub fn strip_images_by_url(items: &mut [ConversationItem], urls: &[Arc<str>]) ->
 }
 
 /// Item-level form of [`ConversationRequest::strip_model_bound_state`]: drops every
-/// model-bound item (`Reasoning` + `BackendToolCall`); returns the count dropped.
+/// model-bound item (`Reasoning` + `BackendToolCall`) and — pair-atomically (XW-ORPHAN-1,
+/// apex-ayl.74) — the `ToolResult` paired to every dropped `BackendToolCall`; returns
+/// the count dropped (calls + their orphaned results).
 /// Single source of truth for what is model-bound: the sampler's in-flight request
 /// strip and the chat-state's persisted strip (XSWITCH-1, apex-ayl.58) must never
 /// diverge. `0` on an already-stripped slice makes both call sites fail closed.
 pub fn drop_model_bound_items(items: &mut Vec<ConversationItem>) -> usize {
+    // XW-ORPHAN-1 (apex-ayl.74): the old single pass never dropped a
+    // `ToolResult`, so dropping its `BackendToolCall` orphaned the result —
+    // the orphaned `function_call_output` then rode the strip-retry wire,
+    // the exact class-(b) `Invalid 'input[N].call_id'` 400 (qwen preplan
+    // H-1) this net exists to keep off the wire. Pass 1 collects the ids of
+    // the calls being dropped (every `BackendToolCall` — none are retained);
+    // pass 2 drops the paired results with them. A `ToolResult` paired to a
+    // SURVIVING assistant tool call is kept: Assistants are never stripped,
+    // so such a result is not an orphan. Idempotent, fail-closed.
+    // Owned ids: the set must not borrow `items` (the pass-2 `retain`
+    // mutably borrows the same vec).
+    let dropped_backend_call_ids: std::collections::HashSet<String> = items
+        .iter()
+        .filter_map(|item| match item {
+            ConversationItem::BackendToolCall(call) => Some(call.id().to_owned()),
+            _ => None,
+        })
+        .collect();
+    let before = items.len();
+    items.retain(|item| match item {
+        ConversationItem::Reasoning(_) | ConversationItem::BackendToolCall(_) => false,
+        ConversationItem::ToolResult(result) => {
+            !dropped_backend_call_ids.contains(result.tool_call_id.as_str())
+        }
+        _ => true,
+    });
+    before.saturating_sub(items.len())
+}
+
+/// Send-boundary orphan cleanup (XW-ORPHAN-1, apex-ayl.74): drops every
+/// `ToolResult` whose `tool_call_id` matches no live call — the live-call
+/// set is `Assistant.tool_calls[].id` ∪ `BackendToolCallItem::id()`. A
+/// dangling `function_call_output` is exactly the predicted Azure
+/// `Invalid 'input[N].call_id'` 400 (class (b)); the responses wire has no
+/// other orphan cleanup (the messages-wire `clean_orphaned_items` does not
+/// apply here), and any future provenance partial strip can mint one.
+/// Runs at the owned /responses send entries BEFORE any splice-index
+/// computation: carrier splice indexes are derived from the TYPED item
+/// positions, so filtering inside the builder would shift them (the H-3
+/// forward hazard). Returns the count dropped; `0` on a clean request is
+/// the fail-closed no-op (byte-identical serialized input). Idempotent.
+pub fn drop_orphaned_tool_results(items: &mut Vec<ConversationItem>) -> usize {
+    // Owned ids: the set must not borrow `items` (the `retain` below
+    // mutably borrows the same vec).
+    let live_call_ids: std::collections::HashSet<String> = items
+        .iter()
+        .flat_map(|item| match item {
+            ConversationItem::Assistant(assistant) => assistant
+                .tool_calls
+                .iter()
+                .map(|call| call.id.to_string())
+                .collect::<Vec<_>>(),
+            ConversationItem::BackendToolCall(call) => vec![call.id().to_string()],
+            _ => Vec::new(),
+        })
+        .collect();
     let before = items.len();
     items.retain(|item| {
         !matches!(
             item,
-            ConversationItem::Reasoning(_) | ConversationItem::BackendToolCall(_)
+            ConversationItem::ToolResult(result)
+                if !live_call_ids.contains(result.tool_call_id.as_str())
         )
     });
     before.saturating_sub(items.len())
@@ -2811,6 +2878,198 @@ mod tests {
             drop_model_bound_items(&mut items),
             0,
             "idempotent: already-stripped history strips 0 (fail-closed, cannot loop)"
+        );
+    }
+
+    // XW-ORPHAN-1 (apex-ayl.74): pair-aware strip + send-boundary orphan
+    // cleanup. The strip today is a single-pass retain that drops
+    // `Reasoning` + `BackendToolCall` and NEVER a `ToolResult` — so dropping
+    // a `BackendToolCall` orphans its paired `ToolResult` (the H-1 hazard
+    // made concrete: the orphaned `function_call_output` rides the wire on
+    // the strip-retry, the class-(b) 400 shape). The fix lands as (1) a
+    // pair-atomic `drop_model_bound_items` (pass 1 collects the dropped
+    // backend-call ids, pass 2 also drops the paired results) and (2)
+    // `drop_orphaned_tool_results` (free fn + `ConversationRequest` method)
+    // run at the three owned /responses send entries BEFORE any splice-index
+    // computation (tdd-74 §2.3 invariant). Cases 8 and 11-half-1 fail on the
+    // pair-atomicity today; cases 10 and 11-half-2 are compile-error RED
+    // (the guard fns do not exist yet — E0425/E0599); case 9 is the
+    // GREEN over-stripping guard.
+
+    #[test]
+    fn xw_orphan_strip_cannot_orphan_tool_result() {
+        // The H-1 hazard made concrete: a `BackendToolCall` and the
+        // `ToolResult` paired to it must drop TOGETHER. Today's single pass
+        // leaves the ToolResult behind (orphan survives: len 3, not 2).
+        let web_search: rs::WebSearchToolCall = serde_json::from_value(serde_json::json!({
+            "action": {"type": "search", "query": "opaque state"},
+            "id": "fc_x",
+            "status": "completed"
+        }))
+        .expect("valid web search fixture");
+        let mut items = vec![
+            ConversationItem::user("question for source model"),
+            ConversationItem::BackendToolCall(BackendToolCallItem {
+                kind: BackendToolKind::WebSearch(web_search),
+            }),
+            ConversationItem::tool_result("fc_x", "tool output for the dropped call"),
+            ConversationItem::assistant("portable answer"),
+        ];
+        let dropped = drop_model_bound_items(&mut items);
+        assert_eq!(
+            dropped, 2,
+            "pair-atomic strip: the BackendToolCall(id=fc_x) AND its ToolResult(tool_call_id=fc_x) drop together"
+        );
+        assert_eq!(
+            items.len(),
+            2,
+            "orphan check: the ToolResult(tool_call_id=fc_x) must not survive a strip that dropped its call (H-1 hazard)"
+        );
+        assert!(
+            items.iter().all(|item| {
+                !matches!(
+                    item,
+                    ConversationItem::Reasoning(_) | ConversationItem::BackendToolCall(_)
+                )
+            }) && items
+                .iter()
+                .all(|item| !matches!(item, ConversationItem::ToolResult(t) if t.tool_call_id == "fc_x")),
+            "portable user + assistant intact and no orphaned ToolResult(tool_call_id=fc_x) remains"
+        );
+    }
+
+    #[test]
+    fn xw_orphan_strip_keeps_result_with_surviving_call() {
+        // Over-stripping guard (stays GREEN): a `ToolResult` paired to a
+        // SURVIVING assistant tool call is not orphaned — Assistants are
+        // never stripped, so the pair-atomic change must not start dropping
+        // results whose call is still in the transcript.
+        let mut items = vec![
+            ConversationItem::user("question"),
+            ConversationItem::Assistant(AssistantItem {
+                content: std::sync::Arc::<str>::from("answer with a tool call"),
+                tool_calls: vec![ToolCall {
+                    id: std::sync::Arc::<str>::from("fc_y"),
+                    name: "run_terminal_command".to_string(),
+                    arguments: std::sync::Arc::<str>::from(r#"{"command":"ls"}"#),
+                }],
+                model_id: None,
+                model_fingerprint: None,
+                reasoning_effort: None,
+            }),
+            ConversationItem::tool_result("fc_y", "file listing"),
+        ];
+        let dropped = drop_model_bound_items(&mut items);
+        assert_eq!(
+            dropped, 0,
+            "no model-bound items in this history — the strip must be a no-op (count 0)"
+        );
+        assert_eq!(items.len(), 3, "all three items survive the no-op strip");
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item, ConversationItem::ToolResult(t) if t.tool_call_id == "fc_y")),
+            "the ToolResult(tool_call_id=fc_y) paired to the surviving assistant call must be kept"
+        );
+    }
+
+    #[test]
+    fn xw_orphan_request_build_drops_dangling_tool_result() {
+        // Send-boundary orphan cleanup + wire-level assert: a
+        // `function_call_output` whose `call_id` matches no live call
+        // (assistant `tool_calls[].id` or `BackendToolCallItem::id()`) must
+        // be dropped at the owned send entry BEFORE request build, so the
+        // dangling `call_id` never rides the responses wire (the class-(b)
+        // `Invalid 'input[N].call_id'` shape). RED today: the method does
+        // not exist (E0599) and the would-be no-op lets `ghost` ride.
+        let mut request = ConversationRequest {
+            items: vec![
+                ConversationItem::user("question"),
+                ConversationItem::assistant("answer"),
+                ConversationItem::tool_result("ghost", "dangling result, no live call"),
+            ],
+            ..Default::default()
+        };
+        let dropped = request.drop_orphaned_tool_results();
+        assert_eq!(
+            dropped, 1,
+            "the dangling ToolResult(tool_call_id=ghost) must be dropped at the send boundary"
+        );
+        let typed: rs::CreateResponse = (&request).into();
+        let wire = serde_json::to_string(&typed).expect("responses request serializes");
+        assert!(
+            !wire.contains("\"call_id\":\"ghost\""),
+            "no function_call_output with call_id=ghost may ride the responses wire"
+        );
+    }
+
+    #[test]
+    fn xw_orphan_idempotence_and_fail_closed() {
+        // Idempotence + fail-closed: strip the case-8 fixture twice — the
+        // second pass drops 0; the guard on a CLEAN (all-results-paired)
+        // request is a 0-drop no-op with byte-identical serialized input.
+        // RED today: the free guard fn does not exist (E0425) and the
+        // pair-atomic first pass drops 1, not 2.
+        let web_search: rs::WebSearchToolCall = serde_json::from_value(serde_json::json!({
+            "action": {"type": "search", "query": "opaque state"},
+            "id": "fc_x",
+            "status": "completed"
+        }))
+        .expect("valid web search fixture");
+        let mut items = vec![
+            ConversationItem::user("question for source model"),
+            ConversationItem::BackendToolCall(BackendToolCallItem {
+                kind: BackendToolKind::WebSearch(web_search),
+            }),
+            ConversationItem::tool_result("fc_x", "tool output for the dropped call"),
+            ConversationItem::assistant("portable answer"),
+        ];
+        assert_eq!(
+            drop_model_bound_items(&mut items),
+            2,
+            "pair-atomic first pass drops the call AND its result"
+        );
+        assert_eq!(
+            drop_model_bound_items(&mut items),
+            0,
+            "idempotent: the second pass drops 0 (fail-closed, cannot loop)"
+        );
+        let clean_items = || {
+            vec![
+                ConversationItem::user("question"),
+                ConversationItem::Assistant(AssistantItem {
+                    content: std::sync::Arc::<str>::from("answer with a tool call"),
+                    tool_calls: vec![ToolCall {
+                        id: std::sync::Arc::<str>::from("fc_y"),
+                        name: "run_terminal_command".to_string(),
+                        arguments: std::sync::Arc::<str>::from(r#"{"command":"ls"}"#),
+                    }],
+                    model_id: None,
+                    model_fingerprint: None,
+                    reasoning_effort: None,
+                }),
+                ConversationItem::tool_result("fc_y", "file listing"),
+            ]
+        };
+        let wire_of = |items: &Vec<ConversationItem>| {
+            let request = ConversationRequest {
+                items: items.clone(),
+                ..Default::default()
+            };
+            let typed: rs::CreateResponse = (&request).into();
+            serde_json::to_string(&typed).expect("responses request serializes")
+        };
+        let before_wire = wire_of(&clean_items());
+        let mut clean = clean_items();
+        let dropped = drop_orphaned_tool_results(&mut clean);
+        assert_eq!(
+            dropped, 0,
+            "clean (all-results-paired) request: the guard drops 0 (fail-closed no-op)"
+        );
+        assert_eq!(
+            before_wire,
+            wire_of(&clean),
+            "the clean request must be byte-identical through the guard"
         );
     }
 

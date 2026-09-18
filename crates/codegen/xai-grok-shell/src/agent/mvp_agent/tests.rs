@@ -2920,6 +2920,7 @@ mod process_scope_reclaim;
 mod session_rename_tests;
 mod session_resume_close_tests;
 mod subagent_spawn_context_tests;
+mod summary_model_tests;
 /// With no load in flight and no session the wait returns immediately (the caller then surfaces "unknown session id" exactly as before).
 #[tokio::test]
 async fn wait_for_in_flight_load_returns_immediately_when_idle() {

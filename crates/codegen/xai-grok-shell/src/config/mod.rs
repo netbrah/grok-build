@@ -505,7 +505,7 @@ fn non_empty_model_override(value: Option<&str>) -> Option<String> {
     })
 }
 impl ModelOverrideConfig {
-    /// CLI flag > env var > config.toml > remote settings > compiled default. `image_description` and `session_summary` always resolve to `Some(_)` (default `grok-4.6`), never the session model.
+    /// CLI flag > env var > config.toml > remote settings > compiled default. `session_summary` resolves to None when unset (build_summary_client falls back to the session model); `image_description` unchanged (always Some, compiled default).
     /// `prompt_suggestion` resolves to a [`PromptSuggestModelPin`] instead of a model string. It has no CLI flag; the default and the catalog guard live at the consumer, `handle_suggest_prompt`.
     pub(crate) fn resolve(
         cli_web_search_model: Option<&str>,
@@ -574,10 +574,6 @@ impl ModelOverrideConfig {
         }
         if let Some(v) = cli_session_summary_model {
             result.session_summary = non_empty_model_override(Some(v));
-        }
-        if result.session_summary.is_none() {
-            result.session_summary =
-                Some(crate::models::default_session_summary_model().to_owned());
         }
         if result.image_description.is_none() {
             result.image_description =

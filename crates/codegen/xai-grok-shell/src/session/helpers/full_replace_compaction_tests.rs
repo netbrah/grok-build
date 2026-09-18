@@ -18,6 +18,18 @@ fn compact_failure_maps_onto_engine_error_classes() {
         compact_failure_to_sample_error(CompactFailure::Deterministic(err("compact failed: 400")));
     assert!(matches!(&mapped, CompactionSampleError::Build(_)));
 
+    // COMPACT-BOUNDARM-1 (apex-ayl.82): ModelBound → the structured
+    // ModelBoundHistory variant — deterministic (the engine short-circuits
+    // the same-payload retry) AND flagged model-bound (the host's compact
+    // loop arms the one bounded strip + re-issue on the flag, not on text).
+    let mapped = compact_failure_to_sample_error(CompactFailure::ModelBound(err(
+        "compact failed: API error (status 400 Bad Request): Could not decrypt the provided encrypted_content.",
+    )));
+    assert!(matches!(&mapped, CompactionSampleError::ModelBoundHistory(m)
+        if m.contains("encrypted_content")));
+    assert!(mapped.is_deterministic());
+    assert!(mapped.is_model_bound());
+
     let mapped =
         compact_failure_to_sample_error(CompactFailure::Transient(err("compact failed: blip")));
     assert!(matches!(&mapped, CompactionSampleError::Other(_)));

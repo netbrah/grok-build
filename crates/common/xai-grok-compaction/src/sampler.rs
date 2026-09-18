@@ -57,6 +57,15 @@ pub enum CompactionSampleError {
     /// payload limit). Deterministic; hosts with an input ladder step down
     /// instead of retrying.
     ContextOverflow(String),
+    /// A model-bound history rejection (COMPACT-BOUNDARM-1, apex-ayl.82): the
+    /// upstream 400/401 keys on provider-boundary state carried in the
+    /// request (encrypted continuation content, a strict-schema item shape,
+    /// an unsupported input item type such as the compact path's
+    /// `compaction_trigger`). Deterministic for the *same* payload —
+    /// re-sending cannot fix it — but the product host can strip the
+    /// model-bound state once and re-issue; this variant is how the host
+    /// learns to arm that one bounded strip instead of suppressing.
+    ModelBoundHistory(String),
     /// Anything else — classified by string matching for backward
     /// compatibility with samplers that pre-date the structured variants.
     Other(anyhow::Error),
@@ -88,6 +97,9 @@ impl std::fmt::Display for CompactionSampleError {
             }
             // Verbatim: callers surface this to users and telemetry.
             Self::ContextOverflow(msg) => write!(f, "{msg}"),
+            // Verbatim: the host already stamps its compact-failure prefix;
+            // callers surface this to users and telemetry.
+            Self::ModelBoundHistory(msg) => write!(f, "{msg}"),
             Self::Other(e) => write!(f, "{}", e),
         }
     }
@@ -105,7 +117,7 @@ impl CompactionSampleError {
     pub fn is_deterministic(&self) -> bool {
         match self {
             Self::Timeout { .. } | Self::EmptyResponse => false,
-            Self::Build(_) | Self::Start(_) | Self::ContextOverflow(_) => true,
+            Self::Build(_) | Self::Start(_) | Self::ContextOverflow(_) | Self::ModelBoundHistory(_) => true,
             Self::Other(err) => {
                 let msg = err.to_string();
                 msg.contains("Failed to build AgenticScheduler")
@@ -117,6 +129,16 @@ impl CompactionSampleError {
     /// Structurally-detected size overflow — the input-ladder step-down signal.
     pub fn is_context_overflow(&self) -> bool {
         matches!(self, Self::ContextOverflow(_))
+    }
+
+    /// COMPACT-BOUNDARM-1 (apex-ayl.82): whether this error is a model-bound
+    /// history rejection — the signal the product host's compact retry loop
+    /// uses to strip the model-bound state ONCE (pair-atomic) and re-issue,
+    /// instead of treating it as an ordinary deterministic failure. A second
+    /// model-bound failure after the strip reports-and-stops: the loop never
+    /// replays a byte-identical failing request.
+    pub fn is_model_bound(&self) -> bool {
+        matches!(self, Self::ModelBoundHistory(_))
     }
 }
 

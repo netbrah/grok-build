@@ -166,6 +166,13 @@ fn compact_failure_to_sample_error(failure: CompactFailure) -> CompactionSampleE
         CompactFailure::Overflow(err) => {
             CompactionSampleError::ContextOverflow(acp_error_message(&err))
         }
+        CompactFailure::ModelBound(err) => {
+            // COMPACT-BOUNDARM-1 (apex-ayl.82): structured model-bound signal —
+            // deterministic (the engine short-circuits the same-payload retry)
+            // but carrying the flag the host's compact loop uses to strip the
+            // model-bound state once and re-issue this pass.
+            CompactionSampleError::ModelBoundHistory(acp_error_message(&err))
+        }
         CompactFailure::Deterministic(err) => CompactionSampleError::Build(acp_error_message(&err)),
         CompactFailure::Transient(err) => {
             CompactionSampleError::Other(anyhow::anyhow!(acp_error_message(&err)))

@@ -1857,4 +1857,108 @@ mod presence_goldens {
             "46c truth: 6 × ABSENT (46a request-side, unchanged)"
         );
     }
+
+    // ------------------------------------------------------------------
+    // 56a (CITATIONS-1) RECORDED-ABSENT source gate: the output
+    // `TextBlock.citations` wire surface (frozen spec r23 L106 row Q5) is
+    // recorded ABSENT at base b745593 (registry entry CITATIONS-1,
+    // grok/plans/citations/citations-registry.md). Fails if 56b or any
+    // refactor adds the surface without flipping the registry entry
+    // `modeled_by` in the same commit (46-series truth-table discipline).
+    // ------------------------------------------------------------------
+
+    /// Brace-delimited body starting at the last `{` of `marker` — the
+    /// `struct_body` idiom generalized to enum/variant bodies (the 46c
+    /// machinery only reaches `pub struct`; 56a T4 source gate).
+    fn brace_body_after<'a>(src: &'a str, marker: &str) -> Option<&'a str> {
+        let start = src.find(marker)?;
+        let rest = &src[start + marker.len() - 1..];
+        let mut depth = 0i32;
+        for (idx, byte) in rest.bytes().enumerate() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&rest[..=idx]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn citations_surface_recorded_absent_pins_56() {
+        let src = include_str!("messages.rs");
+
+        // (i) `ContentBlock::Text` body = { text, cache_control } only:
+        // no `citations` member (46c R18 / ledger 13:48Z OQ-4).
+        let enum_body = brace_body_after(src, "pub enum ContentBlock {")
+            .expect("RECORDED-ABSENT pin: ContentBlock enum must be brace-delimited");
+        let text_body = brace_body_after(enum_body, "    Text {")
+            .expect("RECORDED-ABSENT pin: ContentBlock::Text variant must be brace-delimited");
+        assert!(
+            !text_body
+                .lines()
+                .any(|line| line.trim_start().starts_with("citations:")),
+            "RECORDED-ABSENT (56a): ContentBlock::Text must not gain a `citations` member \
+             until registry entry CITATIONS-1 flips modeled_by in the same commit (56b)"
+        );
+
+        // (ii) `KNOWN_DELTA_SUBTYPES` = exactly the 4 quoted literals;
+        // no `citation_delta` row (the R1 forward-compat table is 56b's to change).
+        let known_marker = "const KNOWN_DELTA_SUBTYPES: &[&str] = &[";
+        let known_start = src
+            .find(known_marker)
+            .expect("RECORDED-ABSENT pin: KNOWN_DELTA_SUBTYPES must exist");
+        let known_rest = &src[known_start + known_marker.len()..];
+        let known_body = &known_rest[..known_rest
+            .find("];")
+            .expect("RECORDED-ABSENT pin: array must be closed")];
+        let entries: Vec<&str> = known_body
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        assert_eq!(
+            entries,
+            [
+                "\"text_delta\",",
+                "\"input_json_delta\",",
+                "\"thinking_delta\",",
+                "\"signature_delta\",",
+            ],
+            "RECORDED-ABSENT (56a): KNOWN_DELTA_SUBTYPES must stay exactly the 4 quoted \
+             literals (no `citation_delta`) until registry entry CITATIONS-1 flips \
+             modeled_by in the same commit (56b)"
+        );
+
+        // (iii) No `TextCitation` type anywhere in the wire module.
+        assert!(
+            !src.contains("TextCitation"),
+            "RECORDED-ABSENT (56a): `TextCitation` must not appear in messages.rs until \
+             registry entry CITATIONS-1 flips modeled_by in the same commit (56b)"
+        );
+
+        // (iv) `StreamDelta` = exactly 4 tagged variants; no citation variant.
+        let sd_body = brace_body_after(src, "pub enum StreamDelta {")
+            .expect("RECORDED-ABSENT pin: StreamDelta enum must be brace-delimited");
+        let variant_count = sd_body
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                trimmed.chars().next().is_some_and(|c: char| c.is_ascii_uppercase())
+                    && trimmed.contains(" { ")
+                    && trimmed.ends_with("},")
+            })
+            .count();
+        assert_eq!(
+            variant_count, 4,
+            "RECORDED-ABSENT (56a): StreamDelta must stay exactly 4 variants (no citation \
+             variant) until registry entry CITATIONS-1 flips modeled_by in the same \
+             commit (56b)"
+        );
+    }
 }

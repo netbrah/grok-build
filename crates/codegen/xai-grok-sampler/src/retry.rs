@@ -547,6 +547,44 @@ mod tests {
         ));
     }
 
+    // XW-ORPHAN-1 (apex-ayl.74): the BRICK path itself, flipped. Both
+    // phrasings hit NO classifier family today — class (a) vLLM pydantic
+    // dotted-id (LIVE, verbatim fragment sha256:1f591ef070d9) and class (b)
+    // Azure `.call_id` orphan (PREDICTION, qwen preplan H-1) — so
+    // `classify_error` falls through to the Fatal tail (:186): terminal on a
+    // 400 (`is_retryable_api_status` excludes 400), every later prompt
+    // re-sends the same history and 400s again — BRICK until compaction
+    // rewrites it. The .74 fix lands the two additive arms (tdd-74 §2.1) in
+    // `is_model_bound_history_error`; this pin asserts the decision flip.
+    // Messages run through the exact user-facing pipeline (structured
+    // unwrap + 280 cap) the classifier sees. Fixture provenance:
+    // xai-grok-sampling-types/testdata/xw_orphan/PROVENANCE.md.
+    const XW_ORPHAN_VLLM_PYDANTIC_400_BODY: &str = include_str!(
+        "../../xai-grok-sampling-types/testdata/xw_orphan/vllm_pydantic_400_body.json"
+    );
+    const XW_ORPHAN_AZURE_CALLID_400_BODY: &str = include_str!(
+        "../../xai-grok-sampling-types/testdata/xw_orphan/azure_callid_orphan_400_body.json"
+    );
+
+    #[test]
+    fn xw_orphan_unclassified_400s_now_strip_not_fatal() {
+        for (label, body) in [
+            ("class-(a) vLLM pydantic dotted-id", XW_ORPHAN_VLLM_PYDANTIC_400_BODY),
+            ("class-(b) Azure `.call_id` orphan", XW_ORPHAN_AZURE_CALLID_400_BODY),
+        ] {
+            let message = xai_grok_sampling_types::user_facing_api_error_message(
+                StatusCode::BAD_REQUEST,
+                body.as_bytes(),
+            );
+            let err = api_err(StatusCode::BAD_REQUEST, &message);
+            let decision = classify_error(&err, 0, 5, RATE_LIMIT_RETRY_THRESHOLD);
+            assert!(
+                matches!(decision, RetryDecision::RetryWithModelBoundStateStrip),
+                "{label}: the unclassified-400 BRICK path (Fatal tail, retry.rs:186) must flip to the model-bound strip; decision: {decision:?}"
+            );
+        }
+    }
+
     #[test]
     fn classify_payload_too_large_strips_images() {
         let err = api_err(StatusCode::PAYLOAD_TOO_LARGE, "too big");

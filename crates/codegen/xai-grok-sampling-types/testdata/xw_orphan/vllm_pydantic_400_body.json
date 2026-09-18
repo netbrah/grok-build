@@ -1,0 +1,8 @@
+{
+  "error": {
+    "message": "litellm.BadRequestError: OpenAIException -\n{\"error\":{\"message\":\"39 validation errors for ChatCompletionRequest\nmessages.8.ChatCompletionMessageGenericParam.content.str\n  Input should be a valid string [type=string_type, input_value=[{...",
+    "type": null,
+    "param": null,
+    "code": "400"
+  }
+}

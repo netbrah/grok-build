@@ -1889,3 +1889,86 @@ async fn get_transcript_path_returns_some_when_file_exists() {
         })
         .await;
 }
+
+/// .82 (redcycle fold of the .74 RED-only cycle): a model-bound 400 on the
+/// compact path must arm the model-bound strip + a stripped retry — not fail
+/// closed with the model-bound state still in the request. Today (GAP, glm
+/// preplan I-A "wall, not bridge"): the compact error path has zero
+/// `RetryWithModelBoundStateStrip` arms — re-derived at 40ffad1: `run_compact_only`
+/// error arm compaction.rs:2686-2710 (notification + `Err(e)`, no classify),
+/// the Codex v2 loop compaction.rs:993-1104 (auth-refresh + `is_retryable`
+/// arms only), and the local path's `classify_sampling_error`
+/// (session_compact.rs:125) maps a 400 to `CompactFailure::Deterministic`
+/// ("re-sending cannot fix it") — so the loop bails after ONE unstripped
+/// attempt and `run_compact_only` returns Err. The TRIGGER wall
+/// (acp_session_impl/model_switch.rs:148-163) then logs "switching anyway"
+/// and the next post-switch turn re-sends the same model-bound history
+/// (COMP-3 retry-storm class, ledger L350-355). The same 400 on the ordinary
+/// turn path routes to the reactive strip (sampler retry.rs:121-122) — the
+/// asymmetry this pin captures.
+#[tokio::test(flavor = "current_thread")]
+async fn xw_orphan_compact_model_bound_400_arms_strip_retry() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+            let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel();
+            let actor =
+                Arc::new(create_test_actor(180_000, 200_000, 85, gateway_tx, persistence_tx).await);
+            // F1-family phrasing: classified model-bound by
+            // `is_model_bound_history_error` (the ordinary turn path routes
+            // it to RetryWithModelBoundStateStrip, sampler retry.rs:121-122).
+            let (base_url, requests) = spawn_capturing_status_body_server(
+                400,
+                r#"{"error":{"type":"invalid_request_error","message":"Could not decrypt the provided encrypted_content"}}"#,
+            )
+            .await;
+            let mut cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            cfg.base_url = base_url;
+            actor.chat_state_handle.update_sampling_config(cfg);
+            actor.chat_state_handle.replace_conversation(vec![
+                ConversationItem::system("sys"),
+                ConversationItem::user("hello"),
+                ConversationItem::Reasoning(xai_grok_sampling_types::rs::ReasoningItem {
+                    id: "tco_xw_orphan_0".to_string(),
+                    summary: vec![xai_grok_sampling_types::rs::SummaryPart::SummaryText(
+                        xai_grok_sampling_types::rs::SummaryTextContent {
+                            text: "xw_orphan_model_bound_reasoning".to_string(),
+                        },
+                    )],
+                    content: None,
+                    encrypted_content: Some("encitem_xw_orphan".to_string()),
+                    status: None,
+                }),
+                ConversationItem::assistant("done"),
+                ConversationItem::user("compact me"),
+            ]);
+            actor.chat_state_handle.record_token_usage(180_000);
+            let result = actor
+                .run_compact_only(
+                    AutoCompactTriggerInfo {
+                        tokens_used: 180_000,
+                        context_window: 200_000,
+                        percentage: 90,
+                    },
+                    false,
+                )
+                .await;
+            assert!(
+                result.is_err(),
+                "the deterministic model-bound 400 still fails the compact (the mock never recovers)"
+            );
+            let bodies = requests.lock().unwrap().clone();
+            assert!(
+                bodies.len() >= 2,
+                ".82 GAP (I-A: wall, not bridge): the model-bound 400 must arm the model-bound strip + a stripped retry on the compact path; attempts today: {}",
+                bodies.len()
+            );
+            let last = bodies.last().expect("at least two attempts");
+            assert!(
+                !last.contains("xw_orphan_model_bound_reasoning"),
+                "the retry after the model-bound strip must not carry the model-bound reasoning; the last attempt still did"
+            );
+        })
+        .await;
+}

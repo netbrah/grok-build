@@ -336,8 +336,8 @@ fn new_from_toml_cfg_restores_web_search_and_session_summary_models() {
     );
     assert_eq!(
         cfg.session_summary_model,
-        Some(crate::models::default_session_summary_model().to_owned()),
-        "empty config should produce compiled default session_summary model"
+        None,
+        "unset session_summary stays None; build_summary_client falls back to the session model"
     );
     assert_eq!(
         cfg.image_description_model,
@@ -6997,7 +6997,7 @@ fn resolve_runtime_fields_interactive_defaults() {
     );
     assert_eq!(
         cfg.session_summary_model,
-        Some(crate::models::default_session_summary_model().to_owned())
+        None
     );
     assert!(!cfg.path_not_found_hints);
 }

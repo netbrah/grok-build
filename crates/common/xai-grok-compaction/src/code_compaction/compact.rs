@@ -69,6 +69,13 @@ pub enum FullReplaceError {
         /// uses this to step its input ladder (rebuild a smaller input and
         /// call this pass again) instead of suppressing.
         context_overflow: bool,
+        /// Whether the failure was a model-bound history rejection
+        /// (COMPACT-BOUNDARM-1, apex-ayl.82). The product host uses this to
+        /// strip the model-bound state once (pair-atomic) and call this pass
+        /// again with the stripped input, instead of suppressing. Always
+        /// deterministic: a second model-bound failure reports-and-stops —
+        /// the loop never replays a byte-identical failing request.
+        model_bound: bool,
     },
 }
 
@@ -224,6 +231,7 @@ where
             message,
             deterministic,
             context_overflow,
+            model_bound,
             attempts,
         }) => {
             observer.on_error(attempts);
@@ -231,6 +239,7 @@ where
                 message,
                 deterministic,
                 context_overflow,
+                model_bound,
             })
         }
     }

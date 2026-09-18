@@ -612,9 +612,10 @@ async fn stalled_compaction_stream_times_out_as_transient() {
         Err(
             CompactFailure::Deterministic(_)
             | CompactFailure::Overflow(_)
-            | CompactFailure::Cancelled,
+            | CompactFailure::Cancelled
+            | CompactFailure::ModelBound(_),
         ) => {
-            panic!("a stalled stream must be retryable (Transient), not Deterministic/Cancelled")
+            panic!("a stalled stream must be retryable (Transient), not Deterministic/Cancelled/ModelBound")
         }
         Ok(_) => panic!("a stalled stream must not produce a summary"),
     }
@@ -698,9 +699,10 @@ async fn completed_then_stalled_stream_errors_no_salvage() {
         Err(
             CompactFailure::Deterministic(_)
             | CompactFailure::Overflow(_)
-            | CompactFailure::Cancelled,
+            | CompactFailure::Cancelled
+            | CompactFailure::ModelBound(_),
         ) => {
-            panic!("a stalled stream must be retryable (Transient), not Deterministic")
+            panic!("a stalled stream must be retryable (Transient), not Deterministic/ModelBound")
         }
         Ok(_) => panic!(
             "salvage removed: a completed-but-unterminated stream must error, not return a summary"
@@ -786,9 +788,10 @@ async fn substantial_partial_errors_no_salvage() {
         Err(
             CompactFailure::Deterministic(_)
             | CompactFailure::Overflow(_)
-            | CompactFailure::Cancelled,
+            | CompactFailure::Cancelled
+            | CompactFailure::ModelBound(_),
         ) => {
-            panic!("a stalled stream must be retryable (Transient), not Deterministic")
+            panic!("a stalled stream must be retryable (Transient), not Deterministic/ModelBound")
         }
         Ok(_) => panic!("salvage removed: a substantial partial must error, not be returned"),
     }

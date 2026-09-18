@@ -1771,7 +1771,7 @@ fn model_overrides_default_session_summary_is_grok_build() {
             let cfg = ModelOverrideConfig::resolve(None, None, &empty, None);
             assert_eq!(
                 cfg.session_summary,
-                Some(crate::models::default_session_summary_model().to_owned())
+                None
             );
         },
     );
@@ -1852,7 +1852,7 @@ fn model_overrides_empty_session_summary_toml_uses_default() {
             let cfg = ModelOverrideConfig::resolve(None, None, &config, None);
             assert_eq!(
                 cfg.session_summary,
-                Some(crate::models::default_session_summary_model().to_owned())
+                None
             );
         },
     );
@@ -1872,7 +1872,7 @@ fn model_overrides_empty_session_summary_remote_uses_default() {
             let cfg = ModelOverrideConfig::resolve(None, None, &empty, Some(&remote));
             assert_eq!(
                 cfg.session_summary,
-                Some(crate::models::default_session_summary_model().to_owned())
+                None
             );
         },
     );
@@ -1916,7 +1916,7 @@ fn model_overrides_empty_cli_session_summary_uses_default() {
             let cfg = ModelOverrideConfig::resolve(None, Some(""), &empty, None);
             assert_eq!(
                 cfg.session_summary,
-                Some(crate::models::default_session_summary_model().to_owned())
+                None
             );
         },
     );

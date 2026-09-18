@@ -1,8 +1,8 @@
 //! Session title generation via LLM tool call.
 
 use crate::sampling::{
-    Client as OaiCompatClient, ConversationItem, ConversationRequest, ConversationToolChoice,
-    ToolSpec,
+    ApiBackend, Client as OaiCompatClient, ConversationItem, ConversationRequest,
+    ConversationToolChoice, ToolSpec,
 };
 use crate::session::helpers::chat::floor_char_boundary;
 
@@ -123,14 +123,21 @@ pub(crate) fn title_fallback_from_user_text(user_message: &str) -> String {
     }
 }
 
-/// Generate the initial session title from the first user message, for the fast first-prompt path ([`crate::session::summary::SummaryGenerator`]).
-/// The title is later refreshed from the whole conversation at the early checkpoints in [`TITLE_REFRESH_TURNS`], then frozen.
-pub async fn generate_session_summary(
-    user_message: String,
-    client: OaiCompatClient,
+/// Build the first-prompt session-title request: one forced `session_title` tool call over the
+/// stripped user query, capped at 100 output tokens.
+/// Extracted from [`generate_session_summary`] (behavior-identical move, TDD-81 RED seam) so the
+/// side-call request can be asserted per backend; `backend` is the wire the request will ride.
+pub(crate) fn build_title_request(
+    user_message: &str,
     model: &str,
-) -> String {
-    let clean_message = title_source_text(&user_message);
+    backend: ApiBackend,
+) -> ConversationRequest {
+    let clean_message = title_source_text(user_message);
+    let tool_choice = if backend == ApiBackend::Responses {
+        ConversationToolChoice::Required
+    } else {
+        ConversationToolChoice::Function("session_title".to_owned())
+    };
     let request = ConversationRequest::from_items(vec![
         ConversationItem::system(
             r#"You are tasked with generating the session title. The user is asking almost always software engineering related questions on their codebase.
@@ -167,7 +174,19 @@ Just generate the session_title and nothing else"#,
     }])
     .with_max_output_tokens(100)
     .with_temperature(1.0)
-    .with_tool_choice(ConversationToolChoice::Function("session_title".to_owned()));
+    .with_tool_choice(tool_choice);
+    request
+}
+
+/// Generate the initial session title from the first user message, for the fast first-prompt path ([`crate::session::summary::SummaryGenerator`]).
+/// The title is later refreshed from the whole conversation at the early checkpoints in [`TITLE_REFRESH_TURNS`], then frozen.
+pub async fn generate_session_summary(
+    user_message: String,
+    client: OaiCompatClient,
+    model: &str,
+) -> String {
+    let clean_message = title_source_text(&user_message);
+    let request = build_title_request(&user_message, model, client.api_backend());
 
     match client.conversation_collect(request).await {
         Ok(response) => {
@@ -396,5 +415,78 @@ mod tests {
             title_fallback_from_user_text("fix the auth bug in login.rs"),
             "fix the auth bug in login.rs",
         );
+    }
+
+    /// RED-1 (TDD-81, defect 1): on the /responses wire the title side-call must not carry the
+    /// chat-completions-style forced-function `tool_choice` — the current litellm responses handler
+    /// rejects `{"type":"function","name":...}` with a 500. With exactly one declared tool, the
+    /// `required` mode is the wire-equivalent forced choice (parse path unchanged).
+    #[test]
+    fn title_request_responses_wire_tool_choice_is_not_chat_style_function() {
+        use super::build_title_request;
+        use crate::sampling::rs;
+        use crate::sampling::ApiBackend;
+
+        let req = build_title_request("build a mario game", "test-model", ApiBackend::Responses);
+        let wire = rs::CreateResponse::from(&req);
+        assert!(
+            !matches!(wire.tool_choice, Some(rs::ToolChoiceParam::Function(_))),
+            "responses wire must not carry the chat-style forced-function tool_choice; got {:?}",
+            wire.tool_choice
+        );
+    }
+
+    /// Positive control: the chat-completions and messages wires keep the forced-function choice.
+    /// Guards against over-suppression of `Function` when the responses arm is fixed.
+    #[test]
+    fn title_request_chat_and_messages_wires_keep_forced_function() {
+        use super::build_title_request;
+        use crate::sampling::build_messages_request;
+        use crate::sampling::{ApiBackend, ChatCompletionRequest, ToolChoice};
+        use xai_grok_sampling_types::messages::ToolChoiceParam;
+
+        let chat_wire = ChatCompletionRequest::from(build_title_request(
+            "build a mario game",
+            "test-model",
+            ApiBackend::ChatCompletions,
+        ));
+        assert!(
+            match &chat_wire.tool_choice {
+                Some(ToolChoice::Function { function, .. }) => function.name == "session_title",
+                _ => false,
+            },
+            "chat-completions wire must keep the forced-function tool_choice; got {:?}",
+            chat_wire.tool_choice
+        );
+
+        let messages_wire = build_messages_request(&build_title_request(
+            "build a mario game",
+            "test-model",
+            ApiBackend::Messages,
+        ));
+        assert!(
+            match messages_wire.tool_choice() {
+                Some(ToolChoiceParam::Tool { name }) => name == "session_title",
+                _ => false,
+            },
+            "messages wire must keep the forced tool tool_choice; got {:?}",
+            messages_wire.tool_choice()
+        );
+    }
+
+    /// Parse-contract guard: exactly one `session_title` tool and the 100-token output cap the
+    /// `generate_session_summary` parse path relies on.
+    #[test]
+    fn title_request_keeps_single_session_title_tool() {
+        use super::build_title_request;
+        use crate::sampling::ApiBackend;
+
+        let req = build_title_request("build a mario game", "test-model", ApiBackend::Responses);
+        assert_eq!(req.tools.len(), 1, "exactly one tool must be declared");
+        assert_eq!(
+            req.tools.first().map(|t| t.name.as_str()),
+            Some("session_title")
+        );
+        assert_eq!(req.max_output_tokens, Some(100));
     }
 }

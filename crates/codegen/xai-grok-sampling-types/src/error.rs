@@ -427,6 +427,37 @@ impl SamplingError {
     ///    never widens the class — key-refresh flows keep the auth-gate
     ///    terminal path.
     ///
+    /// 7. (XW-ORPHAN-1 class (b), apex-ayl.74; PREDICTION — qwen preplan
+    ///    H-1, no live capture) the Azure `.call_id` orphan rejection: a
+    ///    dangling `function_call_output` whose call id is not in the input
+    ///    (`Invalid 'input[N].call_id': ...`). Family 3 needs all of
+    ///    `input[` + `.id` + `invalid`, but `.call_id` does not contain the
+    ///    substring `.id` (the char before `id` is `_`), so F3 misses; this
+    ///    arm is the 3-key F3 mirror (`input[` + `.call_id` + `invalid`).
+    ///    All three needles sit in the first ~35 chars — trivially cap-safe.
+    ///
+    /// 8. (XW-ORPHAN-1 class (a), apex-ayl.74; LIVE — glm cell 2026-09-17,
+    ///    verbatim fragment sha256:1f591ef070d9) the vLLM pydantic dotted-id
+    ///    validation rendering (litellm Responses→ChatCompletions shim):
+    ///    `N validation errors for ChatCompletionRequest` with dotted
+    ///    `messages.N...` locs — no brackets, no "invalid", so F3/F4/F5 all
+    ///    miss. Double-keyed per the F1-503 discipline (`validation error`
+    ///    + `messages.`|`input.`) so `validation error` alone (a generic
+    ///    phrasing) or `messages.` alone (a field mention) never classifies.
+    ///    `validation error` @~65 / `messages.` @~105 of the litellm-prefixed
+    ///    view — both inside the 280 cap (pin asserts the capped shape).
+    ///
+    /// 9. (COMPACT-BOUNDARM-1, apex-ayl.82; LIVE — incident 01a09be2
+    ///    lineage, the compact-400 storm) the proxy's rejection of the
+    ///    remote-compaction-v2 request's trailing `compaction_trigger` input
+    ///    item: `Unsupported Responses API input item type:
+    ///    "compaction_trigger"`. Double-keyed (`unsupported` +
+    ///    `compaction_trigger`) so ordinary compaction chatter in error text
+    ///    never classifies; both needles are inside the first ~66 chars —
+    ///    cap-safe. The v2 retry path additionally consults
+    ///    [`Self::is_compaction_trigger_item_rejection`] to re-issue WITHOUT
+    ///    the trigger item.
+    ///
     /// Pipeline note (CROSSWIRE-1 GREEN-run defect): the classifier sees the
     /// message built by [`user_facing_api_error_message`], which caps the text
     /// at [`MAX_USER_ERROR_BODY_CHARS`] (280). On the live wire shape that cut
@@ -500,15 +531,61 @@ impl SamplingError {
         // rejection. See the pipeline note on `is_model_bound_history_error`:
         // match the surviving Azure message text, with the wire code as an OR
         // for shapes where it survives the 280-char cap.
+        // XW-ORPHAN-1 (apex-ayl.74): the F5 extension — the dotted rendering
+        // (`input.N.content: array too long ...`) misses the bracketed key;
+        // `input[` | `input.` keeps the bracketed live-wire pin (regression
+        // pinned) and adds the dotted shape. `input.` is a dotted loc, not a
+        // generic word — combined with the array-too-long key it stays narrow.
         let azure_content_rejection =
-            normalized.contains("input[")
+            (normalized.contains("input[") || normalized.contains("input."))
                 && (normalized.contains("array too long")
                     || normalized.contains("array_above_max_length"));
+        // Family 7 (XW-ORPHAN-1 class (b), apex-ayl.74; PREDICTION — qwen
+        // preplan H-1): the Azure `.call_id` orphan. 3-key mirror of F3:
+        // `.call_id` does not contain `.id`, so F3 can never key this shape.
+        let input_callid_invalid = normalized
+            .contains("input[")
+            && normalized.contains(".call_id")
+            && normalized.contains("invalid");
+        // Family 8 (XW-ORPHAN-1 class (a), apex-ayl.74; LIVE — glm cell
+        // 2026-09-17, fragment sha256:1f591ef070d9): the vLLM pydantic
+        // dotted-id validation rendering. Double-keyed (F1-503 discipline):
+        // `validation error` alone is a generic phrasing, `messages.` alone
+        // is a field mention — both together are the shim's dotted shape.
+        let pydantic_dotted = normalized.contains("validation error")
+            && (normalized.contains("messages.") || normalized.contains("input."));
+        // Family 9 (COMPACT-BOUNDARM-1, apex-ayl.82; LIVE — incident
+        // 01a09be2 lineage): the proxy rejects the compact path's trailing
+        // `compaction_trigger` input item. Double-keyed so ordinary
+        // compaction chatter in error text never classifies model-bound.
+        let compaction_trigger_rejection =
+            normalized.contains("unsupported") && normalized.contains("compaction_trigger");
         encrypted
             || thinking_signature
             || input_id_invalid
             || item_id_missing
             || azure_content_rejection
+            || input_callid_invalid
+            || pydantic_dotted
+            || compaction_trigger_rejection
+    }
+
+    /// COMPACT-BOUNDARM-1 (apex-ayl.82): whether this error is the proxy's
+    /// rejection of the `compaction_trigger` input item ITSELF (Family 9) —
+    /// as opposed to a model-bound rejection of carried history state. The
+    /// remote-compaction-v2 retry path uses this to re-issue the request
+    /// WITHOUT the trailing trigger item (the item is the offending shape;
+    /// the model history may be fully portable), while any other model-bound
+    /// 400 keeps the trigger (the Codex-native protocol requires it).
+    pub fn is_compaction_trigger_item_rejection(&self) -> bool {
+        let SamplingError::Api { status, message, .. } = self else {
+            return false;
+        };
+        if *status != StatusCode::BAD_REQUEST {
+            return false;
+        }
+        let normalized = message.to_ascii_lowercase();
+        normalized.contains("unsupported") && normalized.contains("compaction_trigger")
     }
 
     /// The server rejected the request because an image could not be processed. [`INVALID_IMAGE_ERROR_CODE`] is the signal.
@@ -2147,6 +2224,157 @@ mod tests {
             ruling.contains("NOT approved"),
             "the field-only variant must stay unpinned (OQ-1b owed)"
         );
+    }
+
+    // XW-ORPHAN-1 (apex-ayl.74): the uncaught-400 BRICK gap. Two phrasings
+    // match NO classifier family today — class (a) vLLM pydantic dotted-id
+    // (LIVE, glm preplan §VI.3, verbatim fragment sha256:1f591ef070d9) and
+    // class (b) Azure `.call_id` orphan (PREDICTION, qwen preplan H-1) — so
+    // `classify_error` falls through to the Fatal tail
+    // (sampler `retry.rs:186`): terminal on a 400 (`is_retryable_api_status`
+    // excludes 400), BRICKed until compaction rewrites the history. The fix
+    // lands as additive arms in the 400-gated region — arm A (F3-mirror,
+    // `input[` + `.call_id` + `invalid`) and arm B (F1-503 double-key
+    // discipline, `validation error` + `messages.`|`input.`) plus the F5
+    // dotted extension (`input.`) — as Family 7/8 after .75's committed
+    // Family 6 (renumber check, tdd-74 §2.5). These pins stay RED until then;
+    // pins 4 and 6 are the GREEN guards (regression + over-fire).
+    // Fixture provenance: `testdata/xw_orphan/PROVENANCE.md`.
+    const XW_ORPHAN_VLLM_PYDANTIC_400_BODY: &str =
+        include_str!("../testdata/xw_orphan/vllm_pydantic_400_body.json");
+    const XW_ORPHAN_AZURE_CALLID_400_BODY: &str =
+        include_str!("../testdata/xw_orphan/azure_callid_orphan_400_body.json");
+    // Synthetic dotted rendering (tdd-74 §3 case 3; sha256:8232e1526b1d,
+    // recomputed first-hand at dispatch).
+    const XW_ORPHAN_DOTTED_ARRAY_TOO_LONG: &str =
+        "input.7.content: array too long. Expected an array with maximum length 0, but got an array with length 1";
+
+    /// The exact pipeline the classifier sees: `user_facing_api_error_message`
+    /// (structured-envelope unwrap + 280-cap) over the raw body bytes.
+    fn xw_orphan_api_err(status: StatusCode, body: &str) -> (SamplingError, String) {
+        let message = user_facing_api_error_message(status, body.as_bytes());
+        (
+            SamplingError::Api {
+                status,
+                message: message.clone(),
+                model_metadata: None,
+                retry_after_secs: None,
+                should_retry: None,
+                error_code: parse_error_code(body.as_bytes()),
+            },
+            message,
+        )
+    }
+
+    #[test]
+    fn xw_orphan_vllm_pydantic_400_is_model_bound() {
+        // Class (a), LIVE: vLLM pydantic dotted-id (litellm
+        // Responses→ChatCompletions shim, glm-5.2 group, incident 01a0b07a).
+        // Needle walk on the classifier view (lowercased 237-char fragment,
+        // under the 280 cap, verbatim): F1 `encrypted*` ✗ · F2
+        // `thinking`+`signature` ✗ · F3 `input[` ✗ (`input_value=` has no bare
+        // bracket) + `.id` ✗ + `invalid` ✗ · F4 `item` ✗ + `not found`/`does
+        // not exist` ✗ · F5 `input[` ✗ → no family → Fatal today.
+        let (err, seen) = xw_orphan_api_err(StatusCode::BAD_REQUEST, XW_ORPHAN_VLLM_PYDANTIC_400_BODY);
+        assert!(
+            err.is_model_bound_history_error(),
+            "XW-ORPHAN-1 class (a): the vLLM pydantic dotted-id 400 must classify model-bound (arm B: `validation error` + `messages.`); classifier saw (237 chars, uncapped): {seen}"
+        );
+        // 280-cap shape (house discipline, 503-region pattern): the needles
+        // sit at char ~67 (`validation error`) and ~110 (`messages.`) of the
+        // litellm-prefixed view, so the capped form must classify too.
+        let capped = seen[..seen.len().min(MAX_USER_ERROR_BODY_CHARS)].to_string();
+        let capped_err = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: capped,
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(
+            capped_err.is_model_bound_history_error(),
+            "XW-ORPHAN-1 class (a): the 280-char capped shape must still classify (needles survive the cap)"
+        );
+    }
+
+    #[test]
+    fn xw_orphan_azure_callid_orphan_400_is_model_bound() {
+        // Class (b), PREDICTION (qwen preplan H-1, no live capture): a
+        // dangling `function_call_output` — the orphan the pair-aware strip
+        // and the send-boundary guard exist to keep off the wire. Needle
+        // walk (lowercased 107-char message, uncapped): `input[` ✓,
+        // `invalid` ✓, but `.id` ✗ (`.call_id` — the char before `id` is `_`,
+        // not `.`) → F3 needs all three → no family today; `item` ✗ so F4
+        // misses too.
+        let (err, seen) = xw_orphan_api_err(StatusCode::BAD_REQUEST, XW_ORPHAN_AZURE_CALLID_400_BODY);
+        assert!(
+            err.is_model_bound_history_error(),
+            "XW-ORPHAN-1 class (b): the Azure `.call_id`-orphan 400 must classify model-bound (arm A: `input[` + `.call_id` + `invalid`); classifier saw: {seen}"
+        );
+    }
+
+    #[test]
+    fn xw_orphan_dotted_array_too_long_is_model_bound() {
+        // Dotted array-too-long rendering (the F5-extension target): the
+        // bracketed live-wire shape is F5-covered at base (regression pin
+        // below); the DOTTED `input.N.content` phrasing misses F5 today
+        // because F5 keys `input[`. Needle walk (lowercased, uncapped):
+        // `input[` ✗ (dotted, no bracket) → F5 ✗; F3/F4 miss as well.
+        let body = format!(
+            r#"{{"error":{{"message":"{XW_ORPHAN_DOTTED_ARRAY_TOO_LONG}","type":null,"param":null,"code":"400"}}}}"#
+        );
+        let (err, seen) = xw_orphan_api_err(StatusCode::BAD_REQUEST, &body);
+        assert!(
+            err.is_model_bound_history_error(),
+            "XW-ORPHAN-1 dotted: `input.` + `array too long` must classify model-bound (F5 extension); classifier saw: {seen}"
+        );
+    }
+
+    #[test]
+    fn xw_orphan_bracketed_array_too_long_still_f5() {
+        // Regression pin (stays GREEN through the fix): the base live-wire
+        // bracketed body (the `error.rs` live-wire pin shape; inner message
+        // sha256:c1651b7d3aff) must keep classifying via F5 after the dotted
+        // extension (`input[` | `input.`) lands — the extension is additive.
+        let body = r#"{"error":{"message":"litellm.BadRequestError: AzureException BadRequestError - {\n  \"error\": {\n    \"message\": \"Invalid 'input[7].content': array too long. Expected an array with maximum length 0, but got an array with length 1 instead.\",\n    \"type\": \"invalid_request_error\",\n    \"param\": \"input[7].content\",\n    \"code\": \"array_above_max_length\"\n  }\n}. Received Model Group=gpt-5.6-sol\nAvailable Model Group Fallbacks=None","type":null,"param":null,"code":"400"}}"#;
+        let (err, _seen) = xw_orphan_api_err(StatusCode::BAD_REQUEST, body);
+        assert!(
+            err.is_model_bound_history_error(),
+            "XW-ORPHAN-1 regression: the bracketed live-wire 400 must stay F5-classified (dotted extension must not regress it)"
+        );
+    }
+
+    #[test]
+    fn xw_orphan_generic_400_stays_unclassified() {
+        // Negative control (F1-503 double-key discipline; stays GREEN): each
+        // half of arm B alone must NOT classify — `validation error` without a
+        // dotted loc is a generic phrasing, and `messages.` without
+        // `validation error` is a field mention, not the vLLM pydantic
+        // dotted shape. Guards arm B from over-firing onto the 400 tail.
+        for (label, message) in [
+            (
+                "`validation error` alone (no dotted loc)",
+                "litellm.BadRequestError: 39 validation errors for the request",
+            ),
+            (
+                "`messages.` alone (no `validation error`)",
+                "request rejected: messages.8 field is malformed",
+            ),
+        ] {
+            let err = SamplingError::Api {
+                status: StatusCode::BAD_REQUEST,
+                message: message.to_string(),
+                model_metadata: None,
+                retry_after_secs: None,
+                should_retry: None,
+                error_code: None,
+            };
+            assert!(
+                !err.is_model_bound_history_error(),
+                "XW-ORPHAN-1 negative control: {label} must NOT classify model-bound (arm B is double-keyed)"
+            );
+        }
     }
 
     #[test]

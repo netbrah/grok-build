@@ -28,7 +28,7 @@ use xai_chat_state::compaction_utils::{
     prepare_conversation_for_verbatim_summarization, sanitize_compacted_history,
     validate_compacted_history,
 };
-use xai_grok_sampling_types::{ApiBackend, ConversationItem};
+use xai_grok_sampling_types::{drop_model_bound_items, ApiBackend, ConversationItem};
 /// Prefix on the early-guard failure payloads below; the user-facing normalizer strips it (the renderer prepends its own headline).
 const COMPACTION_FAILED_GUARD_PREFIX: &str = "Compaction failed: ";
 /// Human-readable "next fire" for a scheduled loop in the compaction reminder.
@@ -938,6 +938,14 @@ impl SessionActor {
     ) -> Result<(), acp::Error> {
         const MAX_ATTEMPTS: u32 = 3;
         let mut refreshed_auth = false;
+        // COMPACT-BOUNDARM-1 (apex-ayl.82): the model-bound strip-once budget
+        // (one pair-atomic strip per run; a second model-bound failure
+        // reports-and-stops — never replay a byte-identical failing request,
+        // the compact-400 storm class) + whether the retry must omit the
+        // trailing `compaction_trigger` item (the proxy rejected the item
+        // itself — Family 9).
+        let mut model_bound_stripped = false;
+        let mut suppress_compaction_trigger = false;
         let base_instruction_count = provider_conversation
             .iter()
             .take_while(|item| matches!(item, ConversationItem::System(_)))
@@ -993,7 +1001,11 @@ impl SessionActor {
         for attempt in 1..=MAX_ATTEMPTS {
             let attempt_started = std::time::Instant::now();
             let result = client
-                .compact_codex_conversation_v2(request.clone(), &instructions)
+                .compact_codex_conversation_v2(
+                    request.clone(),
+                    &instructions,
+                    !suppress_compaction_trigger,
+                )
                 .await
                 .map(|result| {
                     let usage = result.usage.as_ref();
@@ -1067,6 +1079,35 @@ impl SessionActor {
                         // rebuild the client from the reconstructed config.
                         self.refresh_token_if_expired().await;
                         client = self.prepare_chat_completion(false).await?;
+                        continue;
+                    }
+                    // COMPACT-BOUNDARM-1 (apex-ayl.82): the model-bound arm.
+                    // A model-bound 400 (the proxy's
+                    // `Unsupported Responses API input item type:
+                    // "compaction_trigger"` rejection, an encrypted-
+                    // continuation or strict-schema item-shape rejection) is
+                    // not fixed by re-sending the same shape — but stripping
+                    // the model-bound state ONCE (pair-atomic) and re-issuing
+                    // can. One strip per run: a second model-bound failure
+                    // reports-and-stops (retry-budget stop; the incident
+                    // storm retried the same failing compact shape 15x).
+                    if error.is_model_bound_history_error() && !model_bound_stripped {
+                        model_bound_stripped = true;
+                        let stripped_items = drop_model_bound_items(&mut request.items);
+                        // The item itself is the offending shape: the retry
+                        // must omit the trailing trigger item (the Codex-
+                        // native protocol marker a proxy does not model). Any
+                        // OTHER model-bound 400 keeps the trigger.
+                        suppress_compaction_trigger |=
+                            error.is_compaction_trigger_item_rejection();
+                        tracing::warn!(
+                            session_id = %self.session_info.id.0,
+                            attempt,
+                            stripped_items,
+                            suppress_compaction_trigger,
+                            error = %error,
+                            "model-bound compact 400: stripping model-bound state once (pair-atomic) before the retry — a second model-bound failure stops (no byte-identical replay)"
+                        );
                         continue;
                     }
                     let retry_after = match &error {
@@ -1582,6 +1623,11 @@ impl SessionActor {
         };
         let mut request_turns = simplified_messages.clone();
         let mut input_overflow_rejections: u32 = 0;
+        // COMPACT-BOUNDARM-1 (apex-ayl.82): the model-bound strip-once
+        // budget — at most ONE pair-atomic strip per compact run; a second
+        // model-bound failure reports-and-stops (never replay a
+        // byte-identical failing request — the compact-400 storm class).
+        let mut model_bound_stripped = false;
         let two_pass_output = self
             .try_two_pass_pass2_apply(user_context.as_deref(), summary_strips_reasoning)
             .await;
@@ -1626,6 +1672,7 @@ impl SessionActor {
                     message,
                     deterministic,
                     context_overflow,
+                    model_bound,
                 }) => {
                     if cancel.is_cancelled()
                         || message.contains(
@@ -1633,6 +1680,83 @@ impl SessionActor {
                         )
                     {
                         return self.emit_compact_cancelled(auto_trigger).await;
+                    }
+                    // COMPACT-BOUNDARM-1 (apex-ayl.82): the model-bound arm.
+                    // A model-bound 400 (encrypted continuation, strict-schema
+                    // item shape, unsupported compaction-trigger item, 401
+                    // tags-config) is not fixed by re-sending the same shape,
+                    // but stripping the model-bound state ONCE (pair-atomic)
+                    // and re-issuing can — the same arm the ordinary turn path
+                    // takes. One strip per run: a second model-bound failure
+                    // on the stripped input reports-and-stops (retry-budget
+                    // stop; the compact-400 storm retried the same failing
+                    // shape 15x).
+                    if model_bound {
+                        if model_bound_stripped {
+                            tracing::warn!(
+                                session_id = %self.session_info.id.0,
+                                error = %message,
+                                "model-bound compact failure after the one strip: the stripped input still trips the boundary — reporting and stopping (no byte-identical replay)"
+                            );
+                        } else {
+                            model_bound_stripped = true;
+                            let stripped = drop_model_bound_items(&mut request_turns);
+                            if stripped == 0 {
+                                // Fail-closed: this pass's input carries no
+                                // model-bound state — the retry would be
+                                // byte-identical; report-and-stop.
+                                tracing::warn!(
+                                    session_id = %self.session_info.id.0,
+                                    error = %message,
+                                    "model-bound compact rejection with nothing model-bound in the compact input — re-sending cannot help; stopping"
+                                );
+                                last_failure_outcome = CompactionOutcome::Deterministic;
+                                if auto_trigger {
+                                    let reason = Self::classify_suppress_reason(&message);
+                                    self.suppress_auto_compaction(
+                                        reason,
+                                        &message,
+                                        estimated_input_tokens,
+                                        context_window,
+                                    )
+                                    .await;
+                                }
+                                last_error = Some(acp::Error::internal_error().data(message));
+                                break;
+                            }
+                            xai_grok_telemetry::session_ctx::log_event(
+                                xai_grok_telemetry::events::CompactionRetryDegraded {
+                                    trigger,
+                                    reason: "model_bound_strip",
+                                    from_stage: Some(input_stage.into()),
+                                    to_stage: Some(input_stage.into()),
+                                    summary_chars: None,
+                                    attempt: observer.attempt_count(),
+                                    context_window,
+                                    compaction_id: compaction.compaction_id.clone(),
+                                },
+                            );
+                            tracing::warn!(
+                                session_id = %self.session_info.id.0,
+                                stripped,
+                                error = %message,
+                                "model-bound compact 400: stripped {stripped} model-bound item(s) once (pair-atomic); retrying the stripped input — a second model-bound failure stops"
+                            );
+                            continue;
+                        }
+                        last_failure_outcome = CompactionOutcome::Deterministic;
+                        if auto_trigger {
+                            let reason = Self::classify_suppress_reason(&message);
+                            self.suppress_auto_compaction(
+                                reason,
+                                &message,
+                                estimated_input_tokens,
+                                context_window,
+                            )
+                            .await;
+                        }
+                        last_error = Some(acp::Error::internal_error().data(message));
+                        break;
                     }
                     if context_overflow {
                         let next_stage = match input_stage {

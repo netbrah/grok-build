@@ -1501,7 +1501,7 @@ pub struct Config {
     #[serde(skip)]
     pub web_search_model: String,
     /// Session title model.
-    /// Resolved to the compiled default (`default_session_summary_model`) when unset; see `ModelOverrideConfig::resolve`.
+    /// None when unset; build_summary_client falls back to the session model (G2 ruling 2026-09-18); explicit config.toml `models.session_summary` / CLI / env / remote pin still win.
     #[serde(skip)]
     pub session_summary_model: Option<String>,
     /// Image describe model (`grok-4.6` default via `ModelOverrideConfig::resolve`).

@@ -1274,6 +1274,30 @@ mod tests {
         );
     }
 
+    /// Provenance: none (56a CITATIONS-1 record pin). At this base a live
+    /// `citation_delta` is an unknown delta subtype under R1 forward-compat:
+    /// the whole `content_block_delta` frame maps to `Ping` (liveness
+    /// swallow) — the RECORDED-ABSENT pre-56b behavior of the
+    /// `TextBlock.citations` surface (spec r23 L106 row Q5; registry entry
+    /// CITATIONS-1). Names this surface explicitly;
+    /// `unknown_delta_subtype_maps_to_ping` uses `brand_new_delta` and
+    /// predates the record. When 56b models the surface, this pin flips in
+    /// the same commit (strict-parse pin) — a mid-state tree fails the gate
+    /// by construction (SDD §6 R4).
+    #[test]
+    fn citation_delta_maps_to_ping_today() {
+        let event: MessageStreamEvent = serde_json::from_str(
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"citation_delta","x":"y"}}"#,
+        )
+        .expect("an unmodeled delta subtype must not fail the frame parse");
+        assert!(
+            matches!(event, MessageStreamEvent::Ping),
+            "RECORDED-ABSENT (56a): citation_delta must map to Ping (liveness swallow) \
+             until registry entry CITATIONS-1 flips modeled_by in the same commit \
+             (56b), got {event:?}"
+        );
+    }
+
     /// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/client.rs :: decode_messages_sse_frame_keeps_malformed_known_events_strict (re-expressed; near-verbatim)
     /// Forward-compat must not hide wire corruption: a KNOWN event type
     /// missing a required field is a fatal deserialization error.

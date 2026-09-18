@@ -44,6 +44,16 @@ pub(crate) enum CompactFailure {
     /// Failure may resolve on retry. The caller follows its existing
     /// N-attempt + backoff loop.
     Transient(acp::Error),
+    /// The upstream rejected provider-boundary state carried in the request
+    /// (a model-bound 400/401/503 per
+    /// [`SamplingError::is_model_bound_history_error`]). Re-sending the same
+    /// payload cannot fix it, but the compact retry loop can strip the
+    /// model-bound items ONCE (pair-atomic, XW-ORPHAN-1 semantics) and
+    /// re-issue — the same arm the ordinary turn path takes
+    /// (`RetryWithModelBoundStateStrip`). A second model-bound failure after
+    /// the strip reports-and-stops: never replay a byte-identical failing
+    /// request (COMPACT-BOUNDARM-1, apex-ayl.82 — the compact-400 storm).
+    ModelBound(acp::Error),
     /// User/stop cancelled the in-flight compact. Do not retry or suppress AUTO.
     Cancelled,
 }
@@ -146,6 +156,20 @@ fn classify_sampling_error(err: SamplingError) -> CompactFailure {
         )
     {
         return CompactFailure::Overflow(acp_err);
+    }
+    // COMPACT-BOUNDARM-1 (apex-ayl.82): a model-bound rejection (encrypted
+    // continuation content, a strict-schema item shape, the proxy's
+    // unsupported-`compaction_trigger`-item 400, the 401 tags-config arm)
+    // is deterministic for the SAME payload — the generic arm below would
+    // call it `Deterministic` and the loop would bail after ONE unstripped
+    // attempt — but the strip-once-retry arm can change the payload: the
+    // ordinary turn path routes the same error to
+    // `RetryWithModelBoundStateStrip`, and the compact loop now does the
+    // same, bounded to one strip per run (a second model-bound failure
+    // reports-and-stops — never a byte-identical replay, the compact-400
+    // storm class).
+    if err.is_model_bound_history_error() {
+        return CompactFailure::ModelBound(acp_err);
     }
     // Deterministic in-stream text (opaque proxy failures / over-capacity):
     // `Transient` would be retried by the sampler's retry loop AND the

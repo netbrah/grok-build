@@ -1,0 +1,8 @@
+{
+  "error": {
+    "message": "Invalid 'input[7].call_id': the function_call_output references a call id that is not present in the input.",
+    "type": null,
+    "param": null,
+    "code": "400"
+  }
+}

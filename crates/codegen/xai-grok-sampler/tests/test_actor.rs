@@ -1922,7 +1922,7 @@ async fn codex_remote_compaction_v2_uses_responses_stream_contract() {
         "additionalProperties": false
     }));
     let result = client
-        .compact_codex_conversation_v2(request, "base instructions")
+        .compact_codex_conversation_v2(request, "base instructions", true)
         .await
         .expect("remote compaction v2 should complete over /responses SSE");
     server.shutdown();
@@ -2065,7 +2065,7 @@ async fn codex_remote_compaction_v2_carries_live_auth_and_splices_next_turn() {
     ])
     .with_model("gpt-5.6-sol");
     let result = client
-        .compact_codex_conversation_v2(compact_request, "authoritative instructions")
+        .compact_codex_conversation_v2(compact_request, "authoritative instructions", true)
         .await
         .expect("v2 compaction succeeds");
 
@@ -2140,7 +2140,7 @@ async fn codex_remote_compaction_v2_classifies_failures_without_sampler_retry() 
         let request = ConversationRequest::from_items(vec![ConversationItem::user("compact me")])
             .with_model("gpt-5.6-sol");
         let error = client
-            .compact_codex_conversation_v2(request, "")
+            .compact_codex_conversation_v2(request, "", true)
             .await
             .expect_err("failure must classify");
         server.shutdown();
