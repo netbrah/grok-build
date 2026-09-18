@@ -104,6 +104,7 @@ mod tests {
             header_injector: None,
             model_family: None,
             strict_responses_input: false,
+            normalize_content_types: false,
         }
     }
 

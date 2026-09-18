@@ -922,6 +922,58 @@ fn x_search_call_wire_value(call: &rs::CustomToolCall) -> serde_json::Value {
     value
 }
 
+/// Typed-boundary sentinel `action` for `web_search_call` items that arrive
+/// without one. async-openai 0.33.1 requires `action` on every
+/// `WebSearchToolCall`, while Codex can omit it — including on terminal
+/// `response.output_item.done` frames. The sampler fills this exact sentinel
+/// at the deserialization boundary; [`strip_sentinel_web_search_actions`]
+/// removes it again before a request body reaches the wire, so the fabricated
+/// action never replays to the provider.
+/// (apex-ayl.77; verbatim from open-grok@049664b5
+/// xai-grok-sampling-types/src/conversation.rs:4197-4199.)
+pub fn sentinel_web_search_action_json() -> serde_json::Value {
+    serde_json::json!({"type": "search", "query": ""})
+}
+
+/// True when a typed web-search action is the empty-search sentinel from
+/// [`sentinel_web_search_action_json`]. An empty query carries no user-facing
+/// or provider-facing signal, so misclassifying a genuine empty search is
+/// harmless: replay strips a field the provider tolerates omitting.
+/// (apex-ayl.77; verbatim from open-grok@049664b5
+/// xai-grok-sampling-types/src/conversation.rs:4204-4212.)
+pub fn is_sentinel_web_search_action(action: &rs::WebSearchToolCallAction) -> bool {
+    matches!(
+        action,
+        rs::WebSearchToolCallAction::Search(search)
+            if search.query.is_empty()
+                && search.sources.as_ref().is_none_or(|sources| sources.is_empty())
+    )
+}
+
+/// Remove the sentinel `action` from replayed `web_search_call` input items
+/// after request serialization. Codex sent these items without an action;
+/// round-tripping them the same way preserves wire fidelity, and the backend
+/// accepts actionless items (it produced them).
+/// (apex-ayl.77; verbatim from open-grok@049664b5
+/// xai-grok-sampling-types/src/conversation.rs:4218-4234.)
+pub fn strip_sentinel_web_search_actions(body: &mut serde_json::Value) {
+    let Some(input) = body.get_mut("input").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    for item in input.iter_mut() {
+        if item.get("type").and_then(|t| t.as_str()) != Some("web_search_call") {
+            continue;
+        }
+        let is_sentinel = item.get("action").is_some_and(|action| {
+            serde_json::from_value::<rs::WebSearchToolCallAction>(action.clone())
+                .is_ok_and(|action| is_sentinel_web_search_action(&action))
+        });
+        if is_sentinel && let Some(obj) = item.as_object_mut() {
+            obj.remove("action");
+        }
+    }
+}
+
 /// Preserve the exact replacement history returned by Codex remote
 /// compaction (the `compaction` output item over the streaming `/responses`
 /// endpoint).
@@ -5771,5 +5823,84 @@ mod tests {
                 .is_empty(),
             "non-Codex/non-xAI Responses must not replay provider-native history"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // apex-ayl.77 INGRESS-NORMALIZE-1 — WAVE B (compile-RED at RED state).
+    // The D1 cut adds `sentinel_web_search_action_json`,
+    // `is_sentinel_web_search_action`, and `strip_sentinel_web_search_actions`
+    // (donor open-grok 049664b5 conversation.rs:4197-4234, ported 1:1).
+    // These tests reference that API and therefore do NOT compile at the RED
+    // state — the compile failure IS the recorded RED (house RED-2 pattern,
+    // cf. .76 stage B). They must PASS at GREEN.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Byte-pin for the typed-boundary sentinel (donor
+    /// `sentinel_web_search_action_json`, open-grok 049664b5
+    /// conversation.rs:4197-4199): the exact value the sampler fills on
+    /// ingress and the request-serialization strip sites remove pre-egress.
+    #[test]
+    fn ingress77_sentinel_json_value_is_search_empty_query() {
+        assert_eq!(
+            sentinel_web_search_action_json(),
+            serde_json::json!({"type": "search", "query": ""})
+        );
+    }
+
+    /// Donor-parity strip pin (donor test `strip_sentinel_web_search_actions_removes_only_the_sentinel`,
+    /// open-grok 049664b5 conversation.rs:13501): the pre-egress strip
+    /// removes the sentinel action from replayed web_search_call input items
+    /// and leaves every genuine action and every non-web item untouched —
+    /// no sentinel is ever visible on the wire.
+    #[test]
+    fn ingress77_strip_sentinel_web_search_actions_removes_only_the_sentinel() {
+        let mut body = serde_json::json!({
+            "input": [
+                {
+                    "type": "web_search_call",
+                    "id": "ws_sentinel",
+                    "action": sentinel_web_search_action_json(),
+                    "status": "completed"
+                },
+                {
+                    "type": "web_search_call",
+                    "id": "ws_real",
+                    "action": {"type": "search", "query": "genuine query", "sources": [{"type": "url", "url": "https://example.com"}]},
+                    "status": "completed"
+                },
+                {
+                    "type": "web_search_call",
+                    "id": "ws_find",
+                    "action": {"type": "find", "url": "https://example.com", "pattern": "needle"},
+                    "status": "completed"
+                },
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+            ]
+        });
+        strip_sentinel_web_search_actions(&mut body);
+        let input = body["input"].as_array().unwrap();
+        assert!(
+            input[0].get("action").is_none(),
+            "the sentinel action must be stripped pre-egress"
+        );
+        assert_eq!(
+            input[1]["action"]["query"], "genuine query",
+            "a genuine search action must survive the strip"
+        );
+        assert_eq!(
+            input[2]["action"]["type"], "find",
+            "a find action must survive the strip"
+        );
+        assert_eq!(
+            input[3]["content"][0]["text"], "hi",
+            "non-web items must be untouched by the strip"
+        );
+        // The typed classifier must agree with the JSON-level strip decision.
+        let sentinel_typed: rs::WebSearchToolCallAction =
+            serde_json::from_value(sentinel_web_search_action_json()).unwrap();
+        assert!(is_sentinel_web_search_action(&sentinel_typed));
+        let real_typed: rs::WebSearchToolCallAction =
+            serde_json::from_value(input[1]["action"].clone()).unwrap();
+        assert!(!is_sentinel_web_search_action(&real_typed));
     }
 }

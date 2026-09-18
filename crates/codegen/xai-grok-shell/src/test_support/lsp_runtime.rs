@@ -47,6 +47,7 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
             reasoning_effort: None,
             model_family: None,
             strict_responses_input: false,
+            normalize_content_types: false,
             deployment_id: None,
             user_id: None,
             conversation_group_id: None,

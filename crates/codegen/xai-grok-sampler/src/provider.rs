@@ -89,6 +89,7 @@ pub fn patch_responses_request(
     model_family: Option<&str>,
     reasoning_effort: Option<ReasoningEffort>,
     multi_agent_v2: bool,
+    normalize_content_types: bool,
 ) {
     let family = model_family.unwrap_or_default();
 
@@ -97,9 +98,13 @@ pub fn patch_responses_request(
     }
 
     // Content-type normalization for non-OpenAI providers whose Responses
-    // shim expects "text" instead of "input_text"/"output_text".
-    if !is_openai_family(family) {
-        normalize_content_types(request_body);
+    // shim expects "text" instead of "input_text"/"output_text". The named
+    // opt-in (apex-ayl.77 E2 ruling R-B, binding flag spec) fires the same
+    // rewrite for a family-less row; the flagless path is byte-identical to
+    // the pre-cut status quo. The call is qualified because the binding
+    // param name shadows the rewrite fn in scope.
+    if !is_openai_family(family) || normalize_content_types {
+        crate::provider::normalize_content_types(request_body);
     }
 }
 
@@ -487,7 +492,7 @@ mod tests {
             "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
             "tools": [{"type": "web_search"}]
         });
-        patch_responses_request(&mut body, Some("codex"), Some(ReasoningEffort::Ultra), true);
+        patch_responses_request(&mut body, Some("codex"), Some(ReasoningEffort::Ultra), true, false);
         // codex gets web_search access + ultra→max + v2 policy
         assert_eq!(body["tools"][0]["external_web_access"], true);
         assert_eq!(body["reasoning"]["effort"], "max");
@@ -546,7 +551,7 @@ mod tests {
         let mut body = serde_json::json!({
             "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
         });
-        patch_responses_request(&mut body, Some("glm"), None, false);
+        patch_responses_request(&mut body, Some("glm"), None, false, false);
         // glm gets content-type normalization but no codex patches
         assert_eq!(body["input"][0]["content"][0]["type"], "text");
     }
@@ -557,7 +562,7 @@ mod tests {
             "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
         });
         let original = body.clone();
-        patch_responses_request(&mut body, Some("xai"), None, false);
+        patch_responses_request(&mut body, Some("xai"), None, false, false);
         assert_eq!(body, original);
     }
 
@@ -708,7 +713,7 @@ mod tests {
                     {"type": "reasoning", "id": "rs_1", "content": [{"type": "reasoning_text", "text": "t"}], "encrypted_content": "gAAA"}
                 ]
             });
-            patch_responses_request(&mut body, Some(family), None, false);
+            patch_responses_request(&mut body, Some(family), None, false, false);
             strip_encrypted_content_input(&mut body);
             let input = body["input"].as_array().unwrap();
             let user = input
@@ -752,7 +757,7 @@ mod tests {
             })
         };
         let mut body = make_body();
-        patch_responses_request(&mut body, Some("codex"), Some(ReasoningEffort::Max), true);
+        patch_responses_request(&mut body, Some("codex"), Some(ReasoningEffort::Max), true, false);
         assert!(
             body["input"]
                 .as_array()
@@ -763,7 +768,7 @@ mod tests {
         );
         for family in ["qwen", "glm", "xai", "openai", ""] {
             let mut body = make_body();
-            patch_responses_request(&mut body, Some(family), Some(ReasoningEffort::Max), true);
+            patch_responses_request(&mut body, Some(family), Some(ReasoningEffort::Max), true, false);
             assert!(
                 !body["input"].as_array().unwrap().iter().any(is_multi_agent_mode_item),
                 "family {family} gained a <multi_agent_mode> developer item"
@@ -782,7 +787,7 @@ mod tests {
                     {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}
                 ]
             });
-            patch_responses_request(&mut body, Some(family), None, true);
+            patch_responses_request(&mut body, Some(family), None, true, false);
             assert_eq!(body["input"][0]["content"][0]["type"], "text", "family {family} input_text");
             assert_eq!(body["input"][1]["content"][0]["type"], "text", "family {family} output_text");
         }
@@ -804,7 +809,7 @@ mod tests {
                     {"type": "reasoning", "id": "rs_9", "content": [{"type": "reasoning_text", "text": "t"}], "encrypted_content": "gAAA"}
                 ]
             });
-            patch_responses_request(&mut body, Some(family), Some(ReasoningEffort::Max), true);
+            patch_responses_request(&mut body, Some(family), Some(ReasoningEffort::Max), true, false);
             strip_encrypted_content_input(&mut body);
             let input = body["input"].as_array().unwrap();
             // (a) shim normalization
@@ -845,7 +850,7 @@ mod tests {
                     {"type": "reasoning", "id": "rs_7", "encrypted_content": "gAAA", "summary": [{"type": "summary_text", "text": "s"}]}
                 ]
             });
-            patch_responses_request(&mut body, Some(family), None, true);
+            patch_responses_request(&mut body, Some(family), None, true, false);
             strip_encrypted_content_input(&mut body);
             let input = body["input"].as_array().unwrap();
             assert!(
@@ -854,4 +859,74 @@ mod tests {
             );
         }
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // apex-ayl.77 INGRESS-NORMALIZE-1 — E2 add (JIG §6.3, adjudicated into
+    // scope): the L0 invariant for the family-less responses-wire row.
+    //
+    // Today `is_openai_family("")` = TRUE (the `family.is_empty()` arm at
+    // provider.rs:111), so a family-less row on a vLLM shim SILENTLY SKIPS
+    // `normalize_content_types`. The fires-vs-named-flag ruling is a
+    // PRODUCTION-BEHAVIOR change: picking "fires" (R-A) would (a) rewrite
+    // input_text->text for any genuinely OpenAI-native row that merely has an
+    // empty family (risking the SOL/OpenAI path, whose byte-identity is pinned
+    // by `openai_families_are_byte_identical` incl. its `""` member), and
+    // (b) require amending that pinned test. Per brief §6 this is therefore
+    // marked **ADJUDICATION-NEEDED**: both arms are designed in the SDD
+    // (§3.5), and the scratch state below is NON-PRESUPPOSING — it pins the
+    // current behavior as a regression guard and stages the fire-case test as
+    // `#[ignore]` (present, compiles, does not run until the ruling lands).
+    // Reasoned default (SDD §3.5): R-B (named-flag opt-in).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// E2 named-family regression guard (PASSES at RED, must keep passing at
+    /// GREEN): the named OpenAI-native families keep skipping normalization —
+    /// the E2 cut (whichever arm is ruled) must not over-fire onto the
+    /// SOL/OpenAI path. Deliberately excludes `""`: the empty family is the
+    /// adjudication subject and is pinned separately below.
+    #[test]
+    fn ingress77_openai_native_families_still_skip_normalization() {
+        for family in ["openai", "xai", "codex"] {
+            let mut body = serde_json::json!({
+                "input": [
+                    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+                    {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}
+                ]
+            });
+            patch_responses_request(&mut body, Some(family), None, false, false);
+            assert_eq!(
+                body["input"][0]["content"][0]["type"], "input_text",
+                "family {family}: named OpenAI-native family must keep skipping normalization"
+            );
+        }
+    }
+
+    /// E2 empty-family CURRENT-BEHAVIOR regression guard (PASSES at RED).
+    /// Pins the status quo: with no named flag, an empty model family is
+    /// treated as OpenAI-native and skips `normalize_content_types`. This is
+    /// the SOL-path safety the JIG hazard analysis must not regress. If the
+    /// ruling is R-A (fires), this test is retired/amended in the same cut;
+    /// if R-B (named flag), it survives as the no-flag branch of the invariant.
+    #[test]
+    fn ingress77_empty_family_no_flag_current_behavior_skips_normalization() {
+        for family in [None, Some("".to_owned())] {
+            let mut body = serde_json::json!({
+                "input": [
+                    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+                ]
+            });
+            patch_responses_request(&mut body, family.as_deref(), None, false, false);
+            assert_eq!(
+                body["input"][0]["content"][0]["type"], "input_text",
+                "family {family:?}: empty family currently skips normalization (status-quo pin)"
+            );
+        }
+    }
+
+    // E2 fire-case — UNSTAGED by the coordinator's R-B ruling (named-flag
+    // opt-in; SDD §3.5 ruling of record). The two-sided L0 invariant now
+    // lives in the separate compile unit `tests/ingress77_e2_r_b.rs`
+    // (no-flag skip + flag-set fire, post-cut 5-arg call shape). The
+    // no-flag branch stays pinned here by
+    // `ingress77_empty_family_no_flag_current_behavior_skips_normalization`.
 }

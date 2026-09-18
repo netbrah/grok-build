@@ -696,6 +696,7 @@ pub(crate) fn parse_remote_model_value(
         model_family,
         multi_agent_v2,
         strict_responses_input,
+        normalize_content_types: false,
         base_url,
         name,
         description: get_string(obj, "description"),

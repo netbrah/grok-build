@@ -1,0 +1,12 @@
+{
+    "type": "response.output_item.added",
+    "sequence_number": 1,
+    "output_index": 0,
+    "item": {
+        "type": "custom_tool_call",
+        "call_id": "call_custom_1",
+        "name": "code",
+        "input": "",
+        "status": "in_progress"
+    }
+}

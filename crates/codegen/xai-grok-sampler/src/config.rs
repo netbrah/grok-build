@@ -78,6 +78,13 @@ pub struct SamplerConfig {
     /// replay byte-identical for lenient (vLLM-dialect) backends.
     #[serde(default)]
     pub strict_responses_input: bool,
+    /// True when a family-less (or flagged) row must rewrite
+    /// `input_text`/`output_text` content parts to `"text"` for a Responses
+    /// shim that rejects the native part types (apex-ayl.77 E2 ruling R-B,
+    /// binding flag spec). The flagless path is byte-identical to the
+    /// pre-cut status quo.
+    #[serde(default)]
+    pub normalize_content_types: bool,
 
     // Client identity
     pub origin_client: Option<OriginClientInfo>,
@@ -166,6 +173,7 @@ impl Default for SamplerConfig {
             header_injector: None,
             model_family: None,
             strict_responses_input: false,
+            normalize_content_types: false,
         }
     }
 }

@@ -4234,6 +4234,10 @@ struct DefaultModelJson {
     supported_in_api: bool,
     #[serde(default)]
     supports_backend_search: bool,
+    /// apex-ayl.77 E2 ruling R-B (binding flag spec); see
+    /// [`ModelInfo::normalize_content_types`].
+    #[serde(default)]
+    normalize_content_types: bool,
     #[serde(default)]
     compactions_remaining: Option<CompactionsRemaining>,
     #[serde(default)]
@@ -4306,6 +4310,7 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 reasoning_efforts: m.reasoning_efforts,
                 variants: m.variants,
                 supports_backend_search: m.supports_backend_search,
+                normalize_content_types: m.normalize_content_types,
                 compactions_remaining: m.compactions_remaining,
                 compaction_at_tokens: m.compaction_at_tokens,
                 show_model_fingerprint: m.show_model_fingerprint,
@@ -4425,6 +4430,12 @@ pub struct ModelEntryConfig {
     pub supported_in_api: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub supports_backend_search: bool,
+    /// apex-ayl.77 E2 ruling R-B (binding flag spec): rewrite
+    /// `input_text`/`output_text` content parts to `"text"` for a Responses
+    /// shim that rejects the native part types. Row-level named opt-in; the
+    /// flagless path is byte-identical to the pre-cut status quo.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub normalize_content_types: bool,
     /// Per-model config for the `x-compactions-remaining` header; `None` disables it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compactions_remaining: Option<CompactionsRemaining>,
@@ -4734,6 +4745,13 @@ pub struct ModelInfo {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<ModelVariant>,
     pub supports_backend_search: bool,
+    /// apex-ayl.77 E2 ruling R-B — the BINDING row key (`[model.<id>]` /
+    /// catalog row). Named opt-in to rewrite `input_text`/`output_text`
+    /// content parts to `"text"` for a Responses shim that rejects the
+    /// native part types (family-less rows are the intended population).
+    /// Absent/false = pre-cut status quo (byte-identical wire).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub normalize_content_types: bool,
     /// Per-model config for the `x-compactions-remaining` header; `None` disables it.
     pub compactions_remaining: Option<CompactionsRemaining>,
     /// Per-model config for the `x-compaction-at` header; `None` disables it.
@@ -4789,6 +4807,7 @@ impl ModelInfo {
             reasoning_efforts: Vec::new(),
             variants: Vec::new(),
             supports_backend_search: false,
+            normalize_content_types: false,
             compactions_remaining: None,
             compaction_at_tokens: None,
             show_model_fingerprint: false,
@@ -4832,6 +4851,7 @@ impl ModelInfo {
             reasoning_efforts: entry.reasoning_efforts.clone(),
             variants: entry.variants.clone(),
             supports_backend_search: entry.supports_backend_search,
+            normalize_content_types: entry.normalize_content_types,
             compactions_remaining: entry.compactions_remaining,
             compaction_at_tokens: entry.compaction_at_tokens,
             show_model_fingerprint: entry.show_model_fingerprint,
@@ -5582,6 +5602,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 reasoning_efforts: Vec::new(),
                 variants: Vec::new(),
                 supports_backend_search: false,
+                normalize_content_types: false,
                 compactions_remaining: None,
                 compaction_at_tokens: None,
                 show_model_fingerprint: false,
@@ -5753,6 +5774,7 @@ pub(crate) fn sampling_config_for_model(
         attribution_callback: None,
         bearer_resolver: None,
         supports_backend_search: info.supports_backend_search,
+        normalize_content_types: info.normalize_content_types,
         compactions_remaining: info.compactions_remaining,
         compaction_at_tokens: info.compaction_at_tokens,
         doom_loop_recovery: None,
@@ -5825,6 +5847,7 @@ fn resolve_hidden_default_web_search_sampling_config(
             reasoning_efforts: Vec::new(),
             variants: Vec::new(),
             supports_backend_search: false,
+            normalize_content_types: false,
             compactions_remaining: None,
             compaction_at_tokens: None,
             show_model_fingerprint: false,

@@ -3271,6 +3271,7 @@ fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
             variants: Vec::new(),
             model_family: None,
             strict_responses_input: false,
+            normalize_content_types: false,
             model: model.to_string(),
             base_url: String::new(),
             name: None,

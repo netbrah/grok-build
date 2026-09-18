@@ -1,0 +1,10 @@
+{
+    "type": "response.output_item.done",
+    "sequence_number": 3,
+    "output_index": 0,
+    "item": {
+        "id": "ws_123",
+        "type": "web_search_call",
+        "status": "completed"
+    }
+}

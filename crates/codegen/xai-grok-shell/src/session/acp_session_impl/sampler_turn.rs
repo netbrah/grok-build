@@ -675,6 +675,21 @@ impl SessionActor {
             })
             .unwrap_or(false)
         };
+        // apex-ayl.77 E2 R-B: per-model named opt-in flag (same catalog read
+        // as the strict-input gate above; absent row = false = status quo).
+        let normalize_content_types = {
+            let models = self.models_manager.models();
+            crate::agent::remote_config::resolve_catalog_key(
+                &models,
+                &acp::ModelId::new(cfg.model.clone()),
+            )
+            .and_then(|catalog_id| {
+                models
+                    .get(catalog_id.0.as_ref())
+                    .map(|entry| entry.info.normalize_content_types)
+            })
+            .unwrap_or(false)
+        };
         let creds = self.chat_state_handle.get_credentials().await;
         let model_facts = self.model_auth_facts(cfg.model.as_str());
         // Gate on the stable session classifier, not `creds.auth_type`; see `crate::agent::auth_method::session_token_auth_gate`
@@ -793,6 +808,7 @@ impl SessionActor {
             header_injector: Some(std::sync::Arc::new(TraceContextInjector)),
             model_family,
             strict_responses_input,
+            normalize_content_types,
         }
     }
 

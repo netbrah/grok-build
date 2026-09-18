@@ -503,9 +503,140 @@ fn repair_usage(usage: &mut serde_json::Map<String, serde_json::Value>) {
     }
 }
 
+/// async-openai 0.33.1 requires `action` on every `WebSearchToolCall`, but
+/// Codex can omit it on any frame that carries the item — terminal
+/// `response.output_item.done` and `response.completed` outputs included, not
+/// just the nonterminal announcements projected to progress events above.
+/// Fill the shared empty-search sentinel so the frame parses instead of
+/// failing the whole turn; request serialization strips this exact sentinel
+/// before provider replay.
+/// (apex-ayl.77; verbatim from open-grok@049664b5
+/// xai-grok-sampler/src/client.rs:503-515.)
+fn fill_missing_web_search_action(item: &mut serde_json::Value) {
+    let Some(item) = item.as_object_mut() else {
+        return;
+    };
+    if item.get("type").and_then(serde_json::Value::as_str) == Some("web_search_call")
+        && item.get("action").is_none_or(serde_json::Value::is_null)
+    {
+        item.insert(
+            "action".to_owned(),
+            xai_grok_sampling_types::sentinel_web_search_action_json(),
+        );
+    }
+}
+
+fn normalize_web_search_action(item: &mut serde_json::Value) {
+    let Some(item) = item.as_object_mut() else {
+        return;
+    };
+    if item.get("type").and_then(serde_json::Value::as_str) != Some("web_search_call") {
+        return;
+    }
+
+    let Some(action) = item
+        .get_mut("action")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    match action.get("type").and_then(serde_json::Value::as_str) {
+        Some("search") => {
+            if let Some(sources) = action
+                .get_mut("sources")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                sources
+                    .retain(|source| source.get("url").is_some_and(serde_json::Value::is_string));
+            }
+        }
+        Some("find" | "find_in_page")
+            if !action.get("url").is_some_and(serde_json::Value::is_string) =>
+        {
+            item.insert(
+                "action".to_owned(),
+                xai_grok_sampling_types::sentinel_web_search_action_json(),
+            );
+        }
+        _ => {}
+    }
+}
+
+/// Project xAI's current hosted `x_search_call` output item into the legacy
+/// backend CustomToolCall shape already used throughout Open Grok. This is a
+/// typed-SDK adapter only: the tool remains provider-executed and is never
+/// exposed to the local tool dispatcher.
+/// (apex-ayl.77; verbatim from open-grok@049664b5
+/// xai-grok-sampler/src/client.rs:557-591.)
+fn normalize_x_search_call(item: &mut serde_json::Value) {
+    let Some(item) = item.as_object_mut() else {
+        return;
+    };
+    if item.get("type").and_then(serde_json::Value::as_str) != Some("x_search_call") {
+        return;
+    }
+
+    let nonempty_string = |key: &str| {
+        item.get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let id = nonempty_string("id")
+        .or_else(|| nonempty_string("call_id"))
+        .unwrap_or_else(|| "x_search".to_owned());
+    let call_id = nonempty_string("call_id").unwrap_or_else(|| id.clone());
+    let name = nonempty_string("name").unwrap_or_else(|| "x_search".to_owned());
+    let input = nonempty_string("input")
+        .or_else(|| nonempty_string("arguments"))
+        .or_else(|| {
+            item.get("action")
+                .and_then(|action| serde_json::to_string(action).ok())
+        })
+        .unwrap_or_else(|| "{}".to_owned());
+
+    item.insert(
+        "type".to_owned(),
+        serde_json::Value::String("custom_tool_call".to_owned()),
+    );
+    item.insert("id".to_owned(), serde_json::Value::String(id));
+    item.insert("call_id".to_owned(), serde_json::Value::String(call_id));
+    item.insert("name".to_owned(), serde_json::Value::String(name));
+    item.insert("input".to_owned(), serde_json::Value::String(input));
+}
+
+/// (apex-ayl.77; verbatim from open-grok@049664b5
+/// xai-grok-sampler/src/client.rs:678-695.)
+fn fill_missing_custom_tool_call_id(item: &mut serde_json::Value) {
+    let Some(item) = item.as_object_mut() else {
+        return;
+    };
+    if item.get("type").and_then(serde_json::Value::as_str) != Some("custom_tool_call")
+        || item.contains_key("id")
+    {
+        return;
+    }
+    let Some(call_id) = item
+        .get("call_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+    else {
+        return;
+    };
+    item.insert("id".to_owned(), serde_json::Value::String(call_id));
+}
+
 /// Backfill required-but-commonly-omitted fields on a single Responses output item.
 /// Only non-`Option` fields need this: serde already defaults a bare `Option` to `None`.
 fn repair_output_item(item: &mut serde_json::Value) {
+    // apex-ayl.77 ingress repairs (donor parity, open-grok@049664b5
+    // `normalize_response_output_item` :473-479): each fn is self-guarding
+    // and a no-op on non-matching types; the compaction id fill stays the
+    // match arm below (the donor's 5th way).
+    normalize_x_search_call(item);
+    fill_missing_custom_tool_call_id(item);
+    fill_missing_web_search_action(item);
+    normalize_web_search_action(item);
     let Some(obj) = item.as_object_mut() else {
         return;
     };
@@ -883,6 +1014,11 @@ struct ClientDefaults {
     /// Gates the REPLAY-1 strict-input projection (see
     /// `provider::project_strict_responses_input`).
     strict_responses_input: bool,
+    /// Gates the apex-ayl.77 E2 named opt-in (ruling R-B, binding flag
+    /// spec): rewrite `input_text`/`output_text` content parts to `"text"`
+    /// for a family-less row. Flagless path byte-identical to the pre-cut
+    /// status quo.
+    normalize_content_types: bool,
     /// Local reasoning effort for Max/Ultra wire mapping and multi-agent v2 policy.
     reasoning_effort: Option<ReasoningEffort>,
 }
@@ -1364,6 +1500,7 @@ impl SamplingClient {
             doom_loop_recovery: config.doom_loop_recovery,
             model_family: config.model_family.clone(),
             strict_responses_input: config.strict_responses_input,
+            normalize_content_types: config.normalize_content_types,
             reasoning_effort: config.reasoning_effort,
         };
 
@@ -1985,7 +2122,12 @@ impl SamplingClient {
                 .model_family
                 .as_deref()
                 .is_some_and(|f| f.eq_ignore_ascii_case("codex")),
+            self.defaults.normalize_content_types,
         );
+        // apex-ayl.77 (donor parity, open-grok@049664b5 client.rs:2406): strip
+        // the ingress sentinel web-search action pre-egress — the wire keeps
+        // the provider's original action-less shape.
+        xai_grok_sampling_types::strip_sentinel_web_search_actions(&mut request_body);
         // Restore Codex compaction carriers (opaque provider items) at their
         // typed placeholder positions. Empty for every non-Codex request.
         patch_raw_input_replacements(&mut request_body, &request.raw_input_replacements)?;
@@ -2152,7 +2294,12 @@ impl SamplingClient {
                 .model_family
                 .as_deref()
                 .is_some_and(|f| f.eq_ignore_ascii_case("codex")),
+            self.defaults.normalize_content_types,
         );
+        // apex-ayl.77 (donor parity, open-grok@049664b5 client.rs:2833): strip
+        // the ingress sentinel web-search action pre-egress — the wire keeps
+        // the provider's original action-less shape.
+        xai_grok_sampling_types::strip_sentinel_web_search_actions(&mut request_body);
         // Restore Codex compaction carriers (opaque provider items) at their
         // typed placeholder positions. Empty for every non-Codex request.
         patch_raw_input_replacements(&mut request_body, &request.raw_input_replacements)?;
@@ -2415,7 +2562,12 @@ impl SamplingClient {
                 .model_family
                 .as_deref()
                 .is_some_and(|f| f.eq_ignore_ascii_case("codex")),
+            self.defaults.normalize_content_types,
         );
+        // apex-ayl.77 (donor parity, open-grok@049664b5 client.rs:3038): strip
+        // the ingress sentinel web-search action pre-egress — the wire keeps
+        // the provider's original action-less shape.
+        xai_grok_sampling_types::strip_sentinel_web_search_actions(&mut request_body);
         // Transport seam: carrier ciphertext cannot round-trip the proxy's
         // cross-deployment load balancing; strip it after patching.
         crate::provider::strip_encrypted_content_input(&mut request_body);
@@ -3459,6 +3611,7 @@ mod tests {
             header_injector: None,
             model_family: None,
             strict_responses_input: false,
+            normalize_content_types: false,
         }
     }
 
@@ -5273,5 +5426,216 @@ mod tests {
             ..SamplerConfig::default()
         })
         .expect("codex sampling client")
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // apex-ayl.77 INGRESS-NORMALIZE-1 — RED-first (W2-3 / W2-4 / NF-1)
+    //
+    // Fixtures: testdata/ingress77/ (hand-authored from donor shapes @
+    // open-grok 049664b5; see testdata/ingress77/PROVENANCE.md). No live
+    // traffic, sweep-0.
+    //
+    // RED expectation (base 61dec18): the strict typed boundary rejects all
+    // three frame classes — missing `action` (rs::WebSearchToolCall, fork
+    // 95b52eb response.rs:1732), unknown variant `x_search_call`
+    // (rs::OutputItem, response.rs:2629), missing `id` (rs::CustomToolCall,
+    // response.rs:2681) — and `deserialize_response_event_for_dialect`
+    // fatals after the repair retry. The strict-parse pins below pass at RED
+    // state and MUST keep passing at GREEN: the repair pass is retry-path
+    // only, so the raw strict parse never learns the new shapes.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const INGRESS77_ACTIONLESS_WEB_SEARCH_DONE: &str =
+        include_str!("../testdata/ingress77/actionless_web_search_call_done.json");
+    const INGRESS77_NATIVE_X_SEARCH_ADDED: &str =
+        include_str!("../testdata/ingress77/native_x_search_call_added.json");
+    const INGRESS77_IDLESS_CUSTOM_TOOL_CALL_ADDED: &str =
+        include_str!("../testdata/ingress77/idless_custom_tool_call_added.json");
+
+    /// W2-3 RED pin: an action-less web_search_call frame fatals the strict
+    /// parse with `missing field `action``. Passes at RED; must keep passing
+    /// at GREEN (raw strict parse is never repaired).
+    #[test]
+    fn ingress77_actionless_web_search_strict_parse_fatals_missing_action() {
+        let err = serde_json::from_str::<rs::ResponseStreamEvent>(
+            INGRESS77_ACTIONLESS_WEB_SEARCH_DONE,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing field `action`"),
+            "RED expectation drifted: {msg}"
+        );
+    }
+
+    /// W2-3 (RED today → GREEN post-cut): an action-less terminal
+    /// web_search_call frame must ingest instead of fataling mid-session.
+    /// The sentinel action is filled on ingress (donor
+    /// `fill_missing_web_search_action`, open-grok 049664b5 client.rs:503-515)
+    /// and never reaches the wire (the D3 strip sites).
+    #[test]
+    fn ingress77_actionless_web_search_done_ingests_with_sentinel_action() {
+        let event = deserialize_response_event_for_dialect(
+            INGRESS77_ACTIONLESS_WEB_SEARCH_DONE,
+            ResponsesWireDialect::Codex,
+            "codex-hermetic",
+        )
+        .expect("RED today: fatal-deser (missing field `action`); GREEN: sentinel-filled parse");
+        let Some(rs::ResponseStreamEvent::ResponseOutputItemDone(done)) = event else {
+            panic!("expected ResponseOutputItemDone");
+        };
+        let rs::OutputItem::WebSearchCall(call) = done.item else {
+            panic!("expected WebSearchCall output item");
+        };
+        assert_eq!(call.id, "ws_123");
+        assert_eq!(call.status, rs::WebSearchToolCallStatus::Completed);
+        let rs::WebSearchToolCallAction::Search(search) = call.action else {
+            panic!("expected the sentinel search action");
+        };
+        assert!(search.query.is_empty(), "the filled action must be the empty-search sentinel");
+    }
+
+    /// W2-4 RED pin: a native xAI x_search_call frame is an unknown variant of
+    /// rs::OutputItem. Passes at RED; must keep passing at GREEN.
+    #[test]
+    fn ingress77_native_x_search_strict_parse_fatals_unknown_variant() {
+        let err = serde_json::from_str::<rs::ResponseStreamEvent>(INGRESS77_NATIVE_X_SEARCH_ADDED)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown variant `x_search_call`"),
+            "RED expectation drifted: {msg}"
+        );
+    }
+
+    /// W2-4 (RED today → GREEN post-cut): a native x_search_call output frame
+    /// must ingest as the legacy custom_tool_call carrier (donor
+    /// `normalize_x_search_call`, open-grok 049664b5 client.rs:557-591) — the
+    /// .76/W2-1 carrier contract the replay dialect consumes. The missing
+    /// `sequence_number` is synthesized to 0 by the dialect layer
+    /// (`normalize_response_event_for_dialect`, client.rs:179) before the
+    /// strict parse — pinned per the donor test at open-grok client.rs:6727.
+    #[test]
+    fn ingress77_native_x_search_call_normalizes_to_custom_tool_call_carrier() {
+        let event = deserialize_response_event_for_dialect(
+            INGRESS77_NATIVE_X_SEARCH_ADDED,
+            ResponsesWireDialect::Xai,
+            "grok-hermetic",
+        )
+        .expect("RED today: fatal-deser (unknown variant `x_search_call`); GREEN: carrier parse");
+        let Some(rs::ResponseStreamEvent::ResponseOutputItemAdded(added)) = event else {
+            panic!("expected ResponseOutputItemAdded");
+        };
+        assert_eq!(
+            added.sequence_number, 0,
+            "dialect layer synthesizes the missing sequence_number"
+        );
+        let rs::OutputItem::CustomToolCall(call) = added.item else {
+            panic!("expected the normalized custom_tool_call carrier");
+        };
+        assert_eq!(call.id, "xs_123");
+        assert_eq!(call.call_id, "xs_123");
+        assert_eq!(call.name, "x_search");
+        assert_eq!(call.input, "{\"query\":\"current xAI news\"}");
+    }
+
+    /// NF-1 RED pin: an id-less custom_tool_call frame fatals the strict
+    /// parse with `missing field `id``. Passes at RED; must keep passing at
+    /// GREEN.
+    #[test]
+    fn ingress77_idless_custom_tool_call_strict_parse_fatals_missing_id() {
+        let err =
+            serde_json::from_str::<rs::ResponseStreamEvent>(INGRESS77_IDLESS_CUSTOM_TOOL_CALL_ADDED)
+                .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing field `id`"),
+            "RED expectation drifted: {msg}"
+        );
+    }
+
+    /// NF-1 (RED today → GREEN post-cut): an id-less custom_tool_call frame
+    /// must ingest with the id filled from call_id (donor
+    /// `fill_missing_custom_tool_call_id`, open-grok 049664b5 client.rs:678-695).
+    #[test]
+    fn ingress77_idless_custom_tool_call_ingests_with_id_filled_from_call_id() {
+        let event = deserialize_response_event_for_dialect(
+            INGRESS77_IDLESS_CUSTOM_TOOL_CALL_ADDED,
+            ResponsesWireDialect::Xai,
+            "grok-hermetic",
+        )
+        .expect("RED today: fatal-deser (missing field `id`); GREEN: filled parse");
+        let Some(rs::ResponseStreamEvent::ResponseOutputItemAdded(added)) = event else {
+            panic!("expected ResponseOutputItemAdded");
+        };
+        let rs::OutputItem::CustomToolCall(call) = added.item else {
+            panic!("expected CustomToolCall output item");
+        };
+        assert_eq!(call.id, "call_custom_1");
+        assert_eq!(call.call_id, "call_custom_1");
+        assert_eq!(call.name, "code");
+        assert_eq!(call.input, "");
+    }
+
+    /// Seam-level pin (donor client.rs:4655 pattern; our precedent is
+    /// `idless_compaction_output_uses_typed_sentinel_only` at client.rs:5058):
+    /// `repair_output_item` must make the action-less web_search_call item
+    /// re-parse through the strict typed boundary. RED today: the re-parse
+    /// fails; GREEN post-cut: it parses with the sentinel action.
+    #[test]
+    fn ingress77_repair_actionless_web_search_item() {
+        let frame: serde_json::Value = serde_json::from_str(INGRESS77_ACTIONLESS_WEB_SEARCH_DONE)
+            .unwrap();
+        let mut item = frame["item"].clone();
+        repair_output_item(&mut item);
+        let typed: rs::OutputItem = serde_json::from_value(item)
+            .expect("RED today: missing field `action`; GREEN: sentinel-filled parse");
+        let rs::OutputItem::WebSearchCall(call) = typed else {
+            panic!("expected WebSearchCall");
+        };
+        let rs::WebSearchToolCallAction::Search(search) = call.action else {
+            panic!("expected the sentinel search action");
+        };
+        assert!(search.query.is_empty());
+        assert!(search.sources.is_none_or(|sources| sources.is_empty()));
+    }
+
+    /// Seam-level pin: `repair_output_item` must normalize the native
+    /// x_search_call item to the custom_tool_call carrier in place (the item's
+    /// `type` is rewritten; the four carrier fields are donor-pinned).
+    #[test]
+    fn ingress77_repair_native_x_search_item() {
+        let frame: serde_json::Value = serde_json::from_str(INGRESS77_NATIVE_X_SEARCH_ADDED).unwrap();
+        let mut item = frame["item"].clone();
+        repair_output_item(&mut item);
+        assert_eq!(
+            item["type"], "custom_tool_call",
+            "the normalized item must ride the legacy carrier"
+        );
+        let typed: rs::OutputItem =
+            serde_json::from_value(item).expect("RED today: unknown variant; GREEN: carrier parse");
+        let rs::OutputItem::CustomToolCall(call) = typed else {
+            panic!("expected CustomToolCall");
+        };
+        assert_eq!(call.id, "xs_123");
+        assert_eq!(call.call_id, "xs_123");
+        assert_eq!(call.name, "x_search");
+        assert_eq!(call.input, "{\"query\":\"current xAI news\"}");
+    }
+
+    /// Seam-level pin: `repair_output_item` must fill the missing id on an
+    /// id-less custom_tool_call item from its call_id.
+    #[test]
+    fn ingress77_repair_idless_custom_tool_call_item() {
+        let frame: serde_json::Value =
+            serde_json::from_str(INGRESS77_IDLESS_CUSTOM_TOOL_CALL_ADDED).unwrap();
+        let mut item = frame["item"].clone();
+        repair_output_item(&mut item);
+        let typed: rs::OutputItem =
+            serde_json::from_value(item).expect("RED today: missing field `id`; GREEN: filled parse");
+        let rs::OutputItem::CustomToolCall(call) = typed else {
+            panic!("expected CustomToolCall");
+        };
+        assert_eq!(call.id, "call_custom_1");
     }
 }

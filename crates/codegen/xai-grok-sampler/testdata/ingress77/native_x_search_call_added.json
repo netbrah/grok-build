@@ -1,0 +1,12 @@
+{
+    "type": "response.output_item.added",
+    "output_index": 0,
+    "item": {
+        "type": "x_search_call",
+        "id": "xs_123",
+        "name": "",
+        "arguments": "{\"query\":\"current xAI news\"}",
+        "call_id": "",
+        "status": "completed"
+    }
+}

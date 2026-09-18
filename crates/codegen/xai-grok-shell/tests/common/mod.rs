@@ -397,6 +397,7 @@ pub fn test_sampler_config(
         client_version: None,
         model_family: None,
         strict_responses_input: false,
+        normalize_content_types: false,
         force_http1: false,
         max_retries: None,
         rate_limit_retry_threshold: None,
