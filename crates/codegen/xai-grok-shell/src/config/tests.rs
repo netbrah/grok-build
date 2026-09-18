@@ -1761,7 +1761,7 @@ fn model_overrides_default_image_description_is_grok_build() {
     );
 }
 #[test]
-fn model_overrides_default_session_summary_is_grok_build() {
+fn model_overrides_default_session_summary_is_none_when_unset() {
     with_model_overrides_env(
         None,
         None,
@@ -1836,7 +1836,7 @@ fn model_overrides_env_session_summary_overrides_local() {
     );
 }
 #[test]
-fn model_overrides_empty_session_summary_toml_uses_default() {
+fn model_overrides_empty_session_summary_toml_is_none() {
     with_model_overrides_env(
         None,
         None,
@@ -1858,7 +1858,7 @@ fn model_overrides_empty_session_summary_toml_uses_default() {
     );
 }
 #[test]
-fn model_overrides_empty_session_summary_remote_uses_default() {
+fn model_overrides_empty_session_summary_remote_is_none() {
     with_model_overrides_env(
         None,
         None,
@@ -1906,7 +1906,7 @@ fn model_overrides_cli_session_summary_overrides_everything() {
     );
 }
 #[test]
-fn model_overrides_empty_cli_session_summary_uses_default() {
+fn model_overrides_empty_cli_session_summary_is_none() {
     with_model_overrides_env(
         None,
         None,

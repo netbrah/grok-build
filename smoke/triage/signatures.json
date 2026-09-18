@@ -1,7 +1,7 @@
 {
   "version": 1,
   "bead": "apex-ayl.51",
-  "note": "Seed catalog (T4) \u2014 standing baseline 154/154/109/1 = 418 + #5a/#5b/#6, measured 2026-09-15. Matching: fixed substring `pattern` first, one alternation `regex` second. Unknown signatures are emitted as UNKNOWN with a proposed slug SIG-<class>-<n>; `census --write-catalog` appends them as PROPOSED rows (no auto-RCA); proposed slugs are deduped across sibling unknowns in-run. T4.1 (2026-09-15, GLM-concordance adjudication): rows #7-#12 added (2 IGNORED steady-state, 4 PROPOSED); #5a RCA extended with a third unconfirmed instance. T4.2 (2026-09-17, overwatch pre-plan arc): rows #13,#14 added (2 PROPOSED cross-wire 400 classes: empty-id replay; vllm shim input_text rejection). T4.3 (2026-09-18, .76 xsearch mint arc): row #15 added (1 PROPOSED: Vertex x_search tools-entry rejection \u2014 deployment fact; live row off by config). T4.4 (2026-09-18, .74/.82 redcycle green arc): row #16 added (1 PROPOSED: compaction-trigger item 400 / compact-400 storm; COMPACT-BOUNDARM-1).",
+  "note": "Seed catalog (T4) \u2014 standing baseline 154/154/109/1 = 418 + #5a/#5b/#6, measured 2026-09-15. Matching: fixed substring `pattern` first, one alternation `regex` second. Unknown signatures are emitted as UNKNOWN with a proposed slug SIG-<class>-<n>; `census --write-catalog` appends them as PROPOSED rows (no auto-RCA); proposed slugs are deduped across sibling unknowns in-run. T4.1 (2026-09-15, GLM-concordance adjudication): rows #7-#12 added (2 IGNORED steady-state, 4 PROPOSED); #5a RCA extended with a third unconfirmed instance. T4.2 (2026-09-17, overwatch pre-plan arc): rows #13,#14 added (2 PROPOSED cross-wire 400 classes: empty-id replay; vllm shim input_text rejection). T4.3 (2026-09-18, .76 xsearch mint arc): row #15 added (1 PROPOSED: Vertex x_search tools-entry rejection \u2014 deployment fact; live row off by config). T4.4 (2026-09-18, .74/.82 redcycle green arc): row #16 added (1 PROPOSED: compaction-trigger item 400 / compact-400 storm; COMPACT-BOUNDARM-1). T4.5 (2026-09-18, overwatch green-smoke L2 arc): row #17 added (1 PROPOSED: vLLM effort-vocabulary 400 via litellm messages-bridge xhigh->high clamp; XW-QWEN-EFFORT-CLAMP-1 apex-ayl.83). NOTE: d404fe1 body claimed the M-1 row in its triage section but the row was absent from the file - row added by overwatch exfil-close commit, discrepancy recorded in ledger.",
   "signatures": [
     {
       "id": "#1",
@@ -189,6 +189,17 @@
       "status": "PROPOSED",
       "pointer": "reactive net: Family-9 needle (xai-grok-sampling-types error.rs) + model-bound arm on the compact path (xai-grok-shell compaction.rs, local + Codex v2 loops); L2 live compact cell (dogfood /compact on a qwen session with reasoning history, wirecap must show exactly 1 strip + 1 retry, no storm) owed before ratchet close",
       "first_seen": "2026-09-17"
+    },
+    {
+      "id": "#17",
+      "class": "wire.request_400",
+      "pattern": "Unexpected reasoning effort",
+      "regex": "Unexpected reasoning effort \\w+\\. Supported types are",
+      "rca": "litellm-1.90 /v1/messages -> openai-class bridge clamps reasoning effort xhigh->high before dispatch; the vLLM deployment (qwen3.8-27b effort vocabulary {xhigh, medium, low}) rejects the clamped value with a 400 (phrase doubled in body = double-wrap). The grok harness CLIENT is correct: it sends the model's own menu default xhigh (wire capture req-004). 3-variant live probe (2026-09-18): xhigh->400/high, medium->200, none->200 = selective clamp, proxy-image delta (stock v1.90.0 source path does not contain it). glm unaffected (its menu includes high). Zero production-shaped exposure (qwen rides responses, which is GREEN).",
+      "bead": "apex-ayl.83",
+      "status": "PROPOSED",
+      "pointer": "fix owner = llm-proxy lane (locate deployed xhigh->high site in the openai-class messages-bridge effort mapping; alias patch or pass-through + proxy regression test); evidence grok/plans/xwire/crosswire-matrix.md sec7.1 + wstream report 20260918T200643Z qwen-msg",
+      "first_seen": "2026-09-18"
     }
   ]
 }
