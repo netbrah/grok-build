@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "id": "WS9-S04-MODEL-SWITCH",
+  "title": "WS9 row S04 (model switch) vs our llm-proxy — JIG L2 LIVE projection row (responses->responses, cross-family: qwen3.8-27b vLLM-dialect source, lenient row armed in-case so the foreign reasoning id+content RIDE, -> gpt-5.6-sol strict_responses_input=true target, live defaults). ACP session: 3 qwen turns (real reasoning history) -> in-session /model flip (ACP setModel) -> 2 sol turns. This is the ship-gate cross-model row: the first post-switch sol request replays the foreign qwen history into the strict target. Verdict semantics (tolerant, CROSSWIRE-1 discipline): PASS = the post-switch request is accepted (200 directly by the preemptive strip, or 400->strip+retry->200 by the .58 reactive net — both are acceptable outcomes; the count pin discriminates: 1 = preemptive sufficed, 2 = reactive strip fired once); FINDING = a documented delta shape on review (e.g. the reasoning items arrive T3-dropped rather than T1-rekeyed — pre-.71 baseline, the tier floor ratchets only after XW-PROJECT-1 lands, JIG ratchet 5); FAIL (S3 report-and-stop) = retry storm (>=3 sol requests) or an unrecovered acp_error. Invariant pins (xwfix 5-invariant set): (2) NO foreign encrypted_content survives into ANY sol request (all:true absent — 0 tolerance); (1)/(3)/(4) ride the wire reads (the post-switch request is the fixture). GOLDEN-WAIT (JIG L2): the additive `golden` wire-assert kind is not merged at this launch (JIG ratchet 1 pending, .70 op side + .79) — the first post-switch sol request body is RECORDED (wire capture) as the xwfix fixture to byte-pin (normalize: ids, timestamps, request-ids, group_ids) when the kind lands; no guessed golden in this wave. No expected_red: the switch mechanism is proven (RT-CROSSWIRE1/1B carried GREEN in WAVE-S), so this row is a GREEN regression pin; any new 400/500 shape not in the triage catalog = new-failure-class rule (catalog row + cell in the same session, .51 discipline).",
+  "bead": "apex-ayl.78",
+  "suite": "cross-wire",
+  "tier": "full",
+  "driver": "acp",
+  "model": "qwen3.8-27b",
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "config_patch": {
+    "model/qwen3.8-27b/strict_responses_input": false,
+    "model/qwen3.8-27b/reasoning_effort": "medium"
+  },
+  "tolerant": true,
+  "watchdog_s": 300,
+  "est_calls": 8,
+  "wirecap": true,
+  "scoring": {
+    "vacuous_if": [
+      {
+        "pin": "qwen_reasoning_ride",
+        "class": "model"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: WS9-S04-Q1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: WS9-S04-Q2"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: WS9-S04-Q3"
+    },
+    {
+      "op": "switch",
+      "model": "gpt-5.6-sol",
+      "via": "acp"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: WS9-S04-S1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: WS9-S04-S2"
+    },
+    {
+      "op": "recon_note",
+      "note": "GOLDEN-WAIT (JIG L2): the FIRST post-switch gpt-5.6-sol request body (oldest req-NNN.json with body.model=gpt-5.6-sol in this run's wire/) is the xwfix fixture to byte-pin (normalize list: ids, timestamps, request-ids, group_ids) when the additive `golden` wire-assert kind lands (JIG ratchet 1: .70 op side + .79). Until then the tier adjudication (T1 rekeyed vs T3 dropped for the foreign qwen reasoning items; floor ratchets after .71) is a coordinator review step over that capture. No guessed golden in this wave."
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "SESSION SURVIVES THE SWITCH: the post-switch sol turns did not die (200 directly, or 400 recovered by the reactive strip)."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "WS9-S04-S2",
+        "label": "POST-SWITCH TURN COMPLETES: the final sol turn delivered the exact terminal text."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "id": "qwen_reasoning_ride",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "any": true,
+        "grep": "\"type\": \"reasoning\"",
+        "label": "CONTROL (anti-vacuous pin): a pre-switch qwen request carried a reasoning INPUT item — real foreign reasoning (id+content on the lenient row) exists to cross the model boundary. Without this, the strip/acceptance pins are vacuous (the model produced no reasoning to project)."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "all": true,
+        "grep": "encrypted_content",
+        "absent": true,
+        "label": "XWFIX INVARIANT 2 (0 tolerance): NO foreign encrypted_content survives into ANY post-switch sol request — the strip path (D-ENC, prov:176-199) must catch every boundary-marker item."
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "min": 0,
+        "max": 2,
+        "label": "NO RETRY STORM (tolerant discriminator): 1 sol request = the preemptive model-bound strip sufficed (200, zero reactive involvement); 2 = the 400 fired once and the .58 reactive strip recovered (200); >=3 = same-payload retry storm or strip loop = defect (S3)."
+      },
+      {
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "POST-SWITCH ACCEPTED: the final sol request reached 200 (R8/.58-sufficient, or the reactive-strip recovery)."
+      },
+      {
+        "kind": "recon",
+        "op": "recon",
+        "what": "final-text",
+        "file": "req-*.json",
+        "label": "VERDICT RECORD: merged ndjson final text head (the post-switch terminal output, verbatim). recon — always records, never fails."
+      }
+    ]
+  }
+}

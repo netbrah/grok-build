@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "id": "WS9-S03-STREAM-TRUNC",
+  "title": "WS9 row S03 (stream truncation) vs our llm-proxy — seat gpt-5.6-sol (responses wire, strict row). Headless salvage probe (XREPLAY-1/RT-R2 lineage): turn 1 establishes the session (WS9-S03-T1); a kill op starts a long-essay turn and SIGKILLs the binary 4s in (mid-SSE-stream truncation: partial frames captured, process dies); the session is then resumed (via=resume, same model) and turn 2 must complete (WS9-S03-T2). Verdict semantics: PASS = the session survives a mid-stream truncation — T1 content replayed into the post-kill request (history integrity), T2 completes, exit 0, no request storm. The partial-essay leakage question (does the killed turn's partial assistant content persist into resumed history) is a RECON RECORD, not a scored pin: the donor/upstream and our architectures intentionally differ in partial-turn persistence (recon-plan L130-131 semantics-not-bytes) — a leak is an observed delta to adjudicate (S0/S1) on review, never a silent pass. Storm (>6 model requests) or an unrecoverable resume = FAIL (S3 report-and-stop). Semantic-diff dimensions: (1) history integrity post-truncation (T1 nonce in the resumed request), (2) partial-content persistence shape (recon), (3) honest terminal on the killed turn (ndjson error tolerated — the kill is the expected terminal), (4) no retry storm.",
+  "bead": "apex-ayl.78",
+  "suite": "salvage",
+  "tier": "full",
+  "driver": "headless",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "output_format": "streaming-json",
+  "watchdog_s": 300,
+  "est_calls": 5,
+  "wirecap": true,
+  "env": {
+    "store": false
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: WS9-S03-T1"
+    },
+    {
+      "op": "kill",
+      "after_s": 4,
+      "prompt": "Write a 1500-word essay about the history of lighthouses, covering at least three named lighthouses. Begin the essay immediately."
+    },
+    {
+      "op": "switch",
+      "model": "gpt-5.6-sol",
+      "via": "resume"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: WS9-S03-T2"
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "WS9-S03-T2",
+        "label": "SESSION RESUMED: after the mid-stream kill, the resumed session completed the post-kill turn with the exact terminal text."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "any": true,
+        "grep": "WS9-S03-T1",
+        "label": "HISTORY INTEGRITY: a post-kill request replays the pre-kill turn (T1 nonce in the resumed session's context) — the truncation did not corrupt the persisted history."
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "min": 3,
+        "max": 6,
+        "label": "NO RETRY STORM: 3-4 requests = the clean shape (T1 + killed turn + resume turn, plus side calls); >6 = retry storm around the truncation = defect (S3)."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "lighthouses",
+        "label": "PARTIAL-LEAK RECORD (delta dimension): records whether the killed turn's partial essay content ('lighthouses') persisted into any later request. Present = the partial turn was persisted into history (an observed delta vs the donor's discard-partial architecture — adjudicate S0/S1 on review); absent = clean discard. recon — always records, never fails."
+      },
+      {
+        "kind": "recon",
+        "op": "recon",
+        "what": "final-text",
+        "file": "req-*.json",
+        "label": "VERDICT RECORD: merged ndjson final text head (the resumed turn's terminal output, verbatim)."
+      }
+    ]
+  }
+}

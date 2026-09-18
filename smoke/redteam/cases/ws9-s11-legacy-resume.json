@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "id": "WS9-S11-LEGACY-RESUME",
+  "title": "WS9 row S11 (resume legacy session) vs our llm-proxy — seat qwen3.8-27b (responses wire, vLLM-dialect). Headless salvage probe (RT-R2 resume lineage): a pre-seeded session in the LEGACY persisted format — the seed schema is pinned from the 01a09be2 incident session (an old-binary-era chat_history.jsonl: system/user/assistant rows, pre-47b format) — is then resumed through the fresh binary of record (the first turn is a --resume of the seeded session id; three resumed turns total). Verdict semantics: PASS = the new binary resumes the old-format session coherently — the legacy history is actually replayed into the wire (the seed text appears in the resumed requests — the resume READ the old-format file, not a fresh session), T2/T3 complete with exact terminal text, exit 0, no request storm. The format-migration surface is the semantic-diff dimension (recon-plan L130-131: the persistence formats of the old and new binaries are the intentionally-evolved surface — semantics: what survives the migration, not byte-identity): (1) legacy history replayed (scored — the seed marker in a resumed request), (2) encrypted_content marker replay (recon — the OQ-3 documented residual: updates.jsonl replay restores markers → a 503+strip self-heal cycle; a 503 storm inflating the request count = S3), (3) session store round-trip (the runner's session-evidence copy). FAIL (S3 report-and-stop) = the resume crashes/rejects the legacy session, or a 503+strip storm (>6 model requests). Suite note: 'salvage' (state-recovery probe) is the closest existing suite enum — a 'session-resume' enum value is PROPOSED additively for the coordinator (naming only; the case is fully expressible as-is). PROP mapping: OQ-3 residual (observation); no standing PROP.",
+  "bead": "apex-ayl.78",
+  "suite": "salvage",
+  "tier": "full",
+  "driver": "headless",
+  "model": "qwen3.8-27b",
+  "wire": "responses",
+  "output_format": "streaming-json",
+  "seed": {
+    "hist_tokens": 3000
+  },
+  "watchdog_s": 300,
+  "est_calls": 4,
+  "wirecap": true,
+  "env": {
+    "store": false
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: WS9-S11-T1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: WS9-S11-T2"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: WS9-S11-T3"
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error"
+      },
+      {
+        "op": "text_contains",
+        "value": "WS9-S11-T2",
+        "label": "RESUME CHAIN ALIVE: the second resumed turn completed (the session survived the legacy-format resume and a subsequent turn)."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "WS9-S11-T3",
+        "label": "FINAL RESUMED TURN: the last resumed turn completed with the exact terminal text (drift-anchored done pin)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "last": 0,
+        "grep": "Synthetic context paragraph",
+        "label": "LEGACY HISTORY REPLAYED: the OLDEST resumed request carries the seeded legacy-format history (the resume actually READ the old-format chat_history.jsonl — a fresh-session start would not replay the seed; this is the resume claim's discriminating pin)."
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "min": 3,
+        "max": 6,
+        "label": "NO 503+STRIP STORM: 3 resumed turns + side calls fit 3-6; >6 = the OQ-3 residual (updates.jsonl marker replay) fired a 503+strip cycle storm = defect (S3); a single recovered 400/503 within the cap is the documented self-healing residual (record, not stop — OQ-3)."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "encrypted_content",
+        "label": "OQ-3 RESIDUAL RECORD: records any captured request line carrying encrypted_content markers on the resumed legacy history (the marker-replay surface — 0 hits = clean replay; hits = the 503+strip self-heal cycle class, cross-check the count pin). recon — always records, never fails."
+      },
+      {
+        "kind": "recon",
+        "op": "recon",
+        "what": "final-text",
+        "file": "req-*.json",
+        "label": "VERDICT RECORD: merged ndjson final text head (the final resumed turn's output, verbatim). recon — always records, never fails."
+      }
+    ]
+  }
+}

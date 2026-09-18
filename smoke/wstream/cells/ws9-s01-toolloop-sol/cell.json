@@ -1,0 +1,40 @@
+{
+  "cell": "ws9-s01-toolloop-sol",
+  "model": "gpt-5.6-sol",
+  "api_backend": "responses",
+  "backend_class": "native",
+  "wire": "responses",
+  "turns": 1,
+  "prompt": "Perform exactly these two tool calls, in this order, using the run_terminal_command tool, and no other tools: (1) echo WS9-S01-STREAM-A (2) echo WS9-S01-STREAM-B. After both results return, reply with exactly: WS9-S01-STREAM-OK",
+  "invariants": {
+    "status": 200,
+    "route": "responses",
+    "n_model_calls_min": 2
+  },
+  "observe": [
+    "route",
+    "status",
+    "n_model_calls",
+    "all_stream",
+    "any_stream",
+    "req_stream_values",
+    "reasoning_present",
+    "reasoning_frames",
+    "reasoning_encrypted_content",
+    "reasoning_thinking_block",
+    "reasoning_thought_signature",
+    "reasoning_sample",
+    "finish",
+    "budget_trap",
+    "final_text_nonempty",
+    "final_text_len",
+    "usage"
+  ],
+  "open_questions": [
+    "WS9-S01 streaming arm (JIG L3 stream-fidelity per wire): tool-call SSE frames + thinking deltas + usage consistency on the flagship strict seat (strict_responses_input=true). Cross-ref smoke/redteam/cases/ws9-s01-tool-loop.json (the multi-turn redteam arm) + grok/plans/ws9-12row-schema.md (S01 row)."
+  ],
+  "notes": "WS9 streaming arm of row S01 (normal tool loop): the EXISTING sol-resp cell is a no-tool single turn — this cell adds the tool-loop SSE surface (function_call / function_call_output frames in the stream, the strict-wire reasoning visibility during a tool round-trip, usage deltas across the 2+ model calls). n_model_calls_min=2 pins the tool round-trip (call turn + answer turn) — a 1-call run = the model skipped the tool path (invariant fail = the probe is vacuous for this run; re-run, do not relax). Single-turn wstream runner: no config_patch beyond the declared api_backend (the runner's HermeticHome applies model/<m>/api_backend only — see the gap register in grok/plans/ws9-12row-schema.md §8). Re-analyzable later via run.py --reanalyze <run_ts>. Bead apex-ayl.78 (WS9-SCENARIOS-1).",
+  "priority": 3,
+  "enabled": false,
+  "owner": "sdd78_schema_qwen (WS9 streaming arm, 2026-09-18)"
+}

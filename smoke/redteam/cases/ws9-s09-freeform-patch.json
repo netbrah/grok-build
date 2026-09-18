@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "id": "WS9-S09-FREEFORM-PATCH",
+  "title": "WS9 row S09 (freeform patch) vs our llm-proxy — RECON gate-state row (record-only, never fails; the row reports RECON). State of record: the R0 freeform apply_patch ENGINE is ported (parity §2.2: apply.rs/parser.rs/seek_sequence.rs shared; the codex ApplyPatchTool is registered in the tool registry), but the freeform surface is NOT DECLARED on the grok-build seat the redteam lane drives (the ACP/headless toolset advertises search_replace; the codex toolset rides the Codex builtin agent) — W6-2 (PROP-W6-2 FREEFORM-APPLY-PATCH) is MINOR-OWED, activation-gated on the B3 Astra-row operator ruling (feature-ladder R12; mechanism bead splittable from activation per parity §3). This case records the GATE STATE, not a delta: one bounded qwen turn; (1) the ndjson tools_present pin records whether apply_patch is advertised in the available tool list, (2) the wire recon records whether the apply_patch tool schema is present in the request tools[] array (the wire-level advertisement — the discriminating surface). Verdict semantics: RECON + UNPROVEN (activation gate PROP-W6-2/B3) while the records show 0 advertisements — marked, not guessed: no freeform patch can be issued on this seat, so no patch-fidelity claim is made; when the records show apply_patch ADVERTISED (W6-2 activation landed between recon and Phase-B launch), this row flips to PROVEN-instrument and the scored follow-up (a tool-call case with a real patch round-trip + the grammar-surface pins) is filed as a separate additive case — promotion is a coordinator ruling, never silent. No severity applies to a gate-state row (severity attaches to observed deltas once the surface is live).",
+  "bead": "apex-ayl.78",
+  "suite": "recon",
+  "tier": "full",
+  "driver": "headless",
+  "model": "qwen3.8-27b",
+  "wire": "responses",
+  "output_format": "streaming-json",
+  "recon": true,
+  "watchdog_s": 300,
+  "est_calls": 2,
+  "wirecap": true,
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: WS9-S09-OK"
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "tools_present",
+        "id": "apply_patch_offered",
+        "names": [
+          "apply_patch"
+        ],
+        "label": "GATE-STATE RECORD (recon class): does the grok-build seat advertise the freeform apply_patch tool (the W6-2 declaration-swap target)? Records present/absent — UNPROVEN (PROP-W6-2/B3 activation pending) while absent; when present, the scored patch round-trip follow-up is owed (coordinator promotion ruling)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "apply_patch",
+        "label": "GATE-STATE WIRE RECORD (recon class): the tools[] advertisement on the wire — records whether the apply_patch tool schema appears in the request tools[] array (0 hits = the engine is ported but undeclared on this seat; the discriminating surface for the B3 activation ruling). recon — always records, never fails."
+      },
+      {
+        "kind": "recon",
+        "op": "recon",
+        "what": "final-text",
+        "file": "req-*.json",
+        "label": "VERDICT RECORD: merged ndjson final text head (verbatim). recon — always records, never fails."
+      }
+    ]
+  }
+}

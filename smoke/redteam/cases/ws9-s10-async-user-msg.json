@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "WS9-S10-ASYNC-MSG",
+  "title": "WS9 row S10 (async user message) vs our llm-proxy — UNPROVEN (marked, not guessed; PROP-3/W6 gate row). State of record: send_user_message_async is ABSENT from this binary — 0 hits for send_user_message_async / supports_async_user_messages (parity-audit-10 §2.3 item 3; the WS5 sweep re-verified 0 hits @377711c — re-derive @dec6b27 at unblock). The donor's acceptance contract (proposals L67, verbatim — the unblocked shape): the async tool is 'advertised only for Codex+Responses routes that list it, completes on send on the original call ID, independent of API-key vs OAuth; no tool exposure for subagent routes'. No async tool exists to advertise, so this case is disabled: the runner SKIPs it with this reason as the skip note, and the S10 row exits as UNPROVEN (gate state), never PASS and never FAIL. UNBLOCKED SHAPE (when PROP-3 lands; the donor origin commits 62d14fb1/49b98e8e/f69f2cf6/73b33284 = tool + notification + builder exposure + rebuild gating): an ACP session on a Codex+Responses route (gpt-5.6-sol) asserting the three clauses verbatim — (1) the async tool appears in the advertised tools[] (route-capability pin), (2) the tool call COMPLETES ON SEND on the original call ID (the function_call_output closes immediately, before any model continuation — the timing pin), (3) no tool exposure on a subagent route (the same tools[] list on a child session is ABSENT — the negative pin). PROP mapping: PROP-3 (B1: WS8 probe + OFF-OPORD ruling); transitively gates PROP-4/R11 (persistent mode requires the async tool).",
+  "bead": "apex-ayl.78",
+  "suite": "recon",
+  "tier": "full",
+  "driver": "acp",
+  "model": "gpt-5.6-sol",
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "wire": "responses",
+  "disabled": true,
+  "reason": "UNPROVEN — PROP-3 gate (B1): send_user_message_async absent from this binary (0 hits, parity-audit-10 §2.3; re-derive @dec6b27 at unblock). Row exits UNPROVEN (gate state), not guessed.",
+  "unblocks_at": "PROP-3 (B1: WS8 probe + OFF-OPORD ruling; seam groups per parity §2.3 at intake). Transitive: PROP-4/R11 (persistent mode requires the async tool).",
+  "watchdog_s": 300,
+  "est_calls": 0,
+  "wirecap": false,
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "UNBLOCKED-SHAPE PLACEHOLDER (never runs while disabled): ACP session on the sol route — invoke the async user-message tool, pin completes-on-send on the original call ID, and assert the no-exposure negative pin on a child route (proposals L67 clauses verbatim)."
+    }
+  ]
+}

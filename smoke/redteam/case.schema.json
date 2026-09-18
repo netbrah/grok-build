@@ -43,9 +43,10 @@
         "cross-wire",
         "compaction",
         "salvage",
-        "recon"
+        "recon",
+        "session-resume"
       ],
-      "description": "Case type in the matrix. wire-shape = model echo + backend path only (RT-M5/RT-M6 row asserts). tool-call = a real plain builtin tool round-trip. mcp-call = a real MCP server tool round-trip (codegraph). mcp-tool = one case exercising both (the .21 default for per-row coverage cells). cross-wire = mid-session ACP model switch across wire backends (RT-CROSSWIRE1/1B, RT-XREPLAY1/2 lineage). compaction = seeded auto-compact probe (RT-C3/COMP-3 lineage). salvage = truncation/400-recovery probe (XREPLAY-1 strip-retry lineage). recon = record-only case (never fails)."
+      "description": "Case type in the matrix. wire-shape = model echo + backend path only (RT-M5/RT-M6 row asserts). tool-call = a real plain builtin tool round-trip. mcp-call = a real MCP server tool round-trip (codegraph). mcp-tool = one case exercising both (the .21 default for per-row coverage cells). cross-wire = mid-session ACP model switch across wire backends (RT-CROSSWIRE1/1B, RT-XREPLAY1/2 lineage). compaction = seeded auto-compact probe (RT-C3/COMP-3 lineage). salvage = truncation/400-recovery probe (XREPLAY-1 strip-retry lineage). recon = record-only case (never fails). session-resume = legacy/persisted-format session resume through a fresh binary (WS9-S11 lineage; S03/S11 remain filed under `salvage` until this enum lands — both cases already validate, no re-file owed)."
     },
     "tier": {
       "type": "string",
@@ -918,6 +919,30 @@
             "null"
           ],
           "description": "kind=recon literal value form: record this constant as the verdict record (runner check_recon)."
+        },
+        "a": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["file"],
+          "properties": {
+            "file": { "type": "string" },
+            "where": { "type": "object" },
+            "nth": { "type": "integer", "minimum": 0 },
+            "last": { "type": "integer", "minimum": 0 }
+          },
+          "description": "size_lt: the SMALLER-side request selection."
+        },
+        "b": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["file"],
+          "properties": {
+            "file": { "type": "string" },
+            "where": { "type": "object" },
+            "nth": { "type": "integer", "minimum": 0 },
+            "last": { "type": "integer", "minimum": 0 }
+          },
+          "description": "size_lt: the LARGER-side request selection."
         }
       },
       "required": [

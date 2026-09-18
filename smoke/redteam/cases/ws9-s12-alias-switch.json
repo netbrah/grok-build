@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "id": "WS9-S12-ALIAS-SWITCH",
+  "title": "WS9 row S12 (provider alias switch) vs our llm-proxy — same-wire alias-identity row: ACP session starts on claude-sonnet-4-5 (dash alias, messages wire) for 2 turns, then an in-session /model flip to claude-sonnet-4.5 (dot alias, messages wire — a SEPARATE catalog row aliasing the same underlying model/deployment) for 2 turns. This is the .75 AFFINITY-POLICY boundary question in alias form: both alias rows resolve to the same litellm deployment (the encrypted_content boundary markers encode the deployment model_id — same marker = same boundary), so the same-boundary KEEP policy (.75: 'same-boundary KEEP is PROVEN safe', proxy-capability-matrix §3.4) expects the post-switch request to RETAIN the foreign thinking blocks (T0 native-replay class on the xwfix ladder — same model+wire+encryption boundary). Verdict semantics (TOLERANT, CROSSWIRE-1 discipline — the acceptable outcomes are enumerated): PASS = the alias resolved (post-switch request carries body.model=claude-sonnet-4.5), the post-switch request is accepted (200), and the thinking blocks SURVIVED the alias switch (same-boundary KEEP — the .75 expectation). FINDING (designed-delta class, adjudicate S0 vs S2 on review) = 200 but the thinking blocks were STRIPPED at the alias switch — if the boundary markers are IDENTICAL across the switch, the strip treated a same-boundary identity as foreign = persistent user-visible fidelity loss (S2 candidate → PROP via the .75 lineage); if the markers DIFFER (the alias rows actually resolve to different deployments), the strip was justified (S0 documented delta) — the boundary-marker recon discriminates. FINDING (S1 self-healing) = 400 -> strip+retry -> 200 (the reactive net fired once; the count pin discriminates). FAIL (S3 report-and-stop) = retry storm (>=3 post-switch requests) or an unrecovered acp_error. The control pin (thinking rode pre-switch) is a premise: 0-hit => VACUOUS (the model produced no thinking to project — temperament). No expected_red: the switch mechanism is proven (RT-CROSSWIRE1/1B); the affinity-KEEP expectation is the .75 policy of record. No golden pin (the golden wire-assert kind is pending — JIG ratchet 1); the first post-switch request is the recorded fixture (recon).",
+  "bead": "apex-ayl.78",
+  "suite": "cross-wire",
+  "tier": "full",
+  "driver": "acp",
+  "model": "claude-sonnet-4-5",
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "wire": "messages",
+  "tolerant": true,
+  "watchdog_s": 300,
+  "est_calls": 6,
+  "wirecap": true,
+  "scoring": {
+    "vacuous_if": [
+      {
+        "pin": "thinking_rides",
+        "class": "model"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: WS9-S12-A1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: WS9-S12-A2"
+    },
+    {
+      "op": "switch",
+      "model": "claude-sonnet-4.5",
+      "via": "acp"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: WS9-S12-B1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: WS9-S12-B2"
+    },
+    {
+      "op": "recon_note",
+      "note": "BOUNDARY-DISCRIMINATOR (S12 review step): the encrypted_content boundary markers (encitem_*/litellm_enc: forms) in the pre-switch (claude-sonnet-4-5) vs post-switch (claude-sonnet-4.5) requests — IDENTICAL markers = same deployment = same boundary (the strip, if any, is an S2 candidate via the .75 lineage); DIFFERENT markers = different deployments = the strip was justified (S0 documented delta). Read from the wire capture on review; this note names the evidence so the verdict is a step, not a guess."
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "SESSION SURVIVES THE ALIAS SWITCH: the post-switch turns did not die (200 directly, or 400 recovered by the reactive strip)."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "WS9-S12-B2",
+        "label": "POST-SWITCH TURN COMPLETES: the final turn on the dot-alias row delivered the exact terminal text."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "id": "thinking_rides",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-4-5"
+        },
+        "any": true,
+        "grep": "\"type\": \"thinking\"",
+        "label": "CONTROL (anti-vacuous pin): a pre-switch dash-alias request carried a thinking block — real thinking content exists to cross the alias boundary. Without this, the KEEP/strip pins are vacuous (the model produced no thinking to project)."
+      },
+      {
+        "kind": "field",
+        "file": "req-*.json",
+        "path": "$.body.model",
+        "eq": "claude-sonnet-4.5",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "$.body.model": "claude-sonnet-4.5"
+        },
+        "label": "ALIAS RESOLVED: the post-switch request carries body.model=claude-sonnet-4.5 (the dot-alias row) on /v1/messages — the alias switch actually flipped the resolved model row (same wire, same family)."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-4.5"
+        },
+        "last": 0,
+        "grep": "\"type\": \"thinking\"",
+        "label": "SAME-BOUNDARY KEEP (the .75 expectation, T0 native-replay class): the FIRST post-switch dot-alias request (last:0 = oldest dot-alias request = the first post-switch turn) RETAINS the pre-switch thinking blocks — same deployment, same boundary, KEEP is the policy of record (proxy-capability-matrix §3.4). Absent here = the strip finding (adjudicate S0 vs S2 via the boundary-marker recon note)."
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-4.5"
+        },
+        "min": 0,
+        "max": 2,
+        "label": "NO RETRY STORM (tolerant discriminator): 1 dot-alias request = the switch was clean (200, zero reactive involvement); 2 = the 400 fired once and the reactive strip recovered (200); >=3 = retry storm or strip loop = defect (S3)."
+      },
+      {
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-4.5"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "POST-SWITCH ACCEPTED: the final dot-alias request reached 200."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "encitem_",
+        "label": "BOUNDARY-MARKER RECORD (the S0/S2 discriminator): records every captured line carrying litellm boundary markers (encitem_*/litellm_enc:) — pre- vs post-switch comparison on review (see the recon_note): identical = same boundary (strip = S2 candidate); different = different deployments (strip justified = S0). recon — always records, never fails."
+      },
+      {
+        "kind": "recon",
+        "op": "recon",
+        "what": "final-text",
+        "file": "req-*.json",
+        "label": "VERDICT RECORD: merged ndjson final text head (the post-switch terminal output, verbatim). recon — always records, never fails."
+      }
+    ]
+  }
+}

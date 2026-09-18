@@ -1,0 +1,115 @@
+{
+ "schema_version": 1,
+ "id": "WS9-ARM-TAGFLIP",
+ "title": "WS9 live-arm 2 (addendum 2) — TAG-FLIP e2e: the .75 401 tags-config class through the real harness send path (apex-ayl.78, ship gate; .75 = 61dec18 R8 AFFINITY-POLICY-1). Seat gpt-5.6-sol (responses wire). Premise (proxy-capability-matrix.md §2/§3-D): the operator's live config already carries x-litellm-tags: 'East US 2' on the sol row (extra_headers, wire-intact at PG-3 verify) — a session whose history carries foreign-boundary (non-EU2-origin) sol markers meeting that tag is the documented .75 exposure path ('tagless->tagged config change / tag edit mid-campaign', matrix §3 reading 5). Mechanism: the hermetic home copies the live config (tag inherited — NEVER the operator's ~/.grok/config.toml, launcher-side only); config_patch sets model/gpt-5.6-sol/strict_responses_input=false so the row rides the lenient verbatim path (the harness's unconditional strip_encrypted_content_input still strips the FIELD; the encitem_ ID rides — provider.rs:192-211 + project_strict_responses_input no-op when strict=false; lenient KEEP ruling 2026-09-14). The session is cell-seeded (xwfix seed path, absolute cell dir /tmp/ws9-run/arm-tagflip-cell) with a CAPTURED live marker (ws9-arm-probe arm_seed.json: non-EU2-origin encitem id + encrypted_content; the switch_model step is a same-model no-op that scores the storage-diff against expected.json at seed time). Verdict semantics (.75 contract): PASS = the marker rides the first request (anti-vacuous) AND the gateway rejects it with the tags-config 401 ('Not allowed to access model due to tags', 1s pre-affinity) AND the .75 classifier arm classifies + strips + retries ONCE (markerless) AND the retry is served 200 by the tagged EU2 pool AND the turn completes (done pin) AND no storm (2-4 requests). FAIL (S3 report-and-stop) = the 401 is unrecovered (terminal error) or a retry storm (>4). VACUOUS (mechanism, recorded) = the marker never rode (anti-vacuous 0-hit: the premise did not engage — e.g. the lenient patch did not take or the seed did not replay). Severity if the 401 class surfaces: S1 self-healing (contracted strip of the model-bound marker touches persisted history = +1-tier S2 candidate ON REVIEW — the strip is the .75/.58 fix behavior under test, not an incidental leak; the user-visible outcome is intact).",
+ "bead": "apex-ayl.78",
+ "suite": "salvage",
+ "tier": "full",
+ "driver": "headless",
+ "model": "gpt-5.6-sol",
+ "wire": "responses",
+ "output_format": "streaming-json",
+ "config_patch": {
+  "model/gpt-5.6-sol/strict_responses_input": false
+ },
+ "watchdog_s": 600,
+ "est_calls": 3,
+ "wirecap": true,
+ "steps": [
+  {
+   "op": "switch_model",
+   "model": "gpt-5.6-sol",
+   "cell": "/tmp/ws9-run/arm-tagflip-cell",
+   "note": "SEED (xwfix path): the captured non-EU2-origin sol marker history; same-model switch = no-op wall-wise, scores the storage-diff at seed time (expected.json = the seed verbatim)."
+  },
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: WS9-ARM-TAGFLIP-OK"
+  },
+  {
+   "op": "recon_note",
+   "note": "TAG-FLIP OBSERVED-STATE RECORD: the EU2 tag rides from the operator's live config (extra_headers on the sol row — inherited into the hermetic copy; the config_patch above touches ONLY strict_responses_input, never the tag). Expected wire sequence: req-001 carries the encitem_ id (marker; the FIELD is stripped by the unconditional strip_encrypted_content_input — the id is the surviving marker) + x-litellm-tags: East US 2 -> gateway 401 tags-config (1s, pre-affinity; the .75 classifier's message key) -> .75 arm: classify as model-bound-history -> strip via the .58 machinery -> retry-once (request_task.rs:466 contract shape) -> req-002 markerless -> 200 (tagged EU2 single-deployment pool, matrix §3-A constancy) -> turn completes. The 401 arm itself is unit-validated at .75 with the incident's verbatim body; this row is the LIVE e2e validation of the full classify->strip->retry->recovery path through the real send path. Structural note recorded: strict sol rows are marker-free (id+content projected; field unconditionally stripped) and are therefore structurally immune to the tags class — the exposure is the lenient/cross-model marker path this row reproduces."
+  }
+ ],
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "text_contains",
+    "id": "done",
+    "value": "WS9-ARM-TAGFLIP-OK",
+    "label": "RECOVERY: the turn completed with the exact terminal text after the 401->strip->retry cycle (no unrecovered 401, .75 contract)."
+   },
+   {
+    "op": "absent",
+    "event": "acp_error",
+    "label": "NO TERMINAL ERROR: the 401 was recovered in-flight (headless: the turn process would surface an error event if the retry terminated unrecovered)."
+   }
+  ],
+  "wire": [
+   {
+    "kind": "grep",
+    "id": "marker_ride",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/responses",
+     "body.model": "gpt-5.6-sol"
+    },
+    "last": 0,
+    "grep": "\"id\": \"encitem_",
+    "label": "ANTI-VACUOUS (premise pin): the first sol request carries the seeded encitem_ marker id (lenient verbatim ride; 0-hit = the premise never engaged = VACUOUS mechanism finding, never a silent pass)."
+   },
+   {
+    "kind": "resp_status",
+    "id": "first_401",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/responses",
+     "body.model": "gpt-5.6-sol"
+    },
+    "status_in": [
+     401
+    ],
+    "label": "TAGS-CONFIG 401: the marker-carrying request is rejected at the gateway (matrix §2: tag set of the pinned origin excludes the request tag; 1s pre-affinity fail-fast)."
+   },
+   {
+    "kind": "recon",
+    "id": "tags401_body",
+    "file": "resp-*.jsonl",
+    "any": true,
+    "grep": "Not allowed to access model due to tags",
+    "label": "401 BODY VERBATIM CLASS (recon record — resp captures are JSONL and cannot carry a G10 where, house discipline): the .75 classifier's message key as recorded from the captured response. The SCORED class surface is the first_401 resp_status pin (401 on the marker-carrying request); the body phrasing is recorded for adjudication — a 401 body that does NOT carry this key = an adjacent error class = escalate (record + coordinator ruling)."
+   },
+   {
+    "kind": "resp_status",
+    "id": "recovery_200",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/responses",
+     "body.model": "gpt-5.6-sol"
+    },
+    "which": "last",
+    "status_in": [
+     200
+    ],
+    "label": "RECOVERY 200: the final sol request (the post-strip retry, markerless) is served 200 by the tagged EU2 pool — the .75 contract's no-unrecovered-401 face."
+   },
+   {
+    "kind": "count",
+    "id": "no_storm",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/responses",
+     "body.model": "gpt-5.6-sol"
+    },
+    "min": 2,
+    "max": 4,
+    "label": "NO-RETRY-STORM: 2 = the clean 401->strip->retry shape; 3-4 = tolerated side calls; >4 = storm (auto S3 per ws9-12row-schema §2)."
+   }
+  ]
+ }
+}

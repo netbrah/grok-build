@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "id": "WS9-S05-COMPACT-RESUME",
+  "title": "WS9 row S05 (compact and resume) vs our llm-proxy — seat qwen3.8-27b (responses wire, vLLM-dialect). Headless compaction probe (RT-C3/RT-S1 lineage, success shape): a pre-seeded synthetic history (28k est tokens — above the plausible max resolved auto-compact threshold for the case-patched context_window=32768, i.e. 0.9x29532; the seed schema is pinned from the 01a09be2 incident session); the compact pass must SUCCEED on the local self-summarize path (remote_compaction_v2=false at the launch base; the /responses/compact proxy route is 403-gated at recon — PR 1914 unmerged). Verdict semantics: PASS = exactly one compact pass, attempts==1 (no multi-pass storm), summary produced (non-null), the post-compact resume turn rides the shrunken history (final request well below the 24k-token seed), T2 completes, exit 0. FAIL (S3 report-and-stop) = storm, missing summary with a failed compact, or a resume that replays the full pre-compact history (the compact did not take effect = S2 persistent fidelity loss). MUST-VERIFY NF-3 (projdiff §3; bead MUST-VERIFY): the compaction-v2 request-body deltas (ours vs donor) are LATENT until the proxy /responses/compact route lands. Encoded: (1) Phase-B step 0 = one cheap route probe (POST <base>/responses/compact, expect 403 'Route is blocked' or 2xx) decides the branch BEFORE this case runs — 403 = DORMANT (local self-summarize; this case runs as-is; body deltas unobservable, recorded as such), 2xx = ACTIVE (the coordinator additionally re-runs this case with GROK_REMOTE_COMPACTION_V2=1 so the v2 body hits the new route, and adjudicates the body against the donor allowlist: NF-3(a) system-item strip when instructions is set; NF-3(b) ours 14-field vs donor 11-field allowlist incl include/store/stream; direction = 'ours is the conservative refinement', so any diff OUTSIDE that documented refinement = new GAP → file PROP-W3-n PROPOSED per projdiff §5.1). (2) This case records BOTH evidence surfaces (local-path wire pin + remote-path recon + compaction artifact + branch disclosure note) so either branch's verdict is a review step, never a guess. PROP mapping: OQ-8 MANUAL-COMPACT-GATE (MINOR-OWED) context; no PROP unless the ACTIVE-branch delta escapes the documented refinement.",
+  "bead": "apex-ayl.78",
+  "suite": "compaction",
+  "tier": "full",
+  "driver": "headless",
+  "model": "qwen3.8-27b",
+  "wire": "responses",
+  "output_format": "streaming-json",
+  "config_patch": {
+    "model/qwen3.8-27b/context_window": 32768
+  },
+  "seed": {
+    "hist_tokens": 28000
+  },
+  "watchdog_s": 900,
+  "est_calls": 6,
+  "wirecap": true,
+  "env": {
+    "store": false
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: WS9-S05-T1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: WS9-S05-T2"
+    },
+    {
+      "op": "recon_note",
+      "note": "NF-3 MUST-VERIFY branch disclosure (projdiff §3 NF-3; bead apex-ayl.78 MUST-VERIFY): Phase-B step-0 route probe POST <base>/responses/compact decides the branch. 403 'Route is blocked' (expected at recon — PR 1914 unmerged) = DORMANT: local self-summarize only (xai-compact- req-id on /v1/responses); compaction-v2 body deltas unobservable, recorded as such. 2xx = ACTIVE: coordinator additionally re-runs this case with GROK_REMOTE_COMPACTION_V2=1 (the v2 body then rides the new route) and adjudicates the captured compact body against the donor allowlist — NF-3(a) system-item strip when instructions is set (client:2383-2390 splice-before-retain), NF-3(b) ours 14-field allowlist incl include/store/stream (client:591) vs donor 11-field (dclient:853); direction = 'ours is the conservative refinement'; any diff OUTSIDE the documented refinement = new GAP → file PROP-W3-n (PROPOSED) per projdiff §5.1. Neither branch is a defect by itself; the verdict is a review step over the recorded evidence (the two NF-3 recon pins + the compaction_requests artifact)."
+    },
+    {
+      "op": "recon_note",
+      "note": "COMPACT-TOOK-EFFECT DIMENSION (file-shrink evidence): the scored a/b size_lt pin (post-compact main request < pre-compact seed request) is NOT EXPRESSIBLE in the frozen case.schema.json at this launch — the wire_assert definition lacks the additive 'a'/'b' sub-spec properties the runner's size_lt kind requires (gap register in the ws9-12row-schema.md doc; the legacy rt-c1 a/b form is the runner precedent; per the brief's stop condition the schema is reported+proposed, never extended). The dimension is a coordinator review step over this run's wire/ captures: compare byte sizes of the main (non-xai-compact-) req-NNN.json before vs after the single compact pass — shrunken post-compact request = compact took effect; full-size replay = S2 persistent fidelity loss (the session keeps paying the 28k-token seed). Recorded here so the dimension is a step, not a guess."
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "present",
+        "event": "end",
+        "absent_ok": true
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "WS9-S05-T2",
+        "label": "RESUME AFTER COMPACT: the post-compact turn completed with the exact terminal text (the summary replaced the seed in context without breaking the session)."
+      }
+    ],
+    "artifact": [
+      {
+        "op": "count",
+        "file": "compaction_requests/*.json",
+        "min": 1,
+        "max": 1,
+        "label": "exactly one compact pass (no multi-pass storm — the COMP-3 wart shape is the defect class)"
+      },
+      {
+        "file": "compaction_requests/*.json",
+        "field": "$.attempts",
+        "eq": 1,
+        "label": "single sample attempt: a deterministic failure stops at one attempt (no blind retry storm)"
+      },
+      {
+        "file": "compaction_requests/*.json",
+        "field": "$.summary",
+        "ne_null": true,
+        "label": "SUMMARY PRODUCED: the local self-summarize compact succeeded (non-null summary) — the success shape (RT-C3 is the failure shape; this row is the ship-gate success pin)"
+      }
+    ],
+    "wire": [
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "headers.x-grok-req-id": {
+            "prefix": "xai-compact-"
+          }
+        },
+        "min": 0,
+        "max": 1,
+        "label": "LOCAL SELF-SUMMARIZE PATH (NF-3 DORMANT expectation): the compact request rides /v1/responses with the xai-compact- req-id (remote_compaction_v2=false at launch). 1 = dormant-branch clean shape; 0 = the ACTIVE branch flipped at launch (route 2xx + remote arm) — adjudicate against the recon records, not a fail; >1 = compact storm = defect (S3)."
+      },
+
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "xai-compact-",
+        "label": "NF-3 MUST-VERIFY (local-path record): records the compact-request lines (xai-compact- req-id) — 0 hits = the remote path was used at launch (cross-check the step-0 probe branch). recon — always records, never fails."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "responses/compact",
+        "label": "NF-3 MUST-VERIFY (remote-path record): records any request line carrying the /responses/compact route (the ACTIVE-branch evidence surface; 0 hits expected under DORMANT). The captured compact request body (whichever path) is the NF-3(a)/(b) body-shape adjudication corpus. recon — always records, never fails."
+      },
+      {
+        "kind": "recon",
+        "base": "session",
+        "file": "compaction_requests/*.json",
+        "field": "$.summary",
+        "label": "NF-3 MUST-VERIFY (output record): records the compaction summary text (400-char head) — the local self-summarize output for the cross-proxy differential read. recon — always records, never fails."
+      },
+      {
+        "kind": "recon",
+        "op": "recon",
+        "what": "final-text",
+        "file": "req-*.json",
+        "label": "VERDICT RECORD: merged ndjson final text head (the post-compact terminal output, verbatim). recon — always records, never fails."
+      }
+    ]
+  }
+}

@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "id": "WS9-S02-TOOL-FAIL",
+  "title": "WS9 row S02 (tool failure) vs our llm-proxy — seat qwen3.8-27b (responses wire, vLLM-dialect, lenient row). Two headless turns in one resumed session: turn 1 runs a REAL failing command (sh -c 'echo WS9-S02-FAILMARK; exit 3') exactly once via run_terminal_command; turn 2 (restating the exact command) asks the model to report the exit code it observed. Verdict semantics: the control pin fail_call (escaped tool-arguments form) 0-hit => VACUOUS (the model never took the tool path — recorded, not a defect); with the premise held, the scored claim is FAILURE-SEMANTICS PROPAGATION: the model must reply WS9-S02-EXIT-3 on turn 2 (the non-zero exit code reached the model through the tool result — the semantic diff dimension: the result payload must carry the output AND the exit status; bytes differ by family by design). A wrong/missing code = FAIL (S2-class: persistent user-visible fidelity loss — the model lost the exit status). NO RETRY STORM: the failed command must not be blindly re-executed (request-count pin; the XREPLAY-1/COMP-3 storm shape is the defect class). No PROP gate; BRICK = S3 report-and-stop.",
+  "bead": "apex-ayl.78",
+  "suite": "tool-call",
+  "tier": "full",
+  "driver": "headless",
+  "model": "qwen3.8-27b",
+  "wire": "responses",
+  "output_format": "streaming-json",
+  "watchdog_s": 300,
+  "est_calls": 5,
+  "wirecap": true,
+  "env": {
+    "store": false
+  },
+  "tool_calls": [
+    {
+      "id": "sh_fail",
+      "tool": "run_terminal_command",
+      "args": {
+        "command": "sh -c 'echo WS9-S02-FAILMARK; exit 3'"
+      },
+      "premise": "model",
+      "output_contains": "WS9-S02-FAILMARK"
+    }
+  ],
+  "scoring": {
+    "vacuous_if": [
+      {
+        "pin": "fail_call",
+        "class": "model"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Use the run_terminal_command tool exactly once to run this command: sh -c 'echo WS9-S02-FAILMARK; exit 3'. Do not retry it and do not run any other command. After the result returns, reply with exactly: WS9-S02-T1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Earlier you ran this exact command: sh -c 'echo WS9-S02-FAILMARK; exit 3' — it exited non-zero. Reply with exactly: WS9-S02-EXIT-<the exit code you observed>"
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "text_contains",
+        "value": "WS9-S02-EXIT-3",
+        "label": "FAILURE SEMANTICS PROPAGATED: the model reported the exact non-zero exit code — the tool result payload carried the failure status into the model's context (the S02 semantic-diff dimension)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "id": "fail_call",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "any": true,
+        "grep": "\\\"command\\\":\\\"sh -c 'echo WS9-S02-FAILMARK; exit 3'\\\"",
+        "label": "CONTROL (anti-vacuous pin): an escaped tool-arguments line marks the failing command actually issued via run_terminal_command (the prompt's plain mention cannot false-satisfy the escaped form). 0-hit = VACUOUS (the model never took the tool path)."
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "min": 2,
+        "max": 4,
+        "label": "NO RETRY STORM: 2 requests = the clean shape (turn 1 + turn 2); 3-4 = a within-turn re-execution — tolerated but a recorded FINDING (adjudicate on review, S1-class self-healing if the exit code was still reported correctly); >4 = same-payload retry storm (COMP-3 shape) = defect (S3)."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "WS9-S02-FAILMARK",
+        "label": "FAILED-COMMAND EVIDENCE RECORD: records which captured request lines carry the failing command (escaped tool-arguments form vs prompt text) — the per-request evidence for the once-only claim. recon — always records, never fails."
+      }
+    ]
+  }
+}

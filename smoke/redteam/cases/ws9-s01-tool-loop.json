@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "id": "WS9-S01-TOOL-LOOP",
+  "title": "WS9 row S01 (normal tool loop) vs our llm-proxy — flagship seat gpt-5.6-sol (responses wire, strict_responses_input=true, live defaults). Two headless turns in one resumed session: baseline turn (WS9-S01-T1), then the tool-loop turn — TWO real run_terminal_command round-trips (echo nonces, write-free) followed by the exact terminal reply (WS9-S01-T2). Verdict semantics (discriminating-pin design, T21 house pattern): the harness premise is the control pin sh_call (escaped tool-arguments form — the tools[] schema and the prompt text cannot false-satisfy it): 0-hit => VACUOUS (the model never took the tool path — temperament, recorded, not a defect); with the premise held, the scored pins decide PASS/FAIL — the synthesized payload pins (the nonces must appear in the request tool-result payloads) + the ndjson pins (the model QUOTES the nonce output in its reply — container-agnostic payload proof). A 400 on a tool round-trip is NOT recovered-by-design on the strict sol row: it FAILs as a tool-path finding (strict-mode schema rejection is the point of the ship-gate row). Semantic-diff dimensions (semantics-not-bytes per recon-plan L130-131: family tool schemas intentionally differ): (1) tool invoked with declared args (name+args semantics, escaped-JSON pin), (2) result payload reached the model (nonce quoted in the reply), (3) loop closed (final text), (4) usage-field consistency + reasoning visibility = stream-fidelity baseline (recon records; cross-ref wstream cell ws9-s01-toolloop-sol for the SSE-frame view). No PROP gate (pure fidelity row); BRICK = S3 report-and-stop.",
+  "bead": "apex-ayl.78",
+  "suite": "tool-call",
+  "tier": "full",
+  "driver": "headless",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "output_format": "streaming-json",
+  "watchdog_s": 300,
+  "est_calls": 5,
+  "wirecap": true,
+  "env": {
+    "store": false
+  },
+  "tool_calls": [
+    {
+      "id": "sh_a",
+      "tool": "run_terminal_command",
+      "args": {
+        "command": "echo WS9-S01-ECHO-A"
+      },
+      "premise": "model",
+      "output_contains": "WS9-S01-ECHO-A"
+    },
+    {
+      "id": "sh_b",
+      "tool": "run_terminal_command",
+      "args": {
+        "command": "echo WS9-S01-ECHO-B"
+      },
+      "premise": "model",
+      "output_contains": "WS9-S01-ECHO-B"
+    }
+  ],
+  "scoring": {
+    "vacuous_if": [
+      {
+        "pin": "sh_call",
+        "class": "model"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: WS9-S01-T1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Perform exactly these two tool calls, in this order, using the run_terminal_command tool, and no other tools: (1) echo WS9-S01-ECHO-A (2) echo WS9-S01-ECHO-B. After both results return, reply with exactly: ECHOED:WS9-S01-ECHO-A WS9-S01-ECHO-B WS9-S01-T2"
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "WS9-S01-T2",
+        "label": "LOOP CLOSED: the tool-loop turn completed with the exact terminal nonce."
+      },
+      {
+        "op": "text_contains",
+        "id": "quoted",
+        "value": "ECHOED:WS9-S01-ECHO-A",
+        "label": "PAYLOAD PROOF (container-agnostic): the reply quotes both echo outputs — the tool RESULTS reached the model's context (the prompt names the commands, so only a real round-trip can make the model quote the output)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "id": "sh_call",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "any": true,
+        "grep": "\\\"command\\\":\\\"echo WS9-S01-ECHO-A\\\"",
+        "label": "CONTROL (anti-vacuous pin): an escaped tool-arguments line (the form ONLY a real tool call carries — the tools[] schema and the prompt text cannot false-satisfy it) marks the declared echo command actually issued. 0-hit = the model never took the tool path (VACUOUS, temperament)."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "\"type\": \"reasoning\"",
+        "label": "STREAM-FIDELITY BASELINE RECORD (S01 / JIG L3): records how many captured request lines carry reasoning INPUT items on the strict sol seat (stream-fidelity-per-wire baseline; the SSE-frame view is the wstream ws9-s01-toolloop-sol cell). recon — always records, never fails."
+      },
+      {
+        "kind": "recon",
+        "op": "recon",
+        "what": "final-text",
+        "file": "req-*.json",
+        "label": "VERDICT RECORD: merged ndjson final text head (the loop's terminal output, verbatim). recon — always records, never fails."
+      }
+    ]
+  }
+}

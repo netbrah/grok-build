@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "WS9-S08-RESP-LITE",
+  "title": "WS9 row S08 (Responses Lite) vs our llm-proxy — UNPROVEN (marked, not guessed; PROP-3/W6 gate row). State of record: the Responses Lite substrate is ABSENT from this binary — 0 hits for responses_lite / the catalog_wire stage / the provider patch / the route rebuild (parity-audit-10 §2.1 item 1; the WS5 sweep re-verified 0 hits @377711c — re-derive @dec6b27 at unblock), and the WS8 probe of OUR proxy's Lite pass-through = UNKNOWN (OFF-OPORD candidate, overall-plans B1). No Lite-shaped request can be issued, so this case is disabled: the runner SKIPs it with this reason as the skip note, and the S08 row exits as UNPROVEN (gate state), never PASS and never FAIL — the row records the gate, not a delta. UNBLOCKED SHAPE (the contract for when PROP-3 lands, re-derived at intake against the launch base): one turn on the Lite-armed gpt-5.6-sol row (catalog stage -> config stage -> provider patch provider.rs:87 analog -> route rebuild sampler_turn.rs, per the PROP-3 seam line; seam groups a-c fold in at intake per parity §2.1) asserting: (1) the request carries the Lite dialect markers named at intake (200, store=false), (2) the proxy pass-through held (no 400 rejection of the Lite shape — the WS8 B1 probe truth), (3) capability-across-switch (the donor's two-test shape: mock Lite round trip + the capability surviving a model switch). PROP mapping: PROP-3 (B1: WS8 Lite pass-through probe + OFF-OPORD ruling if it fails); transitively gates PROP-4/R11 (persistent mode requires PROP-3's async tool — proposals L32/L80).",
+  "bead": "apex-ayl.78",
+  "suite": "recon",
+  "tier": "full",
+  "driver": "headless",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "disabled": true,
+  "reason": "UNPROVEN — PROP-3 gate (B1): Responses Lite substrate absent from this binary (0 hits, parity-audit-10 §2.1; re-derive @dec6b27 at unblock) AND the WS8 proxy Lite pass-through probe = UNKNOWN (OFF-OPORD candidate). Row exits UNPROVEN (gate state), not guessed.",
+  "unblocks_at": "PROP-3 (B1: WS8 Lite pass-through probe + OFF-OPORD ruling; seam-line extension a-c at intake per parity §2.1). Transitive: PROP-4/R11.",
+  "watchdog_s": 300,
+  "est_calls": 0,
+  "wirecap": false,
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "UNBLOCKED-SHAPE PLACEHOLDER (never runs while disabled): one turn on the Lite-armed sol row asserting the Lite dialect request shape (200, store=false, proxy pass-through) + capability-across-switch — re-derive the marker names at PROP-3 intake."
+    }
+  ]
+}

@@ -1,0 +1,158 @@
+{
+  "schema_version": 1,
+  "id": "WS9-S06-SPAWN-MSG",
+  "title": "WS9 row S06 (spawn and message child) vs our llm-proxy — v2 multi-agent mailbox round-trip (RT-M11/MA-4 lineage) across a wire boundary: ACP parent qwen3.8-27b (responses wire) spawns a background child claude-sonnet-5 (messages wire) with spawn_agent; the child must report PART1 over the mailbox (send_message); the parent then REUSES the completed child with followup_task for PART2; wait_agent gates each exchange. The v2 arm is LIVE in the hermetic config (features.multi_agent_v2=true + row-level arms, live config at recon — no in-case arm patch; re-verify wire-intact at Phase-B launch per WAVE-S PG-3). Verdict semantics (rt-m11 discipline): the scored FAIL surface is the WIRE SHAPE — an opaque \"agent_message\" carrier item on EITHER wire = the designed defect (the v2 protocol pins the text-fallback frames; the carrier is the MA-3/MA-4 failure class); an unrecovered error terminal = defect (S3). The model-cooperation pins (child ran / PART1 / PART2 reported exactly) are premise controls: a 0-hit => VACUOUS (model temperament — report unreachable-as-temperament, never relax the pins, RT-M11 precedent). Semantic-diff dimensions (semantics-not-bytes, recon-plan L130-131: the mailbox encoding intentionally differs — donor v2 uses opaque carriers where our port uses plaintext untrusted-agent frames): (1) spawn envelope marker ('Untrusted message from agent') on the child's wire, (2) child executed on its OWN model+wire (body.model=claude-sonnet-5 on /v1/messages), (3) mailbox round-trip content reached the parent (PART1/PART2 in the parent's final text), (4) no opaque agent_message carrier on any request of either wire. No PROP gate (the v2 tool flow is in-tree; the shape is proven in RT-M11/M11R).",
+  "bead": "apex-ayl.78",
+  "suite": "tool-call",
+  "tier": "full",
+  "driver": "acp",
+  "model": "qwen3.8-27b",
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "watchdog_s": 600,
+  "est_calls": 12,
+  "wirecap": true,
+  "tool_calls": [
+    {
+      "id": "reuse1",
+      "tool": "followup_task",
+      "args": {
+        "task_name": "worker",
+        "message": "use the send_message tool to send the parent agent (root) a message containing exactly: WS9-S06-PART2, and only then finish"
+      },
+      "premise": "model"
+    }
+  ],
+  "scoring": {
+    "vacuous_if": [
+      {
+        "pin": "child_ran",
+        "class": "model"
+      },
+      {
+        "pin": "part1",
+        "class": "model"
+      },
+      {
+        "pin": "part2",
+        "class": "model"
+      },
+      {
+        "pin": "reuse_call",
+        "class": "model"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "timeout_s": 300,
+      "prompt": "Use the spawn_agent tool to start a background agent named worker with model claude-sonnet-5 (pass model: claude-sonnet-5 in the tool arguments). In its message, give it this task: use the send_message tool to send the parent agent (root) a message containing exactly: WS9-S06-PART1, and only then finish. After spawning, use wait_agent to wait for the worker to finish, then reply with exactly: PART1-RECEIVED <the exact message the worker sent you> WORKER-ACK"
+    },
+    {
+      "op": "turn",
+      "timeout_s": 300,
+      "prompt": "Now reuse the worker: use the followup_task tool to send worker this follow-up task: use the send_message tool to send the parent agent (root) a message containing exactly: WS9-S06-PART2, and only then finish. Wait for the report with wait_agent, then reply with exactly: REPORT:<the exact message the worker sent you> PARENT-OK"
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error"
+      },
+      {
+        "op": "text_contains",
+        "value": "WORKER-ACK"
+      },
+      {
+        "op": "text_contains",
+        "id": "part1",
+        "value": "WS9-S06-PART1",
+        "label": "MAILBOX ROUND-TRIP 1: the child's PART1 report reached the parent's context (spawn + send_message + wait cycle closed)."
+      },
+      {
+        "op": "text_contains",
+        "id": "part2",
+        "value": "WS9-S06-PART2",
+        "label": "MAILBOX ROUND-TRIP 2 (REUSE): the reused child (followup_task) delivered PART2 — the child survived completion and was re-tasked with its own model/wire intact."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "PARENT-OK",
+        "label": "TERMINAL ACK: the reuse turn closed with the exact terminal token (drift-anchored done pin)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "id": "child_ran",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "any": true,
+        "grep": "\"model\"",
+        "label": "CONTROL (anti-vacuous pin): a request with body.model=claude-sonnet-5 on /v1/messages exists — the child actually ran on its own model+wire. Without this, the mailbox pins are vacuous (the model never spawned the child)."
+      },
+      {
+        "kind": "grep",
+        "id": "reuse_call",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "any": true,
+        "grep": "\"message\\\":\\\"use the send_message tool to send the parent agent (root) a message containing exactly: WS9-S06-PART2, and only then finish\\\"",
+        "label": "CONTROL (anti-vacuous pin): an escaped tool-arguments line — the followup_task call carrying the declared message VERBATIM (the form ONLY a real tool call carries; the prompt text and the tools[] schema cannot false-satisfy an escaped-JSON value) marks the reuse actually issued with the declared args. 0-hit = the model never issued followup_task with the declared message (VACUOUS, temperament — e.g. a paraphrased task text)."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages"
+        },
+        "all": true,
+        "grep": "\"agent_message\"",
+        "absent": true,
+        "label": "MA-4 NO OPAQUE CARRIER (messages wire): no 'agent_message' carrier item on ANY messages-wire request — the v2 protocol pins the plaintext text-fallback frames (the opaque carrier is the defect class; an empty match set is a fail-closed harness failure — the cross-wire run must produce requests on both paths)."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses"
+        },
+        "all": true,
+        "grep": "\"agent_message\"",
+        "absent": true,
+        "label": "MA-4 NO OPAQUE CARRIER (responses wire): no 'agent_message' carrier item on ANY responses-wire request (parent side — the child-to-parent envelope must ride the plaintext frames)."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages"
+        },
+        "any": true,
+        "grep": "Untrusted message from agent",
+        "label": "SPAWN ENVELOPE (text-fallback pin): the plaintext v0/v2 spawn envelope marker 'Untrusted message from agent' appears on the child's wire — the parent's spawn message crossed into the child as the untrusted-agent frame (the RT-M11 shape, wire-agnostic system_reminder form)."
+      },
+      {
+        "kind": "recon",
+        "op": "recon",
+        "what": "final-text",
+        "file": "req-*.json",
+        "label": "VERDICT RECORD: merged ndjson final text head (the parent's terminal output incl. the reported mailbox content, verbatim). recon — always records, never fails."
+      }
+    ]
+  }
+}

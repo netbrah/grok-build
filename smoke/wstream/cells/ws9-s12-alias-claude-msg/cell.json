@@ -1,0 +1,40 @@
+{
+  "cell": "ws9-s12-alias-claude-msg",
+  "model": "claude-sonnet-5",
+  "api_backend": "messages",
+  "backend_class": "native",
+  "wire": "messages",
+  "turns": 1,
+  "prompt": "Compute 7^8432 mod 5557 using modular exponentiation. Show each squaring step briefly, then state the final remainder on its own line. Do not use any tools.",
+  "invariants": {
+    "status": 200,
+    "route": "messages",
+    "n_model_calls_min": 1
+  },
+  "observe": [
+    "route",
+    "status",
+    "n_model_calls",
+    "all_stream",
+    "any_stream",
+    "req_stream_values",
+    "reasoning_present",
+    "reasoning_frames",
+    "reasoning_encrypted_content",
+    "reasoning_thinking_block",
+    "reasoning_thought_signature",
+    "reasoning_sample",
+    "finish",
+    "budget_trap",
+    "final_text_nonempty",
+    "final_text_len",
+    "usage"
+  ],
+  "open_questions": [
+    "WS9-S12 control baseline (JIG L3 stream-fidelity per wire): thinking-block visibility IN STREAM on the anthropic-family control seat used by the S06/S12 rows — the existing 10 cells cover claude-opus-5 (opus-msg) but NOT claude-sonnet-5; the alias pair claude-sonnet-4-5/claude-sonnet-4.5 (S12) sits in this family, so the sonnet-5 streaming baseline is the family reference for the same-boundary affinity question."
+  ],
+  "notes": "WS9 anthropic-family CONTROL baseline: one bounded streaming turn on claude-sonnet-5 (messages wire, native row). Records the thinking-block/thoughtSignature streaming surface for the S06 (spawn parent) and S12 (alias switch) rows — the boundary-marker (encitem_/litellm_enc:) shape in the SSE stream is the .75 same-boundary affinity reference (proxy-capability-matrix §3.4). Bounded house prompt (modular exponentiation, 180s per-turn kill budget) keeps spend small. Re-analyzable later via run.py --reanalyze <run_ts>. Bead apex-ayl.78 (WS9-SCENARIOS-1).",
+  "priority": 3,
+  "enabled": false,
+  "owner": "sdd78_schema_qwen (WS9 streaming arm, 2026-09-18)"
+}
