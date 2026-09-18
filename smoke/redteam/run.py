@@ -39,6 +39,7 @@ Case-file contract: see smoke/redteam/cases/*.json and spec §4.
 """
 import argparse
 import codecs
+import copy
 import glob as globmod
 import json
 import os
@@ -1506,6 +1507,278 @@ def synth_output_pins(case):
     return out
 
 
+# ---------------------------------------------------------------------------
+# apex-ayl.70 / apex-ayl.79 (XW-FIXTURES-1 op + XW-JIG-1 ratchet ①) —
+# the golden-kind wire engine + the switch_model op's XW-FIXTURES cell
+# helpers. ONE compare engine: check_wire kind=golden and the
+# switch_model op's wire hook both call golden_compare (R1C: the
+# retired cell_diff kind has no second comparator).
+# ---------------------------------------------------------------------------
+
+XWFIX_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+
+
+def _xwfix_cell_dir(cell):
+    return (cell if os.path.isabs(cell)
+            else os.path.join(XWFIX_REPO_ROOT, cell))
+
+
+def xwfix_seed_from_cell(home, cwd, sid, model, cell_dir):
+    """Seed a fresh session with the cell's pre_switch.json VERBATIM (one
+    compact JSON record per line) + a seed_history-style summary.json. The
+    records are the byte-pinned foreign pre-switch history — no token-count
+    filler. Returns (session_dir, n_lines, total_bytes) or None."""
+    pre = os.path.join(cell_dir, "pre_switch.json")
+    if not os.path.isfile(pre):
+        return None
+    with open(pre) as fh:
+        records = json.load(fh)
+    sdir = home.session_dir_for(cwd, sid)
+    os.makedirs(sdir, mode=0o700, exist_ok=True)
+    lines = [json.dumps(r) for r in records]
+    history_path = os.path.join(sdir, "chat_history.jsonl")
+    with open(history_path, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    now = datetime.now(timezone.utc).isoformat()
+    summary = {
+        "info": {"id": sid, "cwd": cwd},
+        "agent_id": "ag1.xwfixcellseed0000000000000000",
+        "session_summary": "xwfix cell-seeded history (%d records)"
+                           % len(records),
+        "created_at": now,
+        "updated_at": now,
+        "num_messages": len(lines),
+        "num_chat_messages": len(lines),
+        "current_model_id": model,
+        "chat_format_version": 1,
+        "grok_home": home.home,
+        "agent_name": "xwfix-cell-seed",
+    }
+    with open(os.path.join(sdir, "summary.json"), "w") as fh:
+        json.dump(summary, fh, indent=2)
+    return sdir, len(lines), os.path.getsize(history_path)
+
+
+def xwfix_cell_diff_storage(cell_dir, session_dir):
+    """Storage-form cell diff (evaluated AT SWITCH TIME, before the
+    post-switch turn appends records): the persisted chat_history.jsonl
+    must equal the cell's expected.json (record array, order-sensitive
+    deep equality). The switch_model op appends this result at switch
+    time so the post-switch turn cannot contaminate the pin."""
+    spec = {"op": "xwfix_cell_diff", "form": "storage",
+            "cell": os.path.basename(cell_dir)}
+    exp_p = os.path.join(cell_dir, "expected.json")
+    hist_p = os.path.join(session_dir or "", "chat_history.jsonl")
+    if not (os.path.isfile(exp_p) and os.path.isfile(hist_p)):
+        return AssertResult(
+            spec, "xwfix_cell_diff.storage", False,
+            "missing expected.json or session chat_history.jsonl",
+            "cell_dir=%s session_dir=%r" % (cell_dir, session_dir))
+    with open(exp_p) as fh:
+        expected = json.load(fh)
+    with open(hist_p) as fh:
+        actual = [json.loads(l) for l in fh if l.strip()]
+    if actual == expected:
+        return AssertResult(
+            spec, "xwfix_cell_diff.storage", True,
+            "%d records match the cell golden (post-switch storage == "
+            "expected)" % len(expected),
+            "storage form; byte pin %s" % exp_p)
+    first = next((i for i in range(min(len(actual), len(expected)))
+                  if actual[i] != expected[i]),
+                 min(len(actual), len(expected)))
+    t = (actual[first].get("type") if first < len(actual) else "<EOF>")
+    return AssertResult(
+        spec, "xwfix_cell_diff.storage", False,
+        "post-switch stored history != cell golden: actual=%d expected=%d "
+        "first_diff_index=%d (type=%s) — the documented pre-projector "
+        "behavior (RED)" % (len(actual), len(expected), first, t),
+        "storage form; byte pin %s" % exp_p)
+
+
+def _golden_canon(v):
+    """The golden-kind canonical form: key-sorted compact JSON (the
+    XW-FIXTURES wire normalization). Object key order is insensitive;
+    list order is SIGNIFICANT — the input[] conversation order is
+    semantic and projection must not reorder it, so no order-insensitive
+    list normalization exists in this engine."""
+    return json.dumps(v, sort_keys=True, separators=(",", ":"))
+
+
+def _golden_null_path(obj, path):
+    """Deep-copy `obj` with the value at dotted capture-root `path`
+    nulled (dot keys + list indices — a bare numeric token indexes a
+    list, the 'body.input.0.id' form; [i] is accepted too). Returns
+    (copy, applied): applied is True iff the final token actually
+    nulled a value — an absent path is a no-op (the same fail-open
+    semantics as the read path) and reports applied=False, so the
+    caller can make an unapplied declaration loud (MINOR-1)."""
+    out = copy.deepcopy(obj)
+    rest = (path or "").strip()
+    if rest.startswith("$."):
+        rest = rest[2:]
+    elif rest.startswith("$"):
+        rest = rest[1:]
+    toks = re.findall(r'[^\.\[\]]+|\[\d+\]', rest)
+    cur = out
+    for tok in toks[:-1]:
+        if tok.startswith("["):
+            idx = int(tok[1:-1])
+            if not isinstance(cur, list) or idx >= len(cur):
+                return out, False
+            cur = cur[idx]
+            continue
+        if isinstance(cur, list) and tok.isdigit():
+            idx = int(tok)
+            if idx >= len(cur):
+                return out, False
+            cur = cur[idx]
+        elif isinstance(cur, dict) and tok in cur:
+            cur = cur[tok]
+        else:
+            return out, False
+    if not toks:
+        return out, False
+    last = toks[-1]
+    applied = False
+    if last.startswith("["):
+        idx = int(last[1:-1])
+        if isinstance(cur, list) and idx < len(cur):
+            cur[idx] = None
+            applied = True
+    elif isinstance(cur, list) and last.isdigit():
+        if int(last) < len(cur):
+            cur[int(last)] = None
+            applied = True
+    elif isinstance(cur, dict) and last in cur:
+        cur[last] = None
+        applied = True
+    return out, applied
+
+
+def _golden_snip(v):
+    s = v if isinstance(v, str) else _golden_canon(v)
+    return s[:120]
+
+
+def _golden_field_diff(actual, want, limit=5):
+    """The structured field-level diff: walk both (already normalized)
+    request bodies in parallel (dicts in canonical key order, lists by
+    index) and collect the first `limit` diverging canonical paths as
+    {path (body-root-relative), got, want}."""
+    divergences = []
+
+    def _walk(a, w, p):
+        if len(divergences) >= limit:
+            return
+        if isinstance(a, dict) and isinstance(w, dict):
+            for k in sorted(set(a) | set(w)):
+                pa = "%s.%s" % (p, k) if p else k
+                if k not in a:
+                    divergences.append({"path": pa, "got": "<absent>",
+                                        "want": _golden_snip(w[k])})
+                elif k not in w:
+                    divergences.append({"path": pa,
+                                        "got": _golden_snip(a[k]),
+                                        "want": "<absent>"})
+                else:
+                    _walk(a[k], w[k], pa)
+                if len(divergences) >= limit:
+                    return
+        elif isinstance(a, list) and isinstance(w, list):
+            for i in range(min(len(a), len(w))):
+                _walk(a[i], w[i], "%s.%d" % (p, i))
+                if len(divergences) >= limit:
+                    return
+            if len(a) != len(w):
+                divergences.append({"path": "%s.<len>" % (p or ""),
+                                    "got": len(a), "want": len(w)})
+        elif _golden_canon(a) != _golden_canon(w):
+            divergences.append({"path": p or "<root>",
+                                "got": _golden_snip(a),
+                                "want": _golden_snip(w)})
+
+    _walk(actual, want, "")
+    return divergences
+
+
+def golden_compare(capture_path, fixture_path, normalize):
+    """The golden-kind compare — the ONE engine for WIRE-FORM byte pins
+    (the check_wire kind=golden branch and the switch_model op's wire
+    hook both route here). Canonical JSON of the capture's FULL request
+    body (after the capture-root-relative `normalize` paths are nulled)
+    vs the fixture's JSON. Returns (ok, detail, diff_doc); diff_doc is
+    the structured field-level diff on mismatch (the TDD RED artifact,
+    which the caller writes to the case report dir)."""
+    with open(capture_path) as fh:
+        doc = json.load(fh)
+    with open(fixture_path) as fh:
+        want = json.load(fh)
+    unapplied = []
+    for p in (normalize or []):
+        doc, applied = _golden_null_path(doc, p)
+        if not applied:
+            unapplied.append(p)
+    # MINOR-1: a declared normalize path not applied this run (the
+    # volatile field absent from this capture) must be loud, not
+    # silent: the hazard direction is false-RED only (a pin failing at
+    # a field that was meant to be nulled), and that must be
+    # diagnosable from the detail — hard-failing would turn a
+    # legitimate field-absent run into a mechanism error.
+    norm_note = ""
+    if normalize:
+        _n_applied = len(normalize) - len(unapplied)
+        if unapplied:
+            norm_note = (" [normalize %d/%d applied; unapplied: %s]"
+                         % (_n_applied, len(normalize),
+                            ", ".join(unapplied)))
+        else:
+            norm_note = " [normalize %d/%d applied]" % (
+                _n_applied, len(normalize))
+    body = doc.get("body")
+    if not isinstance(body, dict):
+        return (False,
+                "capture %s has no JSON request body"
+                % os.path.basename(capture_path), None)
+    got = _golden_canon(body)
+    if got == _golden_canon(want):
+        return (True, "canonical body match (%d B) vs %s%s"
+                % (len(got), os.path.basename(fixture_path),
+                   norm_note), None)
+    div = _golden_field_diff(body, want)
+    diff = {"capture": os.path.basename(capture_path),
+            "fixture": os.path.basename(fixture_path),
+            "normalize": list(normalize or []),
+            "normalize_unapplied": list(unapplied),
+            "divergences": div,
+            "first_divergence": div[0]["path"] if div else "<root>"}
+    detail = ("canonical body mismatch: %d divergence(s), first %s — %s%s"
+              % (len(div), diff["first_divergence"],
+                 "; ".join("%s: got %s want %s"
+                           % (d["path"], d["got"], d["want"])
+                           for d in div[:3]),
+                           norm_note))
+    if unapplied:
+        detail += (" — if the mismatch is at that position, the "
+                   "volatile field was absent this run")
+    return (False, detail, diff)
+
+
+def _golden_write_diff(capture_dir, spec, diff):
+    """The TDD RED artifact: the structured field-level diff lands in the
+    case report dir (the parent of the wire capture dir) as
+    golden-diff-<assert-id>.json."""
+    report_dir = os.path.dirname(os.path.abspath(capture_dir or ""))
+    name = "golden-diff-%s.json" % (spec.get("id") or "unnamed")
+    try:
+        with open(os.path.join(report_dir, name), "w") as fh:
+            json.dump(diff, fh, indent=2)
+            fh.write("\n")
+    except Exception:
+        pass
+
+
 def check_wire(spec, capture_dir):
     kind = spec.get("kind")
     base = capture_dir if capture_dir else os.devnull
@@ -1799,6 +2072,64 @@ def check_wire(spec, capture_dir):
                             cite={"file": os.path.basename(resp_path),
                                   "request_n": n, "model": model,
                                   "status": status} if ok else None)
+    if kind == "golden":
+        # apex-ayl.79 (R1B): the declarative WIRE-FORM byte pin — the
+        # selected capture's FULL request body, canonically (sort_keys,
+        # compact) after the normalize paths are nulled, vs the fixture.
+        # Selection reuses the count-tolerance machinery exactly (the
+        # where-filter + nth/last/any; nth=0 = newest, fail-closed on an
+        # empty set). One engine: golden_compare.
+        if not isinstance(spec.get("golden"), str) \
+                or not spec.get("golden"):
+            return AssertResult(spec, "wire.golden", False,
+                                "golden assert needs a string 'golden' "
+                                "fixture path",
+                                "wire: golden without fixture rejected")
+        paths = _resolve_glob(spec.get("file", ""), base)
+        paths = _wire_filter(paths, spec.get("where"))
+        fixture = os.path.join(base, spec["golden"])
+        if not paths:
+            return AssertResult(spec, "wire.golden", False,
+                                "no wire files match glob %r"
+                                % spec.get("file"),
+                                "wire: glob %s -> none" % spec.get("file"))
+        if not os.path.isfile(fixture):
+            return AssertResult(spec, "wire.golden", False,
+                                "golden fixture %r not found (relative "
+                                "to the wire dir)" % spec["golden"],
+                                "wire: golden fixture missing")
+        if spec.get("any"):
+            for f in paths:
+                ok, detail, _diff = golden_compare(f, fixture,
+                                                   spec.get("normalize"))
+                if ok:
+                    return AssertResult(spec, "wire.golden", True,
+                                        "%s: %s (any of %d)" % (
+                                            os.path.basename(f), detail,
+                                            len(paths)),
+                                        "wire/%s golden %s" % (
+                                            os.path.basename(f),
+                                            spec["golden"]),
+                                        cite=_wire_cite(f))
+            return AssertResult(spec, "wire.golden", False,
+                                "no file of %d matches the golden pin"
+                                % len(paths),
+                                "wire: any-of golden %s" % spec["golden"])
+        nth = _nth_select(paths, spec)
+        if nth >= len(paths):
+            return AssertResult(spec, "wire.golden", False,
+                                "only %d wire files match (nth=%d)"
+                                % (len(paths), nth),
+                                "wire: glob %s -> none" % spec.get("file"))
+        f = paths[nth]
+        ok, detail, diff = golden_compare(f, fixture, spec.get("normalize"))
+        if not ok and diff is not None:
+            _golden_write_diff(capture_dir, spec, diff)
+        return AssertResult(spec, "wire.golden", ok,
+                            "%s: %s" % (os.path.basename(f), detail),
+                            "wire/%s golden %s" % (os.path.basename(f),
+                                                   spec["golden"]),
+                            cite=_wire_cite(f) if ok else None)
     raise ValueError("unknown wire kind: %r" % kind)
 
 
@@ -2263,6 +2594,34 @@ def _run_case_once(case, args, budget, run_dir, attempt):
         wt = None
         if wirecap:
             ctx.capture_dir = os.path.join(run_dir, "wire")
+            # apex-ayl.79 (XW-JIG-1): a case may pre-place its input wire
+            # dir — <CASES_DIR>/<case-stem>/wire/ (the mechanism-case
+            # convention; the xwfix cell-seed pattern at the wire level):
+            # pre-placed captures + golden fixtures land in the run's
+            # wire dir so the wire asserts (file/golden globs) resolve
+            # against them. Copy-if-absent into the run's wire dir at
+            # case start (idempotent across retry attempts — attempts
+            # re-run into fresh dirs). Wiretap captures with open("w")
+            # (smoke/wiretap/wiretap.py:194-197, review-verified), so a
+            # live capture with the SAME name overwrites the pre-placed
+            # file = the live capture is the evidence (a pre-placed
+            # file can never mask a live capture). Residual hazard is
+            # GHOST names: a pre-placed req-*.json the run never
+            # generates persists in the wire dir and can land in a
+            # where-filter (bounded by the count pin) — future live
+            # switch_model cases must NOT pre-place req-*.json;
+            # expected fixtures use non-colliding names (golden-*.json,
+            # expected_wire.json).
+            _pl_src = os.path.join(CASES_DIR, cid.lower(), "wire")
+            if os.path.isdir(_pl_src):
+                os.makedirs(ctx.capture_dir, mode=0o700, exist_ok=True)
+                for _pl in sorted(os.listdir(_pl_src)):
+                    _pl_dst = os.path.join(ctx.capture_dir, _pl)
+                    if not os.path.exists(_pl_dst):
+                        shutil.copyfile(os.path.join(_pl_src, _pl),
+                                        _pl_dst)
+                        log("  %s: pre-placed wire input %s"
+                            % (cid, _pl))
             wt = Wiretap(port, upstream, ctx.capture_dir, args.ambient_key)
             if not wt.wait_ready():
                 mark("BLOCKED", "wiretap did not start")
@@ -2286,6 +2645,32 @@ def _run_case_once(case, args, budget, run_dir, attempt):
                                               seed["hist_tokens"]))
             snapshot_history(ctx, "seed", home, case_cwd)
 
+        # apex-ayl.70 (XW-FIXTURES-1): a switch_model step with a cell
+        # seeds the fresh session with the cell's pre_switch.json
+        # VERBATIM at case start (headless: each turn process re-reads
+        # chat_history.jsonl at start, so this is the proven seeder
+        # ordering). The ACP re-seed happens after session/new, below.
+        _xw_cell = next((s.get("cell") for s in case.get("steps", [])
+                         if s.get("op") == "switch_model"
+                         and s.get("cell")), None)
+        if _xw_cell and case.get("driver", "headless") == "headless" \
+                and not (seed and seed.get("hist_tokens")):
+            _xw_sid = str(uuid.uuid4())
+            ctx.session_id = _xw_sid
+            _xw = xwfix_seed_from_cell(home, case_cwd, _xw_sid, cur_model,
+                                       _xwfix_cell_dir(_xw_cell))
+            if _xw:
+                ctx.session_dir = _xw[0]
+                log("  %s: xwfix cell-seeded %s records=%d bytes=%d "
+                    "(cell=%s)" % (cid, _xw_sid, _xw[1], _xw[2],
+                                   _xw_cell))
+                snapshot_history(ctx, "xwfix_seed", home, case_cwd)
+            else:
+                mark("BLOCKED", "xwfix cell seed failed: unreadable "
+                                "pre_switch.json for %s" % _xw_cell)
+                return _finish(case, run_dir, ctx, results, status,
+                               started, wt, home, args, budget)
+
         driver = case.get("driver", "headless")
         if driver == "acp":
             acp = AcpSession(args.bin, home.home, case_cwd, cur_model,
@@ -2301,6 +2686,43 @@ def _run_case_once(case, args, budget, run_dir, attempt):
                                                    cur_model))
             ctx.session_id = acp.session_id
             ctx.session_dir = home.session_dir_for(case_cwd, acp.session_id)
+            if _xw_cell:
+                # apex-ayl.70 (XW-FIXTURES-1) + ratchet ① adjudication
+                # (NIT-1): the ACP session id is minted by session/new,
+                # so the cell seed is materialized under the real ACP
+                # session dir and then routed through session/load —
+                # the actor loads ONLY summary.json at session/new and
+                # does NOT re-read chat_history.jsonl at the first
+                # prompt (persistence init_session), so re-materializing
+                # the files alone would leave an empty in-memory
+                # history; session/load (load_light) is the path that
+                # puts the seeded history in memory before the first
+                # prompt (leader seam server.rs:607).
+                _xw = xwfix_seed_from_cell(home, case_cwd, acp.session_id,
+                                           cur_model,
+                                           _xwfix_cell_dir(_xw_cell))
+                if _xw:
+                    _xw_resp = acp.call(
+                        "session/load",
+                        {"sessionId": acp.session_id, "cwd": case_cwd},
+                        timeout=acp.init_timeout_s)
+                    if isinstance(_xw_resp, dict) \
+                            and "error" in _xw_resp:
+                        ctx.events.append({"type": "acp_error",
+                                           "error": _xw_resp["error"],
+                                           "model": cur_model})
+                        mark("FAIL", "acp session/load error: %s"
+                             % str(_xw_resp["error"])[:120])
+                    log("  %s: xwfix cell-seeded ACP session %s "
+                        "records=%d (cell=%s, via session/load)"
+                        % (cid, acp.session_id, _xw[1], _xw_cell))
+                    snapshot_history(ctx, "xwfix_seed", home, case_cwd)
+                else:
+                    mark("BLOCKED", "xwfix cell seed failed (ACP): "
+                                    "unreadable pre_switch.json for %s"
+                                    % _xw_cell)
+                    return _finish(case, run_dir, ctx, results, status,
+                                   started, wt, home, args, budget)
             ctx.fmt = "acp"
         extra = []
         if case.get("agents_json"):
@@ -2468,6 +2890,42 @@ def _run_case_once(case, args, budget, run_dir, attempt):
                 else:
                     ctx.turns.append({"op": "switch", "step": si,
                                       "model": cur_model, "via": "resume"})
+            elif op == "switch_model":
+                # apex-ayl.70 (XW-FIXTURES-1): mid-session switch + the
+                # XW-FIXTURES cell RED diff. Drives the switch exactly
+                # like `switch`, then scores the storage-form cell diff
+                # AT SWITCH TIME so the post-switch turn cannot
+                # contaminate the pinned history (the wire-form diff is
+                # scored at wirecap time, below, through the golden
+                # engine).
+                cur_model = step["model"]
+                cell = step.get("cell", "")
+                form = step.get("assert_form", "storage")
+                cell_dir = _xwfix_cell_dir(cell) if cell else None
+                if step.get("via", "acp") == "acp" and driver == "acp":
+                    resp = acp.set_model(cur_model)
+                    ctx.turns.append({"op": "switch_model", "step": si,
+                                      "model": cur_model,
+                                      "resp": str(resp)[:200]})
+                    ctx.events.append({"type": "acp_set_model",
+                                       "model": cur_model, "_line": 0})
+                    if "error" in resp:
+                        ctx.events.append({"type": "acp_error",
+                                           "error": resp["error"],
+                                           "model": cur_model})
+                        mark("FAIL", "acp set_model error: %s"
+                             % str(resp["error"])[:120])
+                else:
+                    ctx.turns.append({"op": "switch_model", "step": si,
+                                      "model": cur_model, "via": "resume"})
+                snapshot_history(ctx, "switch_model", home, case_cwd)
+                if cell_dir:
+                    ctx.xwfix_wire_pending = (cell_dir, cur_model, form)
+                    if form == "storage":
+                        results.append(xwfix_cell_diff_storage(
+                            cell_dir, ctx.session_dir))
+                    ctx.turns[-1]["cell"] = cell
+                    ctx.turns[-1]["assert_form"] = form
             elif op == "compact":
                 model = step.get("model", cur_model)
                 if driver == "acp":
@@ -2522,6 +2980,48 @@ def _run_case_once(case, args, budget, run_dir, attempt):
             ctx.model_calls = sum(
                 1 for t in ctx.turns
                 if t.get("op") in ("turn", "row") and t.get("exit") == 0)
+
+        # apex-ayl.70 (XW-FIXTURES-1, ratchet ① R1A/NIT-3): the wire-form
+        # cell diff — the first post-switch request is captured by
+        # wirecap only after the post-switch turn, so it is scored here
+        # (the storage form was scored at switch time). ONE engine: the
+        # golden-kind compare (the retired cell_diff kind has no second
+        # comparator). Active for a cell once expected_wire.json lands;
+        # skipped with a note until then.
+        if wirecap and getattr(ctx, "xwfix_wire_pending", None):
+            _xw_cd, _xw_m, _xw_f = ctx.xwfix_wire_pending
+            _xw_exp = os.path.join(_xw_cd, "expected_wire.json")
+            if _xw_f == "wire" or os.path.isfile(_xw_exp):
+                _xw_spec = {"op": "xwfix_cell_diff", "form": "wire",
+                            "cell": os.path.basename(_xw_cd),
+                            "model": _xw_m}
+                _xw_paths = _wire_filter(
+                    globmod.glob(os.path.join(run_dir, "wire",
+                                              "req-*.json")),
+                    {"method": "POST", "body.model": _xw_m})
+                if not os.path.isfile(_xw_exp):
+                    results.append(AssertResult(
+                        _xw_spec, "xwfix_cell_diff.wire", True,
+                        "expected_wire.json absent — wire-form byte pin "
+                        "not cut yet (storage form is the active RED)",
+                        "skipped (no byte pin)"))
+                elif not _xw_paths:
+                    results.append(AssertResult(
+                        _xw_spec, "xwfix_cell_diff.wire", False,
+                        "no captured request to model=%s" % _xw_m,
+                        "wire form"))
+                else:
+                    _xw_first = min(_xw_paths, key=os.path.basename)
+                    ok, detail, _xw_diff = golden_compare(
+                        _xw_first, _xw_exp, [])
+                    if not ok and _xw_diff is not None:
+                        _golden_write_diff(os.path.join(run_dir, "wire"),
+                                           _xw_spec, _xw_diff)
+                    results.append(AssertResult(
+                        _xw_spec, "xwfix_cell_diff.wire", ok,
+                        "%s: %s" % (os.path.basename(_xw_first), detail),
+                        "wire form; %s" % os.path.basename(_xw_first),
+                        cite=_wire_cite(_xw_first) if ok else None))
 
         _copy_session_evidence(home, ctx, run_dir)
         assert_block = case.get("assert", {})
@@ -3085,10 +3585,12 @@ def load_cases(args):
 # CaseContractTest; also `python3 smoke/redteam/run.py --selftest`).
 # ---------------------------------------------------------------------------
 
-STEP_OPS = ("turn", "switch", "kill", "compact", "idle", "recon_note")
+STEP_OPS = ("turn", "switch", "switch_model", "kill", "compact", "idle",
+            "recon_note")
 NDJSON_OPS = ("count", "absent", "present", "eq", "ne", "text_contains",
               "tools_absent", "tools_present", "recon")
-WIRE_KINDS = ("field", "grep", "size_lt", "count", "resp_status", "recon")
+WIRE_KINDS = ("field", "grep", "size_lt", "count", "resp_status", "recon",
+              "golden")
 ARTIFACT_OPS = ("count", "grep", "recon")
 
 
@@ -3135,6 +3637,17 @@ def _validate_step(ctx, st, errs):
             errs.append("%s: switch needs a string 'model'" % ctx)
         if st.get("via", "acp") not in ("acp", "resume"):
             errs.append("%s: switch 'via' must be acp|resume" % ctx)
+    if op == "switch_model":
+        if not isinstance(st.get("model"), str):
+            errs.append("%s: switch_model needs a string 'model'" % ctx)
+        if st.get("via", "acp") not in ("acp", "resume"):
+            errs.append("%s: switch_model 'via' must be acp|resume" % ctx)
+        if not isinstance(st.get("cell"), str) or not st.get("cell"):
+            errs.append("%s: switch_model needs a string 'cell' "
+                        "(smoke/xwfix/cells/<cell>)" % ctx)
+        if st.get("assert_form", "storage") not in ("storage", "wire"):
+            errs.append("%s: switch_model 'assert_form' must be "
+                        "storage|wire" % ctx)
     if op == "idle":
         if not (isinstance(st.get("s"), int) and st["s"] > 0):
             errs.append("%s: idle needs a positive int 's'" % ctx)
@@ -3690,6 +4203,19 @@ def validate_case_file(path, engine=None):
                 if kind in ("field", "grep", "count", "resp_status") \
                         and not spec.get("file"):
                     errs.append("%s: %s needs a 'file' glob" % (ctx, kind))
+                if kind == "golden":
+                    if not spec.get("file"):
+                        errs.append("%s: golden needs a 'file' glob" % ctx)
+                    if not isinstance(spec.get("golden"), str) \
+                            or not spec.get("golden"):
+                        errs.append("%s: golden needs a string 'golden' "
+                                    "fixture path" % ctx)
+                    nz = spec.get("normalize")
+                    if nz is not None and (
+                            not isinstance(nz, list)
+                            or not all(isinstance(x, str) for x in nz)):
+                        errs.append("%s: golden 'normalize' must be a "
+                                    "list of dotted-path strings" % ctx)
                 if kind == "count" \
                         and not all(isinstance(spec.get(b), int)
                                     for b in ("min", "max")

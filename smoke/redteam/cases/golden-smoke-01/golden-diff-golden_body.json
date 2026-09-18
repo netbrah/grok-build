@@ -1,0 +1,22 @@
+{
+  "capture": "req-010.json",
+  "fixture": "golden-smoke-01-expected.json",
+  "normalize": [
+    "body.prompt_cache_key",
+    "body.input.7.id",
+    "body.input.13.id"
+  ],
+  "divergences": [
+    {
+      "path": "input.7.id",
+      "got": "rs_04866cbc80f04c52a69f34a1f73a5772",
+      "want": "null"
+    },
+    {
+      "path": "input.13.id",
+      "got": "rs_7e9e17038c2b4ccdaed079e0569d7ac0",
+      "want": "null"
+    }
+  ],
+  "first_divergence": "input.7.id"
+}

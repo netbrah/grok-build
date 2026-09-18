@@ -1,0 +1,26 @@
+test_key_order_insensitive_list_order_significant (__main__.GoldenCanonicalTest.test_key_order_insensitive_list_order_significant) ... ok
+test_normalize_absent_path_is_noop (__main__.GoldenCanonicalTest.test_normalize_absent_path_is_noop) ... ok
+test_normalize_nulls_list_index_path (__main__.GoldenCanonicalTest.test_normalize_nulls_list_index_path) ... ok
+test_full_runner_passes_the_case (__main__.GoldenCaseOfflineRunTest.test_full_runner_passes_the_case) ... ok
+test_case_passes_schema_validation (__main__.GoldenMechanismTest.test_case_passes_schema_validation) ... ok
+test_check_wire_golden_passes (__main__.GoldenMechanismTest.test_check_wire_golden_passes) ... ok
+test_any_form (__main__.GoldenSelectionTest.test_any_form) ... ok
+test_empty_filtered_set_fails_closed (__main__.GoldenSelectionTest.test_empty_filtered_set_fails_closed) ... ok
+test_nth_zero_newest_last_zero_oldest (__main__.GoldenSelectionTest.test_nth_zero_newest_last_zero_oldest) ... ok
+test_session_scope_excludes_foreign_capture (__main__.GoldenSelectionTest.test_session_scope_excludes_foreign_capture) ... ok
+test_unscoped_where_catches_foreign_capture (__main__.GoldenSelectionTest.test_unscoped_where_catches_foreign_capture) ... ok
+test_capture_corruption_fails_too (__main__.GoldenTeethTest.test_capture_corruption_fails_too) ... /Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py:175: ResourceWarning: unclosed file <_io.TextIOWrapper name='/var/folders/42/_lc4qb6d2wnd1x82w43h05nm0000gp/T/golden-smoke-scratch-09jqoqe0/golden-diff-golden_body.json' mode='r' encoding='UTF-8'>
+  diff = json.load(open(os.path.join(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_fixture_corruption_fails_with_structured_diff (__main__.GoldenTeethTest.test_fixture_corruption_fails_with_structured_diff) ... ok
+test_restored_fixture_passes (__main__.GoldenTeethTest.test_restored_fixture_passes) ... ok
+test_one_golden_engine (__main__.SwitchModelOpTest.test_one_golden_engine) ... ok
+test_step_ops_and_wire_kinds_membership (__main__.SwitchModelOpTest.test_step_ops_and_wire_kinds_membership) ... ok
+test_storage_form_cell_diff_engine (__main__.SwitchModelOpTest.test_storage_form_cell_diff_engine) ... ok
+test_validate_step_switch_model (__main__.SwitchModelOpTest.test_validate_step_switch_model) ... ok
+
+----------------------------------------------------------------------
+Ran 18 tests in 0.594s
+
+OK

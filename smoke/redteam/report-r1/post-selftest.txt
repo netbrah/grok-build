@@ -1,0 +1,114 @@
+[22:11:14] selftest: check_schema engine=jsonschema NEW cases=19 failures=0 (legacy cases exempt: 29)
+test_absolute_passthrough (test_run.BinResolutionTest.test_absolute_passthrough) ... ok
+test_relative_resolves_against_repo_root (test_run.BinResolutionTest.test_relative_resolves_against_repo_root) ... ok
+test_seal_stable_sha_and_runbook_copy (test_run.CampaignTest.test_seal_stable_sha_and_runbook_copy) ... ok
+test_summary_outcome_stability (test_run.CampaignTest.test_summary_outcome_stability) ... ok
+test_validate_rejections (test_run.CampaignTest.test_validate_rejections) ... ok
+test_verdict_json_atomic_no_partial (test_run.CampaignTest.test_verdict_json_atomic_no_partial) ... ok
+test_caps_block_shape_and_counts (test_run.CapsBlockTest.test_caps_block_shape_and_counts) ... ok
+test_all_case_files_validate (test_run.CaseContractTest.test_all_case_files_validate)
+0 regressions over the full existing case set (the campaign's ... ok
+test_validator_rejects_broken_case (test_run.CaseContractTest.test_validator_rejects_broken_case)
+The validator must actually fail on contract violations ... ok
+test_popen_cwd_is_case_cwd (test_run.CaseCwdTest.test_popen_cwd_is_case_cwd) ... [22:11:15]   RT-C1: wiretap on :57945 capture=rt-c1/wire
+[22:11:15]   RT-C1: PASS in 0.3s calls=0
+ok
+test_relative_cwd_blocked (test_run.CaseCwdTest.test_relative_cwd_blocked)
+A legacy case with a NON-absolute cwd fail-closes to ... [22:11:15]   RT-C1R -> BLOCKED (case cwd 'relative/path' must be an absolute path (G4))
+[22:11:15]   RT-C1R: BLOCKED in 0.0s calls=0
+[22:11:15]   RT-C1R: no env retry (no retry.on_status declared)
+ok
+test_positional_order_preserved (test_run.CaseOrderTest.test_positional_order_preserved) ... ok
+test_unknown_id_skipped_order_held (test_run.CaseOrderTest.test_unknown_id_skipped_order_held) ... ok
+test_cc_counts_as_model_call (test_run.CcCountTest.test_cc_counts_as_model_call) ... ok
+test_append_binds_parent_with_subtables (test_run.ConfigPatchSurgeryTest.test_append_binds_parent_with_subtables) ... ok
+test_append_section_without_subtables (test_run.ConfigPatchSurgeryTest.test_append_section_without_subtables) ... ok
+test_in_place_replace_position_preserved (test_run.ConfigPatchSurgeryTest.test_in_place_replace_position_preserved) ... ok
+test_bi_replay_off_by_one (test_run.DesyncReplayTest.test_bi_replay_off_by_one)
+The live B-ii ordering (20260915T030218Z/rt-crosswire1b): ... [22:11:15] ACP desync guard: ignoring prompt_complete pid=a2fd3b41-95ff-4fb3-b353-22f9fb2cdd84 (expected ae080c72-0da5-4eca-a02b-174337eb6156) — late/foreign completion
+[22:11:15] ACP desync guard: ignoring prompt_complete pid=ae080c72-0da5-4eca-a02b-174337eb6156 (expected a40c9a3f-829f-4b18-9a4c-c1d9ca797410) — late/foreign completion
+ok
+test_error_turn_grace (test_run.DesyncReplayTest.test_error_turn_grace)
+ACP-2 regression pin: a stop=error turn — the agentResult ... ok
+test_normal_ordering (test_run.DesyncReplayTest.test_normal_ordering)
+Regression pin (common live path, no drain tail): the next ... [22:11:15] ACP desync guard: ignoring prompt_complete pid=a249e498-f2b3-417c-8daa-a13a77cf831b (expected c869ca42-bfaf-4633-8783-4672287abd8a) — late/foreign completion
+[22:11:15] ACP desync guard: ignoring prompt_complete pid=c869ca42-bfaf-4633-8783-4672287abd8a (expected ce5cb8bb-32ec-4495-9b20-0f2f68244cb1) — late/foreign completion
+ok
+test_dual_paths_agree_pass_fail (test_run.DualValidatorTest.test_dual_paths_agree_pass_fail) ... ok
+test_slim_pass_both_broken_rejected_both (test_run.DualValidatorTest.test_slim_pass_both_broken_rejected_both) ... ok
+test_build_env_union (test_run.EnvContractTest.test_build_env_union) ... ok
+test_hermetic_home_generated (test_run.EnvContractTest.test_hermetic_home_generated) ... ok
+test_subset_declaration_rejected (test_run.EnvContractTest.test_subset_declaration_rejected) ... ok
+test_budget_margin_2x (test_run.InitBudgetTest.test_budget_margin_2x)
+The 2x-margin math: 26,001B init line at the 424 BPS plateau ... ok
+test_bulk_read_syscall_pin (test_run.InitBudgetTest.test_bulk_read_syscall_pin)
+Per-syscall plateau model: bytes available immediately; the ... ok
+test_windowed_plateau_424bps (test_run.InitBudgetTest.test_windowed_plateau_424bps)
+The XREPLAY-2 plateau model, end to end: the 26,001B ... ok
+test_legacy_case_skips_new_rules (test_run.NewCaseGateTest.test_legacy_case_skips_new_rules)
+A pre-version case (no schema_version, no bead/suite/tier) ... ok
+test_new_rule_violations_named (test_run.NewCaseGateTest.test_new_rule_violations_named) ... ok
+test_slim_pass_new_gate (test_run.NewCaseGateTest.test_slim_pass_new_gate) ... ok
+test_citable_pass_not_downgraded (test_run.NoEvidenceTest.test_citable_pass_not_downgraded) ... ok
+test_uncitable_pass_downgraded (test_run.NoEvidenceTest.test_uncitable_pass_downgraded) ... ok
+test_no_watch_present (test_run.NoWatchTest.test_no_watch_present) ... ok
+test_not_removable_by_case_patch (test_run.NoWatchTest.test_not_removable_by_case_patch) ... ok
+test_in_tree_slim_cases_no_drift (test_run.PromptDriftTest.test_in_tree_slim_cases_no_drift)
+The slim drop-in set was authored against the D-4c ... ok
+test_missing_arg_value_named (test_run.PromptDriftTest.test_missing_arg_value_named) ... ok
+test_missing_done_reply_named (test_run.PromptDriftTest.test_missing_done_reply_named) ... ok
+test_missing_echo_named (test_run.PromptDriftTest.test_missing_echo_named) ... ok
+test_missing_fq_name_named (test_run.PromptDriftTest.test_missing_fq_name_named) ... ok
+test_no_drift_clean (test_run.PromptDriftTest.test_no_drift_clean) ... ok
+test_any_newest_first_oldest (test_run.ReconAnyFirstTest.test_any_newest_first_oldest) ... ok
+test_recon_never_fails_empty (test_run.ReconAnyFirstTest.test_recon_never_fails_empty) ... ok
+test_400_never_retries (test_run.RetryDecisionTest.test_400_never_retries) ... ok
+test_404_gone_no_retry (test_run.RetryDecisionTest.test_404_gone_no_retry) ... ok
+test_404_present_retries (test_run.RetryDecisionTest.test_404_present_retries) ... ok
+test_502_503_like_404 (test_run.RetryDecisionTest.test_502_503_like_404) ... ok
+test_cap_enforced (test_run.RetryDecisionTest.test_cap_enforced) ... ok
+test_404_gone_fails_no_retry (test_run.RetryLoopTest.test_404_gone_fails_no_retry)
+Catalog change (model gone on recheck) = FAIL, no retry — ... [22:11:16]   RT-R1-GONE: wiretap on :57954 capture=rt-r1-gone/wire
+[22:11:16]   RT-R1-GONE -> FAIL (turn exit=1)
+[22:11:16]   RT-R1-GONE: FAIL in 0.5s calls=1
+[22:11:16]   RT-R1-GONE: no env retry (model 'm-x' gone on recheck (catalog change, not an env flap))
+ok
+test_flap_retries_to_pass_flaky (test_run.RetryLoopTest.test_flap_retries_to_pass_flaky) ... [22:11:17]   RT-R1-LOOP: wiretap on :57962 capture=rt-r1-loop/wire
+[22:11:17]   RT-R1-LOOP -> FAIL (turn exit=1)
+[22:11:17]   RT-R1-LOOP: FAIL in 0.4s calls=1
+[22:11:17]   RT-R1-LOOP: env retry 2/1 after 7.777s backoff (env flap: last status 404 in on_status [404, 502, 503]; model 'm-x' still in catalog)
+[22:11:17]   RT-R1-LOOP: wiretap on :61720 capture=rt-r1-loop/wire
+[22:11:17]   RT-R1-LOOP: PASS in 0.3s calls=1
+ok
+test_bare_body_model (test_run.RowModelDerivationTest.test_bare_body_model) ... ok
+test_dollar_prefixed_body_model (test_run.RowModelDerivationTest.test_dollar_prefixed_body_model) ... ok
+test_legacy_row_model_key_wins (test_run.RowModelDerivationTest.test_legacy_row_model_key_wins) ... ok
+test_non_row_spec_unscoped (test_run.RowModelDerivationTest.test_non_row_spec_unscoped) ... ok
+test_rowskip_excluded_from_evidence_audit (test_run.RowSkipExemptionTest.test_rowskip_excluded_from_evidence_audit) ... ok
+test_rowskip_only_verdict_not_blocked (test_run.RowSkipExemptionTest.test_rowskip_only_verdict_not_blocked) ... ok
+test_unified_and_acp_copied (test_run.SessionEvidenceTest.test_unified_and_acp_copied) ... ok
+test_backends (test_run.ThreeWayAuthorityTest.test_backends) ... ok
+test_paths (test_run.ThreeWayAuthorityTest.test_paths) ... ok
+test_unquoted_section_and_empty (test_run.ThreeWayAuthorityTest.test_unquoted_section_and_empty) ... ok
+test_acp_resolvers_default (test_run.TimeoutOverrideTest.test_acp_resolvers_default) ... ok
+test_init_case_value_beats_floor (test_run.TimeoutOverrideTest.test_init_case_value_beats_floor) ... ok
+test_set_model_uses_case_value (test_run.TimeoutOverrideTest.test_set_model_uses_case_value) ... ok
+test_turn_s_beats_watchdog_s (test_run.TimeoutOverrideTest.test_turn_s_beats_watchdog_s) ... ok
+test_01_blocked_no_announcement (test_run.VerdictMatrixTest.test_01_blocked_no_announcement) ... ok
+test_02_vacuous_model_never_called (test_run.VerdictMatrixTest.test_02_vacuous_model_never_called) ... ok
+test_03_scored_fail (test_run.VerdictMatrixTest.test_03_scored_fail) ... ok
+test_04_pass (test_run.VerdictMatrixTest.test_04_pass) ... ok
+test_05_precedence_scored_fail_plus_zero_hit_model (test_run.VerdictMatrixTest.test_05_precedence_scored_fail_plus_zero_hit_model)
+THE binding precedence row: a scored pin FAILs while a model ... ok
+test_06_messages_wire_pass (test_run.VerdictMatrixTest.test_06_messages_wire_pass) ... ok
+test_07_cc_wire_pass_and_counted (test_run.VerdictMatrixTest.test_07_cc_wire_pass_and_counted)
+The cc wire variant — and G1 in the loop: a ... ok
+test_08_tolerant_finding_pass (test_run.VerdictMatrixTest.test_08_tolerant_finding_pass) ... ok
+test_09_blocked_wins_over_scored_fail (test_run.VerdictMatrixTest.test_09_blocked_wins_over_scored_fail)
+Rule 1 dominance: harness premise 0-hit + scored FAIL -> ... ok
+
+----------------------------------------------------------------------
+Ran 73 tests in 3.640s
+
+OK
+[22:11:18] selftest: PASS (73 run, 0 failures, 0 errors)

@@ -1,0 +1,21 @@
+[21:51:58] selftest: check_schema engine=jsonschema NEW cases=18 failures=6 (legacy cases exempt: 29)
+[21:51:58]   schema: ws9-s05-compact-resume.json: ['assert', 'ndjson', 2]: Additional properties are not allowed ('what' was unexpected)
+[21:51:58]   schema: ws9-s06-spawn-message.json: ['assert', 'wire', 4]: 'file' is a required property
+[21:51:58]   schema: ws9-s07-interrupt-child.json: ['assert', 'wire', 3]: 'file' is a required property
+[21:51:58]   schema: ws9-s09-freeform-patch.json: ['assert', 'ndjson', 1]: Additional properties are not allowed ('what' was unexpected)
+[21:51:58]   schema: ws9-s11-legacy-resume.json: ['assert', 'ndjson', 3]: Additional properties are not allowed ('what' was unexpected)
+[21:51:58]   schema: ws9-s12-alias-switch.json: ['assert', 'ndjson', 2]: Additional properties are not allowed ('what' was unexpected)
+[21:51:58]   contract: ws9-s05-compact-resume.json: ws9-s05-compact-resume.json assert.wire[1]: size_lt needs 'a' and 'b' sub-specs
+[21:51:58]   contract: ws9-s05-compact-resume.json: schema: ['assert', 'ndjson', 2]: Additional properties are not allowed ('what' was unexpected)
+[21:51:58]   contract: ws9-s06-spawn-message.json: schema: ['assert', 'wire', 4]: 'file' is a required property
+[21:51:58]   contract: ws9-s06-spawn-message.json: ws9-s06-spawn-message.json: suite tool-call needs non-empty 'tool_calls'
+[21:51:58]   contract: ws9-s06-spawn-message.json: ws9-s06-spawn-message.json: acp NEW case needs an absolute 'cwd'
+[21:51:58]   contract: ws9-s07-interrupt-child.json: schema: ['assert', 'wire', 3]: 'file' is a required property
+[21:51:58]   contract: ws9-s07-interrupt-child.json: ws9-s07-interrupt-child.json: suite tool-call needs non-empty 'tool_calls'
+[21:51:58]   contract: ws9-s07-interrupt-child.json: ws9-s07-interrupt-child.json: acp NEW case needs an absolute 'cwd'
+[21:51:58]   contract: ws9-s09-freeform-patch.json: schema: ['assert', 'ndjson', 1]: Additional properties are not allowed ('what' was unexpected)
+[21:51:58]   contract: ws9-s10-async-user-msg.json: ws9-s10-async-user-msg.json: acp NEW case needs an absolute 'cwd'
+[21:51:58]   contract: ws9-s11-legacy-resume.json: schema: ['assert', 'ndjson', 3]: Additional properties are not allowed ('what' was unexpected)
+[21:51:58]   contract: ws9-s12-alias-switch.json: schema: ['assert', 'ndjson', 2]: Additional properties are not allowed ('what' was unexpected)
+[21:51:58]   contract: ws9-s12-alias-switch.json: ws9-s12-alias-switch.json: acp NEW case needs an absolute 'cwd'
+[21:51:58] selftest: FAIL — schema/contract gate has violations

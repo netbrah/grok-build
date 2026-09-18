@@ -1,0 +1,24 @@
+GREEN-1 — golden-smoke-01 full-runner run (offline: zero-step headless case, no binary launch, no model call; wiretap idle on loopback)
+
+$ python3 smoke/redteam/run.py GOLDEN-SMOKE-01 --out <scratch>
+[22:12:21] HT-1 L3 run -> /var/folders/42/_lc4qb6d2wnd1x82w43h05nm0000gp/T/green1-xq6qw9nl (budget=40 wirecap=True)
+[22:12:21] cases: GOLDEN-SMOKE-01
+[22:12:21] campaign: sealed green1-xq6qw9nl (sealed_sha256 86bc00315afef964cb8ad35192f534c7ca340b24de1e8168fddce14353b66373)
+[22:12:21] === GOLDEN-SMOKE-01: GOLDEN-SMOKE-01 — mechanism case for the kind=golden wire assert (apex-ayl.79 XW-JIG-1, ratchet ①): a zero-step headless case that byte-pins the WIRE FORM of one REAL captured /v1/responses request through the golden-kind engine (canonical JSON, key-sorted with sort_keys and compact separators — object key order is insensitive, list order is NOT: the input[] conversation order is semantic and projection must not reorder it, so no order-insensitive list normalization exists or may be invented). Input capture: cases/golden-smoke-01/wire/req-010.json = verbatim bytes (sha256:12 cfed3352cc1c) of smoke/redteam/report/20260913T212423Z/rt-r1/wire/req-010.json — a qwen3.8-27b title-refresh side call (x-grok-req-id xai-title-refresh-8cf580a0-cb1f-4dbb-829a-a90ae0d8e10b) of session 01a09ca8-be72-7eb3-99d6-b58a09566587, run of record 20260913T212423Z/rt-r1. Verdict: PASS = the golden assert's canonical request body (the FULL capture body, not a body.input extraction) equals the fixture golden-smoke-01-expected.json after the normalize list nulls three volatile capture-root-relative paths in the capture before compare (body.prompt_cache_key = session-derived UUID; body.input.7.id and body.input.13.id = upstream-issued rs_* reasoning item ids — both regenerate per live run); a mismatch FAILs with a structured field-level diff (first 5 diverging canonical paths with got/want snippets) written to the case report dir — that diff is the TDD RED artifact. The companion count assert bounds the shared where-scope to exactly one capture (min 1 max 1): the B-i count-tolerance lesson — a static/nth selection is only unambiguous when a sibling count pin bounds N, so the golden's selection can never silently pick the wrong request. The where filter scopes by headers.x-grok-session-id (the wiretap capture carries the session id in that header — verified across 1924 captures in the report tree) so the pin cannot match a foreign session's requests in a parallel hermetic run.
+[22:12:21]   GOLDEN-SMOKE-01: pre-placed wire input golden-smoke-01-expected.json
+[22:12:21]   GOLDEN-SMOKE-01: pre-placed wire input req-010.json
+[22:12:22]   GOLDEN-SMOKE-01: wiretap on :49288 capture=golden-smoke-01/wire
+[22:12:22]   GOLDEN-SMOKE-01: PASS in 0.2s calls=1
+[22:12:22] redaction sweep: 0 hits
+[22:12:22] report: /var/folders/42/_lc4qb6d2wnd1x82w43h05nm0000gp/T/green1-xq6qw9nl/report.md
+[22:12:22] calls used: 1 / 40
+
+runner exit: 0
+
+verdict row: status=PASS duration_s=0.2 model_calls=1
+
+assert wire.golden ok=True recon=False
+  detail: req-010.json: canonical body match (34813 B) vs golden-smoke-01-expected.json
+
+assert wire.count ok=True recon=False
+  detail: 1 wire files match req-*.json (want 1..1)

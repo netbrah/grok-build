@@ -1,0 +1,148 @@
+test_absolute_passthrough (__main__.BinResolutionTest.test_absolute_passthrough) ... ok
+test_relative_resolves_against_repo_root (__main__.BinResolutionTest.test_relative_resolves_against_repo_root) ... ok
+test_seal_stable_sha_and_runbook_copy (__main__.CampaignTest.test_seal_stable_sha_and_runbook_copy) ... ok
+test_summary_outcome_stability (__main__.CampaignTest.test_summary_outcome_stability) ... ok
+test_validate_rejections (__main__.CampaignTest.test_validate_rejections) ... /Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run.py:2652: ResourceWarning: unclosed file <_io.TextIOWrapper name='/var/folders/42/_lc4qb6d2wnd1x82w43h05nm0000gp/T/rt-a1r-_l4yca83/c1/ca/verdict.json' mode='r' encoding='UTF-8'>
+  v = json.load(open(p))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_verdict_json_atomic_no_partial (__main__.CampaignTest.test_verdict_json_atomic_no_partial) ... ok
+test_caps_block_shape_and_counts (__main__.CapsBlockTest.test_caps_block_shape_and_counts) ... ok
+test_all_case_files_validate (__main__.CaseContractTest.test_all_case_files_validate)
+0 regressions over the full existing case set (the campaign's ... ok
+test_validator_rejects_broken_case (__main__.CaseContractTest.test_validator_rejects_broken_case)
+The validator must actually fail on contract violations ... ok
+test_popen_cwd_is_case_cwd (__main__.CaseCwdTest.test_popen_cwd_is_case_cwd) ... [22:11:10]   RT-C1: wiretap on :51579 capture=rt-c1/wire
+[22:11:11]   RT-C1: PASS in 0.5s calls=0
+/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/run.py:2479: ResourceWarning: unclosed file <_io.BufferedReader name=7>
+  row = _run_case_once(case, args, budget, run_dir, attempt)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/run.py:2479: ResourceWarning: unclosed file <_io.BufferedReader name=4>
+  row = _run_case_once(case, args, budget, run_dir, attempt)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run.py:2340: ResourceWarning: unclosed file <_io.TextIOWrapper name='/var/folders/42/_lc4qb6d2wnd1x82w43h05nm0000gp/T/rt-c1-v6fz3o7m/recorded-cwd.txt' mode='r' encoding='UTF-8'>
+  recorded = open(rec).read().strip()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/palanisd/.homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/case.py:704: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 51578)>
+  function, args, kwargs = self._cleanups.pop()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_relative_cwd_blocked (__main__.CaseCwdTest.test_relative_cwd_blocked)
+A legacy case with a NON-absolute cwd fail-closes to ... [22:11:11]   RT-C1R -> BLOCKED (case cwd 'relative/path' must be an absolute path (G4))
+[22:11:11]   RT-C1R: BLOCKED in 0.0s calls=0
+[22:11:11]   RT-C1R: no env retry (no retry.on_status declared)
+/Users/palanisd/.homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/case.py:704: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 51595)>
+  function, args, kwargs = self._cleanups.pop()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_positional_order_preserved (__main__.CaseOrderTest.test_positional_order_preserved) ... ok
+test_unknown_id_skipped_order_held (__main__.CaseOrderTest.test_unknown_id_skipped_order_held) ... ok
+test_cc_counts_as_model_call (__main__.CcCountTest.test_cc_counts_as_model_call) ... ok
+test_append_binds_parent_with_subtables (__main__.ConfigPatchSurgeryTest.test_append_binds_parent_with_subtables) ... ok
+test_append_section_without_subtables (__main__.ConfigPatchSurgeryTest.test_append_section_without_subtables) ... ok
+test_in_place_replace_position_preserved (__main__.ConfigPatchSurgeryTest.test_in_place_replace_position_preserved) ... ok
+test_bi_replay_off_by_one (__main__.DesyncReplayTest.test_bi_replay_off_by_one)
+The live B-ii ordering (20260915T030218Z/rt-crosswire1b): ... [22:11:12] ACP desync guard: ignoring prompt_complete pid=868f094e-a486-48fb-ab7c-6ccdcab88afa (expected 541c31e6-7434-4905-ad93-728b0c2e43e9) — late/foreign completion
+[22:11:12] ACP desync guard: ignoring prompt_complete pid=541c31e6-7434-4905-ad93-728b0c2e43e9 (expected aaeeae0f-2bf6-4bec-85d8-1f81ebe78c0e) — late/foreign completion
+ok
+test_error_turn_grace (__main__.DesyncReplayTest.test_error_turn_grace)
+ACP-2 regression pin: a stop=error turn — the agentResult ... ok
+test_normal_ordering (__main__.DesyncReplayTest.test_normal_ordering)
+Regression pin (common live path, no drain tail): the next ... [22:11:12] ACP desync guard: ignoring prompt_complete pid=3cd4d545-d513-4294-ab84-e9b639d9f747 (expected 4783beaf-dbfa-4035-820c-b0ace8c397fe) — late/foreign completion
+[22:11:12] ACP desync guard: ignoring prompt_complete pid=4783beaf-dbfa-4035-820c-b0ace8c397fe (expected a5349a29-59e4-417a-8540-b69746637dbb) — late/foreign completion
+ok
+test_dual_paths_agree_pass_fail (__main__.DualValidatorTest.test_dual_paths_agree_pass_fail) ... ok
+test_slim_pass_both_broken_rejected_both (__main__.DualValidatorTest.test_slim_pass_both_broken_rejected_both) ... ok
+test_build_env_union (__main__.EnvContractTest.test_build_env_union) ... ok
+test_hermetic_home_generated (__main__.EnvContractTest.test_hermetic_home_generated) ... ok
+test_subset_declaration_rejected (__main__.EnvContractTest.test_subset_declaration_rejected) ... ok
+test_budget_margin_2x (__main__.InitBudgetTest.test_budget_margin_2x)
+The 2x-margin math: 26,001B init line at the 424 BPS plateau ... ok
+test_bulk_read_syscall_pin (__main__.InitBudgetTest.test_bulk_read_syscall_pin)
+Per-syscall plateau model: bytes available immediately; the ... ok
+test_windowed_plateau_424bps (__main__.InitBudgetTest.test_windowed_plateau_424bps)
+The XREPLAY-2 plateau model, end to end: the 26,001B ... ok
+test_legacy_case_skips_new_rules (__main__.NewCaseGateTest.test_legacy_case_skips_new_rules)
+A pre-version case (no schema_version, no bead/suite/tier) ... ok
+test_new_rule_violations_named (__main__.NewCaseGateTest.test_new_rule_violations_named) ... ok
+test_slim_pass_new_gate (__main__.NewCaseGateTest.test_slim_pass_new_gate) ... ok
+test_citable_pass_not_downgraded (__main__.NoEvidenceTest.test_citable_pass_not_downgraded) ... ok
+test_uncitable_pass_downgraded (__main__.NoEvidenceTest.test_uncitable_pass_downgraded) ... ok
+test_no_watch_present (__main__.NoWatchTest.test_no_watch_present) ... /Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run.py:2413: ResourceWarning: unclosed file <_io.TextIOWrapper name='/var/folders/42/_lc4qb6d2wnd1x82w43h05nm0000gp/T/rt-c2-qpelbiyq/root/home/config.toml' mode='r' encoding='UTF-8'>
+  cfg = open(os.path.join(home.home, "config.toml")).read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_not_removable_by_case_patch (__main__.NoWatchTest.test_not_removable_by_case_patch) ... /Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run.py:2428: ResourceWarning: unclosed file <_io.TextIOWrapper name='/var/folders/42/_lc4qb6d2wnd1x82w43h05nm0000gp/T/rt-c2p-ov1aqf14/root/home/config.toml' mode='r' encoding='UTF-8'>
+  cfg = open(os.path.join(home.home, "config.toml")).read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_in_tree_slim_cases_no_drift (__main__.PromptDriftTest.test_in_tree_slim_cases_no_drift)
+The slim drop-in set was authored against the D-4c ... ok
+test_missing_arg_value_named (__main__.PromptDriftTest.test_missing_arg_value_named) ... ok
+test_missing_done_reply_named (__main__.PromptDriftTest.test_missing_done_reply_named) ... ok
+test_missing_echo_named (__main__.PromptDriftTest.test_missing_echo_named) ... ok
+test_missing_fq_name_named (__main__.PromptDriftTest.test_missing_fq_name_named) ... ok
+test_no_drift_clean (__main__.PromptDriftTest.test_no_drift_clean) ... ok
+test_any_newest_first_oldest (__main__.ReconAnyFirstTest.test_any_newest_first_oldest) ... ok
+test_recon_never_fails_empty (__main__.ReconAnyFirstTest.test_recon_never_fails_empty) ... ok
+test_400_never_retries (__main__.RetryDecisionTest.test_400_never_retries) ... ok
+test_404_gone_no_retry (__main__.RetryDecisionTest.test_404_gone_no_retry) ... ok
+test_404_present_retries (__main__.RetryDecisionTest.test_404_present_retries) ... ok
+test_502_503_like_404 (__main__.RetryDecisionTest.test_502_503_like_404) ... ok
+test_cap_enforced (__main__.RetryDecisionTest.test_cap_enforced) ... ok
+test_404_gone_fails_no_retry (__main__.RetryLoopTest.test_404_gone_fails_no_retry)
+Catalog change (model gone on recheck) = FAIL, no retry — ... [22:11:12]   RT-R1-GONE: wiretap on :51597 capture=rt-r1-gone/wire
+[22:11:12]   RT-R1-GONE -> FAIL (turn exit=1)
+[22:11:12]   RT-R1-GONE: FAIL in 0.5s calls=1
+[22:11:12]   RT-R1-GONE: no env retry (model 'm-x' gone on recheck (catalog change, not an env flap))
+/Users/palanisd/.homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/case.py:704: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 51596)>
+  function, args, kwargs = self._cleanups.pop()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_flap_retries_to_pass_flaky (__main__.RetryLoopTest.test_flap_retries_to_pass_flaky) ... [22:11:13]   RT-R1-LOOP: wiretap on :51605 capture=rt-r1-loop/wire
+[22:11:13]   RT-R1-LOOP -> FAIL (turn exit=1)
+[22:11:13]   RT-R1-LOOP: FAIL in 0.4s calls=1
+[22:11:13]   RT-R1-LOOP: env retry 2/1 after 7.777s backoff (env flap: last status 404 in on_status [404, 502, 503]; model 'm-x' still in catalog)
+[22:11:13]   RT-R1-LOOP: wiretap on :54607 capture=rt-r1-loop/wire
+[22:11:14]   RT-R1-LOOP: PASS in 0.3s calls=1
+/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/run.py:2500: ResourceWarning: unclosed file <_io.BufferedReader name=7>
+  row = _run_case_once(case, args, budget, run_dir, attempt)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/run.py:2500: ResourceWarning: unclosed file <_io.BufferedReader name=4>
+  row = _run_case_once(case, args, budget, run_dir, attempt)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/palanisd/.homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/case.py:704: ResourceWarning: unclosed <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 51604)>
+  function, args, kwargs = self._cleanups.pop()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_bare_body_model (__main__.RowModelDerivationTest.test_bare_body_model) ... ok
+test_dollar_prefixed_body_model (__main__.RowModelDerivationTest.test_dollar_prefixed_body_model) ... ok
+test_legacy_row_model_key_wins (__main__.RowModelDerivationTest.test_legacy_row_model_key_wins) ... ok
+test_non_row_spec_unscoped (__main__.RowModelDerivationTest.test_non_row_spec_unscoped) ... ok
+test_rowskip_excluded_from_evidence_audit (__main__.RowSkipExemptionTest.test_rowskip_excluded_from_evidence_audit) ... ok
+test_rowskip_only_verdict_not_blocked (__main__.RowSkipExemptionTest.test_rowskip_only_verdict_not_blocked) ... ok
+test_unified_and_acp_copied (__main__.SessionEvidenceTest.test_unified_and_acp_copied) ... ok
+test_backends (__main__.ThreeWayAuthorityTest.test_backends) ... ok
+test_paths (__main__.ThreeWayAuthorityTest.test_paths) ... ok
+test_unquoted_section_and_empty (__main__.ThreeWayAuthorityTest.test_unquoted_section_and_empty) ... ok
+test_acp_resolvers_default (__main__.TimeoutOverrideTest.test_acp_resolvers_default) ... ok
+test_init_case_value_beats_floor (__main__.TimeoutOverrideTest.test_init_case_value_beats_floor) ... ok
+test_set_model_uses_case_value (__main__.TimeoutOverrideTest.test_set_model_uses_case_value) ... ok
+test_turn_s_beats_watchdog_s (__main__.TimeoutOverrideTest.test_turn_s_beats_watchdog_s) ... ok
+test_01_blocked_no_announcement (__main__.VerdictMatrixTest.test_01_blocked_no_announcement) ... ok
+test_02_vacuous_model_never_called (__main__.VerdictMatrixTest.test_02_vacuous_model_never_called) ... ok
+test_03_scored_fail (__main__.VerdictMatrixTest.test_03_scored_fail) ... ok
+test_04_pass (__main__.VerdictMatrixTest.test_04_pass) ... ok
+test_05_precedence_scored_fail_plus_zero_hit_model (__main__.VerdictMatrixTest.test_05_precedence_scored_fail_plus_zero_hit_model)
+THE binding precedence row: a scored pin FAILs while a model ... ok
+test_06_messages_wire_pass (__main__.VerdictMatrixTest.test_06_messages_wire_pass) ... ok
+test_07_cc_wire_pass_and_counted (__main__.VerdictMatrixTest.test_07_cc_wire_pass_and_counted)
+The cc wire variant — and G1 in the loop: a ... ok
+test_08_tolerant_finding_pass (__main__.VerdictMatrixTest.test_08_tolerant_finding_pass) ... ok
+test_09_blocked_wins_over_scored_fail (__main__.VerdictMatrixTest.test_09_blocked_wins_over_scored_fail)
+Rule 1 dominance: harness premise 0-hit + scored FAIL -> ... ok
+
+----------------------------------------------------------------------
+Ran 73 tests in 4.123s
+
+OK

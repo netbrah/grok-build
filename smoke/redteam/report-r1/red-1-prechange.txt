@@ -1,0 +1,246 @@
+test_key_order_insensitive_list_order_significant (__main__.GoldenCanonicalTest.test_key_order_insensitive_list_order_significant) ... ERROR
+test_normalize_absent_path_is_noop (__main__.GoldenCanonicalTest.test_normalize_absent_path_is_noop) ... ERROR
+test_normalize_nulls_list_index_path (__main__.GoldenCanonicalTest.test_normalize_nulls_list_index_path) ... ERROR
+test_full_runner_passes_the_case (__main__.GoldenCaseOfflineRunTest.test_full_runner_passes_the_case) ... FAIL
+test_case_passes_schema_validation (__main__.GoldenMechanismTest.test_case_passes_schema_validation) ... FAIL
+test_check_wire_golden_passes (__main__.GoldenMechanismTest.test_check_wire_golden_passes) ... ERROR
+test_any_form (__main__.GoldenSelectionTest.test_any_form) ... ERROR
+test_empty_filtered_set_fails_closed (__main__.GoldenSelectionTest.test_empty_filtered_set_fails_closed) ... ERROR
+test_nth_zero_newest_last_zero_oldest (__main__.GoldenSelectionTest.test_nth_zero_newest_last_zero_oldest) ... ERROR
+test_session_scope_excludes_foreign_capture (__main__.GoldenSelectionTest.test_session_scope_excludes_foreign_capture) ... ERROR
+test_unscoped_where_catches_foreign_capture (__main__.GoldenSelectionTest.test_unscoped_where_catches_foreign_capture) ... ok
+test_capture_corruption_fails_too (__main__.GoldenTeethTest.test_capture_corruption_fails_too) ... ERROR
+test_fixture_corruption_fails_with_structured_diff (__main__.GoldenTeethTest.test_fixture_corruption_fails_with_structured_diff) ... ERROR
+test_restored_fixture_passes (__main__.GoldenTeethTest.test_restored_fixture_passes) ... ERROR
+test_one_golden_engine (__main__.SwitchModelOpTest.test_one_golden_engine) ... FAIL
+test_step_ops_and_wire_kinds_membership (__main__.SwitchModelOpTest.test_step_ops_and_wire_kinds_membership) ... FAIL
+test_storage_form_cell_diff_engine (__main__.SwitchModelOpTest.test_storage_form_cell_diff_engine) ... ERROR
+test_validate_step_switch_model (__main__.SwitchModelOpTest.test_validate_step_switch_model) ... FAIL
+
+======================================================================
+ERROR: test_key_order_insensitive_list_order_significant (__main__.GoldenCanonicalTest.test_key_order_insensitive_list_order_significant)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 314, in test_key_order_insensitive_list_order_significant
+    ok, detail, diff = self._engine(scratch, "fx.json", [])
+                       ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 295, in _engine
+    return run.golden_compare(
+           ^^^^^^^^^^^^^^^^^^
+AttributeError: module 'run' has no attribute 'golden_compare'
+
+======================================================================
+ERROR: test_normalize_absent_path_is_noop (__main__.GoldenCanonicalTest.test_normalize_absent_path_is_noop)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 360, in test_normalize_absent_path_is_noop
+    ok, detail, diff = self._engine(
+                       ~~~~~~~~~~~~^
+        scratch, "fx.json", ["body.input.9.id",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                             "body.prompt_cache_key"])
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 295, in _engine
+    return run.golden_compare(
+           ^^^^^^^^^^^^^^^^^^
+AttributeError: module 'run' has no attribute 'golden_compare'
+
+======================================================================
+ERROR: test_normalize_nulls_list_index_path (__main__.GoldenCanonicalTest.test_normalize_nulls_list_index_path)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 343, in test_normalize_nulls_list_index_path
+    ok, detail, diff = self._engine(scratch, "fx.json",
+                       ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+                                    ["body.input.0.id"])
+                                    ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 295, in _engine
+    return run.golden_compare(
+           ^^^^^^^^^^^^^^^^^^
+AttributeError: module 'run' has no attribute 'golden_compare'
+
+======================================================================
+ERROR: test_check_wire_golden_passes (__main__.GoldenMechanismTest.test_check_wire_golden_passes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 132, in test_check_wire_golden_passes
+    r = run.check_wire(_golden_spec(), CASE_WIRE)
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/run.py", line 1802, in check_wire
+    raise ValueError("unknown wire kind: %r" % kind)
+ValueError: unknown wire kind: 'golden'
+
+======================================================================
+ERROR: test_any_form (__main__.GoldenSelectionTest.test_any_form)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 271, in test_any_form
+    r = run.check_wire(spec, scratch.wire)
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/run.py", line 1802, in check_wire
+    raise ValueError("unknown wire kind: %r" % kind)
+ValueError: unknown wire kind: 'golden'
+
+======================================================================
+ERROR: test_empty_filtered_set_fails_closed (__main__.GoldenSelectionTest.test_empty_filtered_set_fails_closed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 261, in test_empty_filtered_set_fails_closed
+    r = run.check_wire(spec, CASE_WIRE)
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/run.py", line 1802, in check_wire
+    raise ValueError("unknown wire kind: %r" % kind)
+ValueError: unknown wire kind: 'golden'
+
+======================================================================
+ERROR: test_nth_zero_newest_last_zero_oldest (__main__.GoldenSelectionTest.test_nth_zero_newest_last_zero_oldest)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 246, in test_nth_zero_newest_last_zero_oldest
+    r_newest = run.check_wire(spec, scratch.wire)
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/run.py", line 1802, in check_wire
+    raise ValueError("unknown wire kind: %r" % kind)
+ValueError: unknown wire kind: 'golden'
+
+======================================================================
+ERROR: test_session_scope_excludes_foreign_capture (__main__.GoldenSelectionTest.test_session_scope_excludes_foreign_capture)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 206, in test_session_scope_excludes_foreign_capture
+    r = run.check_wire(_golden_spec(), scratch.wire)
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/run.py", line 1802, in check_wire
+    raise ValueError("unknown wire kind: %r" % kind)
+ValueError: unknown wire kind: 'golden'
+
+======================================================================
+ERROR: test_capture_corruption_fails_too (__main__.GoldenTeethTest.test_capture_corruption_fails_too)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 173, in test_capture_corruption_fails_too
+    r = run.check_wire(_golden_spec(), scratch.wire)
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/run.py", line 1802, in check_wire
+    raise ValueError("unknown wire kind: %r" % kind)
+ValueError: unknown wire kind: 'golden'
+
+======================================================================
+ERROR: test_fixture_corruption_fails_with_structured_diff (__main__.GoldenTeethTest.test_fixture_corruption_fails_with_structured_diff)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 145, in test_fixture_corruption_fails_with_structured_diff
+    r = run.check_wire(_golden_spec(), scratch.wire)
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/run.py", line 1802, in check_wire
+    raise ValueError("unknown wire kind: %r" % kind)
+ValueError: unknown wire kind: 'golden'
+
+======================================================================
+ERROR: test_restored_fixture_passes (__main__.GoldenTeethTest.test_restored_fixture_passes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 187, in test_restored_fixture_passes
+    r = run.check_wire(_golden_spec(), scratch.wire)
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/run.py", line 1802, in check_wire
+    raise ValueError("unknown wire kind: %r" % kind)
+ValueError: unknown wire kind: 'golden'
+
+======================================================================
+ERROR: test_storage_form_cell_diff_engine (__main__.SwitchModelOpTest.test_storage_form_cell_diff_engine)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 416, in test_storage_form_cell_diff_engine
+    r = run.xwfix_cell_diff_storage(cell_dir, session_dir)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: module 'run' has no attribute 'xwfix_cell_diff_storage'
+
+======================================================================
+FAIL: test_full_runner_passes_the_case (__main__.GoldenCaseOfflineRunTest.test_full_runner_passes_the_case)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 447, in test_full_runner_passes_the_case
+    self.assertTrue(
+    ~~~~~~~~~~~~~~~^
+        os.path.isfile(report),
+        ^^^^^^^^^^^^^^^^^^^^^^^
+        "runner output:\n%s\n%s" % (proc.stdout[-2000:],
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                     proc.stderr[-2000:]))
+                                     ^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : runner output:
+er-insensitive list normalization exists or may be invented). Input capture: cases/golden-smoke-01/wire/req-010.json = verbatim bytes (sha256:12 cfed3352cc1c) of smoke/redteam/report/20260913T212423Z/rt-r1/wire/req-010.json — a qwen3.8-27b title-refresh side call (x-grok-req-id xai-title-refresh-8cf580a0-cb1f-4dbb-829a-a90ae0d8e10b) of session 01a09ca8-be72-7eb3-99d6-b58a09566587, run of record 20260913T212423Z/rt-r1. Verdict: PASS = the golden assert's canonical request body (the FULL capture body, not a body.input extraction) equals the fixture golden-smoke-01-expected.json after the normalize list nulls three volatile capture-root-relative paths in the capture before compare (body.prompt_cache_key = session-derived UUID; body.input.7.id and body.input.13.id = upstream-issued rs_* reasoning item ids — both regenerate per live run); a mismatch FAILs with a structured field-level diff (first 5 diverging canonical paths with got/want snippets) written to the case report dir — that diff is the TDD RED artifact. The companion count assert bounds the shared where-scope to exactly one capture (min 1 max 1): the B-i count-tolerance lesson — a static/nth selection is only unambiguous when a sibling count pin bounds N, so the golden's selection can never silently pick the wrong request. The where filter scopes by headers.x-grok-session-id (the wiretap capture carries the session id in that header — verified across 1924 captures in the report tree) so the pin cannot match a foreign session's requests in a parallel hermetic run.
+[21:56:55]   GOLDEN-SMOKE-01: wiretap on :65238 capture=golden-smoke-01/wire
+[21:56:55]   GOLDEN-SMOKE-01 -> FAIL (runner exception: unknown wire kind: 'golden')
+[21:56:55]   GOLDEN-SMOKE-01: FAIL in 0.2s calls=0
+[21:56:55]   GOLDEN-SMOKE-01: no env retry (no retry.on_status declared)
+[21:56:55] redaction sweep: 0 hits
+[21:56:55] report: /var/folders/42/_lc4qb6d2wnd1x82w43h05nm0000gp/T/golden-smoke-out-690hatoh/report.md
+[21:56:55] calls used: 0 / 40
+
+
+
+======================================================================
+FAIL: test_case_passes_schema_validation (__main__.GoldenMechanismTest.test_case_passes_schema_validation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 127, in test_case_passes_schema_validation
+    self.assertEqual(
+    ~~~~~~~~~~~~~~~~^
+        errs, [],
+        ^^^^^^^^^
+        "case contract violations:\n" + "\n".join(errs))
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Lists differ: ["golden-smoke-01.json assert.wire[0]: unk[311 chars]ed)"] != []
+
+First list contains 3 additional elements.
+First extra element 0:
+"golden-smoke-01.json assert.wire[0]: unknown kind 'golden' (known: field, grep, size_lt, count, resp_status, recon)"
+
++ []
+- ["golden-smoke-01.json assert.wire[0]: unknown kind 'golden' (known: field, "
+-  'grep, size_lt, count, resp_status, recon)',
+-  "schema: ['assert', 'wire', 0, 'kind']: 'golden' is not one of ['field', "
+-  "'grep', 'size_lt', 'count', 'resp_status', 'recon']",
+-  "schema: ['assert', 'wire', 0]: Additional properties are not allowed "
+-  "('golden', 'normalize' were unexpected)"] : case contract violations:
+golden-smoke-01.json assert.wire[0]: unknown kind 'golden' (known: field, grep, size_lt, count, resp_status, recon)
+schema: ['assert', 'wire', 0, 'kind']: 'golden' is not one of ['field', 'grep', 'size_lt', 'count', 'resp_status', 'recon']
+schema: ['assert', 'wire', 0]: Additional properties are not allowed ('golden', 'normalize' were unexpected)
+
+======================================================================
+FAIL: test_one_golden_engine (__main__.SwitchModelOpTest.test_one_golden_engine)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 429, in test_one_golden_engine
+    self.assertTrue(hasattr(run, "golden_compare"),
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                    "the golden-kind compare function must exist "
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                    "(the one engine)")
+                    ^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : the golden-kind compare function must exist (the one engine)
+
+======================================================================
+FAIL: test_step_ops_and_wire_kinds_membership (__main__.SwitchModelOpTest.test_step_ops_and_wire_kinds_membership)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 372, in test_step_ops_and_wire_kinds_membership
+    self.assertIn("switch_model", run.STEP_OPS)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'switch_model' not found in ('turn', 'switch', 'kill', 'compact', 'idle', 'recon_note')
+
+======================================================================
+FAIL: test_validate_step_switch_model (__main__.SwitchModelOpTest.test_validate_step_switch_model)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/test_run_golden.py", line 384, in test_validate_step_switch_model
+    self.assertEqual(errs, [])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^
+AssertionError: Lists differ: ["x steps[0]: unknown op 'switch_model' (k[49 chars]te)"] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+"x steps[0]: unknown op 'switch_model' (known: turn, switch, kill, compact, idle, recon_note)"
+
++ []
+- ["x steps[0]: unknown op 'switch_model' (known: turn, switch, kill, compact, "
+-  'idle, recon_note)']
+
+----------------------------------------------------------------------
+Ran 18 tests in 0.540s
+
+FAILED (failures=5, errors=12)

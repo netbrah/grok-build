@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "id": "GOLDEN-SMOKE-01",
+  "title": "GOLDEN-SMOKE-01 — mechanism case for the kind=golden wire assert (apex-ayl.79 XW-JIG-1, ratchet ①): a zero-step headless case that byte-pins the WIRE FORM of one REAL captured /v1/responses request through the golden-kind engine (canonical JSON, key-sorted with sort_keys and compact separators — object key order is insensitive, list order is NOT: the input[] conversation order is semantic and projection must not reorder it, so no order-insensitive list normalization exists or may be invented). Input capture: cases/golden-smoke-01/wire/req-010.json = verbatim bytes (sha256:12 cfed3352cc1c) of smoke/redteam/report/20260913T212423Z/rt-r1/wire/req-010.json — a qwen3.8-27b title-refresh side call (x-grok-req-id xai-title-refresh-8cf580a0-cb1f-4dbb-829a-a90ae0d8e10b) of session 01a09ca8-be72-7eb3-99d6-b58a09566587, run of record 20260913T212423Z/rt-r1. Verdict: PASS = the golden assert's canonical request body (the FULL capture body, not a body.input extraction) equals the fixture golden-smoke-01-expected.json after the normalize list nulls three volatile capture-root-relative paths in the capture before compare (body.prompt_cache_key = session-derived UUID; body.input.7.id and body.input.13.id = upstream-issued rs_* reasoning item ids — both regenerate per live run); a mismatch FAILs with a structured field-level diff (first 5 diverging canonical paths with got/want snippets) written to the case report dir — that diff is the TDD RED artifact. The companion count assert bounds the shared where-scope to exactly one capture (min 1 max 1): the B-i count-tolerance lesson — a static/nth selection is only unambiguous when a sibling count pin bounds N, so the golden's selection can never silently pick the wrong request. The where filter scopes by headers.x-grok-session-id (the wiretap capture carries the session id in that header — verified across 1924 captures in the report tree) so the pin cannot match a foreign session's requests in a parallel hermetic run.",
+  "bead": "apex-ayl.79",
+  "suite": "wire-shape",
+  "tier": "slim",
+  "model": "qwen3.8-27b",
+  "wire": "responses",
+  "driver": "headless",
+  "est_calls": 0,
+  "wirecap": true,
+  "steps": [],
+  "assert": {
+    "wire": [
+      {
+        "id": "golden_body",
+        "kind": "golden",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b",
+          "headers.x-grok-session-id": "01a09ca8-be72-7eb3-99d6-b58a09566587"
+        },
+        "golden": "golden-smoke-01-expected.json",
+        "normalize": [
+          "body.prompt_cache_key",
+          "body.input.7.id",
+          "body.input.13.id"
+        ],
+        "label": "WIRE-FORM BYTE PIN (the core golden pin): the selected request's FULL body, canonically serialized (sort_keys + compact separators) with the three normalize paths nulled, must equal the fixture byte-for-byte. Normalization is key-sorted canonicalization only — list order is significant (input[] is the conversation, in order); volatile per-run values are nulled via the normalize list, never by reordering. Mismatch = structured field-level diff (TDD RED artifact), not a bare FAIL."
+      },
+      {
+        "id": "count_scope",
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b",
+          "headers.x-grok-session-id": "01a09ca8-be72-7eb3-99d6-b58a09566587"
+        },
+        "min": 1,
+        "max": 1,
+        "label": "SCOPE BOUND (the B-i companion count pin): the where-filter (method + path + body.model + headers.x-grok-session-id) matches exactly ONE capture in this case's wire dir — the golden assert's selection is unambiguous because N is bounded here. A foreign session's same-shape request (parallel hermetic run) is excluded by the x-grok-session-id key; a missing capture (harness failure) or an extra match (scope too wide) both FAIL this pin."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

@@ -1,0 +1,36 @@
+RED-2 (teeth, post-change) — in-place fixture corruption, full runner, case GOLDEN-SMOKE-01
+=========================================================================================
+Method: corrupt the in-tree fixture (flip body.reasoning.summary "concise" -> "detailed"),
+run the case through the real runner (python3 smoke/redteam/run.py GOLDEN-SMOKE-01 --out
+<scratch>), capture the verdict + the structured diff artifact written to the case report
+dir; restore the fixture (verified byte-identical via sha256) and rerun.
+
+--- CORRUPTED FIXTURE (expect FAIL + structured diff) ---
+CORRUPTED RUN: exit=1 status=FAIL
+golden ok=False
+golden detail: req-010.json: canonical body mismatch: 1 divergence(s), first
+  reasoning.summary — reasoning.summary: got concise want detailed
+diff file exists: True (golden-diff-golden_body.json in the case report dir)
+diff doc:
+{
+  "capture": "req-010.json",
+  "fixture": "golden-smoke-01-expected.json",
+  "normalize": [
+    "body.prompt_cache_key",
+    "body.input.7.id",
+    "body.input.13.id"
+  ],
+  "divergences": [
+    {
+      "path": "reasoning.summary",
+      "got": "concise",
+      "want": "detailed"
+    }
+  ],
+  "first_divergence": "reasoning.summary"
+}
+
+--- RESTORED FIXTURE (expect PASS) ---
+RESTORED RUN: exit=0 status=PASS
+golden ok=True detail=req-010.json: canonical body match (34813 B) vs golden-smoke-01-expected.json
+fixture restored identical: True (sha256 of fixture == sha256 of pre-corruption backup)
