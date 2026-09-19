@@ -34,7 +34,8 @@
     },
     {
       "op": "turn",
-      "timeout_s": 300,
+      "timeout_s": 600,
+      "note": "OVERWATCH r2 wave 2026-09-19: r2 run (binary f9e7a15d6b6b) cut the parent qwen turn at the 300s ACP prompt timeout mid child-wait (child sonnet req-007 was 200 on the wire; verdict VACUOUS). 600s = 2x headroom for the xhigh parent turn + /v1/messages child round-trip. Rig parameter, not a product pin.",
       "prompt": "Use the spawn_agent tool to start a background agent named worker with model claude-sonnet-5 (pass model: claude-sonnet-5 in the tool arguments). In its message, give it this task: use the send_message tool to send the parent agent (root) a message containing exactly: AT-SPAWN-PART1, and only then finish. After spawning, use wait_agent to wait for the worker to finish, then reply with exactly: PART1-RECEIVED <the exact message the worker sent you> WORKER-ACK"
     }
   ],
