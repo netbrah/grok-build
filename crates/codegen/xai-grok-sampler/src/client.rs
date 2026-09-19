@@ -224,6 +224,35 @@ fn normalize_response_event_for_dialect(
         event.entry("summary_index").or_insert(serde_json::Value::from(0));
     }
 
+    // LiteLLM's gemini responses-compat adapter synthesizes Gemini thinking as a
+    // `reasoning_text` content part whose payload field is `reasoning` (OpenAI's
+    // `reasoning_text` part uses `text`); the SDK's `ReasoningTextContent` declares
+    // `text` required. Default it for the same lenient-dialect scope as
+    // `sequence_number` — no-op when present (never clobbered).
+    if matches!(
+        event_type.as_str(),
+        "response.content_part.added" | "response.content_part.done"
+    ) {
+        if let Some(part) = event
+            .get_mut("part")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            if part
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                == Some("reasoning_text")
+                && !part.contains_key("text")
+            {
+                let text = part
+                    .get("reasoning")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .unwrap_or_default();
+                part.insert("text".to_owned(), serde_json::Value::String(text));
+            }
+        }
+    }
+
     let status = match event_type.as_str() {
         "response.created" | "response.in_progress" => Some("in_progress"),
         "response.completed" => Some("completed"),
@@ -4725,6 +4754,122 @@ mod tests {
             panic!("expected ResponseReasoningSummaryTextDelta");
         };
         assert_eq!(e.summary_index, 2);
+    }
+
+    /// LiteLLM's gemini responses-compat adapter synthesizes Gemini thinking as a
+    /// `reasoning_text` content part whose payload field is `reasoning` (OpenAI's
+    /// `reasoning_text` part uses `text`); `async_openai`'s `ReasoningTextContent`
+    /// declares `text` required. The wire shape below is the verbatim AT-AZ-VXG-r2
+    /// resp-003 frame_index 9 kill frame: type/item_id/output_index/content_index/
+    /// part/model — NO `sequence_number`, part with NO `text`.
+    #[test]
+    fn normalize_content_part_done_reasoning_text_defaults_text_from_reasoning() {
+        let sse = r#"{
+            "type": "response.content_part.done",
+            "item_id": "msg_1",
+            "output_index": 0,
+            "content_index": 0,
+            "part": { "type": "reasoning_text", "reasoning": "X" },
+            "model": "gemini-3.5-flash"
+        }"#;
+        let event = deserialize_response_event(sse).expect("parse without text");
+        let rs::ResponseStreamEvent::ResponseContentPartDone(e) = event else {
+            panic!("expected ResponseContentPartDone");
+        };
+        assert_eq!(e.sequence_number, 0);
+        let rs::OutputContent::ReasoningText(rs::ReasoningTextContent { text }) = e.part else {
+            panic!("expected a reasoning_text part");
+        };
+        assert_eq!(text, "X");
+    }
+
+    /// A `reasoning_text` part with NEITHER `reasoning` NOR `text` still parses; the default
+    /// engages as an empty string rather than a fabricated one.
+    #[test]
+    fn normalize_content_part_done_reasoning_text_no_reasoning_field_defaults_empty() {
+        let sse = r#"{
+            "type": "response.content_part.done",
+            "item_id": "msg_1",
+            "output_index": 0,
+            "content_index": 0,
+            "part": { "type": "reasoning_text" }
+        }"#;
+        let event =
+            deserialize_response_event(sse).expect("parse without reasoning or text");
+        let rs::ResponseStreamEvent::ResponseContentPartDone(e) = event else {
+            panic!("expected ResponseContentPartDone");
+        };
+        assert_eq!(e.sequence_number, 0);
+        let rs::OutputContent::ReasoningText(rs::ReasoningTextContent { text }) = e.part else {
+            panic!("expected a reasoning_text part");
+        };
+        assert_eq!(text, "");
+    }
+
+    /// A present `text` is never clobbered by the default, even when `reasoning` also arrives
+    /// (regression guard: passes before and after the cut).
+    #[test]
+    fn normalize_content_part_done_reasoning_text_present_text_not_clobbered() {
+        let sse = r#"{
+            "type": "response.content_part.done",
+            "item_id": "msg_1",
+            "output_index": 0,
+            "content_index": 0,
+            "part": { "type": "reasoning_text", "text": "keep", "reasoning": "other" }
+        }"#;
+        let event = deserialize_response_event(sse).expect("parse");
+        let rs::ResponseStreamEvent::ResponseContentPartDone(e) = event else {
+            panic!("expected ResponseContentPartDone");
+        };
+        let rs::OutputContent::ReasoningText(rs::ReasoningTextContent { text }) = e.part else {
+            panic!("expected a reasoning_text part");
+        };
+        assert_eq!(text, "keep");
+    }
+
+    /// An `output_text` part passes through the normalize path byte-identical (scope guard: the
+    /// repair must reach only `reasoning_text` parts).
+    #[test]
+    fn normalize_content_part_done_reasoning_text_output_text_part_untouched() {
+        let mut value: serde_json::Value = serde_json::from_str(
+            r#"{
+                "type": "response.content_part.done",
+                "item_id": "msg_1",
+                "output_index": 0,
+                "content_index": 1,
+                "part": {
+                    "type": "output_text",
+                    "text": "visible text",
+                    "annotations": [{ "type": "url_citation", "url_citation": { "url": "https://example.com", "title": "example" } }]
+                }
+            }"#,
+        )
+        .expect("fixture json");
+        let part_before = serde_json::to_string(&value["part"]).expect("serialize part");
+        normalize_response_event_for_dialect(&mut value, ResponsesWireDialect::Xai, "");
+        let part_after = serde_json::to_string(&value["part"]).expect("serialize part");
+        assert_eq!(
+            part_after, part_before,
+            "an output_text part must pass through byte-identical"
+        );
+    }
+
+    /// The kill frame under the Strict dialect is NOT repaired: normalization is
+    /// lenient-dialect-scoped, so the frame stays fatal (scope guard).
+    #[test]
+    fn normalize_content_part_done_reasoning_text_strict_dialect_untouched() {
+        let decoded = decode_responses_sse_frame(
+            "",
+            r#"{
+                "type": "response.content_part.done",
+                "item_id": "msg_1",
+                "output_index": 0,
+                "content_index": 0,
+                "part": { "type": "reasoning_text", "reasoning": "X" }
+            }"#,
+            ResponsesWireDialect::Strict,
+        );
+        assert!(matches!(decoded, Err(SamplingError::Serialization(_))));
     }
 
     /// A gateway that echoes `text: {}` without the required `format` still parses; the Responses
