@@ -691,7 +691,7 @@
   {
    "id": "gpt-5.6-sol",
    "model": "gpt-5.6-sol",
-   "context_window": 353000,
+   "context_window": 922000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
    "auto_compact_threshold_percent": 80,

@@ -88,11 +88,12 @@ fn bundled_catalog_parses_rich_rows() {
         "sol: curated menu wins over the old seed's xhigh-including menu"
     );
 
-    // Seed migration: curated cw 353000 beats the generated 922000 ...
+    // C-class (CATALOG-CCLASS-SEED-1): the baked cw is the generated
+    // (proxy-truth) 922000 — the 071 overlay 353000 leak is gone ...
     assert_eq!(
         sol.context_window,
-        NonZeroU64::new(353_000).unwrap(),
-        "sol: seed-migrated cw (overlay) beats the generated ceiling"
+        NonZeroU64::new(922_000).unwrap(),
+        "sol: cw from the generated catalog (C-class: the proxy's truth)"
     );
     // ... while the generated output cap survives (the overlay is
     // C-class-free by design).
@@ -162,16 +163,17 @@ fn pre_bake_seed_rows_keep_the_head_donor_contract() {
     for key in PRE_BAKE_SEED_KEYS {
         assert!(entries.contains_key(key), "{key}: pre-bake key rides the catalog");
     }
-    // The donor fields (context_window / api_backend) are exactly the
-    // pre-bake seed values: a future curation drift that changes what a
-    // pre-bake row donates to a live row must fail here.
+    // The donor fields (context_window / api_backend): the grok rows are
+    // the pre-bake seed values; sol's cw is the generated (proxy-truth)
+    // 922000 post CATALOG-CCLASS-SEED-1. A future curation drift that
+    // changes what a pre-bake row donates to a live row must fail here.
     let donor_fields = |key: &str| {
         let info = &entries[key].info;
         (info.api_backend.clone(), info.context_window.get())
     };
     assert_eq!(donor_fields("grok-4.6"), (ApiBackend::Responses, 500_000));
     assert_eq!(donor_fields("grok-4.5"), (ApiBackend::Responses, 500_000));
-    assert_eq!(donor_fields("gpt-5.6-sol"), (ApiBackend::Responses, 353_000));
+    assert_eq!(donor_fields("gpt-5.6-sol"), (ApiBackend::Responses, 922_000));
 
     // grok-4.5 is seed-only (not on the proxy) — it survives via the
     // overlay `bake` list with its full seed-migrated curation.
@@ -192,13 +194,14 @@ fn donor_map_is_pre_bake_seed_keys_only() {
     prefetched.insert("claude-opus-4-5".to_string(), live_row("claude-opus-4-5"));
     let resolved = resolve_model_list(&Config::default(), Some(prefetched));
 
-    // The pre-bake key donates exactly as at HEAD: the live sol row at the
-    // hydration placeholder inherits the curated cw + the responses wire.
+    // The pre-bake key donates the bundled row's values: the live sol row
+    // at the hydration placeholder inherits the generated (proxy-truth)
+    // cw 922000 + the responses wire.
     let sol = &resolved["gpt-5.6-sol"];
     assert_eq!(
         sol.info.context_window,
-        NonZeroU64::new(353_000).unwrap(),
-        "pre-bake donor inherits context_window exactly as at HEAD"
+        NonZeroU64::new(922_000).unwrap(),
+        "pre-bake donor inherits the generated context_window"
     );
     assert_eq!(
         sol.info.api_backend,

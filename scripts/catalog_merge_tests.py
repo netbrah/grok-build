@@ -100,13 +100,27 @@ def test_a_merge_precedence_and_row_shape():
               "output_cost_per_token", "supported_reasoning_efforts",
               "max_input_tokens", "max_output_tokens"):
         check(f"merged row drops raw C field {f}", f not in row)
-    # Overlay cw (seed migration) beats the generated cap on collision.
+    # C-class (CATALOG-CCLASS-SEED-1, operator ruling + 2026-09-19
+    # correction): for a model that IS in the generated catalog (on the
+    # proxy) the generated caps are the truth — an overlay
+    # context_window / max_completion_tokens never beats them (the 071
+    # sol 353000 leak is gone). Overlay caps ride only for overlay-only
+    # models (no generated truth): the overlay is the row's sole source.
     models, _ = gate.merge_rows(
-        {"m": {"id": "m", "max_input_tokens": 900000}},
+        {"m": {"id": "m", "max_input_tokens": 900000, "max_output_tokens": 4096}},
         {"m": {"api_backend": "responses", "model_family": "codex",
-               "context_window": 353000}}, [])
-    check("overlay context_window beats generated cap",
-          models["m"]["context_window"] == 353000)
+               "context_window": 353000, "max_completion_tokens": 99999}}, [])
+    check("generated context_window beats overlay (C-class: proxy truth)",
+          models["m"]["context_window"] == 900000)
+    check("generated max_completion_tokens beats overlay (C-class)",
+          models["m"]["max_completion_tokens"] == 4096)
+    # Overlay-only model (not in the generated catalog): the overlay caps
+    # are the row's sole source and ride unchanged (grok-4.5 pattern).
+    models, _ = gate.merge_rows(
+        {}, {"m-seed": {"api_backend": "responses", "model_family": "xai",
+                        "context_window": 500000}}, ["m-seed"])
+    check("overlay-only caps ride when there is no generated truth",
+          models["m-seed"]["context_window"] == 500000)
     # Between-build overlay entry (not generated, not bake-listed): warn only.
     _, warns = gate.merge_rows(
         {}, {"m-x": {"api_backend": "messages", "model_family": "anthropic"}}, [])
@@ -196,25 +210,31 @@ def test_d_committed_artifacts():
     # D3: the committed overlay is exhaustive.
     check("overlay has no coverage gaps",
           gate.collect_missing(gen["models"], ov["models"], ov.get("bake", [])) == [])
+    check("no overlay entry for a generated (on-proxy) model carries a "
+          "C-class cap (CATALOG-CCLASS-SEED-1)",
+          gate.find_forbidden_caps(gen["models"], ov["models"]) == [])
     # Seed migration invariants (the pre-bake rows, byte-for-value).
     g46 = by_id["grok-4.6"]
     check("grok-4.6: overlay backend_search=false beats the seed's true",
           g46["supports_backend_search"] is False)
     check("grok-4.6: seed name/label survive the migration",
           g46["name"] == "Grok 4.6" and g46["system_prompt_label"] == "Grok 4.6")
-    check("grok-4.6: caps (curated cw, generated max_output)",
+    check("grok-4.6: caps (generated cw + generated max_output — the "
+          "overlay no longer carries them, C-class)",
           g46["context_window"] == 500000 and g46["max_completion_tokens"] == 500000)
     check("grok-4.6: seed menu survives (4 items, high default)",
           [m["value"] for m in g46["reasoning_efforts"]] == ["xhigh", "high", "medium", "low"]
           and g46["reasoning_efforts"][1]["default"] is True)
     g45 = by_id["grok-4.5"]
-    check("grok-4.5: seed-only row rides the bake list",
+    check("grok-4.5: overlay-only seed row — overlay cw 500000 is the "
+          "sole source (no generated truth; C-class carve-out)",
           g45["context_window"] == 500000 and g45["api_backend"] == "responses"
           and g45["model_family"] == "xai"
           and [m["value"] for m in g45["reasoning_efforts"]] == ["high", "medium", "low"])
     sol = by_id["gpt-5.6-sol"]
-    check("sol: curated cw 353000 beats generated 922000",
-          sol["context_window"] == 353000)
+    check("sol: cw 922000 from generated (C-class: the proxy's truth; the "
+          "071 overlay 353000 leak is gone)",
+          sol["context_window"] == 922000)
     check("sol: generated mct 128000 survives",
           sol["max_completion_tokens"] == 128000)
     check("sol: overlay menu wins (5 items, no xhigh)",
@@ -320,6 +340,52 @@ def test_f_gate_output_contract():
                                    "model_family": "codex"})
 
 
+def test_g_forbidden_overlay_caps():
+    """(g) CATALOG-CCLASS-SEED-1 (operator ruling, 2026-09-19 correction):
+    rejection is SCOPED by generated-catalog membership — an overlay
+    entry whose model IS in catalog_generated.json (on the proxy) may not
+    carry context_window / max_completion_tokens (the generated capture is
+    the truth; config.toml rows remain the runtime override); the gate
+    FAILS with an explicit per-entry list and writes no artifact.
+    Overlay-only models (not in the generated catalog) are PERMITTED —
+    the overlay is the sole source of caps for those rows."""
+    print("g) forbidden overlay caps (C-class, scoped by proxy membership)")
+    with tempfile.TemporaryDirectory() as td:
+        genp, ovp, outp = (os.path.join(td, n) for n in ("g.json", "o.json", "out.json"))
+        # (a) proxy-model overlay entry with context_window -> FAIL.
+        json.dump({"models": {"m-gen": {"id": "m-gen", "max_input_tokens": 922000}}},
+                  open(genp, "w"))
+        json.dump({"default": "m-gen",
+                   "models": {"m-gen": {"api_backend": "responses",
+                                        "model_family": "codex",
+                                        "context_window": 353000}}},
+                  open(ovp, "w"))
+        proc = run_gate(genp, ovp, outp)
+        check("gate exits 2 on proxy-model overlay context_window",
+              proc.returncode == 2, f"rc={proc.returncode} err={proc.stderr}")
+        check("rejection names the model + field",
+              "m-gen" in proc.stderr and "context_window" in proc.stderr,
+              proc.stderr)
+        check("gate writes no artifact on forbidden cap", not os.path.exists(outp))
+        # (b) overlay-only model entry with context_window -> PASS.
+        json.dump({"models": {"m-gen": {"id": "m-gen", "max_input_tokens": 922000}}},
+                  open(genp, "w"))
+        json.dump({"default": "m-gen", "bake": ["m-seed"],
+                   "models": {"m-gen": {"api_backend": "responses",
+                                        "model_family": "codex"},
+                              "m-seed": {"api_backend": "responses",
+                                         "model_family": "xai",
+                                         "context_window": 500000}}},
+                  open(ovp, "w"))
+        proc = run_gate(genp, ovp, outp)
+        check("overlay-only overlay context_window passes the gate",
+              proc.returncode == 0, f"rc={proc.returncode} err={proc.stderr}")
+        art = json.load(open(outp))
+        seed = {r["id"]: r for r in art["models"]}["m-seed"]
+        check("overlay-only row carries the overlay cap as sole source",
+              seed["context_window"] == 500000)
+
+
 if __name__ == "__main__":
     test_a_merge_precedence_and_row_shape()
     test_b_fail_closed_coverage()
@@ -327,4 +393,5 @@ if __name__ == "__main__":
     test_d_committed_artifacts()
     test_e_schema_validation()
     test_f_gate_output_contract()
+    test_g_forbidden_overlay_caps()
     print(f"ALL PASS ({PASS} checks)")

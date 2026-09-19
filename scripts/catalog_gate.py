@@ -31,6 +31,14 @@ D3 fail-closed (supersedes the flag-only era):
   bless — the operator cures the overlay, the gate enforces completeness.
   The merged file is machine output: the operator curates the overlay,
   never the merged file.
+  CATALOG-CCLASS-SEED-1 (apex-byc, operator ruling 2026-09-19): the gate
+  also FAILS (exit 2) with an explicit per-entry list when an overlay
+  entry carries a FORBIDDEN_OVERLAY_FIELDS value (context_window /
+  max_completion_tokens) for a model that IS in the generated catalog
+  (on the proxy) — the generated capture is the truth for the baked
+  caps, and config.toml rows remain the top runtime override. Overlay-
+  only models (not in the generated catalog) are permitted: the overlay
+  is the sole source of caps for those rows.
 
 Merge rules (runtime precedence UNCHANGED: config row > live fetch >
 baked catalog > fallback — this gate only decides the baked layer):
@@ -38,15 +46,20 @@ baked catalog > fallback — this gate only decides the baked layer):
     (max_input_tokens -> context_window, > 0; max_output_tokens ->
     max_completion_tokens, 0 < v <= u32::MAX) + the curated overlay
     fields. Overlay wins on any collision (O/H class is curated
-    authority). Raw C-class fields (mode/costs/providers/hint menus)
-    stay in catalog_generated.json only.
+    authority) — EXCEPT C-class caps: a generated cap always beats an
+    overlay cap (CATALOG-CCLASS-SEED-1); overlay context_window /
+    max_completion_tokens ride only for overlay-only models that have no
+    generated row (the off-proxy seed carriers). Raw C-class fields
+    (mode/costs/providers/hint menus) stay in catalog_generated.json
+    only.
   * Overlay entries that are neither generated nor bake-listed are
     accepted (between-build additions) with a WARNING; they stay
     config-side until the proxy serves the model or it is bake-listed.
 
 Exit codes: 0 = merged + validated (warnings may be present);
-2 = fail-closed (incomplete curation / dangling pin / schema validation
-    failure — artifact NOT written); 3 = input unreadable / bad shape;
+2 = fail-closed (incomplete curation / dangling pin / forbidden C-class
+    overlay caps / schema validation failure — artifact NOT written);
+    3 = input unreadable / bad shape;
 4 = jsonschema module missing.
 
 Usage (CWD-independent; defaults resolve next to this script):
@@ -73,6 +86,17 @@ DEFAULT_OUT_NAME = "default_models.json"
 # these on live config rows — the overlay is a stricter surface, so the
 # gate enforces it here.
 CREDENTIAL_FIELDS = ("api_key", "env_key", "auth_provider", "mtls_cert_dir")
+
+# CATALOG-CCLASS-SEED-1 (apex-byc, operator ruling 2026-09-19): C-class
+# caps — the generated catalog is the proxy's truth for the baked
+# context_window / max_completion_tokens, and config.toml rows remain the
+# top runtime override. Overlay entries for models that ARE in the
+# generated catalog (on the proxy) must not carry these fields (a curated
+# cap would silently beat the generated truth — the 071 sol 353000 leak).
+# Overlay-only models (not in the generated catalog — e.g. grok-4.5,
+# bake-listed; gemma-4-31b, between-build) are permitted: the overlay is
+# the sole source of caps for those rows.
+FORBIDDEN_OVERLAY_FIELDS = ["context_window", "max_completion_tokens"]
 
 
 def humanize_effort_id(value):
@@ -163,9 +187,28 @@ def collect_missing(gen_models, ov_models, bake_list):
     return missing
 
 
+def find_forbidden_caps(gen_models, ov_models):
+    """CATALOG-CCLASS-SEED-1: rejection is scoped by generated-catalog
+    membership — an overlay entry whose model IS in the generated catalog
+    (on the proxy) may not carry a C-class cap (the generated capture is
+    the truth); overlay-only models are permitted (the overlay is their
+    sole cap source). Returns [(model_id, fields)] in sorted order."""
+    gen_ids = set(gen_models)
+    hits = []
+    for mid in sorted(ov_models):
+        entry = ov_models[mid]
+        if not isinstance(entry, dict):
+            continue  # non-table entries are rejected upstream (exit 3)
+        fields = [f for f in FORBIDDEN_OVERLAY_FIELDS if f in entry]
+        if fields and mid in gen_ids:
+            hits.append((mid, fields))
+    return hits
+
+
 def merge_rows(generated, overlay_models, bake_list=()):
     """D1: merged rows = id/model + the runtime cap mapping + the curated
-    overlay fields (overlay wins on collision; raw C-class fields stay in
+    overlay fields (overlay wins on collision; a generated C-class cap
+    always beats an overlay cap; raw C-class fields stay in
     catalog_generated.json only). Returns (models, warns); coverage and
     pin integrity are enforced by the caller (fail-closed, exit 2)."""
     warns = []
@@ -177,15 +220,25 @@ def merge_rows(generated, overlay_models, bake_list=()):
         # Runtime mapping (ModelEntryConfig names; the crate parse struct
         # reads these).
         cw = src.get("max_input_tokens")
-        if isinstance(cw, (int, float)) and cw > 0:
+        gen_has_cw = isinstance(cw, (int, float)) and cw > 0
+        if gen_has_cw:
             fields["context_window"] = int(cw)
         mo = src.get("max_output_tokens")
-        if isinstance(mo, (int, float)) and 0 < mo <= U32_MAX:
+        gen_has_mct = isinstance(mo, (int, float)) and 0 < mo <= U32_MAX
+        if gen_has_mct:
             fields["max_completion_tokens"] = int(mo)
         entry = overlay_models[mid]
         for k in sorted(entry):
             if k in ("id", "model"):
                 continue  # the generated id is authoritative
+            # CATALOG-CCLASS-SEED-1: a generated cap is the proxy's truth
+            # — an overlay cap never beats it. Overlay caps ride only when
+            # the generated side has none (overlay-only / off-proxy seed
+            # carriers).
+            if k == "context_window" and gen_has_cw:
+                continue
+            if k == "max_completion_tokens" and gen_has_mct:
+                continue
             if k == "reasoning_efforts":
                 fields[k] = normalize_efforts(entry[k])
             else:
@@ -294,6 +347,26 @@ def main():
                 file=sys.stderr,
             )
             sys.exit(3)
+
+    # CATALOG-CCLASS-SEED-1 (apex-byc): overlay entries for models that
+    # ARE in the generated catalog may not carry C-class caps — the
+    # generated capture is the truth, config.toml rows are the runtime
+    # override. Fail closed (exit 2), explicit per-entry list, artifact
+    # NOT written. Overlay-only models are exempt (sole cap source).
+    forbidden = find_forbidden_caps(gen_models, ov_models)
+    if forbidden:
+        print(
+            f"FAIL-CLOSED: {len(forbidden)} overlay entr(y/ies) carry "
+            f"forbidden C-class field(s) {FORBIDDEN_OVERLAY_FIELDS} for a "
+            "model that is in the generated catalog — the generated "
+            "capture is the truth for the baked caps; config.toml rows "
+            "remain the runtime override (overlay-only models are "
+            "permitted):",
+            file=sys.stderr,
+        )
+        for mid, fields in forbidden:
+            print(f"  forbidden: {mid}: {', '.join(fields)}", file=sys.stderr)
+        sys.exit(2)
 
     # D3 fail-closed: every baking model needs a complete overlay entry.
     missing = collect_missing(gen_models, ov_models, bake_list)
