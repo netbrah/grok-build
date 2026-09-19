@@ -2947,6 +2947,11 @@ def _run_case_once(case, args, budget, run_dir, attempt):
                                            "stopReason": stop,
                                            "model": model,
                                            "_line": 0})
+                    # OVERWATCH rig repair (2026-09-19, AT-AZ-VXR): the ACP
+                    # path never set ctx.last_exit (headless-only) -> ACP
+                    # cases declaring exit:0 failed 'last exit None want 0'.
+                    # ACP analog: 0 = prompt closed without an ACP error.
+                    ctx.last_exit = 1 if "error" in resp else 0
                     if ctx.session_dir and not os.path.isdir(
                             ctx.session_dir):
                         ctx.session_dir = home.session_dir_for(
@@ -3168,7 +3173,11 @@ def _run_case_once(case, args, budget, run_dir, attempt):
             if spec.get("op") == "recon":
                 results.append(check_recon(spec, ctx))
                 continue
-            results.append(check_ndjson(spec, ctx.events, fmt, ctx))
+            # OVERWATCH rig repair (2026-09-19, AT-AZ-VXR): ctx.fmt, not the
+            # local headless fmt — the ACP driver stores turn text as
+            # acp_message events (ctx.fmt="acp"); the local fmt made every
+            # ACP text_contains pin read an empty stream.
+            results.append(check_ndjson(spec, ctx.events, ctx.fmt, ctx))
         for spec in assert_block.get("artifact", []):
             if spec.get("op") == "recon":
                 results.append(check_recon(spec, ctx))
