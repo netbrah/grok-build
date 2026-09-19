@@ -300,6 +300,28 @@ impl ChatStateActor {
                     }
                 }
             }
+            ChatStateCommand::ProjectSwitchHistory {
+                target_model,
+                reply,
+            } => {
+                match self.project_switch_history(&target_model) {
+                    None => {
+                        let _ = reply.send(crate::StripOutcome::NoMatch);
+                    }
+                    Some((changed, ack_rx)) => {
+                        // Same off-actor ack discipline as StripModelBoundHistory.
+                        tokio::spawn(async move {
+                            let outcome = match ack_rx.await {
+                                Ok(Ok(())) => crate::StripOutcome::Applied { stripped: changed },
+                                Ok(Err(_)) | Err(_) => {
+                                    crate::StripOutcome::WriteFailed { stripped: changed }
+                                }
+                            };
+                            let _ = reply.send(outcome);
+                        });
+                    }
+                }
+            }
             ChatStateCommand::ReplaceSystemHead { prompt, reply } => {
                 let changed = self.replace_system_head(&prompt);
                 let _ = reply.send(changed);

@@ -294,6 +294,18 @@ impl ChatStateHandle {
         .unwrap_or(crate::StripOutcome::ActorUnavailable)
     }
 
+    /// See [`ChatStateCommand::ProjectSwitchHistory`] (XW-PROJECT-1, apex-ayl.71).
+    /// Outcome is typed and disk-acknowledged like the strips; `Applied.stripped`
+    /// carries the changed-item count.
+    pub async fn project_switch_history(&self, target_model: &str) -> crate::StripOutcome {
+        let target_model = target_model.to_owned();
+        self.query("ProjectSwitchHistory", |reply| {
+            ChatStateCommand::ProjectSwitchHistory { target_model, reply }
+        })
+        .await
+        .unwrap_or(crate::StripOutcome::ActorUnavailable)
+    }
+
     /// Out-of-band history repair (`x.ai/session/repair`); see
     /// [`ChatStateCommand::RepairHistory`]. Returns `None` if the actor is
     /// dead, `Some(Err(_))` if a turn was in flight at processing time.

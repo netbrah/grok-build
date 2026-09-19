@@ -48,6 +48,36 @@ pub(super) enum HistoryRewrite {
     /// transient overestimate, corrected on the next response). Backup-gated,
     /// disk-acked persist, same seam as `ImageStrip`.
     ModelBoundStrip,
+    /// Switch-time projection (XW-PROJECT-1, apex-ayl.71): the stored history is
+    /// re-projected for the new model's wire boundary (`project_switch_history`,
+    /// xai-grok-sampling-types) — foreign reasoning re-keyed/stripped, backend
+    /// calls co-projected or dropped with their results. Item count can shrink
+    /// ahead of the active capture's boundary → snapshot + rebase. Token totals
+    /// are not reseeded: the first response on the new model re-anchors them with
+    /// provider-reported usage (a stale-high estimate can only trigger compaction
+    /// early). Backup-gated, disk-acked persist, same seam as `ModelBoundStrip`.
+    SwitchProjection,
+}
+
+/// Parsed-equivalence diff count between a stored and a projected history
+/// (`ConversationItem` has no `PartialEq`; the JSON round-trip is the
+/// corpus's own verification standard). A length mismatch counts the larger
+/// size as changed.
+fn projection_changed_count(
+    stored: &[ConversationItem],
+    projected: &[ConversationItem],
+) -> usize {
+    if stored.len() != projected.len() {
+        return stored.len().max(projected.len());
+    }
+    stored
+        .iter()
+        .zip(projected.iter())
+        .filter(|(a, b)| {
+            serde_json::to_value(a).unwrap_or(serde_json::Value::Null)
+                != serde_json::to_value(b).unwrap_or(serde_json::Value::Null)
+        })
+        .count()
 }
 
 impl ChatStateActor {
@@ -63,7 +93,11 @@ impl ChatStateActor {
         Option<tokio::sync::oneshot::Receiver<std::io::Result<()>>>,
     ) {
         let snapshots_capture =
-            matches!(kind, HistoryRewrite::IntegrityRepair | HistoryRewrite::ModelBoundStrip);
+            matches!(
+                kind,
+                HistoryRewrite::IntegrityRepair | HistoryRewrite::ModelBoundStrip
+                    | HistoryRewrite::SwitchProjection
+            );
         if snapshots_capture {
             self.snapshot_turn_slice();
         }
@@ -74,7 +108,8 @@ impl ChatStateActor {
                 HistoryRewrite::IntegrityRepair | HistoryRewrite::RetainedPrune => {
                     self.persistence.replace_history(&self.state.conversation);
                 }
-                HistoryRewrite::ImageStrip | HistoryRewrite::ModelBoundStrip => {
+                HistoryRewrite::ImageStrip | HistoryRewrite::ModelBoundStrip
+                | HistoryRewrite::SwitchProjection => {
                     disk_ack = Some(
                         self.persistence
                             .replace_history_for_strip_and_ack(&self.state.conversation),
@@ -225,6 +260,41 @@ impl ChatStateActor {
                 stripped
             });
         disk_ack.map(|ack| (stripped, ack))
+    }
+
+    /// Persist the switch-time projection (XW-PROJECT-1, apex-ayl.71): re-project
+    /// the live stored conversation for the new model's boundary and replace it
+    /// through the single backup-gated, disk-acked flavor, as
+    /// [`HistoryRewrite::SwitchProjection`]. Computed in-actor so the projection
+    /// serializes with turn pushes (no read-then-write window across a new
+    /// prompt). `None` when nothing changed, else changed count + disk ack.
+    pub(super) fn project_switch_history(
+        &mut self,
+        target_model: &str,
+    ) -> Option<(usize, tokio::sync::oneshot::Receiver<std::io::Result<()>>)> {
+        let boundary =
+            xai_grok_sampling_types::conversation::projection::model_boundary_class(target_model);
+        let (changed, disk_ack) =
+            self.rewrite_history(HistoryRewrite::SwitchProjection, |conversation| {
+                let projected =
+                    xai_grok_sampling_types::conversation::projection::project_switch_history(
+                        conversation,
+                        target_model,
+                        boundary,
+                    )
+                    .items;
+                let changed = projection_changed_count(conversation, &projected);
+                if changed > 0 {
+                    *conversation = projected;
+                    tracing::info!(
+                        target_model,
+                        changed,
+                        "switch-time projection applied to stored conversation"
+                    );
+                }
+                changed
+            });
+        disk_ack.map(|ack| (changed, ack))
     }
 
     /// Make memory match the disk-authoritative switch for one generation.

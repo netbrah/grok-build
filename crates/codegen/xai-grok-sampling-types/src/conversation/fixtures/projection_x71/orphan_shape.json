@@ -1,0 +1,32 @@
+[
+  {
+    "type": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "find the flaky test"
+      }
+    ]
+  },
+  {
+    "type": "backend_tool_call",
+    "kind": {
+      "tool_type": "x_search",
+      "id": "fc_x",
+      "call_id": "fc_x",
+      "name": "x_search",
+      "input": "flaky test main.rs"
+    }
+  },
+  {
+    "type": "tool_result",
+    "tool_call_id": "fc_x",
+    "content": "found it: tests/test_main.rs::test_flaky",
+    "is_error": false
+  },
+  {
+    "type": "assistant",
+    "content": "fixed the flaky test",
+    "model_id": "gpt-5.6-sol"
+  }
+]

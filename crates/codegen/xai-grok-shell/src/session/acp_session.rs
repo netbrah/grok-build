@@ -125,6 +125,8 @@ use post_tool_use_delivery::*;
 mod image_strip;
 #[path = "acp_session_impl/model_bound_strip.rs"]
 mod model_bound_strip;
+#[path = "acp_session_impl/switch_projection.rs"]
+mod switch_projection;
 #[path = "acp_session_impl/interjection.rs"]
 mod interjection;
 #[path = "acp_session_impl/sampling_events.rs"]

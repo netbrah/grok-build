@@ -929,4 +929,42 @@ mod tests {
     // (no-flag skip + flag-set fire, post-cut 5-arg call shape). The
     // no-flag branch stays pinned here by
     // `ingress77_empty_family_no_flag_current_behavior_skips_normalization`.
+
+    /// SDD-71 decision (b) · WAVE-C E2 pin (apex-ayl.71): pins the CURRENT
+    /// truth of `is_openai_family` (def :107-112, empty arm :111 @40ffad1) —
+    /// an empty `model_family` is treated as openai-class, so
+    /// `patch_responses_request` SKIPS `normalize_content_types` (the
+    /// vLLM-shim safety net). Standing L0 invariant test (tripwire, not
+    /// policy); no behavior change in .71. INGRESS-NORMALIZE-1 (.77) re-pins
+    /// this test if it flips the behavior.
+    #[test]
+    fn is_openai_family_empty_is_true_is_pinned() {
+        assert!(
+            is_openai_family(""),
+            "empty model_family must stay openai-class (.77 owns any flip)"
+        );
+        // The skip consequence, end to end: an empty/None family leaves the
+        // OpenAI-native content part types untouched...
+        let mut body = serde_json::json!({
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+            ]
+        });
+        patch_responses_request(&mut body, None, None, false, false);
+        assert_eq!(
+            body["input"][0]["content"][0]["type"], "input_text",
+            "empty family must SKIP normalize_content_types"
+        );
+        // ...while a vLLM-class family still gets the shim normalization.
+        let mut body = serde_json::json!({
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
+            ]
+        });
+        patch_responses_request(&mut body, Some("qwen"), None, false, false);
+        assert_eq!(
+            body["input"][0]["content"][0]["type"], "text",
+            "qwen family must keep normalizing input_text -> text"
+        );
+    }
 }

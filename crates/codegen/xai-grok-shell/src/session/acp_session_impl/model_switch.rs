@@ -12,9 +12,9 @@ impl SessionActor {
         auto_compact_threshold_percent: u8,
     ) -> Result<acp::ModelId, acp::Error> {
         let mut sampling_config = sampling_config;
-        if let Some(current) = self.chat_state_handle.get_sampling_config().await
-            && let Some(id) = current.conversation_group_id
-        {
+        let prev_config = self.chat_state_handle.get_sampling_config().await;
+        let prev_model = prev_config.as_ref().map(|c| c.model.clone());
+        if let Some(id) = prev_config.and_then(|c| c.conversation_group_id) {
             sampling_config.conversation_group_id = Some(id);
         }
         let model_id = acp::ModelId::new(sampling_config.model.clone());
@@ -161,6 +161,14 @@ impl SessionActor {
             if let Err(e) = self.run_compact_only(trigger_info, true).await {
                 tracing::error!(error = %e, "Family-switch compaction failed; switching anyway");
             }
+        }
+        // XW-PROJECT-1 (apex-ayl.71): proactive switch-time projection for the
+        // cross-wire switch; the actor no-ops (NoMatch) when the history is
+        // already in the target form. Gated: real model-id change, no turn in flight.
+        if !turn_in_flight
+            && prev_model.as_deref() != Some(sampling_config.model.as_str())
+        {
+            self.apply_switch_projection(&sampling_config.model).await;
         }
         Ok(model_id)
     }

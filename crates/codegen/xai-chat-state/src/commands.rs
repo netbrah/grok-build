@@ -176,6 +176,17 @@ pub enum ChatStateCommand {
         reply: tokio::sync::oneshot::Sender<crate::StripOutcome>,
     },
 
+    /// Persist the switch-time projection (XW-PROJECT-1, apex-ayl.71): the actor
+    /// re-projects its live stored conversation for `target_model` and replaces
+    /// it through the backup-gated, disk-acked seam (in-actor so it serializes
+    /// with turn pushes). Replies with [`crate::StripOutcome`] after the disk ack:
+    /// `Applied` means backup and rewrite both landed (`stripped` = changed-item
+    /// count); `NoMatch` means the projection changed nothing.
+    ProjectSwitchHistory {
+        target_model: String,
+        reply: tokio::sync::oneshot::Sender<crate::StripOutcome>,
+    },
+
     /// Atomically align the leading `System` message with `prompt`, persisting inside the actor.
     /// Serializes with turn pushes so a mid-turn reconnect cannot lose updates the way RMW would.
     /// A changed head re-bases `total_tokens`; acceptable because it invalidates the KV prefix anyway.

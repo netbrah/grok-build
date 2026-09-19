@@ -5,6 +5,7 @@
 
 mod chat_completions;
 mod messages;
+pub mod projection;
 mod responses;
 
 pub use chat_completions::{conversation_item_to_chat_message, conversation_to_chat_messages};
@@ -2753,6 +2754,10 @@ mod responses_tests;
 #[cfg(test)]
 #[path = "conversation/messages_tests.rs"]
 mod messages_tests;
+
+#[cfg(test)]
+#[path = "conversation/projection_tests.rs"]
+mod projection_tests;
 
 #[cfg(test)]
 mod tests {
