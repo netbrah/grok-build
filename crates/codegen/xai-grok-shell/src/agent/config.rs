@@ -3529,6 +3529,15 @@ fn fill_from_endpoint_defaults(entry: &mut ModelEntry, endpoints: &EndpointsConf
         );
     }
 }
+/// CATALOG-BAKE-1 (apex-071): the model keys the bundled seed carried
+/// before the catalog bake (the rich rows of `default_models.json` at
+/// fc7d64a). They keep exact pre-bake resolution behavior: the ONLY
+/// donors for prefetched rows, and exempt from the row-aware resolution
+/// fills. Every other bundled row is a generated+overlay addition —
+/// fallback + drift baseline only, never a donor (baked rows never
+/// donate to live rows; live fetch wins when present).
+pub(crate) const PRE_BAKE_SEED_KEYS: [&str; 3] = ["grok-4.6", "grok-4.5", "gpt-5.6-sol"];
+
 /// Assemble the final model map. Priority (highest wins):
 /// config.toml `[model.*]` > prefetched (remote) > hardcoded defaults.
 pub(crate) fn resolve_model_list(
@@ -3536,6 +3545,11 @@ pub(crate) fn resolve_model_list(
     prefetched: Option<IndexMap<String, ModelEntry>>,
 ) -> IndexMap<String, ModelEntry> {
     let mut resolved: IndexMap<String, ModelEntry> = IndexMap::new();
+    // CATALOG-BAKE-1 (apex-071, D1/D2): the bundled catalog (seed +
+    // generated + overlay, merged into `default_models.json`) is the
+    // Layer-1 base; only the pre-bake seed keys may donate to
+    // prefetched (live) rows.
+    let mut bundled_donor: IndexMap<String, ModelEntry> = IndexMap::new();
     if cfg.endpoints.has_custom_endpoint() {
         tracing::info!(
             models_base_url = ?cfg.endpoints.models_base_url,
@@ -3543,15 +3557,31 @@ pub(crate) fn resolve_model_list(
             "custom models endpoint active, skipping built-in defaults",
         );
     } else {
-        let defaults = default_model_entries(&cfg.endpoints);
-        tracing::debug!(count = defaults.len(), "loaded default models");
-        resolved.extend(defaults);
+        let seed = default_model_entries(&cfg.endpoints);
+        tracing::debug!(count = seed.len(), "loaded default models (bundled catalog)");
+        bundled_donor = seed
+            .iter()
+            .filter(|(key, _)| PRE_BAKE_SEED_KEYS.contains(&key.as_str()))
+            .map(|(key, entry)| (key.clone(), entry.clone()))
+            .collect();
+        resolved.extend(seed);
+        // The row-aware seams run at resolution on the NON-pre-bake merged
+        // rows only: those rows were absent from the bundled seed before
+        // the bake, so the pre-bake keys keep exact pre-bake behavior (no
+        // fills). Both seams only touch fields still at built-in
+        // defaults, so the config tier below keeps last word.
+        for (key, entry) in resolved.iter_mut() {
+            if !PRE_BAKE_SEED_KEYS.contains(&key.as_str()) {
+                fill_from_catalog_inference(entry);
+                fill_from_endpoint_defaults(entry, &cfg.endpoints);
+            }
+        }
     }
     if let Some(mut prefetched) = prefetched {
         tracing::debug!(count = prefetched.len(), "loaded prefetched models");
         let default_cw = DEFAULT_CONTEXT_WINDOW;
         for (key, entry) in prefetched.iter_mut() {
-            let donor = resolved.get(key);
+            let donor = bundled_donor.get(key);
             if let Some(donor) = donor {
                 if entry.info.context_window.get() == default_cw
                     && donor.info.context_window.get() != default_cw
@@ -3858,7 +3888,13 @@ fn model_authority_view(
     } else {
         Some(default_model_entries(endpoints))
     };
-    let donor = bundled.as_ref().and_then(|entries| entries.get(key));
+    // CATALOG-BAKE-1 (apex-071): the donor contract is the pre-bake seed
+    // keys only — the generated additions ride the fallback but never
+    // donate (mirrors `resolve_model_list`'s `bundled_donor`).
+    let donor = bundled
+        .as_ref()
+        .and_then(|entries| entries.get(key))
+        .filter(|_| PRE_BAKE_SEED_KEYS.contains(&key));
     let info = &resolved.info;
 
     // ---- api_backend: donor seam -> catalog inference -> endpoint
@@ -4219,66 +4255,86 @@ pub struct ModelVariant {
     pub effort: ReasoningEffort,
     pub model_id: String,
 }
-/// JSON-only subset of `ModelEntryConfig`.
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-struct DefaultModelJson {
-    id: Option<String>,
-    model: String,
-    model_family: Option<String>,
-    name: Option<String>,
-    description: Option<String>,
-    context_window: Option<NonZeroU64>,
-    temperature: Option<f32>,
-    top_p: Option<f32>,
-    max_completion_tokens: Option<u32>,
-    api_backend: ApiBackend,
-    #[serde(default = "default_agent_type")]
-    agent_type: String,
-    inference_idle_timeout_secs: Option<u64>,
-    hidden: bool,
-    reasoning_effort: Option<ReasoningEffort>,
-    #[serde(default)]
-    supports_reasoning_effort: bool,
-    #[serde(default)]
-    reasoning_efforts: Vec<ReasoningEffortOption>,
-    #[serde(default)]
-    variants: Vec<ModelVariant>,
-    /// When false, only OAuth users see this in the picker.
-    #[serde(default = "default_true")]
-    supported_in_api: bool,
-    #[serde(default)]
-    supports_backend_search: bool,
-    /// apex-ayl.77 E2 ruling R-B (binding flag spec); see
-    /// [`ModelInfo::normalize_content_types`].
-    #[serde(default)]
-    normalize_content_types: bool,
-    #[serde(default)]
-    compactions_remaining: Option<CompactionsRemaining>,
-    #[serde(default)]
-    compaction_at_tokens: Option<CompactionAtTokens>,
-    #[serde(default)]
-    show_model_fingerprint: bool,
-    #[serde(default)]
-    auto_compact_threshold_percent: Option<u8>,
-    #[serde(default)]
-    system_prompt_label: Option<String>,
+/// CATALOG-BAKE-1 (apex-071, D2): map one embedded-catalog row (the
+/// enriched `xai-grok-models::DefaultModelEntry`) into a
+/// [`ModelEntryConfig`] for the Layer-1 base. Mirrors the pre-bake
+/// seed-row mapping: the endpoint's inference base URL fills `base_url`
+/// (the artifact is deployment-independent), the generated cap aliases
+/// fold into the runtime caps (`max_input_tokens` -> `context_window`,
+/// `max_output_tokens` -> `max_completion_tokens`, values above u32::MAX
+/// dropped), and the feed provenance fields stay `None` — they are
+/// feed-only, and a bundled row is not a feed row (apex-93d semantics
+/// preserved).
+pub(crate) fn entry_config_from_default_row(
+    row: &crate::models::DefaultModelEntry,
+    endpoints: &EndpointsConfig,
+) -> ModelEntryConfig {
+    ModelEntryConfig {
+        id: row.id.clone(),
+        model: row.model.clone(),
+        model_family: row.model_family.clone(),
+        multi_agent_v2: row.multi_agent_v2,
+        strict_responses_input: row.strict_responses_input.unwrap_or(false),
+        base_url: endpoints.resolve_inference_base_url(),
+        api_base_url: Some(endpoints.xai_api_base_url.clone()),
+        name: row.name.clone(),
+        description: row.description.clone(),
+        context_window: row
+            .context_window
+            .or_else(|| row.max_input_tokens.and_then(NonZeroU64::new))
+            .unwrap_or_else(|| NonZeroU64::new(200_000).expect("200000 is non-zero")),
+        feed_max_input_tokens: None,
+        feed_max_output_tokens: None,
+        auto_compact_threshold_percent: row.auto_compact_threshold_percent,
+        system_prompt_label: row.system_prompt_label.clone(),
+        temperature: None,
+        top_p: None,
+        max_completion_tokens: row
+            .max_completion_tokens
+            .or_else(|| row.max_output_tokens.and_then(|v| u32::try_from(v).ok())),
+        api_backend: row.api_backend.clone().unwrap_or_default(),
+        auth_scheme: None,
+        agent_type: default_agent_type(),
+        inference_idle_timeout_secs: None,
+        max_retries: None,
+        rate_limit_retry_threshold: None,
+        subagent_rate_limit_max_attempts: None,
+        api_key: None,
+        env_key: None,
+        extra_headers: row
+            .extra_headers
+            .as_ref()
+            .map(|h| h.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default(),
+        use_concise: false,
+        hidden: false,
+        supported_in_api: true,
+        reasoning_effort: row.reasoning_effort,
+        supports_reasoning_effort: row.supports_reasoning_effort.unwrap_or(false),
+        reasoning_efforts: row.reasoning_efforts.clone().unwrap_or_default(),
+        variants: Vec::new(),
+        supports_backend_search: row.supports_backend_search.unwrap_or(false),
+        normalize_content_types: false,
+        compactions_remaining: row.compactions_remaining,
+        compaction_at_tokens: row.compaction_at_tokens,
+        show_model_fingerprint: false,
+        stream_tool_calls: None,
+        laziness_detector: LazinessDetectorPerModelConfig::default(),
+        cache_ttl: row.cache_ttl.clone(),
+    }
 }
 fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryConfig> {
-    let root: serde_json::Value = serde_json::from_str(crate::models::DEFAULT_MODELS_JSON)
-        .expect("default_models.json: invalid JSON");
-    let entries: Vec<DefaultModelJson> = serde_json::from_value(
-        root.get("models")
-            .expect("default_models.json: missing 'models' array")
-            .clone(),
-    )
-    .expect("default_models.json: invalid 'models' array");
+    // CATALOG-BAKE-1 (apex-071, D1/D2): the bundled seed IS the merged
+    // catalog (role pins + models array in `default_models.json`); the
+    // enriched crate rows carry the full curated fields, so the offline
+    // fallback carries the whole curated catalog.
+    let rows = crate::models::default_model_rows();
     tracing::debug!(
-        count = entries.len(),
-        "loaded default models from embedded JSON"
+        count = rows.len(),
+        "loaded default models from the embedded catalog"
     );
-    entries
-        .into_iter()
+    rows
+        .iter()
         .map(|m| {
             assert!(
                 !m.model.is_empty(),
@@ -4286,56 +4342,7 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 m.id
             );
             let key = m.id.clone().unwrap_or_else(|| m.model.clone());
-            let context_window = m
-                .context_window
-                .unwrap_or_else(|| NonZeroU64::new(200_000).expect("200000 is non-zero"));
-            let config = ModelEntryConfig {
-                id: m.id,
-                model: m.model,
-                model_family: m.model_family,
-                // Built-in (XAI-direct) catalog entries ship dark for v2
-                // multi-agent; the per-model row is the only enable path.
-                multi_agent_v2: None,
-                strict_responses_input: false,
-                base_url: endpoints.resolve_inference_base_url(),
-                api_base_url: Some(endpoints.xai_api_base_url.clone()),
-                name: m.name,
-                description: m.description,
-                context_window,
-                feed_max_input_tokens: None,
-                feed_max_output_tokens: None,
-                auto_compact_threshold_percent: m.auto_compact_threshold_percent,
-                system_prompt_label: m.system_prompt_label,
-                temperature: m.temperature,
-                top_p: m.top_p,
-                max_completion_tokens: m.max_completion_tokens,
-                api_backend: m.api_backend,
-                auth_scheme: None,
-                agent_type: m.agent_type,
-                inference_idle_timeout_secs: m.inference_idle_timeout_secs,
-                max_retries: None,
-                rate_limit_retry_threshold: None,
-                subagent_rate_limit_max_attempts: None,
-                api_key: None,
-                env_key: None,
-                extra_headers: IndexMap::new(),
-                use_concise: false,
-                hidden: m.hidden,
-                supported_in_api: m.supported_in_api,
-                reasoning_effort: m.reasoning_effort,
-                supports_reasoning_effort: m.supports_reasoning_effort,
-                reasoning_efforts: m.reasoning_efforts,
-                variants: m.variants,
-                supports_backend_search: m.supports_backend_search,
-                normalize_content_types: m.normalize_content_types,
-                compactions_remaining: m.compactions_remaining,
-                compaction_at_tokens: m.compaction_at_tokens,
-                show_model_fingerprint: m.show_model_fingerprint,
-                stream_tool_calls: None,
-                laziness_detector: LazinessDetectorPerModelConfig::default(),
-                cache_ttl: None,
-            };
-            (key, config)
+            (key, entry_config_from_default_row(m, endpoints))
         })
         .collect()
 }

@@ -1,129 +1,975 @@
 {
-  "default": "grok-4.6",
-  "web_search": "grok-4.6",
-  "image_description": "grok-4.6",
-  "session_summary": "grok-4.6",
-  "models": [
+ "default": "grok-4.6",
+ "web_search": "grok-4.6",
+ "image_description": "grok-4.6",
+ "session_summary": "grok-4.6",
+ "models": [
+  {
+   "id": "Qwen3-Embedding-8B",
+   "model": "Qwen3-Embedding-8B",
+   "context_window": 32768,
+   "api_backend": "chat_completions",
+   "model_family": "qwen"
+  },
+  {
+   "id": "answerai-colbert-small-v1",
+   "model": "answerai-colbert-small-v1",
+   "api_backend": "chat_completions",
+   "model_family": "cohere"
+  },
+  {
+   "id": "claude-haiku-4-5",
+   "model": "claude-haiku-4-5",
+   "context_window": 200000,
+   "max_completion_tokens": 64000,
+   "api_backend": "messages",
+   "cache_ttl": "1h",
+   "model_family": "anthropic"
+  },
+  {
+   "id": "claude-haiku-4-5-20251001",
+   "model": "claude-haiku-4-5-20251001",
+   "context_window": 200000,
+   "max_completion_tokens": 64000,
+   "api_backend": "messages",
+   "cache_ttl": "1h",
+   "model_family": "anthropic"
+  },
+  {
+   "id": "claude-haiku-4.5",
+   "model": "claude-haiku-4.5",
+   "context_window": 200000,
+   "max_completion_tokens": 64000,
+   "api_backend": "messages",
+   "cache_ttl": "1h",
+   "model_family": "anthropic"
+  },
+  {
+   "id": "claude-opus-4-5",
+   "model": "claude-opus-4-5",
+   "context_window": 1000000,
+   "max_completion_tokens": 128000,
+   "api_backend": "messages",
+   "cache_ttl": "1h",
+   "model_family": "anthropic"
+  },
+  {
+   "id": "claude-opus-4-6",
+   "model": "claude-opus-4-6",
+   "context_window": 1000000,
+   "max_completion_tokens": 128000,
+   "api_backend": "messages",
+   "cache_ttl": "1h",
+   "model_family": "anthropic"
+  },
+  {
+   "id": "claude-opus-4-7",
+   "model": "claude-opus-4-7",
+   "context_window": 1000000,
+   "max_completion_tokens": 128000,
+   "api_backend": "messages",
+   "cache_ttl": "1h",
+   "model_family": "anthropic"
+  },
+  {
+   "id": "claude-opus-4-8",
+   "model": "claude-opus-4-8",
+   "context_window": 1000000,
+   "max_completion_tokens": 128000,
+   "api_backend": "messages",
+   "cache_ttl": "1h",
+   "model_family": "anthropic"
+  },
+  {
+   "id": "claude-opus-4.5",
+   "model": "claude-opus-4.5",
+   "context_window": 1000000,
+   "max_completion_tokens": 128000,
+   "api_backend": "messages",
+   "cache_ttl": "1h",
+   "model_family": "anthropic"
+  },
+  {
+   "id": "claude-opus-4.6",
+   "model": "claude-opus-4.6",
+   "context_window": 1000000,
+   "max_completion_tokens": 128000,
+   "api_backend": "messages",
+   "cache_ttl": "1h",
+   "model_family": "anthropic"
+  },
+  {
+   "id": "claude-opus-4.7",
+   "model": "claude-opus-4.7",
+   "context_window": 1000000,
+   "max_completion_tokens": 128000,
+   "api_backend": "messages",
+   "cache_ttl": "1h",
+   "model_family": "anthropic"
+  },
+  {
+   "id": "claude-opus-4.8",
+   "model": "claude-opus-4.8",
+   "context_window": 1000000,
+   "max_completion_tokens": 128000,
+   "api_backend": "messages",
+   "cache_ttl": "1h",
+   "model_family": "anthropic"
+  },
+  {
+   "id": "claude-opus-5",
+   "model": "claude-opus-5",
+   "context_window": 1000000,
+   "max_completion_tokens": 128000,
+   "api_backend": "messages",
+   "cache_ttl": "1h",
+   "model_family": "anthropic"
+  },
+  {
+   "id": "claude-sonnet-4-5",
+   "model": "claude-sonnet-4-5",
+   "context_window": 1000000,
+   "max_completion_tokens": 128000,
+   "api_backend": "messages",
+   "cache_ttl": "1h",
+   "model_family": "anthropic"
+  },
+  {
+   "id": "claude-sonnet-4-6",
+   "model": "claude-sonnet-4-6",
+   "context_window": 1000000,
+   "max_completion_tokens": 128000,
+   "api_backend": "messages",
+   "cache_ttl": "1h",
+   "model_family": "anthropic"
+  },
+  {
+   "id": "claude-sonnet-4.5",
+   "model": "claude-sonnet-4.5",
+   "context_window": 1000000,
+   "max_completion_tokens": 128000,
+   "api_backend": "messages",
+   "cache_ttl": "1h",
+   "model_family": "anthropic"
+  },
+  {
+   "id": "claude-sonnet-4.6",
+   "model": "claude-sonnet-4.6",
+   "context_window": 1000000,
+   "max_completion_tokens": 128000,
+   "api_backend": "messages",
+   "cache_ttl": "1h",
+   "model_family": "anthropic"
+  },
+  {
+   "id": "claude-sonnet-5",
+   "model": "claude-sonnet-5",
+   "context_window": 1000000,
+   "max_completion_tokens": 128000,
+   "api_backend": "messages",
+   "cache_ttl": "1h",
+   "model_family": "anthropic",
+   "multi_agent_v2": true
+  },
+  {
+   "id": "gemini-3-flash-preview",
+   "model": "gemini-3-flash-preview",
+   "context_window": 1048576,
+   "max_completion_tokens": 65535,
+   "api_backend": "responses",
+   "model_family": "google"
+  },
+  {
+   "id": "gemini-3-pro-preview",
+   "model": "gemini-3-pro-preview",
+   "context_window": 1048576,
+   "max_completion_tokens": 65536,
+   "api_backend": "responses",
+   "model_family": "google",
+   "reasoning_efforts": [
     {
-      "id": "grok-4.6",
-      "model": "grok-4.6",
-      "model_family": "xai",
-      "name": "Grok 4.6",
-      "description": "SpaceXAI's latest frontier model",
-      "context_window": 500000,
-      "api_backend": "responses",
-      "supports_backend_search": true,
-      "system_prompt_label": "Grok 4.6",
-      "supports_reasoning_effort": true,
-      "reasoning_effort": "high",
-      "auto_compact_threshold_percent": 80,
-      "compaction_at_tokens": true,
-      "compactions_remaining": 1,
-      "reasoning_efforts": [
-        {
-          "value": "xhigh",
-          "label": "Extra High Effort",
-          "description": "Highest effort and reasoning level"
-        },
-        {
-          "value": "high",
-          "label": "High Effort",
-          "description": "Higher implementation quality with extensive reasoning",
-          "default": true
-        },
-        {
-          "value": "medium",
-          "label": "Medium Effort",
-          "description": "Balanced effort with standard implementation and testing"
-        },
-        {
-          "value": "low",
-          "label": "Low Effort",
-          "description": "Quick, fast implementations"
-        }
-      ]
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
     },
     {
-      "id": "grok-4.5",
-      "model": "grok-4.5",
-      "model_family": "xai",
-      "name": "Grok 4.5",
-      "context_window": 500000,
-      "api_backend": "responses",
-      "supports_backend_search": false,
-      "system_prompt_label": "Grok 4.5",
-      "supports_reasoning_effort": true,
-      "reasoning_effort": "high",
-      "auto_compact_threshold_percent": 80,
-      "compaction_at_tokens": true,
-      "compactions_remaining": 1,
-      "reasoning_efforts": [
-        {
-          "value": "high",
-          "label": "High Effort",
-          "description": "Highest implementation quality with extensive reasoning",
-          "default": true
-        },
-        {
-          "value": "medium",
-          "label": "Medium Effort",
-          "description": "Balanced effort with standard implementation and testing"
-        },
-        {
-          "value": "low",
-          "label": "Low Effort",
-          "description": "Quick, fast implementations"
-        }
-      ]
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
     },
     {
-      "id": "gpt-5.6-sol",
-      "model": "gpt-5.6-sol",
-      "model_family": "codex",
-      "name": "GPT-5.6 Sol",
-      "description": "Latest frontier agentic coding model",
-      "context_window": 353000,
-      "api_backend": "responses",
-      "supports_backend_search": true,
-      "system_prompt_label": "GPT-5.6 Sol",
-      "supports_reasoning_effort": true,
-      "reasoning_effort": "low",
-      "auto_compact_threshold_percent": 80,
-      "compaction_at_tokens": true,
-      "compactions_remaining": 1,
-      "reasoning_efforts": [
-        {
-          "value": "low",
-          "label": "Low Effort",
-          "description": "Fast responses with lighter reasoning",
-          "default": true
-        },
-        {
-          "value": "medium",
-          "label": "Medium Effort",
-          "description": "Balances speed and reasoning depth for everyday tasks"
-        },
-        {
-          "value": "high",
-          "label": "High Effort",
-          "description": "Greater reasoning depth for complex problems"
-        },
-        {
-          "value": "xhigh",
-          "label": "Extra High Effort",
-          "description": "Extra high reasoning depth for complex problems"
-        },
-        {
-          "value": "max",
-          "label": "Max Effort",
-          "description": "Maximum reasoning depth for the hardest problems"
-        },
-        {
-          "value": "ultra",
-          "label": "Ultra Effort",
-          "description": "Maximum reasoning with automatic task delegation"
-        }
-      ]
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
     }
-  ]
+   ],
+   "supports_reasoning_effort": true
+  },
+  {
+   "id": "gemini-3.1-flash-lite",
+   "model": "gemini-3.1-flash-lite",
+   "context_window": 1048576,
+   "max_completion_tokens": 65536,
+   "api_backend": "responses",
+   "model_family": "google"
+  },
+  {
+   "id": "gemini-3.1-flash-lite-preview",
+   "model": "gemini-3.1-flash-lite-preview",
+   "context_window": 1048576,
+   "max_completion_tokens": 65536,
+   "api_backend": "responses",
+   "model_family": "google",
+   "reasoning_efforts": [
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    }
+   ],
+   "supports_reasoning_effort": true
+  },
+  {
+   "id": "gemini-3.1-pro-preview",
+   "model": "gemini-3.1-pro-preview",
+   "context_window": 1048576,
+   "max_completion_tokens": 65536,
+   "api_backend": "responses",
+   "model_family": "google",
+   "reasoning_efforts": [
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    }
+   ],
+   "supports_reasoning_effort": true
+  },
+  {
+   "id": "gemini-3.5-flash",
+   "model": "gemini-3.5-flash",
+   "context_window": 1048576,
+   "max_completion_tokens": 65535,
+   "api_backend": "responses",
+   "model_family": "google",
+   "reasoning_efforts": [
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    }
+   ],
+   "supports_reasoning_effort": true
+  },
+  {
+   "id": "gemini-3.5-flash-lite",
+   "model": "gemini-3.5-flash-lite",
+   "context_window": 1048576,
+   "max_completion_tokens": 65536,
+   "api_backend": "responses",
+   "model_family": "google"
+  },
+  {
+   "id": "gemini-3.6-flash",
+   "model": "gemini-3.6-flash",
+   "context_window": 1048576,
+   "max_completion_tokens": 65536,
+   "api_backend": "responses",
+   "model_family": "google"
+  },
+  {
+   "id": "gemini-3.7-flash",
+   "model": "gemini-3.7-flash",
+   "context_window": 1048576,
+   "max_completion_tokens": 65536,
+   "api_backend": "responses",
+   "model_family": "google",
+   "reasoning_efforts": [
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    }
+   ],
+   "supports_reasoning_effort": true
+  },
+  {
+   "id": "gemini-3.8-flash",
+   "model": "gemini-3.8-flash",
+   "context_window": 1048576,
+   "max_completion_tokens": 65536,
+   "api_backend": "responses",
+   "model_family": "google"
+  },
+  {
+   "id": "glm-5.2",
+   "model": "glm-5.2",
+   "context_window": 262144,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "glm",
+   "multi_agent_v2": true,
+   "reasoning_efforts": [
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": true
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": false
+    },
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    }
+   ],
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true
+  },
+  {
+   "id": "gpt-3.5-turbo",
+   "model": "gpt-3.5-turbo",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "chat_completions",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-35-turbo-0301",
+   "model": "gpt-35-turbo-0301",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "chat_completions",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-4",
+   "model": "gpt-4",
+   "context_window": 1047576,
+   "max_completion_tokens": 32768,
+   "api_backend": "chat_completions",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-4-0314",
+   "model": "gpt-4-0314",
+   "context_window": 1047576,
+   "max_completion_tokens": 32768,
+   "api_backend": "chat_completions",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-4-32k",
+   "model": "gpt-4-32k",
+   "context_window": 1047576,
+   "max_completion_tokens": 32768,
+   "api_backend": "chat_completions",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-4-32k-0314",
+   "model": "gpt-4-32k-0314",
+   "context_window": 1047576,
+   "max_completion_tokens": 32768,
+   "api_backend": "chat_completions",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-4-turbo",
+   "model": "gpt-4-turbo",
+   "context_window": 1047576,
+   "max_completion_tokens": 32768,
+   "api_backend": "chat_completions",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-4-turbo-preview",
+   "model": "gpt-4-turbo-preview",
+   "context_window": 1047576,
+   "max_completion_tokens": 32768,
+   "api_backend": "chat_completions",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-4.1",
+   "model": "gpt-4.1",
+   "context_window": 1047576,
+   "max_completion_tokens": 32768,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-4.1-mini",
+   "model": "gpt-4.1-mini",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-4.1-nano",
+   "model": "gpt-4.1-nano",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-4o",
+   "model": "gpt-4o",
+   "context_window": 1047576,
+   "max_completion_tokens": 32768,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-4o-mini",
+   "model": "gpt-4o-mini",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "chat_completions",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5",
+   "model": "gpt-5",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5-chat",
+   "model": "gpt-5-chat",
+   "context_window": 128000,
+   "max_completion_tokens": 16384,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5-codex",
+   "model": "gpt-5-codex",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5-mini",
+   "model": "gpt-5-mini",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5-nano",
+   "model": "gpt-5-nano",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5.1",
+   "model": "gpt-5.1",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5.1-chat",
+   "model": "gpt-5.1-chat",
+   "context_window": 128000,
+   "max_completion_tokens": 16384,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5.1-codex",
+   "model": "gpt-5.1-codex",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5.1-codex-max",
+   "model": "gpt-5.1-codex-max",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5.1-codex-mini",
+   "model": "gpt-5.1-codex-mini",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5.2",
+   "model": "gpt-5.2",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5.2-chat",
+   "model": "gpt-5.2-chat",
+   "context_window": 128000,
+   "max_completion_tokens": 16384,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5.2-codex",
+   "model": "gpt-5.2-codex",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5.3-chat",
+   "model": "gpt-5.3-chat",
+   "context_window": 128000,
+   "max_completion_tokens": 16384,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5.3-codex",
+   "model": "gpt-5.3-codex",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5.4",
+   "model": "gpt-5.4",
+   "context_window": 1050000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5.4-mini",
+   "model": "gpt-5.4-mini",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5.4-nano",
+   "model": "gpt-5.4-nano",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5.5",
+   "model": "gpt-5.5",
+   "context_window": 1050000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "gpt-5.6-luna",
+   "model": "gpt-5.6-luna",
+   "context_window": 922000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "extra_headers": {
+    "x-litellm-tags": "East US 2"
+   },
+   "model_family": "codex",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": true
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": false
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": true,
+   "supports_reasoning_effort": true
+  },
+  {
+   "id": "gpt-5.6-sol",
+   "model": "gpt-5.6-sol",
+   "context_window": 353000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "auto_compact_threshold_percent": 80,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "description": "Latest frontier agentic coding model",
+   "extra_headers": {
+    "x-litellm-tags": "East US 2"
+   },
+   "model_family": "codex",
+   "multi_agent_v2": true,
+   "name": "GPT-5.6 Sol",
+   "reasoning_effort": "low",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": false
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": true,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5.6 Sol"
+  },
+  {
+   "id": "gpt-5.6-terra",
+   "model": "gpt-5.6-terra",
+   "context_window": 922000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "extra_headers": {
+    "x-litellm-tags": "East US 2"
+   },
+   "model_family": "codex",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": true
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": false
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": true,
+   "supports_reasoning_effort": true
+  },
+  {
+   "id": "grok-4.5",
+   "model": "grok-4.5",
+   "api_backend": "responses",
+   "auto_compact_threshold_percent": 80,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "context_window": 500000,
+   "model_family": "xai",
+   "name": "Grok 4.5",
+   "reasoning_effort": "high",
+   "reasoning_efforts": [
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": true,
+     "description": "Highest implementation quality with extensive reasoning"
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": false,
+     "description": "Balanced effort with standard implementation and testing"
+    },
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false,
+     "description": "Quick, fast implementations"
+    }
+   ],
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Grok 4.5"
+  },
+  {
+   "id": "grok-4.6",
+   "model": "grok-4.6",
+   "context_window": 500000,
+   "max_completion_tokens": 500000,
+   "api_backend": "responses",
+   "auto_compact_threshold_percent": 80,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "description": "SpaceXAI's latest frontier model",
+   "model_family": "xai",
+   "name": "Grok 4.6",
+   "reasoning_effort": "high",
+   "reasoning_efforts": [
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Extra High Effort",
+     "default": false,
+     "description": "Highest effort and reasoning level"
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": true,
+     "description": "Higher implementation quality with extensive reasoning"
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": false,
+     "description": "Balanced effort with standard implementation and testing"
+    },
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false,
+     "description": "Quick, fast implementations"
+    }
+   ],
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Grok 4.6"
+  },
+  {
+   "id": "o1",
+   "model": "o1",
+   "context_window": 1050000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "o1-mini",
+   "model": "o1-mini",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "o1-preview",
+   "model": "o1-preview",
+   "context_window": 1050000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "o3",
+   "model": "o3",
+   "context_window": 1050000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "o3-mini",
+   "model": "o3-mini",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "o4-mini",
+   "model": "o4-mini",
+   "context_window": 272000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "codex"
+  },
+  {
+   "id": "qwen3.8-27b",
+   "model": "qwen3.8-27b",
+   "context_window": 262144,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "model_family": "qwen",
+   "multi_agent_v2": true,
+   "reasoning_efforts": [
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": true
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": false
+    },
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    }
+   ],
+   "supports_reasoning_effort": true
+  },
+  {
+   "id": "text-embedding-3-large",
+   "model": "text-embedding-3-large",
+   "context_window": 8191,
+   "api_backend": "chat_completions",
+   "model_family": "codex"
+  },
+  {
+   "id": "text-embedding-3-small",
+   "model": "text-embedding-3-small",
+   "context_window": 8191,
+   "api_backend": "chat_completions",
+   "model_family": "codex"
+  },
+  {
+   "id": "text-embedding-ada-002",
+   "model": "text-embedding-ada-002",
+   "context_window": 8191,
+   "api_backend": "chat_completions",
+   "model_family": "codex"
+  }
+ ]
 }
