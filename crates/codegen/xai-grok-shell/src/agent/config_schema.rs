@@ -85,11 +85,21 @@ pub fn canonicalize(value: &Value) -> Value {
     }
 }
 
+/// The canonicalized, default-stripped schema value — the single model both
+/// the JSON fixture and the HTML reference (`html` module) render from.
+///
+/// Split out of `config_schema_json` (apex-33z) so the HTML renderer reuses
+/// the exact same canonicalize + strip pipeline; the JSON bytes are
+/// unchanged (the `config_schema_matches_fixture` golden pins that).
+pub fn config_schema_value() -> Value {
+    let mut value = canonicalize(&config_schema().to_value());
+    strip_defaults(&mut value);
+    value
+}
+
 /// Render the config schema as canonicalized, pretty-printed JSON.
 pub fn config_schema_json() -> serde_json::Result<Vec<u8>> {
-    let schema = config_schema();
-    let mut value = canonicalize(&schema.to_value());
-    strip_defaults(&mut value);
+    let mut value = config_schema_value();
     if let Value::Object(root) = &mut value {
         root.insert("$comment".into(), Value::String(REGEN_HINT.to_string()));
     }
@@ -141,6 +151,12 @@ pub fn write_config_schema(out_path: &Path) -> std::io::Result<()> {
 pub fn any_toml_value_schema(_gen: &mut SchemaGenerator) -> Schema {
     Schema::try_from(Value::Bool(true)).expect("bool is a valid JSON Schema")
 }
+
+/// Self-contained HTML reference for the config surface (apex-33z).
+/// Declared here (mirroring the `#[path]` include of `mod tests` below) so
+/// the HTML lane stays inside this file's pathspec.
+#[path = "config_schema_html.rs"]
+pub mod html;
 
 #[cfg(test)]
 #[path = "config_schema_tests.rs"]
