@@ -88,17 +88,38 @@ fn offline_bundled_row_fields_are_bundled_row_authority() {
         "offline explicit bundled model_family must be BundledRow, got: {:?}",
         view.model_family.source
     );
-    // The menu is not curated in the overlay: the row-aware seam infers
-    // it at resolution, exactly as on prefetched rows — CatalogInference,
-    // not BundledRow (the bundled row arrived menu-empty).
+    // kb6 (CATALOG-REQUIRED-CURATION-1): the fill now curates gpt-5-codex's
+    // menu in the overlay, so the bundled row arrives menu-FULL — the
+    // explicit field carries BundledRow authority (semantics unchanged:
+    // explicit bundled fields are BundledRow; the attribution now simply
+    // reflects a menu-full row).
     assert_eq!(
         view.reasoning_efforts.value, oracle.info.reasoning_efforts,
         "gpt-5-codex reasoning_efforts value (STOP-4)"
     );
     assert!(
-        matches!(view.reasoning_efforts.source, FieldSource::CatalogInference),
-        "seam-inferred bundled menu must be CatalogInference, got: {:?}",
+        matches!(view.reasoning_efforts.source, FieldSource::BundledRow),
+        "kb6 menu-full bundled row must be BundledRow, got: {:?}",
         view.reasoning_efforts.source
+    );
+
+    // CatalogInference menu-empty coverage PRESERVED (kb6): gpt-4.1 stays
+    // menu-[] (A1), so the empty-menu slug-inference attribution path is
+    // still exercised — on a row of the same (responses) wire.
+    let gpt41 = resolved
+        .get("gpt-4.1")
+        .expect("gpt-4.1 rides the baked catalog");
+    let view41 = bind_messages_wire_model(&cfg, None, "gpt-4.1")
+        .expect("gpt-4.1 offline bundled row binds (responses backend passes the strict gate)");
+    assert_eq!(view41.model, gpt41.info.model, "gpt-4.1 model");
+    assert_eq!(
+        view41.reasoning_efforts.value, gpt41.info.reasoning_efforts,
+        "gpt-4.1 reasoning_efforts value (STOP-4)"
+    );
+    assert!(
+        matches!(view41.reasoning_efforts.source, FieldSource::CatalogInference),
+        "menu-empty bundled row must stay CatalogInference, got: {:?}",
+        view41.reasoning_efforts.source
     );
 }
 

@@ -117,8 +117,8 @@ fn bundled_catalog_parses_rich_rows() {
     );
     assert_eq!(
         grok.reasoning_efforts.iter().map(|o| o.value.as_str()).collect::<Vec<_>>(),
-        ["xhigh", "high", "medium", "low"],
-        "grok-4.6: seed menu survives the migration (the overlay had none)"
+        ["xhigh", "ultra", "high", "medium", "low"],
+        "grok-4.6: seed menu survives + kb6 ultra after the top tier (xhigh)"
     );
 
     // Anthropic pinned to messages + 1h cache + family — never left to
@@ -181,8 +181,8 @@ fn pre_bake_seed_rows_keep_the_head_donor_contract() {
     assert_eq!(grok45.context_window, NonZeroU64::new(500_000).unwrap());
     assert_eq!(
         grok45.reasoning_efforts.iter().map(|o| o.value.as_str()).collect::<Vec<_>>(),
-        ["high", "medium", "low"],
-        "grok-4.5: seed menu survives (the overlay had none)"
+        ["high", "ultra", "medium", "low"],
+        "grok-4.5: seed menu survives + kb6 ultra after the top tier (high)"
     );
     assert_eq!(grok45.auto_compact_threshold_percent, Some(80));
 }
@@ -247,20 +247,22 @@ fn fallback_path_runs_seams_on_non_pre_bake_rows_only() {
         "curated legacy pin: the slug inference is a no-op on it"
     );
 
-    // Rows without a curated menu get the slug-inferred menu at
-    // resolution — the same behavior live rows have always had.
+    // kb6 (CATALOG-REQUIRED-CURATION-1): gpt-5.1's digest-derived curated
+    // menu (low..xhigh + ultra) is now baked — an explicit menu beats the
+    // slug seam at resolution (the seam no longer infers for this row).
     let g51 = resolved.get("gpt-5.1").expect("gpt-5.1 rides the fallback");
     assert_eq!(
         g51.info.reasoning_efforts.len(),
-        4,
-        "slug-inferred menu rides the curated responses row"
+        5,
+        "kb6 curated digest menu rides the fallback row"
     );
 
-    // Pre-bake rows keep their seed menus (the seams never touch them).
+    // Pre-bake rows keep their seed menus (the seams never touch them);
+    // kb6 inserts ultra after the top tier in each.
     let grok45 = resolved.get("grok-4.5").expect("seed-only grok-4.5 rides the fallback");
-    assert_eq!(grok45.info.reasoning_efforts.len(), 3);
+    assert_eq!(grok45.info.reasoning_efforts.len(), 4);
     let grok46 = resolved.get("grok-4.6").expect("grok-4.6 rides the fallback");
-    assert_eq!(grok46.info.reasoning_efforts.len(), 4);
+    assert_eq!(grok46.info.reasoning_efforts.len(), 5);
     assert!(!grok46.info.supports_backend_search, "overlay curation rides the fallback row");
 }
 

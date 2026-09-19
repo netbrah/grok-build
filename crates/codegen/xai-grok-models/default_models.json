@@ -9,13 +9,39 @@
    "model": "Qwen3-Embedding-8B",
    "context_window": 32768,
    "api_backend": "chat_completions",
-   "model_family": "qwen"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "qwen",
+   "multi_agent_v2": false,
+   "name": "Qwen3 Embedding 8B",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "Qwen3 Embedding 8B"
   },
   {
    "id": "answerai-colbert-small-v1",
    "model": "answerai-colbert-small-v1",
    "api_backend": "chat_completions",
-   "model_family": "cohere"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "cohere",
+   "multi_agent_v2": false,
+   "name": "AnswerAI Colbert Small V1",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "AnswerAI Colbert Small V1"
   },
   {
    "id": "claude-haiku-4-5",
@@ -23,8 +49,20 @@
    "context_window": 200000,
    "max_completion_tokens": 64000,
    "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
    "cache_ttl": "1h",
-   "model_family": "anthropic"
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "anthropic",
+   "multi_agent_v2": false,
+   "name": "Claude Haiku 4.5",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "Claude Haiku 4.5"
   },
   {
    "id": "claude-haiku-4-5-20251001",
@@ -32,8 +70,20 @@
    "context_window": 200000,
    "max_completion_tokens": 64000,
    "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
    "cache_ttl": "1h",
-   "model_family": "anthropic"
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "anthropic",
+   "multi_agent_v2": false,
+   "name": "Claude Haiku 4.5 20251001",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "Claude Haiku 4.5 20251001"
   },
   {
    "id": "claude-haiku-4.5",
@@ -41,8 +91,20 @@
    "context_window": 200000,
    "max_completion_tokens": 64000,
    "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
    "cache_ttl": "1h",
-   "model_family": "anthropic"
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "anthropic",
+   "multi_agent_v2": false,
+   "name": "Claude Haiku 4.5",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "Claude Haiku 4.5"
   },
   {
    "id": "claude-opus-4-5",
@@ -50,8 +112,51 @@
    "context_window": 1000000,
    "max_completion_tokens": 128000,
    "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
    "cache_ttl": "1h",
-   "model_family": "anthropic"
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "anthropic",
+   "multi_agent_v2": false,
+   "name": "Claude Opus 4.5",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Claude Opus 4.5"
   },
   {
    "id": "claude-opus-4-6",
@@ -59,8 +164,51 @@
    "context_window": 1000000,
    "max_completion_tokens": 128000,
    "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
    "cache_ttl": "1h",
-   "model_family": "anthropic"
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "anthropic",
+   "multi_agent_v2": false,
+   "name": "Claude Opus 4.6",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Claude Opus 4.6"
   },
   {
    "id": "claude-opus-4-7",
@@ -68,8 +216,51 @@
    "context_window": 1000000,
    "max_completion_tokens": 128000,
    "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
    "cache_ttl": "1h",
-   "model_family": "anthropic"
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "anthropic",
+   "multi_agent_v2": false,
+   "name": "Claude Opus 4.7",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Claude Opus 4.7"
   },
   {
    "id": "claude-opus-4-8",
@@ -77,8 +268,51 @@
    "context_window": 1000000,
    "max_completion_tokens": 128000,
    "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
    "cache_ttl": "1h",
-   "model_family": "anthropic"
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "anthropic",
+   "multi_agent_v2": false,
+   "name": "Claude Opus 4.8",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Claude Opus 4.8"
   },
   {
    "id": "claude-opus-4.5",
@@ -86,8 +320,51 @@
    "context_window": 1000000,
    "max_completion_tokens": 128000,
    "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
    "cache_ttl": "1h",
-   "model_family": "anthropic"
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "anthropic",
+   "multi_agent_v2": false,
+   "name": "Claude Opus 4.5",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Claude Opus 4.5"
   },
   {
    "id": "claude-opus-4.6",
@@ -95,8 +372,51 @@
    "context_window": 1000000,
    "max_completion_tokens": 128000,
    "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
    "cache_ttl": "1h",
-   "model_family": "anthropic"
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "anthropic",
+   "multi_agent_v2": false,
+   "name": "Claude Opus 4.6",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Claude Opus 4.6"
   },
   {
    "id": "claude-opus-4.7",
@@ -104,8 +424,51 @@
    "context_window": 1000000,
    "max_completion_tokens": 128000,
    "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
    "cache_ttl": "1h",
-   "model_family": "anthropic"
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "anthropic",
+   "multi_agent_v2": false,
+   "name": "Claude Opus 4.7",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Claude Opus 4.7"
   },
   {
    "id": "claude-opus-4.8",
@@ -113,8 +476,51 @@
    "context_window": 1000000,
    "max_completion_tokens": 128000,
    "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
    "cache_ttl": "1h",
-   "model_family": "anthropic"
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "anthropic",
+   "multi_agent_v2": false,
+   "name": "Claude Opus 4.8",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Claude Opus 4.8"
   },
   {
    "id": "claude-opus-5",
@@ -122,8 +528,51 @@
    "context_window": 1000000,
    "max_completion_tokens": 128000,
    "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
    "cache_ttl": "1h",
-   "model_family": "anthropic"
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "anthropic",
+   "multi_agent_v2": false,
+   "name": "Claude Opus 5",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Claude Opus 5"
   },
   {
    "id": "claude-sonnet-4-5",
@@ -131,8 +580,51 @@
    "context_window": 1000000,
    "max_completion_tokens": 128000,
    "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
    "cache_ttl": "1h",
-   "model_family": "anthropic"
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "anthropic",
+   "multi_agent_v2": false,
+   "name": "Claude Sonnet 4.5",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Claude Sonnet 4.5"
   },
   {
    "id": "claude-sonnet-4-6",
@@ -140,8 +632,51 @@
    "context_window": 1000000,
    "max_completion_tokens": 128000,
    "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
    "cache_ttl": "1h",
-   "model_family": "anthropic"
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "anthropic",
+   "multi_agent_v2": false,
+   "name": "Claude Sonnet 4.6",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Claude Sonnet 4.6"
   },
   {
    "id": "claude-sonnet-4.5",
@@ -149,8 +684,51 @@
    "context_window": 1000000,
    "max_completion_tokens": 128000,
    "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
    "cache_ttl": "1h",
-   "model_family": "anthropic"
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "anthropic",
+   "multi_agent_v2": false,
+   "name": "Claude Sonnet 4.5",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Claude Sonnet 4.5"
   },
   {
    "id": "claude-sonnet-4.6",
@@ -158,8 +736,51 @@
    "context_window": 1000000,
    "max_completion_tokens": 128000,
    "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
    "cache_ttl": "1h",
-   "model_family": "anthropic"
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "anthropic",
+   "multi_agent_v2": false,
+   "name": "Claude Sonnet 4.6",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Claude Sonnet 4.6"
   },
   {
    "id": "claude-sonnet-5",
@@ -167,9 +788,51 @@
    "context_window": 1000000,
    "max_completion_tokens": 128000,
    "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
    "cache_ttl": "1h",
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
    "model_family": "anthropic",
-   "multi_agent_v2": true
+   "multi_agent_v2": true,
+   "name": "Claude Sonnet 5",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Claude Sonnet 5"
   },
   {
    "id": "gemini-3-flash-preview",
@@ -177,7 +840,20 @@
    "context_window": 1048576,
    "max_completion_tokens": 65535,
    "api_backend": "responses",
-   "model_family": "google"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "google",
+   "multi_agent_v2": false,
+   "name": "Gemini 3 Flash Preview",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "Gemini 3 Flash Preview"
   },
   {
    "id": "gemini-3-pro-preview",
@@ -185,12 +861,26 @@
    "context_window": 1048576,
    "max_completion_tokens": 65536,
    "api_backend": "responses",
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
    "model_family": "google",
+   "multi_agent_v2": false,
+   "name": "Gemini 3 Pro Preview",
+   "reasoning_effort": "medium",
    "reasoning_efforts": [
     {
      "id": "high",
      "value": "high",
      "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
      "default": false
     },
     {
@@ -206,7 +896,10 @@
      "default": false
     }
    ],
-   "supports_reasoning_effort": true
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Gemini 3 Pro Preview"
   },
   {
    "id": "gemini-3.1-flash-lite",
@@ -214,7 +907,20 @@
    "context_window": 1048576,
    "max_completion_tokens": 65536,
    "api_backend": "responses",
-   "model_family": "google"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "google",
+   "multi_agent_v2": false,
+   "name": "Gemini 3.1 Flash Lite",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "Gemini 3.1 Flash Lite"
   },
   {
    "id": "gemini-3.1-flash-lite-preview",
@@ -222,12 +928,26 @@
    "context_window": 1048576,
    "max_completion_tokens": 65536,
    "api_backend": "responses",
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
    "model_family": "google",
+   "multi_agent_v2": false,
+   "name": "Gemini 3.1 Flash Lite Preview",
+   "reasoning_effort": "medium",
    "reasoning_efforts": [
     {
      "id": "high",
      "value": "high",
      "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
      "default": false
     },
     {
@@ -243,7 +963,10 @@
      "default": false
     }
    ],
-   "supports_reasoning_effort": true
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Gemini 3.1 Flash Lite Preview"
   },
   {
    "id": "gemini-3.1-pro-preview",
@@ -251,12 +974,26 @@
    "context_window": 1048576,
    "max_completion_tokens": 65536,
    "api_backend": "responses",
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
    "model_family": "google",
+   "multi_agent_v2": false,
+   "name": "Gemini 3.1 Pro Preview",
+   "reasoning_effort": "medium",
    "reasoning_efforts": [
     {
      "id": "high",
      "value": "high",
      "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
      "default": false
     },
     {
@@ -272,7 +1009,10 @@
      "default": false
     }
    ],
-   "supports_reasoning_effort": true
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Gemini 3.1 Pro Preview"
   },
   {
    "id": "gemini-3.5-flash",
@@ -280,12 +1020,26 @@
    "context_window": 1048576,
    "max_completion_tokens": 65535,
    "api_backend": "responses",
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
    "model_family": "google",
+   "multi_agent_v2": false,
+   "name": "Gemini 3.5 Flash",
+   "reasoning_effort": "medium",
    "reasoning_efforts": [
     {
      "id": "high",
      "value": "high",
      "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
      "default": false
     },
     {
@@ -301,7 +1055,10 @@
      "default": false
     }
    ],
-   "supports_reasoning_effort": true
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Gemini 3.5 Flash"
   },
   {
    "id": "gemini-3.5-flash-lite",
@@ -309,7 +1066,20 @@
    "context_window": 1048576,
    "max_completion_tokens": 65536,
    "api_backend": "responses",
-   "model_family": "google"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "google",
+   "multi_agent_v2": false,
+   "name": "Gemini 3.5 Flash Lite",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "Gemini 3.5 Flash Lite"
   },
   {
    "id": "gemini-3.6-flash",
@@ -317,7 +1087,20 @@
    "context_window": 1048576,
    "max_completion_tokens": 65536,
    "api_backend": "responses",
-   "model_family": "google"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "google",
+   "multi_agent_v2": false,
+   "name": "Gemini 3.6 Flash",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "Gemini 3.6 Flash"
   },
   {
    "id": "gemini-3.7-flash",
@@ -325,12 +1108,26 @@
    "context_window": 1048576,
    "max_completion_tokens": 65536,
    "api_backend": "responses",
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
    "model_family": "google",
+   "multi_agent_v2": false,
+   "name": "Gemini 3.7 Flash",
+   "reasoning_effort": "medium",
    "reasoning_efforts": [
     {
      "id": "high",
      "value": "high",
      "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
      "default": false
     },
     {
@@ -346,7 +1143,10 @@
      "default": false
     }
    ],
-   "supports_reasoning_effort": true
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Gemini 3.7 Flash"
   },
   {
    "id": "gemini-3.8-flash",
@@ -354,7 +1154,45 @@
    "context_window": 1048576,
    "max_completion_tokens": 65536,
    "api_backend": "responses",
-   "model_family": "google"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "google",
+   "multi_agent_v2": false,
+   "name": "Gemini 3.8 Flash",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Gemini 3.8 Flash"
   },
   {
    "id": "glm-5.2",
@@ -362,14 +1200,27 @@
    "context_window": 262144,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
    "model_family": "glm",
    "multi_agent_v2": true,
+   "name": "GLM 5.2",
+   "reasoning_effort": "high",
    "reasoning_efforts": [
     {
      "id": "high",
      "value": "high",
      "label": "High Effort",
      "default": true
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
     },
     {
      "id": "medium",
@@ -384,8 +1235,10 @@
      "default": false
     }
    ],
+   "strict_responses_input": false,
    "supports_backend_search": false,
-   "supports_reasoning_effort": true
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GLM 5.2"
   },
   {
    "id": "gpt-3.5-turbo",
@@ -393,7 +1246,20 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "chat_completions",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-3.5 Turbo",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "GPT-3.5 Turbo"
   },
   {
    "id": "gpt-35-turbo-0301",
@@ -401,7 +1267,20 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "chat_completions",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-35 Turbo 0301",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "GPT-35 Turbo 0301"
   },
   {
    "id": "gpt-4",
@@ -409,7 +1288,20 @@
    "context_window": 1047576,
    "max_completion_tokens": 32768,
    "api_backend": "chat_completions",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-4",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "GPT-4"
   },
   {
    "id": "gpt-4-0314",
@@ -417,7 +1309,20 @@
    "context_window": 1047576,
    "max_completion_tokens": 32768,
    "api_backend": "chat_completions",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-4 0314",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "GPT-4 0314"
   },
   {
    "id": "gpt-4-32k",
@@ -425,7 +1330,20 @@
    "context_window": 1047576,
    "max_completion_tokens": 32768,
    "api_backend": "chat_completions",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-4 32K",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "GPT-4 32K"
   },
   {
    "id": "gpt-4-32k-0314",
@@ -433,7 +1351,20 @@
    "context_window": 1047576,
    "max_completion_tokens": 32768,
    "api_backend": "chat_completions",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-4 32K 0314",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "GPT-4 32K 0314"
   },
   {
    "id": "gpt-4-turbo",
@@ -441,7 +1372,20 @@
    "context_window": 1047576,
    "max_completion_tokens": 32768,
    "api_backend": "chat_completions",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-4 Turbo",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "GPT-4 Turbo"
   },
   {
    "id": "gpt-4-turbo-preview",
@@ -449,7 +1393,20 @@
    "context_window": 1047576,
    "max_completion_tokens": 32768,
    "api_backend": "chat_completions",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-4 Turbo Preview",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "GPT-4 Turbo Preview"
   },
   {
    "id": "gpt-4.1",
@@ -457,7 +1414,20 @@
    "context_window": 1047576,
    "max_completion_tokens": 32768,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-4.1",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "GPT-4.1"
   },
   {
    "id": "gpt-4.1-mini",
@@ -465,7 +1435,51 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-4.1 Mini",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-4.1 Mini"
   },
   {
    "id": "gpt-4.1-nano",
@@ -473,7 +1487,51 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-4.1 Nano",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-4.1 Nano"
   },
   {
    "id": "gpt-4o",
@@ -481,7 +1539,20 @@
    "context_window": 1047576,
    "max_completion_tokens": 32768,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-4o",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "GPT-4o"
   },
   {
    "id": "gpt-4o-mini",
@@ -489,7 +1560,20 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "chat_completions",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-4o Mini",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "GPT-4o Mini"
   },
   {
    "id": "gpt-5",
@@ -497,7 +1581,51 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5"
   },
   {
    "id": "gpt-5-chat",
@@ -505,7 +1633,20 @@
    "context_window": 128000,
    "max_completion_tokens": 16384,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5 Chat",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "GPT-5 Chat"
   },
   {
    "id": "gpt-5-codex",
@@ -513,7 +1654,45 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5 Codex",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5 Codex"
   },
   {
    "id": "gpt-5-mini",
@@ -521,7 +1700,51 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5 Mini",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5 Mini"
   },
   {
    "id": "gpt-5-nano",
@@ -529,7 +1752,51 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5 Nano",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5 Nano"
   },
   {
    "id": "gpt-5.1",
@@ -537,7 +1804,51 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5.1",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5.1"
   },
   {
    "id": "gpt-5.1-chat",
@@ -545,7 +1856,20 @@
    "context_window": 128000,
    "max_completion_tokens": 16384,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5.1 Chat",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "GPT-5.1 Chat"
   },
   {
    "id": "gpt-5.1-codex",
@@ -553,7 +1877,45 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5.1 Codex",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5.1 Codex"
   },
   {
    "id": "gpt-5.1-codex-max",
@@ -561,7 +1923,45 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5.1 Codex Max",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5.1 Codex Max"
   },
   {
    "id": "gpt-5.1-codex-mini",
@@ -569,7 +1969,45 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5.1 Codex Mini",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5.1 Codex Mini"
   },
   {
    "id": "gpt-5.2",
@@ -577,7 +2015,51 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5.2",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5.2"
   },
   {
    "id": "gpt-5.2-chat",
@@ -585,7 +2067,20 @@
    "context_window": 128000,
    "max_completion_tokens": 16384,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5.2 Chat",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "GPT-5.2 Chat"
   },
   {
    "id": "gpt-5.2-codex",
@@ -593,7 +2088,45 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5.2 Codex",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5.2 Codex"
   },
   {
    "id": "gpt-5.3-chat",
@@ -601,7 +2134,20 @@
    "context_window": 128000,
    "max_completion_tokens": 16384,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5.3 Chat",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "GPT-5.3 Chat"
   },
   {
    "id": "gpt-5.3-codex",
@@ -609,7 +2155,45 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5.3 Codex",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5.3 Codex"
   },
   {
    "id": "gpt-5.4",
@@ -617,7 +2201,51 @@
    "context_window": 1050000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5.4",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5.4"
   },
   {
    "id": "gpt-5.4-mini",
@@ -625,7 +2253,51 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5.4 Mini",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5.4 Mini"
   },
   {
    "id": "gpt-5.4-nano",
@@ -633,7 +2305,51 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5.4 Nano",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5.4 Nano"
   },
   {
    "id": "gpt-5.5",
@@ -641,7 +2357,51 @@
    "context_window": 1050000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "GPT-5.5",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5.5"
   },
   {
    "id": "gpt-5.6-luna",
@@ -649,10 +2409,17 @@
    "context_window": 922000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
    "extra_headers": {
     "x-litellm-tags": "East US 2"
    },
    "model_family": "codex",
+   "multi_agent_v2": true,
+   "name": "GPT-5.6 Luna",
+   "reasoning_effort": "low",
    "reasoning_efforts": [
     {
      "id": "low",
@@ -686,7 +2453,9 @@
     }
    ],
    "strict_responses_input": true,
-   "supports_reasoning_effort": true
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5.6 Luna"
   },
   {
    "id": "gpt-5.6-sol",
@@ -695,6 +2464,7 @@
    "max_completion_tokens": 128000,
    "api_backend": "responses",
    "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
    "compaction_at_tokens": true,
    "compactions_remaining": 1,
    "description": "Latest frontier agentic coding model",
@@ -710,7 +2480,7 @@
      "id": "low",
      "value": "low",
      "label": "Low Effort",
-     "default": false
+     "default": true
     },
     {
      "id": "medium",
@@ -748,10 +2518,17 @@
    "context_window": 922000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
    "extra_headers": {
     "x-litellm-tags": "East US 2"
    },
    "model_family": "codex",
+   "multi_agent_v2": true,
+   "name": "GPT-5.6 Terra",
+   "reasoning_effort": "low",
    "reasoning_efforts": [
     {
      "id": "low",
@@ -785,17 +2562,22 @@
     }
    ],
    "strict_responses_input": true,
-   "supports_reasoning_effort": true
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5.6 Terra"
   },
   {
    "id": "grok-4.5",
    "model": "grok-4.5",
    "api_backend": "responses",
    "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
    "compaction_at_tokens": true,
    "compactions_remaining": 1,
    "context_window": 500000,
+   "extra_headers": {},
    "model_family": "xai",
+   "multi_agent_v2": false,
    "name": "Grok 4.5",
    "reasoning_effort": "high",
    "reasoning_efforts": [
@@ -805,6 +2587,12 @@
      "label": "High Effort",
      "default": true,
      "description": "Highest implementation quality with extensive reasoning"
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
     },
     {
      "id": "medium",
@@ -821,6 +2609,7 @@
      "description": "Quick, fast implementations"
     }
    ],
+   "strict_responses_input": false,
    "supports_backend_search": false,
    "supports_reasoning_effort": true,
    "system_prompt_label": "Grok 4.5"
@@ -832,10 +2621,13 @@
    "max_completion_tokens": 500000,
    "api_backend": "responses",
    "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
    "compaction_at_tokens": true,
    "compactions_remaining": 1,
    "description": "SpaceXAI's latest frontier model",
+   "extra_headers": {},
    "model_family": "xai",
+   "multi_agent_v2": false,
    "name": "Grok 4.6",
    "reasoning_effort": "high",
    "reasoning_efforts": [
@@ -845,6 +2637,12 @@
      "label": "Extra High Effort",
      "default": false,
      "description": "Highest effort and reasoning level"
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
     },
     {
      "id": "high",
@@ -868,6 +2666,7 @@
      "description": "Quick, fast implementations"
     }
    ],
+   "strict_responses_input": false,
    "supports_backend_search": false,
    "supports_reasoning_effort": true,
    "system_prompt_label": "Grok 4.6"
@@ -878,7 +2677,51 @@
    "context_window": 1050000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "o1",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "o1"
   },
   {
    "id": "o1-mini",
@@ -886,7 +2729,51 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "o1-mini",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "o1-mini"
   },
   {
    "id": "o1-preview",
@@ -894,7 +2781,51 @@
    "context_window": 1050000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "o1-preview",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "o1-preview"
   },
   {
    "id": "o3",
@@ -902,7 +2833,51 @@
    "context_window": 1050000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "o3",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "o3"
   },
   {
    "id": "o3-mini",
@@ -910,7 +2885,51 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "o3-mini",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "o3-mini"
   },
   {
    "id": "o4-mini",
@@ -918,7 +2937,51 @@
    "context_window": 272000,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "o4-mini",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "o4-mini"
   },
   {
    "id": "qwen3.8-27b",
@@ -926,14 +2989,27 @@
    "context_window": 262144,
    "max_completion_tokens": 128000,
    "api_backend": "responses",
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
    "model_family": "qwen",
    "multi_agent_v2": true,
+   "name": "Qwen3.8 27B",
+   "reasoning_effort": "xhigh",
    "reasoning_efforts": [
     {
      "id": "xhigh",
      "value": "xhigh",
      "label": "Xhigh Effort",
      "default": true
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
     },
     {
      "id": "medium",
@@ -948,28 +3024,70 @@
      "default": false
     }
    ],
-   "supports_reasoning_effort": true
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Qwen3.8 27B"
   },
   {
    "id": "text-embedding-3-large",
    "model": "text-embedding-3-large",
    "context_window": 8191,
    "api_backend": "chat_completions",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "Text Embedding 3 Large",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "Text Embedding 3 Large"
   },
   {
    "id": "text-embedding-3-small",
    "model": "text-embedding-3-small",
    "context_window": 8191,
    "api_backend": "chat_completions",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "Text Embedding 3 Small",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "Text Embedding 3 Small"
   },
   {
    "id": "text-embedding-ada-002",
    "model": "text-embedding-ada-002",
    "context_window": 8191,
    "api_backend": "chat_completions",
-   "model_family": "codex"
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": false,
+   "name": "Text Embedding Ada 002",
+   "reasoning_effort": null,
+   "reasoning_efforts": [],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": false,
+   "system_prompt_label": "Text Embedding Ada 002"
   }
  ]
 }
