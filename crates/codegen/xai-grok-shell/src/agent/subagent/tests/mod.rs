@@ -2631,6 +2631,8 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
             query_params: Default::default(),
             env_http_headers: Default::default(),
             context_window: std::num::NonZeroU64::new(256_000).unwrap(),
+            feed_max_input_tokens: None,
+            feed_max_output_tokens: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
             use_concise: false,

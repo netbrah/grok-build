@@ -1090,3 +1090,76 @@ async fn auth_headers_do_not_collide_with_json() {
         assert_eq!(count, 1, "duplicate header {name}");
     }
 }
+
+// CATALOG-HYDRATE-1 (apex-93d): provenance. The raw feed ceilings must
+// survive the fetch-time fold as named fields so the runtime can tell a
+// feed-value apart from a config-row or the built-in default. The existing
+// ANTHROPIC-WIRE-2 cut 6 mapping (contextWindow|context_window|meta.*|
+// max_input_tokens -> context_window; maxCompletionTokens|max_completion_tokens
+// |max_output_tokens -> max_completion_tokens) stays byte-identical — these
+// tests pin BOTH halves: the fold AND the preserved raw.
+#[test]
+fn parse_v1_row_preserves_feed_provenance_fields() {
+    let value = serde_json::json!({
+        "id": "prov-1",
+        "object": "model",
+        "created": 1677610602,
+        "owned_by": "openai",
+        "max_input_tokens": 922_000,
+        "max_output_tokens": 128_000
+    });
+    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    // Fold (pre-cut mapping, byte-identical):
+    assert_eq!(result.context_window.get(), 922_000);
+    assert_eq!(result.max_completion_tokens, Some(128_000));
+    // Provenance: the raw feed values are named and preserved:
+    assert_eq!(result.feed_max_input_tokens, Some(922_000));
+    assert_eq!(result.feed_max_output_tokens, Some(128_000));
+}
+
+#[test]
+fn parse_v1_row_v2_style_keys_preserve_provenance_too() {
+    // The v2-style spellings are feed values as well — provenance tracks
+    // whichever accepted key the fold took, in the same chain order.
+    let value = serde_json::json!({
+        "id": "prov-2",
+        "object": "model",
+        "contextWindow": 131_072,
+        "maxCompletionTokens": 8_192,
+        "max_input_tokens": 500_000,
+        "max_output_tokens": 64_000
+    });
+    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    assert_eq!(result.context_window.get(), 131_072);
+    assert_eq!(result.max_completion_tokens, Some(8_192));
+    assert_eq!(result.feed_max_input_tokens, Some(131_072));
+    assert_eq!(result.feed_max_output_tokens, Some(8_192));
+}
+
+#[test]
+fn parse_v1_row_without_caps_keeps_none_provenance() {
+    // No feed caps (legacy-row shape, or 0 = absent via the zero-guard):
+    // the fold keeps its defaults and provenance is None — never a guess.
+    let value = serde_json::json!({
+        "id": "prov-absent",
+        "object": "model"
+    });
+    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    assert_eq!(result.context_window.get(), DEFAULT_CONTEXT_WINDOW);
+    assert_eq!(result.max_completion_tokens, None);
+    assert_eq!(result.feed_max_input_tokens, None);
+    assert_eq!(result.feed_max_output_tokens, None);
+
+    let value = serde_json::json!({
+        "id": "prov-zero",
+        "object": "model",
+        "max_input_tokens": 0,
+        "max_output_tokens": 0
+    });
+    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    assert_eq!(result.context_window.get(), DEFAULT_CONTEXT_WINDOW);
+    // max_output_tokens has no zero-guard (explicit 0 maps to Some(0)):
+    assert_eq!(result.max_completion_tokens, Some(0));
+    assert_eq!(result.feed_max_input_tokens, None, "zero window is absent, not a value");
+    assert_eq!(result.feed_max_output_tokens, Some(0));
+}

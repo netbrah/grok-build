@@ -1071,6 +1071,8 @@ fn test_model_entry(
             query_params: IndexMap::new(),
             env_http_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
+            feed_max_input_tokens: None,
+            feed_max_output_tokens: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
             use_concise: false,
@@ -2231,6 +2233,8 @@ fn model_info_from_config_propagates_use_concise() {
         auth_scheme: None,
         extra_headers: IndexMap::new(),
         context_window: NonZeroU64::new(200_000).unwrap(),
+        feed_max_input_tokens: None,
+        feed_max_output_tokens: None,
         auto_compact_threshold_percent: None,
         system_prompt_label: None,
         api_base_url: None,
@@ -2398,6 +2402,8 @@ fn model_info_from_config_propagates_agent_type() {
         auth_scheme: None,
         extra_headers: IndexMap::new(),
         context_window: NonZeroU64::new(200_000).unwrap(),
+        feed_max_input_tokens: None,
+        feed_max_output_tokens: None,
         auto_compact_threshold_percent: None,
         system_prompt_label: None,
         api_base_url: None,
@@ -2857,6 +2863,8 @@ fn inference_idle_timeout_propagates_to_model_info() {
         auth_scheme: None,
         extra_headers: IndexMap::new(),
         context_window: NonZeroU64::new(200_000).unwrap(),
+        feed_max_input_tokens: None,
+        feed_max_output_tokens: None,
         auto_compact_threshold_percent: None,
         system_prompt_label: None,
         api_base_url: None,
@@ -7520,6 +7528,8 @@ fn prefetch_model_entry(slug: &str, context_window: u64, api_backend: ApiBackend
             query_params: IndexMap::new(),
             env_http_headers: IndexMap::new(),
             context_window: NonZeroU64::new(context_window).unwrap(),
+            feed_max_input_tokens: None,
+            feed_max_output_tokens: None,
             use_concise: false,
             agent_type: default_agent_type(),
             inference_idle_timeout_secs: None,
@@ -9726,4 +9736,190 @@ default_context_window = 777000
         NonZeroU64::new(777000).unwrap(),
         "[endpoints] default_context_window must fill the hydration placeholder"
     );
+}
+
+// ---------------------------------------------------------------------------
+// CATALOG-HYDRATE-1 (apex-93d): config row vs live-feed ceiling sanity.
+//
+// The live /v1/models feed reports max_input_tokens/max_output_tokens; the
+// fetch parser (ANTHROPIC-WIRE-2 cut 6) folds them into context_window /
+// max_completion_tokens while preserving the raw feed values as provenance.
+// A config row ABOVE the live feed ceiling is unsafe (a compaction budget
+// beyond the provider's input window) and warns at resolve; the operator row
+// is authority — no clamp, no failure. Below-ceiling rows are intentional
+// tight (cost posture) — silent. No feed ceiling = unjudgeable — silent.
+// ---------------------------------------------------------------------------
+mod catalog_hydrate_ceiling {
+    use super::*;
+    use tracing::Subscriber;
+    use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+    use tracing_subscriber::registry::LookupSpan;
+
+    /// Tracing capture modeled on `agent/mvp_agent/tests.rs` `mod capture`.
+    struct Captured {
+        events_rx: tokio::sync::mpsc::UnboundedReceiver<(tracing::Level, String)>,
+        _guard: tracing::subscriber::DefaultGuard,
+    }
+    fn capture() -> Captured {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let subscriber = tracing_subscriber::registry().with(CaptureLayer { tx });
+        let guard = tracing::subscriber::set_default(subscriber);
+        Captured {
+            events_rx: rx,
+            _guard: guard,
+        }
+    }
+    struct CaptureLayer {
+        tx: tokio::sync::mpsc::UnboundedSender<(tracing::Level, String)>,
+    }
+    impl<S> Layer<S> for CaptureLayer
+    where
+        S: Subscriber + for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = Visitor::default();
+            event.record(&mut visitor);
+            let _ = self.tx.send((*event.metadata().level(), visitor.out));
+        }
+    }
+    #[derive(Default)]
+    struct Visitor {
+        out: String,
+    }
+    impl tracing::field::Visit for Visitor {
+        fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+            if !self.out.is_empty() {
+                self.out.push(' ');
+            }
+            self.out.push_str(f.name());
+            self.out.push('=');
+            self.out.push_str(&format!("{v:?}"));
+        }
+        fn record_str(&mut self, f: &tracing::field::Field, v: &str) {
+            if !self.out.is_empty() {
+                self.out.push(' ');
+            }
+            self.out.push_str(f.name());
+            self.out.push_str(v);
+        }
+    }
+    fn warn_fields(captured: &mut Captured) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Ok((level, fields)) = captured.events_rx.try_recv() {
+            if level == tracing::Level::WARN {
+                out.push(fields);
+            }
+        }
+        out
+    }
+
+    /// A feed row through the live-fetch path: parse_remote_model_value ->
+    /// build_prefetched_map (the same conversion the manager applies).
+    fn feed_prefetched(id: &str, max_input: u64, max_output: Option<u64>) -> IndexMap<String, ModelEntry> {
+        let mut row = serde_json::json!({ "id": id, "model": id, "max_input_tokens": max_input });
+        if let Some(out) = max_output {
+            row["max_output_tokens"] = serde_json::json!(out);
+        }
+        let cfg =
+            crate::remote::client::parse_remote_model_value(&row, "https://default.url")
+                .expect("feed row parses");
+        crate::agent::remote_config::build_prefetched_map(vec![cfg], None)
+    }
+
+    #[test]
+    fn config_row_above_live_feed_ceiling_warns_and_keeps_row() {
+        let mut captured = capture();
+        let prefetched = feed_prefetched("row-over-ceiling", 100, Some(50));
+        let (_, models) = resolve_models_from_toml(
+            r#"
+            [model."row-over-ceiling"]
+            context_window = 200
+            max_completion_tokens = 60
+            "#,
+            Some(prefetched),
+        );
+        let model = &models["row-over-ceiling"];
+        assert_eq!(
+            model.info.context_window.get(),
+            200,
+            "operator row is authority: applied, not clamped"
+        );
+        assert_eq!(
+            model.info.max_completion_tokens,
+            Some(60),
+            "operator row is authority: applied, not clamped"
+        );
+        let warns = warn_fields(&mut captured);
+        assert!(
+            warns.iter().any(|f| f.contains("model_key=row-over-ceiling")
+                && f.contains("row_context_window=200")
+                && f.contains("feed_max_input_tokens=100")),
+            "ctx over-ceiling warn must fire: {warns:?}"
+        );
+        assert!(
+            warns.iter().any(|f| f.contains("model_key=row-over-ceiling")
+                && f.contains("row_max_completion_tokens=60")
+                && f.contains("feed_max_output_tokens=50")),
+            "max-out over-ceiling warn must fire: {warns:?}"
+        );
+    }
+
+    #[test]
+    fn config_row_below_live_feed_ceiling_stays_silent() {
+        let mut captured = capture();
+        let prefetched = feed_prefetched("row-under-ceiling", 922_000, Some(128_000));
+        let (_, models) = resolve_models_from_toml(
+            r#"
+            [model."row-under-ceiling"]
+            context_window = 262_144
+            max_completion_tokens = 65_536
+            "#,
+            Some(prefetched),
+        );
+        let model = &models["row-under-ceiling"];
+        assert_eq!(
+            model.info.context_window.get(),
+            262_144,
+            "tight row is intentional and must survive"
+        );
+        assert_eq!(
+            model.info.max_completion_tokens,
+            Some(65_536),
+            "tight row is intentional and must survive"
+        );
+        let warns = warn_fields(&mut captured);
+        assert!(
+            !warns.iter().any(|f| f.contains("row_context_window")
+                || f.contains("row_max_completion_tokens")),
+            "below-ceiling rows are intentional tight: no warning: {warns:?}"
+        );
+    }
+
+    #[test]
+    fn config_row_without_live_feed_ceiling_stays_silent() {
+        let mut captured = capture();
+        // Feed row without caps (the legacy-row shape; max_input_tokens 0 is
+        // treated as absent by the zero-guard) — unjudgeable, no warning.
+        let prefetched = feed_prefetched("row-no-ceiling", 0, None);
+        let (_, models) = resolve_models_from_toml(
+            r#"
+            [model."row-no-ceiling"]
+            context_window = 300_000
+            max_completion_tokens = 200_000
+            "#,
+            Some(prefetched),
+        );
+        let model = &models["row-no-ceiling"];
+        assert_eq!(
+            model.info.context_window.get(),
+            300_000,
+            "operator row is authority: applied"
+        );
+        let warns = warn_fields(&mut captured);
+        assert!(
+            !warns.iter().any(|f| f.contains("row_context_window")
+                || f.contains("row_max_completion_tokens")),
+            "no feed ceiling = unjudgeable: no warning: {warns:?}"
+        );
+    }
 }

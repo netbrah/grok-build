@@ -4302,6 +4302,8 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 name: m.name,
                 description: m.description,
                 context_window,
+                feed_max_input_tokens: None,
+                feed_max_output_tokens: None,
                 auto_compact_threshold_percent: m.auto_compact_threshold_percent,
                 system_prompt_label: m.system_prompt_label,
                 temperature: m.temperature,
@@ -4404,6 +4406,22 @@ pub struct ModelEntryConfig {
     /// Used for auto-compact threshold calculations.
     /// Required: BYOK users must explicitly set this in config.toml.
     pub context_window: NonZeroU64,
+    /// CATALOG-HYDRATE-1 (apex-93d): the raw context-window value the live
+    /// `/v1/models` feed reported for this row (via any accepted feed key),
+    /// observed before the fetch-time fold applies `DEFAULT_CONTEXT_WINDOW`.
+    /// `None` = the feed reported no window for this row, so `context_window`
+    /// is a config row, a donor/endpoint fill, or the default — never the
+    /// feed. Provenance only: routing and compaction read `context_window`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feed_max_input_tokens: Option<u64>,
+    /// CATALOG-HYDRATE-1 (apex-93d): the raw max-output budget the live
+    /// `/v1/models` feed reported for this row, observed before the u32
+    /// fold into `max_completion_tokens` (a feed value > u32::MAX keeps its
+    /// provenance even when the fold drops it). `None` = the feed reported
+    /// no budget. Provenance only: the wire budget reads
+    /// `max_completion_tokens`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feed_max_output_tokens: Option<u64>,
     /// Per-model auto-compact threshold (0-100). When the session's token usage exceeds this percentage of `context_window`, the conversation is summarized.
     /// Resolver precedence: requirements > env > user (per-model > global) > managed (per-model > global). Below those: remote per-model (this field) > remote global > 85.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4557,7 +4575,43 @@ impl ConfigModelOverride {
         base: Option<ModelEntry>,
         endpoints: &EndpointsConfig,
     ) -> ModelEntry {
+        // CATALOG-HYDRATE-1 (apex-93d): row-vs-live-feed ceiling sanity.
+        // The operator row is authority — a row above the live feed's
+        // reported ceiling is unsafe (e.g. a compaction budget beyond the
+        // provider's input window) and gets a warn, never a clamp or a
+        // failure. Below-ceiling rows are intentional tight (cost posture)
+        // and stay silent; an absent feed ceiling is unjudgeable, also
+        // silent.
+        // The feed ceilings are read before `base` is consumed below.
+        let feed_input_ceiling = base
+            .as_ref()
+            .and_then(|base| base.info.feed_max_input_tokens);
+        let feed_output_ceiling = base
+            .as_ref()
+            .and_then(|base| base.info.feed_max_output_tokens);
         let mut entry = base.unwrap_or_else(|| ModelEntry::fallback(key, endpoints));
+        if let Some(row_context_window) = self.context_window
+            && let Some(feed_ceiling) = feed_input_ceiling
+            && row_context_window > feed_ceiling
+        {
+            tracing::warn!(
+                model_key = %key,
+                row_context_window,
+                feed_max_input_tokens = feed_ceiling,
+                "config row context_window exceeds the live feed max_input_tokens ceiling; operator row kept (no clamp)"
+            );
+        }
+        if let Some(row_max_completion_tokens) = self.max_completion_tokens
+            && let Some(feed_ceiling) = feed_output_ceiling
+            && u64::from(row_max_completion_tokens) > feed_ceiling
+        {
+            tracing::warn!(
+                model_key = %key,
+                row_max_completion_tokens,
+                feed_max_output_tokens = feed_ceiling,
+                "config row max_completion_tokens exceeds the live feed max_output_tokens ceiling; operator row kept (no clamp)"
+            );
+        }
         if let Some(ref v) = self.model {
             entry.info.model = v.clone();
         }
@@ -4723,6 +4777,18 @@ pub struct ModelInfo {
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub env_http_headers: IndexMap<String, String>,
     pub context_window: NonZeroU64,
+    /// CATALOG-HYDRATE-1 (apex-93d): raw feed ceilings preserved through
+    /// `ModelInfo::from_config` (from the fetch-side `ModelEntryConfig`)
+    /// and the `models_cache.json` round-trip, so resolution can
+    /// distinguish feed-value vs config-row vs default after the
+    /// fetch-time fold. `None` = the feed reported no value for this row.
+    /// Provenance only — see [`ModelEntryConfig::feed_max_input_tokens`] /
+    /// [`ModelEntryConfig::feed_max_output_tokens`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feed_max_input_tokens: Option<u64>,
+    /// See [`ModelEntryConfig::feed_max_output_tokens`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feed_max_output_tokens: Option<u64>,
     /// Per-model auto-compact threshold (0-100).
     /// `None` defers to the global / default tiers in `resolve_auto_compact_threshold_percent`.
     pub auto_compact_threshold_percent: Option<u8>,
@@ -4807,6 +4873,8 @@ impl ModelInfo {
             query_params: IndexMap::new(),
             env_http_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
+            feed_max_input_tokens: None,
+            feed_max_output_tokens: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
             use_concise: false,
@@ -4851,6 +4919,8 @@ impl ModelInfo {
             query_params: IndexMap::new(),
             env_http_headers: IndexMap::new(),
             context_window: entry.context_window,
+            feed_max_input_tokens: entry.feed_max_input_tokens,
+            feed_max_output_tokens: entry.feed_max_output_tokens,
             auto_compact_threshold_percent: entry.auto_compact_threshold_percent,
             system_prompt_label: entry.system_prompt_label.clone(),
             use_concise: entry.use_concise,
@@ -5615,6 +5685,8 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 query_params: IndexMap::new(),
                 env_http_headers: IndexMap::new(),
                 context_window: NonZeroU64::new(200_000).unwrap(),
+                feed_max_input_tokens: None,
+                feed_max_output_tokens: None,
                 auto_compact_threshold_percent: None,
                 system_prompt_label: None,
                 use_concise: false,
@@ -5859,6 +5931,8 @@ fn resolve_hidden_default_web_search_sampling_config(
             query_params: IndexMap::new(),
             env_http_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
+            feed_max_input_tokens: None,
+            feed_max_output_tokens: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
             use_concise: false,

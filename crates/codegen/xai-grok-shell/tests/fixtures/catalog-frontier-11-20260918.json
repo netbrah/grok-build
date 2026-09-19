@@ -1,0 +1,151 @@
+{
+  "source": "grok/plans/model/data/catalog-digest.json (captured 2026-09-18, /model_group/info; per_model_errors: [])",
+  "bead": "apex-93d CATALOG-HYDRATE-1",
+  "note": "Reduced redacted frontier rows (comb doc config-row-comb-20260918.md section 4 matrix, 11 rows). Digest-keyed: drift baseline for apex-6mz. No endpoints, keys, or pricing.",
+  "models": [
+    {
+      "id": "gpt-5.6-sol",
+      "max_input_tokens": 922000,
+      "max_output_tokens": 128000,
+      "supports_reasoning": true,
+      "supported_reasoning_efforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "providers": [
+        "azure"
+      ]
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "max_input_tokens": 922000,
+      "max_output_tokens": 128000,
+      "supports_reasoning": true,
+      "supported_reasoning_efforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "providers": [
+        "azure"
+      ]
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "max_input_tokens": 922000,
+      "max_output_tokens": 128000,
+      "supports_reasoning": true,
+      "supported_reasoning_efforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "providers": [
+        "azure"
+      ]
+    },
+    {
+      "id": "qwen3.8-27b",
+      "max_input_tokens": 262144,
+      "max_output_tokens": 128000,
+      "supports_reasoning": false,
+      "supported_reasoning_efforts": null,
+      "providers": [
+        "openai"
+      ]
+    },
+    {
+      "id": "glm-5.2",
+      "max_input_tokens": 262144,
+      "max_output_tokens": 128000,
+      "supports_reasoning": false,
+      "supported_reasoning_efforts": null,
+      "providers": [
+        "openai"
+      ]
+    },
+    {
+      "id": "claude-sonnet-5",
+      "max_input_tokens": 1000000,
+      "max_output_tokens": 128000,
+      "supports_reasoning": true,
+      "supported_reasoning_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "providers": [
+        "vertex_ai"
+      ]
+    },
+    {
+      "id": "claude-opus-5",
+      "max_input_tokens": 1000000,
+      "max_output_tokens": 128000,
+      "supports_reasoning": true,
+      "supported_reasoning_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "providers": [
+        "vertex_ai"
+      ]
+    },
+    {
+      "id": "claude-haiku-4-5",
+      "max_input_tokens": 200000,
+      "max_output_tokens": 64000,
+      "supports_reasoning": true,
+      "supported_reasoning_efforts": null,
+      "providers": [
+        "vertex_ai"
+      ]
+    },
+    {
+      "id": "grok-4.6",
+      "max_input_tokens": 500000,
+      "max_output_tokens": 500000,
+      "supports_reasoning": true,
+      "supported_reasoning_efforts": null,
+      "providers": [
+        "vertex_ai"
+      ]
+    },
+    {
+      "id": "gemini-3.1-pro-preview",
+      "max_input_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "supports_reasoning": true,
+      "supported_reasoning_efforts": null,
+      "providers": [
+        "vertex_ai"
+      ]
+    },
+    {
+      "id": "gemini-3-pro-preview",
+      "max_input_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "supports_reasoning": true,
+      "supported_reasoning_efforts": null,
+      "providers": [
+        "vertex_ai"
+      ]
+    }
+  ]
+}

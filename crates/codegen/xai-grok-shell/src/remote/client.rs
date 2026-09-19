@@ -663,7 +663,11 @@ pub(crate) fn parse_remote_model_value(
         .or_else(|| get_string(obj, "base_url"))
         .unwrap_or_else(|| default_base_url.to_owned());
     let name = get_string(obj, "name").or_else(|| Some(model.clone()));
-    let context_window = get_u64(obj, "contextWindow")
+    // CATALOG-HYDRATE-1 (apex-93d): observe the raw feed window BEFORE the
+    // default fold so provenance survives (feed-value vs config-row vs
+    // default). The or-chain — keys, order, zero-guard — is byte-identical
+    // to the ANTHROPIC-WIRE-2 cut 6 mapping; only the result is now named.
+    let feed_max_input_tokens = get_u64(obj, "contextWindow")
         .or_else(|| get_u64(obj, "context_window"))
         .or_else(|| meta.and_then(|m| get_u64(m, "contextWindow")))
         .or_else(|| meta.and_then(|m| get_u64(m, "totalContextTokens")))
@@ -671,8 +675,8 @@ pub(crate) fn parse_remote_model_value(
         // window as max_input_tokens. 0 means absent (a zero window would
         // drop the row at the NonZeroU64 guard below), absent keeps the
         // DEFAULT_CONTEXT_WINDOW fallback.
-        .or_else(|| get_u64(obj, "max_input_tokens").filter(|v| *v > 0))
-        .unwrap_or(DEFAULT_CONTEXT_WINDOW);
+        .or_else(|| get_u64(obj, "max_input_tokens").filter(|v| *v > 0));
+    let context_window = feed_max_input_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
     let context_window = std::num::NonZeroU64::new(context_window)?;
     let agent_type = get_string(obj, "systemPromptType")
         .or_else(|| get_string(obj, "system_prompt_type"))
@@ -690,6 +694,15 @@ pub(crate) fn parse_remote_model_value(
             _ => None,
         })
         .unwrap_or_default();
+    // CATALOG-HYDRATE-1 (apex-93d): raw feed budget observed BEFORE the u32
+    // fold into max_completion_tokens (a >u32::MAX feed value keeps its
+    // provenance even when the fold drops it). Chain spellings/order
+    // unchanged (ANTHROPIC-WIRE-2 cut 6).
+    let feed_max_output_tokens = get_u64(obj, "maxCompletionTokens")
+        .or_else(|| get_u64(obj, "max_completion_tokens"))
+        // ANTHROPIC-WIRE-2 (cut 6): the proxy's v1 /models rows report
+        // the budget as max_output_tokens (absent stays None).
+        .or_else(|| get_u64(obj, "max_output_tokens"));
     Some(crate::agent::config::ModelEntryConfig {
         id,
         model,
@@ -700,12 +713,9 @@ pub(crate) fn parse_remote_model_value(
         base_url,
         name,
         description: get_string(obj, "description"),
-        max_completion_tokens: get_u64(obj, "maxCompletionTokens")
-            .or_else(|| get_u64(obj, "max_completion_tokens"))
-            // ANTHROPIC-WIRE-2 (cut 6): the proxy's v1 /models rows report
-            // the budget as max_output_tokens (absent stays None).
-            .or_else(|| get_u64(obj, "max_output_tokens"))
-            .and_then(|v| u32::try_from(v).ok()),
+        feed_max_input_tokens,
+        feed_max_output_tokens,
+        max_completion_tokens: feed_max_output_tokens.and_then(|v| u32::try_from(v).ok()),
         temperature: get_f64(obj, "temperature").map(|v| v as f32),
         top_p: get_f64(obj, "topP").or_else(|| get_f64(obj, "top_p")).map(|v| v as f32),
         api_key: get_string(obj, "apiKey").or_else(|| get_string(obj, "api_key")),

@@ -3286,6 +3286,8 @@ fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
             query_params: IndexMap::new(),
             env_http_headers: IndexMap::new(),
             context_window: std::num::NonZeroU64::new(200_000).unwrap(),
+            feed_max_input_tokens: None,
+            feed_max_output_tokens: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
             use_concise: false,

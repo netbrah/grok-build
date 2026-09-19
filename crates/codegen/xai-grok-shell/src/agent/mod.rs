@@ -34,4 +34,6 @@ pub use relay::{RelayConfig, RelayHandle, spawn_relay_connection};
 pub use server::{ServerConfig, run_agent_server};
 
 #[cfg(test)]
+mod catalog_hydrate_tests;
+#[cfg(test)]
 mod storage_client_tests;
