@@ -6,6 +6,7 @@ use super::super::{
     degraded_log_level, evaluate_models_commit, resolve_prefetch_inputs_from_parts,
     resolve_startup_endpoints, selectable_catalog_key_for_persisted,
 };
+use crate::agent::remote_config::fetch::ModelsFetchOutcome;
 use super::*;
 
 fn test_manager() -> ModelsManager {
@@ -96,7 +97,10 @@ impl ModelsEndpoint for SlowEndpoint {
         let delay = self.delay;
         Box::pin(async move {
             tokio::time::sleep(delay).await;
-            Some(catalog)
+            Some(ModelsFetchOutcome {
+                models: catalog,
+                model_groups: indexmap::IndexMap::new(),
+            })
         })
     }
 }
@@ -120,7 +124,10 @@ async fn catalog_retry_recovers_after_endpoint_returns() {
             let out = if n == 0 {
                 None
             } else {
-                Some(self.catalog.clone())
+                Some(ModelsFetchOutcome {
+                models: self.catalog.clone(),
+                model_groups: indexmap::IndexMap::new(),
+            })
             };
             Box::pin(async move { out })
         }
@@ -191,6 +198,7 @@ async fn disk_cache_reload_applies_without_fetching() {
     let seeder = test_cache_manager(tmp.path());
     seeder.persist(
         &make_prefetched(&["grok-4.5"]),
+        &indexmap::IndexMap::new(),
         Some("etag-x"),
         &mgr.cache_scope(),
         Utc::now(),
@@ -229,7 +237,12 @@ async fn auth_refresh_watcher_refetches_on_notify() {
         ) -> ModelsFetchFuture {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let catalog = self.catalog.clone();
-            Box::pin(async move { Some(catalog) })
+            Box::pin(async move {
+                Some(ModelsFetchOutcome {
+                    models: catalog,
+                    model_groups: indexmap::IndexMap::new(),
+                })
+            })
         }
     }
 
@@ -520,7 +533,10 @@ fn stale_fetch_result_is_discarded_after_identity_change() {
 
     assert!(!mgr.apply_refresh_result_fenced(
         &cfg,
-        Some(make_prefetched(&["stale-model"])),
+        Some(ModelsFetchOutcome {
+            models: make_prefetched(&["stale-model"]),
+            model_groups: indexmap::IndexMap::new(),
+        }),
         None,
         stale_generation,
     ));
@@ -534,7 +550,7 @@ fn stale_fetch_result_is_discarded_after_identity_change() {
         "a stale failure must not latch",
     );
 
-    assert!(mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["new-model"])), None));
+    assert!(mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: make_prefetched(&["new-model"]), model_groups: indexmap::IndexMap::new() }), None));
     assert!(mgr.models().contains_key("new-model"));
 }
 
@@ -856,7 +872,7 @@ fn first_catalog_reselect_bumps_model_switch_watch() {
     let mgr = test_manager();
     let start = mgr.model_switch_generation();
     let cfg = config_from_toml("[models]\ndefault = \"grok-4.5\"");
-    mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["grok-4.5", "grok-4"])), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: make_prefetched(&["grok-4.5", "grok-4"]), model_groups: indexmap::IndexMap::new() }), None);
     assert_eq!(mgr.current_model_id().0.as_ref(), "grok-4.5");
     assert!(
         mgr.model_switch_generation() > start,
@@ -868,11 +884,11 @@ fn first_catalog_reselect_bumps_model_switch_watch() {
 fn reselect_missing_current_model_bumps_watch() {
     let mgr = test_manager();
     let cfg = config::Config::default();
-    mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["grok-4", "grok-3"])), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: make_prefetched(&["grok-4", "grok-3"]), model_groups: indexmap::IndexMap::new() }), None);
     mgr.set_current_model_id(acp::ModelId::new("grok-4"));
     let start = mgr.model_switch_generation();
     // A later catalog drops the current model, so reselect_current_model_if_missing runs
-    mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["grok-3"])), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: make_prefetched(&["grok-3"]), model_groups: indexmap::IndexMap::new() }), None);
     assert_ne!(mgr.current_model_id().0.as_ref(), "grok-4");
     assert!(
         mgr.model_switch_generation() > start,
@@ -1294,7 +1310,7 @@ fn first_apply_refresh_reselects_default_model() {
     assert!(!mgr.has_fetched_real_catalog());
 
     let prefetched = make_prefetched(&["grok-3", "grok-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: prefetched, model_groups: indexmap::IndexMap::new() }), None);
 
     assert!(mgr.has_fetched_real_catalog());
     assert_eq!(mgr.current_model_id().0.as_ref(), "grok-3");
@@ -1307,14 +1323,14 @@ fn subsequent_apply_refresh_preserves_user_model() {
     cfg.models.default = Some("grok-3".to_string());
 
     let prefetched = make_prefetched(&["grok-3", "grok-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: prefetched, model_groups: indexmap::IndexMap::new() }), None);
     mgr.set_current_model_id(acp::ModelId::new("grok-4"));
 
     mgr.inner.catalog.write().prefetched = None;
     mgr.inner.catalog.write().etag = None;
 
     let prefetched = make_prefetched(&["grok-3", "grok-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: prefetched, model_groups: indexmap::IndexMap::new() }), None);
 
     assert_eq!(
         mgr.current_model_id().0.as_ref(),
@@ -1330,11 +1346,11 @@ fn subsequent_refresh_reselects_when_model_removed() {
     cfg.models.default = Some("grok-3".to_string());
 
     let prefetched = make_prefetched(&["grok-3", "grok-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: prefetched, model_groups: indexmap::IndexMap::new() }), None);
     mgr.set_current_model_id(acp::ModelId::new("grok-4"));
 
     let prefetched = make_prefetched(&["grok-3", "grok-4.5"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: prefetched, model_groups: indexmap::IndexMap::new() }), None);
 
     assert_eq!(
         mgr.current_model_id().0.as_ref(),
@@ -1350,7 +1366,7 @@ fn apply_config_honors_new_preferred_model() {
     cfg.models.default = Some("grok-3".to_string());
 
     let prefetched = make_prefetched(&["grok-3", "grok-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: prefetched, model_groups: indexmap::IndexMap::new() }), None);
     mgr.set_current_model_id(acp::ModelId::new("grok-4"));
 
     let mut stale_cfg = config::Config::default();
@@ -1374,7 +1390,7 @@ fn apply_config_preserves_current_when_preferred_unchanged() {
     let cfg = config::Config::default();
 
     let prefetched = make_prefetched(&["grok-3", "grok-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: prefetched, model_groups: indexmap::IndexMap::new() }), None);
 
     mgr.set_current_model_id(acp::ModelId::new("grok-4"));
 
@@ -1395,7 +1411,7 @@ fn apply_config_falls_back_when_preferred_not_in_catalog() {
     cfg.models.default = Some("grok-3".to_string());
 
     let prefetched = make_prefetched(&["grok-3", "grok-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: prefetched, model_groups: indexmap::IndexMap::new() }), None);
 
     mgr.set_current_model_id(acp::ModelId::new("grok-4"));
 
@@ -1417,7 +1433,7 @@ fn apply_config_both_none_preferred_preserves_current() {
     let mgr = test_manager();
     let cfg = config::Config::default();
     let prefetched = make_prefetched(&["grok-3", "grok-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: prefetched, model_groups: indexmap::IndexMap::new() }), None);
     mgr.set_current_model_id(acp::ModelId::new("grok-4"));
     let new_cfg = config::Config::default();
     mgr.apply_config(new_cfg);
@@ -1436,7 +1452,7 @@ fn apply_config_old_some_new_none_preserves_current() {
     cfg.models.default = Some("grok-3".to_string());
 
     let prefetched = make_prefetched(&["grok-3", "grok-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: prefetched, model_groups: indexmap::IndexMap::new() }), None);
     assert_eq!(mgr.current_model_id().0.as_ref(), "grok-3");
 
     mgr.set_current_model_id(acp::ModelId::new("grok-4"));
@@ -1458,7 +1474,7 @@ fn auth_refresh_then_config_reload_preserves_user_model() {
     cfg.models.default = Some("grok-3".to_string());
 
     let prefetched = make_prefetched(&["grok-3", "grok-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: prefetched, model_groups: indexmap::IndexMap::new() }), None);
 
     mgr.set_current_model_id(acp::ModelId::new("grok-4"));
 
@@ -1466,7 +1482,7 @@ fn auth_refresh_then_config_reload_preserves_user_model() {
     mgr.inner.catalog.write().etag = None;
 
     let prefetched = make_prefetched(&["grok-3", "grok-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: prefetched, model_groups: indexmap::IndexMap::new() }), None);
     assert_eq!(mgr.current_model_id().0.as_ref(), "grok-4");
 
     let mut new_cfg = config::Config::default();
@@ -1491,6 +1507,7 @@ fn reload_from_disk_cache_applies_external_catalog() {
 
     cache.persist(
         &make_prefetched(&["grok-4.5", "grok-4.3"]),
+        &indexmap::IndexMap::new(),
         Some("etag-ext"),
         &mgr.cache_scope(),
         Utc::now(),
@@ -1510,7 +1527,7 @@ fn reload_from_disk_cache_recomputes_allowlist_excludes_all() {
     let mgr = test_manager();
     let cfg = config_from_toml("[models]\nallowed_models = [\"keep-*\"]");
 
-    mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["other-1"])), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: make_prefetched(&["other-1"]), model_groups: indexmap::IndexMap::new() }), None);
     assert!(
         mgr.allowlist_excludes_all(),
         "setup: allowlist should exclude the entire catalog"
@@ -1521,6 +1538,7 @@ fn reload_from_disk_cache_recomputes_allowlist_excludes_all() {
     let cache = test_cache_manager(tmp.path());
     cache.persist(
         &make_prefetched(&["keep-1"]),
+        &indexmap::IndexMap::new(),
         Some("etag-keep"),
         &mgr.cache_scope(),
         Utc::now(),
@@ -1547,6 +1565,7 @@ fn reload_from_disk_cache_resolves_default_on_first_catalog() {
     let cache = test_cache_manager(tmp.path());
     cache.persist(
         &make_prefetched(&["keep-1", "other-1"]),
+        &indexmap::IndexMap::new(),
         Some("etag-first"),
         &mgr.cache_scope(),
         Utc::now(),
@@ -1568,12 +1587,25 @@ fn reload_from_disk_cache_skips_identical_catalog_and_adopts_etag() {
     let mgr = test_manager();
     let cfg = config::Config::default();
     let prefetched = make_prefetched(&["grok-3", "grok-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched.clone()), Some("etag-a".into()));
+    mgr.apply_refresh_result(
+        &cfg,
+        Some(ModelsFetchOutcome {
+            models: prefetched.clone(),
+            model_groups: indexmap::IndexMap::new(),
+        }),
+        Some("etag-a".into()),
+    );
     mgr.set_current_model_id(acp::ModelId::new("grok-4"));
 
     let tmp = tempfile::TempDir::new().unwrap();
     let cache = test_cache_manager(tmp.path());
-    cache.persist(&prefetched, Some("etag-b"), &mgr.cache_scope(), Utc::now());
+    cache.persist(
+        &prefetched,
+        &indexmap::IndexMap::new(),
+        Some("etag-b"),
+        &mgr.cache_scope(),
+        Utc::now(),
+    );
 
     mgr.reload_from_cache_manager(&cache);
 
@@ -1587,6 +1619,146 @@ fn reload_from_disk_cache_skips_identical_catalog_and_adopts_etag() {
         Some("etag-b"),
         "etag should be adopted so refresh_if_new_etag stays accurate"
     );
+}
+
+/// CATALOG-LIVEHYDRATE-1 (apex-8jo): hot-reload inclusion of the second
+/// section — the watched file is `models_cache.json`, so the section rides
+/// the existing `x.ai/internal/reload_models_cache` trigger with no new
+/// watch entry.
+#[test]
+#[serial]
+fn hot_reload_applies_group_section() {
+    let mgr = test_manager();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cache = test_cache_manager(tmp.path());
+    let groups: IndexMap<String, serde_json::Value> = [
+        (
+            "claude-opus-4.8".to_string(),
+            serde_json::json!({"model_group": "claude-opus-4.8", "tpm": null}),
+        ),
+        (
+            "claude-opus-4-8".to_string(),
+            serde_json::json!({"model_group": "claude-opus-4-8", "tpm": 128}),
+        ),
+    ]
+    .into_iter()
+    .collect();
+
+    cache.persist(
+        &make_prefetched(&["grok-4.5", "grok-4.3"]),
+        &groups,
+        Some("etag-ext"),
+        &mgr.cache_scope(),
+        Utc::now(),
+    );
+
+    mgr.reload_from_cache_manager(&cache);
+
+    assert!(mgr.models().contains_key("grok-4.5"));
+    assert_eq!(
+        mgr.model_groups(),
+        groups,
+        "the second section must arrive with the hot-reloaded catalog"
+    );
+    assert!(mgr.model_groups()["claude-opus-4.8"]["tpm"].is_null());
+}
+
+#[test]
+#[serial]
+fn hot_reload_same_models_changed_groups_applies() {
+    // The content-dedupe pair must include the section: identical models +
+    // a changed section is NOT a skip.
+    let mgr = test_manager();
+    let cfg = config::Config::default();
+    let models = make_prefetched(&["grok-4.5"]);
+    let v1: IndexMap<String, serde_json::Value> =
+        [("g-1".to_string(), serde_json::json!({"model_group": "g-1", "tpm": 1}))]
+            .into_iter()
+            .collect();
+    let v2: IndexMap<String, serde_json::Value> =
+        [("g-1".to_string(), serde_json::json!({"model_group": "g-1", "tpm": 2}))]
+            .into_iter()
+            .collect();
+
+    mgr.apply_refresh_result(
+        &cfg,
+        Some(ModelsFetchOutcome {
+            models: models.clone(),
+            model_groups: v1,
+        }),
+        Some("etag-a".into()),
+    );
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cache = test_cache_manager(tmp.path());
+    cache.persist(
+        &models,
+        &v2,
+        Some("etag-b"),
+        &mgr.cache_scope(),
+        Utc::now(),
+    );
+
+    mgr.reload_from_cache_manager(&cache);
+
+    assert_eq!(
+        mgr.model_groups(),
+        v2,
+        "identical models + changed section must APPLY, not false-skip"
+    );
+    assert_eq!(
+        mgr.inner.catalog.read().etag.as_deref(),
+        Some("etag-b"),
+        "the apply path must run (etag adopted)"
+    );
+}
+
+#[test]
+#[serial]
+fn hot_reload_identical_content_skips() {
+    // Both sections equal: the skip branch runs — etag syncs, catalog and
+    // section stand untouched.
+    let mgr = test_manager();
+    let cfg = config::Config::default();
+    let models = make_prefetched(&["grok-4.5"]);
+    let groups: IndexMap<String, serde_json::Value> =
+        [("g-1".to_string(), serde_json::json!({"model_group": "g-1", "tpm": 1}))]
+            .into_iter()
+            .collect();
+    mgr.set_current_model_id(acp::ModelId::new("grok-4.5"));
+
+    mgr.apply_refresh_result(
+        &cfg,
+        Some(ModelsFetchOutcome {
+            models: models.clone(),
+            model_groups: groups.clone(),
+        }),
+        Some("etag-a".into()),
+    );
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cache = test_cache_manager(tmp.path());
+    cache.persist(
+        &models,
+        &groups,
+        Some("etag-b"),
+        &mgr.cache_scope(),
+        Utc::now(),
+    );
+
+    mgr.reload_from_cache_manager(&cache);
+
+    assert_eq!(
+        mgr.current_model_id().0.as_ref(),
+        "grok-4.5",
+        "identical content must not disturb the current model"
+    );
+    assert_eq!(
+        mgr.inner.catalog.read().etag.as_deref(),
+        Some("etag-b"),
+        "the skip branch still syncs the etag"
+    );
+    assert_eq!(mgr.model_groups(), groups);
 }
 
 #[test]
@@ -1605,6 +1777,7 @@ fn reload_from_disk_cache_ignores_stale_cache() {
         identity: Some(scope.identity.clone()),
         etag: Some("etag-stale".into()),
         models: make_prefetched(&["grok-stale"]),
+        model_groups: indexmap::IndexMap::new(),
     };
     cache.atomic_write(&stale);
 
@@ -1625,6 +1798,7 @@ async fn renew_ttl_does_not_shadow_a_newer_content_write() {
     let a_fetched = Utc::now() - ChronoDuration::seconds(60);
     cache.persist(
         &make_prefetched(&["grok-a"]),
+        &indexmap::IndexMap::new(),
         Some("etag-a"),
         &scope,
         a_fetched,
@@ -1636,6 +1810,7 @@ async fn renew_ttl_does_not_shadow_a_newer_content_write() {
     let b_fetched = Utc::now() - ChronoDuration::seconds(30);
     cache.persist(
         &make_prefetched(&["grok-b"]),
+        &indexmap::IndexMap::new(),
         Some("etag-b"),
         &scope,
         b_fetched,
@@ -1668,6 +1843,7 @@ fn reload_from_disk_cache_ignores_auth_method_mismatch() {
     };
     cache.persist(
         &make_prefetched(&["grok-other-auth"]),
+        &indexmap::IndexMap::new(),
         Some("etag-x"),
         &other,
         Utc::now(),
@@ -1690,6 +1866,7 @@ fn reload_from_disk_cache_ignores_origin_mismatch() {
     };
     cache.persist(
         &make_prefetched(&["grok-other-origin"]),
+        &indexmap::IndexMap::new(),
         Some("etag-y"),
         &other,
         Utc::now(),
@@ -1711,6 +1888,7 @@ fn models_persist_does_not_regress_to_an_older_fetch() {
     let newer = Utc::now() - ChronoDuration::seconds(30);
     cache.persist(
         &make_prefetched(&["grok-new"]),
+        &indexmap::IndexMap::new(),
         Some("etag-new"),
         &scope,
         newer,
@@ -1719,6 +1897,7 @@ fn models_persist_does_not_regress_to_an_older_fetch() {
     // An older same-scope fetch must not overwrite the newer catalog.
     cache.persist(
         &make_prefetched(&["grok-old"]),
+        &indexmap::IndexMap::new(),
         Some("etag-old"),
         &scope,
         newer - ChronoDuration::seconds(60),
@@ -1746,6 +1925,7 @@ fn models_cache_read_is_scoped_by_identity() {
 
     cache.persist(
         &make_prefetched(&["grok-a"]),
+        &indexmap::IndexMap::new(),
         Some("etag-a"),
         &scope_a,
         Utc::now(),
@@ -1781,6 +1961,7 @@ fn models_cache_read_is_scoped_by_alpha_test_key() {
 
     cache.persist(
         &make_prefetched(&["grok-a"]),
+        &indexmap::IndexMap::new(),
         Some("etag-a"),
         &scope_a,
         Utc::now(),
@@ -1949,6 +2130,7 @@ fn reload_from_disk_cache_ignores_legacy_cache_without_origin() {
         identity: Some(scope.identity.clone()),
         etag: Some("etag-legacy".into()),
         models: make_prefetched(&["grok-legacy"]),
+        model_groups: indexmap::IndexMap::new(),
     };
     cache.atomic_write(&legacy);
 
@@ -1964,14 +2146,14 @@ fn clear_resets_has_fetched_real_catalog() {
     cfg.models.default = Some("grok-3".to_string());
 
     let prefetched = make_prefetched(&["grok-3", "grok-4"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: prefetched, model_groups: indexmap::IndexMap::new() }), None);
     assert!(mgr.has_fetched_real_catalog());
 
     mgr.clear();
     assert!(!mgr.has_fetched_real_catalog());
 
     let prefetched = make_prefetched(&["grok-4.5", "grok-4.3"]);
-    mgr.apply_refresh_result(&cfg, Some(prefetched), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: prefetched, model_groups: indexmap::IndexMap::new() }), None);
     let first_available = mgr.available().keys().next().unwrap().clone();
     assert_eq!(
         mgr.current_model_id().0.as_ref(),
@@ -2015,7 +2197,7 @@ fn campaign_only_flip_does_not_reselect_live_session() {
     let mgr = test_manager();
     let mut cfg = config::Config::default();
     cfg.models.default = Some("alpha".to_string());
-    mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["alpha", "beta"])), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: make_prefetched(&["alpha", "beta"]), model_groups: indexmap::IndexMap::new() }), None);
     *mgr.inner.cfg.write() = cfg.clone(); // apply_config sees old_preferred as "alpha"
     assert_eq!(mgr.current_model_id().0.as_ref(), "alpha");
 
@@ -2032,7 +2214,7 @@ fn campaign_only_flip_does_not_reselect_live_session() {
     let mgr2 = test_manager();
     let mut cfg2 = config::Config::default();
     cfg2.models.default = Some("alpha".to_string());
-    mgr2.apply_refresh_result(&cfg2, Some(make_prefetched(&["alpha", "beta"])), None);
+    mgr2.apply_refresh_result(&cfg2, Some(ModelsFetchOutcome { models: make_prefetched(&["alpha", "beta"]), model_groups: indexmap::IndexMap::new() }), None);
     *mgr2.inner.cfg.write() = cfg2.clone();
     let mut new_cfg2 = config::Config::default();
     new_cfg2.models.default = Some("beta".to_string());
@@ -2548,7 +2730,7 @@ async fn explicit_model_pick_survives_first_real_catalog() {
     let mgr = test_manager();
     let cfg = config_from_toml("[models]\ndefault = \"grok-4.5\"");
     mgr.set_current_model_id(acp::ModelId::new("grok-4"));
-    mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["grok-4.5", "grok-4"])), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: make_prefetched(&["grok-4.5", "grok-4"]), model_groups: indexmap::IndexMap::new() }), None);
     assert_eq!(
         mgr.current_model_id().0.as_ref(),
         "grok-4",
@@ -2562,7 +2744,7 @@ async fn identity_switch_clears_user_pick_latch() {
     let cfg = config_from_toml("[models]\ndefault = \"grok-4.5\"");
     mgr.set_current_model_id(acp::ModelId::new("grok-4"));
     mgr.clear();
-    mgr.apply_refresh_result(&cfg, Some(make_prefetched(&["grok-4.5", "grok-4"])), None);
+    mgr.apply_refresh_result(&cfg, Some(ModelsFetchOutcome { models: make_prefetched(&["grok-4.5", "grok-4"]), model_groups: indexmap::IndexMap::new() }), None);
     assert_eq!(
         mgr.current_model_id().0.as_ref(),
         "grok-4.5",

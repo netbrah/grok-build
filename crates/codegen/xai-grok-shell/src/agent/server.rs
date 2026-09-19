@@ -37,11 +37,11 @@ use xai_acp_lib::{
     AcpClientMessage, LineBufferedRead,
 };
 
-use crate::agent::config::{Config as AgentConfig, ModelEntry};
+use crate::agent::config::Config as AgentConfig;
 use crate::agent::mvp_agent::MvpAgent;
-use crate::agent::remote_config::{ModelFetchAuth, prefetch_models_blocking};
-
-use indexmap::IndexMap;
+use crate::agent::remote_config::{
+    ModelFetchAuth, ModelsFetchOutcome, prefetch_models_blocking,
+};
 
 /// Swappable destination for the relay task.
 /// Points at the current ACP connection's gateway sender.
@@ -451,7 +451,7 @@ async fn handle_connection(ws: WebSocket, state: Arc<ServerState>, peer_addr: So
 async fn run_persistent_agent(
     mut agent_config: AgentConfig,
     mut connection_rx: mpsc::UnboundedReceiver<NewConnectionChannels>,
-    prefetched_models: Option<IndexMap<String, ModelEntry>>,
+    prefetched_models: Option<ModelsFetchOutcome>,
 ) {
     let (gw_tx, mut gw_rx) = tokio::sync::mpsc::unbounded_channel::<AcpClientMessage>();
     let gateway = GatewaySender::new(gw_tx);

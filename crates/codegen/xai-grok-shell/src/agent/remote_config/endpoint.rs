@@ -3,15 +3,15 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use indexmap::IndexMap;
-
 use super::{ModelFetchAuth, prefetch_models_blocking};
-use crate::agent::config::{self, ModelEntry};
+use crate::agent::config;
 use xai_grok_login::GrokAuth;
+
+use super::fetch::ModelsFetchOutcome;
 
 /// Boxed future returned by [`ModelsEndpoint::fetch_models`].
 pub(crate) type ModelsFetchFuture =
-    Pin<Box<dyn Future<Output = Option<IndexMap<String, ModelEntry>>> + Send>>;
+    Pin<Box<dyn Future<Output = Option<ModelsFetchOutcome>> + Send>>;
 
 /// The `/v1/models` fetch behind a trait so tests can inject a fake.
 pub(crate) trait ModelsEndpoint: Send + Sync {
@@ -41,7 +41,7 @@ pub(crate) async fn fetch_models_async(
     endpoints: config::EndpointsConfig,
     auth: Option<GrokAuth>,
     fetch_auth: ModelFetchAuth,
-) -> Option<IndexMap<String, ModelEntry>> {
+) -> Option<ModelsFetchOutcome> {
     tokio::task::spawn_blocking(move || {
         prefetch_models_blocking(&endpoints, auth.as_ref(), fetch_auth)
     })

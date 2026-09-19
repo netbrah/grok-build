@@ -433,7 +433,8 @@ impl SessionActor {
             |json: serde_json::Value| -> Option<(std::num::NonZeroU64, Option<u32>)> {
                 let data = json.get("data")?.as_array()?;
                 for entry in data {
-                    let parsed = crate::remote::client::parse_remote_model_value(entry, base_url)?;
+                    let parsed =
+                        crate::remote::client::parse_remote_model_value(entry, base_url, &indexmap::IndexMap::new())?;
                     if parsed.model == *current_model {
                         return Some((parsed.context_window, parsed.max_completion_tokens));
                     }

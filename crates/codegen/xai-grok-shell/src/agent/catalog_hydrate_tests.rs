@@ -78,9 +78,12 @@ fn fixture_rows_parse_through_provenance_fields() {
             "max_input_tokens": row["max_input_tokens"],
             "max_output_tokens": row["max_output_tokens"],
         });
-        let parsed =
-            crate::remote::client::parse_remote_model_value(&feed_body, "https://default.url")
-                .unwrap_or_else(|| panic!("{id}: fixture row must parse"));
+        let parsed = crate::remote::client::parse_remote_model_value(
+            &feed_body,
+            "https://default.url",
+            &indexmap::IndexMap::new(),
+        )
+        .unwrap_or_else(|| panic!("{id}: fixture row must parse"));
         // Provenance: raw feed values preserved, named:
         assert_eq!(
             parsed.feed_max_input_tokens,

@@ -4,6 +4,7 @@
 //! Co-located child of `mvp_agent` (`use super::*`).
 use super::*;
 use crate::sampling::EffortTarget;
+use crate::agent::remote_config::ModelsFetchOutcome;
 use xai_grok_login::PreferredAuthMethod;
 use crate::upload::trace::PromptMetadataParams;
 use xai_grok_tools::implementations::grok_build::task::backend::SubagentBackend;
@@ -2194,7 +2195,7 @@ impl MvpAgent {
         gateway: GatewaySender,
         cfg: &AgentConfig,
         auth_manager: Arc<AuthManager>,
-        prefetched_models: Option<IndexMap<String, ModelEntry>>,
+        prefetched_models: Option<ModelsFetchOutcome>,
         boot: Option<crate::agent::init::BootstrapPrefetch>,
     ) -> Result<Self, crate::agent::init::BootstrapError> {
         let (cfg, models_manager) = crate::agent::init::bootstrap_with_cancel(

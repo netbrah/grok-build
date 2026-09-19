@@ -303,7 +303,7 @@ fn parse_openai_format_uses_id_field() {
         "owned_by": "xai",
         "context_window": 131072
     });
-    let result = parse_remote_model_value(&value, "https://api.x.ai/v1").unwrap();
+    let result = parse_remote_model_value(&value, "https://api.x.ai/v1", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(result.model, "grok-3");
     assert_eq!(result.base_url, "https://api.x.ai/v1");
     assert_eq!(result.name.as_deref(), Some("grok-3"));
@@ -316,7 +316,7 @@ fn parse_model_field_takes_priority_over_id() {
         "name": "Display Name",
         "context_window": 131072
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(result.model, "actual-model-id");
     assert_eq!(result.name.as_deref(), Some("Display Name"));
 }
@@ -327,14 +327,14 @@ fn parse_reads_rate_limit_retry_threshold() {
         "context_window": 1_000_000,
         "rateLimitRetryThreshold": 6
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(result.rate_limit_retry_threshold, Some(6));
     let value = serde_json::json!({
         "model": "grok-4.5",
         "context_window": 1_000_000,
         "rate_limit_retry_threshold": 7
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(result.rate_limit_retry_threshold, Some(7));
 }
 #[test]
@@ -344,17 +344,17 @@ fn parse_reads_model_family() {
         "context_window": 1_000_000,
         "model_family": "xai"
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(result.model_family.as_deref(), Some("xai"));
     let value = serde_json::json!({
         "model": "acme-1",
         "contextWindow": 400_000,
         "modelFamily": "acme"
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(result.model_family.as_deref(), Some("acme"));
     let value = serde_json::json!({"model": "x", "context_window": 256_000});
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert!(result.model_family.is_none());
 }
 #[test]
@@ -366,7 +366,7 @@ fn parse_reads_reasoning_effort_fields() {
         "supports_reasoning_effort": true,
         "reasoning_effort": "high"
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert!(result.supports_reasoning_effort);
     assert_eq!(result.reasoning_effort, Some(ReasoningEffort::High));
     let value = serde_json::json!({
@@ -375,11 +375,11 @@ fn parse_reads_reasoning_effort_fields() {
         "supportsReasoningEffort": true,
         "reasoningEffort": "xhigh"
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert!(result.supports_reasoning_effort);
     assert_eq!(result.reasoning_effort, Some(ReasoningEffort::Xhigh));
     let value = serde_json::json!({"model": "x", "context_window": 256_000});
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert!(!result.supports_reasoning_effort);
     assert!(result.reasoning_effort.is_none());
 }
@@ -395,7 +395,7 @@ fn parse_reads_reasoning_efforts_list() {
             "low",
         ]
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(result.reasoning_efforts.len(), 2);
     assert_eq!(result.reasoning_efforts[0].id, "deep");
     assert_eq!(result.reasoning_efforts[0].value, ReasoningEffort::Xhigh);
@@ -410,12 +410,12 @@ fn parse_reads_reasoning_efforts_list() {
             "_meta": { "reasoningEfforts": [{ "value": "high" }] }
         }),
     ] {
-        let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+        let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
         assert_eq!(result.reasoning_efforts.len(), 1);
         assert_eq!(result.reasoning_efforts[0].value, ReasoningEffort::High);
     }
     let value = serde_json::json!({"model": "x", "context_window": 256_000});
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert!(result.reasoning_efforts.is_empty());
 }
 #[test]
@@ -427,7 +427,7 @@ fn parse_reads_meta_fallback_fields() {
             "agentType": "concise"
         }
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(result.model, "meta-model-id");
     assert_eq!(
         result.context_window,
@@ -441,7 +441,7 @@ fn parse_remote_model_value_no_laziness_detector_block_yields_default() {
         "model": "grok-4",
         "context_window": 256_000,
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(
         result.laziness_detector,
         crate::agent::config::LazinessDetectorPerModelConfig::default()
@@ -475,7 +475,7 @@ fn parse_v1_pin_rows_ingest_proxy_window_fields() {
         ("grok-4.6", 500_000, Some(500_000)),
     ];
     for (id, context_window, max_completion) in expected {
-        let result = parse_remote_model_value(&v1_extract_row(id), "https://default.url").unwrap();
+        let result = parse_remote_model_value(&v1_extract_row(id), "https://default.url", &indexmap::IndexMap::new()).unwrap();
         assert_eq!(
             result.context_window.get(),
             *context_window,
@@ -500,7 +500,7 @@ fn parse_v1_row_missing_output_tokens_keeps_none_budget() {
         "owned_by": "openai",
         "max_input_tokens": 8191
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(result.context_window.get(), 8191);
     assert_eq!(result.max_completion_tokens, None);
 }
@@ -514,7 +514,7 @@ fn parse_v1_zero_or_absent_input_tokens_keep_default_window() {
         "max_input_tokens": 0,
         "max_output_tokens": 0
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(result.context_window.get(), DEFAULT_CONTEXT_WINDOW);
     // max_output_tokens has no >0 guard in the v2-style chain either: an
     // explicit 0 maps to Some(0) exactly like an explicit
@@ -524,7 +524,7 @@ fn parse_v1_zero_or_absent_input_tokens_keep_default_window() {
         "id": "m-absent",
         "object": "model"
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(result.context_window.get(), DEFAULT_CONTEXT_WINDOW);
     assert_eq!(result.max_completion_tokens, None);
 }
@@ -541,7 +541,7 @@ fn parse_explicit_context_fields_beat_v1_window_fields() {
         "max_input_tokens": 500_000,
         "max_output_tokens": 64_000
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(result.context_window.get(), 131_072);
     assert_eq!(result.max_completion_tokens, Some(8_192));
 }
@@ -557,7 +557,7 @@ fn parse_remote_model_value_parses_camelcase_key() {
             "min_confidence": 0.75,
         },
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     let expected = crate::agent::config::LazinessDetectorPerModelConfig {
         enabled: true,
         max_nudges_per_session: 2,
@@ -579,7 +579,7 @@ fn parse_remote_model_value_parses_snake_case_laziness_detector() {
             "min_confidence": 0.6,
         },
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     let expected = crate::agent::config::LazinessDetectorPerModelConfig {
         enabled: true,
         max_nudges_per_session: 3,
@@ -603,7 +603,7 @@ fn parse_remote_model_value_parses_meta_laziness_detector() {
             },
         },
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     let expected = crate::agent::config::LazinessDetectorPerModelConfig {
         enabled: true,
         max_nudges_per_session: 1,
@@ -622,7 +622,7 @@ fn parse_remote_model_value_partial_block_uses_field_defaults() {
             "enabled": true,
         },
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     let expected = crate::agent::config::LazinessDetectorPerModelConfig {
         enabled: true,
         max_nudges_per_session: 0,
@@ -642,7 +642,7 @@ fn parse_remote_model_value_malformed_block_falls_back_to_default() {
             "max_nudges_per_session": "abc",
         },
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(
         result.laziness_detector,
         crate::agent::config::LazinessDetectorPerModelConfig::default()
@@ -655,7 +655,7 @@ fn parse_remote_model_value_non_object_value_falls_back_to_default() {
         "context_window": 256_000,
         "lazinessDetector": "not-an-object",
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(
         result.laziness_detector,
         crate::agent::config::LazinessDetectorPerModelConfig::default()
@@ -675,7 +675,7 @@ fn parse_remote_model_value_top_level_camelcase_wins_over_snake_case() {
             "max_nudges_per_session": 99,
         },
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     let expected = crate::agent::config::LazinessDetectorPerModelConfig {
         enabled: true,
         max_nudges_per_session: 7,
@@ -697,7 +697,7 @@ fn parse_remote_model_value_parses_include_reasoning_under_camelcase_wrapper() {
             "include_reasoning": false,
         },
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(result.laziness_detector.include_reasoning, Some(false));
 }
 #[test]
@@ -710,7 +710,7 @@ fn parse_remote_model_value_parses_include_reasoning_under_snake_case_wrapper() 
             "include_reasoning": true,
         },
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(result.laziness_detector.include_reasoning, Some(true));
 }
 #[test]
@@ -723,7 +723,7 @@ fn parse_remote_model_value_omitted_include_reasoning_defaults_to_none() {
             "max_nudges_per_session": 2,
         },
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(
         result.laziness_detector.include_reasoning, None,
         "absent include_reasoning defers to harness default via None",
@@ -745,7 +745,7 @@ fn parse_remote_model_value_top_level_wins_over_meta() {
             },
         },
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     let expected = crate::agent::config::LazinessDetectorPerModelConfig {
         enabled: true,
         max_nudges_per_session: 5,
@@ -762,24 +762,24 @@ fn parse_reads_show_model_fingerprint_field() {
         "context_window": 256_000,
         "show_model_fingerprint": true
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert!(result.show_model_fingerprint);
     let value = serde_json::json!({
         "model": "grok-build",
         "contextWindow": 256_000,
         "showModelFingerprint": true
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert!(result.show_model_fingerprint);
     let value = serde_json::json!({
         "model": "grok-build",
         "context_window": 256_000,
         "_meta": { "showModelFingerprint": true }
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert!(result.show_model_fingerprint);
     let value = serde_json::json!({"model": "x", "context_window": 256_000});
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert!(!result.show_model_fingerprint);
 }
 #[test]
@@ -1108,7 +1108,7 @@ fn parse_v1_row_preserves_feed_provenance_fields() {
         "max_input_tokens": 922_000,
         "max_output_tokens": 128_000
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     // Fold (pre-cut mapping, byte-identical):
     assert_eq!(result.context_window.get(), 922_000);
     assert_eq!(result.max_completion_tokens, Some(128_000));
@@ -1129,7 +1129,7 @@ fn parse_v1_row_v2_style_keys_preserve_provenance_too() {
         "max_input_tokens": 500_000,
         "max_output_tokens": 64_000
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(result.context_window.get(), 131_072);
     assert_eq!(result.max_completion_tokens, Some(8_192));
     assert_eq!(result.feed_max_input_tokens, Some(131_072));
@@ -1144,7 +1144,7 @@ fn parse_v1_row_without_caps_keeps_none_provenance() {
         "id": "prov-absent",
         "object": "model"
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(result.context_window.get(), DEFAULT_CONTEXT_WINDOW);
     assert_eq!(result.max_completion_tokens, None);
     assert_eq!(result.feed_max_input_tokens, None);
@@ -1156,7 +1156,7 @@ fn parse_v1_row_without_caps_keeps_none_provenance() {
         "max_input_tokens": 0,
         "max_output_tokens": 0
     });
-    let result = parse_remote_model_value(&value, "https://default.url").unwrap();
+    let result = parse_remote_model_value(&value, "https://default.url", &indexmap::IndexMap::new()).unwrap();
     assert_eq!(result.context_window.get(), DEFAULT_CONTEXT_WINDOW);
     // max_output_tokens has no zero-guard (explicit 0 maps to Some(0)):
     assert_eq!(result.max_completion_tokens, Some(0));

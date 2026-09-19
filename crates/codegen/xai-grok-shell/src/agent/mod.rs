@@ -38,4 +38,6 @@ mod catalog_bake_tests;
 #[cfg(test)]
 mod catalog_hydrate_tests;
 #[cfg(test)]
+mod catalog_live_hydrate_tests;
+#[cfg(test)]
 mod storage_client_tests;

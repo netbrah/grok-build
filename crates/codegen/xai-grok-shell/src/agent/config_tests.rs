@@ -9820,9 +9820,12 @@ mod catalog_hydrate_ceiling {
         if let Some(out) = max_output {
             row["max_output_tokens"] = serde_json::json!(out);
         }
-        let cfg =
-            crate::remote::client::parse_remote_model_value(&row, "https://default.url")
-                .expect("feed row parses");
+        let cfg = crate::remote::client::parse_remote_model_value(
+            &row,
+            "https://default.url",
+            &indexmap::IndexMap::new(),
+        )
+        .expect("feed row parses");
         crate::agent::remote_config::build_prefetched_map(vec![cfg], None)
     }
 

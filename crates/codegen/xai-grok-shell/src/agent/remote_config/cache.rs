@@ -41,11 +41,19 @@ pub(crate) struct ModelsCache {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) etag: Option<String>,
     pub(crate) models: IndexMap<String, ModelEntry>,
+    /// CATALOG-LIVEHYDRATE-1 (apex-8jo): the observed `/model_group/info`
+    /// section — verbatim records keyed by `model_group`. Absent on disk when
+    /// empty, so a degraded fetch serializes a byte-identical pre-cut file
+    /// (R1c). Old binaries ignore the key (no deny_unknown_fields on this
+    /// read path); new binaries read absent as empty.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub(crate) model_groups: IndexMap<String, serde_json::Value>,
 }
 
 pub(in crate::agent::remote_config) struct CacheResult {
     pub(crate) models: IndexMap<String, ModelEntry>,
     pub(crate) etag: Option<String>,
+    pub(crate) model_groups: IndexMap<String, serde_json::Value>,
 }
 
 pub(crate) struct ModelsCacheManager {
@@ -96,6 +104,7 @@ impl ModelsCacheManager {
         }
         tracing::debug!(count = cache.models.len(), "loaded models from disk cache");
         Ok(CacheResult {
+            model_groups: cache.model_groups,
             models: cache.models,
             etag: cache.etag,
         })
@@ -107,6 +116,7 @@ impl ModelsCacheManager {
     pub(crate) fn persist(
         &self,
         models: &IndexMap<String, ModelEntry>,
+        model_groups: &IndexMap<String, serde_json::Value>,
         etag: Option<&str>,
         scope: &ModelsCacheScope,
         fetched_at: DateTime<Utc>,
@@ -128,6 +138,7 @@ impl ModelsCacheManager {
             identity: Some(scope.identity.clone()),
             etag: etag.map(|s| s.to_string()),
             models: models.clone(),
+            model_groups: model_groups.clone(),
         };
         self.atomic_write(&cache);
     }
@@ -192,5 +203,206 @@ impl ModelsCacheManager {
             return;
         };
         write_atomic(&self.path, self.ttl, &json, false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! CATALOG-LIVEHYDRATE-1 (apex-8jo): the second section's cache
+    //! discipline — TTL rides together, the monotonic guard protects it,
+    //! renew_ttl preserves it, and the file format stays backward
+    //! compatible in the new-binary direction (old files parse; a
+    //! degraded write is section-free).
+
+    use super::*;
+    use crate::remote::client::parse_remote_model_value;
+
+    fn test_cache(path: &std::path::Path) -> ModelsCacheManager {
+        ModelsCacheManager {
+            path: path.join(MODELS_CACHE_FILE),
+            ttl: CACHE_TTL,
+        }
+    }
+
+    fn scope() -> ModelsCacheScope {
+        ModelsCacheScope {
+            auth_method: CacheAuthMethod::ApiKey,
+            origin: "https://o.example/v1/models".to_string(),
+            identity: "id-1".to_string(),
+        }
+    }
+
+    fn entry(id: &str) -> crate::agent::config::ModelEntry {
+        let cfg = parse_remote_model_value(
+            &serde_json::json!({
+                "id": id,
+                "object": "model",
+                "max_input_tokens": 200_000,
+                "max_output_tokens": 64_000,
+            }),
+            "https://default.url",
+            &indexmap::IndexMap::new(),
+        )
+        .unwrap();
+        crate::agent::config::ModelEntry::from_config_entry(&cfg)
+    }
+
+    fn models(ids: &[&str]) -> indexmap::IndexMap<String, crate::agent::config::ModelEntry> {
+        ids.iter().map(|id| (id.to_string(), entry(id))).collect()
+    }
+
+    fn section() -> indexmap::IndexMap<String, serde_json::Value> {
+        [
+            (
+                "claude-opus-4.8".to_string(),
+                serde_json::json!({"model_group": "claude-opus-4.8", "tpm": null}),
+            ),
+            (
+                "claude-opus-4-8".to_string(),
+                serde_json::json!({"model_group": "claude-opus-4-8", "tpm": 128}),
+            ),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    #[test]
+    fn new_binary_reads_old_cache_file() {
+        // A pre-cut file (no section key at all) must load cleanly:
+        // `#[serde(default)]` makes the section an optional empty table.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = test_cache(tmp.path());
+        let cache_struct = ModelsCache {
+            fetched_at: Utc::now(),
+            renewed_at: None,
+            grok_version: Some(xai_grok_version::VERSION.to_string()),
+            auth_method: Some(scope().auth_method.clone()),
+            origin: Some(scope().origin.clone()),
+            identity: Some(scope().identity.clone()),
+            etag: Some("etag-old".to_string()),
+            models: models(&["grok-4.6"]),
+            model_groups: indexmap::IndexMap::new(),
+        };
+        cache.atomic_write(&cache_struct);
+        let raw = std::fs::read_to_string(&cache.path).unwrap();
+        assert!(
+            !raw.contains("model_groups"),
+            "an empty section must not appear on disk (pre-cut file shape)"
+        );
+        let hit = cache
+            .load_fresh(&scope())
+            .expect("an old-format file must load on the new binary");
+        assert!(hit.models.contains_key("grok-4.6"));
+        assert!(hit.model_groups.is_empty(), "absent section = empty table");
+    }
+
+    #[test]
+    fn persist_empty_groups_omits_section() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = test_cache(tmp.path());
+        cache.persist(
+            &models(&["grok-4.6"]),
+            &indexmap::IndexMap::new(),
+            Some("etag-1"),
+            &scope(),
+            Utc::now(),
+        );
+        let raw = std::fs::read_to_string(&cache.path).unwrap();
+        assert!(
+            !raw.contains("model_groups"),
+            "a degraded fetch (empty section) must serialize a pre-cut-shaped file"
+        );
+    }
+
+    #[test]
+    fn cached_section_serves_on_fresh_load() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = test_cache(tmp.path());
+        cache.persist(
+            &models(&["grok-4.6"]),
+            &section(),
+            Some("etag-1"),
+            &scope(),
+            Utc::now(),
+        );
+        let hit = cache.load_fresh(&scope()).expect("fresh cache");
+        assert_eq!(
+            hit.model_groups,
+            section(),
+            "the section must ride the fresh load with the models"
+        );
+        assert!(hit.model_groups["claude-opus-4.8"]["tpm"].is_null());
+    }
+
+    #[tokio::test]
+    async fn renew_ttl_preserves_group_section() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = test_cache(tmp.path());
+        let fetched_at = Utc::now();
+        cache.persist(
+            &models(&["grok-4.6"]),
+            &section(),
+            Some("etag-1"),
+            &scope(),
+            fetched_at,
+        );
+        cache.renew_ttl(&scope()).await;
+        let raw = std::fs::read_to_string(&cache.path).unwrap();
+        let reread: ModelsCache = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            reread.model_groups,
+            section(),
+            "the TTL bump must rewrite the file WITH the section intact"
+        );
+        assert_eq!(
+            reread.fetched_at, fetched_at,
+            "the content key must not move on a TTL renewal"
+        );
+        assert!(reread.renewed_at.is_some(), "the TTL must actually bump");
+    }
+
+    #[test]
+    fn stale_cache_with_section_is_a_miss() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = test_cache(tmp.path());
+        cache.persist(
+            &models(&["grok-4.6"]),
+            &section(),
+            Some("etag-1"),
+            &scope(),
+            Utc::now() - chrono::Duration::seconds(CACHE_TTL.as_secs() as i64 + 60),
+        );
+        assert!(
+            cache.load_fresh(&scope()).is_none(),
+            "staleness is per-file: a stale section must miss like a stale catalog"
+        );
+    }
+
+    #[test]
+    fn monotonic_guard_protects_newer_write() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = test_cache(tmp.path());
+        cache.persist(
+            &models(&["grok-new"]),
+            &section(),
+            Some("etag-new"),
+            &scope(),
+            Utc::now(),
+        );
+        // An older fetch (no section) must not roll the file back.
+        cache.persist(
+            &models(&["grok-old"]),
+            &indexmap::IndexMap::new(),
+            Some("etag-old"),
+            &scope(),
+            Utc::now() - chrono::Duration::seconds(120),
+        );
+        let hit = cache.load_fresh(&scope()).expect("the newer write must stand");
+        assert!(hit.models.contains_key("grok-new"));
+        assert_eq!(
+            hit.model_groups,
+            section(),
+            "the section of the NEWER fetch must survive the older write attempt"
+        );
     }
 }

@@ -10,6 +10,7 @@ use agent_client_protocol as acp;
 
 use super::{
     HttpModelsEndpoint, ModelFetchAuth, ModelsCacheManager, ModelsCacheScope, ModelsEndpoint,
+    ModelsFetchOutcome,
     allowlist_matches_nothing, available_models, is_campaign_only_flip, resolve_catalog_key,
     resolve_default_model, resolve_model_catalog, task_model_error_for_catalog,
     validate_selectable,
@@ -38,6 +39,10 @@ enum CatalogProgress {
 #[derive(Default)]
 struct CatalogState {
     prefetched: Option<IndexMap<String, ModelEntry>>,
+    /// CATALOG-LIVEHYDRATE-1 (apex-8jo): the observed `/model_group/info`
+    /// section. Stored + reloaded only; no runtime-resolution semantics in
+    /// this cut (consumption lands in the cost/effort cuts).
+    model_groups: IndexMap<String, serde_json::Value>,
     models: IndexMap<String, ModelEntry>,
     etag: Option<String>,
     /// Gates whether the apply path reselects the default (first real catalog)
@@ -152,7 +157,7 @@ impl Default for ModelsManager {
 
 /// Builder for [`ModelsManager`]; transport and disk cache default to production (tests override them).
 pub(crate) struct ModelsManagerBuilder {
-    prefetched: Option<IndexMap<String, ModelEntry>>,
+    prefetched: Option<ModelsFetchOutcome>,
     models: IndexMap<String, ModelEntry>,
     current_model_id: acp::ModelId,
     auth_manager: Arc<AuthManager>,
@@ -163,7 +168,7 @@ pub(crate) struct ModelsManagerBuilder {
 
 impl ModelsManagerBuilder {
     pub(crate) fn new(
-        prefetched: Option<IndexMap<String, ModelEntry>>,
+        prefetched: Option<ModelsFetchOutcome>,
         models: IndexMap<String, ModelEntry>,
         current_model_id: acp::ModelId,
         auth_manager: Arc<AuthManager>,
@@ -199,7 +204,11 @@ impl ModelsManagerBuilder {
         ModelsManager {
             inner: Arc::new(Inner {
                 catalog: RwLock::new(CatalogState {
-                    prefetched: self.prefetched,
+                    prefetched: self.prefetched.as_ref().map(|o| o.models.clone()),
+                    model_groups: self
+                        .prefetched
+                        .map(|o| o.model_groups)
+                        .unwrap_or_default(),
                     allowlist_excludes_all: allowlist_matches_nothing(&self.cfg, &self.models),
                     models: self.models,
                     ..Default::default()
@@ -225,7 +234,7 @@ impl ModelsManagerBuilder {
 
 impl ModelsManager {
     pub(crate) fn new(
-        prefetched: Option<IndexMap<String, ModelEntry>>,
+        prefetched: Option<ModelsFetchOutcome>,
         models: IndexMap<String, ModelEntry>,
         current_model_id: acp::ModelId,
         auth_manager: Arc<AuthManager>,
@@ -246,7 +255,7 @@ impl ModelsManager {
     /// Falls back to bundled default if no models available.
     pub(crate) fn from_config(
         cfg: &config::Config,
-        prefetched_models: Option<IndexMap<String, ModelEntry>>,
+        prefetched_models: Option<ModelsFetchOutcome>,
         auth_manager: Arc<AuthManager>,
     ) -> Result<Self, String> {
         let has_session = auth_manager.current_or_expired().is_some();
@@ -264,11 +273,17 @@ impl ModelsManager {
             let cache = ModelsCacheManager::new();
             cache.load_fresh(&scope).map(|c| {
                 cached_etag = c.etag;
-                c.models
+                ModelsFetchOutcome {
+                    models: c.models,
+                    model_groups: c.model_groups,
+                }
             })
         });
         let has_prefetched = prefetched_models.is_some();
-        let catalog = resolve_model_catalog(cfg, prefetched_models.clone());
+        let catalog = resolve_model_catalog(
+            cfg,
+            prefetched_models.as_ref().map(|o| o.models.clone()),
+        );
 
         // Only against a real catalog. A fleet pin on built-ins-only (custom endpoint, cold cache) would reject a valid policy before the first fetch. The catalog still marks unselectable entries; this check runs after prefetch / cache.
         if has_prefetched {
@@ -381,6 +396,13 @@ impl ModelsManager {
 
     pub fn models(&self) -> IndexMap<String, ModelEntry> {
         self.inner.catalog.read().models.clone()
+    }
+
+    /// CATALOG-LIVEHYDRATE-1 (apex-8jo): the observed `/model_group/info`
+    /// section (verbatim records keyed by `model_group`); observed-only in
+    /// this cut.
+    pub fn model_groups(&self) -> IndexMap<String, serde_json::Value> {
+        self.inner.catalog.read().model_groups.clone()
     }
 
     /// One name without cloning the catalog, for callers on a hot path.
@@ -816,6 +838,11 @@ impl ModelsManager {
             let cat = self.inner.catalog.read();
             cat.prefetched.as_ref().is_some_and(|current| {
                 serde_json::to_string(current).ok() == serde_json::to_string(&cached.models).ok()
+                    // CATALOG-LIVEHYDRATE-1 (apex-8jo): the dedupe pair
+                    // includes the second section — identical models with a
+                    // changed section must apply, not false-skip.
+                    && serde_json::to_string(&cat.model_groups).ok()
+                        == serde_json::to_string(&cached.model_groups).ok()
             })
         };
         if same_content {
@@ -828,7 +855,7 @@ impl ModelsManager {
 
         let cfg = self.inner.cfg.read().clone();
         let count = cached.models.len();
-        self.apply_catalog(&cfg, cached.models, cached.etag);
+        self.apply_catalog(&cfg, cached.models, cached.model_groups, cached.etag);
         tracing::info!(count, "model catalog hot-reloaded from disk cache");
         xai_grok_telemetry::unified_log::info(
             "model catalog: reloaded from external disk-cache write",
@@ -1198,9 +1225,10 @@ impl ModelsManager {
         &self,
         cfg: &config::Config,
         models: IndexMap<String, ModelEntry>,
+        model_groups: IndexMap<String, serde_json::Value>,
         new_etag: Option<String>,
     ) {
-        let _ = self.apply_catalog_fenced(cfg, models, new_etag, None);
+        let _ = self.apply_catalog_fenced(cfg, models, model_groups, new_etag, None);
     }
 
     /// Discards a result captured before an identity change; returns whether the catalog applied.
@@ -1208,6 +1236,7 @@ impl ModelsManager {
         &self,
         cfg: &config::Config,
         models: IndexMap<String, ModelEntry>,
+        model_groups: IndexMap<String, serde_json::Value>,
         new_etag: Option<String>,
         generation: Option<u64>,
     ) -> bool {
@@ -1222,6 +1251,7 @@ impl ModelsManager {
             let first_real_catalog = !cat.has_fetched_real_catalog;
             cat.has_fetched_real_catalog = true;
             cat.prefetched = Some(models);
+            cat.model_groups = model_groups;
             cat.models = resolve_model_catalog(cfg, cat.prefetched.clone());
             cat.etag = new_etag;
             cat.allowlist_excludes_all = allowlist_matches_nothing(cfg, &cat.models);
@@ -1250,7 +1280,7 @@ impl ModelsManager {
     fn apply_refresh_result(
         &self,
         config: &config::Config,
-        new_prefetched: Option<IndexMap<String, ModelEntry>>,
+        new_prefetched: Option<ModelsFetchOutcome>,
         new_etag: Option<String>,
     ) -> bool {
         let generation = self.inner.catalog.read().generation;
@@ -1260,7 +1290,7 @@ impl ModelsManager {
     fn apply_refresh_result_fenced(
         &self,
         config: &config::Config,
-        new_prefetched: Option<IndexMap<String, ModelEntry>>,
+        new_prefetched: Option<ModelsFetchOutcome>,
         new_etag: Option<String>,
         generation: u64,
     ) -> bool {
@@ -1288,7 +1318,13 @@ impl ModelsManager {
             );
             return false;
         };
-        self.apply_catalog_fenced(config, new_prefetched, new_etag, Some(generation))
+        self.apply_catalog_fenced(
+            config,
+            new_prefetched.models,
+            new_prefetched.model_groups,
+            new_etag,
+            Some(generation),
+        )
     }
 
     pub fn allowlist_excludes_all(&self) -> bool {

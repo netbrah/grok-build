@@ -625,6 +625,83 @@ fn fetch_settings_blocking_with_attempts(
 }
 /// Default context window when the remote endpoint doesn't provide one.
 pub(crate) const DEFAULT_CONTEXT_WINDOW: u64 = 256_000;
+
+/// CATALOG-LIVEHYDRATE-1 (apex-8jo, R2): one baked-catalog row's cap
+/// observations, for the null/absent live-cap backfill at parse time.
+/// `None` fields are observations the capture lacked — deliberately NOT the
+/// 200k fold of `entry_config_from_default_row`, so a cap-less baked row
+/// contributes nothing and the pre-cut last resort stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BakedCapRow {
+    pub context_window: Option<std::num::NonZeroU64>,
+    pub max_completion_tokens: Option<u32>,
+}
+
+/// Raw `DefaultModelEntry` fields only (curated values win over the
+/// generated proxy-named aliases). No fold may enter the table.
+pub(crate) fn baked_cap_row_from_entry(
+    row: &crate::models::DefaultModelEntry,
+) -> BakedCapRow {
+    BakedCapRow {
+        context_window: row
+            .context_window
+            .or_else(|| row.max_input_tokens.and_then(std::num::NonZeroU64::new)),
+        max_completion_tokens: row
+            .max_completion_tokens
+            .or_else(|| row.max_output_tokens.and_then(|v| u32::try_from(v).ok())),
+    }
+}
+
+/// The full baked-cap table keyed by the same id-or-model rule
+/// `build_prefetched_map` uses as its catalog key.
+pub(crate) fn baked_cap_rows() -> IndexMap<String, BakedCapRow> {
+    crate::models::default_model_rows()
+        .iter()
+        .map(|row| {
+            let key = row.id.clone().unwrap_or_else(|| row.model.clone());
+            (key, baked_cap_row_from_entry(row))
+        })
+        .collect()
+}
+
+/// CATALOG-LIVEHYDRATE-1 (apex-8jo): parse the `/model_group/info` batch
+/// into the observed-shape second cache section.
+///
+/// Zero-assumption contract (SDD §2.1): the only read-side assumptions are
+/// the observed container (a top-level object with a `"data"` array) and the
+/// observed key field (a non-empty string `model_group`). Records are stored
+/// VERBATIM as `Value` — every field, unknown or future fields included,
+/// nulls preserved as nulls. Anything else degrades to `None` (no section),
+/// never an invented value. Unkeyable records are skipped + warned; duplicate
+/// names: first occurrence wins (observed population: 0 duplicates).
+pub(crate) fn parse_model_group_info(
+    value: &serde_json::Value,
+) -> Option<IndexMap<String, serde_json::Value>> {
+    let data = value.get("data")?.as_array()?;
+    let mut rows: IndexMap<String, serde_json::Value> = IndexMap::new();
+    for record in data {
+        let Some(obj) = record.as_object() else {
+            tracing::warn!("model_group/info record is not an object; skipping");
+            continue;
+        };
+        let Some(name) = obj.get("model_group").and_then(|v| v.as_str()) else {
+            tracing::warn!("model_group/info record has no usable model_group; skipping");
+            continue;
+        };
+        if name.is_empty() {
+            tracing::warn!("model_group/info record has empty model_group; skipping");
+            continue;
+        }
+        if rows.contains_key(name) {
+            // IndexMap::insert would replace the stored value; the contract
+            // is first-occurrence-wins, so skip the later record instead.
+            tracing::warn!(group = %name, "duplicate model_group record; first wins");
+            continue;
+        }
+        rows.insert(name.to_string(), record.clone());
+    }
+    Some(rows)
+}
 pub struct FetchModelsResult {
     pub models: Vec<crate::agent::config::ModelEntryConfig>,
     pub etag: Option<String>,
@@ -634,6 +711,7 @@ pub struct FetchModelsResult {
 pub(crate) fn parse_remote_model_value(
     value: &serde_json::Value,
     default_base_url: &str,
+    baked: &IndexMap<String, BakedCapRow>,
 ) -> Option<crate::agent::config::ModelEntryConfig> {
     let obj = value.as_object()?;
     let meta = obj.get("_meta").and_then(|v| v.as_object());
@@ -676,7 +754,17 @@ pub(crate) fn parse_remote_model_value(
         // drop the row at the NonZeroU64 guard below), absent keeps the
         // DEFAULT_CONTEXT_WINDOW fallback.
         .or_else(|| get_u64(obj, "max_input_tokens").filter(|v| *v > 0));
-    let context_window = feed_max_input_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
+    // CATALOG-LIVEHYDRATE-1 (apex-8jo, R2): when the LIVE feed's cap
+    // observation is null/absent, the resolved cap backfills from the BAKED
+    // catalog row's observation for the same model (id-or-model key, the
+    // same expression build_prefetched_map uses). A present live value
+    // always wins; the baked table carries observations, never folds.
+    // Provenance (feed_*) below keeps recording the live feed only.
+    let baked_key = id.clone().unwrap_or_else(|| model.clone());
+    let baked_row = baked.get(&baked_key);
+    let context_window = feed_max_input_tokens
+        .or_else(|| baked_row.and_then(|r| r.context_window).map(|nz| nz.get()))
+        .unwrap_or(DEFAULT_CONTEXT_WINDOW);
     let context_window = std::num::NonZeroU64::new(context_window)?;
     let agent_type = get_string(obj, "systemPromptType")
         .or_else(|| get_string(obj, "system_prompt_type"))
@@ -703,6 +791,13 @@ pub(crate) fn parse_remote_model_value(
         // ANTHROPIC-WIRE-2 (cut 6): the proxy's v1 /models rows report
         // the budget as max_output_tokens (absent stays None).
         .or_else(|| get_u64(obj, "max_output_tokens"));
+    // R2 backfill: a present live value folds as today (overflow drops to
+    // None — "present" is the live observation, not a null); only a
+    // null/absent live observation falls through to the baked one.
+    let max_completion_tokens = match feed_max_output_tokens {
+        Some(v) => u32::try_from(v).ok(),
+        None => baked_row.and_then(|r| r.max_completion_tokens),
+    };
     Some(crate::agent::config::ModelEntryConfig {
         id,
         model,
@@ -715,7 +810,7 @@ pub(crate) fn parse_remote_model_value(
         description: get_string(obj, "description"),
         feed_max_input_tokens,
         feed_max_output_tokens,
-        max_completion_tokens: feed_max_output_tokens.and_then(|v| u32::try_from(v).ok()),
+        max_completion_tokens,
         temperature: get_f64(obj, "temperature").map(|v| v as f32),
         top_p: get_f64(obj, "topP").or_else(|| get_f64(obj, "top_p")).map(|v| v as f32),
         api_key: get_string(obj, "apiKey").or_else(|| get_string(obj, "api_key")),

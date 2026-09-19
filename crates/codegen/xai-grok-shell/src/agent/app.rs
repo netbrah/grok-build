@@ -1,4 +1,4 @@
-use crate::agent::config::{Config as AgentConfig, ModelEntry};
+use crate::agent::config::Config as AgentConfig;
 use crate::agent::init::{bootstrap_with_cancel, exit_on_config_error};
 use crate::agent::mvp_agent::MvpAgent;
 use crate::agent::remote_config::{ModelFetchAuth, prefetch_models_blocking};
@@ -23,7 +23,7 @@ use xai_acp_lib::{
 use xai_grok_login::AuthMode;
 use xai_grok_login::{AuthManager, GrokAuth, GrokComConfig, run_auth_flow};
 const MAX_BUFFER_SIZE: usize = 8 * 1024 * 1024;
-use indexmap::IndexMap;
+use crate::agent::remote_config::ModelsFetchOutcome;
 /// Configuration for periodic auto-update checking in leader mode. A long-running leader periodically calls `check_fn` to check for updates.
 /// `check_fn` both detects whether a newer version is available **and** downloads/installs it.
 /// It returns `true` only when the new binary is on disk and the leader should shut down so the next `connect_or_spawn` picks it up. If the download fails, `check_fn` should return `false` so the leader stays alive and retries on the next interval.
@@ -117,7 +117,7 @@ pub(crate) async fn run_auto_update_checker(
 fn spawn_agent_local(
     agent_config: AgentConfig,
     auth_manager: Arc<AuthManager>,
-    prefetched_models: Option<IndexMap<String, ModelEntry>>,
+    prefetched_models: Option<ModelsFetchOutcome>,
     boot: Option<crate::agent::init::BootstrapPrefetch>,
     memory_config: Option<crate::config::MemoryConfig>,
     outgoing: impl futures::AsyncWrite + Unpin + 'static,
@@ -213,7 +213,7 @@ fn register_fs_watch_runtime() {
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn run_stdio_agent(
     agent_config: &AgentConfig,
-    prefetched_models: Option<IndexMap<String, ModelEntry>>,
+    prefetched_models: Option<ModelsFetchOutcome>,
     memory_config: Option<crate::config::MemoryConfig>,
 ) -> anyhow::Result<()> {
     register_fs_watch_runtime();

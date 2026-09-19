@@ -3,12 +3,13 @@
 //! [`bootstrap`] runs the full init sequence (config resolution, process
 //! singletons, model catalog) and returns a resolved config + `ModelsManager`.
 //! [`update_telemetry_config`] re-initializes telemetry after auth changes.
-use crate::agent::config::{self, Config as AgentConfig, ModelEntry};
+use crate::agent::config::{self, Config as AgentConfig};
 use crate::agent::remote_config::settings_get::SettingsWait;
-use crate::agent::remote_config::{ModelsManager, ResolvedModels, settings_get};
+use crate::agent::remote_config::{
+    ModelsFetchOutcome, ModelsManager, ResolvedModels, settings_get,
+};
 use crate::config::StorageMode;
 use crate::managed_config::LaunchProfile;
-use indexmap::IndexMap;
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -88,7 +89,7 @@ pub(crate) fn hold_bootstrap_gate_for_tests() -> std::sync::MutexGuard<'static, 
 pub fn bootstrap(
     cfg: &AgentConfig,
     auth_manager: &Arc<AuthManager>,
-    prefetched: Option<IndexMap<String, ModelEntry>>,
+    prefetched: Option<ModelsFetchOutcome>,
 ) -> Result<(AgentConfig, ModelsManager), BootstrapError> {
     bootstrap_with_cancel(
         cfg,
@@ -103,7 +104,7 @@ pub fn bootstrap(
 pub fn bootstrap_with_cancel(
     cfg: &AgentConfig,
     auth_manager: &Arc<AuthManager>,
-    prefetched: Option<IndexMap<String, ModelEntry>>,
+    prefetched: Option<ModelsFetchOutcome>,
     cancel: &CancellationToken,
     boot: Option<BootstrapPrefetch>,
 ) -> Result<(AgentConfig, ModelsManager), BootstrapError> {

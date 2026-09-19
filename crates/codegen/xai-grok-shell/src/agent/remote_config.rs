@@ -3,7 +3,7 @@
 mod cache;
 mod cache_file;
 mod endpoint;
-mod fetch;
+pub(in crate::agent) mod fetch;
 mod manager;
 mod metrics;
 mod model_fetch_auth;
@@ -16,7 +16,7 @@ mod settings_refresh;
 
 pub(in crate::agent::remote_config) use cache::ModelsCacheManager;
 pub(crate) use endpoint::{HttpModelsEndpoint, ModelsEndpoint};
-pub(crate) use fetch::prefetch_models_blocking;
+pub(crate) use fetch::{ModelsFetchOutcome, prefetch_models_blocking};
 pub(in crate::agent::remote_config) use fetch::{ModelsPrefetch, fetch_models_uncommitted};
 pub(crate) use manager::ModelsManager;
 pub(crate) use metrics::{DegradedStartCause, record_degraded_start};

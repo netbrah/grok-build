@@ -1,13 +1,13 @@
 //! Startup model-catalog prefetch and handoff.
 
-use indexmap::IndexMap;
-
 use super::{
     Commit, ModelFetchAuth, ModelsCacheScope, ModelsPrefetch, evaluate_models_commit,
     fetch_models_uncommitted, resolve_disk_auth,
 };
-use crate::agent::config::{self, ModelEntry};
+use crate::agent::config;
 use xai_grok_login::{GrokAuth, GrokComConfig};
+
+use super::fetch::ModelsFetchOutcome;
 
 pub(crate) struct PrefetchInputs {
     pub(crate) auth: Option<GrokAuth>,
@@ -55,7 +55,7 @@ pub(crate) fn resolve_prefetch_inputs_from_parts(
 /// still lands its monotonic cache write for the next boot.
 #[must_use]
 pub(crate) struct InitialModelsLoad(
-    tokio::sync::oneshot::Receiver<Option<IndexMap<String, ModelEntry>>>,
+    tokio::sync::oneshot::Receiver<Option<ModelsFetchOutcome>>,
 );
 
 impl InitialModelsLoad {
@@ -63,7 +63,7 @@ impl InitialModelsLoad {
         self,
         cancel: &tokio_util::sync::CancellationToken,
         timeout: std::time::Duration,
-    ) -> Option<IndexMap<String, ModelEntry>> {
+    ) -> Option<ModelsFetchOutcome> {
         tokio::select! {
             biased;
             _ = cancel.cancelled() => None,
@@ -84,7 +84,7 @@ impl InitialModelsLoad {
 /// Catalog from the async pre-resolve. Outer `Option`: whether pre-resolve ran;
 /// inner: the catalog, or `None` on a failed or skipped fetch. Carried by value
 /// in `BootstrapPrefetch` from the boot's settings resolve to sync bootstrap.
-pub(crate) type ResolvedModels = Option<IndexMap<String, ModelEntry>>;
+pub(crate) type ResolvedModels = Option<ModelsFetchOutcome>;
 
 /// Resolved inputs for a models prefetch, or `None` when none would run.
 ///
@@ -123,7 +123,7 @@ struct ModelsPrefetchPlan {
 fn run_models_prefetch(
     plan: ModelsPrefetchPlan,
     cancel: &tokio_util::sync::CancellationToken,
-) -> Option<IndexMap<String, ModelEntry>> {
+) -> Option<ModelsFetchOutcome> {
     if cancel.is_cancelled() {
         return None;
     }
@@ -138,7 +138,12 @@ fn run_models_prefetch(
         env.model_fetch_auth,
         true,
     ) {
-        ModelsPrefetch::Cached(models) => Some(models),
+        ModelsPrefetch::Cached { models, model_groups } => {
+            Some(ModelsFetchOutcome {
+                models,
+                model_groups,
+            })
+        }
         ModelsPrefetch::Fetched(write) => {
             // Re-resolve the live scope under the fetch-time mode (stable origin) but with live disk
             // auth for identity, so an alpha flip, key rotation, or account switch is caught without
@@ -150,7 +155,7 @@ fn run_models_prefetch(
                     tracing::info!(
                         "models fetch served in memory; not cached until the session persists"
                     );
-                    Some(write.into_models())
+                    Some(write.into_outcome())
                 }
                 Commit::Retry | Commit::Abandon => {
                     tracing::info!("models load discarded fetch: policy or origin changed");
@@ -169,7 +174,7 @@ fn spawn_prefetch_thread(
     name: &str,
     plan: ModelsPrefetchPlan,
     cancel: tokio_util::sync::CancellationToken,
-    deliver: impl FnOnce(Option<IndexMap<String, ModelEntry>>) + Send + 'static,
+    deliver: impl FnOnce(Option<ModelsFetchOutcome>) + Send + 'static,
 ) -> Option<()> {
     std::thread::Builder::new()
         .name(name.into())
@@ -201,7 +206,7 @@ pub(crate) fn fetch_initial_models_blocking(
     cancel: &tokio_util::sync::CancellationToken,
     grok_com_config: Option<GrokComConfig>,
     warmed_auth: Option<GrokAuth>,
-) -> Option<IndexMap<String, ModelEntry>> {
+) -> Option<ModelsFetchOutcome> {
     let plan = models_prefetch_inputs(grok_com_config, warmed_auth)?;
     let (tx, rx) = std::sync::mpsc::channel();
     spawn_prefetch_thread(
