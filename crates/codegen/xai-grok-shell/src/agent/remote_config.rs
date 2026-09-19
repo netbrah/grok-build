@@ -3,7 +3,7 @@
 mod cache;
 mod cache_file;
 mod endpoint;
-pub(in crate::agent) mod fetch;
+pub mod fetch;
 mod manager;
 mod metrics;
 mod model_fetch_auth;

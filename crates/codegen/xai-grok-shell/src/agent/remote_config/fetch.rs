@@ -11,8 +11,14 @@ use xai_grok_login::GrokAuth;
 /// CATALOG-LIVEHYDRATE-1 (apex-8jo): one catalog fetch's boundary payload —
 /// the live models section plus the observed `/model_group/info` section.
 /// The outer `Option` (pipeline result) stays on the callers.
+/// CATALOG-LIVEHYDRATE-1 (apex-8jo): `pub` because the `bootstrap` /
+/// `bootstrap_with_cancel` signatures (pub, agent/init.rs) name this type —
+/// external consumers (xai-grok-pager, the shell integration-test targets)
+/// must be able to resolve it even when they pass `None` (E0446/private-type
+/// at the call site). Fields stay crate-private: only the shell builds or
+/// reads the outcome.
 #[derive(Debug)]
-pub(crate) struct ModelsFetchOutcome {
+pub struct ModelsFetchOutcome {
     pub(crate) models: IndexMap<String, ModelEntry>,
     pub(crate) model_groups: IndexMap<String, serde_json::Value>,
 }
