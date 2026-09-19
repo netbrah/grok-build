@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
@@ -15,7 +16,7 @@ pub enum ResolvedStatusLine<'a> {
     Command { command: &'a str },
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, JsonSchema)]
 pub struct StatusLineConfig {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     kind: Option<StatusLineType>,
@@ -282,6 +283,7 @@ impl StatusLineConfig {
     strum::EnumString,
     strum::IntoStaticStr,
     strum::VariantArray,
+    schemars::JsonSchema,
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase", ascii_case_insensitive)]
@@ -319,6 +321,7 @@ impl StatusLineType {
     strum::EnumString,
     strum::IntoStaticStr,
     strum::VariantArray,
+    schemars::JsonSchema,
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case", ascii_case_insensitive)]

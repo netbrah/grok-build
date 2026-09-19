@@ -54,6 +54,7 @@ regex = { workspace = true }
 xai-grok-mcp = { workspace = true }
 reqwest = { workspace = true, features = ["stream", "blocking"] }
 reqwest-middleware = { workspace = true }
+schemars = { workspace = true, features = ["indexmap2"] }
 serde = { workspace = true }
 serde_ignored = "0.1"
 serde_json = { workspace = true, features = ["preserve_order"] }
@@ -215,6 +216,8 @@ xai-grok-memory = { workspace = true, features = ["test-support"] }
 xai-grok-workspace = { workspace = true, features = ["test-support", "sandbox-enforce"] }
 xai-grok-config = { workspace = true, features = [] }
 ring = { workspace = true }
+schemars = { workspace = true }
+similar = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 semver = { workspace = true }
@@ -288,3 +291,7 @@ tar = { workspace = true }
 [[bin]]
 name = "chat-history-downgrade"
 path = "src/bin/chat-history-downgrade.rs"
+
+[[bin]]
+name = "config-schema-write"
+path = "src/bin/config_schema_write.rs"

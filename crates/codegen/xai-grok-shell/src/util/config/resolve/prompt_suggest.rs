@@ -1,4 +1,5 @@
 use crate::util::config::RemoteSettings;
+use schemars::JsonSchema;
 use toml::Value as TomlValue;
 use xai_grok_sampling_types::ReasoningEffort;
 
@@ -10,7 +11,7 @@ const PROMPT_SUGGEST_MAX_OUTPUT_TOKENS_MAX: u32 = 256;
 /// Low temperature keeps the prediction close to the obvious next step.
 const PROMPT_SUGGEST_TEMPERATURE_DEFAULT: f32 = 0.2;
 
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct PromptSuggestConfig {
     pub enabled: Option<bool>,

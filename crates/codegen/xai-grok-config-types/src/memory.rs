@@ -2,13 +2,14 @@
 //!
 //! These are the raw optional settings and resolved leaf value types for `[memory.*]` and the memory-owned `[compaction.*]` tables.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Persistent-memory implementation selected for a session.
 ///
 /// The mode is resolved once with the rest of [`MemoryConfig`] and is not
 /// changed for an already-running session.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryMode {
     /// Existing summary, search, and Dream pipeline rooted at `memory/`.
@@ -29,7 +30,7 @@ impl MemoryMode {
 }
 
 /// Raw `[memory]` settings. Absence is preserved for per-field fallback.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemorySettings {
     pub enabled: Option<bool>,
@@ -44,14 +45,14 @@ pub struct MemorySettings {
     pub dream: Option<MemoryDreamSettings>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemoryIndexSettings {
     pub max_chunk_chars: Option<usize>,
     pub chunk_overlap_chars: Option<usize>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemoryEmbeddingSettings {
     pub provider: Option<String>,
@@ -59,7 +60,7 @@ pub struct MemoryEmbeddingSettings {
     pub dimensions: Option<usize>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemorySearchSettings {
     pub max_results: Option<usize>,
@@ -72,14 +73,14 @@ pub struct MemorySearchSettings {
     pub source_weights: Option<std::collections::HashMap<String, f32>>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct TemporalDecaySettings {
     pub enabled: Option<bool>,
     pub half_life_days: Option<f64>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MmrSettings {
     pub enabled: Option<bool>,
@@ -87,33 +88,33 @@ pub struct MmrSettings {
     pub lambda: Option<f64>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemoryInitialInjectionSettings {
     pub enabled: Option<bool>,
     pub min_score: Option<f32>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemorySessionSettings {
     pub save_on_end: Option<bool>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemoryWatcherSettings {
     pub enabled: Option<bool>,
     pub stale_claim_secs: Option<i64>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemoryGcSettings {
     pub max_age_days: Option<u64>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemoryDreamSettings {
     pub enabled: Option<bool>,
@@ -123,7 +124,7 @@ pub struct MemoryDreamSettings {
     pub check_interval_secs: Option<u64>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemoryFlushSettings {
     pub enabled: Option<bool>,
@@ -135,7 +136,7 @@ pub struct MemoryFlushSettings {
     pub semantic_dedup_threshold: Option<f64>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct PruningSettings {
     pub enabled: Option<bool>,
@@ -147,7 +148,7 @@ pub struct PruningSettings {
 }
 
 /// Index and chunking configuration (`[memory.index]`).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemoryIndexConfig {
     /// Maximum chunk size in characters (about 4 characters per token).
@@ -166,7 +167,7 @@ impl Default for MemoryIndexConfig {
 }
 
 /// Embedding provider configuration (`[memory.embedding]`).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemoryEmbeddingConfig {
     /// Provider type: `"api"`, `"local"`, or `"auto"`.
@@ -188,7 +189,7 @@ impl Default for MemoryEmbeddingConfig {
 }
 
 /// Hybrid search scoring configuration (`[memory.search]`).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemorySearchConfig {
     /// Maximum number of search results to return.
@@ -233,7 +234,7 @@ impl Default for MemorySearchConfig {
 
 /// Temporal decay configuration for time-aware search scoring.
 /// Only `session` chunks decay, using an exponential half-life formula:
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct TemporalDecayConfig {
     /// Whether temporal decay is enabled.
@@ -254,7 +255,7 @@ impl Default for TemporalDecayConfig {
 /// MMR (Maximal Marginal Relevance) diversity re-ranking configuration.
 /// When enabled, re-ranks search results to penalize redundancy.
 /// It uses Jaccard similarity on tokenized snippets to measure how alike two results are.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MmrConfig {
     /// Whether MMR re-ranking is enabled. Default: true.
@@ -333,7 +334,7 @@ impl MemorySearchConfig {
 }
 
 /// First-turn memory injection configuration (`[memory.initial_injection]`).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemoryInitialInjectionConfig {
     /// Whether to search memory and inject a reminder on the first turn.
@@ -353,7 +354,7 @@ impl Default for MemoryInitialInjectionConfig {
 }
 
 /// Session lifecycle configuration (`[memory.session]`).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemorySessionConfig {
     /// Whether to auto-save a session summary to memory on session end.
@@ -367,7 +368,7 @@ impl Default for MemorySessionConfig {
 }
 
 /// autoDream consolidation configuration (`[memory.dream]`).
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemoryDreamConfig {
     /// Whether autoDream background consolidation is enabled.
@@ -398,7 +399,7 @@ impl Default for MemoryDreamConfig {
 
 /// File watcher configuration for detecting external memory edits (`[memory.watcher]`).
 /// Sync runs at most once per search call, when dirty files are present and the claim is acquired.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemoryWatcherConfig {
     /// Whether the file watcher is enabled. Default: true (when memory is enabled).
@@ -419,7 +420,7 @@ impl Default for MemoryWatcherConfig {
 
 /// Garbage collection for orphaned workspace memory directories (`[memory.gc]`).
 /// `tmp*` dirs: empty ones removed unconditionally, non-empty ones removed after 7 days; Other workspaces with no session files: removed after `max_age_days`; Non-empty non-tmp workspaces: never touched.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemoryGcConfig {
     pub max_age_days: u64,
@@ -432,7 +433,7 @@ impl Default for MemoryGcConfig {
 }
 
 /// Pre-compaction memory flush configuration (`[compaction.memory_flush]`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemoryFlushConfig {
     /// Whether the flush step is enabled before compaction.
@@ -468,7 +469,7 @@ impl Default for MemoryFlushConfig {
 }
 
 /// Tool-result pruning configuration (`[compaction.pruning]`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct PruningConfig {
     /// Whether pruning is enabled.
@@ -499,7 +500,7 @@ impl Default for PruningConfig {
 }
 
 /// Concrete memory configuration used by a running session.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MemoryConfig {
     pub enabled: bool,

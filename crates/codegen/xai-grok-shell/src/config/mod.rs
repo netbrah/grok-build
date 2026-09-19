@@ -1,6 +1,7 @@
 pub mod reloader;
 pub mod watcher;
 use crate::bundle;
+use schemars::JsonSchema;
 use serde::Deserialize;
 pub use xai_grok_config_types::{
     DEFAULT_RECENCY_DECAY, MemoryConfig, MemoryDreamConfig, MemoryDreamSettings,
@@ -29,7 +30,7 @@ pub fn load_memory_mode() -> std::io::Result<MemoryMode> {
 /// Configuration for subagent (task tool) support.
 /// Parsed from the `[subagents]` section of `~/.grok/config.toml` or `.grok/config.toml`.
 /// Enabled by default; can be disabled via the `GROK_SUBAGENTS=0` env var or `[subagents] enabled = false` in config.toml.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct SubagentsConfig {
     /// Whether subagent support is enabled.
@@ -403,7 +404,7 @@ impl SubagentsConfig {
 /// Managed MCP connector fetching config (`[managed_mcps]` in config.toml).
 ///
 /// See [`Self::resolve`] for full priority chain.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct ManagedMcpsConfig {
     pub enabled: bool,
@@ -483,7 +484,7 @@ impl Default for ModelOverrideConfig {
 /// Resolved model pin for the next-prompt suggestion call (tab-autocomplete ghost text). Precedence is `env > config.toml > remote`; see [`ModelOverrideConfig::resolve`].
 /// Unlike the other auxiliary overrides this does not collapse to a plain model string. The consumer (`handle_suggest_prompt`) must distinguish an explicit pin from "unpinned".
 /// When unpinned, the client hint wins; otherwise reasoning-disabled sampling uses the alias and reasoning-enabled sampling uses the session model. Every effective model is catalog-guarded. A model missing from the shell's catalog skips the per-turn suggestion request instead of firing one that must fail.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 pub enum PromptSuggestModelPin {
     /// `GROK_PROMPT_SUGGESTIONS_MODEL`: catalog-guarded explicit pin.
     Env(String),
@@ -583,7 +584,7 @@ impl ModelOverrideConfig {
     }
 }
 /// Raw `[tools.media_gen]` counts; resolve via [`ToolsConfig::resolve_max_parallel_image_gen_calls`].
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct MediaGenToolsConfig {
     #[serde(default)]
@@ -593,7 +594,7 @@ pub struct MediaGenToolsConfig {
 }
 /// Tool behavior configuration (`[tools]` in config.toml).
 /// Controls cross-cutting tool behavior such as `.gitignore` filtering.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct ToolsConfig {
     /// When `true`, all tools (including `read_file`) filter gitignored files.
@@ -773,7 +774,7 @@ fn clamp_positive_count(value: i64, source: &str, name: &str) -> usize {
     }
 }
 /// Storage mode for session persistence.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
 pub enum StorageMode {
     /// Local JSONL only (default)
     #[default]
@@ -893,7 +894,7 @@ pub use crate::util::config::load_effective_config;
 /// This avoids resolving against a never-seeded cache.
 pub use crate::util::config::load_effective_config_disk_only;
 /// Where a requirement or permission rule was loaded from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, JsonSchema)]
 pub enum RequirementSource {
     Unknown,
     Requirements { path: std::path::PathBuf },
@@ -926,7 +927,7 @@ impl std::fmt::Display for RequirementSource {
     }
 }
 /// A value paired with the source it came from.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, JsonSchema)]
 pub struct Sourced<T> {
     pub value: T,
     pub source: RequirementSource,

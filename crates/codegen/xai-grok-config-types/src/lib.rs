@@ -17,13 +17,14 @@ mod permission;
 pub use permission::*;
 mod auth_provider;
 pub use auth_provider::*;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use xai_grok_announcements::RemoteAnnouncement;
 pub use xai_grok_config::DisplayRefreshSettings;
 use xai_grok_config::deserialize::optional_bool as de_opt_bool_tolerant;
 /// A remote `campaigns[]` entry: an `id` gate plus a flattened patch that can set any config key.
 /// It is the JSON sibling of a `[[campaigns]]` TOML override.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
 pub struct CampaignOverride {
     #[serde(default, alias = "campaign_id")]
     pub id: Option<String>,
@@ -34,7 +35,7 @@ pub struct CampaignOverride {
 /// Every field is `Option` with a per-field default, so a partial object parses and unknown future keys are ignored.
 /// Unset fields fall through per-field in `resolve_doom_loop_recovery`: env, then TOML, then remote, then default.
 /// The namespace is distinct from the removed legacy `doom_loop_*` keys.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
 #[serde(default)]
 pub struct DoomLoopRecoverySettings {
     /// Send the `x-grok-doom-loop-check` header, parse the reported triggers, and resample confident loops.
@@ -54,7 +55,7 @@ pub struct DoomLoopRecoverySettings {
     pub window_tokens: Option<u32>,
 }
 /// Per-kind age policy for auto-GC: seconds or never.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, JsonSchema)]
 pub enum WorktreeKindMaxAge {
     Secs(u64),
     Never,
@@ -104,7 +105,7 @@ impl<'de> Deserialize<'de> for WorktreeKindMaxAge {
 }
 /// Policy from the local `[worktree.auto_gc]` table or the remote `worktree_auto_gc` object.
 /// Each field deserializes tolerantly, so one bad key cannot drop a sibling kill-switch.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
 #[serde(default)]
 pub struct WorktreeAutoGcSettings {
     /// `Some(false)` is a kill-switch; absent defaults to on (an env kill still applies).
@@ -259,7 +260,7 @@ where
 }
 /// Consent notice from `grok_build_settings.consent_gate`.
 /// The server decides which accounts see it; the payload carries no targeting.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
 pub struct ConsentGate {
     /// The id keys the stored answer and the upstream record. A payload without one is dropped whole.
     pub id: String,
@@ -281,7 +282,7 @@ pub struct ConsentGate {
 /// - Missing fields from old servers are ignored
 /// - New fields added in the future don't break existing clients
 /// - Callers can distinguish "server said false" from "server didn't say"
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
 pub struct RemoteSettings {
     /// When `Some(true)`, the server recommends enabling leader mode.
     /// It is the fallback when the user hasn't set `[cli] use_leader` locally.
@@ -913,7 +914,7 @@ impl RemoteSettings {
 /// Remote enable tier for the per-tip contextual hints (mirrors the client's `[ui.contextual_hints]` shape).
 /// Each field is a soft default for one tip; `None` defers to the client default (on).
 /// Every field is `#[serde(default)]` so a partial object from remote settings never fails the whole `RemoteSettings` parse.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 pub struct ContextualHintsRemote {
     /// Undo tip (Ctrl+Z after a substantial draft wipe).
     #[serde(default)]
@@ -1022,7 +1023,7 @@ where
 }
 /// A model and the harness whose system prompt and toolset flavor that model must run against.
 /// The pair is the atomic configurable unit because a model is only guaranteed to work with a compatible harness (cursor vs grok-build).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GoalRoleModel {
     /// Model id, e.g. "grok-4". It resolves against available models at spawn time; unknown or unauthorized fails open to the current model.
     pub model: String,

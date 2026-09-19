@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::Deserialize;
 use toml::Value as TomlValue;
 
@@ -12,7 +13,7 @@ pub(crate) fn show_tips_from_toml_opt(root: &TomlValue) -> Option<bool> {
     }
 }
 /// Local `[tips]` config section.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct TipsOverride {
     pub tips: Vec<String>,

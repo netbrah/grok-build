@@ -2,6 +2,7 @@
 
 use agent_client_protocol as acp;
 use indexmap::IndexMap;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,7 +29,7 @@ fn resolve_oauth_client_secret(env_var: Option<&String>) -> Option<String> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
 #[serde(untagged)]
 pub enum McpServerTransportConfig {
     Stdio {
@@ -64,7 +65,7 @@ pub enum McpServerTransportConfig {
     },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum McpServerProblemSeverity {
     Error,
@@ -72,7 +73,7 @@ pub enum McpServerProblemSeverity {
 }
 
 /// A problem found loading an `[mcp_servers.*]` entry. It is reported (never fatal) and shown by `grok inspect`.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerConfigProblem {
     pub server: String,
@@ -109,7 +110,7 @@ pub const KNOWN_MCP_SERVER_FIELDS: &[&str] = &[
     "url_template",
 ];
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct McpJsonOAuthBlock {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -122,7 +123,7 @@ pub struct McpJsonOAuthBlock {
     pub callback_port: Option<u16>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct McpSetupConfig {
     #[serde(default)]
     pub fields: Vec<McpSetupField>,
@@ -130,7 +131,7 @@ pub struct McpSetupConfig {
     pub variables: HashMap<String, McpSetupDerivedValue>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct McpSetupField {
     pub id: String,
     pub label: String,
@@ -144,25 +145,25 @@ pub struct McpSetupField {
     pub options: Vec<McpSetupOption>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum McpSetupFieldType {
     Select,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct McpSetupOption {
     pub label: String,
     pub value: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct McpSetupDerivedValue {
     pub from: String,
     pub map: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct McpPreferenceSource {
     pub kind: String,
@@ -172,7 +173,7 @@ pub struct McpPreferenceSource {
     pub scope: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerPreferences {
     #[serde(default)]
@@ -183,7 +184,7 @@ pub struct McpServerPreferences {
     pub updated_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct McpPreferencesFile {
     pub version: u32,
     #[serde(default)]
@@ -199,14 +200,14 @@ impl Default for McpPreferencesFile {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, JsonSchema)]
 pub enum McpSetupResolution {
     Resolved(Box<McpServerConfig>),
     Required(McpSetupConfig),
     Invalid(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct McpServerConfig {
     #[serde(flatten)]
     pub transport: McpServerTransportConfig,
@@ -510,7 +511,7 @@ impl McpServerConfig {
 }
 
 /// Configuration for relay session sharing, set in config.toml under the `[relay]` section.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct RelaySyncConfig {
     pub enabled: Option<bool>,
 }
@@ -525,7 +526,7 @@ impl RelaySyncConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct McpConfig {
     #[serde(default, rename = "mcpServers")]
     pub mcp_servers: IndexMap<String, McpServerConfig>,

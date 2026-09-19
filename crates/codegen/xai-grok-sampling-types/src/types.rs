@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::num::NonZeroU64;
@@ -691,7 +692,7 @@ pub enum SearchSource {
 /// Per-model config for the `x-compaction-at` request header (a token count). The remote-config value is polymorphic:
 /// `true` enables the header with the value `context_window * auto_compact_threshold_percent / 100`. `false` (or absent)
 /// disables it; an integer `N` sends the constant `N`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum CompactionAtTokens {
     Enabled(bool),
@@ -714,7 +715,7 @@ impl CompactionAtTokens {
 /// Per-model config for the `x-compactions-remaining` request header. `true` sends the dynamic value (1 on the
 /// uncompacted prefix, 0 once the session compacts). `false`/absent disables the header; an integer `N` sends the
 /// constant `N`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum CompactionsRemaining {
     Dynamic(bool),
@@ -744,6 +745,7 @@ impl CompactionsRemaining {
     serde::Deserialize,
     strum::AsRefStr,
     strum::IntoStaticStr,
+    schemars::JsonSchema,
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "snake_case")]
@@ -892,7 +894,7 @@ pub const REASONING_EFFORTS_META_KEY: &str = "reasoningEfforts";
 
 /// A single selectable reasoning-effort option for a model.
 /// `id`/`label` are presentation and input; `value` is the canonical value sent on the wire.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, JsonSchema)]
 pub struct ReasoningEffortOption {
     pub id: String,
     pub value: ReasoningEffort,
@@ -1005,7 +1007,7 @@ pub fn reasoning_efforts_meta_value(opts: &[ReasoningEffortOption]) -> serde_jso
     serde_json::to_value(opts).unwrap_or_else(|_| serde_json::Value::Array(Vec::new()))
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ApiBackend {
     /// Use the Chat Completions API (/v1/chat/completions)
@@ -1033,7 +1035,7 @@ impl ApiBackend {
 }
 
 /// Stable identifier shared by every model request in one root conversation tree.
-#[derive(Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct ConversationGroupId(String);
 

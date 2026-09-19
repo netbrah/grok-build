@@ -1,4 +1,5 @@
 use super::model::TEAM_PRINCIPAL_TYPE;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use xai_grok_shell_base::env::{PROD_RELAY_WS_URL, PROD_WS_ORIGIN};
 fn default_oidc_scopes() -> Vec<String> {
@@ -41,7 +42,7 @@ fn default_team_oauth2_scopes() -> Vec<String> {
 /// Pins automatic auth to one method via `[auth] preferred_method`.
 /// When the pinned method is unavailable, auth fails rather than falling back; unset keeps the multi-method fallback.
 /// Only the config file can set this, not remote settings or env.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PreferredAuthMethod {
     /// `XAI_API_KEY` / auth.json `xai::api_key` / per-model BYOK (`xai.api_key`).
@@ -49,7 +50,7 @@ pub enum PreferredAuthMethod {
     /// OIDC / OAuth2 session (`cached_token`, interactive `grok.com` / `oidc`, including devbox-minted OIDC).
     Oidc,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct GrokComConfig {
     pub grok_ws_origin: String,
@@ -84,7 +85,7 @@ pub struct GrokComConfig {
     pub preferred_method: Option<PreferredAuthMethod>,
 }
 /// Team login restriction. TOML string or array; an empty array fails closed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ForceLoginTeam {
     /// The only allowed team.
@@ -93,7 +94,7 @@ pub enum ForceLoginTeam {
     AnyOf(Vec<String>),
 }
 /// Customer OIDC Identity Provider configuration (`[grok_com_config.oidc]`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OidcAuthConfig {
     pub issuer: String,
     pub client_id: String,
@@ -105,7 +106,7 @@ pub struct OidcAuthConfig {
 /// OAuth2 provider configuration (`GROK_OAUTH2_ISSUER` / `GROK_OAUTH2_CLIENT_ID`).
 ///
 /// Uses the standard OAuth 2.1 authorization code flow with PKCE via [`OidcAuthConfig`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OAuth2ProviderConfig {
     pub issuer: String,
     pub client_id: String,

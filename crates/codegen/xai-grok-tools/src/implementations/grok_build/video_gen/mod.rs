@@ -24,6 +24,7 @@
 use base64::Engine as _;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use serde::Deserialize;
+use schemars::JsonSchema;
 
 use crate::attribution::{SharedAttributionCallback, ToolConsumer};
 use crate::types::SharedApiKeyProvider;
@@ -64,7 +65,7 @@ pub use xai_grok_tools_api::slash_commands::{
 
 pub const REFERENCE_TO_VIDEO_TOOL_NAME: &str = "reference_to_video";
 
-#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct S3AccessCredentials {
     pub access_key_id: String,
     pub secret_access_key: String,
@@ -92,7 +93,7 @@ impl std::fmt::Debug for S3AccessCredentials {
     }
 }
 
-#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct ZdrVideoOutputS3Config {
     pub bucket: String,
     pub endpoint: String,

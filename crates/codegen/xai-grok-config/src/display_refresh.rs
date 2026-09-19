@@ -1,5 +1,6 @@
 //! Display-refresh settings shared by local UI config and remote settings.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::deserialize::optional_bool as de_opt_bool_tolerant;
@@ -12,7 +13,7 @@ mod tests;
 /// Each field deserializes tolerantly (wrong types become `None`); unknown keys land in [`Self::extra`] so a settings save cannot drop future knobs.
 /// `resolve_display_refresh` resolves it.
 /// Client defaults: probe on, auto on, floor 8 ms, ceiling 16 ms, Hz band 55 to 240.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, JsonSchema)]
 #[serde(default)]
 pub struct DisplayRefreshSettings {
     /// Probe the primary display's Hz once per process. `Some(false)` is a kill-switch.

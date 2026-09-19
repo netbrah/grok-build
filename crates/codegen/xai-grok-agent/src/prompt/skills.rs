@@ -17,7 +17,7 @@ use xai_grok_tools::implementations::skills::discovery::{
     is_valid_skill_name, normalize_skill_name, parse_skill_files, scan_md_files, walk_for_skill_md,
 };
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, schemars::JsonSchema)]
 pub struct SkillsConfig {
     /// Additional skill locations to load.
     /// Each entry is a `SKILL.md` file or a directory walked recursively.

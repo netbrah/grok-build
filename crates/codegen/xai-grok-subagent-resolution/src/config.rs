@@ -11,11 +11,12 @@ use std::path::PathBuf;
 use xai_grok_tools::implementations::skills::discovery::extract_first_paragraph;
 
 use serde::Deserialize;
+use schemars::JsonSchema;
 
 /// A declarative subagent role definition from config. Roles provide named presets that callers can reference via the
 /// `subagent_type` field in the task tool. Each role can specify a default capability mode, model override, and custom
 /// prompt.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct SubagentRole {
     /// Human-readable description of what this role does.
@@ -48,7 +49,7 @@ pub struct SubagentRole {
 
 /// A named persona/SOUL definition controlling tone, style, and behavior. Personas are referenced by name via the
 /// `persona` field in the task tool. Their instructions are prepended to the child's prompt as a `<persona>` XML block.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct SubagentPersona {
     /// Inline instruction text applied as a persona layer.
@@ -91,7 +92,7 @@ pub struct SubagentPersona {
 /// A declared input or output for a persona.
 ///
 /// Enables the parent agent to discover what a persona needs (inputs) and produces (outputs) without hardcoding the persona's protocol.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PersonaIOField {
     /// Short identifier (e.g. "review_file", "summary_file").

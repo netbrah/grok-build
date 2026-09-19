@@ -1,9 +1,10 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use xai_grok_config::DisplayRefreshSettings;
 
 use xai_grok_status_line::StatusLineConfig;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct UiConfig {
     pub max_thoughts_width: u16,
@@ -177,7 +178,7 @@ fn status_line_should_not_be_saved(status_line: &StatusLineConfig) -> bool {
 
 /// User-config opt-outs for the per-tip contextual hints, serialized as `[ui.contextual_hints]`.
 /// Per-field `None` means "inherit remote/default"; `Some(bool)` is a user-explicit choice (needed so the resolver can let it beat the remote tier).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ContextualHints {
     /// Undo tip (Ctrl+Z after a substantial draft wipe).
     #[serde(default, skip_serializing_if = "Option::is_none")]

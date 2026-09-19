@@ -15,6 +15,7 @@ xai-token-estimation = { workspace = true }
 minijinja = { version = "2", features = ["custom_syntax"] }
 git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
 regex = { workspace = true }
+schemars = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 serde_json = { workspace = true }

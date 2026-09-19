@@ -194,7 +194,7 @@ pub enum ClassifierMessageRole {
 /// - `no_user_tool_prefix`: drops the conversation transcript (the `User:` / tool-call turns); keeps AGENTS.md.
 /// - `bare_instructions`: system, proposed action, and the JSON instruction (no AGENTS.md, no transcript).
 /// - `just_command`: system and the command to judge only (json_schema still enforces the output shape).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ClassifierPromptType {
     #[default]

@@ -13,6 +13,7 @@
 //! - [`CompatConfig`] — resolved plain bools consumed at runtime. Every cell
 //!   defaults on.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
@@ -213,7 +214,7 @@ pub const COMPAT_CELLS: [CompatCell; 18] = [
 /// Raw per-vendor compat cells parsed from `[compat.<vendor>]` TOML.
 ///
 /// Resolution order is env override, this value, remote flag, default ON.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, JsonSchema)]
 pub struct VendorCompatToml {
     pub skills: Option<bool>,
     pub rules: Option<bool>,
@@ -237,7 +238,7 @@ impl VendorCompatToml {
 }
 
 /// Raw `[compat]` TOML section.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, JsonSchema)]
 pub struct CompatConfigToml {
     #[serde(default)]
     pub cursor: VendorCompatToml,

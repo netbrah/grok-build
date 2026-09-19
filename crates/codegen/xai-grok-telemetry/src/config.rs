@@ -1,6 +1,7 @@
 //! These types live here so the data-collector engine can construct a [`TelemetryClient`](crate::client::TelemetryClient) without depending on shell.
 //!
 //! Shell still re-exports these types from their original paths so existing call sites (and `Config` derive impls) compile unchanged.
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use xai_grok_env::env_bool;
 /// Telemetry mode: `true`/`false` (legacy bool) or `"session_metrics"` (string). `Disabled`: nothing sent (enterprise
@@ -97,6 +98,24 @@ impl<'de> serde::Deserialize<'de> for TelemetryMode {
         }
     }
 }
+
+/// Wire format for `[features] telemetry`: `true`/`false` or a string mode
+/// (`"session_metrics"`, plus the tolerant aliases accepted by
+/// [`TelemetryMode::parse`]).
+impl schemars::JsonSchema for TelemetryMode {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "TelemetryMode".into()
+    }
+
+    fn json_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "anyOf": [
+                { "type": "boolean" },
+                { "type": "string" }
+            ]
+        })
+    }
+}
 /// Parse an env var as a `TelemetryMode`. Returns `None` if unset or empty.
 pub fn env_telemetry_mode(name: &str) -> Option<TelemetryMode> {
     let value = std::env::var(name).ok()?;
@@ -121,7 +140,7 @@ where
         Some(IntOrString::Str(s)) => Some(s),
     })
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct TelemetryConfig {
     /// Declared for `serde_ignored`. Actual toggle is `[features] telemetry`.

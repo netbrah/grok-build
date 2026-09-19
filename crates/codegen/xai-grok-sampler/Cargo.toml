@@ -21,6 +21,7 @@ eventsource-stream = { workspace = true }
 futures-util = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
 reqwest = { workspace = true, features = ["stream", "rustls-tls-native-roots"] }
+schemars = { workspace = true, features = ["indexmap2"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 strum = { workspace = true }

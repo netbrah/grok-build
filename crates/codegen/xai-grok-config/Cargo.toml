@@ -12,6 +12,7 @@ dunce = { workspace = true }
 # Shared signed deployment-config envelope contract with the cli-chat-proxy signer.
 prod-mc-cli-chat-proxy-types = { path = "../../../prod/mc/cli-chat-proxy-types" }
 ring = { workspace = true }
+schemars = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -6,6 +6,7 @@ edition.workspace = true
 description = "The status-line contract: the `[ui.status_line]` config a user writes and the payload the agent sends clients."
 
 [dependencies]
+schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 strum = { workspace = true }
 
