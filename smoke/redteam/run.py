@@ -1676,12 +1676,32 @@ def xwfix_seed_from_cell(home, cwd, sid, model, cell_dir):
     return sdir, len(lines), os.path.getsize(history_path)
 
 
+def _norm_storage_records(records):
+    """Normalize runtime-regenerated system records before the storage
+    deep-equality. The harness rewrites the system record with the runtime
+    system prompt (shape depends on interactive vs nonInteractive), so a
+    cell golden's pinned system content can never match post-load; scoring
+    it is a permanent index-0/type=system artifact (OVERWATCH-ADVERSARIAL
+    r2 wave 2026-09-19: it made the .71 lane's 'GREEN after' storage
+    contract, xwfix-driver §4, unreachable). Every other field and record
+    stays scored byte-for-byte; the system content diff is informational."""
+    norm = []
+    for rec in records:
+        if isinstance(rec, dict) and rec.get("type") == "system":
+            rec = dict(rec)
+            rec["content"] = "<runtime-system-prompt>"
+        norm.append(rec)
+    return norm
+
+
 def xwfix_cell_diff_storage(cell_dir, session_dir):
     """Storage-form cell diff (evaluated AT SWITCH TIME, before the
     post-switch turn appends records): the persisted chat_history.jsonl
     must equal the cell's expected.json (record array, order-sensitive
-    deep equality). The switch_model op appends this result at switch
-    time so the post-switch turn cannot contaminate the pin."""
+    deep equality; system record CONTENT excluded from scoring — it is
+    runtime-regenerated, see _norm_storage_records). The switch_model op
+    appends this result at switch time so the post-switch turn cannot
+    contaminate the pin."""
     spec = {"op": "xwfix_cell_diff", "form": "storage",
             "cell": os.path.basename(cell_dir)}
     exp_p = os.path.join(cell_dir, "expected.json")
@@ -1701,15 +1721,28 @@ def xwfix_cell_diff_storage(cell_dir, session_dir):
             "%d records match the cell golden (post-switch storage == "
             "expected)" % len(expected),
             "storage form; byte pin %s" % exp_p)
-    first = next((i for i in range(min(len(actual), len(expected)))
-                  if actual[i] != expected[i]),
-                 min(len(actual), len(expected)))
-    t = (actual[first].get("type") if first < len(actual) else "<EOF>")
+    n_actual = _norm_storage_records(actual)
+    n_expected = _norm_storage_records(expected)
+    if n_actual == n_expected:
+        sysdiff = [i for i in range(min(len(actual), len(expected)))
+                   if isinstance(actual[i], dict)
+                   and actual[i].get("type") == "system"
+                   and actual[i] != expected[i]]
+        return AssertResult(
+            spec, "xwfix_cell_diff.storage", True,
+            "%d records match the cell golden (post-switch storage == "
+            "expected; system record content excluded from scoring — "
+            "runtime-regenerated, index(es) %s)" % (len(expected), sysdiff),
+            "storage form; byte pin %s" % exp_p)
+    first = next((i for i in range(min(len(n_actual), len(n_expected)))
+                  if n_actual[i] != n_expected[i]),
+                 min(len(n_actual), len(n_expected)))
+    t = (n_actual[first].get("type") if first < len(n_actual) else "<EOF>")
     return AssertResult(
         spec, "xwfix_cell_diff.storage", False,
-        "post-switch stored history != cell golden: actual=%d expected=%d "
-        "first_diff_index=%d (type=%s) — the documented pre-projector "
-        "behavior (RED)" % (len(actual), len(expected), first, t),
+        "post-switch stored history != cell golden (system content "
+        "excluded from scoring): actual=%d expected=%d "
+        "first_diff_index=%d (type=%s)" % (len(actual), len(expected), first, t),
         "storage form; byte pin %s" % exp_p)
 
 
