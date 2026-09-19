@@ -3819,6 +3819,12 @@ pub(crate) enum FieldSource {
     BuiltIn,
     ProxyRow,
     Donor,
+    /// AUTHORITY-47B-1 (apex-72c): an explicit field of the BUNDLED
+    /// (baked) row for a key WITHOUT a prefetched (live) row — the
+    /// bundled row is the effective resolver's own Layer-1 base, so the
+    /// field rides from it (offline bindings only; the prefetched path
+    /// keeps Donor).
+    BundledRow,
     CatalogInference,
     EndpointDefaults,
     Config,
@@ -3865,9 +3871,15 @@ pub(crate) struct ModelAuthorityView {
 /// - a prefetched key replays the per-key donor seam (bundled default at
 ///   the same key), the P2.0 catalog-inference seam, and the P1
 ///   endpoint-default seam on the raw row, in that order;
-/// - a key without a prefetched row starts from its bundled default (or
-///   the `ModelEntry::fallback` base), which the built-in tier owns —
-///   no seam ever runs on non-prefetched entries;
+/// - a key without a prefetched row starts from its BUNDLED row (the
+///   baked Layer-1 base, AUTHORITY-47B-1): an explicit bundled field
+///   that differs from the built-in default carries BundledRow
+///   authority; for non-pre-bake keys the row-aware seams then run on
+///   the bundled row exactly as in the resolver (fills label
+///   CatalogInference / EndpointDefaults); pre-bake seed keys keep exact
+///   pre-bake behavior (no seams, no donation offline); a key with no
+///   bundled row (custom endpoint / config-only) starts from the
+///   `ModelEntry::fallback` base, which the built-in tier owns;
 /// - the `[model.<key>]` config tier runs last (highest).
 /// The post-resolve sibling-slug pass and the `[models]` global scalar
 /// defaults are NOT part of the 6-tier chain: Option C retires the sibling
@@ -3895,15 +3907,38 @@ fn model_authority_view(
         .as_ref()
         .and_then(|entries| entries.get(key))
         .filter(|_| PRE_BAKE_SEED_KEYS.contains(&key));
+    // AUTHORITY-47B-1 (apex-72c): the BUNDLED row for this key — any key
+    // (pre-bake seed or generated addition), mirroring the resolver's
+    // Layer-1 base (`resolved.extend(seed)`). For non-prefetched keys
+    // the replay starts from this row, and the row-aware seams run on it
+    // for the non-pre-bake keys only (mirrors the resolver's bundled
+    // path); pre-bake keys are seam-exempt and never donate offline.
+    let bundled_entry = bundled.as_ref().and_then(|entries| entries.get(key));
+    let is_prefetched = row.is_some();
+    let is_pre_bake = PRE_BAKE_SEED_KEYS.contains(&key);
     let info = &resolved.info;
 
     // ---- api_backend: donor seam -> catalog inference -> endpoint
     // defaults -> config tier (each step only when still at the built-in
     // default, mirroring the seam order in `resolve_model_list`).
-    let mut api_backend = donor
-        .map(|d| d.info.api_backend.clone())
-        .unwrap_or_default();
-    let mut api_backend_source = FieldSource::BuiltIn;
+    // AUTHORITY-47B-1: the non-prefetched starting value is the bundled
+    // row's field (BundledRow when it moved off the built-in default).
+    // The prefetched path keeps the pre-bake donor start (built-in default
+    // when no donor applies): the row block below assigns this field only
+    // inside its branches, so a broader start would leak past the seam
+    // guards.
+    let mut api_backend = if is_prefetched {
+        donor.map(|d| d.info.api_backend.clone()).unwrap_or_default()
+    } else {
+        bundled_entry.map(|b| b.info.api_backend.clone()).unwrap_or_default()
+    };
+    let mut api_backend_source = if !is_prefetched
+        && bundled_entry.is_some_and(|b| b.info.api_backend != ApiBackend::default())
+    {
+        FieldSource::BundledRow
+    } else {
+        FieldSource::BuiltIn
+    };
     let mut endpoint_inference_fired = false;
     if let Some(row) = row {
         if row.info.api_backend != ApiBackend::default() {
@@ -3940,6 +3975,35 @@ fn model_authority_view(
             }
         }
     }
+    // AUTHORITY-47B-1: non-prefetched, non-pre-bake — the resolver runs
+    // the row-aware seams on the bundled row; mirror them 1:1 so the
+    // replay labels seam fills identically.
+    if !is_prefetched && !is_pre_bake && let Some(b) = bundled_entry {
+        if api_backend == ApiBackend::default()
+            && matches!(
+                resolve_family(b.info.model_family.as_deref(), &b.info.model),
+                CatalogFamily::Xai | CatalogFamily::OpenAi
+            )
+        {
+            let inferred = resolve_api_backend(None, &b.info.model);
+            if inferred != api_backend {
+                api_backend = inferred;
+                api_backend_source = FieldSource::CatalogInference;
+            }
+        }
+        if api_backend == ApiBackend::default()
+            && let Some(backend) = &endpoints.default_api_backend
+        {
+            if is_anthropic_model(&b.info.model) && backend != &ApiBackend::Messages {
+                api_backend = ApiBackend::Messages;
+                api_backend_source = FieldSource::EndpointDefaults;
+                endpoint_inference_fired = true;
+            } else {
+                api_backend = backend.clone();
+                api_backend_source = FieldSource::EndpointDefaults;
+            }
+        }
+    }
     if let Some(backend) = override_cfg.and_then(|ov| ov.api_backend.as_ref()) {
         api_backend = backend.clone();
         api_backend_source = FieldSource::Config;
@@ -3958,10 +4022,16 @@ fn model_authority_view(
         .default_context_window
         .and_then(NonZeroU64::new)
         .unwrap_or_else(|| NonZeroU64::new(200_000).expect("200000 is non-zero"));
-    let mut context_window = donor
-        .map(|d| d.info.context_window)
+    let mut context_window = bundled_entry
+        .map(|b| b.info.context_window)
         .unwrap_or(fallback_cw);
-    let mut context_window_source = FieldSource::BuiltIn;
+    let mut context_window_source = if !is_prefetched
+        && bundled_entry.is_some_and(|b| b.info.context_window != fallback_cw)
+    {
+        FieldSource::BundledRow
+    } else {
+        FieldSource::BuiltIn
+    };
     if let Some(row) = row {
         context_window = row.info.context_window;
         if row.info.context_window.get() == DEFAULT_CONTEXT_WINDOW {
@@ -3981,6 +4051,17 @@ fn model_authority_view(
             context_window_source = FieldSource::ProxyRow;
         }
     }
+    // AUTHORITY-47B-1: the resolver's P1 endpoint cw fill also runs on
+    // the non-prefetched, non-pre-bake bundled rows (256k placeholder
+    // only, value-based — mirror 1:1).
+    if !is_prefetched && !is_pre_bake {
+        if context_window.get() == DEFAULT_CONTEXT_WINDOW
+            && let Some(cw) = endpoints.default_context_window.and_then(NonZeroU64::new)
+        {
+            context_window = cw;
+            context_window_source = FieldSource::EndpointDefaults;
+        }
+    }
     if let Some(cw) = override_cfg
         .and_then(|ov| ov.context_window.and_then(NonZeroU64::new))
     {
@@ -3995,10 +4076,22 @@ fn model_authority_view(
 
     // ---- model_family: explicit row field -> catalog inference (Xai ->
     // "xai", OpenAi -> "codex") -> P1 endpoint family fill -> config tier.
-    let mut model_family = donor
-        .map(|d| d.info.model_family.clone())
-        .unwrap_or_default();
-    let mut model_family_source = FieldSource::BuiltIn;
+    // AUTHORITY-47B-1: non-prefetched keys start from the bundled row's
+    // field; the prefetched path keeps the donor start because the row
+    // block assigns this field only inside its branches (a broader start
+    // would leak past the `is_none()` seam guards).
+    let mut model_family = if is_prefetched {
+        donor.map(|d| d.info.model_family.clone()).unwrap_or_default()
+    } else {
+        bundled_entry.map(|b| b.info.model_family.clone()).unwrap_or_default()
+    };
+    let mut model_family_source = if !is_prefetched
+        && bundled_entry.is_some_and(|b| b.info.model_family.is_some())
+    {
+        FieldSource::BundledRow
+    } else {
+        FieldSource::BuiltIn
+    };
     if let Some(row) = row {
         if let Some(family) = &row.info.model_family {
             model_family = Some(family.clone());
@@ -4024,6 +4117,31 @@ fn model_authority_view(
             }
         }
     }
+    // AUTHORITY-47B-1: non-prefetched, non-pre-bake — the resolver's
+    // family inference + endpoint family fill run on the bundled row;
+    // mirror 1:1.
+    if !is_prefetched && !is_pre_bake && let Some(b) = bundled_entry {
+        if model_family.is_none() {
+            match resolve_family(b.info.model_family.as_deref(), &b.info.model) {
+                CatalogFamily::Xai => {
+                    model_family = Some("xai".to_owned());
+                    model_family_source = FieldSource::CatalogInference;
+                }
+                CatalogFamily::OpenAi => {
+                    model_family = Some("codex".to_owned());
+                    model_family_source = FieldSource::CatalogInference;
+                }
+                CatalogFamily::Anthropic | CatalogFamily::Other => {}
+            }
+        }
+        if model_family.is_none()
+            && let Some(family) = &endpoints.default_model_family
+            && !family.eq_ignore_ascii_case("codex")
+        {
+            model_family = Some(family.clone());
+            model_family_source = FieldSource::EndpointDefaults;
+        }
+    }
     if let Some(family) = override_cfg.and_then(|ov| ov.model_family.as_ref()) {
         model_family = Some(family.clone());
         model_family_source = FieldSource::Config;
@@ -4037,10 +4155,16 @@ fn model_authority_view(
     // ---- max_completion_tokens: explicit row field -> [model.<key>] ->
     // [models] global (config-file authority); no donor/catalog/P1 seam
     // touches this field.
-    let mut max_completion_tokens = donor
-        .map(|d| d.info.max_completion_tokens)
+    let mut max_completion_tokens = bundled_entry
+        .map(|b| b.info.max_completion_tokens)
         .unwrap_or_default();
-    let mut max_completion_tokens_source = FieldSource::BuiltIn;
+    let mut max_completion_tokens_source = if !is_prefetched
+        && bundled_entry.is_some_and(|b| b.info.max_completion_tokens.is_some())
+    {
+        FieldSource::BundledRow
+    } else {
+        FieldSource::BuiltIn
+    };
     if let Some(row) = row {
         max_completion_tokens = row.info.max_completion_tokens;
         if row.info.max_completion_tokens.is_some() {
@@ -4065,16 +4189,33 @@ fn model_authority_view(
     // ---- reasoning_efforts: explicit row field -> catalog inference ->
     // [model.<key>] config tier (a non-empty override wins even over a
     // row menu).
-    let mut reasoning_efforts = donor
-        .map(|d| d.info.reasoning_efforts.clone())
+    let mut reasoning_efforts = bundled_entry
+        .map(|b| b.info.reasoning_efforts.clone())
         .unwrap_or_default();
-    let mut reasoning_efforts_source = FieldSource::BuiltIn;
+    let mut reasoning_efforts_source = if !is_prefetched
+        && bundled_entry.is_some_and(|b| !b.info.reasoning_efforts.is_empty())
+    {
+        FieldSource::BundledRow
+    } else {
+        FieldSource::BuiltIn
+    };
     if let Some(row) = row {
         reasoning_efforts = row.info.reasoning_efforts.clone();
         if !row.info.reasoning_efforts.is_empty() {
             reasoning_efforts_source = FieldSource::ProxyRow;
         } else {
             let inferred = resolve_reasoning_efforts(None, &row.info.model);
+            if !inferred.is_empty() {
+                reasoning_efforts = inferred;
+                reasoning_efforts_source = FieldSource::CatalogInference;
+            }
+        }
+    }
+    // AUTHORITY-47B-1: the resolver's menu inference also runs on the
+    // non-prefetched, non-pre-bake bundled rows; mirror 1:1.
+    if !is_prefetched && !is_pre_bake && let Some(b) = bundled_entry {
+        if reasoning_efforts.is_empty() {
+            let inferred = resolve_reasoning_efforts(None, &b.info.model);
             if !inferred.is_empty() {
                 reasoning_efforts = inferred;
                 reasoning_efforts_source = FieldSource::CatalogInference;
@@ -4095,10 +4236,16 @@ fn model_authority_view(
 
     // ---- cache_ttl: explicit row field -> [model.<key>] -> [models]
     // global (config-file authority); no seam touches this field.
-    let mut cache_ttl = donor
-        .map(|d| d.info.cache_ttl.clone())
+    let mut cache_ttl = bundled_entry
+        .map(|b| b.info.cache_ttl.clone())
         .unwrap_or_default();
-    let mut cache_ttl_source = FieldSource::BuiltIn;
+    let mut cache_ttl_source = if !is_prefetched
+        && bundled_entry.is_some_and(|b| b.info.cache_ttl.is_some())
+    {
+        FieldSource::BundledRow
+    } else {
+        FieldSource::BuiltIn
+    };
     if let Some(row) = row {
         cache_ttl = row.info.cache_ttl.clone();
         if row.info.cache_ttl.is_some() {
@@ -4120,10 +4267,16 @@ fn model_authority_view(
 
     // ---- m-2: enumerate every inference branch that can produce a
     // Messages backend, with honest reachability/fired flags.
+    // AUTHORITY-47B-1: the row the resolver's inference seams actually
+    // ran on — the prefetched row when present, else the bundled row for
+    // non-prefetched non-pre-bake keys (the seams run on it there too);
+    // pre-bake keys never run the seams offline.
+    let inference_input = row
+        .or_else(|| if is_pre_bake { None } else { bundled_entry });
     let inference_branches = vec![
         InferenceBranch {
             name: "catalog-inference-to-messages",
-            reachable_for_messages: row.is_some_and(|r| {
+            reachable_for_messages: inference_input.is_some_and(|r| {
                 r.info.api_backend == ApiBackend::default()
                     && matches!(
                         resolve_family(r.info.model_family.as_deref(), &r.info.model),
@@ -6136,3 +6289,10 @@ fn force_login_team_from_requirements() -> Option<xai_grok_login::ForceLoginTeam
 #[cfg(test)]
 #[path = "config_tests.rs"]
 mod tests;
+
+// AUTHORITY-47B-1 (apex-72c): the 47b BundledRow-tier tests live in a
+// dedicated file declared via `#[path]` here (33z config_schema_tests
+// precedent) so the test file stays inside this file's pathspec.
+#[cfg(test)]
+#[path = "authority_47b_tests.rs"]
+mod authority_47b_tests;
