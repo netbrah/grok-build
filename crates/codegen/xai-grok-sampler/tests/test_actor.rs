@@ -209,6 +209,23 @@ fn strip_sequence_numbers(events: Vec<SseEvent>) -> Vec<SseEvent> {
         .collect()
 }
 
+/// Drop `summary_index` from every event payload, reproducing what LiteLLM's responses-compat
+/// synthesis emits on reasoning-summary frames (OpenAI always sends the field).
+fn strip_summary_index(events: Vec<SseEvent>) -> Vec<SseEvent> {
+    events
+        .into_iter()
+        .map(|mut e| {
+            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&e.data) {
+                if let Some(obj) = v.as_object_mut() {
+                    obj.remove("summary_index");
+                }
+                e.data = v.to_string();
+            }
+            e
+        })
+        .collect()
+}
+
 fn text_chunk_event(content: &str, finish: bool) -> Event {
     let chunk = json!({
         "id": "chatcmpl-test",
@@ -1558,6 +1575,83 @@ async fn responses_stream_without_sequence_numbers_completes_turn() {
     server.shutdown();
 
     let (response, _metrics) = result.expect("turn completes without sequence_number");
+    assert_eq!(response.assistant_text(), "an answer");
+}
+
+/// A gateway whose responses-compat synthesis omits `summary_index` on reasoning-summary frames
+/// (LiteLLM) still drives a full turn. `async_openai` declares the field as required on exactly the
+/// four summary event structs, so without the sanitize-path default the first summary frame fails
+/// to deserialize and the whole turn dies with
+/// `serialization error: missing field 'summary_index'`. This exercises the real SSE path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_stream_without_summary_index_completes_turn() {
+    let app = Router::new().route(
+        "/v1/responses",
+        post(move || async move {
+            let events = strip_summary_index(sse::responses_api_reasoning_and_text_events(
+                "a thought",
+                "an answer",
+                "test-model",
+            ));
+            let events = sse_events_to_axum(events);
+            Sse::new(stream::iter(
+                events.into_iter().map(Ok::<_, std::convert::Infallible>),
+            ))
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let handle = SamplerActor::spawn(
+        responses_config(server.base_url(), None),
+        RetryPolicy::default(),
+        event_tx,
+    );
+
+    let result = handle
+        .submit_and_collect(RequestId::from("req-no-summindex"), user_request("hi"))
+        .await;
+    server.shutdown();
+
+    let (response, _metrics) = result.expect("turn completes without summary_index");
+    assert_eq!(response.assistant_text(), "an answer");
+}
+
+/// The full live LiteLLM shape end-to-end: reasoning-summary frames missing BOTH
+/// `sequence_number` and `summary_index` (the verbatim AT-AZ-VXG-r2 hole). Without the
+/// dialect-layer defaults the turn dies on the first summary frame.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_stream_gateway_shape_missing_seq_and_summary_completes_turn() {
+    let app = Router::new().route(
+        "/v1/responses",
+        post(move || async move {
+            let events = strip_sequence_numbers(strip_summary_index(
+                sse::responses_api_reasoning_and_text_events(
+                    "a thought",
+                    "an answer",
+                    "test-model",
+                ),
+            ));
+            let events = sse_events_to_axum(events);
+            Sse::new(stream::iter(
+                events.into_iter().map(Ok::<_, std::convert::Infallible>),
+            ))
+        }),
+    );
+    let server = MockServer::spawn(app).await;
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let handle = SamplerActor::spawn(
+        responses_config(server.base_url(), None),
+        RetryPolicy::default(),
+        event_tx,
+    );
+
+    let result = handle
+        .submit_and_collect(RequestId::from("req-no-seq-si"), user_request("hi"))
+        .await;
+    server.shutdown();
+
+    let (response, _metrics) =
+        result.expect("turn completes without sequence_number and summary_index");
     assert_eq!(response.assistant_text(), "an answer");
 }
 

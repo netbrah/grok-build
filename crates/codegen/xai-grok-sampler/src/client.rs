@@ -210,6 +210,20 @@ fn normalize_response_event_for_dialect(
         .entry("sequence_number")
         .or_insert(serde_json::Value::from(0));
 
+    // LiteLLM's responses-compat synthesis omits `summary_index` on reasoning-summary
+    // frames (OpenAI always sends it); the SDK's four summary event structs declare it
+    // required (async-openai stream.rs). Default it for the same lenient-dialect scope
+    // as `sequence_number` — no-op when present (never clobbered).
+    if matches!(
+        event_type.as_str(),
+        "response.reasoning_summary_text.delta"
+            | "response.reasoning_summary_text.done"
+            | "response.reasoning_summary_part.added"
+            | "response.reasoning_summary_part.done"
+    ) {
+        event.entry("summary_index").or_insert(serde_json::Value::from(0));
+    }
+
     let status = match event_type.as_str() {
         "response.created" | "response.in_progress" => Some("in_progress"),
         "response.completed" => Some("completed"),
@@ -4599,6 +4613,118 @@ mod tests {
             panic!("expected ResponseOutputTextDelta");
         };
         assert_eq!(e.sequence_number, 42);
+    }
+
+    /// LiteLLM's responses-compat synthesis omits `summary_index` on reasoning-summary frames
+    /// (OpenAI always sends it), and `async_openai` declares the field as required on exactly the
+    /// four summary event structs. Without the sanitize-path default the first such frame fails to
+    /// deserialize and the whole turn dies with
+    /// `serialization error: missing field 'summary_index'`. The wire shape below is the verbatim
+    /// AT-AZ-VXG-r2 frame: type/item_id/output_index/delta/model — NO `sequence_number`,
+    /// NO `summary_index`.
+    #[test]
+    fn deserialize_response_event_defaults_missing_summary_index_on_delta() {
+        let sse = r#"{
+            "type": "response.reasoning_summary_text.delta",
+            "item_id": "reasoning_item_1",
+            "output_index": 0,
+            "delta": "a thought",
+            "model": "gemini-3.5-flash"
+        }"#;
+        let event = deserialize_response_event(sse).expect("parse without summary_index");
+        let rs::ResponseStreamEvent::ResponseReasoningSummaryTextDelta(e) = event else {
+            panic!("expected ResponseReasoningSummaryTextDelta");
+        };
+        assert_eq!(e.summary_index, 0);
+        assert_eq!(e.sequence_number, 0);
+        assert_eq!(e.delta, "a thought");
+    }
+
+    /// A `.text.done` frame with `sequence_number` present but `summary_index` absent: the default
+    /// engages without touching the supplied sequence number.
+    #[test]
+    fn deserialize_response_event_defaults_missing_summary_index_on_text_done() {
+        let sse = r#"{
+            "type": "response.reasoning_summary_text.done",
+            "sequence_number": 4,
+            "item_id": "reasoning_item_1",
+            "output_index": 0,
+            "text": "a thought"
+        }"#;
+        let event = deserialize_response_event(sse).expect("parse without summary_index");
+        let rs::ResponseStreamEvent::ResponseReasoningSummaryTextDone(e) = event else {
+            panic!("expected ResponseReasoningSummaryTextDone");
+        };
+        assert_eq!(e.summary_index, 0);
+        assert_eq!(e.sequence_number, 4);
+        assert_eq!(e.text, "a thought");
+    }
+
+    /// A `.part.added` frame with the full part shape but no `summary_index`: defaulted to 0,
+    /// part content intact.
+    #[test]
+    fn deserialize_response_event_defaults_missing_summary_index_on_part_added() {
+        let sse = r#"{
+            "type": "response.reasoning_summary_part.added",
+            "sequence_number": 3,
+            "item_id": "reasoning_item_1",
+            "output_index": 0,
+            "part": { "type": "summary_text", "text": "a thought" }
+        }"#;
+        let event = deserialize_response_event(sse).expect("parse without summary_index");
+        let rs::ResponseStreamEvent::ResponseReasoningSummaryPartAdded(e) = event else {
+            panic!("expected ResponseReasoningSummaryPartAdded");
+        };
+        assert_eq!(e.summary_index, 0);
+        assert_eq!(
+            e.part,
+            rs::SummaryPart::SummaryText(rs::SummaryTextContent {
+                text: "a thought".to_owned()
+            })
+        );
+    }
+
+    /// A `.part.done` frame with the full part shape but no `summary_index`: defaulted to 0,
+    /// part content intact.
+    #[test]
+    fn deserialize_response_event_defaults_missing_summary_index_on_part_done() {
+        let sse = r#"{
+            "type": "response.reasoning_summary_part.done",
+            "sequence_number": 3,
+            "item_id": "reasoning_item_1",
+            "output_index": 0,
+            "part": { "type": "summary_text", "text": "a thought" }
+        }"#;
+        let event = deserialize_response_event(sse).expect("parse without summary_index");
+        let rs::ResponseStreamEvent::ResponseReasoningSummaryPartDone(e) = event else {
+            panic!("expected ResponseReasoningSummaryPartDone");
+        };
+        assert_eq!(e.summary_index, 0);
+        assert_eq!(
+            e.part,
+            rs::SummaryPart::SummaryText(rs::SummaryTextContent {
+                text: "a thought".to_owned()
+            })
+        );
+    }
+
+    /// A present `summary_index` is never clobbered by the default (regression guard: passes
+    /// before and after the cut).
+    #[test]
+    fn deserialize_response_event_preserves_present_summary_index() {
+        let sse = r#"{
+            "type": "response.reasoning_summary_text.delta",
+            "sequence_number": 1,
+            "item_id": "reasoning_item_1",
+            "output_index": 0,
+            "summary_index": 2,
+            "delta": "hi"
+        }"#;
+        let event = deserialize_response_event(sse).expect("parse");
+        let rs::ResponseStreamEvent::ResponseReasoningSummaryTextDelta(e) = event else {
+            panic!("expected ResponseReasoningSummaryTextDelta");
+        };
+        assert_eq!(e.summary_index, 2);
     }
 
     /// A gateway that echoes `text: {}` without the required `format` still parses; the Responses
