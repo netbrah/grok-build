@@ -1,0 +1,194 @@
+{
+  "schema_version": 1,
+  "id": "AT-SPAWN-XWIRE",
+  "title": "OVERWATCH-ADVERSARIAL \u2014 v2 subagent (spawn_agent, mAV2) x cross-wire on the .71-gated az-vlq seed (53 recs, 7 encitem_ rides, incident 01a09d0e): model gpt-5.6-sol, ACP mid-session switch to qwen3.8-27b (FAMILY SWITCH sol(codex)->qwen => preemptive compact) seeded from the byte-pinned az-vlq sol phase, then ONE turn that must (a) spawn a BACKGROUND child via spawn_agent on a DIFFERENT wire+model (claude-sonnet-5, /v1/messages), (b) have the child send the parent exactly AT-SPAWN-PART1 via send_message, (c) wait (wait_agent) and quote it back. Attack surface: (a) the parent's sol-era encitem_ rides must not be projected into the child's messages-wire context (child_no_ride / child_no_enc LEAK pins); (b) the v2 mailbox round-trip across the wire boundary (responses parent -> messages child) must close with the plaintext frames (the MA-4 opaque-carrier defect class, carrier_rec recon); (c) the .71-gated seed storage diff at switch (expected_red apex-ayl.71 \u2014 the documented projector gap, NOT a new finding). PREDICTED: seed replayed onto the qwen request without rides; child ran 1..6 times on /v1/messages with a 200 final; PART1 reached the parent; terminal WORKER-ACK. STOP-AND-REPORT (house rule): an encitem_/encrypted_content LEAK on any messages-wire request, a 400/503 on the child boundary with a phrasing outside F1-F5 + triage #13-17, a child request storm (>6), an 'agent_message' opaque carrier sighting (MA-4 defect), or an acp_error. Model-class premises (child_ran/part1/done): a 0-hit = VACUOUS (the model never took the probe path \u2014 temperament, recorded, never a silent pass).",
+  "bead": "overwatch-adversarial",
+  "suite": "cross-wire",
+  "tier": "full",
+  "driver": "acp",
+  "model": "gpt-5.6-sol",
+  "wirecap": true,
+  "expected_red": {
+    "id": "apex-ayl.71"
+  },
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "tool_calls": [
+    {
+      "id": "spawn1",
+      "tool": "spawn_agent",
+      "args": {
+        "task_name": "worker",
+        "model": "claude-sonnet-5"
+      },
+      "premise": "model"
+    }
+  ],
+  "steps": [
+    {
+      "op": "switch_model",
+      "model": "qwen3.8-27b",
+      "via": "acp",
+      "cell": "smoke/xwfix/cells/az-vlq",
+      "assert_form": "storage",
+      "note": "SEED (xwfix): the byte-pinned real sol phase (53 recs, 7 encitem_ rides); the storage-form diff is scored at switch time against the T1 golden (the documented .71 RED class); sol(codex)->qwen is a FAMILY SWITCH => the preemptive compact fires before the spawn turn."
+    },
+    {
+      "op": "turn",
+      "timeout_s": 300,
+      "prompt": "Use the spawn_agent tool to start a background agent named worker with model claude-sonnet-5 (pass model: claude-sonnet-5 in the tool arguments). In its message, give it this task: use the send_message tool to send the parent agent (root) a message containing exactly: AT-SPAWN-PART1, and only then finish. After spawning, use wait_agent to wait for the worker to finish, then reply with exactly: PART1-RECEIVED <the exact message the worker sent you> WORKER-ACK"
+    }
+  ],
+  "watchdog_s": 600,
+  "est_calls": 12,
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error"
+      },
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "NO TERMINAL ERROR: an unrecovered 400/503 on the parent qwen boundary or the child messages boundary surfaces here (Fatal tail, retry.rs:186)."
+      },
+      {
+        "op": "text_contains",
+        "id": "part1",
+        "value": "AT-SPAWN-PART1",
+        "label": "MAILBOX ROUND-TRIP: the child's PART1 frame reached the parent's context and was quoted back (spawn + send_message + wait cycle closed)."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "WORKER-ACK",
+        "label": "TERMINAL ACK: the spawn turn closed with the exact terminal token."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "id": "seed_replay",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "qwen3.8-27b"
+        },
+        "any": true,
+        "grep": "let's ship it, i think the mode for this work was wrong",
+        "label": "ANTI-VACUOUS (premise): the az-vlq seed history actually reached a qwen3.8-27b request (seed marker from the sol phase). 0-hit = the seed never replayed = VACUOUS mechanism (probe meaningless), never a silent pass."
+      },
+      {
+        "kind": "grep",
+        "id": "no_parent_ride",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "qwen3.8-27b"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"id\": \"encitem_",
+        "label": "NO-PARENT-RIDE PIN: the 7 encitem_ ids must be absent from EVERY qwen3.8-27b request (the preemptive compact AND the multi-request spawn turn) \u2014 .77 ingress-normalize + the family-switch strip must remove them before they ride onto the qwen target."
+      },
+      {
+        "kind": "grep",
+        "id": "child_ran",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "any": true,
+        "grep": "\"model\"",
+        "label": "CONTROL (anti-vacuous pin): a request with body.model=claude-sonnet-5 on /v1/messages exists \u2014 the child actually ran on its own model+wire. Without this, the child LEAK/round-trip pins are vacuous (the model never spawned the child)."
+      },
+      {
+        "kind": "grep",
+        "id": "child_no_ride",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"id\": \"encitem_",
+        "label": "CHILD LEAK PIN: the parent's sol-era encitem_ rides must NOT be projected into the child's messages-wire context. Present = the v2 spawn projection leaked parent history into the child = defect -> STOP."
+      },
+      {
+        "kind": "grep",
+        "id": "child_no_enc",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "encrypted_content",
+        "label": "CHILD LEAK PIN (2): no encrypted_content field may appear on ANY messages-wire child request (the messages wire has no encrypted-reasoning concept; a field here = a projection defect -> STOP."
+      },
+      {
+        "kind": "count",
+        "id": "child_calls",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "min": 1,
+        "max": 6,
+        "label": "CHILD REQUEST BAND: 1-4 = clean (spawn + task + mailbox turns); >6 = storm -> STOP."
+      },
+      {
+        "kind": "resp_status",
+        "id": "child_200",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "CHILD NO-BRICK: the final messages-wire child request is a 200 (a 400/503 on the child boundary = brick or new phrasing -> STOP)."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "agent_message",
+        "label": "MA-4 CARRIER RECORD (recon): an 'agent_message' opaque carrier item on the wire = the MA-4 defect class (the v2 protocol pins the plaintext text-fallback frames; the opaque carrier is the defect). A sighting = new finding -> STOP."
+      },
+      {
+        "kind": "recon",
+        "file": "resp-*.jsonl",
+        "grep": "EncryptedContent",
+        "label": "F1 PHRASING RECORD (recon): the EncryptedContentAffinityError 503 family verbatim, if it fires on the child or parent boundary (a sighting = new finding -> STOP)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true,
+    "vacuous_if": [
+      {
+        "pin": "child_ran",
+        "class": "model"
+      },
+      {
+        "pin": "part1",
+        "class": "model"
+      },
+      {
+        "pin": "done",
+        "class": "model"
+      }
+    ]
+  }
+}

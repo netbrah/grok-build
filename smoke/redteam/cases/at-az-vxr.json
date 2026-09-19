@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "id": "AT-AZ-VXR",
+  "title": "OVERWATCH-ADVERSARIAL — matrix pair #3 (sol -> grok-4.6), the highest-predicted BRICK of the AZ-out set, UNPROVEN (no live cell). Seed = the byte-pinned az-vlq real sol phase (53 recs, 7 encitem_ rides, incident 01a09d0e); ACP mid-session switch to grok-4.6 (family xai vertex deployment); one post-switch turn. Code-derivable era state (re-verified 2026-09-18, r3r first-hand): sol(codex)->grok-4.6(xai) is a FAMILY SWITCH (both set+distinct, model_switch.rs:148-163) so the preemptive lossy compact fires BEFORE the first post-switch request (r3r az-vlq: count 2 = compact + turn, both 200); .77 INGRESS-NORMALIZE strips the encitem_ rides pre-send (r3r wire pin 'no file contains encitem_' GOOD-direction). PREDICTED: clean 200 turn on 2 requests, rides absent from every grok-4.6 request. STOP-AND-REPORT (house rule): a 400/503 final (BRICK — the matrix prediction, now a matrix-vs-.77 adjudication), any wire phrasing outside the F1-F5 + triage #13-17 set (new failure class), the encitem_ ride PRESENT on a grok-4.6 request (.77 coverage gap on the xai target -> the .82 compact-storm class becomes reachable: >6 requests = storm), or a count outside 1..6. Storage diff RED = the documented .71 projector gap (expected_red), NOT a new finding — adjudicate per-assert in the report.",
+  "bead": "overwatch-adversarial",
+  "suite": "cross-wire",
+  "tier": "slim",
+  "driver": "acp",
+  "model": "gpt-5.6-sol",
+  "wirecap": true,
+  "expected_red": {
+    "id": "apex-ayl.71"
+  },
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "steps": [
+    {
+      "op": "switch_model",
+      "model": "grok-4.6",
+      "via": "acp",
+      "cell": "smoke/xwfix/cells/az-vlq",
+      "assert_form": "storage",
+      "note": "SEED (xwfix): the byte-pinned real sol phase (53 recs, 7 encitem_ rides); the storage-form diff is scored at switch time against the T1 golden (the documented .71 RED class); the switch itself is the attack (family-switch preemptive compact + bridge to the vertex-xai deployment)."
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: AT-AZ-VXR-DONE",
+      "timeout_s": 300
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 4,
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error"
+      },
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "NO TERMINAL ERROR: an unrecovered 400/503 on the grok-4.6 boundary surfaces here (Fatal tail, retry.rs:186)."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "AT-AZ-VXR-DONE",
+        "label": "TURN COMPLETED: the post-switch grok-4.6 turn closed with the exact terminal token (no brick)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "id": "seed_replay",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "grok-4.6"
+        },
+        "any": true,
+        "grep": "let's ship it, i think the mode for this work was wrong",
+        "label": "ANTI-VACUOUS (premise): the az-vlq seed history actually reached a grok-4.6 request (seed marker from record 2). 0-hit = the seed never replayed = VACUOUS mechanism (probe meaningless), never a silent pass."
+      },
+      {
+        "kind": "grep",
+        "id": "no_ride",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "grok-4.6"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"id\": \"encitem_",
+        "label": "NO-RIDE PIN (.77 prediction, r3r GOOD-direction): the 7 encitem_ ids must be absent from EVERY grok-4.6 request (turn AND the preemptive compact request). Present = .77 ingress-normalization coverage gap on the xai/vertex target -> the BRICK exposure the matrix warned about + the .82 compact-storm class becomes reachable -> STOP."
+      },
+      {
+        "kind": "resp_status",
+        "id": "final_200",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "grok-4.6"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "NO-BRICK PIN: the final grok-4.6 request is a 200 (the error JSON rides the resp capture as verdict evidence). A 400/503 final = BRICK (the matrix's highest-predicted AZ-out risk) or a new phrasing -> STOP."
+      },
+      {
+        "kind": "count",
+        "id": "no_storm",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "grok-4.6"
+        },
+        "min": 1,
+        "max": 6,
+        "label": "REQUEST BAND: 2 = the clean era shape (preemptive family-switch compact + turn, r3r az-vlq); 3-6 = tolerated retry cycles; 1 = the preemptive compact did NOT fire (is_family_switch determination deviation -> record + adjudicate); >6 = the .82 same-payload compact-storm class (max_retries=15) is reachable on the xai target -> STOP."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "\"id\": \"encitem_",
+        "label": "RIDE RECORD (recon, newest request): whether/where the encitem_ rides appear in the LAST captured grok-4.6 request (the scored surface is no_ride across ALL requests; this records the line sample for adjudication)."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "xai-compact",
+        "label": "COMPACT RECORD (recon): the preemptive family-switch compact request marker (xai-compact- request id) — records whether the .68/.82 compact path engaged on the xai target."
+      },
+      {
+        "kind": "recon",
+        "file": "resp-*.jsonl",
+        "grep": "EncryptedContent",
+        "label": "F1 PHRASING RECORD (recon): the EncryptedContentAffinityError 503 family verbatim, if it fires on the vertex-xai boundary (r3r never saw it post-.77 — a sighting = the affinity check IS target-agnostic and .77 coverage lapsed = new finding)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

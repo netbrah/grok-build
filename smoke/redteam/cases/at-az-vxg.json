@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "id": "AT-AZ-VXG",
+  "title": "OVERWATCH-ADVERSARIAL \u2014 matrix pair #5 (sol -> gemini-3.5-flash), UNPROVEN (no live cell): .77 ingress-normalize coverage on a family-UNSET target is unknown. Seed = the byte-pinned az-vlq sol phase (53 recs, 7 encitem_ rides, incident 01a09d0e); ACP mid-session switch to gemini-3.5-flash (config.toml carries NO model_family -> family UNSET). Code-derivable era state (re-verified 2026-09-18, r3r first-hand): sol(codex)->gemini(unset) is NOT a family switch (model_switch.rs:148-163 requires both-set+distinct) so NO preemptive compact \u2014 the seeded history rides straight into the first gemini request; .77 strips encitem_ rides pre-send on the /responses path (r3r az-vlq: seed marker present, encitem absent \u2014 GOOD direction on the qwen/xai targets). PREDICTED: clean count-1 shape (no compact), rides absent from every gemini request (if .77 is target-agnostic), final 200. STOP-AND-REPORT (house rule): a 400/503 final with a phrasing outside F1-F5 + triage #13-17 (new failure class), the encitem_ ride PRESENT on a gemini request (200 = GOOD-direction .77 coverage-lapse record -> matrix correction; 400/503 = the BRICK exposure the matrix warned about), a count outside 1..4 (storm), or an acp_error. Storage diff RED at switch = the documented .71 projector gap (expected_red), NOT a new finding \u2014 adjudicate per-assert.",
+  "bead": "overwatch-adversarial",
+  "suite": "cross-wire",
+  "tier": "slim",
+  "driver": "acp",
+  "model": "gpt-5.6-sol",
+  "wirecap": true,
+  "expected_red": {
+    "id": "apex-ayl.71"
+  },
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "steps": [
+    {
+      "op": "switch_model",
+      "model": "gemini-3.5-flash",
+      "via": "acp",
+      "cell": "smoke/xwfix/cells/az-vlq",
+      "assert_form": "storage",
+      "note": "SEED (xwfix): the byte-pinned real sol phase (53 recs, 7 encitem_ rides); the storage-form diff is scored at switch time against the T1 golden (the documented .71 RED class); the switch to the family-UNSET gemini target is the attack (NOT a family switch => NO preemptive compact => the seeded history rides straight into the first gemini request)."
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: AT-AZ-VXG-DONE",
+      "timeout_s": 300
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 4,
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error"
+      },
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "NO TERMINAL ERROR: an unrecovered 400/503 on the gemini-3.5-flash boundary surfaces here (Fatal tail, retry.rs:186)."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "AT-AZ-VXG-DONE",
+        "label": "TURN COMPLETED: the post-switch gemini-3.5-flash turn closed with the exact terminal token (no brick)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "id": "seed_replay",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gemini-3.5-flash"
+        },
+        "any": true,
+        "grep": "let's ship it, i think the mode for this work was wrong",
+        "label": "ANTI-VACUOUS (premise): the az-vlq seed history actually reached a gemini-3.5-flash request (seed marker from the sol phase). 0-hit = the seed never replayed = VACUOUS mechanism (probe meaningless), never a silent pass."
+      },
+      {
+        "kind": "grep",
+        "id": "no_ride",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gemini-3.5-flash"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"id\": \"encitem_",
+        "label": "NO-RIDE PIN (.77 prediction, UNPROVEN on a family-unset target): the 7 encitem_ ids must be absent from EVERY gemini-3.5-flash request. Present = .77 ingress-normalization coverage gap on the family-unset target -> STOP."
+      },
+      {
+        "kind": "resp_status",
+        "id": "final_200",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gemini-3.5-flash"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "NO-BRICK PIN: the final gemini-3.5-flash request is a 200 (the error JSON rides the resp capture as verdict evidence). A 400/503 final = BRICK or a new phrasing -> STOP."
+      },
+      {
+        "kind": "count",
+        "id": "no_storm",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gemini-3.5-flash"
+        },
+        "min": 1,
+        "max": 4,
+        "label": "REQUEST BAND: 1 = the clean era shape (NOT a family switch => NO preemptive compact: r3r anchor count-2 belongs to family switches only); 2-4 = tolerated reactive strip+retry cycles; >4 = storm -> STOP."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "\"id\": \"encitem_",
+        "label": "RIDE RECORD (recon, newest request): whether/where the encitem_ rides appear in the LAST captured gemini-3.5-flash request (the scored surface is no_ride across ALL requests; this records the line sample for adjudication)."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "xai-compact",
+        "label": "COMPACT-DEVIATION RECORD (recon): a xai-compact- request id would mean the preemptive compact FIRED \u2014 but a family-UNSET target must NOT be a family switch, so a compact here is a determination deviation -> record + adjudicate."
+      },
+      {
+        "kind": "recon",
+        "file": "resp-*.jsonl",
+        "grep": "EncryptedContent",
+        "label": "F1 PHRASING RECORD (recon): the EncryptedContentAffinityError 503 family verbatim, if it fires on the gemini (vertex openai-responses compat) boundary (a sighting = the affinity check IS target-agnostic and .77 coverage lapsed = new finding)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

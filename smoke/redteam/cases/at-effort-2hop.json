@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "id": "AT-EFFORT-2HOP",
+  "title": "OVERWATCH-ADVERSARIAL \u2014 2-hop effort-projection chain across THREE families in ONE fresh session (no seed, no cell, no expected_red): the session cursor is pinned hermetically to ultra (config_patch models/default_reasoning_effort=ultra \u2014 idempotent, the live value is already ultra as of the 2026-09-18 re-verification). Code-derivable chain (provider.rs:138-145 wire remap + multi_agent_mode hook; reasoning_effort.rs:11 apply_supported_effort; remote_config/manager/mod.rs:572 project_effort; model_switch.rs Preserve arm stores the projected value back): HOP-1 sol (family codex, mAV2 on): cursor ultra -> wire effort max + the PROACTIVE multi_agent_mode hook (ultra local effort -> proactive text). HOP-2 /model qwen3.8-27b (family codex->qwen = FAMILY SWITCH -> preemptive compact, no effort on the compact per r3r req-003): carried ultra not in the qwen menu {xhigh,medium,low} -> projection = TARGET DEFAULT xhigh; no hook (hook gated on the codex dialect, client.rs:1967 model_family=='codex'). HOP-3 /model gpt-5.6-terra (family qwen->codex = FAMILY SWITCH -> preemptive compact): carried xhigh not in the terra menu {low,medium,high,max,ultra} (EXPLICIT menu, config.toml re-verified 2026-09-18 \u2014 the slug-inference era note is STALE) -> projection = TERRA DEFAULT low; hook = EXPLICIT_REQUEST_ONLY flavor (codex family, non-ultra local effort). PREDICTED: every pin GREEN \u2014 the first live pin of the R6/effort-seam contract across three families. STOP-AND-REPORT (house rule): a 400/503 final on the terra boundary (the M-1 'Unexpected reasoning effort' class or a new phrasing), a wire effort OUTSIDE the pinned chain (raw ultra/max on a qwen turn = the R5 leak class), the multi_agent_mode literal on a qwen request (hook-gate lapse), or an acp_error.",
+  "bead": "overwatch-adversarial",
+  "suite": "cross-wire",
+  "tier": "slim",
+  "driver": "acp",
+  "model": "gpt-5.6-sol",
+  "wirecap": true,
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "config_patch": {
+    "models/default_reasoning_effort": "ultra"
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: AT-EFF-P1",
+      "timeout_s": 300
+    },
+    {
+      "op": "switch",
+      "model": "qwen3.8-27b",
+      "via": "acp"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: AT-EFF-P2",
+      "timeout_s": 300
+    },
+    {
+      "op": "switch",
+      "model": "gpt-5.6-terra",
+      "via": "acp"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: AT-EFF-P3",
+      "timeout_s": 300
+    },
+    {
+      "op": "recon_note",
+      "note": "WIRE READ (recon_note, non-scoring): the three per-family turn requests are the fixture \u2014 req bodies for gpt-5.6-sol (hop 1), qwen3.8-27b (hop 2, post family-switch compact), and gpt-5.6-terra (hop 3, post family-switch compact). The scored pins assert the effort remap chain (max -> xhigh -> low) and the hook presence/absence (proactive on sol, none on qwen, explicit_request_only on terra). A coordinator review over the captured req bodies confirms the verbatim developer-item hook text per family."
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 5,
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error"
+      },
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "NO TERMINAL ERROR: an unrecovered 400/503 on any of the three family boundaries surfaces here (Fatal tail, retry.rs:186)."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "AT-EFF-P3",
+        "label": "CHAIN COMPLETED: the final (terra, hop-3) turn closed with the exact terminal token \u2014 both switches and all three turns survived."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "id": "p1_wire_max",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gpt-5.6-sol"
+        },
+        "any": true,
+        "grep": "\"effort\": \"max\"",
+        "label": "HOP-1 WIRE (PREMISE/anti-vacuous): the sol turn carried wire effort max (cursor ultra -> Max|Ultra -> 'max' on the wire, provider.rs:138-145). 0-hit = the premise (cursor ultra on sol) did not hold = VACUOUS."
+      },
+      {
+        "kind": "grep",
+        "id": "p1_hook_present",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gpt-5.6-sol"
+        },
+        "any": true,
+        "grep": "multi_agent_mode",
+        "label": "HOP-1 HOOK: the sol request carries the multi_agent_mode developer item (codex-dialect + mAV2 gated; ultra local effort => PROACTIVE text)."
+      },
+      {
+        "kind": "grep",
+        "id": "p2_wire_xhigh",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "qwen3.8-27b"
+        },
+        "any": true,
+        "grep": "\"effort\": \"xhigh\"",
+        "label": "HOP-2 WIRE (core R6 projection pin): the qwen turn carried wire effort xhigh (carried ultra not in the qwen menu {xhigh,medium,low} -> projection = TARGET DEFAULT xhigh)."
+      },
+      {
+        "kind": "grep",
+        "id": "p2_no_max",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "qwen3.8-27b"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"effort\": \"max\"",
+        "label": "HOP-2 LEAK GUARD: no raw 'max' effort may leak onto a qwen request (the R5 leak class \u2014 the carried ultra must project to the target default, never ride its raw/max-remapped value)."
+      },
+      {
+        "kind": "grep",
+        "id": "p2_no_ultra",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "qwen3.8-27b"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"effort\": \"ultra\"",
+        "label": "HOP-2 LEAK GUARD: no raw 'ultra' effort may leak onto a qwen request (ultra is a local tier, never a wire value)."
+      },
+      {
+        "kind": "grep",
+        "id": "p2_no_hook",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "qwen3.8-27b"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "multi_agent_mode",
+        "label": "HOP-2 HOOK ABSENCE: the qwen request must NOT carry the multi_agent_mode developer item (the hook is codex-dialect + mAV2 gated; qwen is a non-codex family). Present = hook-gate deviation -> STOP."
+      },
+      {
+        "kind": "grep",
+        "id": "p3_wire_low",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gpt-5.6-terra"
+        },
+        "any": true,
+        "grep": "\"effort\": \"low\"",
+        "label": "HOP-3 WIRE (DRIFT-CORRECTED): the terra turn carried wire effort low (carried xhigh not in the terra menu {low,medium,high,max,ultra} -> projection = TERRA DEFAULT low). The old design's p3_wire_xhigh is STALE (terra's menu is EXPLICIT in config.toml, re-verified 2026-09-18)."
+      },
+      {
+        "kind": "grep",
+        "id": "p3_no_xhigh",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gpt-5.6-terra"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"effort\": \"xhigh\"",
+        "label": "HOP-3 LEAK GUARD: no 'xhigh' effort may leak onto a terra request (xhigh is not in the terra menu; the carried value must project to the terra default low)."
+      },
+      {
+        "kind": "grep",
+        "id": "p3_no_max",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gpt-5.6-terra"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"effort\": \"max\"",
+        "label": "HOP-3 LEAK GUARD: no raw 'max' effort may leak onto a terra request."
+      },
+      {
+        "kind": "grep",
+        "id": "p3_no_ultra",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gpt-5.6-terra"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"effort\": \"ultra\"",
+        "label": "HOP-3 LEAK GUARD: no raw 'ultra' effort may leak onto a terra request."
+      },
+      {
+        "kind": "resp_status",
+        "id": "p3_final_200",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gpt-5.6-terra"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "M-1 GATE: the final terra request is a 200 (a 400 with 'Unexpected reasoning effort' = the M-1 class; any other 400/503 = new phrasing -> STOP)."
+      },
+      {
+        "kind": "count",
+        "id": "terra_calls",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "body.model": "gpt-5.6-terra"
+        },
+        "min": 1,
+        "max": 3,
+        "label": "TERRA REQUEST BAND: 1-2 = clean (the post family-switch compact + the turn); 3 = one tolerated retry; >3 = storm -> STOP."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "multi_agent_mode",
+        "label": "HOP-3 HOOK RECORD (recon, newest request): the multi_agent_mode developer item text in the LAST captured request (expected = the terra turn, EXPLICIT_REQUEST_ONLY flavor \u2014 codex family, non-ultra local effort). Records the verbatim hook for the .77-era hook audit."
+      },
+      {
+        "kind": "recon",
+        "file": "resp-*.jsonl",
+        "grep": "Unexpected reasoning effort",
+        "label": "M-1 PHRASING RECORD (recon): the 'Unexpected reasoning effort' 400 verbatim, if the terra boundary rejects the projected effort (a sighting = the M-1 class is live on terra = new finding -> STOP)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true,
+    "vacuous_if": [
+      {
+        "pin": "p1_wire_max",
+        "class": "model"
+      }
+    ]
+  }
+}
