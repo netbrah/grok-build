@@ -1518,7 +1518,10 @@ async fn over_cap_system_candidate_fails_loud_and_suppresses_auto() {
         .run_until(async {
             let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
             let (persistence_tx, mut persistence_rx) = mpsc::unbounded_channel();
-            let huge_system = "s".repeat(150_000);
+            // Cap-agnostic: (MAX+1) est tokens + JSON overhead — over the
+            // per-item cap at any cap value (apex-ayl.47 bump made the
+            // old 150_000-char literal sub-cap at 100_000).
+            let huge_system = compactn3_over_cap_text(0);
             let conv = vec![
                 ConversationItem::system(huge_system),
                 ConversationItem::user("q"),
