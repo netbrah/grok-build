@@ -67,6 +67,7 @@ async fn create_test_actor(
             context_window: std::num::NonZeroU64::new(context_window)
                 .expect("test context_window must be non-zero"),
             reasoning_effort: None,
+            ultra_wire_effort: None,
             stream_tool_calls: None,
             cache_ttl: None,
         },
@@ -496,6 +497,7 @@ async fn create_test_actor_with_memory(
             context_window: std::num::NonZeroU64::new(context_window)
                 .expect("test context_window must be non-zero"),
             reasoning_effort: None,
+            ultra_wire_effort: None,
             stream_tool_calls: None,
             cache_ttl: None,
         },

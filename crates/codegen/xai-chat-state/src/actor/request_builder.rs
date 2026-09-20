@@ -95,6 +95,7 @@ impl ChatStateActor {
             trace,
             prompt_cache_key: None,
             reasoning_effort: self.state.sampling_config.reasoning_effort,
+            ultra_wire_effort: self.state.sampling_config.ultra_wire_effort,
             json_schema: None,
             // Execute completed tool calls on a Length-truncated turn instead
             // of failing it; text-only salvage stays behind `CompletePartial`.

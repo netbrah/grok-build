@@ -851,6 +851,12 @@ async fn read_parent_sampling_config(
                 model_family,
                 strict_responses_input,
                 normalize_content_types,
+                // apex-ayl.86 M-1 (review fix): inheritance is a propagation
+                // boundary — copy the parent's resolved wire tier verbatim
+                // (the handle_request seed gate only runs for explicit
+                // runtime overrides; a None here would downgrade an ultra
+                // parent's children to the "max" no-menu fallback on the wire).
+                ultra_wire_effort: cfg.ultra_wire_effort,
             };
             let model_id = ctx.model_id.clone();
             let global_model_id = ctx.models_manager.current_model_id();

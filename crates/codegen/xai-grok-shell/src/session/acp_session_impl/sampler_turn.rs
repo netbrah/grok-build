@@ -646,6 +646,7 @@ impl SessionActor {
                 env_http_headers: Default::default(),
                 context_window: std::num::NonZeroU64::new(256_000).unwrap(),
                 reasoning_effort: None,
+                ultra_wire_effort: None,
                 stream_tool_calls: None,
                 cache_ttl: None,
             });
@@ -771,6 +772,7 @@ impl SessionActor {
             context_window: cfg.context_window.get(),
             client_version: creds.client_version,
             reasoning_effort: cfg.reasoning_effort,
+            ultra_wire_effort: cfg.ultra_wire_effort,
             force_http1: false,
             max_retries: cfg.max_retries.or(Some(self.max_retries)),
             rate_limit_retry_threshold: cfg.rate_limit_retry_threshold,

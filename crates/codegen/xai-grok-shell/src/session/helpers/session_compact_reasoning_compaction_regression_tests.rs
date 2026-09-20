@@ -189,6 +189,7 @@ fn test_config(base_url: &str) -> SamplerConfig {
         model_family: None,
         strict_responses_input: false,
         normalize_content_types: false,
+        ultra_wire_effort: None,
         deployment_id: None,
         user_id: None,
         conversation_group_id: None,

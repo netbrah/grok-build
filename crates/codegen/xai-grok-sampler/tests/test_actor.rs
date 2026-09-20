@@ -107,6 +107,7 @@ fn test_config(base_url: String, model: &str) -> SamplerConfig {
         model_family: None,
         strict_responses_input: false,
         normalize_content_types: false,
+        ultra_wire_effort: None,
         cache_ttl: None,
     }
 }
@@ -1855,12 +1856,26 @@ async fn responses_confident_doom_loop_signal_resamples_once() {
 
     let bodies = bodies.lock().unwrap();
     let retry_input = bodies[1]["input"].as_array().unwrap();
-    assert_eq!(retry_input.len(), 4);
+    // The unified multi-agent-mode item (apex-ayl.86, R-UNIFIED-ITEM)
+    // rides every responses-wire request: the resample's input grows to
+    // 5 — system, reasoning, assistant, the fresh developer item (before
+    // the last user message), and the reminder user turn.
+    assert_eq!(retry_input.len(), 5);
     assert_eq!(retry_input[1]["summary"][0]["text"], "loop loop loop");
     assert_eq!(retry_input[2]["role"], "assistant");
     assert_eq!(retry_input[2]["content"], "poisoned answer");
-    assert_eq!(retry_input[3]["role"], "user");
-    let reminder = retry_input[3]["content"]
+    assert_eq!(retry_input[3]["role"], "developer");
+    let mode_text = retry_input[3]["content"][0]["text"]
+        .as_str()
+        .expect("the unified item is a text part");
+    assert!(
+        mode_text.starts_with("<multi_agent_mode>")
+            && mode_text.ends_with("</multi_agent_mode>")
+            && mode_text.contains("explicit_request_only"),
+        "the resample carries the unified explicit-only item: {mode_text}"
+    );
+    assert_eq!(retry_input[4]["role"], "user");
+    let reminder = retry_input[4]["content"]
         .as_str()
         .expect("the reminder is a text item");
     assert!(

@@ -72,6 +72,8 @@ pub(crate) struct AuxCall {
     pub(crate) model: String,
     /// Must match the main turn's, or the prompt differs before the conversation history even starts.
     pub(crate) reasoning_effort: Option<xai_grok_sampling_types::ReasoningEffort>,
+    /// apex-ayl.86 (SDD §3.6 fill directive, review-fix m-1): the shell-resolved wire tier for ultra; `None` lets egress fall back to wire "max" (I9).
+    pub(crate) ultra_wire_effort: Option<xai_grok_sampling_types::ReasoningEffort>,
     /// Says whether the cache key gets sent, which is what decides the conv id below.
     pub(crate) backend: crate::sampling::ApiBackend,
     pub(crate) conv_id: String,
@@ -86,6 +88,8 @@ pub(crate) struct SideCallSetup {
     pub(crate) model: String,
     /// Must match the main turn so the side-call shares the prompt-cache prefix.
     pub(crate) reasoning_effort: Option<xai_grok_sampling_types::ReasoningEffort>,
+    /// apex-ayl.86 (SDD §3.6 fill directive, review-fix m-1): carried to the AuxCall sites below so side-call egress keeps the parent's resolved wire tier.
+    pub(crate) ultra_wire_effort: Option<xai_grok_sampling_types::ReasoningEffort>,
 }
 
 pub(super) fn should_strip_side_call_reasoning(
@@ -120,6 +124,8 @@ impl SessionActor {
             temperature: None,
             // Effort changes the prompt ahead of the conversation history, so dropping it here would share no prefix with the main turn.
             reasoning_effort: call.reasoning_effort,
+            // apex-ayl.86 (SDD §3.6 fill directive, review-fix m-1): carry the parent's resolved wire tier so side-call egress does not degrade ultra to the "max" fallback.
+            ultra_wire_effort: call.ultra_wire_effort,
             x_grok_conv_id: Some(conv_id),
             x_grok_req_id: Some(call.req_id),
             x_grok_session_id: Some(session_id.clone()),
@@ -144,6 +150,7 @@ impl SessionActor {
             .map(|c| c.context_window.get())
             .unwrap_or(DEFAULT_CONTEXT_WINDOW);
         let reasoning_effort = sampling_config.as_ref().and_then(|c| c.reasoning_effort);
+        let ultra_wire_effort = sampling_config.as_ref().and_then(|c| c.ultra_wire_effort);
         let strip_reasoning =
             should_strip_side_call_reasoning(client.api_backend(), reasoning_effort);
         let model = sampling_config.map(|c| c.model).unwrap_or_default();
@@ -153,6 +160,7 @@ impl SessionActor {
             context_window,
             model,
             reasoning_effort,
+            ultra_wire_effort,
         })
     }
 
@@ -176,6 +184,7 @@ impl SessionActor {
             hosted_tools,
             model: setup.model.clone(),
             reasoning_effort: setup.reasoning_effort,
+            ultra_wire_effort: setup.ultra_wire_effort,
             backend: setup.client.api_backend(),
             conv_id: x_grok_conv_id,
             req_id: x_grok_req_id,

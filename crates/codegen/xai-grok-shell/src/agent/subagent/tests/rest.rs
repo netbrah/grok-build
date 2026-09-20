@@ -2324,6 +2324,44 @@ async fn read_parent_sampling_config_ignores_global_default() {
             ctx.models_manager.current_model_id().0.as_ref(),
         );
 }
+/// apex-ayl.86 M-1 (review fix): a subagent spawned WITHOUT an explicit
+/// effort override inherits the parent's resolved wire tier verbatim — the
+/// seed gate in handle_request.rs only runs for explicit runtime overrides,
+/// so a hardcoded None in the inheritance constructor would downgrade an
+/// ultra parent's children to the "max" no-menu fallback on the wire.
+#[tokio::test]
+async fn read_parent_sampling_config_inherits_ultra_wire_effort_verbatim() {
+    let mut models = indexmap::IndexMap::new();
+    models.insert("composer-2-fast".to_string(), test_model_entry("composer-2-fast"));
+    let ctx = ctx_with_parent_chat_state(
+        "composer-2-fast",
+        "composer-2-fast",
+        "auto",
+        models,
+    );
+    let mut parent_config = ctx
+        .parent_chat_state
+        .as_ref()
+        .unwrap()
+        .get_sampling_config()
+        .await
+        .unwrap();
+    parent_config.reasoning_effort = Some(xai_grok_sampling_types::ReasoningEffort::Ultra);
+    parent_config.ultra_wire_effort = Some(xai_grok_sampling_types::ReasoningEffort::Xhigh);
+    ctx.parent_chat_state
+        .as_ref()
+        .unwrap()
+        .update_sampling_config(parent_config);
+    let (config, _model_id) = read_parent_sampling_config(&ctx).await;
+    assert_eq!(
+        config.reasoning_effort,
+        Some(xai_grok_sampling_types::ReasoningEffort::Ultra)
+    );
+    assert_eq!(
+        config.ultra_wire_effort,
+        Some(xai_grok_sampling_types::ReasoningEffort::Xhigh)
+    );
+}
 /// Every subagent config path must carry the live bearer resolver.
 /// A config frozen at spawn 401s for the rest of the subagent's life once the parent rotates its token (the wake-from-sleep failure mode).
 /// The test uses a first-party base URL so the assertion holds whether the catalog memo reports `NotByok` or `Unknown`.

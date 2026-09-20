@@ -80,6 +80,7 @@ impl SessionActor {
                 env_http_headers: sampling_config.env_http_headers.clone(),
                 context_window: new_context_window,
                 reasoning_effort: sampling_config.reasoning_effort,
+                ultra_wire_effort: sampling_config.ultra_wire_effort,
                 stream_tool_calls: Some(sampling_config.stream_tool_calls),
                 cache_ttl: sampling_config.cache_ttl.clone(),
             });
@@ -192,6 +193,12 @@ impl SessionActor {
             cfg.model = routed;
         }
         cfg.reasoning_effort = Some(effort);
+        // PROACTIVE-ULTRA-1 (apex-ayl.86, M1): the /effort writer is the
+        // second session-effort writer — it maintains the sibling
+        // menu-derived field against the POST-routing model (the same
+        // post-routing anchor as the seed writer's second assignment), so
+        // both writers produce identical egress for the same (effort, menu).
+        cfg.ultra_wire_effort = self.models_manager.ultra_wire_effort_for(&cfg.model);
         let model_id = acp::ModelId::new(cfg.model.clone());
         self.chat_state_handle.update_sampling_config(cfg);
         let agent_name = self.agent.borrow().definition().name.clone();
@@ -413,5 +420,189 @@ impl SessionActor {
             self.compaction.prefire.finish();
         }
         self.compaction.prefire.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::config::{Config, ModelEntry, ModelInfo};
+    use indexmap::IndexMap;
+    use xai_grok_sampling_types::{ReasoningEffort, ReasoningEffortOption};
+
+    fn entry_with_menu(id: &str, supports: bool, menu: &[(ReasoningEffort, bool)]) -> ModelEntry {
+        let mut info = ModelInfo::fallback(id);
+        info.supports_reasoning_effort = supports;
+        info.reasoning_efforts = menu
+            .iter()
+            .map(|(effort, default)| ReasoningEffortOption {
+                id: effort.as_str().to_owned(),
+                value: *effort,
+                label: effort.as_str().to_owned(),
+                description: None,
+                default: *default,
+            })
+            .collect();
+        ModelEntry {
+            info,
+            mtls_cert_dir: None,
+            api_key: None,
+            env_key: None,
+            auth_provider: None,
+            api_base_url: None,
+        }
+    }
+
+    fn manager_with_entries() -> (
+        crate::agent::remote_config::ModelsManager,
+        tempfile::TempDir,
+    ) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let auth = std::sync::Arc::new(
+            xai_grok_login::AuthManager::new(tmp.path(), xai_grok_login::GrokComConfig::default()),
+        );
+        let manager = crate::agent::remote_config::ModelsManager::new(
+            None,
+            IndexMap::new(),
+            acp::ModelId::new("default"),
+            auth,
+            Config::default(),
+        );
+        (manager, tmp)
+    }
+
+    /// S7 (SDD §4, M1 fix — the /effort seed): the /effort write path
+    /// (`handle_set_reasoning_effort`) seeds `ultra_wire_effort` against the
+    /// POST-routing model alongside the raw effort write; the
+    /// unsupported-model Err early return leaves both fields untouched.
+    /// Harness: the session-actor test support (`create_test_actor_ex`,
+    /// `#[path] mod support` in acp_session.rs); the actor's
+    /// `models_manager` is swapped for a manager carrying the menu under
+    /// test.
+    #[tokio::test(flavor = "current_thread")]
+    async fn effort_path_seeds_the_field() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                // (i) supported model advertising ultra: /effort ultra writes
+                // reasoning_effort = Some(Ultra) AND
+                // ultra_wire_effort = Some(Xhigh)
+                {
+                    let (gateway_tx, _gateway_rx) =
+                        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                    let (persistence_tx, _persistence_rx) =
+                        tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+                    let (mut actor, _event_rx) =
+                        super::super::support::create_test_actor_ex(
+                            0,
+                            256_000,
+                            85,
+                            gateway_tx,
+                            persistence_tx,
+                        )
+                        .await;
+                    let (manager, _tmp) = manager_with_entries();
+                    manager.insert_test_entry(
+                        "qwen-ultra",
+                        entry_with_menu(
+                            "qwen-ultra",
+                            true,
+                            &[
+                                (ReasoningEffort::Ultra, false),
+                                (ReasoningEffort::Xhigh, true),
+                                (ReasoningEffort::Medium, false),
+                                (ReasoningEffort::Low, false),
+                            ],
+                        ),
+                    );
+                    actor.models_manager = manager;
+                    let mut cfg = actor
+                        .chat_state_handle
+                        .get_sampling_config()
+                        .await
+                        .expect("the test actor carries a sampling config");
+                    cfg.model = "qwen-ultra".to_string();
+                    actor.chat_state_handle.update_sampling_config(cfg);
+                    let actor = std::sync::Arc::new(actor);
+                    let model_id = actor
+                        .handle_set_reasoning_effort(ReasoningEffort::Ultra)
+                        .await
+                        .expect("an ultra-advertising menu accepts /effort ultra");
+                    assert_eq!(model_id.0.as_ref(), "qwen-ultra");
+                    let cfg = actor
+                        .chat_state_handle
+                        .get_sampling_config()
+                        .await
+                        .expect("the config persists after the /effort write");
+                    assert_eq!(
+                        cfg.reasoning_effort,
+                        Some(ReasoningEffort::Ultra),
+                        "the raw /effort write lands"
+                    );
+                    assert_eq!(
+                        cfg.ultra_wire_effort,
+                        Some(ReasoningEffort::Xhigh),
+                        "the /effort writer must seed ultra_wire_effort against the POST-routing model"
+                    );
+                }
+                // (ii) unsupported model: the Err early return leaves BOTH
+                // fields untouched
+                {
+                    let (gateway_tx, _gateway_rx) =
+                        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                    let (persistence_tx, _persistence_rx) =
+                        tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+                    let (mut actor, _event_rx) =
+                        super::super::support::create_test_actor_ex(
+                            0,
+                            256_000,
+                            85,
+                            gateway_tx,
+                            persistence_tx,
+                        )
+                        .await;
+                    let (manager, _tmp) = manager_with_entries();
+                    manager.insert_test_entry(
+                        "no-effort-model",
+                        entry_with_menu(
+                            "no-effort-model",
+                            false,
+                            &[(ReasoningEffort::Low, true)],
+                        ),
+                    );
+                    actor.models_manager = manager;
+                    let mut cfg = actor
+                        .chat_state_handle
+                        .get_sampling_config()
+                        .await
+                        .expect("the test actor carries a sampling config");
+                    cfg.model = "no-effort-model".to_string();
+                    cfg.reasoning_effort = Some(ReasoningEffort::Medium);
+                    cfg.ultra_wire_effort = Some(ReasoningEffort::High);
+                    actor.chat_state_handle.update_sampling_config(cfg);
+                    let actor = std::sync::Arc::new(actor);
+                    let result = actor.handle_set_reasoning_effort(ReasoningEffort::Ultra).await;
+                    assert!(
+                        result.is_err(),
+                        "the unsupported-model support check must reject the /effort write"
+                    );
+                    let cfg = actor
+                        .chat_state_handle
+                        .get_sampling_config()
+                        .await
+                        .expect("the config persists after the rejected /effort write");
+                    assert_eq!(
+                        cfg.reasoning_effort,
+                        Some(ReasoningEffort::Medium),
+                        "the rejected /effort write leaves reasoning_effort untouched"
+                    );
+                    assert_eq!(
+                        cfg.ultra_wire_effort,
+                        Some(ReasoningEffort::High),
+                        "the rejected /effort write leaves ultra_wire_effort untouched"
+                    );
+                }
+            })
+            .await;
     }
 }

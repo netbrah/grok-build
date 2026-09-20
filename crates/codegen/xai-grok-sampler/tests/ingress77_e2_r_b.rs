@@ -25,7 +25,9 @@ fn ingress77_e2_r_b_no_flag_empty_family_skips_normalization() {
                 {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
             ]
         });
-        patch_responses_request(&mut body, family.as_deref(), None, false, false);
+        // apex-ayl.86: wire-seam arg deleted; `ultra_wire_effort` None (the
+        // no-flag branch of the invariant, SDD §3.7).
+        patch_responses_request(&mut body, family.as_deref(), None, false, None);
         assert_eq!(
             body["input"][0]["content"][0]["type"], "input_text",
             "family {family:?}: no-flag empty family must keep skipping normalization (status-quo pin)"
@@ -46,7 +48,9 @@ fn ingress77_e2_r_b_flag_set_empty_family_normalization_fires() {
                 {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}
             ]
         });
-        patch_responses_request(&mut body, family.as_deref(), None, false, true);
+        // apex-ayl.86: wire-seam arg deleted; `ultra_wire_effort` None (the
+        // named-flag opt-in branch, SDD §3.7).
+        patch_responses_request(&mut body, family.as_deref(), None, true, None);
         assert_eq!(
             body["input"][0]["content"][0]["type"], "text",
             "family {family:?}: flag-set empty family must normalize input_text -> text"

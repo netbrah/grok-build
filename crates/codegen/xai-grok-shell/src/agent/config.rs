@@ -6035,6 +6035,7 @@ pub(crate) fn sampling_config_for_model(
         bearer_resolver: None,
         supports_backend_search: info.supports_backend_search,
         normalize_content_types: info.normalize_content_types,
+        ultra_wire_effort: None,
         compactions_remaining: info.compactions_remaining,
         compaction_at_tokens: info.compaction_at_tokens,
         doom_loop_recovery: None,

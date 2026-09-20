@@ -137,6 +137,7 @@ impl SessionActor {
             hosted_tools: Vec::new(),
             model: setup.model.clone(),
             reasoning_effort: setup.reasoning_effort,
+            ultra_wire_effort: setup.ultra_wire_effort,
             backend: setup.client.api_backend(),
             conv_id: format!("title-refresh-{}", uuid::Uuid::new_v4()),
             req_id: format!("xai-title-refresh-{}", uuid::Uuid::new_v4()),

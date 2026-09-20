@@ -86,6 +86,15 @@ pub struct SamplerConfig {
     /// pre-cut status quo.
     #[serde(default)]
     pub normalize_content_types: bool,
+    /// Menu-derived wire value for a locally-carried `ultra` (PROACTIVE-ULTRA-1 /
+    /// apex-ayl.86, ruling R-MENU-DERIVED): the highest advertised menu tier below
+    /// `ultra` (canonical effort order); `None` when the model advertises no menu
+    /// (or no non-ultra tier) — the egress then falls back to wire "max".
+    /// Resolved by the shell at the .59 seed gate; consumed by
+    /// `provider::patch_responses_request` (AXIS 1). Not a flag: it is derived
+    /// MENU DATA.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ultra_wire_effort: Option<ReasoningEffort>,
 
     // Client identity
     pub origin_client: Option<OriginClientInfo>,
@@ -175,6 +184,7 @@ impl Default for SamplerConfig {
             model_family: None,
             strict_responses_input: false,
             normalize_content_types: false,
+            ultra_wire_effort: None,
         }
     }
 }

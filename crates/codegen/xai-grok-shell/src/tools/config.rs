@@ -235,6 +235,7 @@ impl ShellToolsetConfig {
             model_family: None,
             strict_responses_input: false,
             normalize_content_types: false,
+            ultra_wire_effort: None,
         };
         let mut toolset = base.unwrap_or_else(|| Self {
             bash: BashToolConfig::default(),

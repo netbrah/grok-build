@@ -1100,6 +1100,15 @@ pub struct SamplingConfig {
     /// Reasoning effort level for reasoning models.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Menu-derived wire value for a locally-carried `ultra` (PROACTIVE-ULTRA-1 /
+    /// apex-ayl.86, ruling R-MENU-DERIVED): the highest advertised menu tier below
+    /// `ultra` (canonical effort order); `None` when the model advertises no menu
+    /// (or no non-ultra tier) — the egress then falls back to wire "max".
+    /// Resolved by the shell (the .59 seed gate + the /effort writer); consumed at
+    /// egress on both wires (responses patch + `build_messages_request`).
+    /// Not a flag: it is derived MENU DATA.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ultra_wire_effort: Option<ReasoningEffort>,
     /// When true, inject `stream_tool_calls: true` into the Responses API request body so the upstream emits per-chunk argument deltas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_tool_calls: Option<bool>,

@@ -28,7 +28,50 @@ fn assert_rides_parent_prefix(
     label: &str,
 ) {
     let expected = main_turn_input(parent);
-    let actual = body["input"].as_array().expect("input must be present");
+    let raw = body["input"].as_array().expect("input must be present").clone();
+    // apex-ayl.86 (R-UNIFIED-ITEM v2, census-fix-3 R-B): the auxiliary call
+    // egresses through the PATCHED responses path, so its parent prefix
+    // carries exactly one injected `<multi_agent_mode>` developer item that
+    // the unpatched `main_turn_input` expected value does not (post-cut
+    // contract: auxiliary body = parent main-turn input INCLUDING the unified
+    // item + exactly one appended instruction turn). Strip the single
+    // injected item from `actual` so the prefix-equality and
+    // one-instruction-turn intents below compare the parent conversation
+    // itself, as before the cut.
+    let mut seen_unified = false;
+    let actual: Vec<serde_json::Value> = raw
+        .into_iter()
+        .filter(|item| {
+            let is_unified = item
+                .get("role")
+                .and_then(|role| role.as_str())
+                == Some("developer")
+                && item
+                    .get("content")
+                    .and_then(|content| content.as_array())
+                    .is_some_and(|parts| {
+                        parts.len() == 1
+                            && parts[0].get("type").and_then(|t| t.as_str()) == Some("input_text")
+                            && parts[0]
+                                .get("text")
+                                .and_then(|text| text.as_str())
+                                .is_some_and(|text| text.contains("<multi_agent_mode>"))
+                    });
+            if is_unified {
+                assert!(
+                    !seen_unified,
+                    "{label}: more than one injected <multi_agent_mode> item"
+                );
+                seen_unified = true;
+                return false;
+            }
+            true
+        })
+        .collect();
+    assert!(
+        seen_unified,
+        "{label}: the injected <multi_agent_mode> item is missing from the auxiliary input"
+    );
     assert!(
         actual.len() > expected.len(),
         "{label}: auxiliary input ({}) must extend the parent ({})",
@@ -1780,6 +1823,7 @@ async fn parent_cached_request_pins_fail_length_policy() {
         hosted_tools: Vec::new(),
         model: "test-model".to_string(),
         reasoning_effort: None,
+        ultra_wire_effort: None,
         backend: crate::sampling::ApiBackend::Messages,
         conv_id: "conv".to_string(),
         req_id: "req".to_string(),

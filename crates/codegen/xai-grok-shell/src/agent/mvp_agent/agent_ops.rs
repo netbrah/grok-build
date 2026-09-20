@@ -115,7 +115,7 @@ impl MvpAgent {
                 cfg.client_version.clone(),
             )
         };
-        let config = match crate::agent::config::resolve_aux_model_sampling_config(
+        let mut config = match crate::agent::config::resolve_aux_model_sampling_config(
             &slug,
             &models,
             &endpoints,
@@ -139,6 +139,16 @@ impl MvpAgent {
                 fallback
             }
         };
+        // apex-ayl.86 review-fix (probe P8, 2026-09-19): aux summary/title calls
+        // build their requests WITHOUT an effort field (pre-cut parity — the
+        // client-default effort never reached the wire for non-codex). The .86
+        // AXIS-1 remap keys off the client-default effort, so carrying a raw
+        // Ultra here would inject the "max" no-menu fallback into every ultra
+        // session bootstrap's title call — a hard 400 on menu-restricted rows
+        // (qwen: only xhigh/medium/low legal). Strip it, same pattern as the
+        // prompt-suggest aux client (recap.rs forced-None).
+        config.reasoning_effort = None;
+        config.ultra_wire_effort = None;
         let model = config.model.clone();
         let client = OaiCompatClient::new(config).map_err(map_sampling_err_to_acp)?;
         Ok((client, model))

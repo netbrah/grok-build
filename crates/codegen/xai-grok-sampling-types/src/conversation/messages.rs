@@ -851,10 +851,25 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         ConversationToolChoice::None => ToolChoiceParam::Auto, // ToolChoiceParam has no none variant, so fall back to the default
     });
 
-    let effort = req
-        .reasoning_effort
-        .and_then(|e| e.to_messages_api())
-        .map(|s| s.to_string());
+    // WIRE-NEUTRAL-2 (apex-ayl.86): ultra is resolved at the REQUEST level,
+    // not the enum level — `to_messages_api` still maps Ultra to the raw
+    // "ultra" (untouched, pinned by M4); this arm intercepts before
+    // emission and carries the shell-resolved menu tier, falling back to
+    // wire "max" when it is None (no menu / legacy row). The raw "ultra"
+    // never reaches the messages wire (I9). Sub-ultra efforts ride the
+    // pre-cut `to_messages_api` path, zero-diff (M2).
+    let effort = match req.reasoning_effort {
+        Some(crate::ReasoningEffort::Ultra) => Some(
+            req
+                .ultra_wire_effort
+                .unwrap_or(crate::ReasoningEffort::Max)
+                .as_str()
+                .to_string(),
+        ),
+        other => other
+            .and_then(|e| e.to_messages_api())
+            .map(|s| s.to_string()),
+    };
 
     // A wire schema here suppresses tool calls, so the agent routes structured output through the StructuredOutput tool instead
     let format = req
@@ -964,5 +979,114 @@ impl From<crate::messages::MessagesResponse> for ConversationItem {
             model_fingerprint: None,
             reasoning_effort: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_messages_request;
+    use crate::conversation::ConversationRequest;
+
+    /// M1 (SDD §4, WIRE-NEUTRAL-2): a messages-wire request carrying ultra
+    /// with the shell-resolved menu tier emits the RESOLVED tier in
+    /// `output_config.effort` — and the raw string "ultra" appears NOWHERE
+    /// in the encoded body (I9).
+    #[test]
+    fn messages_ultra_resolves_to_menu_tier() {
+        let mut req = ConversationRequest::default();
+        req.model = Some("claude-opus-5-test".to_owned());
+        req.reasoning_effort = Some(crate::ReasoningEffort::Ultra);
+        req.ultra_wire_effort = Some(crate::ReasoningEffort::Xhigh);
+        let built = build_messages_request(&req);
+        let encoded = serde_json::to_string(&built).expect("messages request encodes");
+        assert!(
+            encoded.contains("\"effort\":\"xhigh\""),
+            "ultra must resolve to the menu-derived tier: {encoded}"
+        );
+        assert!(
+            !encoded.contains("ultra"),
+            "raw ultra must never reach the messages wire (I9): {encoded}"
+        );
+    }
+
+    /// M2 (SDD §4, WIRE-NEUTRAL-2): sub-ultra messages bytes are UNCHANGED
+    /// — the field is inert when the effort is not ultra, and
+    /// None/Minimal leave `output_config` absent, as today.
+    #[test]
+    fn messages_subultra_unchanged() {
+        let mut req = ConversationRequest::default();
+        req.model = Some("claude-opus-5-test".to_owned());
+        req.reasoning_effort = Some(crate::ReasoningEffort::Xhigh);
+        req.ultra_wire_effort = Some(crate::ReasoningEffort::Xhigh);
+        let built = build_messages_request(&req);
+        let encoded = serde_json::to_string(&built).expect("messages request encodes");
+        assert!(
+            encoded.contains("\"effort\":\"xhigh\""),
+            "sub-ultra goes through the pre-cut to_messages_api path: {encoded}"
+        );
+        for effort in [
+            Some(crate::ReasoningEffort::None),
+            Some(crate::ReasoningEffort::Minimal),
+            None,
+        ] {
+            let mut req = ConversationRequest::default();
+            req.model = Some("claude-opus-5-test".to_owned());
+            req.reasoning_effort = effort;
+            req.ultra_wire_effort = Some(crate::ReasoningEffort::Xhigh);
+            let built = build_messages_request(&req);
+            assert!(
+                built.output_config().is_none(),
+                "{effort:?}: output_config stays absent, as today"
+            );
+        }
+    }
+
+    /// M3 (SDD §4, WIRE-NEUTRAL-2): a fieldless ultra (menu-less /
+    /// ultra-only edge — the S4/S5 analog) falls back to wire "max" —
+    /// no raw "ultra" (I9; the R-MENU-DERIVED no-menu fallback).
+    #[test]
+    fn messages_ultra_fieldless_falls_back_to_max() {
+        let mut req = ConversationRequest::default();
+        req.model = Some("claude-opus-5-test".to_owned());
+        req.reasoning_effort = Some(crate::ReasoningEffort::Ultra);
+        // `ultra_wire_effort` stays `None` (default).
+        let built = build_messages_request(&req);
+        let encoded = serde_json::to_string(&built).expect("messages request encodes");
+        assert!(
+            encoded.contains("\"effort\":\"max\""),
+            "fieldless ultra falls back to wire-legal max: {encoded}"
+        );
+        assert!(
+            !encoded.contains("ultra"),
+            "no raw ultra on the messages wire (I9): {encoded}"
+        );
+    }
+
+    /// M4 (SDD §4, WIRE-NEUTRAL-2): the resolution happens at the REQUEST
+    /// level, not the enum level — `to_messages_api` still maps Ultra to
+    /// the raw "ultra" at the enum level (untouched), and the
+    /// `build_messages_request` ultra arm intercepts before emission
+    /// (pins the §3.4b field-approach decision).
+    #[test]
+    fn resolution_happens_at_request_level_not_enum_level() {
+        assert_eq!(
+            crate::ReasoningEffort::Ultra.to_messages_api(),
+            Some("ultra"),
+            "the enum-level mapping is untouched by this cut"
+        );
+        let mut req = ConversationRequest::default();
+        req.model = Some("claude-opus-5-test".to_owned());
+        req.reasoning_effort = Some(crate::ReasoningEffort::Ultra);
+        req.ultra_wire_effort = Some(crate::ReasoningEffort::Xhigh);
+        let built = build_messages_request(&req);
+        let encoded = serde_json::to_string(&built).expect("messages request encodes");
+        assert!(
+            !encoded.contains("ultra"),
+            "the request-level consumption intercepts the raw value: {encoded}"
+        );
+        assert!(
+            encoded.contains("\"effort\":\"xhigh\""),
+            "the resolved tier reaches the wire: {encoded}"
+        );
     }
 }

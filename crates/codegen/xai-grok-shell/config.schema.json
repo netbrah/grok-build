@@ -3197,6 +3197,17 @@
             "null"
           ]
         },
+        "ultra_wire_effort": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Menu-derived wire value for a locally-carried `ultra` (PROACTIVE-ULTRA-1 /\napex-ayl.86, ruling R-MENU-DERIVED): the highest advertised menu tier below\n`ultra` (canonical effort order); `None` when the model advertises no menu\n(or no non-ultra tier) — the egress then falls back to wire \"max\".\nResolved by the shell at the .59 seed gate; consumed by\n`provider::patch_responses_request` (AXIS 1). Not a flag: it is derived\nMENU DATA."
+        },
         "user_id": {
           "type": [
             "string",

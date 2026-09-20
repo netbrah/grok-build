@@ -72,6 +72,7 @@ async fn create_test_actor(
             context_window: std::num::NonZeroU64::new(context_window)
                 .expect("test context_window must be non-zero"),
             reasoning_effort: None,
+            ultra_wire_effort: None,
             stream_tool_calls: None,
             cache_ttl: None,
         },
@@ -872,6 +873,12 @@ async fn family_switch_compacts_lossy_with_new_model() {
                 body["model"], "new-model",
                 "summarizer must be the NEW model"
             );
+            // apex-ayl.86 (R-UNIFIED-ITEM v2, census-fix-3 R-B): the unified
+            // `<multi_agent_mode>` developer item rides EVERY responses-wire
+            // request — including this summary-client (summarizer) body — so
+            // tolerate EXACTLY ONE of it (validating its shape); every OTHER
+            // item keeps the plain-string lossy-view contract.
+            let mut unified_mode_items = 0;
             for message in body["input"].as_array().unwrap() {
                 let keys: Vec<&String> = message.as_object().unwrap().keys().collect();
                 assert!(
@@ -880,11 +887,34 @@ async fn family_switch_compacts_lossy_with_new_model() {
                     "lossy view must send plain text messages, got keys {keys:?} in {message}"
                 );
                 assert_eq!(message["type"], "message", "non-message item: {message}");
+                if message["role"] == "developer" {
+                    unified_mode_items += 1;
+                    let parts = message["content"].as_array().unwrap_or_else(|| {
+                        panic!("unified item must carry an array content: {message}")
+                    });
+                    assert_eq!(
+                        parts.len(),
+                        1,
+                        "unified item must be a single input_text part: {message}"
+                    );
+                    assert_eq!(parts[0]["type"], "input_text", "{message}");
+                    assert!(
+                        parts[0]["text"]
+                            .as_str()
+                            .is_some_and(|text| text.contains("<multi_agent_mode>")),
+                        "unified item must be the mode declaration: {message}"
+                    );
+                    continue;
+                }
                 assert!(
                     message["content"].is_string(),
                     "non-text content in {message}"
                 );
             }
+            assert_eq!(
+                unified_mode_items, 1,
+                "exactly one injected <multi_agent_mode> item expected in the summarizer body, got {unified_mode_items}"
+            );
         })
         .await;
 }

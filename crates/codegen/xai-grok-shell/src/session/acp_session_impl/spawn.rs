@@ -571,6 +571,7 @@ pub(crate) async fn spawn_session_actor(
         env_http_headers: sampling_config.env_http_headers.clone(),
         context_window: context_window_override.unwrap_or(baseline_context_window),
         reasoning_effort: sampling_config.reasoning_effort,
+        ultra_wire_effort: sampling_config.ultra_wire_effort,
         stream_tool_calls: Some(sampling_config.stream_tool_calls),
         cache_ttl: sampling_config.cache_ttl.clone(),
     };

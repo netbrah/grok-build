@@ -1064,6 +1064,10 @@ struct ClientDefaults {
     normalize_content_types: bool,
     /// Local reasoning effort for Max/Ultra wire mapping and multi-agent v2 policy.
     reasoning_effort: Option<ReasoningEffort>,
+    /// Menu-derived wire value for a locally-carried `ultra` (PROACTIVE-ULTRA-1 /
+    /// apex-ayl.86, ruling R-MENU-DERIVED) — carried from `SamplerConfig` and
+    /// passed to `provider::patch_responses_request` (AXIS 1).
+    ultra_wire_effort: Option<ReasoningEffort>,
 }
 
 /// Endpoint URL builder, resolved once at client construction so each request only appends its path.
@@ -1545,6 +1549,7 @@ impl SamplingClient {
             strict_responses_input: config.strict_responses_input,
             normalize_content_types: config.normalize_content_types,
             reasoning_effort: config.reasoning_effort,
+            ultra_wire_effort: config.ultra_wire_effort,
         };
 
         let endpoint = EndpointTemplate::new(&config.base_url, &config.query_params);
@@ -2161,11 +2166,8 @@ impl SamplingClient {
             &mut request_body,
             self.defaults.model_family.as_deref(),
             self.defaults.reasoning_effort,
-            self.defaults
-                .model_family
-                .as_deref()
-                .is_some_and(|f| f.eq_ignore_ascii_case("codex")),
             self.defaults.normalize_content_types,
+            self.defaults.ultra_wire_effort,
         );
         // apex-ayl.77 (donor parity, open-grok@049664b5 client.rs:2406): strip
         // the ingress sentinel web-search action pre-egress — the wire keeps
@@ -2333,11 +2335,8 @@ impl SamplingClient {
             &mut request_body,
             self.defaults.model_family.as_deref(),
             self.defaults.reasoning_effort,
-            self.defaults
-                .model_family
-                .as_deref()
-                .is_some_and(|f| f.eq_ignore_ascii_case("codex")),
             self.defaults.normalize_content_types,
+            self.defaults.ultra_wire_effort,
         );
         // apex-ayl.77 (donor parity, open-grok@049664b5 client.rs:2833): strip
         // the ingress sentinel web-search action pre-egress — the wire keeps
@@ -2604,11 +2603,8 @@ impl SamplingClient {
             &mut request_body,
             self.defaults.model_family.as_deref(),
             request.reasoning_effort,
-            self.defaults
-                .model_family
-                .as_deref()
-                .is_some_and(|f| f.eq_ignore_ascii_case("codex")),
             self.defaults.normalize_content_types,
+            self.defaults.ultra_wire_effort,
         );
         // apex-ayl.77 (donor parity, open-grok@049664b5 client.rs:3038): strip
         // the ingress sentinel web-search action pre-egress — the wire keeps
@@ -3684,6 +3680,7 @@ mod tests {
             model_family: None,
             strict_responses_input: false,
             normalize_content_types: false,
+            ultra_wire_effort: None,
         }
     }
 
@@ -5991,5 +5988,19 @@ mod tests {
             panic!("expected CustomToolCall");
         };
         assert_eq!(call.id, "call_custom_1");
+    }
+
+    /// T13 (SDD §4, plumbing): `SamplerConfig.ultra_wire_effort` flows into
+    /// `ClientDefaults` — the value the three egress sites pass to
+    /// `provider::patch_responses_request` (AXIS 1).
+    #[test]
+    fn ultra_wire_effort_flows_config_to_defaults() {
+        let client = SamplingClient::new(SamplerConfig {
+            model_family: Some("qwen".into()),
+            ultra_wire_effort: Some(ReasoningEffort::Xhigh),
+            ..SamplerConfig::default()
+        })
+        .expect("sampling client");
+        assert_eq!(client.defaults.ultra_wire_effort, Some(ReasoningEffort::Xhigh));
     }
 }

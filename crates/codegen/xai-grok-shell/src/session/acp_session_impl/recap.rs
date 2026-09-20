@@ -59,6 +59,7 @@ impl SessionActor {
 
         let sampling_config = self.chat_state_handle.get_sampling_config().await;
         let reasoning_effort = sampling_config.as_ref().and_then(|c| c.reasoning_effort);
+        let ultra_wire_effort = sampling_config.as_ref().and_then(|c| c.ultra_wire_effort);
         if super::side_call::should_strip_side_call_reasoning(
             sampling_client.api_backend(),
             reasoning_effort,
@@ -98,6 +99,8 @@ impl SessionActor {
             hosted_tools,
             model: model.clone(),
             reasoning_effort,
+            // apex-ayl.86 (SDD §3.6 fill directive, review-fix m-1): same config read as the effort above.
+            ultra_wire_effort,
             backend: sampling_client.api_backend(),
             conv_id: btw_session_id.clone(),
             req_id: format!("xai-btw-{}", uuid::Uuid::new_v4()),
@@ -628,6 +631,7 @@ impl SessionActor {
         );
         let reasoning_effort = suggest_reasoning.effort;
         let request_model = sampling_config.model.clone();
+        let ultra_wire_effort = sampling_config.ultra_wire_effort;
         let sampling_client = match xai_grok_sampler::SamplingClient::new(sampling_config) {
             Ok(client) => client,
             Err(e) => {
@@ -664,6 +668,8 @@ impl SessionActor {
             temperature: Some(temperature),
             max_output_tokens: Some(max_output_tokens),
             reasoning_effort,
+            // apex-ayl.86 (SDD §3.6 fill directive, review-fix m-1): post-seed config carries the resolved wire tier.
+            ultra_wire_effort,
             x_grok_conv_id: Some(format!("promptsuggest-{}", uuid::Uuid::new_v4())),
             x_grok_req_id: Some(request_id.clone()),
             x_grok_session_id: Some(self.session_info.id.to_string()),

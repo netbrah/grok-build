@@ -813,6 +813,17 @@ pub struct ConversationRequest {
     pub trace: Option<Box<dyn TraceContext>>,
     /// Reasoning effort level for reasoning models.
     pub reasoning_effort: Option<crate::ReasoningEffort>,
+    /// Menu-derived wire value for a locally-carried `ultra` (PROACTIVE-ULTRA-1 /
+    /// apex-ayl.86, ruling R-MENU-DERIVED, WIRE-NEUTRAL-2): the highest
+    /// advertised menu tier below `ultra` (canonical effort order); `None`
+    /// when the model advertises no menu (or no non-ultra tier) —
+    /// `build_messages_request` then falls back to wire "max" (I9 holds by
+    /// construction, not by caller discipline). Resolved by the shell's two
+    /// session-effort writers; consumed ONLY at messages-wire egress (the
+    /// `build_messages_request` ultra arm, §3.4b). The `<multi_agent_mode>`
+    /// item does NOT ride the messages wire (R-UNIFIED-ITEM v2 is
+    /// responses-wire only).
+    pub ultra_wire_effort: Option<crate::ReasoningEffort>,
     /// JSON Schema for structured output (strict mode).
     pub json_schema: Option<serde_json::Value>,
     /// Sticky routing key for prompt-cache reuse; overrides `x_grok_conv_id` for routing.
