@@ -1,0 +1,62 @@
+{
+ "schema_version": 1,
+ "id": "AUXMODEL-WIRE-01",
+ "title": "apex-ayl.84 RED ratchet (AUXMODEL-FALLBACK-WIRE-1) — the session-summary aux resolver's synthetic entry hardcodes ApiBackend::Responses + resolve_inference_base_url() (shell agent/config.rs resolve_aux_model_sampling_config bearer branch; .81 F-N3, concord PASS 3, present at union base 7c82fe7): the case pins models/session_summary=probe-aux-01 — a CATALOG-MISS slug, the deterministic trigger (all live rows carry env_key, so the no-key-row trigger is unreachable in this deployment) — on a claude-sonnet-5 MESSAGES-wire session. Pre-cut: the aux (session-title) call routes to POST /v1/responses with body.model=probe-aux-01 (recorded in the campaign wire/ dir as the defect evidence; the proxy 404s the unknown model — by-design degradation, text fallback, session unaffected per .84). The red pin asserts the GREEN shape: a /v1/messages request carrying the probe slug — 0-hit today (aux went the wrong wire) = RED; GREEN when the cut makes the synthetic entry inherit the session wire/base_url (or an explicit aux-wire seam). Control (class harness, plain assert): the newest /v1/messages request carries the session model claude-sonnet-5 — the harness always sends the main-call model, so a miss is a harness failure, never vacuous. RE-PIN RULE: if the cut lands an explicit aux-wire config seam (instead of session-wire inheritance) or makes the resolver catalog-guard the slug (caller falls back to the session model, never sending probe-aux-01), re-pin to the landed shape.",
+ "bead": "apex-ayl.84",
+ "suite": "wire-shape",
+ "tier": "slim",
+ "driver": "headless",
+ "model": "claude-sonnet-5",
+ "wire": "messages",
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "watchdog_s": 300,
+ "est_calls": 2,
+ "wirecap": true,
+ "config_patch": {
+  "models/session_summary": "probe-aux-01"
+ },
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: AUXMODEL-WIRE-OK",
+   "timeout_s": 180
+  }
+ ],
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error",
+    "label": "NO TERMINAL ERROR: the aux 404/500 at the proxy degrades to text fallback and the session turn completes (.84: degradation not worse than today's 500s). A terminal error here is an independent finding — adjudicate, do not attribute to the aux routing."
+   },
+   {
+    "id": "term",
+    "op": "present",
+    "event": "end",
+    "label": "TURN COMPLETES: the merged event stream reached the end terminal (the aux failure did not kill the session)."
+   }
+  ],
+  "wire": [
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/messages" },
+    "nth": 0,
+    "path": "$.body.model",
+    "eq": "claude-sonnet-5",
+    "label": "CONTROL (class harness, plain assert): the NEWEST /v1/messages request carries the session model — the main call. The session-title aux call (pre-fix) does NOT carry the probe slug on /v1/messages, so it cannot false-satisfy or false-fail this pin. A miss is a harness failure, never vacuous."
+   },
+   {
+    "kind": "grep",
+    "id": "auxmodel_wire_red",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/messages" },
+    "any": true,
+    "grep": "\"model\": \"probe-aux-01\"",
+    "label": "RED PIN (asserts the GREEN shape): a /v1/messages request carries the catalog-miss aux slug — the synthetic aux entry inherited the SESSION wire (messages) instead of the hardcoded Responses backend. Pre-fix FAILs (0-hit: the aux request landed on /v1/responses — the defect, visible in the campaign wire/ dir). GREEN when the .84 cut lands. Note the direction: this pin passes post-fix by PRESENCE, unlike the absence-grep reds of the .118 stack."
+   }
+  ]
+ },
+ "expected_red": { "id": "auxmodel-wire-responses-hardcode" }
+}

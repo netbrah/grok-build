@@ -1,0 +1,32 @@
+{
+  "info": {
+    "id": "01a0bfcc-77fd-7352-afc3-828ccc98ff68",
+    "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T171039Z/terra-resp/cwd"
+  },
+  "agent_id": "ag1.58c7022f67134ecdbc3b09369422874e",
+  "attempt_id": "at1.a0159f08345949b8b3200cf11017a5df",
+  "session_summary": "Create a dependency-free Python 3 CLI at tools/minidiff.py that word-level",
+  "created_at": "2026-09-20T17:10:43.514494Z",
+  "updated_at": "2026-09-20T17:16:07.447942Z",
+  "num_messages": 17,
+  "num_chat_messages": 6,
+  "current_model_id": "gpt-5.6-terra",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "session_kind": "headless",
+  "git_root_dir": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/",
+  "git_remotes": [
+    "https://bitbucket.ngage.netapp.com/scm/apex/grok-build.git",
+    "https://github.com/netbrah/grok-build.git",
+    "https://github.com/xai-org/grok-build.git"
+  ],
+  "head_commit": "355cfe4ef2546bc2f0ac70735eafe4b521fdf95e",
+  "head_branch": "feat/first-class-responses-catalog",
+  "request_id": "21008ab7-090e-4e0c-ba0e-cb16d7b4bbb8",
+  "grok_home": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T171039Z/terra-resp/home",
+  "last_active_at": "2026-09-20T17:16:07.447942Z",
+  "generated_title": "Create a dependency-free Python 3 CLI at tools/minidiff.py that word-level",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

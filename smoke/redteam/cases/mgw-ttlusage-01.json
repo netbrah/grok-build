@@ -1,0 +1,58 @@
+{
+ "schema_version": 1,
+ "id": "MGW-TTLUSAGE-01",
+ "title": "apex-ayl.112 RED ratchet (msgw-sweep F12) — usage DTO lacks the TTL-split cache fields: the /v1/messages RESPONSE wire carries usage.cache_creation = {ephemeral_5m_input_tokens, ephemeral_1h_input_tokens} (verified on live receipts, report/20260919T084258Z/t21-msg-s5-mcp-tool resp frames) but the harness's MessagesUsage DTO (ST/messages.rs:596+) exposes only the flat cached_prompt_tokens / cache_creation_prompt_tokens (SA/stream/messages.rs:758-759) — the 1h-vs-5m spend mix is invisible in usage.json. Control pin (class model): the captured response wire carries 'ephemeral_1h_input_tokens' at all (if the proxy strips the split, the probe is meaningless -> VACUOUS). RED PIN: usage.json exposes the TTL split — pinned to the WIRE NAMING 'ephemeral_1h_input_tokens' as the proposed contract; RE-PIN RULE: if the cut SDD lands different field names, re-pin the artifact grep to those names (one-line change). One cold-home turn: turn 1 creates the 1h system-head tier, so a real 1h creation exists in this session. RED today (field absent from usage.json); GREEN when the DTO + usage.json carry the split.",
+ "bead": "apex-ayl.112",
+ "suite": "wire-shape",
+ "tier": "slim",
+ "driver": "headless",
+ "model": "claude-sonnet-5",
+ "wirecap": true,
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "In under 80 words, name two cache invalidation strategies for a rolling conversation prefix and the failure mode of each. Then reply with exactly: MGW-TTL-OK",
+   "timeout_s": 300
+  }
+ ],
+ "watchdog_s": 300,
+ "est_calls": 2,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error",
+    "label": "NO TERMINAL ERROR: the turn completed (the red is the usage DTO, not the turn)."
+   }
+  ],
+  "wire": [
+   {
+    "kind": "grep",
+    "id": "mgw_ttl_ctl",
+    "file": "resp-*.jsonl",
+    "where": { "method": "POST", "path": "/v1/messages" },
+    "any": true,
+    "grep": "ephemeral_1h_input_tokens",
+    "label": "CONTROL (class model): the response wire carries the TTL-split field at all (verified live 2026-09-19). 0-hit = proxy stripped the split = probe meaningless = VACUOUS (never a silent pass, never a false red)."
+   }
+  ],
+  "artifact": [
+   {
+    "id": "mgw_ttl_red",
+    "op": "grep",
+    "file": "usage.json",
+    "grep": "ephemeral_1h_input_tokens",
+    "min_count": 1,
+    "label": "RED PIN (F12): usage.json exposes the 1h/5m creation split (wire naming = proposed contract; re-pin if the cut SDD renames). Pre-cut FAILs: MessagesUsage has only the flat fields."
+   }
+  ]
+ },
+ "scoring": {
+  "vacuous_if": [
+   { "pin": "mgw_ttl_ctl", "class": "model" }
+  ]
+ },
+ "expected_red": { "id": "mgw-f12-ttlusage" }
+}

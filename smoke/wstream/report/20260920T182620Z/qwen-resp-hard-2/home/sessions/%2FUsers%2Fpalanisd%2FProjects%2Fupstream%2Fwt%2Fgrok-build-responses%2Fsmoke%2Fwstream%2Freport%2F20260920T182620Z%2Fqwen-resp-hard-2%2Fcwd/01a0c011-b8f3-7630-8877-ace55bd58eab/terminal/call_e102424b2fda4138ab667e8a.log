@@ -1,0 +1,14 @@
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 215, in <module>
+    sys.exit(main(sys.argv))
+             ~~~~^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 208, in main
+    out = format_hunks(build_hunks(a_lines, b_lines))
+                       ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 157, in build_hunks
+    body = block_records(a_lines, i1, i2, j1, j2)
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 118, in block_records
+    b_block = b_lines[j1:j2]
+              ^^^^^^^
+NameError: name 'b_lines' is not defined. Did you mean: 'a_lines'?
+exit=1

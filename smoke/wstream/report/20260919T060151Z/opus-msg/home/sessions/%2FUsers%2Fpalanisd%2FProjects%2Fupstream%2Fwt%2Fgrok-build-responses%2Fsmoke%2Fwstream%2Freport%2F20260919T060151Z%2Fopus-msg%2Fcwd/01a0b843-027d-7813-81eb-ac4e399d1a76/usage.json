@@ -1,0 +1,52 @@
+{
+  "sessionId": "01a0b843-027d-7813-81eb-ac4e399d1a76",
+  "updatedAt": "2026-09-19T06:04:07.091241+00:00",
+  "session": {
+    "inputTokens": 28239,
+    "outputTokens": 5163,
+    "cachedReadTokens": 0,
+    "cacheCreationTokens": 28237,
+    "reasoningTokens": 4292,
+    "totalTokens": 33402,
+    "modelCalls": 1,
+    "turnCount": 1,
+    "primaryModelId": "claude-opus-5",
+    "modelUsage": {
+      "claude-opus-5": {
+        "inputTokens": 28239,
+        "outputTokens": 5163,
+        "cachedReadTokens": 0,
+        "cacheCreationTokens": 28237,
+        "reasoningTokens": 4292,
+        "totalTokens": 33402,
+        "modelCalls": 1
+      }
+    }
+  },
+  "turns": [
+    {
+      "turnNumber": 1,
+      "endedAt": "2026-09-19T06:04:07.091241+00:00",
+      "inputTokens": 28239,
+      "outputTokens": 5163,
+      "cachedReadTokens": 0,
+      "cacheCreationTokens": 28237,
+      "reasoningTokens": 4292,
+      "totalTokens": 33402,
+      "modelCalls": 1,
+      "turnCount": 1,
+      "primaryModelId": "claude-opus-5",
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 28239,
+          "outputTokens": 5163,
+          "cachedReadTokens": 0,
+          "cacheCreationTokens": 28237,
+          "reasoningTokens": 4292,
+          "totalTokens": 33402,
+          "modelCalls": 1
+        }
+      }
+    }
+  ]
+}

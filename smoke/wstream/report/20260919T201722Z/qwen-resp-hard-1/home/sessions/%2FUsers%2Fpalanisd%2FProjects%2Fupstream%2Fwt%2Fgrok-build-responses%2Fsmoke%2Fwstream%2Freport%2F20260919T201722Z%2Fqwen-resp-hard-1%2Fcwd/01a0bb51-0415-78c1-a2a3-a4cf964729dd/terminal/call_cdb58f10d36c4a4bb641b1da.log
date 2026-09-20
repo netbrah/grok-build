@@ -1,0 +1,50 @@
+FAIL trial 3 rc 1 expected 1 apply_ok False
+A: ['eta beta']
+B: ['beta eps']
+@@ -1,2 +1,1 @@
+-eta beta
+-eta beta
++beta eps
+
+FAIL trial 5 rc 1 expected 1 apply_ok False
+A: ['delta delta eps eta', 'theta theta beta', 'delta beta', 'alpha delta delta', 'beta', 'delta', 'alpha', 'beta delta eps']
+B: ['gamma theta', 'theta eta', 'beta beta', 'zeta eta eta theta', 'beta', 'eta', 'beta delta delta', 'theta gamma', 'gamma eps theta delta']
+@@ -1,8 +1,9 @@
+-delta delta eps eta
++gamma theta
++theta eta
+-theta theta beta
++beta beta
+-delta beta
++zeta eta eta theta
+-alpha delta delta
++eta
++beta delta delta
+-beta
++theta gamma
++gamma eps theta delta
+ delta
+-alpha
+-beta delta eps
+
+FAIL trial 6 rc 1 expected 1 apply_ok False
+A: ['alpha', 'beta', 'gamma eta', 'theta delta eta alpha', 'eta alpha', 'eps theta eps eta', 'gamma delta eps delta']
+B: ['zeta', 'alpha', 'gamma alpha beta gamma', 'beta', 'eta beta', 'alpha gamma', 'zeta eps delta zeta', 'eps eta', 'beta alpha theta', 'beta', 'eps gamma']
+@@ -1,7 +1,9 @@
++zeta
+-alpha
++gamma alpha beta gamma
+ beta
++eta beta
++alpha gamma
+-gamma eta
+-theta delta eta alpha
++zeta eps delta zeta
+-eta alpha
+-eps theta eps eta
++beta alpha theta
++beta
++eps gamma
+-gamma delta eps delta
+
+RANDOM_TRIALS_FAILS: 3

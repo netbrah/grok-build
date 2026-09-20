@@ -1,0 +1,4 @@
+Error: Internal error: {
+  "message": "API error (status 400 Bad Request): invalid_request_error: litellm.BadRequestError: OpenAIException - {\"error\":{\"message\":\"Unexpected reasoning effort high. Supported types are xhigh (default), medium, and low. Unexpected reasoning effort high. Supported types are xhigh (default), medium, and low.\",\"type\":\"invalid_…",
+  "http_status": 400
+}

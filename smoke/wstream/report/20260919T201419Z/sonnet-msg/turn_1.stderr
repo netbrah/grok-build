@@ -1,0 +1,26 @@
+Error: Internal error: {
+  "message": "request validation failed: context item message[1] estimates 18937 tokens; per-item limit 10000 (non-retryable, local)",
+  "promptUsage": {
+    "inputTokens": 29819,
+    "outputTokens": 16821,
+    "totalTokens": 46640,
+    "cachedReadTokens": 0,
+    "cacheCreationTokens": 29817,
+    "reasoningTokens": 16733,
+    "modelCalls": 1,
+    "apiDurationMs": 177435,
+    "modelUsage": {
+      "claude-sonnet-5": {
+        "inputTokens": 29819,
+        "outputTokens": 16821,
+        "totalTokens": 46640,
+        "cachedReadTokens": 0,
+        "cacheCreationTokens": 29817,
+        "reasoningTokens": 16733,
+        "modelCalls": 1,
+        "apiDurationMs": 177435
+      }
+    },
+    "numTurns": 1
+  }
+}

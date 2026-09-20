@@ -1,0 +1,120 @@
+crates/codegen:
+[1m[36mptyctl[39;49m[0m
+[1m[36mptyctl-cli[39;49m[0m
+[1m[36mxai-acp-lib[39;49m[0m
+[1m[36mxai-agent-lifecycle[39;49m[0m
+[1m[36mxai-chat-state[39;49m[0m
+[1m[36mxai-codebase-graph[39;49m[0m
+[1m[36mxai-compaction-transcript[39;49m[0m
+[1m[36mxai-crash-handler[39;49m[0m
+[1m[36mxai-dirs[39;49m[0m
+[1m[36mxai-fast-worktree[39;49m[0m
+[1m[36mxai-file-utils[39;49m[0m
+[1m[36mxai-fsnotify[39;49m[0m
+[1m[36mxai-fuzzy-file-search[39;49m[0m
+[1m[36mxai-gix-status[39;49m[0m
+[1m[36mxai-grok-active-sessions[39;49m[0m
+[1m[36mxai-grok-agent[39;49m[0m
+[1m[36mxai-grok-announcements[39;49m[0m
+[1m[36mxai-grok-auth[39;49m[0m
+[1m[36mxai-grok-bundle[39;49m[0m
+[1m[36mxai-grok-config[39;49m[0m
+[1m[36mxai-grok-config-types[39;49m[0m
+[1m[36mxai-grok-dashboard-store[39;49m[0m
+[1m[36mxai-grok-diag-server[39;49m[0m
+[1m[36mxai-grok-env[39;49m[0m
+[1m[36mxai-grok-extra-ca[39;49m[0m
+[1m[36mxai-grok-feedback[39;49m[0m
+[1m[36mxai-grok-foreign-sessions[39;49m[0m
+[1m[36mxai-grok-gboom[39;49m[0m
+[1m[36mxai-grok-hooks[39;49m[0m
+[1m[36mxai-grok-http[39;49m[0m
+[1m[36mxai-grok-image[39;49m[0m
+[1m[36mxai-grok-login[39;49m[0m
+[1m[36mxai-grok-markdown[39;49m[0m
+[1m[36mxai-grok-markdown-core[39;49m[0m
+[1m[36mxai-grok-mcp[39;49m[0m
+[1m[36mxai-grok-memory[39;49m[0m
+[1m[36mxai-grok-mermaid[39;49m[0m
+[1m[36mxai-grok-models[39;49m[0m
+[1m[36mxai-grok-otel[39;49m[0m
+[1m[36mxai-grok-pager[39;49m[0m
+[1m[36mxai-grok-pager-bin[39;49m[0m
+[1m[36mxai-grok-pager-diff[39;49m[0m
+[1m[36mxai-grok-pager-minimal[39;49m[0m
+[1m[36mxai-grok-pager-pty-harness[39;49m[0m
+[1m[36mxai-grok-pager-render[39;49m[0m
+[1m[36mxai-grok-paths[39;49m[0m
+[1m[36mxai-grok-plugin-marketplace[39;49m[0m
+[1m[36mxai-grok-sampler[39;49m[0m
+[1m[36mxai-grok-sampling-types[39;49m[0m
+[1m[36mxai-grok-sandbox[39;49m[0m
+[1m[36mxai-grok-secrets[39;49m[0m
+[1m[36mxai-grok-session-events[39;49m[0m
+[1m[36mxai-grok-session-search[39;49m[0m
+[1m[36mxai-grok-shared[39;49m[0m
+[1m[36mxai-grok-shell[39;49m[0m
+[1m[36mxai-grok-shell-base[39;49m[0m
+[1m[36mxai-grok-shell-session-support[39;49m[0m
+[1m[36mxai-grok-shell-terminal[39;49m[0m
+[1m[36mxai-grok-status-line[39;49m[0m
+[1m[36mxai-grok-subagent-resolution[39;49m[0m
+[1m[36mxai-grok-telemetry[39;49m[0m
+[1m[36mxai-grok-test-support[39;49m[0m
+[1m[36mxai-grok-tools[39;49m[0m
+[1m[36mxai-grok-tools-api[39;49m[0m
+[1m[36mxai-grok-update[39;49m[0m
+[1m[36mxai-grok-version[39;49m[0m
+[1m[36mxai-grok-voice[39;49m[0m
+[1m[36mxai-grok-workspace[39;49m[0m
+[1m[36mxai-grok-workspace-client[39;49m[0m
+[1m[36mxai-grok-workspace-daemon[39;49m[0m
+[1m[36mxai-grok-workspace-types[39;49m[0m
+[1m[36mxai-hooks-plugins-types[39;49m[0m
+[1m[36mxai-hunk-tracker[39;49m[0m
+[1m[36mxai-mixpanel[39;49m[0m
+[1m[36mxai-prompt-queue[39;49m[0m
+[1m[36mxai-ratatui-inline[39;49m[0m
+[1m[36mxai-ratatui-textarea[39;49m[0m
+[1m[36mxai-sqlite-journal[39;49m[0m
+[1m[36mxai-system-power[39;49m[0m
+[1m[36mxai-token-estimation[39;49m[0m
+[1m[36mxai-tracing-macros[39;49m[0m
+[1m[36mxai-tty-utils[39;49m[0m
+[1m[36mxai-workflow[39;49m[0m
+
+crates/common:
+[1m[36mxai-circuit-breaker[39;49m[0m
+[1m[36mxai-computer-hub-core[39;49m[0m
+[1m[36mxai-computer-hub-mcp-adapter[39;49m[0m
+[1m[36mxai-computer-hub-sdk[39;49m[0m
+[1m[36mxai-grok-compaction[39;49m[0m
+[1m[36mxai-interjection-core[39;49m[0m
+[1m[36mxai-message-delivery-core[39;49m[0m
+[1m[36mxai-test-utils[39;49m[0m
+[1m[36mxai-tool-protocol[39;49m[0m
+[1m[36mxai-tool-runtime[39;49m[0m
+[1m[36mxai-tool-types[39;49m[0m
+[1m[36mxai-tracing[39;49m[0m
+---CLI---
+/Users/palanisd/.npm-global/bin/codegraph
+Usage: codegraph [options] [command]
+
+Code intelligence and knowledge graph for any codebase
+
+Options:
+  -V, --version                  output the version number
+  --color                        force ANSI colors even when stdout is not a TTY
+  --no-color                     disable ANSI colors (NO_COLOR env is also
+                                 honored)
+  -h, --help                     display help for command
+
+Commands:
+  init [options] [path]          Initialize CodeGraph in a project directory and
+                                 build the initial index
+  uninit [options] [path]        Remove CodeGraph from a project (deletes
+                                 .codegraph/ directory)
+  index [options] [path]         Rebuild the full index from scratch (same
+                                 result as a fresh init)
+  sync [options] [path]          Sync changes since last index
+  status [options] [path]        Show index status and statistics

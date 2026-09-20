@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "id": "CN3-BRICK-01",
+  "title": "apex-ayl.89 (COMPACT-N3-1) RED ratchet — Messages-wire auto-compaction bricks the session by coalescing metadata into one user item over the 10k per-item cap (hermetic replica of the 01a0b095 incident): headless claude-sonnet-5 (messages wire), seeded 28k est-token synthetic history, case-patched context_window=32768 (auto-compact threshold ~0.9x29532 < 28k, the S05-shape trigger), T1+T2 turns. Mechanism (bead RCA): the local self-summarize compact pass completes; build_compacted_history (compaction_utils.rs:882-948 producer, messages.rs:568-675 R1 coalesce) merges the adjacent post-compact user items (rules + last query + summary + reminder) into ONE user message whose est exceeds the 10k per-item cap; the immediate post-compact resume request then FAILS LOCAL request validation (request_validation.rs:380-403+467-499) BEFORE HTTP — 'request validation failed: context item message[0] estimates ... tokens; per-item limit 10000' (non-retryable, local) — and every further prompt fails identically. Verdict semantics (expected_red against the defect): PRE-FIX binary (the committed tip 355cfe4 does NOT carry the .89 cut — it lives on branch apex-ayl-89-land b26c319, binary of record 7c7495200a35, live gate closed 2026-09-20) the T1 main post-compact call is never sent (post-compact count pin reads 1 = the compact pass only, min 2 FAILs), the ndjson carries the verbatim N3 error event (recon records it — the RED artifact), the T2 terminal text is absent -> FAIL = RED-EXPECTED(ayl89-compact-n3-brick). POST-FIX the compact pass is exactly one (storm band), the T1+T2 post-compact requests ARE sent (count 2, band max 3 for one retry), both turns complete, no error events -> PASS = RED-CLEARED. Re-pin rule: on the first GREEN run on a wave binary built from a main-branch tip containing apex-ayl-89-land (b26c319), drop expected_red and promote the count/text pins to hard asserts — the case becomes the standing regression guard for the .89 fix and the apex-ayl.117 (N3-EXEMPT-1) family. Control (class harness, BLOCKED if absent): the compact pass fired — exactly one xai-compact- tagged /v1/messages request (session_compact.rs:543/638/764 tag every compact pass, wire-agnostic); 0 or >1 = the seed/threshold rig missed, never a model conclusion.",
+  "bead": "apex-ayl.89",
+  "suite": "compaction",
+  "tier": "full",
+  "driver": "headless",
+  "model": "claude-sonnet-5",
+  "wire": "messages",
+  "seed": {
+    "hist_tokens": 28000
+  },
+  "config_patch": {
+    "model/claude-sonnet-5/context_window": 32768
+  },
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "wirecap": true,
+  "env": {
+    "store": false
+  },
+  "watchdog_s": 900,
+  "est_calls": 4,
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: CN3-BRICK-T1",
+      "timeout_s": 300
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: CN3-BRICK-T2",
+      "timeout_s": 300
+    }
+  ],
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error",
+        "label": "NO LOCAL/TURN ERROR: pre-cut the post-compact turn dies locally with the N3 validation message (this pin FAILs = part of the RED); post-cut both turns complete clean."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "CN3-BRICK-T2",
+        "label": "POST-COMPACT TURNS SURVIVE: the second post-compact turn completed with the exact terminal text (pre-cut ABSENT — the session is bricked after the compact pass; the S05-shape done pin, scored)."
+      },
+      {
+        "op": "recon",
+        "event": "error",
+        "label": "VERDICT RECORD: the last ndjson error event (pre-cut this is the verbatim 'request validation failed: context item message[0] estimates ... per-item limit 10000' N3 message — the RED artifact, capture the full text from the run ndjson; post-cut 0 error events = empty record)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "count",
+        "id": "compact_fired",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "headers.x-grok-req-id": { "prefix": "xai-compact-" }
+        },
+        "min": 1,
+        "max": 1,
+        "label": "CONTROL (class harness): the compact pass fired EXACTLY ONCE on the local self-summarize path (xai-compact- req-id, the S05 control shape on the messages route). 0 = the seed did not cross the threshold (rig miss -> BLOCKED); >1 = a compact storm (a separate defect class -> report-and-stop)."
+      },
+      {
+        "kind": "count",
+        "id": "postcompact_sent",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "min": 2,
+        "max": 3,
+        "label": "POST-COMPACT REQUESTS REACH THE WIRE (the scored RED/GREEN pin): 2 = T1 main + T2 main both sent (post-fix: the post-compact history passes local validation); 3 = one retry observed (record the branch); 1 = pre-cut shape — the T1 main post-compact request was REJECTED LOCALLY before HTTP (the N3 brick: it never reaches wiretap) -> FAIL = RED-EXPECTED; 0 = the turn never fired -> report-and-stop."
+      }
+    ]
+  },
+  "expected_red": {
+    "id": "ayl89-compact-n3-brick"
+  },
+  "scoring": {
+    "vacuous_if": [
+      {
+        "pin": "compact_fired",
+        "class": "harness",
+        "note": "the seed/threshold rig did not fire the compact pass — the brick premise never held; BLOCKED, never VACUOUS (the threshold is case-controlled, not model-temperament)."
+      }
+    ],
+    "require_wire_evidence": true
+  }
+}

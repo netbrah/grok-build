@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "id": "MXAI-C14",
+  "title": "MERGE-XAI-SYNC C-14 (ADOPT 01 §3 S1, grove-off worktree fallback) — the upstream deprecation: on a host where grove worktrees are unavailable (the NFS deployment class), a worktree create request SILENTLY degrades to the copy/btrfs fallback (the xai-fast-worktree crate), with no error surfaced. RECON CASE (record-only, never fails; the row reports RECON, not PASS/FAIL): the HERMETIC-MAC ARM exercises the grove-OFF path on a non-NFS host — one headless turn on sol (L-01) runs a SELF-CLEANING git probe in the hermetic temp cwd (a recon case may contain the write; disclosed in the contract): git init -q . + git config (throwaway identity, smoke@example.invalid) + git worktree add -q ../mxai-c14-wt + git worktree remove — the add+remove pair leaves no residue in the run dir and the temp cwd is discarded with the run (the probe touches only the hermetic tempdir; the real worktree is never written). EXPECTED SHAPE (recorded, not scored): the worktree add SUCCEEDS SILENTLY (the copy/btrfs fallback under our deployment class) and NO error surfaces on the wire or in the final text; the terminal carries 'WT-OUTCOME ok C14-DONE'. RECON SURFACE: (1) the final-text head (the WT-OUTCOME terminal + any error text), (2) the error-event record (absent = the silent-degrade expectation held), (3) the wire record of the git-output context (the function_call_output carrying the git result lines). The DEPLOYMENT-CLASS ARM (the real S1 claim: the NFS host where grove is genuinely off) is OPERATOR-DRIVEN on SCS per 06 §5 (the fleet-ops question, not a merge gate — 06 §5 non-goal): the README runbook documents the comparison (hermetic-arm record vs SCS-arm record; a SURFACED worktree error on either arm = the deprecation regressed under our code = new finding, report-and-stop). No scored pins by design.",
+  "bead": "apex-l2d.4",
+  "suite": "recon",
+  "tier": "full",
+  "driver": "headless",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "output_format": "streaming-json",
+  "wirecap": true,
+  "recon": true,
+  "env": {
+    "store": false
+  },
+  "est_calls": 3,
+  "watchdog_s": 300,
+  "tool_calls": [
+    {
+      "id": "wt1",
+      "tool": "run_terminal_command",
+      "args": {
+        "command": "git init -q . && git config user.email smoke@example.invalid && git config user.name smoke && git worktree add -q ../mxai-c14-wt && rc=$?; git worktree remove -q ../mxai-c14-wt 2>/dev/null; exit $rc"
+      },
+      "premise": "model"
+    }
+  ],
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Use the run_terminal_command tool to run this single command (it chains a throwaway git init, a worktree add, and a self-cleanup worktree remove, so it leaves no residue): git init -q . && git config user.email smoke@example.invalid && git config user.name smoke && git worktree add -q ../mxai-c14-wt && rc=$?; git worktree remove -q ../mxai-c14-wt 2>/dev/null; exit $rc — then reply with exactly: WT-OUTCOME <ok|error> C14-DONE, where <ok|error> reflects whether the 'git worktree add' step succeeded; if it errored, also include the error text after the token."
+    },
+    {
+      "op": "recon_note",
+      "note": "ARM SCOPE (recon_note, non-scoring): the hermetic-Mac arm exercises the grove-OFF fallback path (xai-fast-worktree) on a NON-NFS host — the expected record is a SILENT success (copy/btrfs worktree, no error surfaced on the wire or in the final text; terminal 'WT-OUTCOME ok C14-DONE'). The 06 C-14 DEPLOYMENT-CLASS claim (the NFS host where grove is genuinely unavailable) is the operator arm on SCS per 06 §5 (explicit non-goal: 'No fleet-wide Grove dependency audit beyond C-14's deployment-class check — that is a fleet-ops question for the operator'); the README runbook documents the pair comparison. The self-cleaning probe (add+remove in one command, throwaway identity) keeps the recon case's contained write inside the hermetic temp cwd (disclosed in the title)."
+    }
+  ],
+  "assert": {
+    "ndjson": [
+      {
+        "op": "recon",
+        "event": "error",
+        "field": "message",
+        "label": "ERROR-EVENT RECORD (recon, never fails): the last ndjson error event's message, if any — ABSENT = the silent-degrade expectation held (no worktree error surfaced; the 06 C-14 'no error surfaced' claim on the reachable arm). PRESENT = a surfaced worktree error = the deprecation regressed under our code = new finding -> report-and-stop (adjudicate on the record)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "recon",
+        "op": "recon",
+        "what": "final-text",
+        "file": "req-*.json",
+        "label": "VERDICT RECORD (recon, never fails): the merged ndjson final-text head — the expected shape is 'WT-OUTCOME ok C14-DONE' (the worktree add+remove probe succeeded silently). 'WT-OUTCOME error C14-DONE' (or the token absent) = the fallback surfaced a failure on this arm = new finding (adjudicate with the wire git-output record below). recon — always records, never fails."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "worktree|mxai-c14-wt",
+        "label": "GIT-OUTPUT RECORD (recon, all sol requests): the command + result context on the wire (the run_terminal_command call carrying the probe command, the function_call_output carrying the git result lines) — the coordinator's corpus for the hermetic-arm vs SCS-arm pair comparison (the S1 drift row's deployment-class half). recon — always records, never fails."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

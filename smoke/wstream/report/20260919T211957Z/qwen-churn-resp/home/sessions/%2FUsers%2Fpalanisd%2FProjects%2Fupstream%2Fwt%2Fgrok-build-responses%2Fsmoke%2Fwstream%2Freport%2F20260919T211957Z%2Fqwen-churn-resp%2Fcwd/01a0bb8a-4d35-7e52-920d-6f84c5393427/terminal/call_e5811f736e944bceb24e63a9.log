@@ -1,0 +1,5 @@
+121:        .with_name("run_terminal_command")
+127:        .with_name("spawn_subagent")
+132:    ToolConfig::from(&grok_build::TaskOutputTool).with_name("get_command_or_subagent_output")
+136:    ToolConfig::from(&grok_build::WaitTasksTool).with_name("wait_commands_or_subagents")
+140:    ToolConfig::from(&grok_build::KillTaskTool).with_name("kill_command_or_subagent")

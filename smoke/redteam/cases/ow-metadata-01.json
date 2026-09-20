@@ -1,0 +1,63 @@
+{
+ "schema_version": 1,
+ "id": "OW-METADATA-01",
+ "title": "apex-ayl.118 RED ratchet (openai side sweep F9) — body identity (user / safety_identifier) unreachable on the responses wire: the case declares model/gpt-5.6-sol/user=redstack-ow-metadata-01 (config_patch intent; the lenient row parser ignores the key pre-cut) and pins the configured user value + 'safety_identifier' on the /v1/responses request bodies. The fork hardcodes body user/safety_identifier to None (SA/client.rs:152 — sweep F9). WIRE-FINDING 20260920 redstack (first-hand, corrected from the F9/F14 docs claim): NO sol /v1/responses request carries any user-id header — the x-grok-* header set is agent/conv/session-scoped only (agent-id, conv-id, session-id, req-id, client-*) — so the identity surface is thinner than documented: no body identity AND no header user identity. RED today (no request body carries the user value or safety_identifier); GREEN when the cut plumbs config -> body identity. Control pin (class harness, plain assert): body.model eq gpt-5.6-sol on the main (oldest) request — the harness always sends the model. RE-PIN RULE: if the cut sends the user value in a different form (alias, normalization), re-pin the red to the landed shape.",
+ "bead": "apex-ayl.118",
+ "suite": "wire-shape",
+ "tier": "slim",
+ "driver": "headless",
+ "model": "gpt-5.6-sol",
+ "wirecap": true,
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "config_patch": {
+  "model/gpt-5.6-sol/user": "redstack-ow-metadata-01"
+ },
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: OW-METADATA-OK",
+   "timeout_s": 180
+  }
+ ],
+ "watchdog_s": 300,
+ "est_calls": 2,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error",
+    "label": "NO TERMINAL ERROR: the turn completed (the red is the body-identity seam, not the turn)."
+   }
+  ],
+  "wire": [
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses" },
+    "last": 0,
+    "path": "body.model",
+    "eq": "gpt-5.6-sol",
+    "label": "CONTROL (class harness): the main request carries the session model — the harness always does; a miss is a harness failure, never vacuous."
+   },
+   {
+    "kind": "grep",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses" },
+    "any": true,
+    "grep": "\"user\": \"redstack-ow-metadata-01\"",
+    "label": "RED PIN (F9, member 1): a /v1/responses request body carries the operator-configured user value. Pre-cut FAILs: the producer hardcodes user None (SA/client.rs:152) and no user-id header rides either (wire-verified 20260920)."
+   },
+   {
+    "kind": "grep",
+    "id": "ow_metadata_red2",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses" },
+    "any": true,
+    "grep": "safety_identifier",
+    "label": "RED PIN (F9, member 2): a /v1/responses request body carries safety_identifier. Pre-cut FAILs: hardcoded None (SA/client.rs:152)."
+   }
+  ]
+ },
+ "expected_red": { "id": "ow-f9-metadata" }
+}

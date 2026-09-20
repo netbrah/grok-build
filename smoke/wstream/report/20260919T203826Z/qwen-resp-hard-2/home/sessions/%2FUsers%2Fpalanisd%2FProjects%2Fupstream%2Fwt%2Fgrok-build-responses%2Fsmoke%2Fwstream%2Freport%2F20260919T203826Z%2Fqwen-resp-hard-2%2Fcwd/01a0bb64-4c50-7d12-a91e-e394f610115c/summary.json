@@ -1,0 +1,32 @@
+{
+  "info": {
+    "id": "01a0bb64-4c50-7d12-a91e-e394f610115c",
+    "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T203826Z/qwen-resp-hard-2/cwd"
+  },
+  "agent_id": "ag1.6037af19d19245358bd725459baa06b4",
+  "attempt_id": "at1.82a8ee1939d14a28a4e52136845f1753",
+  "session_summary": "Create a dependency-free Python 3 CLI at tools/minidiff.py that word-level",
+  "created_at": "2026-09-19T20:38:27.682324Z",
+  "updated_at": "2026-09-19T20:51:13.033199Z",
+  "num_messages": 75,
+  "num_chat_messages": 49,
+  "current_model_id": "qwen3.8-27b",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "session_kind": "headless",
+  "git_root_dir": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/",
+  "git_remotes": [
+    "https://bitbucket.ngage.netapp.com/scm/apex/grok-build.git",
+    "https://github.com/netbrah/grok-build.git",
+    "https://github.com/xai-org/grok-build.git"
+  ],
+  "head_commit": "49c4e549fb308d3824f7cb6ff93b4f3937fe9835",
+  "head_branch": "feat/first-class-responses-catalog",
+  "request_id": "11fe11ad-bc2b-4c66-a6b6-11f7b9463a93",
+  "grok_home": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T203826Z/qwen-resp-hard-2/home",
+  "last_active_at": "2026-09-19T20:51:13.033199Z",
+  "generated_title": "Create a dependency-free Python 3 CLI at tools/minidiff.py that word-level",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "xhigh"
+}

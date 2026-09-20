@@ -1,0 +1,63 @@
+{
+  "fixture": "c-03-cache/messages-request-shape",
+  "kind": "REDACTED shape reference (not a capture): the /v1/messages request MXAI-C03 scores (the session's LATEST messages request, nth:0) with the 06 §2 C-03 cache-breakpoint pins. Text fields are structural placeholders; the live wire capture is the evidence — this fixture is the expected shape for coordinator cross-reference.",
+  "request": {
+    "model": "claude-sonnet-5",
+    "max_tokens": 16384,
+    "stream": true,
+    "system": [
+      {
+        "type": "text",
+        "text": "<redacted system head — the runtime prompt, harness-rewritten at load; the head CONTENT is not the pin>",
+        "cache_control": {
+          "type": "ephemeral",
+          "ttl": "1h"
+        }
+      }
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          { "type": "text", "text": "<redacted user turn 1>" }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          { "type": "text", "text": "<redacted assistant turn 1 — NO cache_control here (06: 'not the assistant block')>" }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          { "type": "text", "text": "<redacted user turn 2>" }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          { "type": "text", "text": "<redacted assistant turn 2 — the trailing assistant; NO cache_control here either>" }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "[Continue]",
+            "cache_control": { "type": "ephemeral" }
+          }
+        ]
+      }
+    ]
+  },
+  "request_note": "The scored (title-refresh) request is tool-free by design — no tools key on its wire; the in-turn requests additionally carry the session tool surface + sampling params, which are not pins and are omitted here.",
+  "pins": {
+    "head_ttl_1h": "system[-1].cache_control == {type:'ephemeral', ttl:'1h'} — the M5 ours-side cache_ttl pin survived the merge (lane L-03 row cache_ttl = \"1h\"; the configured tier lands on the STABLE-HEAD breakpoint only — every 1h breakpoint precedes every 5m on the wire). A head without the 1h ttl = the theirs-side-only shape landed = the M5 pin regressed -> STOP.",
+    "tip_on_sentinel": "messages[-1] == the synthetic-user '[Continue]' sentinel (the '[Awaiting tool result]' variant would be the wrong sentinel for this no-tool session) and its single text block carries cache_control == {type:'ephemeral'} with NO ttl key (the tip stays at the wire's 5m default).",
+    "assistant_none": "no cache_control on any assistant block — the trailing assistant keeps no marker at all (the R2 interaction, pinned in-tree).",
+    "system_blocks_form": "a breakpoint on the head forces system to serialize as a BLOCKS array (SystemParam::Blocks) — the bare-string form only appears when the head carries no marker."
+  },
+  "driver_gap": "PARTIAL (C-03): the block-level placement assertion ('on the sentinel block, NOT the assistant block') is positional JSON the driver cannot express (grep is positional-agnostic; the block indices are not stable JSON paths) — the MXAI-C03 scored pins bound the request-level shape and the recon pin records the cache_control context lines of every message-request capture for coordinator review."
+}

@@ -66,7 +66,10 @@ REPORT_ROOT = os.path.join(HERE, "report")
 # grok/plans/c21c22/schema/case.schema.json; AC-2 pins byte-identity).
 SCHEMA_PATH = os.path.join(HERE, "case.schema.json")
 
-DEFAULT_BIN = os.path.join(REPO_ROOT, "target", "debug", "grok-responses")
+# 2026-09-19: release is the binary of record (debug build removed per
+# lean-down order); GROK_BIN env overrides.
+DEFAULT_BIN = os.environ.get("GROK_BIN") or os.path.join(
+    REPO_ROOT, "target", "release", "grok-responses")
 DEFAULT_LIVE_HOME = os.path.expanduser("~/.grok")
 DEFAULT_UPSTREAM = "https://llm-proxy-api.ai.eng.netapp.com"
 
@@ -669,7 +672,9 @@ def build_env(home: str, extra_unset=None) -> dict:
         unset.update(extra_unset)
     env = {k: v for k, v in os.environ.items() if k not in unset}
     env["GROK_AUTH_EXPIRED"] = "1"
-    env["GROK_HOME"] = home
+    # kiloecho P0 class 1 (defense-in-depth): never hand the binary a
+    # relative GROK_HOME.
+    env["GROK_HOME"] = os.path.abspath(home)
     return env
 
 
@@ -715,6 +720,15 @@ def run_headless_turn(bin_path, home, cwd, model, prompt, resume_sid,
     r.elapsed = elapsed
     r.stdout = out or ""
     r.stderr = err or ""
+    # kiloecho P0 triage §5: persist raw headless stdout per turn (was
+    # in-memory only — RT-M6-class failures invisible on disk). Per-turn
+    # files under capture_dir ride the final redaction sweep; ACP cases are
+    # unaffected (they have acp.log).
+    if capture_dir:
+        seq = len(globmod.glob(os.path.join(capture_dir, "stdout.ndjson.*")))
+        with open(os.path.join(capture_dir, "stdout.ndjson.%d" % seq),
+                  "w") as fh:
+            fh.write(r.stdout)
     fmt = "streaming-messages-json" if output_format == \
         "streaming-messages-json" else output_format
     r.events = parse_ndjson(r.stdout) if output_format.startswith(
@@ -1494,15 +1508,36 @@ def check_artifact(spec, session_dir):
                         cite={"file": rel})
 
 
+def _load_capture_doc(p):
+    """Request document a `where` filter applies to for capture `p`.
+    req-NNN.json loads directly; resp-NNN.jsonl resolves to its PAIRED
+    req-NNN.json (same capture number) — the resp-side form of the G10
+    scope: a response is in scope iff the request that produced it
+    matches the filter (CW-WRITE-USAGE-01: resp-frame value pins are
+    the only way to assert on provider-reported usage). Unparseable or
+    unpaired captures are dropped (fail-closed: an unscoped file is
+    never treated as matching)."""
+    name = os.path.basename(p)
+    if name.endswith(".jsonl"):
+        stem = name[: -len(".jsonl")]
+        if stem.startswith("resp-"):
+            p = os.path.join(
+                os.path.dirname(p),
+                "req-" + stem[len("resp-"):] + ".json")
+    try:
+        with open(p) as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+
 def _wire_filter(paths, where):
     if not where:
         return paths
     out = []
     for p in paths:
-        try:
-            with open(p) as fh:
-                d = json.load(fh)
-        except Exception:
+        d = _load_capture_doc(p)
+        if d is None:
             continue
         ok = True
         for k, v in where.items():
@@ -1852,14 +1887,79 @@ def _golden_field_diff(actual, want, limit=5):
     return divergences
 
 
+def _golden_norm_note(declared, unapplied):
+    """The MINOR-1 loudness note: a declared normalize path not applied
+    this run (the volatile field absent from this capture) must be loud,
+    not silent: the hazard direction is false-RED only (a pin failing at
+    a field that was meant to be nulled), and that must be
+    diagnosable from the detail — hard-failing would turn a
+    legitimate field-absent run into a mechanism error."""
+    if not declared:
+        return ""
+    n_applied = len(declared) - len(unapplied)
+    if unapplied:
+        return (" [normalize %d/%d applied; unapplied: %s]"
+                % (n_applied, len(declared), ", ".join(unapplied)))
+    return " [normalize %d/%d applied]" % (n_applied, len(declared))
+
+
+def golden_compare_doc(actual_doc, fixture_doc, normalize, capture_name,
+                       fixture_name, label="body", declared_normalize=None,
+                       pre_unapplied=None, norm_note=None):
+    """The shared golden core (apex-2o6): canonical compare of
+    `actual_doc` vs `fixture_doc` after the DOC-ROOT-RELATIVE
+    `normalize` paths are nulled in `actual_doc` (body-root-relative
+    for the response-side kinds resp_body/resp_stream; the request-side
+    golden kind pre-nulls the capture doc with capture-root paths and
+    passes its declared set + pre-computed note via
+    `declared_normalize`/`pre_unapplied` so its detail and diff doc
+    are byte-identical to the pre-cut engine). Returns (ok, detail,
+    diff_doc); diff_doc is the structured field-level diff on mismatch
+    (the TDD RED artifact; the caller writes it to the case report dir
+    via _golden_write_diff)."""
+    unapplied = list(pre_unapplied or [])
+    for p in (normalize or []):
+        actual_doc, applied = _golden_null_path(actual_doc, p)
+        if not applied:
+            unapplied.append(p)
+    declared = list(declared_normalize if declared_normalize is not None
+                    else (normalize or []))
+    if norm_note is None:
+        norm_note = _golden_norm_note(declared, unapplied)
+    got = _golden_canon(actual_doc)
+    if got == _golden_canon(fixture_doc):
+        return (True, "canonical %s match (%d B) vs %s%s"
+                % (label, len(got), fixture_name, norm_note), None)
+    div = _golden_field_diff(actual_doc, fixture_doc)
+    diff = {"capture": capture_name,
+            "fixture": fixture_name,
+            "normalize": declared,
+            "normalize_unapplied": list(unapplied),
+            "divergences": div,
+            "first_divergence": div[0]["path"] if div else "<root>"}
+    detail = ("canonical %s mismatch: %d divergence(s), first %s — %s%s"
+              % (label, len(div), diff["first_divergence"],
+                 "; ".join("%s: got %s want %s"
+                           % (d["path"], d["got"], d["want"])
+                           for d in div[:3]),
+                 norm_note))
+    if unapplied:
+        detail += (" — if the mismatch is at that position, the "
+                   "volatile field was absent this run")
+    return (False, detail, diff)
+
+
 def golden_compare(capture_path, fixture_path, normalize):
-    """The golden-kind compare — the ONE engine for WIRE-FORM byte pins
-    (the check_wire kind=golden branch and the switch_model op's wire
-    hook both route here). Canonical JSON of the capture's FULL request
-    body (after the capture-root-relative `normalize` paths are nulled)
-    vs the fixture's JSON. Returns (ok, detail, diff_doc); diff_doc is
-    the structured field-level diff on mismatch (the TDD RED artifact,
-    which the caller writes to the case report dir)."""
+    """The golden-kind compare (request side) — the ONE engine for
+    WIRE-FORM byte pins (the check_wire kind=golden branch and the
+    switch_model op's wire hook both route here). The capture's
+    `normalize` paths are CAPTURE-ROOT-RELATIVE (e.g.
+    'body.input.0.id'); they are nulled on the capture doc, then the
+    body is handed to golden_compare_doc. Canonical JSON of the
+    capture's FULL request body vs the fixture's JSON. Returns
+    (ok, detail, diff_doc) — behavior-identical to the pre-apex-2o6
+    engine (detail note + diff doc shape pinned by
+    GoldenCanonicalTest)."""
     with open(capture_path) as fh:
         doc = json.load(fh)
     with open(fixture_path) as fh:
@@ -1869,49 +1969,16 @@ def golden_compare(capture_path, fixture_path, normalize):
         doc, applied = _golden_null_path(doc, p)
         if not applied:
             unapplied.append(p)
-    # MINOR-1: a declared normalize path not applied this run (the
-    # volatile field absent from this capture) must be loud, not
-    # silent: the hazard direction is false-RED only (a pin failing at
-    # a field that was meant to be nulled), and that must be
-    # diagnosable from the detail — hard-failing would turn a
-    # legitimate field-absent run into a mechanism error.
-    norm_note = ""
-    if normalize:
-        _n_applied = len(normalize) - len(unapplied)
-        if unapplied:
-            norm_note = (" [normalize %d/%d applied; unapplied: %s]"
-                         % (_n_applied, len(normalize),
-                            ", ".join(unapplied)))
-        else:
-            norm_note = " [normalize %d/%d applied]" % (
-                _n_applied, len(normalize))
     body = doc.get("body")
     if not isinstance(body, dict):
         return (False,
                 "capture %s has no JSON request body"
                 % os.path.basename(capture_path), None)
-    got = _golden_canon(body)
-    if got == _golden_canon(want):
-        return (True, "canonical body match (%d B) vs %s%s"
-                % (len(got), os.path.basename(fixture_path),
-                   norm_note), None)
-    div = _golden_field_diff(body, want)
-    diff = {"capture": os.path.basename(capture_path),
-            "fixture": os.path.basename(fixture_path),
-            "normalize": list(normalize or []),
-            "normalize_unapplied": list(unapplied),
-            "divergences": div,
-            "first_divergence": div[0]["path"] if div else "<root>"}
-    detail = ("canonical body mismatch: %d divergence(s), first %s — %s%s"
-              % (len(div), diff["first_divergence"],
-                 "; ".join("%s: got %s want %s"
-                           % (d["path"], d["got"], d["want"])
-                           for d in div[:3]),
-                           norm_note))
-    if unapplied:
-        detail += (" — if the mismatch is at that position, the "
-                   "volatile field was absent this run")
-    return (False, detail, diff)
+    return golden_compare_doc(
+        body, want, [],
+        os.path.basename(capture_path), os.path.basename(fixture_path),
+        label="body", declared_normalize=list(normalize or []),
+        pre_unapplied=unapplied)
 
 
 def _golden_write_diff(capture_dir, spec, diff):
@@ -1926,6 +1993,182 @@ def _golden_write_diff(capture_dir, spec, diff):
             fh.write("\n")
     except Exception:
         pass
+
+
+def _resp_pair(spec, base):
+    """The shared response-pairing machinery (apex-2o6; factored out of
+    the resp_status branch, status/pairing logic UNCHANGED): resolve +
+    where-filter the request glob, n-sort (capture sequence), which
+    first|last, then pair to resp-NNN.jsonl (direct name, fallback
+    scan). Fail-closed like the sibling ops. Returns
+    (fail_result, req_path, n, resp_path) — fail_result is a ready
+    AssertResult (kind 'wire.<kind>') on any fail-closed exit, else
+    None with the triple populated."""
+    kind = spec.get("kind", "resp_status")
+    req_paths = _resolve_glob(spec.get("file", "req-*.json"), base)
+    if not req_paths:
+        return (AssertResult(spec, "wire.%s" % kind, False,
+                             "no wire files match glob %r"
+                             % spec.get("file"),
+                             "wire: glob %s -> none" % spec.get("file")),
+                None, None, None)
+    req_paths = _wire_filter(req_paths, spec.get("where"))
+    if not req_paths:
+        return (AssertResult(spec, "wire.%s" % kind, False,
+                             "no request matches where-filter %r "
+                             "(probe request never fired)"
+                             % spec.get("where"),
+                             "wire: %s where -> none" % kind),
+                None, None, None)
+    def _n_key(p):
+        try:
+            with open(p) as fh:
+                n = json.load(fh).get("n")
+        except Exception:
+            n = None
+        return (0, n) if isinstance(n, int) else (1, p)
+    req_paths.sort(key=_n_key)
+    if spec.get("which") == "last":
+        req_paths = list(reversed(req_paths))
+    f = req_paths[0]
+    try:
+        with open(f) as fh:
+            n = json.load(fh).get("n")
+    except Exception:
+        n = None
+    if not isinstance(n, int):
+        return (AssertResult(spec, "wire.%s" % kind, False,
+                             "request %s carries no capture n"
+                             % os.path.basename(f),
+                             "wire: %s -> no n" % kind),
+                None, None, None)
+    resp_path = os.path.join(base, "resp-%03d.jsonl" % n)
+    if not os.path.isfile(resp_path):
+        resp_path = None
+        for rp in sorted(globmod.glob(os.path.join(base, "resp-*.jsonl"))):
+            try:
+                with open(rp) as fh:
+                    if json.loads(fh.readline()).get("n") == n:
+                        resp_path = rp
+                        break
+            except Exception:
+                continue
+    if resp_path is None:
+        return (AssertResult(spec, "wire.%s" % kind, False,
+                             "no response captured for %s (n=%s) - "
+                             "upstream never answered"
+                             % (os.path.basename(f), n),
+                             "wire: %s -> no resp capture" % kind),
+                None, None, None)
+    return (None, f, n, resp_path)
+
+
+def _sse_frames(resp_path):
+    """apex-2o6: parse a resp-NNN.jsonl STREAM capture into
+    (status, frames) — the first int 'status' record value, then one
+    (event, data) per record whose 'frame' text carries SSE
+    'event:'/'data:' heads with at least one data line.
+    Comment/keep-alive frames (no data line, e.g. ': keepalive ping')
+    are SKIPPED (documented); unparseable data is kept as None (the
+    per-frame compare then fails closed)."""
+    status = None
+    frames = []
+    with open(resp_path, errors="replace") as fh:
+        for ln in fh:
+            try:
+                rec = json.loads(ln)
+            except Exception:
+                continue
+            if status is None and isinstance(rec.get("status"), int):
+                status = rec["status"]
+            fr = rec.get("frame")
+            if not isinstance(fr, str):
+                continue
+            ev = None
+            datas = []
+            for line in fr.split("\n"):
+                if line.startswith("event:"):
+                    ev = line[6:].strip()
+                elif line.startswith("data:"):
+                    datas.append(line[5:].strip())
+            if not datas:
+                continue
+            try:
+                data = json.loads("\n".join(datas))
+            except Exception:
+                data = None
+            frames.append((ev, data))
+    return status, frames
+
+
+def _frame_match(actual_fr, fx_fr, normalize):
+    """apex-2o6: one resp_stream frame compare — event-name equality +
+    the shared golden core on the frame's data object (the normalize
+    paths are FRAME-DATA-ROOT-RELATIVE, nulled in the actual frame).
+    Returns (ok, detail)."""
+    actual_ev, actual_data = actual_fr
+    fx_ev = fx_fr.get("event") if isinstance(fx_fr, dict) else None
+    if actual_ev != fx_ev:
+        return (False, "event %r != fixture %r" % (actual_ev, fx_ev))
+    fx_data = fx_fr.get("data") if isinstance(fx_fr, dict) else None
+    if not isinstance(actual_data, dict):
+        return (False, "frame data is not a JSON object (got %s)"
+                % type(actual_data).__name__)
+    ok, detail, _diff = golden_compare_doc(
+        actual_data, fx_data, normalize or [], "<frame>",
+        "fixture frame", label="frame data")
+    return (ok, detail)
+
+
+def _recon_file_val(spec, paths):
+    """The file-form recon read (shared by check_recon and the
+    check_wire kind=recon branch). grep = a REGEX search over ALL
+    matched files (ADV1-R1, apex-2o6, 2026-09-19: the pre-cut literal
+    substring over the NEWEST single file made regex alternations a
+    structural no-op and earlier captures invisible — the seat's
+    BRICK-phrasing pin never fired); an invalid pattern is recorded,
+    not raised (recon is non-scoring). field = the JSON read of the
+    selected file (nth/any/first, D-12 G15 unchanged)."""
+    if spec.get("grep") is not None:
+        pat = spec["grep"]
+        if not paths:
+            return "<no files>"
+        try:
+            rx = re.compile(pat)
+        except re.error as e:
+            return "<invalid recon regex %r: %s>" % (pat[:60], e)
+        total = 0
+        nfiles = 0
+        first_hit = None
+        for p in sorted(paths):
+            try:
+                with open(p, errors="replace") as fh:
+                    text = fh.read()
+            except Exception:
+                continue
+            nfiles += 1
+            hits = [ln for ln in text.splitlines() if rx.search(ln)]
+            if hits:
+                total += len(hits)
+                if first_hit is None:
+                    first_hit = "%s: %s" % (os.path.basename(p),
+                                            hits[0][:200])
+        return ("%d line(s) in %d file(s) match %r: %s"
+                % (total, nfiles, pat[:60], first_hit or "-"))
+    if spec.get("first"):
+        nth = len(paths) - 1
+    elif spec.get("any"):
+        nth = 0
+    else:
+        nth = spec.get("nth", 0)
+    if paths and nth < len(paths):
+        with open(paths[nth]) as fh:
+            d = json.load(fh)
+        found, val = get_path(d, spec.get("field"))
+        val = val if found else "<missing>"
+    else:
+        val = "<no files>"
+    return val
 
 
 def check_wire(spec, capture_dir):
@@ -1968,6 +2211,33 @@ def check_wire(spec, capture_dir):
     if kind == "grep":
         paths = _resolve_glob(spec.get("file", ""), base)
         paths = _wire_filter(paths, spec.get("where"))
+        # Opt-in regex match (CW-WRITE-USAGE-01 lesson): resp-frame captures
+        # carry the SSE payload JSON-ESCAPED inside the 'frame' string, so a
+        # literal needle must hand-escape every quote (the T21 precedent) and
+        # can never express a value class like "non-zero". regex:true
+        # compiles the needle once (fail-closed on a bad pattern); the
+        # default stays literal str.find — every pre-existing case is
+        # untouched.
+        _gre = None
+        if spec.get("regex"):
+            try:
+                _gre = re.compile(spec.get("grep", ""))
+            except re.error as exc:
+                return AssertResult(spec, "wire.grep", False,
+                                    "regex:true pattern does not compile: %s"
+                                    % exc,
+                                    "wire: bad regex rejected")
+
+        def _gspan(text):
+            """Match span (start, end) for the needle in `text`, or None."""
+            if _gre is not None:
+                m = _gre.search(text)
+                return (m.start(), m.end()) if m else None
+            if not needle:
+                return None
+            pos = text.find(needle)
+            return (pos, pos + len(needle)) if pos >= 0 else None
+
         if spec.get("all"):
             # MA-3: absent across ALL filtered files (not just the selected
             # nth). Fail-closed: `all` without `absent` is rejected, and an
@@ -1987,12 +2257,12 @@ def check_wire(spec, capture_dir):
             for f in paths:
                 with open(f) as fh:
                     text = fh.read()
-                pos = text.find(needle) if needle else -1
-                if pos >= 0:
-                    hit = (f, pos)
+                span = _gspan(text)
+                if span:
+                    hit = (f, span)
                     break
             if hit is not None:
-                f, pos = hit
+                f, span = hit
                 return AssertResult(spec, "wire.grep", False,
                                     "%s contains %r (absent in all %d)"
                                     % (os.path.basename(f), needle,
@@ -2000,9 +2270,7 @@ def check_wire(spec, capture_dir):
                                     "wire: %s grep %r"
                                     % (os.path.basename(f),
                                        needle[:80]),
-                                    cite=_wire_cite(f,
-                                                    [pos, pos +
-                                                     len(needle)]))
+                                    cite=_wire_cite(f, list(span)))
             return AssertResult(spec, "wire.grep", True,
                                 "all %d files lack %r"
                                 % (len(paths), needle),
@@ -2028,8 +2296,8 @@ def check_wire(spec, capture_dir):
             for f in paths:
                 with open(f) as fh:
                     text = fh.read()
-                pos = text.find(needle) if needle else -1
-                if pos >= 0:
+                span = _gspan(text)
+                if span:
                     return AssertResult(spec, "wire.grep", True,
                                         "%s contains %r (any of %d)"
                                         % (os.path.basename(f), needle,
@@ -2037,10 +2305,7 @@ def check_wire(spec, capture_dir):
                                         "wire: %s grep %r"
                                         % (os.path.basename(f),
                                            needle[:80]),
-                                        cite=_wire_cite(f,
-                                                        [pos,
-                                                         pos + len(
-                                                             needle)]))
+                                        cite=_wire_cite(f, list(span)))
             return AssertResult(spec, "wire.grep", False,
                                 "no file of %d contains %r"
                                 % (len(paths), needle),
@@ -2055,12 +2320,12 @@ def check_wire(spec, capture_dir):
         with open(f) as fh:
             text = fh.read()
         needle = spec.get("grep", "")
-        present = needle in text
+        span = _gspan(text)
+        present = span is not None
         ok = (not present) if spec.get("absent") else present
         cite = None
         if present:
-            pos = text.find(needle)
-            cite = _wire_cite(f, [pos, pos + len(needle)])
+            cite = _wire_cite(f, list(span))
         elif ok:
             cite = _wire_cite(f)
         return AssertResult(spec, "wire.grep", ok,
@@ -2129,56 +2394,9 @@ def check_wire(spec, capture_dir):
         # failures. `status_in` (optional whitelist) makes the check
         # assertive; omit it for evidence-only (ok iff a status line
         # exists).
-        req_paths = _resolve_glob(spec.get("file", "req-*.json"), base)
-        if not req_paths:
-            return AssertResult(spec, "wire.resp_status", False,
-                                "no wire files match glob %r"
-                                % spec.get("file"),
-                                "wire: glob %s -> none" % spec.get("file"))
-        req_paths = _wire_filter(req_paths, spec.get("where"))
-        if not req_paths:
-            return AssertResult(spec, "wire.resp_status", False,
-                                "no request matches where-filter %r "
-                                "(probe request never fired)"
-                                % spec.get("where"),
-                                "wire: resp_status where -> none")
-        def _cap_n(p):
-            try:
-                with open(p) as fh:
-                    return json.load(fh).get("n")
-            except Exception:
-                return None
-        def _n_key(p):
-            n = _cap_n(p)
-            return (0, n) if isinstance(n, int) else (1, p)
-        req_paths.sort(key=_n_key)
-        if spec.get("which") == "last":
-            req_paths = list(reversed(req_paths))
-        f = req_paths[0]
-        n = _cap_n(f)
-        if not isinstance(n, int):
-            return AssertResult(spec, "wire.resp_status", False,
-                                "request %s carries no capture n"
-                                % os.path.basename(f),
-                                "wire: resp_status -> no n")
-        resp_path = os.path.join(base, "resp-%03d.jsonl" % n)
-        if not os.path.isfile(resp_path):
-            resp_path = None
-            for rp in sorted(globmod.glob(
-                    os.path.join(base, "resp-*.jsonl"))):
-                try:
-                    with open(rp) as fh:
-                        if json.loads(fh.readline()).get("n") == n:
-                            resp_path = rp
-                            break
-                except Exception:
-                    continue
-        if resp_path is None:
-            return AssertResult(spec, "wire.resp_status", False,
-                                "no response captured for %s (n=%s) - "
-                                "upstream never answered"
-                                % (os.path.basename(f), n),
-                                "wire: resp_status -> no resp capture")
+        fail, f, n, resp_path = _resp_pair(spec, base)
+        if fail is not None:
+            return fail
         status = None
         error_json = None
         with open(resp_path, errors="replace") as fh:
@@ -2279,6 +2497,263 @@ def check_wire(spec, capture_dir):
                             "wire/%s golden %s" % (os.path.basename(f),
                                                    spec["golden"]),
                             cite=_wire_cite(f) if ok else None)
+    if kind == "resp_body":
+        # apex-2o6: the RESPONSE-SIDE byte pin — the selected request's
+        # paired NON-STREAM response body (the resp-NNN.jsonl frame
+        # lines concatenated + JSON-parsed) vs the fixture, through the
+        # shared golden core (golden_compare_doc; the normalize paths
+        # are BODY-ROOT-RELATIVE, unlike the request-side golden
+        # kind's capture-root paths). Fixture duality on the top-level
+        # 'status': an INT = the HTTP assert (the paired capture's
+        # status line must equal it; 'status' is popped from BOTH the
+        # fixture and the actual body before the canonical compare —
+        # the body's own status field is subsumed by the HTTP pin);
+        # a STRING (e.g. "completed") = the body's own field, left in
+        # the compare (the two forms are mutually exclusive — one
+        # object, one key).
+        if not isinstance(spec.get("golden"), str) \
+                or not spec.get("golden"):
+            return AssertResult(spec, "wire.resp_body", False,
+                                "resp_body assert needs a string "
+                                "'golden' fixture path",
+                                "wire: resp_body without fixture "
+                                "rejected")
+        fixture = os.path.join(base, spec["golden"])
+        if not os.path.isfile(fixture):
+            return AssertResult(spec, "wire.resp_body", False,
+                                "resp_body fixture %r not found "
+                                "(relative to the wire dir)"
+                                % spec["golden"],
+                                "wire: resp_body fixture missing")
+        with open(fixture) as fh:
+            fx = json.load(fh)
+        if not isinstance(fx, dict):
+            return AssertResult(spec, "wire.resp_body", False,
+                                "resp_body fixture must be a JSON "
+                                "object", "wire: resp_body fixture "
+                                "malformed")
+        fail, f, n, resp_path = _resp_pair(spec, base)
+        if fail is not None:
+            return fail
+        want_status = None
+        if isinstance(fx.get("status"), int):
+            want_status = fx.pop("status")
+        actual_status = None
+        frame_texts = []
+        with open(resp_path, errors="replace") as fh:
+            for ln in fh:
+                try:
+                    rec = json.loads(ln)
+                except Exception:
+                    continue
+                if actual_status is None \
+                        and isinstance(rec.get("status"), int):
+                    actual_status = rec["status"]
+                fr = rec.get("frame")
+                if isinstance(fr, str):
+                    frame_texts.append(fr)
+        if actual_status is None:
+            return AssertResult(spec, "wire.resp_body", False,
+                                "no parseable status line in %s"
+                                % os.path.basename(resp_path),
+                                "wire: resp_body -> unparseable")
+        if want_status is not None and actual_status != want_status:
+            return AssertResult(
+                spec, "wire.resp_body", False,
+                "req-%03d -> HTTP %d != fixture status %d"
+                % (n, actual_status, want_status),
+                "wire/%s (status=%d, want=%d)"
+                % (os.path.basename(resp_path), actual_status,
+                   want_status),
+                cite={"file": os.path.basename(resp_path),
+                      "request_n": n, "status": actual_status})
+        if not frame_texts:
+            return AssertResult(
+                spec, "wire.resp_body", False,
+                "no frames in %s (non-stream body missing)"
+                % os.path.basename(resp_path),
+                "wire: resp_body -> no frames")
+        try:
+            actual_body = json.loads("\n".join(frame_texts))
+        except Exception:
+            return AssertResult(
+                spec, "wire.resp_body", False,
+                "response body is not a single JSON document (%d "
+                "frame line(s) in %s) — fail-closed"
+                % (len(frame_texts), os.path.basename(resp_path)),
+                "wire: resp_body -> unparseable body")
+        if not isinstance(actual_body, dict):
+            return AssertResult(
+                spec, "wire.resp_body", False,
+                "response body is %s, not a JSON object — fail-closed"
+                % type(actual_body).__name__,
+                "wire: resp_body -> body not an object")
+        if want_status is not None and "status" in actual_body:
+            # The int-HTTP form subsumes the body's own status field:
+            # pop it from the actual side too (the fixture already
+            # lost it) so the canonical compare is symmetric.
+            actual_body = dict(actual_body)
+            actual_body.pop("status", None)
+        ok, detail, diff = golden_compare_doc(
+            actual_body, fx, spec.get("normalize"),
+            os.path.basename(resp_path),
+            os.path.basename(spec["golden"]),
+            label="response body")
+        if not ok and diff is not None:
+            _golden_write_diff(capture_dir, spec, diff)
+        return AssertResult(spec, "wire.resp_body", ok,
+                            "req-%03d (HTTP %d): %s"
+                            % (n, actual_status, detail),
+                            "wire/%s body %s"
+                            % (os.path.basename(resp_path),
+                               spec["golden"]),
+                            cite={"file": os.path.basename(resp_path),
+                                  "request_n": n,
+                                  "status": actual_status}
+                            if ok else None)
+    if kind == "resp_stream":
+        # apex-2o6: the STREAM-FRAME surface pin — the paired
+        # resp-NNN.jsonl SSE frames parsed (event:/data: heads;
+        # comment/keep-alive frames carry no data and are SKIPPED),
+        # the 'drop' list removes volatile event names, the
+        # min_frames/max_frames band bounds the POST-DROP count (the
+        # COMP-3 storm-band pattern, response-side), and the fixture
+        # frame sequence must appear IN ORDER (mode 'subsequence',
+        # the default — interleaved chunks tolerated) or 1:1 (mode
+        # 'exact'). Per-frame compare = event equality + the shared
+        # golden core on the frame's data object (normalize paths
+        # nulled per frame, body-root-relative).
+        if not isinstance(spec.get("golden"), str) \
+                or not spec.get("golden"):
+            return AssertResult(spec, "wire.resp_stream", False,
+                                "resp_stream assert needs a string "
+                                "'golden' fixture path",
+                                "wire: resp_stream without fixture "
+                                "rejected")
+        fixture = os.path.join(base, spec["golden"])
+        if not os.path.isfile(fixture):
+            return AssertResult(spec, "wire.resp_stream", False,
+                                "resp_stream fixture %r not found "
+                                "(relative to the wire dir)"
+                                % spec["golden"],
+                                "wire: resp_stream fixture missing")
+        with open(fixture) as fh:
+            fx = json.load(fh)
+        if not isinstance(fx, dict) or not isinstance(fx.get("frames"),
+                                                      list):
+            return AssertResult(
+                spec, "wire.resp_stream", False,
+                "resp_stream fixture must be an object with a "
+                "'frames' list", "wire: resp_stream fixture "
+                "malformed")
+        mode = spec.get("mode") or fx.get("mode") or "subsequence"
+        if mode not in ("subsequence", "exact"):
+            return AssertResult(
+                spec, "wire.resp_stream", False,
+                "resp_stream 'mode' must be subsequence|exact (got "
+                "%r)" % mode, "wire: resp_stream bad mode")
+        want_status = fx.get("status")
+        fail, f, n, resp_path = _resp_pair(spec, base)
+        if fail is not None:
+            return fail
+        actual_status, actual_frames = _sse_frames(resp_path)
+        if actual_status is None:
+            return AssertResult(spec, "wire.resp_stream", False,
+                                "no parseable status line in %s"
+                                % os.path.basename(resp_path),
+                                "wire: resp_stream -> unparseable")
+        if isinstance(want_status, int) \
+                and actual_status != want_status:
+            return AssertResult(
+                spec, "wire.resp_stream", False,
+                "req-%03d -> HTTP %d != fixture status %d"
+                % (n, actual_status, want_status),
+                "wire/%s (status=%d, want=%d)"
+                % (os.path.basename(resp_path), actual_status,
+                   want_status),
+                cite={"file": os.path.basename(resp_path),
+                      "request_n": n, "status": actual_status})
+        drop = set(spec.get("drop") or [])
+        kept = [fr for fr in actual_frames if fr[0] not in drop]
+        lo = spec.get("min_frames", 0)
+        hi = spec.get("max_frames")
+        if not (len(kept) >= lo and (hi is None or len(kept) <= hi)):
+            return AssertResult(
+                spec, "wire.resp_stream", False,
+                "%d post-drop frames outside the band %d..%s "
+                "(min_frames=%s max_frames=%s)"
+                % (len(kept), lo,
+                   str(hi) if hi is not None else "inf", lo,
+                   str(hi) if hi is not None else "none"),
+                "wire: resp_stream count band")
+        normalize = spec.get("normalize")
+        cite = {"file": os.path.basename(resp_path), "request_n": n}
+        if mode == "exact":
+            if len(kept) != len(fx["frames"]):
+                return AssertResult(
+                    spec, "wire.resp_stream", False,
+                    "exact mode: %d post-drop frames != %d fixture "
+                    "frames (1:1 required)"
+                    % (len(kept), len(fx["frames"])),
+                    "wire: resp_stream exact length")
+            for i, (actual_fr, fx_fr) in enumerate(
+                    zip(kept, fx["frames"])):
+                okf, detf = _frame_match(actual_fr, fx_fr, normalize)
+                if not okf:
+                    return AssertResult(
+                        spec, "wire.resp_stream", False,
+                        "exact frame %d: %s" % (i, detf),
+                        "wire: resp_stream exact frame %d" % i)
+            return AssertResult(
+                spec, "wire.resp_stream", True,
+                "req-%03d: exact 1:1 match of %d frame(s) (HTTP %d)"
+                % (n, len(kept), actual_status),
+                "wire/%s stream %s (exact)"
+                % (os.path.basename(resp_path), spec["golden"]),
+                cite=cite)
+        # subsequence (default): fixture frames in order, interleaved
+        # actual chunks tolerated.
+        pos = 0
+        for fi, fx_fr in enumerate(fx["frames"]):
+            matched = False
+            while pos < len(kept):
+                okf, _detf = _frame_match(kept[pos], fx_fr, normalize)
+                pos += 1
+                if okf:
+                    matched = True
+                    break
+            if not matched:
+                fx_ev = fx_fr.get("event") if isinstance(fx_fr, dict) \
+                    else None
+                return AssertResult(
+                    spec, "wire.resp_stream", False,
+                    "fixture frame %d (%s) not found in order in the "
+                    "%d post-drop actual frame(s)"
+                    % (fi, fx_ev, len(kept)),
+                    "wire: resp_stream subsequence frame %d" % fi)
+        return AssertResult(
+            spec, "wire.resp_stream", True,
+            "req-%03d: all %d fixture frame(s) matched in order "
+            "(%d post-drop actual, HTTP %d)"
+            % (n, len(fx["frames"]), len(kept), actual_status),
+            "wire/%s stream %s (subsequence)"
+            % (os.path.basename(resp_path), spec["golden"]),
+            cite=cite)
+    if kind == "recon":
+        # ADV1-R1 (apex-2o6): the wire-level recon pin — non-scoring
+        # (always ok; the evidence text is the match summary), regex
+        # over ALL matched files (the pre-cut engine had no
+        # check_wire recon branch at all — kind=recon raised).
+        label = spec.get("label", "recon")
+        if not spec.get("file"):
+            return AssertResult(spec, "wire.recon", True,
+                                "%s: <n/a>" % label,
+                                "recon: " + label, recon=True)
+        paths = _resolve_glob(spec["file"], base)
+        val = _recon_file_val(spec, paths)
+        return AssertResult(spec, "wire.recon", True,
+                            "%s: %s" % (label, str(val)[:400]),
+                            "recon: " + label, recon=True)
     raise ValueError("unknown wire kind: %r" % kind)
 
 
@@ -2294,32 +2769,13 @@ def check_recon(spec, ctx):
         base = ctx.capture_dir if spec.get("base") == "wire" \
             else (ctx.session_dir or "")
         paths = _resolve_glob(spec["file"], base or "")
-        # apex-ayl.22 D-12 (G15): any = the newest mtime (paths[0]
-        # under the prefer_last sort); first = the oldest (paths[-1]);
-        # the always-ok recon contract is unchanged either way.
-        if spec.get("first"):
-            nth = len(paths) - 1
-        elif spec.get("any"):
-            nth = 0
-        else:
-            nth = spec.get("nth", 0)
-        if spec.get("grep") is not None:
-            val = "<no files>"
-            if nth < len(paths):
-                with open(paths[nth], errors="replace") as fh:
-                    text = fh.read()
-                hits = [ln for ln in text.splitlines()
-                        if spec["grep"] in ln]
-                val = "%d line(s) contain %r: %s" % (
-                    len(hits), spec["grep"][:60],
-                    (hits[0][:200] if hits else "-"))
-        elif paths and nth < len(paths):
-            with open(paths[nth]) as fh:
-                d = json.load(fh)
-            found, val = get_path(d, spec.get("field"))
-            val = val if found else "<missing>"
-        else:
-            val = "<no files>"
+        # ADV1-R1 (apex-2o6, 2026-09-19): the grep form is a REGEX
+        # over ALL matched files (the pre-cut literal substring over
+        # the NEWEST single file made regex alternations a structural
+        # no-op and earlier captures invisible); the field form keeps
+        # the D-12 (G15) selection (any = newest, first = oldest,
+        # nth). The always-ok recon contract is unchanged either way.
+        val = _recon_file_val(spec, paths)
     elif "event" in spec:
         matches = [e for e in ctx.events if e.get("type") == spec["event"]]
         if matches:
@@ -2349,8 +2805,10 @@ CAPS = {"full_blocked_max_no_ruling": 3,
 # apex-ayl.22 D-8: the scored wire kinds that make a per-file claim
 # (audited under scoring.require_wire_evidence). `count` is exempt:
 # its machine index is the matched file SET (cite["files"]), not one
-# file; recon asserts are never scored.
-AUDITED_WIRE_KINDS = ("field", "grep", "resp_status", "size_lt")
+# file; recon asserts are never scored. apex-2o6: the response-side
+# kinds (resp_body/resp_stream) cite their paired resp-NNN.jsonl.
+AUDITED_WIRE_KINDS = ("field", "grep", "resp_status", "size_lt",
+                      "resp_body", "resp_stream")
 
 
 def _req_n_from_name(path):
@@ -2709,17 +3167,39 @@ def _run_case_once(case, args, budget, run_dir, attempt):
 
     try:
         if case.get("disabled"):
-            return _skip_row(case, "disabled: %s" % case.get("reason",
-                                                            case.get(
-                                                                "unblocks_at",
-                                                                "")))
+            row = _skip_row(case, "disabled: %s" % case.get("reason",
+                                                           case.get(
+                                                               "unblocks_at",
+                                                               "")))
+            # N1: terminal-shape line so sweepctl's log parser closes the
+            # === marker (done=74/74, calls=0); the reason rides in
+            # verdict.json + the report table.
+            log("  %s: SKIP in 0.0s calls=0" % cid)
+            _skip_verdict(run_dir, case, row, ctx, args)
+            return row
         est = case.get("est_calls", 3)
         if budget.used + est > args.budget:
-            return _skip_row(case, "budget: used=%d est=%d limit=%d"
-                             % (budget.used, est, args.budget))
+            row = _skip_row(case, "budget: used=%d est=%d limit=%d"
+                            % (budget.used, est, args.budget))
+            log("  %s: SKIP in 0.0s calls=0" % cid)
+            _skip_verdict(run_dir, case, row, ctx, args)
+            return row
 
         wirecap = (case.get("wirecap", True) and args.wirecap)
-        port = free_port() if wirecap else None
+        proxy_none = (case.get("env") or {}).get("proxy") == "none"
+        # apex-2o6: the L1 key-free runtime backstop (validate_case_file
+        # is the primary gate; this catches hand-run rosters).
+        if proxy_none and (case.get("rows")
+                           or any(isinstance(st, dict)
+                                  and st.get("op") in LIVE_MODEL_OPS
+                                  for st in case.get("steps") or [])):
+            mark("BLOCKED", "proxy:none case carries live model ops "
+                            "(rows or a LIVE_MODEL_OPS step) — the "
+                            "contract gate should have caught this")
+            return _finish(case, run_dir, ctx, results, status,
+                           started, None, None, args, budget,
+                           attempt=attempt)
+        port = free_port() if (wirecap or proxy_none) else None
         # apex-ayl.22 D-10 (G4): the case cwd wins over the hermetic
         # home cwd (the binary runs read-only in the case cwd); a
         # non-absolute cwd fail-closes to BLOCKED at the runtime
@@ -2741,7 +3221,7 @@ def _run_case_once(case, args, budget, run_dir, attempt):
         case_cwd = case_cwd or home.cwd
         upstream = live_upstream(args.live_home)
         wt = None
-        if wirecap:
+        if wirecap or proxy_none:
             ctx.capture_dir = os.path.join(run_dir, "wire")
             # apex-ayl.79 (XW-JIG-1): a case may pre-place its input wire
             # dir — <CASES_DIR>/<case-stem>/wire/ (the mechanism-case
@@ -2771,13 +3251,22 @@ def _run_case_once(case, args, budget, run_dir, attempt):
                                         _pl_dst)
                         log("  %s: pre-placed wire input %s"
                             % (cid, _pl))
-            wt = Wiretap(port, upstream, ctx.capture_dir, args.ambient_key)
-            if not wt.wait_ready():
-                mark("BLOCKED", "wiretap did not start")
-                return _finish(case, run_dir, ctx, results, status, started,
-                               wt, home, args, budget)
-            log("  %s: wiretap on :%d capture=%s/wire" % (cid, port,
-                                                          cid.lower()))
+            if proxy_none and not wirecap:
+                # apex-2o6: the L1 key-free mode — the pre-placed wire
+                # dir is the case's ONLY evidence source; no Wiretap
+                # (the hermetic base_url points at the dead port).
+                log("  %s: proxy:none L1 key-free — pre-placed wire "
+                    "inputs only (no Wiretap; dead port %d)"
+                    % (cid, port))
+            if wirecap:
+                wt = Wiretap(port, upstream, ctx.capture_dir,
+                             args.ambient_key)
+                if not wt.wait_ready():
+                    mark("BLOCKED", "wiretap did not start")
+                    return _finish(case, run_dir, ctx, results, status,
+                                   started, wt, home, args, budget)
+                log("  %s: wiretap on :%d capture=%s/wire" % (cid, port,
+                                                              cid.lower()))
 
         cur_model = case.get("model")
         seed = case.get("seed")
@@ -3222,10 +3711,11 @@ def _run_case_once(case, args, budget, run_dir, attempt):
                                                            "session"))
                                           else (ctx.session_dir or
                                                os.devnull)))
-        if wirecap:
+        if wirecap or proxy_none:
             # apex-ayl.22 D-4b: the declared output_contains pins are
             # scored synthesized wire-grep pins (added to the case's
-            # own explicit wire pins).
+            # own explicit wire pins). apex-2o6: also for proxy:none
+            # (the pre-placed wire dir is the evidence source).
             wire_specs = list(assert_block.get("wire", []))
             wire_specs.extend(synth_output_pins(case))
             for spec in wire_specs:
@@ -3268,6 +3758,10 @@ def _copy_session_evidence(home, ctx, run_dir):
                 # apex-ayl.22 D-8: the hermetic home's unified session
                 # log is copied too (T-S4 pins the copy behavior).
                 "unified.jsonl",
+                # apex-ayl.101 RED surface (CW-WRITE-USAGE-01): the usage
+                # receipt is a session-dir artifact — cache-economics
+                # ratchets assert on session.cacheCreationTokens.
+                "usage.json",
                 "compaction", "compaction_requests",
                 "compaction_checkpoints", "subagents"]
         os.makedirs(dst, exist_ok=True)
@@ -3292,6 +3786,16 @@ def _skip_row(case, why):
             "status": "SKIP", "duration_s": 0.0, "model_calls": 0,
             "turns": [], "asserts": [], "skipped": why,
             "run_dir": None, "snapshots": []}
+
+
+def _skip_verdict(run_dir, case, row, ctx, args):
+    """apex-ayl.91 N1: SKIP rows persist verdict.json (status/outcome
+    SKIP, zero calls, empty evidence_index) so the campaign census is
+    machine-readable end to end — the aggregator and seal validator
+    count verdict files, and a log-only skip note left the row
+    invisible to both (72/74 with two empty cell dirs)."""
+    write_verdict_json(run_dir, case, row, ctx, [],
+                       getattr(args, "campaign_id", None))
 
 
 def _row_model_for_spec(spec):
@@ -3482,8 +3986,17 @@ def write_verdict_json(run_dir, case, row, ctx, results, campaign_id=None):
     `status` + `verdict`)."""
     v = ctx.verdict or {}
     status = row["status"]
-    outcome = "FAIL" if status == "FAIL" else \
-        ("BLOCKED" if status == "BLOCKED" else "PASS")
+    # apex-ayl.91 N1: SKIP persists as outcome SKIP (previously PASS,
+    # which the validator's is_pass check then rejected as "incomplete
+    # evidence" for the zero-evidence skip row).
+    if status == "FAIL":
+        outcome = "FAIL"
+    elif status == "BLOCKED":
+        outcome = "BLOCKED"
+    elif status == "SKIP":
+        outcome = "SKIP"
+    else:
+        outcome = "PASS"
     doc = {
         "schema_version": 1,
         "campaign_id": campaign_id,
@@ -3521,7 +4034,7 @@ def write_verdict_json(run_dir, case, row, ctx, results, campaign_id=None):
 # ---------------------------------------------------------------------------
 
 KEY_HEURISTIC = re.compile(
-    r'(?i)(sk-[A-Za-z0-9_-]{16,}|AKIA[A-Z0-9]{16}|'
+    r'(?i)((?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{16,}|AKIA[A-Z0-9]{16}|'
     r'(?:api[_-]?key|token)\s*[:=]\s*"[A-Za-z0-9._-]{24,}"'
     r'|user=[A-Za-z0-9]+:[A-Za-z0-9+/=]{20,}@)')
 
@@ -3670,7 +4183,7 @@ def write_report(out: str, rows, env_meta, args, sweep_hits, sweep_details):
     for r in rows_sorted:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
     md = []
-    md.append("# HT-1 L3 red-team run report")
+    md.append("# L3 red-team instrumented run report")
     md.append("")
     md.append("- ts: %s" % env_meta["ts"])
     md.append("- binary: %s (sha256_12 %s)" % (env_meta["bin"],
@@ -3805,7 +4318,12 @@ STEP_OPS = ("turn", "switch", "switch_model", "kill", "compact", "idle",
 NDJSON_OPS = ("count", "absent", "present", "eq", "ne", "text_contains",
               "tools_absent", "tools_present", "recon")
 WIRE_KINDS = ("field", "grep", "size_lt", "count", "resp_status", "recon",
-              "golden")
+              "golden", "resp_body", "resp_stream")
+# apex-2o6: the step ops that fire a LIVE model call — a proxy:none
+# (L1 key-free) case may carry none of these (validate_case_file
+# gate + _run_case_once runtime backstop).
+LIVE_MODEL_OPS = ("turn", "switch", "switch_model", "kill", "compact",
+                  "mcp_call", "subagent")
 ARTIFACT_OPS = ("count", "grep", "recon")
 
 
@@ -4415,7 +4933,8 @@ def validate_case_file(path, engine=None):
                 if kind == "grep" \
                         and not isinstance(spec.get("grep"), str):
                     errs.append("%s: grep needs a string 'grep'" % ctx)
-                if kind in ("field", "grep", "count", "resp_status") \
+                if kind in ("field", "grep", "count", "resp_status",
+                            "resp_body", "resp_stream") \
                         and not spec.get("file"):
                     errs.append("%s: %s needs a 'file' glob" % (ctx, kind))
                 if kind == "golden":
@@ -4451,6 +4970,34 @@ def validate_case_file(path, engine=None):
                         and isinstance(spec.get("b"), dict)):
                     errs.append("%s: size_lt needs 'a' and 'b' sub-specs"
                                 % ctx)
+                if kind in ("resp_body", "resp_stream"):
+                    if not isinstance(spec.get("golden"), str) \
+                            or not spec.get("golden"):
+                        errs.append("%s: %s needs a string 'golden' "
+                                    "fixture path" % (ctx, kind))
+                    nz = spec.get("normalize")
+                    if nz is not None and (
+                            not isinstance(nz, list)
+                            or not all(isinstance(x, str) for x in nz)):
+                        errs.append("%s: %s 'normalize' must be a list "
+                                    "of dotted-path strings" % (ctx,
+                                                                kind))
+                if kind == "resp_stream":
+                    if spec.get("mode") not in (None, "subsequence",
+                                                "exact"):
+                        errs.append("%s: resp_stream 'mode' must be "
+                                    "subsequence|exact" % ctx)
+                    drp = spec.get("drop")
+                    if drp is not None and (
+                            not isinstance(drp, list)
+                            or not all(isinstance(x, str) for x in drp)):
+                        errs.append("%s: resp_stream 'drop' must be a "
+                                    "list of event names" % ctx)
+                    for bk in ("min_frames", "max_frames"):
+                        if bk in spec \
+                                and not isinstance(spec[bk], int):
+                            errs.append("%s: resp_stream %s must be an "
+                                        "int" % (ctx, bk))
                 if recon and not (spec.get("file") or spec.get("event")
                                   or "value" in spec
                                   or spec.get("what") == "final-text"):
@@ -4493,6 +5040,38 @@ def validate_case_file(path, engine=None):
     # legacy files stop here (back-compat, no new failures).
     if case.get("schema_version") is not None:
         errs.extend(_validate_new_case(name, case, engine))
+    # apex-2o6 (HARNESS-UNIFY-IMPL-1): the L1 key-free mode contract —
+    # env.proxy='none' declares a hermetic, ZERO-LIVE-OP case whose
+    # wire inputs are PRE-PLACED at the case-file sibling
+    # <case-stem>/wire/ (copied if-absent into the run dir). Live
+    # model ops (LIVE_MODEL_OPS) or a rows case contradict the
+    # declaration (there is no proxy to talk to); absent pre-placed
+    # inputs make every wire assert vacuous (nothing to pin).
+    if (case.get("env") or {}).get("proxy") == "none":
+        bad_steps = [i for i, st in enumerate(case.get("steps") or [])
+                     if isinstance(st, dict)
+                     and st.get("op") in LIVE_MODEL_OPS]
+        if bad_steps:
+            errs.append(
+                "%s: proxy:none forbids live model ops (steps %s: %s) "
+                "— a key-free case has no proxy to talk to"
+                % (name,
+                   ", ".join("steps[%d]" % i for i in bad_steps),
+                   ", ".join(case["steps"][i].get("op")
+                             for i in bad_steps)))
+        if "rows" in case:
+            errs.append("%s: proxy:none forbids rows cases (each row "
+                        "fires a live headless turn)" % name)
+        stem = (os.path.join(os.path.dirname(os.path.abspath(path)),
+                             str(cid).lower(), "wire")
+                if isinstance(cid, str) and cid else None)
+        if not (stem and os.path.isdir(stem) and os.listdir(stem)):
+            errs.append(
+                "%s: proxy:none requires pre-placed wire inputs at the "
+                "case-file sibling %r (copied if-absent into the run's "
+                "wire dir; absent = every wire assert is vacuous)"
+                % (name, os.path.join(str(cid).lower(), "wire")
+                   if isinstance(cid, str) and cid else "?"))
     return errs
 
 
@@ -4656,8 +5235,12 @@ def validate_campaign(campaign_dir):
                     "%s: identity drift — case_id %r not in manifest "
                     "expected_cases %s (%s)" % (prefix, cid, expected,
                                                 loc))
-            is_pass = (doc.get("outcome") == "PASS"
-                       or doc.get("status") == "PASS")
+            # apex-ayl.91 N4: only a genuine PASS that actually made
+            # model calls must carry wire evidence — RECON/VACUOUS/
+            # FINDING-PASS rows (outcome-mapped PASS) and the 0-call
+            # hermetic mechanism cases legitimately have none.
+            is_pass = (doc.get("status") == "PASS"
+                       and int(doc.get("model_calls") or 0) > 0)
             if is_pass and not doc.get("evidence_index"):
                 rejections.append(
                     "%s: PASS with incomplete evidence — cell %r "
@@ -4669,6 +5252,31 @@ def validate_campaign(campaign_dir):
                     "%s: retry overwrote earlier evidence — cell %r "
                     "has attempt %d without attempt %d (%s)"
                     % (prefix, cell_id, n, n - 1, cell_dir))
+    # apex-ayl.91 N5: every sealed expected case must have a persisted
+    # verdict (a lost cell dir or a log-only skip breaks the census),
+    # and the seal must still match the manifest fields it was cut over.
+    import hashlib
+    sealed = man.get("sealed_sha256")
+    if sealed:
+        base = {k: v for k, v in man.items()
+                if k not in ("started_utc", "sealed_sha256")}
+        canonical = json.dumps(base, sort_keys=True,
+                               separators=(",", ":"), default=str)
+        if (hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+                != sealed):
+            rejections.append(
+                "%s: seal broken — sealed_sha256 %s… does not match "
+                "the canonical manifest fields" % (prefix, sealed[:12]))
+    known = set()
+    for cell_id, _attempt in seen:
+        if cell_id:
+            known.add(cell_id)
+            known.add(str(cell_id).lower())
+    for cid in expected:
+        if cid not in known and cid.lower() not in known:
+            rejections.append(
+                "%s: no verdict persisted — expected case %r has no "
+                "verdict.json in the campaign dir" % (prefix, cid))
     return rejections
 
 
@@ -4964,6 +5572,11 @@ def main(argv=None):
     p.add_argument("--selftest", action="store_true",
                    help="run the offline test suite (test_run.py) and "
                         "exit — no proxy key, no binary, no live calls")
+    p.add_argument("--daemon", action="store_true",
+                   help="cut 0.5 (D-3): self-daemonize (setsid+double-fork) "
+                        "and register in smoke/runs.jsonl; logs to "
+                        "<out>/run.log, pid to <out>/daemon.pid — designed "
+                        "to be launched by smoke/sweepctl.py")
     p.add_argument("--budget", type=int, default=40,
                    help="model-call budget (abort remaining cases past it)")
     p.add_argument("--no-wirecap", action="store_true",
@@ -4998,6 +5611,22 @@ def main(argv=None):
                         "summary.json/summary.md; exit 1 on any "
                         "rejection (apex-ayl.22 D-14)")
     a = p.parse_args(argv)
+    if a.daemon:
+        # cut 0.5 (D-3): self-daemonize FIRST (m10 — before any log()/
+        # argument-driven I/O); the original process exits 0 immediately and
+        # the daemon grandchild continues below with a.out (hence the
+        # default campaign id) already fixed.
+        if a.selftest or a.aggregate:
+            p.error("--daemon is incompatible with --selftest/--aggregate")
+        if a.out is None:
+            a.out = os.path.join(REPORT_ROOT, utc_ts())
+        a.out = os.path.abspath(a.out)
+        os.makedirs(a.out, exist_ok=True)
+        if os.path.dirname(HERE) not in sys.path:
+            sys.path.insert(0, os.path.dirname(HERE))
+        import lib.launch as _launch
+        _launch.self_daemonize(os.path.join(a.out, "run.log"),
+                               os.path.join(a.out, "daemon.pid"))
     a.bin = resolve_bin_path(a.bin)
     if a.selftest:
         # Offline gate: no env key, no report dir, no binary. The suite
@@ -5047,7 +5676,13 @@ def main(argv=None):
             % ("PASS" if result.wasSuccessful() else "FAIL",
                result.testsRun, len(result.failures),
                len(result.errors)))
-        return 0 if result.wasSuccessful() else 1
+        # cut 0.5 (D-4): fold the sweepctl ST-SURV survival suite into the
+        # offline gate (3/3 hermetic; pass count 73 -> 76).
+        import test_sweepctl
+        sweep_ok = test_sweepctl.main() == 0
+        log("selftest: sweepctl ST-SURV suite %s"
+            % ("PASS (3/3)" if sweep_ok else "FAIL (see lines above)"))
+        return 0 if (result.wasSuccessful() and sweep_ok) else 1
     if a.aggregate:
         # apex-ayl.22 D-14: the offline campaign lane — no proxy key,
         # no run dir; validate first, and only a clean campaign gets
@@ -5071,6 +5706,11 @@ def main(argv=None):
     a.wirecap = not a.no_wirecap
     if a.out is None:
         a.out = os.path.join(REPORT_ROOT, utc_ts())
+    # kiloecho P0 (full-sweep-20260919T060150Z, class 1): abspath a relative
+    # --out before any derived path (GROK_HOME, case cwd, ACP session/new
+    # cwd) is computed — a relative home nested an empty hermetic home and
+    # killed 40/73 cases. No-op when a.out is already absolute (D-3 daemon).
+    a.out = os.path.abspath(a.out)
     os.makedirs(a.out, exist_ok=True)
     # apex-ayl.22 D-14(a): the campaign id defaults to the run dir
     # name; the manifest is sealed once below, after the case roster
@@ -5079,8 +5719,21 @@ def main(argv=None):
 
     ambient = os.environ.get("CODEX_LLM_PROXY_KEY", "")
     if not ambient:
-        log("FATAL: CODEX_LLM_PROXY_KEY not set (env-only, never on disk)")
-        return 2
+        # apex-2o6: the L1 key-free mode — a roster in which EVERY
+        # case declares env.proxy='none' runs without a key (the
+        # hermetic home points at a dead local port; zero live ops).
+        # Anything else stays FATAL (a live case without a key is a
+        # misfire, not a feature).
+        pre = load_cases(a)
+        if pre and all((c.get("env") or {}).get("proxy") == "none"
+                       for c in pre):
+            log("L1 key-free run: all %d case(s) declare "
+                "env.proxy=none (no proxy key read)" % len(pre))
+        else:
+            log("FATAL: CODEX_LLM_PROXY_KEY not set (env-only, never "
+                "on disk) — or run a proxy:none-only roster key-free "
+                "(L1)")
+            return 2
     a.ambient_key = ambient
     budget = Budget(a.budget)
 
@@ -5093,7 +5746,8 @@ def main(argv=None):
         "bin": a.bin,
         "bin_sha": (sha.stdout.split()[0][:12] if sha.stdout else "?"),
     "git": git.stdout.strip() or "?",
-    "key_sha": sha256_12(ambient),
+    "key_sha": sha256_12(ambient) if ambient else "none",
+    "py": sys.version.split()[0],
     "upstream": live_upstream(a.live_home),
 }
     log("HT-1 L3 run -> %s (budget=%d wirecap=%s)" % (a.out, a.budget,
@@ -5148,4 +5802,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    sys.exit(code)

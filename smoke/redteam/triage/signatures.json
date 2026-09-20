@@ -1,0 +1,183 @@
+{
+ "version": 1,
+ "bead": "none",
+ "note": "Redteam-local triage catalog \u2014 full-sweep-20260919T060150Z (73 rows: 55 FAIL / 8 VACUOUS / 7 PASS / 2 SKIP / 1 FINDING-PASS). Field contract per smoke/triage/signatures.json. 10 rows: the live model-traffic FAIL cases triaged by the kiloecho P0 lane beyond the 7 coordinator-triaged (AT-VLQ-VXG, T21-MSG-S5-MCP-TOOL, T21-RESP-QWEN3827B-MCP-TOOL, XW-AZ-AZ, XW-AZ-VXM, XW-VLQ-VLG, XW-VXM-AZ-LIVE). Findings roll into EXISTING beads only (apex-ayl.87, apex-ayl.71). The 40 zero-call deaths (38 FAIL + 2 VACUOUS) are ONE launcher class \u2014 relative --out in /tmp/full-sweep-2.sh -> relative GROK_HOME -> nested empty hermetic home -> no [model.*] env_key rows -> first-party probe Unusable vs default api.x.ai endpoint (31 headless die at eager auth 'Not signed in'; 9 ACP die at session/new -32602 'Path is not absolute'); fix = run.py abspath of a.out (~:5566) + GROK_HOME (:675) \u2014 reported separately, not rowed here (one class, no per-case signature). Auth-class cases' VACUOUS masking: WS9-S01/S02 verdicts record vacuous_reason 'model premise 0-hit' by design \u2014 they are harness deaths, not .21-lane vacuous. + 6 rows #11-#16 from full-sweep-20260919T084258Z (74 cases: 34 PASS / 27 FAIL (9 = apex-ayl.71 RED-EXPECTED ratchet) / 7 VACUOUS / 3 RECON / 1 FINDING-PASS / 2 SKIP), triaged by the kiloecho fail-triage lane (smoke/redteam/kiloecho/triage-full-sweep-20260919T084258Z.md): findings folded into apex-ayl.90/.66/.71/.72/.36/.16/.21/.76 + newly filed apex-ayl.94 (V2-SPAWN-ROOT-1) / .95 (XRESP-ARGTRUNC-1) / .96 (COMPACT-STORM-1). Row #16 routes to apex-ayl.93 (WS9 case-design lane) since apex-ayl.78 closed 09-19.",
+ "signatures": [
+  {
+   "id": "#1",
+   "class": "shell.serialization",
+   "pattern": "missing field `summary_index`",
+   "regex": "serialization error: missing field `summary_index`",
+   "rca": "AT-AZ-VXG (OVERWATCH-ADVERSARIAL sol -> gemini-3.5-flash, cell az-vlq). Turn 1 dies via prompt_complete with a client-side deserialization failure on a clean HTTP 200: LiteLLM responses-compat omits summary_index on response.reasoning_summary_text.delta frames (the .done frame carries it); the async-openai SDK declares it required in exactly 4 summary event structs. The sweep binary f9e7a15d6b6b predates the in-tree fix 6b13992 (SUMMINDEX-1, base fc0b3f9, committed 2026-09-19T07:38Z \u2014 97 min AFTER the 06:01Z sweep start; the post-sweep rebuild aced8a93263766be @07:37Z also predates it), so the deployed binary still dies this way. First seen 2026-09-19T03:01Z in smoke/redteam/report-at1/AT-AZ-VXG-r2/at-az-vxg/acp.log (3/4 live gemini 200-turns died: AT-AZ-VXG r1/r2, AT-VLQ-VXG r3). Companion asserts (storage idx5 53=53 = declared apex-ayl.71 expected_red; DONE/exit misses) are downstream of the turn death. Evidence: smoke/redteam/report/full-sweep-20260919T060150Z/at-az-vxg/acp.log (retry_state failed/serialization, prompt_complete stopReason:error, RPC -32603) + smoke/redteam/report/full-sweep-20260919T060150Z/at-az-vxg/wire/.",
+   "bead": "apex-ayl.87",
+   "status": "PROPOSED",
+   "pointer": "rebuild target/release/grok-responses from >= 6b13992, then rerun. gemini rows carry no model_family (None => ResponsesWireDialect::Xai) so the fix's 4-type lenient scope (client.rs:213-224 @HEAD) covers this frame. Deterministic per stream shape: any gemini turn whose stream emits a summary .delta frame dies on the pre-fix binary.",
+   "first_seen": "2026-09-19"
+  },
+  {
+   "id": "#2",
+   "class": "shell.serialization",
+   "pattern": "missing field `summary_index`",
+   "regex": "serialization error: missing field `summary_index`",
+   "rca": "XW-VXM-VXG (P6 probe, cell vxm-vxg: byte-pinned claude-phase seed, claude-sonnet-5 -> gemini-3-pro-preview mid-session, both rows family-unset). Turn 1 dies identically to #1: wire resp-003 frame_index 3 = response.reasoning_summary_text.delta item_id rs_dd81ef8a-0b79-41df-9dc0-c24482a7ce1c WITHOUT summary_index (frame 4 .text.done carries summary_index:0 \u2014 LiteLLM omits it only on the delta frame); pre-fix binary => turn death via prompt_complete, exit 1, text ''. Companion scored misses: storage idx2 (10 vs 8-record T3 golden \u2014 the declared .71 expected_red for this cell) and the literal ride pin wire.grep '\"id\": \"\"' (the seeded id:'' rides are rekeyed by the .71 projector \u2014 see #7-#10). Evidence: smoke/redteam/report/full-sweep-20260919T060150Z/xw-vxm-vxg/acp.log (lines 28-34) + smoke/redteam/report/full-sweep-20260919T060150Z/xw-vxm-vxg/wire/resp-003.jsonl.",
+   "bead": "apex-ayl.87",
+   "status": "PROPOSED",
+   "pointer": "same as #1: rebuild from >= 6b13992 and rerun; the P6 wire-outcome question (vertex /generateContent transform shape) is answerable only on the rerun.",
+   "first_seen": "2026-09-19"
+  },
+  {
+   "id": "#3",
+   "class": "harness.golden_stale",
+   "pattern": "post-switch stored history != cell golden",
+   "regex": "first_diff_index=5 \\(type=reasoning\\)",
+   "rca": "AT-AZ-VXR (OVERWATCH-ADVERSARIAL sol -> grok-4.6, cell az-vlq, FAMILY switch). Wire clean: preemptive compact + turn, both 200, final text AT-AZ-VXR-DONE, 2 calls, zero error events. Sole scored miss = xwfix_cell_diff.storage first_diff_index=5 (type=reasoning, 53=53) vs smoke/xwfix/cells/az-vlq/expected.json: the .71 XW-PROJECT-1 switch-time projector (bb59cff, in dbf9441..fc7d64a) rewrites the seeded reasoning item, so the pre-.71 golden is era-stale. Declared expected_red apex-ayl.71 \u2014 re-pin debt, not a product delta. Same idx5 signature as #4/#5 (all three seed the az-vlq 53-record history). Evidence: smoke/redteam/report/full-sweep-20260919T060150Z/at-az-vxr/ (row asserts, turns clean).",
+   "bead": "apex-ayl.71",
+   "status": "PROPOSED",
+   "pointer": "adjudicate the projected post-switch storage shape on the az-vlq seed and re-pin smoke/xwfix/cells/az-vlq/expected.json (covers #3-#5 in one re-pin).",
+   "first_seen": "2026-09-19"
+  },
+  {
+   "id": "#4",
+   "class": "harness.golden_stale",
+   "pattern": "post-switch stored history != cell golden",
+   "regex": "first_diff_index=5 \\(type=reasoning\\)",
+   "rca": "AT-SPAWN-XWIRE (sol -> qwen3.8-27b, cell az-vlq). The spawn-xwire flow completed (PART1-RECEIVED worker-ack text, 8 calls, final 200, zero error events); sole scored miss = storage first_diff_index=5 (type=reasoning, 53=53) \u2014 same .71-era-stale az-vlq golden as #3. Evidence: smoke/redteam/report/full-sweep-20260919T060150Z/at-spawn-xwire/.",
+   "bead": "apex-ayl.71",
+   "status": "PROPOSED",
+   "pointer": "covered by the #3 az-vlq golden re-pin.",
+   "first_seen": "2026-09-19"
+  },
+  {
+   "id": "#5",
+   "class": "harness.golden_stale",
+   "pattern": "post-switch stored history != cell golden",
+   "regex": "first_diff_index=5 \\(type=reasoning\\)",
+   "rca": "XW-AZ-VLQ (sol -> qwen3.8-27b, cell az-vlq; compact + turn, final XW-AZ-VLQ-POSTSW1, 2 calls, clean). Sole scored miss = storage first_diff_index=5 (type=reasoning, 53=53) \u2014 same .71-era-stale az-vlq golden as #3. Evidence: smoke/redteam/report/full-sweep-20260919T060150Z/xw-az-vlq/.",
+   "bead": "apex-ayl.71",
+   "status": "PROPOSED",
+   "pointer": "covered by the #3 az-vlq golden re-pin.",
+   "first_seen": "2026-09-19"
+  },
+  {
+   "id": "#6",
+   "class": "harness.golden_stale",
+   "pattern": "post-switch stored history != cell golden",
+   "regex": "first_diff_index=6 \\(type=reasoning\\)",
+   "rca": "XW-VXM-AZ (claude-sonnet-5 -> gpt-5.6-terra, cell vxm-az; clean 200 turn, final XW-VXM-AZ-POSTSW1, 1 call). Sole scored miss = storage first_diff_index=6 (type=reasoning, 36=36) vs smoke/xwfix/cells/vxm-az/expected.json \u2014 .71 projector rewrite on the vxm-az golden (different seed, different diff index, same class). Evidence: smoke/redteam/report/full-sweep-20260919T060150Z/xw-vxm-az/.",
+   "bead": "apex-ayl.71",
+   "status": "PROPOSED",
+   "pointer": "adjudicate projected shape on the vxm-az seed and re-pin smoke/xwfix/cells/vxm-az/expected.json.",
+   "first_seen": "2026-09-19"
+  },
+  {
+   "id": "#7",
+   "class": "harness.golden_stale",
+   "pattern": "post-switch stored history != cell golden",
+   "regex": "first_diff_index=2 \\(type=reasoning\\)",
+   "rca": "XW-VXM-VLG (claude-sonnet-5 -> glm-5.2, cell vxm-vlg; clean 200 turn, 1 call). Two scored misses, both .71-era: (a) storage first_diff_index=2 (type=reasoning, 10=10) vs smoke/xwfix/cells/vxm-vlg/expected.json; (b) the literal anti-vacuous ride pin wire.grep '\"id\": \"\"' \u2014 the seeded id:'' reasoning rides were NOT dropped, they were rekeyed by the .71 projector to xw_3b4fee1cdfa6687e8b3b75a4 + xw_bfcc932c3afb776e74bd27a3 in the post-switch request (verified in smoke/redteam/report/full-sweep-20260919T060150Z/xw-vxm-vlg/wire/req-003.json; 0 empty-id rides, 2 xw_ rides). GUARD twin #8 identical. Evidence: smoke/redteam/report/full-sweep-20260919T060150Z/xw-vxm-vlg/.",
+   "bead": "apex-ayl.71",
+   "status": "PROPOSED",
+   "pointer": "re-pin the vxm-vlg storage golden AND update the ride pin from literal '\"id\": \"\"' to the rekeyed xw_* shape (pin format is pre-.71).",
+   "first_seen": "2026-09-19"
+  },
+  {
+   "id": "#8",
+   "class": "harness.golden_stale",
+   "pattern": "post-switch stored history != cell golden",
+   "regex": "first_diff_index=2 \\(type=reasoning\\)",
+   "rca": "XW-VXM-VLG-GUARD (GUARD twin of #7: same cell vxm-vlg, glm-5.2, clean 200 turn, 1 call; storage idx2 10=10 + rekeyed ride pin \u2014 same xw_3b4fee1cdfa6687e8b3b75a4/xw_bfcc932c3afb776e74bd27a3 ids in smoke/redteam/report/full-sweep-20260919T060150Z/xw-vxm-vlg-guard/wire/req-003.json). Same .71-era-stale class.",
+   "bead": "apex-ayl.71",
+   "status": "PROPOSED",
+   "pointer": "covered by the #7 vxm-vlg re-pin + ride-pin update.",
+   "first_seen": "2026-09-19"
+  },
+  {
+   "id": "#9",
+   "class": "harness.golden_stale",
+   "pattern": "post-switch stored history != cell golden",
+   "regex": "first_diff_index=2 \\(type=reasoning\\)",
+   "rca": "XW-VXM-VLQ (claude-sonnet-5 -> qwen3.8-27b, cell vxm-vlq; clean 200 turn, 1 call). Storage idx2 (10=10) + ride pin: the id:'' rides rekeyed to xw_06a1e8c0a2d2d5bd9691be65 + xw_123f1f641906b1362b40d44c in the post-switch request (verified in smoke/redteam/report/full-sweep-20260919T060150Z/xw-vxm-vlq/wire/req-003.json; deterministic per seed \u2014 #10's vlq-v2 twin shows the same pair on the v2 seed). Same .71-era-stale class.",
+   "bead": "apex-ayl.71",
+   "status": "PROPOSED",
+   "pointer": "re-pin the vxm-vlq storage golden AND update the ride pin to the rekeyed shape.",
+   "first_seen": "2026-09-19"
+  },
+  {
+   "id": "#10",
+   "class": "harness.golden_stale",
+   "pattern": "post-switch stored history != cell golden",
+   "regex": "first_diff_index=2 \\(type=reasoning\\)",
+   "rca": "XW-VXM-VLQ-V2 (v2 twin of #9: cell vxm-vlq-v2, qwen3.8-27b, clean 200 turn, final XW-VXM-VLQ-V2-POSTSW1, 1 call). Storage idx2 (10=10) + ride pin rekeyed (same xw_06a1e8c0a2d2d5bd9691be65/xw_123f1f641906b1362b40d44c pair in smoke/redteam/report/full-sweep-20260919T060150Z/xw-vxm-vlq-v2/wire/req-003.json). Same .71-era-stale class.",
+   "bead": "apex-ayl.71",
+   "status": "PROPOSED",
+   "pointer": "covered by the #9 vxm-vlq re-pin + ride-pin update (v2 seed shares the rekeyed ids).",
+   "first_seen": "2026-09-19"
+  },
+  {
+   "id": "#11",
+   "class": "shell.serialization",
+   "pattern": "missing field `text`",
+   "regex": "serialization error: missing field `text`",
+   "rca": "AT-VLQ-VXG (sol -> gemini-3-pro via LiteLLM, cell at-vlq-vxg). Turn dies on a clean 200 via client-side deserialization: resp-003.jsonl frame idx11 = response.content_part.done part {\"type\":\"reasoning_text\",\"reasoning\":\"**Confirming Final Output**...\"} \u2014 LiteLLM's gemini adapter emits the non-standard `reasoning` field and the part lacks SDK-required `text` (SDK fork panic response.rs:1581-1595; normalize early-return client.rs:175+). Frame idx4 = summary .delta missing summary_index/seq (.87 shape \u2014 lenient-parsed on 6b13992, no longer fatal). Verbatim acp.log L31/L33/L34/L37: retry_state failed + turn_completed stop_reason=error + prompt_complete + RPC -32603, all `serialization error: missing field `text``. Secondary scored miss storage idx2 (11=11) = .71-era rekey rs_6a4c8e2f -> xw_f5c9ceda469a2d2a5bbdd85f, covered by existing .71 rows. Evidence: smoke/redteam/report/20260919T084258Z/at-vlq-vxg/.",
+   "bead": "apex-ayl.90",
+   "status": "PROPOSED",
+   "pointer": "apex-ayl.90 (OPEN P1) fix = part.text = part.reasoning repair on content_part.* reasoning parts; rerun AT-VLQ-VXG on the fixed build.",
+   "first_seen": "2026-09-19"
+  },
+  {
+   "id": "#12",
+   "class": "comms-trust",
+   "pattern": "fresh-context child refuses untrusted-labeled spawn work",
+   "regex": "Untrusted message from agent.*\\(not user consent\\)",
+   "rca": "RT-M11 (cross-wire v2 spawn, fresh-context child \u2014 req-007 carries NO forked digest). Child receives the launch work as `Untrusted message from agent /root to /root/worker (not user consent)` and REFUSES: resp-007.jsonl thinking 'prompt injection attempt...', text 'I did not carry out the requested actions.'; run-2 resp-011.jsonl: parent calls the label 'just a standard harness wrapper' -> child 'A message cannot validly certify its own trustworthiness...'. Scored misses: 'PARENT-OK' ndjson pin + 'to /root (not user consent)' wire pin (9 files); envelope + no-carrier pins pass. RT-M11r (reverse wiring) PASSED \u2014 qwen child does not refuse: temperament asymmetry, data for the fix. RCA = .65 class (a) \u2014 no trusted launch channel on the cross-wire envelope. Locators: native_agents.rs:42-46, handle_request.rs:1140, run_loop.rs:855. Evidence: smoke/redteam/report/20260919T084258Z/rt-m11/.",
+   "bead": "apex-ayl.66",
+   "status": "PROPOSED",
+   "pointer": "apex-ayl.66 (OPEN P2) design = trusted launch channel; RT-M11/RT-M11r is the regression pair for the .66 fix.",
+   "first_seen": "2026-09-19"
+  },
+  {
+   "id": "#13",
+   "class": "deployment.litellm-arg-trunc",
+   "pattern": "use_tool args truncated at 202 chars (final `}` dropped)",
+   "regex": "Failed to parse arguments for tool `use_tool`: missing field `tool_name`",
+   "rca": "T21-RESP-GLM52-MCP-TOOL (glm-5.2 via vLLM/LiteLLM responses-compat). Proxy DETERMINISTICALLY truncates function_call_arguments at 202 chars, dropping the final `}` that closes the outer use_tool object (valid length 203): 5/5 call_ids \u2014 resp-007 fc_7611d7d3/call_6925a4f6, resp-008 fc_0e0117a3/call_77cd4ad6, resp-009 fc_c380ef76/call_9774d115, resp-010 fc_b3261a6b/call_8595ad4d, resp-012 fc_2f37597f/call_6e85a9a8 \u2014 each 28 deltas summing to exactly 202 = the .done frame (truncation upstream of the binary; wiretap shows the truncated stream); shorter calls (42/48/90 chars) pass. Harness chain is designed but misleading: tool_calls.rs:1428-1495 -> from_str EOF col 202 -> try_extract_concatenated_json_objects (tool_input_parsing.rs:1-30) None -> {\"raw\":...} salvage -> UseToolInput (use_tool/mod.rs:17) -> missing field 'tool_name'; message built tool_dispatch.rs:375-414 (locator L380, JSON-position note L397). Model retried 5x, gave up -> retry.rs pin miss. NOT double-encode; does not share the .52 seam; codegraph degraded-daemon a red herring (call never reached the MCP server). Evidence: smoke/redteam/report/20260919T084258Z/t21-resp-glm52-mcp-tool/wire/.",
+   "bead": "apex-ayl.95",
+   "status": "PROPOSED",
+   "pointer": "apex-ayl.95 (OPEN P2, filed 2026-09-19) \u2014 proxy-side fix (LiteLLM vLLM responses-compat drops the final delta for glm-5.2 args >202 chars); keep the EOF-position note ahead of the missing-field error (already present, tool_dispatch.rs:397).",
+   "first_seen": "2026-09-19"
+  },
+  {
+   "id": "#14",
+   "class": "v2.toolscope",
+   "pattern": "spawn_agent armed on child session (max-depth 5-not-6 violated)",
+   "regex": "Start a named background agent.*\\(absent in all 5\\)",
+   "rca": "RT-M10b (v2 cross-model pair, child row-ON: qwen3.8-27b parent, claude-sonnet-5 child). Case ruling MA-4 Q1/Q2: row-ON child rebuilds its toolset from its own row => 5-of-6 v2 tools, NOT spawn_agent (max-depth 5-not-6). Observed: all 4 child /v1/messages turns (req-007/008/009/011; req-006 is a 1-tool side call) carry 29 tools INCLUDING spawn_agent at tools[23] (verified req-011.json: model claude-sonnet-5, n_tools 29, all six v2 names present) \u2014 the negative pin (absent:true, all:true, POST /v1/messages, needle 'Start a named background agent') fails. Other pins pass (send_message/list_agents needles, PARENT-OK, 'to /root (not user consent)' on /v1/responses, exit 0). Shares the seam with .66's row formula agent_rebuild.rs:160-169. Evidence: smoke/redteam/report/20260919T084258Z/rt-m10b/.",
+   "bead": "apex-ayl.94",
+   "status": "PROPOSED",
+   "pointer": "apex-ayl.94 (OPEN P2, filed 2026-09-19) \u2014 restrict spawn_agent to root sessions in the v2 child toolset rebuild (agent_rebuild.rs:160-169).",
+   "first_seen": "2026-09-19"
+  },
+  {
+   "id": "#15",
+   "class": "compaction.storm",
+   "pattern": "auto-compact re-fires when post-compact floor stays >= trigger",
+   "regex": "17 files match compaction_checkpoints/\\*\\.json",
+   "rca": "RT-S1 (qwen3.8-27b, 12k window / 11k seed = 92%). 17 auto-compact checkpoints 09:28:16->09:38:37 (all prompt_index=1), 8 compaction_requests artifacts (trigger=auto, variant=detailed, 1 attempt each, summaries 4.2-5.6k chars), each compacted_history = 5 items ~33KB; 11 min, 41 calls. Flow otherwise healthy: 3 v1 subagents CHILD-OK, PARENT-DONE, exit 0, 0 errors. Post-compact floor (system+summary+scaffolding) stays >= the trigger, so every turn re-fires; no headroom recovery. NOT .89 (Messages-wire brick via 10k per-item cap). WS9-S05 is a distinct mechanism (prefire band + proxy empty-200) and does NOT corroborate this storm. Aggravator: live multi_agent_v2=true leaked v2 tools (list_agents re-verification loops in the 061f6ddc summary). Evidence: smoke/redteam/report/20260919T084258Z/rt-s1/.",
+   "bead": "apex-ayl.96",
+   "status": "PROPOSED",
+   "pointer": "apex-ayl.96 (OPEN P3, filed 2026-09-19) \u2014 headroom check/backoff so a compact that leaves the floor >= trigger does not re-fire per turn; case-lane re-pin of the checkpoint band. Optional row \u2014 record if the coordinator prefers the storm un-rowed.",
+   "first_seen": "2026-09-19"
+  },
+  {
+   "id": "#16",
+   "class": "case.compaction-band",
+   "pattern": "seed lands in the 75-85% prefire band: background prefire compacts (200 + zero-frame proxy stream), 0 artifacts, resume replays full history",
+   "regex": "0 files match compaction_requests/\\*\\.json",
+   "rca": "WS9-S05-COMPACT-RESUME (case bead apex-ayl.78; qwen3.8-27b; 28k seed; context_window=32768 patch). Case premise '28k est tokens above the auto-compact threshold (0.9x29532)' is miscalibrated: the resolved default threshold is 85% (no override), and the binary's estimate lands in the prefire band [75%, 85%) \u2014 prefire fired (2x, one per resume process) while the blocking 85% auto-compact never fired. Prefire (Feature::TwoPassCompaction default-on; compaction.rs:249/292) runs concurrent with the turn and NEVER writes a compaction_requests artifact (writer lives only in the run_compact path, compaction.rs:1855/2838) \u2014 the artifact pins are unsatisfiable in this band regardless of proxy health. Both prefire samples also failed at the proxy: 200 + zero-frame SSE stream (resp-003 1531ms, resp-006 541ms) for the compact shape (temp 1.0 + tool_choice auto + reasoning{summary only}), while the same model's turn shape streams fine \u2014 deterministic 2/2; same proxy returned an in-stream litellm.APIError for the rt-c3 compact 50 min earlier. Binary handling is by design (EmptyResponse -> terminal after 1 attempt, warn-only prefire SampleFailed); session healthy, both turns exact-text, exit 0. Verbatim FAILs: '[FAIL] artifact.count: 0 files match compaction_requests/*.json'; '[FAIL] wire.count: 2 wire files match req-*.json (want 0..1)'. Evidence: smoke/redteam/report/20260919T084258Z/ws9-s05-compact-resume/ + wire/ + session/.",
+   "bead": "apex-ayl.93",
+   "status": "PROPOSED",
+   "pointer": "case lane (apex-ayl.93, handoff from closed apex-ayl.78): re-anchor the seed past the 85% hard line (larger seed or GROK_AUTO_COMPACT_THRESHOLD_PERCENT in config_patch) or re-pin to prefire-band semantics (0 artifacts, <=1 xai-compact per process); correct the 0.9x29532 premise to the 85% default. Proxy lane: record qwen responses-compat silent-empty-200 on compact shape (cross-ref rt-c3 in-stream error).",
+   "first_seen": "2026-09-19"
+  }
+ ]
+}

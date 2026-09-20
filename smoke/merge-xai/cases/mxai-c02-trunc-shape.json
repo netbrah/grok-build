@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "id": "MXAI-C02-TRUNC-SHAPE",
+  "title": "MERGE-XAI-SYNC C-02 SHAPE ARM — zero-step mechanism case pinning the TRUNCATED-STREAM capture shape (the MW-3 'without done' condition, wire-side): pre-placed wire inputs (cases/mxai-c02-trunc-shape/wire/, symlinked into the redteam case-stem dir; copy-if-absent into the run dir) = one redacted structural /v1/messages request (req-001.json) + a truncated SSE response capture (resp-001.jsonl: 200 text/event-stream; message_start → content_block_start → three content_block_delta frames — then the stream ENDS: no message_stop, no [DONE], no frame past the last delta). The kind=resp_stream pin runs in mode=exact (1:1 length + per-frame canonical match, volatile ids nulled via normalize) against the pinned truncated fixture: the actual post-drop frame sequence must be EXACTLY the truncated shape — nothing after the last delta. A frame past the last delta (message_stop, [DONE], or any extra delta) = the stream was NOT truncated (the shape premise failed) or the capture is contaminated = STOP. This arm is the executable half of C-02 while the live fault-injection arm is a DRIVER GAP (MXAI-C02 disabled; see smoke/merge-xai/README.md): it (a) verifies the runner's SSE frame parser against the documented truncated shape now, and (b) becomes the LIVE shape pin once injection exists — run the live case with the same where-scope and the live wiretap capture OVERWRITES the pre-placed file (open('w') semantics: the live capture is the evidence), so this exact fixture scores the real truncated stream. Runs in proxy:none L1 key-free mode (no proxy key, no live calls). VERDICT: PASS = exact 1:1 truncated-frame identity; FAIL with first-unmatched-frame named = the stream was complete or contaminated.",
+  "bead": "apex-l2d.4",
+  "suite": "wire-shape",
+  "tier": "full",
+  "driver": "headless",
+  "model": "claude-sonnet-5",
+  "wire": "messages",
+  "est_calls": 0,
+  "wirecap": false,
+  "env": {
+    "proxy": "none"
+  },
+  "steps": [],
+  "assert": {
+    "wire": [
+      {
+        "id": "trunc_shape",
+        "kind": "resp_stream",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "which": "last",
+        "golden": "expected-trunc-frames.json",
+        "normalize": [
+          "message.id",
+          "message.usage",
+          "content_block.index",
+          "index",
+          "delta.text"
+        ],
+        "drop": [],
+        "mode": "exact",
+        "min_frames": 5,
+        "max_frames": 5,
+        "label": "TRUNCATED-STREAM SHAPE PIN (the MW-3 condition, wire-side): the actual post-drop SSE frame sequence must be EXACTLY the pinned truncated shape — 1:1 (mode=exact): message_start, content_block_start, three content_block_delta, and NOTHING after the last delta (no message_stop, no [DONE], no extra frames; keepalive comment frames are skipped by the parser, documented). The count band 5..5 re-states the ceiling: a sixth frame = the stream completed or the capture is contaminated = STOP. Volatile per-run ids/usage/delta-text are nulled via the normalize list (FRAME-DATA-ROOT-RELATIVE — the engine applies them per frame data object; in-tree precedent resp-stream-smoke-01; wave-2 authoring correction: the originally authored 'data.'-prefixed paths were no-ops on the flat /v1/messages frame shape, and 'delta.text' was added so the LIVE truncated stream (which overwrites this scaffold capture) scores on shape, not on the redacted text); frame ORDER is significant (list order is never normalized)."
+      },
+      {
+        "id": "scope_bound",
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "min": 1,
+        "max": 1,
+        "label": "SCOPE BOUND (B-i companion): the where-filter matches exactly ONE capture in this case's wire dir — the resp_stream's which:last selection is unambiguous because N is bounded here (the pre-placed single request)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

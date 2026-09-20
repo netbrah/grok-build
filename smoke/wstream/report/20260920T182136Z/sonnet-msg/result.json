@@ -1,0 +1,423 @@
+{
+  "cell": "sonnet-msg",
+  "model": "claude-sonnet-5",
+  "api_backend": "messages",
+  "backend_class": "native",
+  "verdict": "PASS",
+  "invariants": [
+    {
+      "key": "status",
+      "expected": 200,
+      "actual": 200,
+      "ok": true
+    },
+    {
+      "key": "route",
+      "expected": "messages",
+      "actual": "messages",
+      "ok": true
+    },
+    {
+      "key": "n_model_calls_min",
+      "expected": ">= 1",
+      "actual": 9,
+      "ok": true
+    }
+  ],
+  "observations": {
+    "route": "messages",
+    "status": 200,
+    "n_model_calls": 9,
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 189,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": true,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "This",
+    "finish": "stop",
+    "budget_trap": false,
+    "final_text_nonempty": false,
+    "final_text_len": 0,
+    "usage": {
+      "input_tokens": 2,
+      "cache_creation_input_tokens": 29815,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 3301,
+      "output_tokens_details": {
+        "thinking_tokens": 3248
+      }
+    }
+  },
+  "analysis": {
+    "cell": "sonnet-msg",
+    "route": "messages",
+    "expected_route": "messages",
+    "routes_mixed": false,
+    "status": 200,
+    "n_model_calls": 9,
+    "n_side_calls": 8,
+    "side_call_errors": [],
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 189,
+    "reasoning_tokens": 3248,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": true,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "This",
+    "finish": "stop",
+    "budget_trap": false,
+    "final_text_len": 0,
+    "final_text_nonempty": false,
+    "usage": {
+      "input_tokens": 2,
+      "cache_creation_input_tokens": 29815,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 3301,
+      "output_tokens_details": {
+        "thinking_tokens": 3248
+      }
+    },
+    "n_frames_total": 204
+  },
+  "calls": [
+    {
+      "route": "messages",
+      "req_model": "claude-sonnet-5",
+      "req_stream": true,
+      "req_max_tokens": 100,
+      "status": 200,
+      "n_frames": 15,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 1,
+        "content_block_delta": 9,
+        "content_block_stop": 1,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 957,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 50,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        }
+      },
+      "final_text": ""
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-sonnet-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 204,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 2,
+        "content_block_start": 2,
+        "content_block_delta": 195,
+        "content_block_stop": 2,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 189,
+      "thinking_block": true,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "This",
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 29815,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 3301,
+        "output_tokens_details": {
+          "thinking_tokens": 3248
+        }
+      },
+      "final_text": ""
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-sonnet-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 198,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 2,
+        "content_block_delta": 190,
+        "content_block_stop": 2,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 7,
+      "thinking_block": true,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "The",
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 3366,
+        "cache_read_input_tokens": 29815,
+        "output_tokens": 580,
+        "output_tokens_details": {
+          "thinking_tokens": 20
+        }
+      },
+      "final_text": ""
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-sonnet-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 278,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 2,
+        "content_block_start": 3,
+        "content_block_delta": 267,
+        "content_block_stop": 3,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 138,
+      "thinking_block": true,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "I",
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 775,
+        "cache_read_input_tokens": 29815,
+        "output_tokens": 2950,
+        "output_tokens_details": {
+          "thinking_tokens": 2495
+        }
+      },
+      "final_text": ""
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-sonnet-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 59,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 2,
+        "content_block_delta": 51,
+        "content_block_stop": 2,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 8,
+      "thinking_block": true,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "I",
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 3777,
+        "cache_read_input_tokens": 29932,
+        "output_tokens": 218,
+        "output_tokens_details": {
+          "thinking_tokens": 33
+        }
+      },
+      "final_text": ""
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-sonnet-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 75,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 2,
+        "content_block_delta": 67,
+        "content_block_stop": 2,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 27,
+      "thinking_block": true,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "That",
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 992,
+        "cache_read_input_tokens": 30569,
+        "output_tokens": 428,
+        "output_tokens_details": {
+          "thinking_tokens": 245
+        }
+      },
+      "final_text": ""
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-sonnet-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 95,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 2,
+        "content_block_delta": 87,
+        "content_block_stop": 2,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 17,
+      "thinking_block": true,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Ident",
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 764,
+        "cache_read_input_tokens": 31213,
+        "output_tokens": 474,
+        "output_tokens_details": {
+          "thinking_tokens": 183
+        }
+      },
+      "final_text": ""
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-sonnet-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 87,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 2,
+        "content_block_delta": 79,
+        "content_block_stop": 2,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 30,
+      "thinking_block": true,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Good, that",
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 822,
+        "cache_read_input_tokens": 31527,
+        "output_tokens": 428,
+        "output_tokens_details": {
+          "thinking_tokens": 204
+        }
+      },
+      "final_text": ""
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-sonnet-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 125,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 1,
+        "content_block_delta": 119,
+        "content_block_stop": 1,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 916,
+        "cache_read_input_tokens": 31731,
+        "output_tokens": 661,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        }
+      },
+      "final_text": "Everything checks out. Here's a summary of what I built and verified:\n\n**Tool**: `tools/minidiff.py` \u2014 a dependency-free Python 3 CLI (stdlib `difflib` only) that:\n- Reads `argv[1]` and `argv[2]` as text files, splits each into whitespace-delimited words\n- Runs `difflib.unified_diff` at word granularity with `n=1` (1 word of context per hunk)\n- Prints only the changed hunks in unified-diff format when differences exist, exits `1`\n- Prints nothing and exits `0` when files are word-identical\n- Exits `2` with a usage message if not given exactly two file arguments\n\n**Fixtures**: `a.txt` and `b.txt`, each 5 lines of lighthouse prose, differing by exactly 3 single-word substitutions: `stormy`\u2192`calm`, `harbor.`\u2192`port.`, `flame.`\u2192`fire.`.\n\n**Verification performed**:\n- Ran the tool on `a.txt`/`b.txt`: produced clean hunk output, exit code `1`, empty stderr, all 3 substituted words (`stormy`/`calm`, `harbor`/`port`, `flame`/`fire`) present in the diff.\n- Ran the tool on `a.txt`/`a.txt` (identical): no output, exit code `0`.\n- Ran with missing args: correct usage message on stderr-equivalent, exit code `2`.\n- Confirmed the script parses with no syntax errors.\n\nNo bugs were found requiring a fix \u2014 the tool worked correctly on the first pass.\n\nFinal diff output between the two fixtures (exit code 1):\n\n```\n--- a.txt\n+++ b.txt\n@@ -6,3 +6,3 @@\n the\n-stormy\n+calm\n sky.\n@@ -25,3 +25,3 @@\n safe\n-harbor.\n+port.\n Waves\n@@ -46,2 +46,2 @@\n the\n-flame.\n+fire.\n```"
+    }
+  ],
+  "turns": [
+    {
+      "turn": 1,
+      "exit_code": 0,
+      "killed": false,
+      "elapsed": 112.47,
+      "session_id": "01a0c00d-6408-7bf3-840f-5f9998e7662e",
+      "n_events": 587
+    }
+  ],
+  "binary_sha256_12": "1463fe4cfb4e",
+  "wire_port": 59556,
+  "upstream": "https://llm-proxy-api.ai.eng.netapp.com",
+  "key_sha256_12": "9f3f56a263da",
+  "raw_key_hits": 0,
+  "ts": "20260920T182329Z"
+}

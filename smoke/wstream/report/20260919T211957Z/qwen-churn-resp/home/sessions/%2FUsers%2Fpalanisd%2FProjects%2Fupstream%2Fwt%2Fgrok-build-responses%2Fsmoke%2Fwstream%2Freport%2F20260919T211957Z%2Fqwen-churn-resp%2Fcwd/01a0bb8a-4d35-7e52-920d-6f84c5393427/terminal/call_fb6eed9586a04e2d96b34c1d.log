@@ -1,0 +1,3 @@
+xai-grok-shell/src/session/usage_file.rs:330:    let path = dir.join(crate::session::storage::USAGE_FILE);
+xai-grok-shell/src/session/storage/mod.rs:34:pub(crate) const USAGE_FILE: &str = "usage.json";
+xai-grok-shell/src/session/storage/jsonl/mod.rs:234:        self.session_dir(info).join(super::USAGE_FILE)

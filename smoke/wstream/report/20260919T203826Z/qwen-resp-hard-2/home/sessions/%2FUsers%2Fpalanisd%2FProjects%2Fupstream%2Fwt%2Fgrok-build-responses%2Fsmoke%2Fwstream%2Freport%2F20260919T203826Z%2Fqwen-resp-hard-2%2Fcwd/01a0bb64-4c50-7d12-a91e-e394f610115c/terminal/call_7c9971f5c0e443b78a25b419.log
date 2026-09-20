@@ -1,0 +1,24 @@
+=== 1. identical files: expect no output, exit 0 ===
+(eval):5: no such file or directory: python3 /Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T203826Z/qwen-resp-hard-2/cwd/tools/minidiff.py
+exit=127
+=== 2. same words, different wrapping: expect no output, exit 0 ===
+(eval):10: no such file or directory: python3 /Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T203826Z/qwen-resp-hard-2/cwd/tools/minidiff.py
+exit=127
+=== 3. usage error: exit 2 ===
+(eval):13: no such file or directory: python3 /Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T203826Z/qwen-resp-hard-2/cwd/tools/minidiff.py
+exit=127
+=== 4. missing file: exit 2 ===
+(eval):16: no such file or directory: python3 /Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T203826Z/qwen-resp-hard-2/cwd/tools/minidiff.py
+exit=127
+=== 5. two changes 3 lines apart: expect two hunks ===
+(eval):21: no such file or directory: python3 /Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T203826Z/qwen-resp-hard-2/cwd/tools/minidiff.py
+exit=127
+=== 6. pure insertion at start + deletion at end ===
+(eval):26: no such file or directory: python3 /Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T203826Z/qwen-resp-hard-2/cwd/tools/minidiff.py
+exit=127
+=== 7. empty vs nonempty ===
+(eval):30: no such file or directory: python3 /Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T203826Z/qwen-resp-hard-2/cwd/tools/minidiff.py
+exit=127
+=== 8. blank line kept as context ===
+(eval):35: no such file or directory: python3 /Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T203826Z/qwen-resp-hard-2/cwd/tools/minidiff.py
+exit=127

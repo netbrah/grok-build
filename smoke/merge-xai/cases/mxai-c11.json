@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "id": "MXAI-C11",
+  "title": "MERGE-XAI-SYNC C-11 (DRIFT 01 §3 S2/R7, timed_out task terminal semantics) — upstream adds 'timed_out' to TaskOutputResult::is_terminal (ours: completed|failed|cancelled — xai-tool-types task.rs:854; 01 §3 S2), and the reminder path that records task terminal state is OURS and was NOT updated by upstream (the R7 row): this cell verifies the wait loop terminates on the new terminal member under our code. Induction (ONE headless turn, sol lane L-01, 600s budget): the model runs 'sleep 300' via run_terminal_command with background:true + timeout:15000 ms — the harness kills the process group at the 15 s timeout, so the task reaches terminal status 'timed_out' (the new is_terminal member); the model then waits through get_command_or_subagent_output until the task reports a terminal status and replies TASK-TERMINAL <the exact status word the task reported> C11-DONE. SCORED PINS: (1) EXIT 0 = THE CORE DRIFT PIN: the wait loop TERMINATED — an infinite in-flight wait (the timed_out member dropped from is_terminal, or the ours-side reminder path stuck on the new member) = the 600 s watchdog SIGKILLs the process = non-zero exit = FAIL; this is the 06 C-11 'wait loop terminates on timed_out / no infinite in-flight wait' verdict, machine-scored; (2) 'C11-DONE' in the merged text (model premise — the model closed the protocol); (3) 'timed_out' in the merged text (model premise, vacuous class — the task REPORTED the new terminal status word: the upstream is_terminal member landed under our code and the model read it from the tool result). The ours-side reminder path is the recon_note (R7: it was not updated by upstream — the coordinator cross-references the crate test for the reminder's terminal-state recording in the wave-3 full gate). VERDICT: PASS = exit 0 + done + timed_out recorded; VACUOUS = the model never took the probe path (done/timed_out 0-hit); a watchdog-kill exit (the wait loop hung) = the drift is live = STOP-AND-REPORT.",
+  "bead": "apex-l2d.4",
+  "suite": "tool-call",
+  "tier": "full",
+  "driver": "headless",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "output_format": "streaming-json",
+  "wirecap": true,
+  "env": {
+    "store": false
+  },
+  "est_calls": 3,
+  "watchdog_s": 600,
+  "tool_calls": [
+    {
+      "id": "bg1",
+      "tool": "run_terminal_command",
+      "args": {
+        "command": "sleep 300",
+        "background": true,
+        "timeout": 15000
+      },
+      "premise": "model",
+      "output_contains": "task"
+    }
+  ],
+  "steps": [
+    {
+      "op": "turn",
+      "timeout_s": 600,
+      "prompt": "Use the run_terminal_command tool with background: true and timeout: 15000 (milliseconds) to run the command: sleep 300. It will be killed at the timeout. Then use get_command_or_subagent_output to wait for that task until it reports a terminal status, and reply with exactly: TASK-TERMINAL <the exact status word the task reported> C11-DONE"
+    },
+    {
+      "op": "recon_note",
+      "note": "R7 SURFACE (recon_note, non-scoring): the wait loop's exit 0 is the scored drift pin (an infinite in-flight wait = watchdog kill = FAIL). The REMINDER PATH (ours-side code that records the task's terminal state — 01 §3 S2 R7: 'our reminder code is ours and was NOT updated by upstream') is not machine-scored here: the coordinator cross-references the crate test covering the reminder's terminal-state recording for the new 'timed_out' member in the wave-3 full gate (step 6) against this cell's live result. The declared tool_call bg1's output_contains='task' is the synthesized round-trip payload pin (the background-spawn result carries the task id; the follow-up wait request replays it)."
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "C11-DONE",
+        "label": "WAIT LOOP CLOSED: the model waited for the task's terminal status and closed the protocol with the exact terminal token. Absent = the wait did not close (or the model never took the probe path — the premise pass sorts it) -> the core pin is the exit code."
+      },
+      {
+        "op": "text_contains",
+        "id": "timed_out_status",
+        "value": "timed_out",
+        "label": "NEW TERMINAL MEMBER REPORTED: the merged text carries 'timed_out' — the task reached its terminal status as the NEW is_terminal member (upstream's addition, 01 §3 S2) and the model read it from the get_command_or_subagent_output result and echoed it into TASK-TERMINAL <status>. A different status word (or none) = the task did not report timed_out = the member did not land under our code (or the model parroted nothing — the premise pass + the exit pin adjudicate) -> STOP."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "timed_out|sleep 300|task_id",
+        "label": "TASK-LIFECYCLE RECORD (recon, all sol requests): the background-spawn result (task id), the wait request(s), and the terminal-status payload context — the coordinator's corpus for the R7 reminder-path cross-reference (the ours-side reminder code that records terminal state was not updated by upstream; the crate test in the full gate is the mechanical half). recon — always records, never fails."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true,
+    "vacuous_if": [
+      {
+        "pin": "done",
+        "class": "model",
+        "note": "the model never closed the protocol (C11-DONE 0-hit) — the background+wait probe path was not taken (temperament; recorded, never a silent pass). The exit-code pin still scores the wait-loop termination."
+      },
+      {
+        "pin": "timed_out_status",
+        "class": "model",
+        "note": "the merged text never carried the 'timed_out' status word — the model did not report the task's terminal status (probe meaningless for the status-word surface; the exit pin + the wire record adjudicate)."
+      }
+    ]
+  },
+  "retry": {
+    "on_status": [
+      404,
+      502,
+      503
+    ],
+    "max_attempts": 1,
+    "backoff_s": 30
+  }
+}

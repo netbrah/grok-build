@@ -1,0 +1,21 @@
+{
+  "fixture": "c-01-replay",
+  "cell": "C-01",
+  "cases": [
+    "MXAI-C01-REPLAY"
+  ],
+  "kind": "Exact-bytes retry-pair golden — the pre-placed wire pair that the zero-step mechanism case scores (smoke/merge-xai/wire/mxai-c01-replay/wire/: req-001.json = the original validated carrier, req-002.json = the retried carrier, expected-retry-body.json = the original's body verbatim). Capture envelope: {n, method, path, ts, headers, body}.",
+  "status": "DISABLED SCAFFOLD — the case is disabled:true until the operator populates this fixture from a real retried-pair capture. The current req-001/req-002/expected-retry-body.json are redacted structural placeholders (identical redacted bodies on both sides; the golden matches by construction — that proves the harness mechanism, NOT the invariant).",
+  "invariant": "A2 seam: build_encoded_request re-serializes the same validated carrier deterministically, so on our proxy (request_compression=None) the retried body must equal the original byte-for-byte. The golden's normalize list is EMPTY — ids are NOT normalized, list order is significant, and any divergence = the seam re-encoded differently = the S5 pin regressed.",
+  "population_procedure": [
+    "1. Induce a retried request on a frozen lane (L-01/L-02): a 400-class response or an aborted turn that the harness re-sends with the same carrier. wiretap2 is pass-through (no fault injection — DRIVER GAP C-01): use the operator's fault layer in front of the proxy, or a real 400 the harness retries.",
+    "2. From the run's wire dir (~/.grok/dogfood/<ts>/wire/) pick the ORIGINAL request capture and its RETRY — timestamp ordering: the retry is the later capture of the same route+model pair.",
+    "3. Apply the SAME deterministic redaction to BOTH captures (sweep-0: creds / host paths / IPs / secret-bearing URLs; model ids + structural shapes stay). Byte-identity survives because one redaction function is applied to both sides.",
+    "4. Copy into smoke/merge-xai/wire/mxai-c01-replay/wire/ as req-001.json (original) and req-002.json (retry), keeping the capture envelope.",
+    "5. Rewrite expected-retry-body.json = req-001.json's body field VERBATIM (the golden target is the original carrier's body).",
+    "6. Flip disabled:false in smoke/merge-xai/cases/mxai-c01-replay.json.",
+    "7. Run: python3 smoke/redteam/run.py MXAI-C01-REPLAY --bin <binary-of-record> (proxy:none L1 key-free — zero live calls; the wire input is copy-if-absent).",
+    "8. Re-sweep the populated pair (sweep-0) and commit the redacted wire + report (06 §3 step 4: redacted wire captures committed to fixtures)."
+  ],
+  "verdict": "PASS = exact canonical identity of the retried body to the original carrier. This is the mechanical half of C-01 that the live driver cannot induce — the strict-bytes half of the cell's 'retried body byte-identical to the original validated carrier' assertion."
+}

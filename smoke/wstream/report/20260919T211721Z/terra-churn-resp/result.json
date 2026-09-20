@@ -1,0 +1,629 @@
+{
+  "cell": "terra-churn-resp",
+  "model": "gpt-5.6-terra",
+  "api_backend": "responses",
+  "backend_class": "native",
+  "verdict": "PASS",
+  "invariants": [
+    {
+      "key": "status",
+      "expected": 200,
+      "actual": 200,
+      "ok": true
+    },
+    {
+      "key": "route",
+      "expected": "responses",
+      "actual": "responses",
+      "ok": true
+    },
+    {
+      "key": "n_model_calls_min",
+      "expected": ">= 1",
+      "actual": 13,
+      "ok": true
+    }
+  ],
+  "observations": {
+    "route": "responses",
+    "status": 200,
+    "n_model_calls": 13,
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 2,
+    "reasoning_encrypted_content": true,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": null,
+    "finish": null,
+    "budget_trap": false,
+    "final_text_nonempty": false,
+    "final_text_len": 0,
+    "usage": {
+      "input_tokens": 19571,
+      "input_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 19568
+      },
+      "output_tokens": 349,
+      "output_tokens_details": {
+        "reasoning_tokens": 105
+      },
+      "total_tokens": 19920,
+      "cost": 0.053114
+    }
+  },
+  "analysis": {
+    "cell": "terra-churn-resp",
+    "route": "responses",
+    "expected_route": "responses",
+    "routes_mixed": false,
+    "status": 200,
+    "n_model_calls": 13,
+    "n_side_calls": 12,
+    "side_call_errors": [],
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 2,
+    "reasoning_tokens": 105,
+    "reasoning_encrypted_content": true,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": null,
+    "finish": null,
+    "budget_trap": false,
+    "final_text_len": 0,
+    "final_text_nonempty": false,
+    "usage": {
+      "input_tokens": 19571,
+      "input_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 19568
+      },
+      "output_tokens": 349,
+      "output_tokens_details": {
+        "reasoning_tokens": 105
+      },
+      "total_tokens": 19920,
+      "cost": 0.053114
+    },
+    "n_frames_total": 22
+  },
+  "calls": [
+    {
+      "route": "responses",
+      "req_model": "gpt-5.6-terra",
+      "req_stream": true,
+      "req_max_tokens": 100,
+      "status": 200,
+      "n_frames": 24,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.output_item.done": 2,
+        "response.function_call_arguments.delta": 15,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 2,
+      "thinking_block": false,
+      "encrypted_content": true,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": {
+        "input_tokens": 446,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 46,
+        "output_tokens_details": {
+          "reasoning_tokens": 16
+        },
+        "total_tokens": 492,
+        "cost": 0.001444
+      },
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "gpt-5.6-terra",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 22,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 5,
+        "response.output_item.done": 5,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 4,
+        "response.completed": 1
+      },
+      "reasoning_frames": 2,
+      "thinking_block": false,
+      "encrypted_content": true,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": {
+        "input_tokens": 19571,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 19568
+        },
+        "output_tokens": 349,
+        "output_tokens_details": {
+          "reasoning_tokens": 105
+        },
+        "total_tokens": 19920,
+        "cost": 0.053114
+      },
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "gpt-5.6-terra",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 18,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 4,
+        "response.output_item.done": 4,
+        "response.function_call_arguments.delta": 3,
+        "response.function_call_arguments.done": 3,
+        "response.completed": 1
+      },
+      "reasoning_frames": 2,
+      "thinking_block": false,
+      "encrypted_content": true,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": {
+        "input_tokens": 25796,
+        "input_tokens_details": {
+          "cached_tokens": 9804,
+          "cache_write_tokens": 15972
+        },
+        "output_tokens": 471,
+        "output_tokens_details": {
+          "reasoning_tokens": 153
+        },
+        "total_tokens": 26267,
+        "cost": 0.047582799999999995
+      },
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "gpt-5.6-terra",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 14,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.output_item.done": 3,
+        "response.function_call_arguments.delta": 2,
+        "response.function_call_arguments.done": 2,
+        "response.completed": 1
+      },
+      "reasoning_frames": 2,
+      "thinking_block": false,
+      "encrypted_content": true,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": {
+        "input_tokens": 30639,
+        "input_tokens_details": {
+          "cached_tokens": 25776,
+          "cache_write_tokens": 4843
+        },
+        "output_tokens": 320,
+        "output_tokens_details": {
+          "reasoning_tokens": 160
+        },
+        "total_tokens": 30959,
+        "cost": 0.0211427
+      },
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "gpt-5.6-terra",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 12,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.function_call_arguments.delta": 2,
+        "response.function_call_arguments.done": 2,
+        "response.output_item.done": 2,
+        "response.completed": 1
+      },
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": {
+        "input_tokens": 31690,
+        "input_tokens_details": {
+          "cached_tokens": 30619,
+          "cache_write_tokens": 1051
+        },
+        "output_tokens": 169,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 31859,
+        "cost": 0.0108193
+      },
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "gpt-5.6-terra",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 14,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.output_item.done": 3,
+        "response.function_call_arguments.delta": 2,
+        "response.function_call_arguments.done": 2,
+        "response.completed": 1
+      },
+      "reasoning_frames": 2,
+      "thinking_block": false,
+      "encrypted_content": true,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": {
+        "input_tokens": 35086,
+        "input_tokens_details": {
+          "cached_tokens": 31670,
+          "cache_write_tokens": 3396
+        },
+        "output_tokens": 497,
+        "output_tokens_details": {
+          "reasoning_tokens": 127
+        },
+        "total_tokens": 35583,
+        "cost": 0.020828
+      },
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "gpt-5.6-terra",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 14,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.output_item.done": 3,
+        "response.function_call_arguments.delta": 2,
+        "response.function_call_arguments.done": 2,
+        "response.completed": 1
+      },
+      "reasoning_frames": 2,
+      "thinking_block": false,
+      "encrypted_content": true,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": {
+        "input_tokens": 41507,
+        "input_tokens_details": {
+          "cached_tokens": 35066,
+          "cache_write_tokens": 6421
+        },
+        "output_tokens": 561,
+        "output_tokens_details": {
+          "reasoning_tokens": 111
+        },
+        "total_tokens": 42068,
+        "cost": 0.0298377
+      },
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "gpt-5.6-terra",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 108,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 5,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 83,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 5,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 4,
+        "response.completed": 1
+      },
+      "reasoning_frames": 85,
+      "thinking_block": false,
+      "encrypted_content": true,
+      "thought_signature": false,
+      "reasoning_sample": "**Producing documentation**\n\nI",
+      "finish": null,
+      "usage": {
+        "input_tokens": 48959,
+        "input_tokens_details": {
+          "cached_tokens": 41487,
+          "cache_write_tokens": 7452
+        },
+        "output_tokens": 270,
+        "output_tokens_details": {
+          "reasoning_tokens": 53
+        },
+        "total_tokens": 49229,
+        "cost": 0.030207400000000002
+      },
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "gpt-5.6-terra",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 575,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 5,
+        "response.output_item.done": 5,
+        "response.function_call_arguments.delta": 560,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 8,
+      "thinking_block": false,
+      "encrypted_content": true,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": {
+        "input_tokens": 59671,
+        "input_tokens_details": {
+          "cached_tokens": 48939,
+          "cache_write_tokens": 10712
+        },
+        "output_tokens": 7567,
+        "output_tokens_details": {
+          "reasoning_tokens": 1960
+        },
+        "total_tokens": 67238,
+        "cost": 0.1274118
+      },
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "gpt-5.6-terra",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 16,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.function_call_arguments.delta": 3,
+        "response.function_call_arguments.done": 3,
+        "response.output_item.done": 3,
+        "response.completed": 1
+      },
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": {
+        "input_tokens": 65337,
+        "input_tokens_details": {
+          "cached_tokens": 59651,
+          "cache_write_tokens": 5666
+        },
+        "output_tokens": 474,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 65811,
+        "cost": 0.0318232
+      },
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "gpt-5.6-terra",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 107,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.output_item.done": 2,
+        "response.function_call_arguments.delta": 98,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 2,
+      "thinking_block": false,
+      "encrypted_content": true,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": {
+        "input_tokens": 71345,
+        "input_tokens_details": {
+          "cached_tokens": 65317,
+          "cache_write_tokens": 6008
+        },
+        "output_tokens": 392,
+        "output_tokens_details": {
+          "reasoning_tokens": 64
+        },
+        "total_tokens": 71737,
+        "cost": 0.0328274
+      },
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "gpt-5.6-terra",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 12,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.function_call_arguments.delta": 2,
+        "response.function_call_arguments.done": 2,
+        "response.output_item.done": 2,
+        "response.completed": 1
+      },
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": {
+        "input_tokens": 71695,
+        "input_tokens_details": {
+          "cached_tokens": 71325,
+          "cache_write_tokens": 350
+        },
+        "output_tokens": 428,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 72123,
+        "cost": 0.020316
+      },
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "gpt-5.6-terra",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 76,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 1,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 67,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.output_item.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": {
+        "input_tokens": 72604,
+        "input_tokens_details": {
+          "cached_tokens": 71675,
+          "cache_write_tokens": 909
+        },
+        "output_tokens": 133,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 72737,
+        "cost": 0.0182435
+      },
+      "final_text": "The harness can close the measured first-party OpenAI gap by preserving one immutable request prefix and advancing work in fewer, larger model turns.  \nOn the identical gpt-5.6-sol task, matching the official 6-request shape rather than the harness's 16 requests targets a $0.3239 saving per run (64.4%; $0.5027 \u2192 $0.1788).  \nMake this an OpenAI parity lane with explicit, testable wire contracts while retaining independent Responses/Messages profiles for Grok, Claude, qwen3.8-27b, glm-5.2, and other providers."
+    }
+  ],
+  "turns": [
+    {
+      "turn": 1,
+      "exit_code": 0,
+      "killed": false,
+      "elapsed": 148.62,
+      "session_id": "01a0bb87-ef0e-7c42-85c3-29e54a33f97d",
+      "n_events": 278
+    }
+  ],
+  "binary_sha256_12": "f9e7a15d6b6b",
+  "wire_port": 55145,
+  "upstream": "https://llm-proxy-api.ai.eng.netapp.com",
+  "key_sha256_12": "9f3f56a263da",
+  "raw_key_hits": 0,
+  "ts": "20260919T211950Z"
+}

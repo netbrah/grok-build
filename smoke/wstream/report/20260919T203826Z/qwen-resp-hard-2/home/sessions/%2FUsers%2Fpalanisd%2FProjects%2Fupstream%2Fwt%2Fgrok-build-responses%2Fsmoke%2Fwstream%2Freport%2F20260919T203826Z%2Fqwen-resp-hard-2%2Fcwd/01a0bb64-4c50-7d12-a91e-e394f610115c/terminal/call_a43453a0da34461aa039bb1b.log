@@ -1,0 +1,48 @@
+=== 1. identical files: expect no output, exit 0 ===
+exit=0
+=== 2. same words, different wrapping: expect no output, exit 0 ===
+exit=0
+=== 3. usage error: exit 2 ===
+usage: /Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T203826Z/qwen-resp-hard-2/cwd/tools/minidiff.py FILE1 FILE2
+exit=2
+=== 4. missing file: exit 2 ===
+minidiff: [Errno 2] No such file or directory: 'nope.txt'
+exit=2
+=== 5. two changes 3 lines apart: expect two hunks ===
+--- f1
++++ f2
+@@ -1,3 +1,3 @@
+ l1
+-CHANGED one
++changed one
+ l3
+@@ -4,3 +4,3 @@
+ l4
+-CHANGED two
++changed two
+ l6
+exit=1
+=== 6. pure insertion at start + deletion at end ===
+--- f1
++++ f2
+@@ -1 +1,2 @@
++NEW
+ alpha
+@@ -2,2 +3 @@
+ beta
+-gamma
+exit=1
+=== 7. empty vs nonempty ===
+--- f1
++++ f2
+@@ -0,0 +1 @@
++hello world
+exit=1
+=== 8. blank line kept as context ===
+--- f1
++++ f2
+@@ -2,2 +2,2 @@
+ 
+-old
++new
+exit=1

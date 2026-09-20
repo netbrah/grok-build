@@ -16,7 +16,7 @@
 # Env contract mirrors run-smoke.sh. Usage: smoke/run-compaction-smoke.sh
 set -u
 cd "${0:A:h}/.."
-BIN=${BIN:-./target/debug/grok-responses}
+BIN=${BIN:-./target/release/grok-responses}
 TIMEOUT=${TIMEOUT:-180}
 PROXY=${GROK_L2_PROXY_BASE_URL:-https://llm-proxy-api.ai.eng.netapp.com/v1}
 OUT=${OUT:-/tmp/grok-p21-acceptance}

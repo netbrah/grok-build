@@ -1,0 +1,5 @@
+{"ts_ms":1789852672183,"kind":"start","pid":76445,"version":"1.0.24"}
+{"ts_ms":1789852672184,"kind":"sample","footprint_bytes":68387752,"rss_bytes":131137536,"threads":60,"alloc":{"allocated":40840312,"active":66256896,"resident":83591168,"mapped":196034560,"retained":0,"metadata":11827112}}
+{"ts_ms":1789852702190,"kind":"sample","footprint_bytes":80380840,"rss_bytes":99762176,"threads":60,"alloc":{"allocated":42709256,"active":68321280,"resident":96534528,"mapped":208961536,"retained":0,"metadata":11848232}}
+{"ts_ms":1789852732196,"kind":"sample","footprint_bytes":80380840,"rss_bytes":106790912,"threads":60,"alloc":{"allocated":42393088,"active":68403200,"resident":96534528,"mapped":208961536,"retained":0,"metadata":11849384}}
+{"ts_ms":1789852762200,"kind":"sample","footprint_bytes":80397224,"rss_bytes":107053056,"threads":60,"alloc":{"allocated":42082248,"active":68059136,"resident":96534528,"mapped":208961536,"retained":0,"metadata":11849384}}

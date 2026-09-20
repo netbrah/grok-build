@@ -1,13 +1,16 @@
 {
   "schema_version": 1,
   "id": "XW-AZ-AZ",
-  "title": "XW-FIXTURES GREEN-PIN GUARD case, cell az-az (switch_model op, RULING 3 GO 3 (a), 2026-09-18 \u2014 corpus lane, ratchet \u2461; runner-visible copy in redteam/cases/): the runner seeds the session with the byte-pinned synthetic canonical sol-phase history (10 records; 2 reasoning items id=encitem_* + content:[] + encrypted_content (SYNTH-AZ-CIPHERTEXT placeholders) + summary text; 2 tool pairs; assistant model_id gpt-5.6-sol \u2014 byte-identical reuse of the cells/az-vxm pre, sha256:12 379ade4065e6), switches gpt-5.6-sol -> gpt-5.6-terra MID-SESSION (ACP session/set_model \u2014 NO preemptive wall: (codex,codex) same-family pair, is_family_switch requires (Some(a),Some(b)) with a!=b (model_switch.rs:60-69) so no family switch and no lossy compact), then one post-switch turn. PREDICTED OUTCOME (RULING 3 (a): predicted-clean, the no-wall same-wire guard): (i) storage diff AT SWITCH TIME PASSES = T0 (no projector in-tree and no wall -> the switch rewrites nothing in storage; expected.json byte-identical to pre_switch, the az-vxm T0 pattern); (ii) the first post-switch /v1/responses request (body.model=gpt-5.6-terra) carries the 2 rides in the post-strict-projection summary-only shape (provider.rs:263-280 strips id + content at send on the strict row; D-ENC provider.rs:187-208 ungated strips encrypted_content on every /responses send) \u2014 summary text byte-verbatim from the seed, zero encitem_ ids, zero '\"id\": \"\"' occurrences, zero ciphertext; (iii) 200 on the final terra request, no storm (count 1..2). Verdict semantics (A1): GREEN-BY-CONSTRUCTION guard \u2014 all asserts PASSing today is the correct outcome. ANY failing assert = a regression beyond the documented surface (a naive .71 T1 storage re-key REDs the storage T0 pin; a serializer emitting array content or a strict-projection regression REDs the wire pins) -> report-and-stop. NEVER edit expected.json or a pin to fit.",
+  "title": "XW-FIXTURES GREEN-PIN GUARD case, cell az-az (switch_model op, RULING 3 GO 3 (a), 2026-09-18 \u2014 corpus lane, ratchet \u2461; runner-visible copy in redteam/cases/): the runner seeds the session with the byte-pinned synthetic canonical sol-phase history (10 records; 2 reasoning items id=encitem_* + content:[] + encrypted_content (SYNTH-AZ-CIPHERTEXT placeholders) + summary text; 2 tool pairs; assistant model_id gpt-5.6-sol \u2014 byte-identical reuse of the cells/az-vxm pre, sha256:12 379ade4065e6), switches gpt-5.6-sol -> gpt-5.6-terra MID-SESSION (ACP session/set_model \u2014 NO preemptive wall: (codex,codex) same-family pair, is_family_switch requires (Some(a),Some(b)) with a!=b (model_switch.rs:60-69) so no family switch and no lossy compact), then one post-switch turn. PREDICTED OUTCOME (RULING 3 (a): predicted-clean, the no-wall same-wire guard): (i) storage diff AT SWITCH TIME PASSES = T0 (no projector in-tree and no wall -> the switch rewrites nothing in storage; expected.json byte-identical to pre_switch, the az-vxm T0 pattern); (ii) the first post-switch /v1/responses request (body.model=gpt-5.6-terra) carries the 2 rides in the post-strict-projection summary-only shape (provider.rs:263-280 strips id + content at send on the strict row; pre-mf6 this was 'zero ciphertext' via the retired ungated D-ENC (provider.rs:187-208) - SUPERSEDED: the mf6 affinity gate now classifies per (pin,mint) and the seeded rides are (pin Some, mint None) = Strip, so T1 stays field-clean) \u2014 summary text byte-verbatim from the seed, zero encitem_ ids, zero '\"id\": \"\"' occurrences; T2's request carries T1's same-pin Retain ride (the M-5 pin at the end of the wire list); (iii) 200 on the final terra request, no storm (count 2..3, M-5). Verdict semantics (A1): GREEN-BY-CONSTRUCTION guard \u2014 all asserts PASSing today is the correct outcome. ANY failing assert = a regression beyond the documented surface (a naive .71 T1 storage re-key REDs the storage T0 pin; a serializer emitting array content or a strict-projection regression REDs the wire pins) -> report-and-stop.  M-5 (mf6 OPORD L1/A2, 2026-09-20 - the owed second post-switch turn): T1 becomes a reasoning-forcing prompt (config_patch models/default_reasoning_effort='max' - the O7 M-1 carrier-mint lesson: the session wire effort seeds from the global, a row-level scalar is inert on the wire) whose terra-minted ride (D1 store-side stamp, terra row pin 'East US 2') must CROSS T2's request under the same-pin Retain arm (conversation.rs:135-141). The D-ENC FIELD INVARIANT re-scopes all-terra -> T1 (req-003) because T2's (Some, Some same-pin) = Retain legitimately carries the field while the seeded rides Strip; no-storm band widens 1..2 -> 2..3; est_calls 2 -> 3. The pre-M-5 verdict semantics (GREEN-by-construction guard, RULING 3 (a)) are UNCHANGED for pins 1-5 (RIDE-1/RIDE-2 verbatim, NO RAW RIDE, D-ENC seed-ciphertext, NO EMPTY-ID), the storage T0 scoring at switch time, and the ndjson pin.",
   "bead": "apex-ayl.70",
   "suite": "cross-wire",
   "tier": "slim",
   "driver": "acp",
   "model": "gpt-5.6-sol",
   "wirecap": true,
+  "config_patch": {
+    "models/default_reasoning_effort": "max"
+  },
   "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
   "steps": [
     {
@@ -19,11 +22,15 @@
     },
     {
       "op": "turn",
-      "prompt": "Reply with exactly: XW-AZ-AZ-POSTSW1"
+      "prompt": "Find the remainder when 7^8432 is divided by 5557. Work it out by hand using modular exponentiation (repeated squaring), showing each step, without using any tools or code execution."
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: XW-AZ-AZ-POSTSW2"
     }
   ],
   "watchdog_s": 300,
-  "est_calls": 2,
+  "est_calls": 3,
   "assert": {
     "ndjson": [
       {
@@ -98,16 +105,11 @@
       },
       {
         "kind": "grep",
-        "file": "req-*.json",
-        "where": {
-          "method": "POST",
-          "path": "/v1/responses",
-          "body.model": "gpt-5.6-terra"
-        },
+        "file": "req-003.json",
         "all": true,
         "absent": true,
         "grep": "\"encrypted_content\":",
-        "label": "GREEN-PIN (RULING 3 (a)) D-ENC FIELD INVARIANT: no encrypted_content FIELD in any terra request (the needle is field-form with the colon so the 'include: [reasoning.escaped_content]' request parameter and escaped text mentions cannot false-hit; verified safe on this seed: 0 escaped-field occurrences in pre_switch). Present = D-ENC regression -> report-and-stop."
+        "label": "D-ENC FIELD INVARIANT (T1-SCOPED, M-5 re-scope 2026-09-20): no encrypted_content FIELD in the FIRST post-switch request (req-003 = T1; req-001/002 = harness probes, the pattern of all six pre-M-5 runs). The seeded rides carry NO mint_tag (cell pre_switch byte-pin) so the mf6 send-time gate classifies them (pin Some(EU2), mint None) = Strip (conversation.rs:135-141) - T1 must be field-clean. Re-scoped from all-terra to T1-only because T2's request LEGITIMATELY carries T1's terra-minted ride under the same-pin Retain arm (the M-5 pin at the end of this list) - an all-terra absence pin would false-RED the documented mf6 behavior. The needle stays field-form with the colon (the 'include: [reasoning.escaped_content]' request parameter and escaped text mentions cannot false-hit; verified safe on this seed: 0 escaped-field occurrences in pre_switch)."
       },
       {
         "kind": "count",
@@ -117,9 +119,9 @@
           "path": "/v1/responses",
           "body.model": "gpt-5.6-terra"
         },
-        "min": 1,
-        "max": 2,
-        "label": "NO-STORM BAND (no wall, no compact): 1 = clean single post-switch request (run-1 precedent, same terra row); 2 = one retry observed before 200 (record the branch); >2 = retry-storm beyond documented semantics -> defect (report-and-stop)."
+        "min": 2,
+        "max": 3,
+        "label": "NO-STORM BAND (no wall, no compact; M-5: two post-switch turns): 2 = clean T1+T2 (run-1 precedent was 1 for the single turn); 3 = one retry observed before 200 (record the branch); >3 = retry-storm beyond documented semantics -> defect (report-and-stop); <2 = a turn never fired -> report-and-stop."
       },
       {
         "kind": "resp_status",
@@ -146,6 +148,18 @@
         "file": "req-003.json",
         "grep": "\"type\": \"reasoning\"",
         "label": "VERDICT RECORD: line count of '\"type\": \"reasoning\"' occurrences in the first post-switch request (expected 2 \u2014 the 2 seeded rides, projected to the summary-only shape; 0 would corroborate a strict-projection drop, >2 a ride duplication). Recon is always-ok (non-scoring)."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "any": true,
+        "grep": "\"encrypted_content\":",
+        "label": "M-5 SAME-PIN RETAIN RIDE (mf6 OPORD L1/A2 - the owed second-turn cell, 2026-09-20): the SECOND post-switch request (T2) carries T1's terra-minted reasoning ciphertext - D1 mint-stamped T1's ride with the terra row's pin ('East US 2') at store time; send-time gate pin Some(EU2) x mint Some(EU2) = Retain (conversation.rs:135-141). Under pre-mf6 code (retired D-ENC, unconditional strip at every /responses send) this pin is ABSENT and REDs - this is the live second-turn witness the mf6 OPORD owed. Absent under post-mf6 code = a regression beyond the documented surface (a D1 mint-stamp loss, a gate misclassification of the same-pin arm, or a D-ENC-style strip resurrected) -> report-and-stop. any:true selects the T2 request (T1 stays clean per the T1-scoped field invariant)."
       }
     ]
   },

@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "id": "XW-VXM-AZ-LIVE",
+  "title": "ADVERSARIAL-CASES-1 case 1 (ADV1-R1): LIVE foreign-reasoning replay — a real claude-sonnet-5 thinking turn creates the history (NO cell seed), mid-session ACP switch to gpt-5.6-sol (plain `switch` op — the switch_model op is deliberately NOT used: it always seeds from a cell, which would defeat the live premise), one post-switch turn. The BRICK watch (error-class-audit §4: unclassified 400 -> Fatal retry.rs:186, terminal until compaction) greps the response captures for the unclassified phrasings (vLLM pydantic dotted id/content; Azure max-0; generic validation errors). A clean final-200 with the anti-vacuous reasoning pin PASS closes OQ-11 (lenient-shim empty-id tolerance on the LIVE path); a 400 final (or 400->Fatal, no recovery) is the BRICK finding — capture the verbatim phrasing from resp-*.jsonl + report.md, that is the deliverable.",
+  "bead": "apex-dqa",
+  "suite": "cross-wire",
+  "tier": "slim",
+  "driver": "acp",
+  "model": "claude-sonnet-5",
+  "wirecap": true,
+  "steps": [
+    {"op": "turn", "prompt": "Think step by step: what is 17*23? Show reasoning, then the answer."},
+    {"op": "switch", "model": "gpt-5.6-sol", "via": "acp"},
+    {"op": "turn", "prompt": "Reply with exactly: XW-VXM-AZ-POSTSW1"}
+  ],
+  "watchdog_s": 300,
+  "est_calls": 6,
+  "assert": {
+    "ndjson": [
+      {"op": "absent", "event": "acp_error", "label": "TURN COMPLETES: the post-switch sol turn did not die."}
+    ],
+    "wire": [
+      {"kind": "grep", "file": "req-*.json", "where": {"method": "POST", "path": "/v1/responses", "body.model": "gpt-5.6-sol"}, "any": true, "grep": "\"type\": \"reasoning\"", "label": "ANTI-VACUOUS: a post-switch sol request carried a reasoning INPUT item — the LIVE foreign (sonnet thinking) history actually crossed the responses wire. A MISS here makes every other pin vacuous — treat as report-and-stop (the switch may have lost the ride to a preemptive compact; pair with the count pin)."},
+      {"kind": "grep", "file": "req-*.json", "where": {"method": "POST", "path": "/v1/responses", "body.model": "gpt-5.6-sol"}, "any": true, "grep": "\"id\": \"\"", "label": "EMPTY-ID RIDE (record, not a defect in itself): a post-switch sol request ships id:'' reasoning items verbatim (the .69/.77 ingress-normalize surface on the LIVE path; the .71 projector re-keys at switch time — if it fires, this pin MISSES and that is the GOOD outcome). Record which happened in your report."},
+      {"kind": "resp_status", "file": "req-*.json", "where": {"method": "POST", "path": "/v1/responses", "body.model": "gpt-5.6-sol"}, "which": "last", "status_in": [200], "label": "POST-SWITCH ACCEPTED: the final sol request reached 200. 400 final = BRICK or classified-failure — capture the phrasing (see recon pin) and report-and-stop."},
+      {"kind": "count", "file": "req-*.json", "where": {"method": "POST", "path": "/v1/responses", "body.model": "gpt-5.6-sol"}, "min": 1, "max": 4, "label": "NO STORM: 1 = clean first-try 200 (projector/normalization sufficed); 2 = one 400 -> reactive strip/repair -> 200 (record which classifier fired); >=5 = same-payload storm beyond documented semantics -> defect, report-and-stop."},
+      {"kind": "recon", "file": "resp-*.jsonl", "grep": "array too long|validation error|Unsupported Responses API|input\\[|in-stream error", "label": "BRICK PHRASING CAPTURE (recon, non-scoring): record ANY 400/error body phrasing from the response captures VERBATIM (this is the classifier/triage deliverable if the final is not 200). A clean run shows nothing here — that is expected."}
+    ]
+  },
+  "scoring": {"require_wire_evidence": true},
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses"
+}

@@ -1,0 +1,68 @@
+{
+ "schema_version": 1,
+ "id": "OW-CACHECTL-01",
+ "title": "apex-ayl.118 RED ratchet (openai side sweep F1, GREEN path apex-ayl.102) — prompt_cache_retention unreachable on the responses wire: the case declares model/gpt-5.6-sol/prompt_cache_retention=in_memory (config_patch intent; the lenient row parser ignores the key pre-cut) and pins 'prompt_cache_retention' on the /v1/responses requests. The fork hardcodes prompt_cache_retention: None (ST/conversation/responses.rs:197), so the docs-named retention lever can never ride the wire. RED today (no request carries the field — the grep pin 0-hits); GREEN when the apex-ayl.102 cut plumbs config -> wire. Control pins (class harness, plain asserts): body.model eq gpt-5.6-sol on the main (oldest) request; 'prompt_cache_key' present on at least one /v1/responses request (F14 docs: the pck IS sent today — a miss is a harness regression, not vacuous). Two turns: a math T1 (real prefix) + an exact-OK T2.",
+ "bead": "apex-ayl.118",
+ "suite": "wire-shape",
+ "tier": "slim",
+ "driver": "headless",
+ "model": "gpt-5.6-sol",
+ "wirecap": true,
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "config_patch": {
+  "model/gpt-5.6-sol/prompt_cache_retention": "in_memory"
+ },
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Find the remainder when 7^8432 is divided by 5557. Show your work using modular exponentiation. End your reply with exactly: OW-CACHECTL-T1",
+   "timeout_s": 240
+  },
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: OW-CACHECTL-OK",
+   "timeout_s": 180
+  }
+ ],
+ "watchdog_s": 420,
+ "est_calls": 4,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error",
+    "label": "NO TERMINAL ERROR: both turns completed (the red is the retention seam, not the turn)."
+   }
+  ],
+  "wire": [
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses" },
+    "last": 0,
+    "path": "body.model",
+    "eq": "gpt-5.6-sol",
+    "label": "CONTROL (class harness): the main (oldest) request carries the session model — the harness always does; a miss is a harness failure, never vacuous."
+   },
+   {
+    "kind": "grep",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses" },
+    "any": true,
+    "grep": "prompt_cache_key",
+    "label": "CONTROL (class harness, F14 docs): the prompt_cache_key rides the wire today — a miss is a harness regression, not vacuous."
+   },
+   {
+    "kind": "grep",
+    "id": "ow_cachectl_red",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses" },
+    "any": true,
+    "grep": "prompt_cache_retention",
+    "label": "RED PIN (F1 / apex-ayl.102): a /v1/responses request carries prompt_cache_retention (the docs-named retention lever). Pre-cut FAILs: the producer hardcodes None (responses.rs:197) — the field is unemittable."
+   }
+  ]
+ },
+ "expected_red": { "id": "ow-f1-cachectl" }
+}

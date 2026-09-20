@@ -21,7 +21,7 @@
 #   GROK_DOGFOOD_CLEANUP=1     delete capture dir + temp home after the run
 #   GROK_DOGFOOD_WIRETAP=<path> wiretap2 location (default: worktree)
 
-BIN=${GROK_DOGFOOD_BIN:-/Users/palanisd/Projects/upstream/wt/grok-build-responses/target/debug/grok-responses}
+BIN=${GROK_DOGFOOD_BIN:-/Users/palanisd/Projects/upstream/wt/grok-build-responses/target/release/grok-responses}
 [ -x "$BIN" ] || {
   echo "grok-dogfood: binary missing: $BIN (in-flight build? cargo build -p xai-grok-pager-bin)" >&2
   exit 2

@@ -1,0 +1,17 @@
+--- a.txt
++++ b.txt
+@@ -6,3 +6,3 @@
+ the
+-stormy
++calm
+ sky.
+@@ -25,3 +25,3 @@
+ safe
+-harbor.
++port.
+ Waves
+@@ -46,2 +46,2 @@
+ the
+-flame.
++fire.
+EXIT:1

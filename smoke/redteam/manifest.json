@@ -1,0 +1,434 @@
+{
+ "version": 1,
+ "suite": "redteam",
+ "bead": "apex-ayl.79 (manifest discipline row, JIG 4); case-family ownership: golden = apex-ayl.79 ratchet 1; xw = apex-ayl.70/.71; ws9 = apex-ayl.78; t21/rt = pre-R1 lanes (status per own report homes)",
+ "note": "redteam \u2014 L2 wire-level redteam suite: hermetic-home dogfood runs of the built grok-responses binary behind wiretap, scored declaratively by case files against wire captures (check_wire kinds: field, grep, size_lt, count, resp_status, recon, golden). ONE compare engine: golden_compare \u2014 check_wire kind=golden and the switch_model op's wire hook both call it (R1C: the retired cell_diff kind has no second comparator; run.py:1627-1631 comment, @d404fe1). Case files are the corpus; this manifest is the machine record of suite state (cells, pins, expected refs, run history) per JIG 4.",
+ "mechanism": "smoke/redteam/run.py (canonical runner; ACP session/load cell seeding for switch_model cases per R1A + concordance V1a)",
+ "schema": "smoke/redteam/case.schema.json (draft07 gate + validate_case_file; golden kind schema-pinned at ratchet 1, kind enum L780-786 @d404fe1)",
+ "binary_of_record": "target/release/grok-responses sha256_12 24a941bac02b (2026-09-18 L2 window; worktree tree = 7c82fe7 + .74+.81 green pre-union-commit \u2014 superseded-by-record only; the 5f4411a/d404fe1 tree's binary is a sibling-lane step, not recorded here)",
+ "cells": [
+  {
+   "case": "xw-az-az",
+   "file": "cases/xw-az-az.json",
+   "family": "xw",
+   "status": "ratchet 2 (apex-ayl.70/.71): 15 STAGE-2 RED runs in report-r2/ (RULING 3 adjudication 07:08Z; machine record = smoke/xwfix/manifest.json red_runs_r2); 2026-09-18 20:25Z L2 re-verify on binary 24a941bac02b in report-green/: xw-az-az PASS, xw-vlq-vlg-ws PASS, xw-vxm-vlg-guard RED-EXPECTED(.71)+green pins PASS, xw-vxm-vlq-v2 RED-EXPECTED(.71)+green pins PASS; remaining cells per redcycle-20260918.md 2 + RULING 3 | r3 re-verify (sealed report-r3r, 2026-09-18 21:42-21:51Z, bin f0f2455a6ca2 @0fc1060): PASS"
+  },
+  {
+   "case": "xw-az-vlq",
+   "file": "cases/xw-az-vlq.json",
+   "family": "xw",
+   "status": "ratchet 2 (apex-ayl.70/.71): 15 STAGE-2 RED runs in report-r2/ (RULING 3 adjudication 07:08Z; machine record = smoke/xwfix/manifest.json red_runs_r2); 2026-09-18 20:25Z L2 re-verify on binary 24a941bac02b in report-green/: xw-az-az PASS, xw-vlq-vlg-ws PASS, xw-vxm-vlg-guard RED-EXPECTED(.71)+green pins PASS, xw-vxm-vlq-v2 RED-EXPECTED(.71)+green pins PASS; remaining cells per redcycle-20260918.md 2 + RULING 3 | r3 re-verify (sealed report-r3r, 2026-09-18 21:42-21:51Z, bin f0f2455a6ca2 @0fc1060): RED-EXPECTED(.71) storage as-documented + era-stale encitem_ pin (absent post-.77); no COMP-3 storm; final 200"
+  },
+  {
+   "case": "xw-az-vxm",
+   "file": "cases/xw-az-vxm.json",
+   "family": "xw",
+   "status": "ratchet 2 (apex-ayl.70/.71): 15 STAGE-2 RED runs in report-r2/ (RULING 3 adjudication 07:08Z; machine record = smoke/xwfix/manifest.json red_runs_r2); 2026-09-18 20:25Z L2 re-verify on binary 24a941bac02b in report-green/: xw-az-az PASS, xw-vlq-vlg-ws PASS, xw-vxm-vlg-guard RED-EXPECTED(.71)+green pins PASS, xw-vxm-vlq-v2 RED-EXPECTED(.71)+green pins PASS; remaining cells per redcycle-20260918.md 2 + RULING 3 | r3 re-verify (sealed report-r3r, 2026-09-18 21:42-21:51Z, bin f0f2455a6ca2 @0fc1060): PASS"
+  },
+  {
+   "case": "xw-vlq-vlg-ws",
+   "file": "cases/xw-vlq-vlg-ws.json",
+   "family": "xw",
+   "status": "ratchet 2 (apex-ayl.70/.71): 15 STAGE-2 RED runs in report-r2/ (RULING 3 adjudication 07:08Z; machine record = smoke/xwfix/manifest.json red_runs_r2); 2026-09-18 20:25Z L2 re-verify on binary 24a941bac02b in report-green/: xw-az-az PASS, xw-vlq-vlg-ws PASS, xw-vxm-vlg-guard RED-EXPECTED(.71)+green pins PASS, xw-vxm-vlq-v2 RED-EXPECTED(.71)+green pins PASS; remaining cells per redcycle-20260918.md 2 + RULING 3 | r3 re-verify (sealed report-r3r, 2026-09-18 21:42-21:51Z, bin f0f2455a6ca2 @0fc1060): PASS (wall preemption, c2)"
+  },
+  {
+   "case": "xw-vlq-vlg",
+   "file": "cases/xw-vlq-vlg.json",
+   "family": "xw",
+   "status": "ratchet 2 (apex-ayl.70/.71): 15 STAGE-2 RED runs in report-r2/ (RULING 3 adjudication 07:08Z; machine record = smoke/xwfix/manifest.json red_runs_r2); 2026-09-18 20:25Z L2 re-verify on binary 24a941bac02b in report-green/: xw-az-az PASS, xw-vlq-vlg-ws PASS, xw-vxm-vlg-guard RED-EXPECTED(.71)+green pins PASS, xw-vxm-vlq-v2 RED-EXPECTED(.71)+green pins PASS; remaining cells per redcycle-20260918.md 2 + RULING 3 | r3 re-verify (sealed report-r3r, 2026-09-18 21:42-21:51Z, bin f0f2455a6ca2 @0fc1060): FAIL x2 = documented UNPROVEN .68 finding (wall ate the ride); assert-identical to r2; case id typo XW-VLG-VLG recorded"
+  },
+  {
+   "case": "xw-vxm-az",
+   "file": "cases/xw-vxm-az.json",
+   "family": "xw",
+   "status": "ratchet 2 (apex-ayl.70/.71): 15 STAGE-2 RED runs in report-r2/ (RULING 3 adjudication 07:08Z; machine record = smoke/xwfix/manifest.json red_runs_r2); 2026-09-18 20:25Z L2 re-verify on binary 24a941bac02b in report-green/: xw-az-az PASS, xw-vlq-vlg-ws PASS, xw-vxm-vlg-guard RED-EXPECTED(.71)+green pins PASS, xw-vxm-vlq-v2 RED-EXPECTED(.71)+green pins PASS; remaining cells per redcycle-20260918.md 2 + RULING 3 | r3 re-verify (sealed report-r3r, 2026-09-18 21:42-21:51Z, bin f0f2455a6ca2 @0fc1060): RED-EXPECTED(.71) storage as-documented + era-stale id:'' pin (absent post-.77)"
+  },
+  {
+   "case": "xw-vxm-vlg-guard",
+   "file": "cases/xw-vxm-vlg-guard.json",
+   "family": "xw",
+   "status": "ratchet 2 (apex-ayl.70/.71): 15 STAGE-2 RED runs in report-r2/ (RULING 3 adjudication 07:08Z; machine record = smoke/xwfix/manifest.json red_runs_r2); 2026-09-18 20:25Z L2 re-verify on binary 24a941bac02b in report-green/: xw-az-az PASS, xw-vlq-vlg-ws PASS, xw-vxm-vlg-guard RED-EXPECTED(.71)+green pins PASS, xw-vxm-vlq-v2 RED-EXPECTED(.71)+green pins PASS; remaining cells per redcycle-20260918.md 2 + RULING 3 | r3 re-verify (sealed report-r3r, 2026-09-18 21:42-21:51Z, bin f0f2455a6ca2 @0fc1060): RED-EXPECTED(.71) storage-only = exact documented shape; all green pins PASS"
+  },
+  {
+   "case": "xw-vxm-vlg",
+   "file": "cases/xw-vxm-vlg.json",
+   "family": "xw",
+   "status": "ratchet 2 (apex-ayl.70/.71): 15 STAGE-2 RED runs in report-r2/ (RULING 3 adjudication 07:08Z; machine record = smoke/xwfix/manifest.json red_runs_r2); 2026-09-18 20:25Z L2 re-verify on binary 24a941bac02b in report-green/: xw-az-az PASS, xw-vlq-vlg-ws PASS, xw-vxm-vlg-guard RED-EXPECTED(.71)+green pins PASS, xw-vxm-vlq-v2 RED-EXPECTED(.71)+green pins PASS; remaining cells per redcycle-20260918.md 2 + RULING 3 | r3 re-verify (sealed report-r3r, 2026-09-18 21:42-21:51Z, bin f0f2455a6ca2 @0fc1060): RED-EXPECTED(.71) storage idx2 as-documented + 200 vs want=[400] pin (class-(a) lapsed, documented drift)"
+  },
+  {
+   "case": "xw-vxm-vlq-v2",
+   "file": "cases/xw-vxm-vlq-v2.json",
+   "family": "xw",
+   "status": "ratchet 2 (apex-ayl.70/.71): 15 STAGE-2 RED runs in report-r2/ (RULING 3 adjudication 07:08Z; machine record = smoke/xwfix/manifest.json red_runs_r2); 2026-09-18 20:25Z L2 re-verify on binary 24a941bac02b in report-green/: xw-az-az PASS, xw-vlq-vlg-ws PASS, xw-vxm-vlg-guard RED-EXPECTED(.71)+green pins PASS, xw-vxm-vlq-v2 RED-EXPECTED(.71)+green pins PASS; remaining cells per redcycle-20260918.md 2 + RULING 3 | r3 re-verify (sealed report-r3r, 2026-09-18 21:42-21:51Z, bin f0f2455a6ca2 @0fc1060): RED-EXPECTED(.71) storage-only = exact documented shape (sealed run; the r3-root 2-assert outcome is unrecoverable \u2014 driver defect)"
+  },
+  {
+   "case": "xw-vxm-vlq",
+   "file": "cases/xw-vxm-vlq.json",
+   "family": "xw",
+   "status": "ratchet 2 (apex-ayl.70/.71): 15 STAGE-2 RED runs in report-r2/ (RULING 3 adjudication 07:08Z; machine record = smoke/xwfix/manifest.json red_runs_r2); 2026-09-18 20:25Z L2 re-verify on binary 24a941bac02b in report-green/: xw-az-az PASS, xw-vlq-vlg-ws PASS, xw-vxm-vlg-guard RED-EXPECTED(.71)+green pins PASS, xw-vxm-vlq-v2 RED-EXPECTED(.71)+green pins PASS; remaining cells per redcycle-20260918.md 2 + RULING 3 | r3 re-verify (sealed report-r3r, 2026-09-18 21:42-21:51Z, bin f0f2455a6ca2 @0fc1060): RED-EXPECTED(.71) storage idx2 as-documented + 200 vs 400 pin; recon CATCH surface <no files> = no new phrasing"
+  },
+  {
+   "case": "xw-vxm-vxg",
+   "file": "cases/xw-vxm-vxg.json",
+   "family": "xw",
+   "status": "ratchet 2 (apex-ayl.70/.71): 15 STAGE-2 RED runs in report-r2/ (RULING 3 adjudication 07:08Z; machine record = smoke/xwfix/manifest.json red_runs_r2); 2026-09-18 20:25Z L2 re-verify on binary 24a941bac02b in report-green/: xw-az-az PASS, xw-vlq-vlg-ws PASS, xw-vxm-vlg-guard RED-EXPECTED(.71)+green pins PASS, xw-vxm-vlq-v2 RED-EXPECTED(.71)+green pins PASS; remaining cells per redcycle-20260918.md 2 + RULING 3 | r3 re-verify (sealed report-r3r, 2026-09-18 21:42-21:51Z, bin f0f2455a6ca2 @0fc1060): RED-EXPECTED(.71) storage as-documented; recon P6 surface <no files> = clean 200, acceptance class per RULING 3"
+  },
+  {
+   "case": "golden-smoke-01",
+   "file": "cases/golden-smoke-01.json",
+   "family": "golden",
+   "status": "ratchet 1 (apex-ayl.79): GREEN byte-pinned \u2014 fixture from verbatim capture cfed3352cc1c; full-runner PASS report-r1/green-1.txt; RED-1 mechanism 5F+12E pre-change (report-r1/README.md)"
+  },
+  {
+   "case": "rt-46c1",
+   "file": "cases/rt-46c1.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-c1",
+   "file": "cases/rt-c1.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-c2",
+   "file": "cases/rt-c2.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-c3",
+   "file": "cases/rt-c3.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-c4",
+   "file": "cases/rt-c4.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-c5",
+   "file": "cases/rt-c5.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-c6",
+   "file": "cases/rt-c6.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-crosswire1",
+   "file": "cases/rt-crosswire1.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-crosswire1b",
+   "file": "cases/rt-crosswire1b.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-m1",
+   "file": "cases/rt-m1.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-m10a",
+   "file": "cases/rt-m10a.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-m10b",
+   "file": "cases/rt-m10b.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-m11",
+   "file": "cases/rt-m11.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-m11r",
+   "file": "cases/rt-m11r.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-m2",
+   "file": "cases/rt-m2.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-m3",
+   "file": "cases/rt-m3.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-m4",
+   "file": "cases/rt-m4.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-m5",
+   "file": "cases/rt-m5.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-m6",
+   "file": "cases/rt-m6.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-m8",
+   "file": "cases/rt-m8.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-m9",
+   "file": "cases/rt-m9.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-r1",
+   "file": "cases/rt-r1.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-r2",
+   "file": "cases/rt-r2.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-r3",
+   "file": "cases/rt-r3.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-s1",
+   "file": "cases/rt-s1.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-s2",
+   "file": "cases/rt-s2.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-s3",
+   "file": "cases/rt-s3.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-s4",
+   "file": "cases/rt-s4.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-xreplay1",
+   "file": "cases/rt-xreplay1.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "rt-xreplay2",
+   "file": "cases/rt-xreplay2.json",
+   "family": "rt",
+   "status": "legacy corpus (pre-R1 lanes: M-series, S-series, C-series, crosswire, xreplay, 46c1); report homes report/ (2026-09-13 windows)"
+  },
+  {
+   "case": "t21-messages-sonnet5-mcp-tool",
+   "file": "cases/t21-messages-sonnet5-mcp-tool.json",
+   "family": "t21",
+   "status": "t21 MCP tool-call matrix (pre-R1 lanes); report homes report/"
+  },
+  {
+   "case": "t21-responses-glm52-mcp-tool",
+   "file": "cases/t21-responses-glm52-mcp-tool.json",
+   "family": "t21",
+   "status": "t21 MCP tool-call matrix (pre-R1 lanes); report homes report/"
+  },
+  {
+   "case": "t21-responses-grok46-mcp-tool",
+   "file": "cases/t21-responses-grok46-mcp-tool.json",
+   "family": "t21",
+   "status": "t21 MCP tool-call matrix (pre-R1 lanes); report homes report/"
+  },
+  {
+   "case": "t21-responses-qwen3827b-mcp-tool",
+   "file": "cases/t21-responses-qwen3827b-mcp-tool.json",
+   "family": "t21",
+   "status": "t21 MCP tool-call matrix (pre-R1 lanes); report homes report/"
+  },
+  {
+   "case": "t21-responses-sol-mcp-tool",
+   "file": "cases/t21-responses-sol-mcp-tool.json",
+   "family": "t21",
+   "status": "t21 MCP tool-call matrix (pre-R1 lanes); report homes report/"
+  },
+  {
+   "case": "ws9-arm-tagflip",
+   "file": "cases/ws9-arm-tagflip.json",
+   "family": "ws9",
+   "status": "apex-ayl.78 ship-gate 12 rows: case-ops LANDED d404fe1 (2026-09-18 21:13Z); L2 runs = .78-B lane (unblocked per 20:25Z entry; python3.12 mandatory)"
+  },
+  {
+   "case": "ws9-arm-xsearch",
+   "file": "cases/ws9-arm-xsearch.json",
+   "family": "ws9",
+   "status": "apex-ayl.78 ship-gate 12 rows: case-ops LANDED d404fe1 (2026-09-18 21:13Z); L2 runs = .78-B lane (unblocked per 20:25Z entry; python3.12 mandatory)"
+  },
+  {
+   "case": "ws9-s01-tool-loop",
+   "file": "cases/ws9-s01-tool-loop.json",
+   "family": "ws9",
+   "status": "apex-ayl.78 ship-gate 12 rows: case-ops LANDED d404fe1 (2026-09-18 21:13Z); L2 runs = .78-B lane (unblocked per 20:25Z entry; python3.12 mandatory)"
+  },
+  {
+   "case": "ws9-s02-tool-fail",
+   "file": "cases/ws9-s02-tool-fail.json",
+   "family": "ws9",
+   "status": "apex-ayl.78 ship-gate 12 rows: case-ops LANDED d404fe1 (2026-09-18 21:13Z); L2 runs = .78-B lane (unblocked per 20:25Z entry; python3.12 mandatory)"
+  },
+  {
+   "case": "ws9-s03-stream-trunc",
+   "file": "cases/ws9-s03-stream-trunc.json",
+   "family": "ws9",
+   "status": "apex-ayl.78 ship-gate 12 rows: case-ops LANDED d404fe1 (2026-09-18 21:13Z); L2 runs = .78-B lane (unblocked per 20:25Z entry; python3.12 mandatory)"
+  },
+  {
+   "case": "ws9-s04-model-switch",
+   "file": "cases/ws9-s04-model-switch.json",
+   "family": "ws9",
+   "status": "apex-ayl.78 ship-gate 12 rows: case-ops LANDED d404fe1 (2026-09-18 21:13Z); L2 runs = .78-B lane (unblocked per 20:25Z entry; python3.12 mandatory)"
+  },
+  {
+   "case": "ws9-s05-compact-resume",
+   "file": "cases/ws9-s05-compact-resume.json",
+   "family": "ws9",
+   "status": "apex-ayl.78 ship-gate 12 rows: case-ops LANDED d404fe1 (2026-09-18 21:13Z); L2 runs = .78-B lane (unblocked per 20:25Z entry; python3.12 mandatory)"
+  },
+  {
+   "case": "ws9-s06-spawn-message",
+   "file": "cases/ws9-s06-spawn-message.json",
+   "family": "ws9",
+   "status": "apex-ayl.78 ship-gate 12 rows: case-ops LANDED d404fe1 (2026-09-18 21:13Z); L2 runs = .78-B lane (unblocked per 20:25Z entry; python3.12 mandatory)"
+  },
+  {
+   "case": "ws9-s07-interrupt-child",
+   "file": "cases/ws9-s07-interrupt-child.json",
+   "family": "ws9",
+   "status": "apex-ayl.78 ship-gate 12 rows: case-ops LANDED d404fe1 (2026-09-18 21:13Z); L2 runs = .78-B lane (unblocked per 20:25Z entry; python3.12 mandatory)"
+  },
+  {
+   "case": "ws9-s08-responses-lite",
+   "file": "cases/ws9-s08-responses-lite.json",
+   "family": "ws9",
+   "status": "apex-ayl.78 ship-gate 12 rows: case-ops LANDED d404fe1 (2026-09-18 21:13Z); L2 runs = .78-B lane (unblocked per 20:25Z entry; python3.12 mandatory)"
+  },
+  {
+   "case": "ws9-s09-freeform-patch",
+   "file": "cases/ws9-s09-freeform-patch.json",
+   "family": "ws9",
+   "status": "apex-ayl.78 ship-gate 12 rows: case-ops LANDED d404fe1 (2026-09-18 21:13Z); L2 runs = .78-B lane (unblocked per 20:25Z entry; python3.12 mandatory)"
+  },
+  {
+   "case": "ws9-s10-async-user-msg",
+   "file": "cases/ws9-s10-async-user-msg.json",
+   "family": "ws9",
+   "status": "apex-ayl.78 ship-gate 12 rows: case-ops LANDED d404fe1 (2026-09-18 21:13Z); L2 runs = .78-B lane (unblocked per 20:25Z entry; python3.12 mandatory)"
+  },
+  {
+   "case": "ws9-s11-legacy-resume",
+   "file": "cases/ws9-s11-legacy-resume.json",
+   "family": "ws9",
+   "status": "apex-ayl.78 ship-gate 12 rows: case-ops LANDED d404fe1 (2026-09-18 21:13Z); L2 runs = .78-B lane (unblocked per 20:25Z entry; python3.12 mandatory)"
+  },
+  {
+   "case": "ws9-s12-alias-switch",
+   "file": "cases/ws9-s12-alias-switch.json",
+   "family": "ws9",
+   "status": "apex-ayl.78 ship-gate 12 rows: case-ops LANDED d404fe1 (2026-09-18 21:13Z); L2 runs = .78-B lane (unblocked per 20:25Z entry; python3.12 mandatory)"
+  }
+ ],
+ "pins": {
+  "golden-smoke-01": {
+   "fixture": "cases/golden-smoke-01/wire/golden-smoke-01-expected.json",
+   "source_capture": "smoke/redteam/report/20260913T212423Z/rt-r1/wire/req-010.json",
+   "source_capture_sha256_12": "cfed3352cc1c",
+   "status": "GREEN byte-pinned (report-r1/green-1.txt full-runner PASS; report-r1/post-golden-suite.txt 18/18; post-selftest 73/73)"
+  },
+  "xwfix_corpus": {
+   "ref": "smoke/xwfix/manifest.json (bead apex-ayl.70 \u2014 pre_switch/expected byte pins per cell + red_runs_r2 machine record; NOT duplicated here)"
+  }
+ },
+ "expected_refs": {
+  "ratchet_1": {
+   "commit": "ef5192b",
+   "tag": "backup/r1-golden-complete-20260918",
+   "remotes": "fork + mirror verified at ship; tag re-verified local==fork==mirror by ls-remote 2026-09-18 (overwatch arc)"
+  },
+  "ratchet_2": {
+   "runs": 15,
+   "report_dir": "smoke/redteam/report-r2/",
+   "machine_record": "smoke/xwfix/manifest.json red_runs_r2 (bead .79 NOTES sha256:12 150831e4c2e5)",
+   "adjudication": "RULING 3 (ledger 2026-09-18T07:08Z); first live ACP session/load validation of switch_model"
+  },
+  "wave_gate": {
+   "log": "/tmp/xw-union-gate-20260918.log",
+   "tree": "5f4411a",
+   "ts": "2026-09-18T21:06Z",
+   "verdict": "6743 passed / 8 failed / 5 ignored, 11 filtered (documented --skip image_strip_tests per apex-ayl.73); single failing target xai-grok-shell --lib; 8/8 failing names in A6 baseline name-by-name (C-3 union x5, rotating-wake x1, watcher x1, env util::hooks x1 \u2014 review-gates-q3.md 2) = zero new names = PASS vs A6 baseline"
+  },
+  "exfil": {
+   "branch": "feat/first-class-responses-catalog",
+   "sha": "d404fe1",
+   "remotes": "fork (netbrah/grok-build) + mirror (bitbucket apex/grok-build) both at d404fe1 \u2014 ls-remote first-hand 2026-09-18 overwatch arc"
+  },
+  "r3": {
+   "campaign": "apex-ayl.70-r3",
+   "wave": "R3-RED",
+   "bin": "f0f2455a6ca2 (fresh --release @0fc1060, 2026-09-18 21:34Z; preserved /tmp/binary-of-record-f0f2455a6ca2; the prior record 24a941bac02b was first-hand confirmed STALE vs the union tree \u2014 the rebuild actually recompiled xai-grok-shell + pager crates)",
+   "git_head": "0fc1060",
+   "run_1": "report-r3/ 21:35-21:38Z: 11 cells, 12 model calls, shared --out root (driver defect \u2014 per-cell report.json/campaign.json overwritten at root; per-cell verdict.json + wire captures + driver logs (incl. per-cell seal sha256) survive)",
+   "run_2_governing": "report-r3r/ 21:42-21:51Z: all 11 cells re-run with per-cell --out, 15 model calls, 11/11 per-cell campaign seals",
+   "verdict": "PASS x3 (az-az, az-vxm, vlq-vlg-ws [wall preemption holds, c2]) + RED-EXPECTED(apex-ayl.71) x7 with the storage RED failing exactly as documented (vxm-az idx6-reasoning, az-vlq idx0-system, vxm-vlg idx2-reasoning, vxm-vlg-guard storage-only, vxm-vlq idx2-reasoning, vxm-vlq-v2 storage-only, vxm-vxg idx2-reasoning actual=10/expected=8) + 1 documented UNPROVEN .68-matrix finding (vlq-vlg: family-switch qwen->glm preemptive compact eats the seeded ride; assert-identical to r2 = stable 2/2). SECOND failing asserts on 4 cells = era-stale scored pins flipping the good direction (id:''/encitem_ wire presences now absent post-.77 ingress-normalization; last-400 pins now 200 = class-(a) 400 lapsed per RULING 3 / 20:25Z drift). NO new wire-error phrasings (recon surfaces <no files> x2), no retry storms (all counts in band), zero acp_error.",
+   "sweep": "literal raw-key (env len-85, never echoed) = 0 files across report-r3 + report-r3r; runner N-HIT lines = KEY_HEURISTIC class matches (hermetic-home key-shaped strings), not ambient-key hits"
+  }
+ },
+ "run_history_dirs": [
+  "smoke/redteam/report/",
+  "smoke/redteam/report-r1/",
+  "smoke/redteam/report-r2/",
+  "smoke/redteam/report-r2b/",
+  "smoke/redteam/report-r2b-invocation-error-0432Z/",
+  "smoke/redteam/report-green/",
+  "smoke/redteam/report-r3/",
+  "smoke/redteam/report-r3r/"
+ ],
+ "probe_policy": "store=false MUST; raw-key sweep = 0 on every artifact (review-gates-q3.md 6 \u2014 pattern described, never quoted); per-turn kill budget 180s; one retry per cell on transport error; report trees pruned after digest capture (JIG 4)",
+ "status": "SUITE-STATE-RECORDED 2026-09-18 (overwatch, apex-ayl.79 remainder): manifest created to close the .79 AC row 'manifest.json present in wstream/xwfix/redteam' (wstream 7682B + xwfix 108897B pre-existed). Untracked at creation; commit pathspec = coordinator (.22 lane) per house rule \u2014 overwatch never commits. | R3 EXECUTED 2026-09-18 21:35-21:51Z (overwatch, operator-directed): 11/11 cells, 27 model calls total, verdict per expected_refs.r3; case-maintenance debts (id typo + 4 era-stale pins) recorded to the .70/.72 lane; NO code/case edits by this lane."
+}

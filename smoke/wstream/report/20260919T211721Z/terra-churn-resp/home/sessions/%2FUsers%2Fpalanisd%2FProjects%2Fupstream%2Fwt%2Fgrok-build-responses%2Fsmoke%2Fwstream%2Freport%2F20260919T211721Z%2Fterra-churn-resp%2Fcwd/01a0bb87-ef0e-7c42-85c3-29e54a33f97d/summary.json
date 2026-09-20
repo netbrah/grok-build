@@ -1,0 +1,32 @@
+{
+  "info": {
+    "id": "01a0bb87-ef0e-7c42-85c3-29e54a33f97d",
+    "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T211721Z/terra-churn-resp/cwd"
+  },
+  "agent_id": "ag1.f7c69a160d99466982a5c07f0e4428a2",
+  "attempt_id": "at1.7f831ddc9f2d456c91ff3d39af4c94dc",
+  "session_summary": "Eliminate Harness Upstream Churn for Codex",
+  "created_at": "2026-09-19T21:17:23.119416Z",
+  "updated_at": "2026-09-19T21:19:50.621935Z",
+  "num_messages": 85,
+  "num_chat_messages": 56,
+  "current_model_id": "gpt-5.6-terra",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "session_kind": "headless",
+  "git_root_dir": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/",
+  "git_remotes": [
+    "https://bitbucket.ngage.netapp.com/scm/apex/grok-build.git",
+    "https://github.com/netbrah/grok-build.git",
+    "https://github.com/xai-org/grok-build.git"
+  ],
+  "head_commit": "49c4e549fb308d3824f7cb6ff93b4f3937fe9835",
+  "head_branch": "feat/first-class-responses-catalog",
+  "request_id": "85108803-5116-4b70-bcb3-0ca681b71062",
+  "grok_home": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T211721Z/terra-churn-resp/home",
+  "last_active_at": "2026-09-19T21:19:50.621935Z",
+  "generated_title": "Eliminate Harness Upstream Churn for Codex",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

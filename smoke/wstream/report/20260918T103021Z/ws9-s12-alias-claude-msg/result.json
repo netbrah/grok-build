@@ -1,0 +1,164 @@
+{
+  "cell": "ws9-s12-alias-claude-msg",
+  "model": "claude-sonnet-5",
+  "api_backend": "messages",
+  "backend_class": "native",
+  "verdict": "PASS",
+  "invariants": [
+    {
+      "key": "status",
+      "expected": 200,
+      "actual": 200,
+      "ok": true
+    },
+    {
+      "key": "route",
+      "expected": "messages",
+      "actual": "messages",
+      "ok": true
+    },
+    {
+      "key": "n_model_calls_min",
+      "expected": ">= 1",
+      "actual": 2,
+      "ok": true
+    }
+  ],
+  "observations": {
+    "route": "messages",
+    "status": 200,
+    "n_model_calls": 2,
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 606,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": true,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "Since I can",
+    "finish": "stop",
+    "budget_trap": false,
+    "final_text_nonempty": true,
+    "final_text_len": 1315,
+    "usage": {
+      "input_tokens": 2,
+      "cache_creation_input_tokens": 29639,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 11511,
+      "output_tokens_details": {
+        "thinking_tokens": 10735
+      }
+    }
+  },
+  "analysis": {
+    "cell": "ws9-s12-alias-claude-msg",
+    "route": "messages",
+    "expected_route": "messages",
+    "routes_mixed": true,
+    "status": 200,
+    "n_model_calls": 2,
+    "n_side_calls": 1,
+    "side_call_errors": [
+      500
+    ],
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 606,
+    "reasoning_tokens": 10735,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": true,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "Since I can",
+    "finish": "stop",
+    "budget_trap": false,
+    "final_text_len": 1315,
+    "final_text_nonempty": true,
+    "usage": {
+      "input_tokens": 2,
+      "cache_creation_input_tokens": 29639,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 11511,
+      "output_tokens_details": {
+        "thinking_tokens": 10735
+      }
+    },
+    "n_frames_total": 741
+  },
+  "calls": [
+    {
+      "route": "responses",
+      "req_model": "grok-4.6",
+      "req_stream": true,
+      "req_max_tokens": 100,
+      "status": 500,
+      "n_frames": 1,
+      "frame_types": {},
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": null,
+      "final_text": ""
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-sonnet-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 741,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 3,
+        "content_block_start": 2,
+        "content_block_delta": 731,
+        "content_block_stop": 2,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 606,
+      "thinking_block": true,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Since I can",
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 29639,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 11511,
+        "output_tokens_details": {
+          "thinking_tokens": 10735
+        }
+      },
+      "final_text": "## Setting up\n\nBinary expansion of the exponent: 8432 = 10000011110000\u2082 (14 bits, MSB\u2192LSB: 1 0 0 0 0 0 1 1 1 1 0 0 0 0).\n\nI'll use left\u2011to\u2011right square\u2011and\u2011multiply mod 5557, starting from `result = 1` and processing each bit (square every step; multiply by 7 when the bit is 1).\n\n## Squaring steps\n\n| bit | operation | result |\n|---|---|---|\n| 1 | 1\u00b2 = 1, \u00d77 \u2192 7 | **7** |\n| 0 | 7\u00b2 = 49 | **49** |\n| 0 | 49\u00b2 = 2401 | **2401** |\n| 0 | 2401\u00b2 = 5,764,801 mod 5557 | **2192** |\n| 0 | 2192\u00b2 = 4,804,864 mod 5557 | **3616** |\n| 0 | 3616\u00b2 = 13,075,456 mod 5557 | **5392** |\n| 1 | 5392\u00b2 \u2261 165\u00b2 = 27,225 mod 5557 = 4997, \u00d77 = 34,979 mod 5557 | **1637** |\n| 1 | 1637\u00b2 = 2,679,769 mod 5557 = 1295, \u00d77 = 9065 mod 5557 | **3508** |\n| 1 | 3508\u00b2 = 12,306,064 mod 5557 = 2866, \u00d77 = 20,062 mod 5557 | **3391** |\n| 1 | 3391\u00b2 = 11,498,881 mod 5557 = 1448, \u00d77 = 10,136 mod 5557 | **4579** |\n| 0 | 4579\u00b2 \u2261 978\u00b2 = 956,484 mod 5557 | **680** |\n| 0 | 680\u00b2 = 462,400 mod 5557 | **1169** |\n| 0 | 1169\u00b2 = 1,366,561 mod 5557 | **5096** |\n| 0 | 5096\u00b2 \u2261 461\u00b2 = 212,521 mod 5557 | **1355** |\n\nI cross-checked this with Fermat's little theorem: 5557 is prime, so 7^5556 \u2261 1 mod 5557, meaning 7^8432 \u2261 7^2876 mod 5557 (8432 \u2212 5556 = 2876). Running square-and-multiply independently on exponent 2876 also lands on 1355, confirming the result.\n\n1355"
+    }
+  ],
+  "turns": [
+    {
+      "turn": 1,
+      "exit_code": 0,
+      "killed": false,
+      "elapsed": 89.35,
+      "session_id": "01a0b411-79d2-7340-91c2-aadafdedd1de",
+      "n_events": 735
+    }
+  ],
+  "binary_sha256_12": "e635d5d7f2fe",
+  "wire_port": 61188,
+  "upstream": "https://llm-proxy-api.ai.eng.netapp.com",
+  "key_sha256_12": "9f3f56a263da",
+  "raw_key_hits": 0,
+  "ts": "20260918T103207Z"
+}

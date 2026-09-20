@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "id": "RESP-STREAM-SMOKE-01",
+  "title": "RESP-STREAM-SMOKE-01 \u2014 worked example for the kind=resp_stream wire assert (apex-2o6 HARNESS-UNIFY-IMPL-1 first cut, L1 key-free mode): a zero-step headless case with pre-placed wire inputs pinning the STREAM-frame surface \u2014 the resp-001.jsonl SSE frames are parsed (event:/data: heads; comment frames like ': keepalive ping' carry no data and are skipped, documented), the declared 'drop' list removes volatile terminal bookkeeping (response.created), and the fixture frame sequence must appear IN ORDER in the actual (mode 'subsequence', the default \u2014 interleaved chunks are tolerated; 'exact' is opt-in 1:1). Per-frame compare = the shared golden core on the frame's data object with the normalize paths (body-root-relative: response.id, item.id, item_id, response.usage \u2014 the volatile set) nulled; min_frames/max_frames bound the post-filter count (the COMP-3 storm-band pattern, response-side). env.proxy='none' = L1 key-free: runs with CODEX_LLM_PROXY_KEY unset.",
+  "bead": "apex-2o6",
+  "suite": "wire-shape",
+  "tier": "slim",
+  "model": "resp-stream-smoke-model",
+  "driver": "headless",
+  "est_calls": 0,
+  "wirecap": false,
+  "env": {
+    "proxy": "none"
+  },
+  "steps": [],
+  "assert": {
+    "wire": [
+      {
+        "id": "resp_stream_pin",
+        "kind": "resp_stream",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "resp-stream-smoke-model",
+          "headers.x-grok-session-id": "00000000-0000-4000-8000-000000000002"
+        },
+        "which": "last",
+        "golden": "expected_resp_stream-01.json",
+        "normalize": [
+          "response.id",
+          "item.id",
+          "item_id",
+          "response.usage"
+        ],
+        "drop": [
+          "response.created"
+        ],
+        "mode": "subsequence",
+        "min_frames": 3,
+        "max_frames": 10,
+        "label": "STREAM-FRAME PIN: subsequence match of the three fixture frames (output_item.added / output_text.delta with the pinned 'pong' delta / completed) against the post-drop actual sequence; volatile ids/usage nulled per-frame via normalize; count band 3..10 bounds the storm direction. A missing or out-of-order frame FAILs with the first unmatched fixture frame named."
+      },
+      {
+        "id": "count_scope",
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "resp-stream-smoke-model",
+          "headers.x-grok-session-id": "00000000-0000-4000-8000-000000000002"
+        },
+        "min": 1,
+        "max": 1,
+        "label": "SCOPE BOUND (B-i companion): one capture, unambiguous selection."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

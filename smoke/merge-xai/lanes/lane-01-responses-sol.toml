@@ -1,0 +1,48 @@
+# MERGE-XAI-SYNC frozen lane L-01 — gpt-5.6-sol on /v1/responses (PIN lane of record).
+# Bead apex-l2d.4 (06 §2 lane column: 'sol/terra responses + wiretap').
+#
+# FROZEN TEMPLATE: model + wire pinned; the launcher (the wstream-style lane
+# launcher of 06 §1, or the dogfood sed rewrite of smoke/redteam/grok-dogfood.v2)
+# rewrites the PLACEHOLDER base_urls at run time:
+#     s|^base_url = ".*"|base_url = "http://127.0.0.1:<wiretap-port>/v1"|
+#     s|^models_base_url = ".*"|models_base_url = "http://127.0.0.1:<wiretap-port>/v1"|
+# NEVER commit a live URL into this file (sweep-0: no creds/host paths/IPs/secret
+# URLs). Port 0 = dead-port placeholder; a config with the placeholder left
+# unrewritten points at a port that accepts no connections (fail-closed).
+#
+# Model row shape verified against the live catalog 2026-09-18/19 (sol row:
+# api_backend responses, model_family codex, strict_responses_input true,
+# multi_agent_v2 true, context_window 262144, max_completion_token 128000,
+# 5-effort array). env_key is the ENV VAR NAME that holds the proxy key (the L1
+# contract: ambient CODEX_LLM_PROXY_KEY only — the name is fine, the value never
+# ships in this file). [auth] is intentionally ABSENT: the operator's launcher
+# supplies the hermetic auth stub (host paths are sweep-0-forbidden here).
+
+disable_web_search = true
+
+[model."gpt-5.6-sol"]
+base_url = "http://127.0.0.1:0/v1"
+api_backend = "responses"
+model_family = "codex"
+strict_responses_input = true
+multi_agent_v2 = true
+context_window = 262144
+max_completion_token = 128000
+env_key = "CODEX_LLM_PROXY_KEY"
+supports_backend_search = false
+reasoning_efforts = [
+    "low",
+    "medium",
+    "high",
+    "max",
+    "ultra",
+]
+
+[model."gpt-5.6-sol".extra_headers]
+x-litellm-tags = "East US 2"
+
+[endpoints]
+models_base_url = "http://127.0.0.1:0/v1"
+default_api_backend = "responses"
+default_env_key = "CODEX_LLM_PROXY_KEY"
+default_context_window = 256000

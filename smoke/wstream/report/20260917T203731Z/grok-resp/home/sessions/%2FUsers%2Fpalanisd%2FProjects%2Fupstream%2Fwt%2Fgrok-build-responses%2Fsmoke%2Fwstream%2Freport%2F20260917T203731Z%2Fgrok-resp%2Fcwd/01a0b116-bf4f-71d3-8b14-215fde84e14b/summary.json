@@ -1,0 +1,32 @@
+{
+  "info": {
+    "id": "01a0b116-bf4f-71d3-8b14-215fde84e14b",
+    "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260917T203731Z/grok-resp/cwd"
+  },
+  "agent_id": "ag1.f26adb53b79640a09c297f4543b3424b",
+  "attempt_id": "at1.5c858ff41fe42f9ac7e42256701d2c1",
+  "session_summary": "Compute 7^8432 mod 5557 using modular exponentiation. Show each squaring",
+  "created_at": "2026-09-17T20:37:33.162566Z",
+  "updated_at": "2026-09-17T20:38:18.521650Z",
+  "num_messages": 3,
+  "num_chat_messages": 7,
+  "current_model_id": "grok-4.6",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "session_kind": "headless",
+  "git_root_dir": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/",
+  "git_remotes": [
+    "https://bitbucket.ngage.netapp.com/scm/apex/grok-build.git",
+    "https://github.com/netbrah/grok-build.git",
+    "https://github.com/xai-org/grok-build.git"
+  ],
+  "head_commit": "4fb487f9cd88ca88a54858b721e7d0a497cf6a1b",
+  "head_branch": "feat/first-class-responses-catalog",
+  "request_id": "a750f3e3-f2ae-4bc9-9ffc-6b59442e213f",
+  "grok_home": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260917T203731Z/grok-resp/home",
+  "last_active_at": "2026-09-17T20:38:18.521650Z",
+  "generated_title": "Compute 7^8432 mod 5557 using modular exponentiation. Show each squaring",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "medium"
+}

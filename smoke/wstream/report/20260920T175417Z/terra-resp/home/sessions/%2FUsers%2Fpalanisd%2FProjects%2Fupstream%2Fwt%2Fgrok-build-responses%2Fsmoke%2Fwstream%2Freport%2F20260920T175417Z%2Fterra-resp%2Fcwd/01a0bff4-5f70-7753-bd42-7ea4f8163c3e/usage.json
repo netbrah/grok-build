@@ -1,0 +1,52 @@
+{
+  "sessionId": "01a0bff4-5f70-7753-bd42-7ea4f8163c3e",
+  "updatedAt": "2026-09-20T17:59:43.298632+00:00",
+  "session": {
+    "inputTokens": 16136,
+    "outputTokens": 267,
+    "cachedReadTokens": 0,
+    "cacheCreationTokens": 0,
+    "reasoningTokens": 57,
+    "totalTokens": 16403,
+    "modelCalls": 1,
+    "turnCount": 1,
+    "primaryModelId": "gpt-5.6-terra",
+    "modelUsage": {
+      "gpt-5.6-terra": {
+        "inputTokens": 16136,
+        "outputTokens": 267,
+        "cachedReadTokens": 0,
+        "cacheCreationTokens": 0,
+        "reasoningTokens": 57,
+        "totalTokens": 16403,
+        "modelCalls": 1
+      }
+    }
+  },
+  "turns": [
+    {
+      "turnNumber": 1,
+      "endedAt": "2026-09-20T17:59:43.298632+00:00",
+      "inputTokens": 16136,
+      "outputTokens": 267,
+      "cachedReadTokens": 0,
+      "cacheCreationTokens": 0,
+      "reasoningTokens": 57,
+      "totalTokens": 16403,
+      "modelCalls": 1,
+      "turnCount": 1,
+      "primaryModelId": "gpt-5.6-terra",
+      "modelUsage": {
+        "gpt-5.6-terra": {
+          "inputTokens": 16136,
+          "outputTokens": 267,
+          "cachedReadTokens": 0,
+          "cacheCreationTokens": 0,
+          "reasoningTokens": 57,
+          "totalTokens": 16403,
+          "modelCalls": 1
+        }
+      }
+    }
+  ]
+}

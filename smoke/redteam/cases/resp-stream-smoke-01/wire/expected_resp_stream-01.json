@@ -1,0 +1,39 @@
+{
+  "status": 200,
+  "mode": "subsequence",
+  "frames": [
+    {
+      "event": "response.output_item.added",
+      "data": {
+        "type": "response.output_item.added",
+        "output_index": 0,
+        "item": {
+          "type": "message",
+          "id": null,
+          "role": "assistant"
+        }
+      }
+    },
+    {
+      "event": "response.output_text.delta",
+      "data": {
+        "type": "response.output_text.delta",
+        "item_id": null,
+        "output_index": 0,
+        "content_index": 0,
+        "delta": "pong"
+      }
+    },
+    {
+      "event": "response.completed",
+      "data": {
+        "type": "response.completed",
+        "response": {
+          "id": null,
+          "status": "completed",
+          "usage": null
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "id": "ENC-AZ-AZ-RESUME",
+  "title": "XW-ENC-AFFINITY-1 (apex-mf6) L1b live: boot-time RESUME, same-model same-pin ciphertext retention — the unproven resume-load seam (mf6 OPORD L-cell L1b/A3, the second of the two case parts owed by the OPORD; L2/B2 + L2b + L3/A1 already authored). Fresh headless gpt-5.6-sol session (responses wire; the row's x-litellm-tags pin 'East US 2' is UNTOUCHED — the live-config premise was settled by the L3 wave live probe per the ENC-SOL-2TURN-PINNED title; an untagged sol row is a REPORT finding, not a case edit). config_patch carries ONLY the global [models] default_reasoning_effort='max' (O7 M-1 carrier-mint lesson: the session's wire effort resolves from the models-manager current effort, which seeds from that global and projects onto the row menu — a row-level reasoning_effort scalar is INERT on the wire). Turn 1 (a reasoning-forcing modular-exponentiation prompt, tool-free by instruction so the turn-request count stays deterministic) mints: the response's reasoning item carries encrypted_content and is mint-stamped STORE-SIDE (D1) with the sol row's pin. The middle step is a TRUE boot-time resume — the headless driver re-boots the binary with -m gpt-5.6-sol --resume <sid> (same model, same pin): the persisted chat_history.jsonl (mint-stamped ride) is loaded VERBATIM from disk; the in-session projector does NOT run on this path (the seam XW-RESUME-CROSSFAM flagged UNPROVEN, here in its same-boundary form). Turn 2's request then replays turn 1's ride through the SEND-TIME gate: pin Some(EU2) x mint Some(EU2) = RETAIN (conversation.rs enc_affinity_gate, conversation.rs:135-141) -> the encrypted_content CROSSES the resumed request. This is THE mf6 behavioral delta on the resume path: the retired D-ENC stripped encrypted_content unconditionally at every /responses send, so under pre-mf6 code this pin is ABSENT and REDs. Zero 400/503 by construction (same-boundary retention is the deterministic arm): any retry on a pinned row (sol model-request count >3) = a boundary error where none was possible = classification drift -> report-and-stop. The D1 mint disk round-trip is a SCORED artifact pin (chat_history.jsonl carries mint_tag): if the stamp is lost on persist/load the ride degrades to (Some, None) = Strip and the wire pin fails — the resume-load sub-seam is witnessed independently of the gate. Suite is cross-wire (the committed schema has no enc-affinity suite; the affinity semantics live in the pins).",
+  "bead": "apex-mf6",
+  "suite": "cross-wire",
+  "tier": "full",
+  "driver": "headless",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "wirecap": true,
+  "config_patch": {
+    "models/default_reasoning_effort": "max"
+  },
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "env": {
+    "store": false
+  },
+  "watchdog_s": 300,
+  "est_calls": 3,
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Find the remainder when 7^8432 is divided by 5557. Work it out by hand using modular exponentiation (repeated squaring), showing each step, without using any tools or code execution.",
+      "timeout_s": 300
+    },
+    {
+      "op": "switch",
+      "model": "gpt-5.6-sol",
+      "via": "resume"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: ENC-RESUME-T2",
+      "timeout_s": 180
+    }
+  ],
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error",
+        "label": "BOTH TURNS COMPLETE: the resume re-boot succeeded and the post-resume turn did not die (a resume rejection or a turn error = regression beyond the documented surface -> report-and-stop)."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "ENC-RESUME-T2",
+        "label": "POST-RESUME TURN: the second (resumed) turn completed with the exact terminal text."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "field",
+        "file": "req-*.json",
+        "where": { "method": "POST", "path": "/v1/responses" },
+        "last": 0,
+        "path": "body.model",
+        "eq": "gpt-5.6-sol",
+        "label": "CONTROL (class harness): the main (oldest) request carries the session model — the harness always does; a miss is a harness failure, never vacuous."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "any": true,
+        "grep": "\"encrypted_content\":",
+        "label": "L1b RETAIN-VIA-RESUME (the mf6 delta pin): the POST-RESUME request carries turn 1's reasoning ciphertext — D1 mint-stamped the ride with the pinned sol row's tag at store time, the resume load path carried the mint_tag through the disk round-trip, and the send-time gate (pin Some x mint Some, exact-string) = RETAIN. Absent = a D-ENC-style unconditional strip (pre-mf6 behavior), a mint_tag lost on persist/load (see the artifact pin for the attribution), or a gate misclassification of the (Some,Some same-pin) arm -> report-and-stop."
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "min": 2,
+        "max": 3,
+        "label": "NO-STORM BAND (zero 400/503 by construction — same-boundary retention is deterministic): 2 = T1 + T2 clean; 3 = one retry observed (record the branch — on a pinned row any retry is already a classification-drift signal, adjudicate from the resp bodies); >3 = fallback loop or storm -> report-and-stop; <2 = a turn never fired -> report-and-stop."
+      },
+      {
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "which": "last",
+        "status_in": [200],
+        "label": "FINAL ACCEPTED: the FINAL sol request reached 200. A non-200 final on a pinned same-model resume = BRICK/unclassified wire-error shape -> report-and-stop with the verbatim body (house rule: a new shape is a finding, not a retry)."
+      }
+    ],
+    "artifact": [
+      {
+        "op": "grep",
+        "file": "chat_history.jsonl",
+        "grep": "mint_tag",
+        "label": "D1 MINT DISK ROUND-TRIP: the persisted history carries the store-side mint_tag stamp (the (Some,Some) Retain arm's precondition). Absent = the stamp was lost on persist or on the resume load — the wire pin's failure, if any, is then attributable to the persistence seam, not the gate."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

@@ -1,0 +1,149 @@
+{"n": 14, "status": 200, "ts": "2026-09-20T18:33:02Z", "headers": {"Cache-Control": "no-cache", "Content-Security-Policy": "frame-ancestors 'none'", "Content-Type": "text/event-stream; charset=utf-8", "Date": "Sun, 20 Sep 2026 18:33:00 GMT", "Llm_provider-Cache-Control": "no-cache", "Llm_provider-Content-Encoding": "gzip", "Llm_provider-Content-Type": "text/event-stream; charset=utf-8", "Llm_provider-Date": "Sun, 20 Sep 2026 18:33:02 GMT", "Llm_provider-Request-Id": "req_vrtx_011CfFArohifmFutLCS5PJZY", "Llm_provider-Server": "hypercorn-h11", "Llm_provider-Transfer-Encoding": "chunked", "Llm_provider-Vary": "Origin, X-Origin, Referer", "Llm_provider-X-Accel-Buffering": "no", "Llm_provider-X-Content-Type-Options": "nosniff", "Llm_provider-X-Frame-Options": "SAMEORIGIN", "Llm_provider-X-Vertex-Ai-Received-Request-Id": "fd871a8d-f6fa-4452-8651-f215e7332ff0", "Llm_provider-X-Xss-Protection": "0", "Server": "uvicorn", "X-Accel-Buffering": "no", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "X-Litellm-Attempted-Fallbacks": "0", "X-Litellm-Attempted-Retries": "0", "X-Litellm-Call-Id": "da77449e-ec96-4d16-a3fa-dc4acedf15b1", "X-Litellm-Callback-Duration-Ms": "0.0", "X-Litellm-Key-Spend": "0.0", "X-Litellm-Model-Group": "claude-opus-5", "X-Litellm-Model-Id": "0c1724bede29cfa64c28cd91d4d7b9d3aa25176ea2faef5aa490362328eaf95d", "X-Litellm-Model-Name": "vertex_ai/claude-opus-5@default", "X-Litellm-Overhead-Duration-Ms": "8.843", "X-Litellm-Response-Cost-Discount-Amount": "0.0", "X-Litellm-Response-Cost-Input": "0.0", "X-Litellm-Response-Cost-Margin-Amount": "0.0", "X-Litellm-Response-Cost-Margin-Percent": "0.0", "X-Litellm-Response-Cost-Original": "0.0", "X-Litellm-Response-Cost-Output": "0.0", "X-Litellm-Response-Cost-Tool-Usage": "0.0", "X-Litellm-Response-Duration-Ms": "925.956", "X-Litellm-Version": "1.101.0rc2", "X-Ratelimit-Limit-Tokens": "5000000", "X-Ratelimit-Remaining-Tokens": "4414782", "Connection": "close", "Transfer-Encoding": "chunked"}}
+{"frame_index": 0, "frame": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-5\",\"id\":\"msg_vrtx_011CfFAropuUjNHTZFzY8BUr\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"container\":null,\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":1672,\"cache_read_input_tokens\":35457,\"cache_creation\":{\"ephemeral_5m_input_tokens\":1672,\"ephemeral_1h_input_tokens\":0},\"output_tokens\":4}}         }"}
+{"frame_index": 1, "frame": "event: ping\ndata: {\"type\": \"ping\"}"}
+{"frame_index": 2, "frame": "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}"}
+{"frame_index": 3, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Done. `\"}         }"}
+{"frame_index": 4, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"t\"}}"}
+{"frame_index": 5, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ools/minidiff.py\"}  }"}
+{"frame_index": 6, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"` is a dependency-free\"}       }"}
+{"frame_index": 7, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" Python \"}           }"}
+{"frame_index": 8, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"3 CLI (stand\"}   }"}
+{"frame_index": 9, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ard library only:\"}               }"}
+{"frame_index": 10, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" `difflib`, `re\"} }"}
+{"frame_index": 11, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"`, `sys`) that\"}           }"}
+{"frame_index": 12, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" diffs two files\"}      }"}
+{"frame_index": 13, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" at line\"}             }"}
+{"frame_index": 14, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" level\"}              }"}
+{"frame_index": 15, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\",\"}    }"}
+{"frame_index": 16, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" then re\"}        }"}
+{"frame_index": 17, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"-diffs each chang\"}     }"}
+{"frame_index": 18, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ed line p\"}             }"}
+{"frame_index": 19, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"air at word\"}}"}
+{"frame_index": 20, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" level so\"}        }"}
+{"frame_index": 21, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" the spec\"}             }"}
+{"frame_index": 22, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ific subst\"}       }"}
+{"frame_index": 23, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ituted words are marked:\"}    }"}
+{"frame_index": 24, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" remov\"}           }"}
+{"frame_index": 25, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"als\"}   }"}
+{"frame_index": 26, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" as\"}   }"}
+{"frame_index": 27, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" `[-word-]`,\"}     }"}
+{"frame_index": 28, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" addit\"}           }"}
+{"frame_index": 29, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ions as `{+\"}   }"}
+{"frame_index": 30, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"word+}`. It prints\"}}"}
+{"frame_index": 31, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" only chang\"} }"}
+{"frame_index": 32, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ed hunks with 1 \"}           }"}
+{"frame_index": 33, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"line of context and\"}     }"}
+{"frame_index": 34, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" exits 1 on differ\"}}"}
+{"frame_index": 35, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ences, 0 when\"}            }"}
+{"frame_index": 36, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" identical.\\n\\n**One\"}            }"}
+{"frame_index": 37, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" b\"}              }"}
+{"frame_index": 38, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ug found\"}            }"}
+{"frame_index": 39, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" and fixed.** My\"}  }"}
+{"frame_index": 40, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" first version always\"}              }"}
+{"frame_index": 41, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" w\"}}"}
+{"frame_index": 42, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"rote the two\"}         }"}
+{"frame_index": 43, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"-number form in\"}   }"}
+{"frame_index": 44, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" hunk headers (`@\"}     }"}
+{"frame_index": 45, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"@ -6\"}           }"}
+{"frame_index": 46, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\",2 +6,1\"}   }"}
+{"frame_index": 47, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" @@`). Unified\"}             }"}
+{"frame_index": 48, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" diff format\"}    }"}
+{"frame_index": 49, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" omits the length when\"}     }"}
+{"frame_index": 50, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" a\"}     }"}
+{"frame_index": 51, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" range cov\"}  }"}
+{"frame_index": 52, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ers exactly one line, so\"}  }"}
+{"frame_index": 53, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" the corre\"}     }"}
+{"frame_index": 54, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ct header is `@@ -\"} }"}
+{"frame_index": 55, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"6,2 +6 @\"}   }"}
+{"frame_index": 56, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"@`. I added\"}         }"}
+{"frame_index": 57, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" a `format_range` helper\"}              }"}
+{"frame_index": 58, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" and re\"}}"}
+{"frame_index": 59, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"-verified.\"}    }"}
+{"frame_index": 60, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"\\n\\n**Verification performed:\"}              }"}
+{"frame_index": 61, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"**\"}          }"}
+{"frame_index": 62, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"\\n\\n| Check | Result |\"} }"}
+{"frame_index": 63, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"\\n|---|---|\\n|\"}      }"}
+{"frame_index": 64, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" Hunk headers v\"}        }"}
+{"frame_index": 65, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"s system\"}            }"}
+{"frame_index": 66, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" `diff -U1`\"}       }"}
+{"frame_index": 67, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\", 5 file\"}         }"}
+{"frame_index": 68, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" pairs | all\"}        }"}
+{"frame_index": 69, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" match\"}           }"}
+{"frame_index": 70, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\",\"}           }"}
+{"frame_index": 71, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" including single\"}         }"}
+{"frame_index": 72, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"-line and empty-file \"}           }"}
+{"frame_index": 73, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ranges |\\n| Full output\"}       }"}
+{"frame_index": 74, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" vs `diff -U1\"}  }"}
+{"frame_index": 75, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"` body\"}          }"}
+{"frame_index": 76, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\",\"}    }"}
+{"frame_index": 77, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" word markers stripped | by\"}           }"}
+{"frame_index": 78, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"te-identical |\\n| All\"}      }"}
+{"frame_index": 79, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" 3 substituted words present\"}     }"}
+{"frame_index": 80, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" | `gran\"}      }"}
+{"frame_index": 81, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ite`, `sixty`\"}    }"}
+{"frame_index": 82, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\", `bell` each found\"}             }"}
+{"frame_index": 83, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" |\\n| Exit code,\"}       }"}
+{"frame_index": 84, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" files\"}  }"}
+{"frame_index": 85, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" differ | 1 |\"}          }"}
+{"frame_index": 86, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"\\n| Exit code, ident\"}           }"}
+{"frame_index": 87, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ical files | 0 |\"}      }"}
+{"frame_index": 88, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"\\n| B\"}       }"}
+{"frame_index": 89, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ad arg\"} }"}
+{"frame_index": 90, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ument count / un\"}        }"}
+{"frame_index": 91, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"readable file | us\"}}"}
+{"frame_index": 92, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"age or\"}    }"}
+{"frame_index": 93, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" error\"}       }"}
+{"frame_index": 94, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" on stderr, exit \"}          }"}
+{"frame_index": 95, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"2 |\\n\\nThe three\"}    }"}
+{"frame_index": 96, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" substitutions are `r\"}              }"}
+{"frame_index": 97, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ocky`\"}   }"}
+{"frame_index": 98, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"\u2192`granite` (line \"}           }"}
+{"frame_index": 99, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"1), `forty`\"}         }"}
+{"frame_index": 100, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"\u2192`sixty` (line\"}   }"}
+{"frame_index": 101, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" 3), and\"} }"}
+{"frame_index": 102, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" `horn`\u2192`bell\"}            }"}
+{"frame_index": 103, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"` (line 5). L\"}}"}
+{"frame_index": 104, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ines 2 and 4 \"}   }"}
+{"frame_index": 105, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"are unchanged and app\"}}"}
+{"frame_index": 106, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ear only as context.\"}       }"}
+{"frame_index": 107, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" No browser ver\"}          }"}
+{"frame_index": 108, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ification appl\"}}"}
+{"frame_index": 109, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ies here\"}     }"}
+{"frame_index": 110, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\",\"}   }"}
+{"frame_index": 111, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" since this is a command-line t\"}             }"}
+{"frame_index": 112, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ool with no web sur\"}     }"}
+{"frame_index": 113, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"face.\\n\\nExact diff\"}       }"}
+{"frame_index": 114, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" output between\"}}"}
+{"frame_index": 115, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" `a.txt` and `\"} }"}
+{"frame_index": 116, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"b.txt` (exit\"} }"}
+{"frame_index": 117, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" code 1):\\n\\n```text\"}   }"}
+{"frame_index": 118, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"\\n@\"}        }"}
+{"frame_index": 119, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"@ -1,5 +\"}    }"}
+{"frame_index": 120, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"1,5 @@\\n-\"}              }"}
+{"frame_index": 121, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"The lighthouse stood\"}              }"}
+{"frame_index": 122, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" alone on the [-roc\"}      }"}
+{"frame_index": 123, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ky-] headland.\\n+\"}         }"}
+{"frame_index": 124, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"The lighthouse stood\"}             }"}
+{"frame_index": 125, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" alone on the {+granite\"}              }"}
+{"frame_index": 126, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"+} headland.\\n \"}         }"}
+{"frame_index": 127, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Every night its lamp swept\"}       }"}
+{"frame_index": 128, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" a slow arc across the water\"}}"}
+{"frame_index": 129, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\".\\n-Fishermen\"}             }"}
+{"frame_index": 130, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" steered by that pale beam\"}              }"}
+{"frame_index": 131, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" for [-forty-] years\"}           }"}
+{"frame_index": 132, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\".\\n+Fishermen\"}               }"}
+{"frame_index": 133, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" steered by that pale beam\"}           }"}
+{"frame_index": 134, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" for {+sixty+}\"}  }"}
+{"frame_index": 135, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" years.\\n The keeper\"}               }"}
+{"frame_index": 136, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" climbed the spiral st\"} }"}
+{"frame_index": 137, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"airs at dusk without f\"}    }"}
+{"frame_index": 138, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ail.\\n-When the fog\"}  }"}
+{"frame_index": 139, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" rolled in, the [-\"}         }"}
+{"frame_index": 140, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"horn-] answered the dar\"}               }"}
+{"frame_index": 141, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"kness.\\n+When the f\"}               }"}
+{"frame_index": 142, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"og rolled in, the {\"}         }"}
+{"frame_index": 143, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"+bell+} answered the\"} }"}
+{"frame_index": 144, "frame": "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" darkness.\\n```\"}        }"}
+{"frame_index": 145, "frame": "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0      }"}
+{"frame_index": 146, "frame": "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"stop_details\":null,\"container\":null},\"usage\":{\"input_tokens\":2,\"cache_creation_input_tokens\":1672,\"cache_read_input_tokens\":35457,\"output_tokens\":775,\"output_tokens_details\":{\"thinking_tokens\":0}}     }"}
+{"frame_index": 147, "frame": "event: message_stop\ndata: {\"type\":\"message_stop\"    }"}

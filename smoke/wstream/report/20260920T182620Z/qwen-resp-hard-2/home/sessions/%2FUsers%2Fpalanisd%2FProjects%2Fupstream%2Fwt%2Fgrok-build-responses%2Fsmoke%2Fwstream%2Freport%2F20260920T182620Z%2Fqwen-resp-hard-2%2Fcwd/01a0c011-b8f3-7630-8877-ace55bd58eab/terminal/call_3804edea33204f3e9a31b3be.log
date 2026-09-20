@@ -1,0 +1,86 @@
+=== main fixture ===
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 231, in <module>
+    sys.exit(main(sys.argv))
+             ~~~~^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 224, in main
+    out = format_hunks(build_hunks(a_lines, b_lines))
+                       ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 173, in build_hunks
+    body = block_records(a_lines, b_lines, i1, i2, j1, j2)
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 138, in block_records
+    if all_marked(marks, "del"):
+       ~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 122, in all_marked
+    toks = [m for line in marks for _, m in line]
+                                    ^^^^
+ValueError: too many values to unpack (expected 2)
+exit=1
+=== delete line 2 ===
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 231, in <module>
+    sys.exit(main(sys.argv))
+             ~~~~^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 224, in main
+    out = format_hunks(build_hunks(a_lines, b_lines))
+                       ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 173, in build_hunks
+    body = block_records(a_lines, b_lines, i1, i2, j1, j2)
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 138, in block_records
+    if all_marked(marks, "del"):
+       ~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 122, in all_marked
+    toks = [m for line in marks for _, m in line]
+                                    ^^^^
+ValueError: too many values to unpack (expected 2)
+exit=1
+=== insert line after 1 ===
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 231, in <module>
+    sys.exit(main(sys.argv))
+             ~~~~^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 224, in main
+    out = format_hunks(build_hunks(a_lines, b_lines))
+                       ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 173, in build_hunks
+    body = block_records(a_lines, b_lines, i1, i2, j1, j2)
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 146, in block_records
+    if all_marked(marks, "ins"):
+       ~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 122, in all_marked
+    toks = [m for line in marks for _, m in line]
+                                    ^^^^
+ValueError: too many values to unpack (expected 2)
+exit=1
+=== empty vs one line ===
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 231, in <module>
+    sys.exit(main(sys.argv))
+             ~~~~^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 224, in main
+    out = format_hunks(build_hunks(a_lines, b_lines))
+                       ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 173, in build_hunks
+    body = block_records(a_lines, b_lines, i1, i2, j1, j2)
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 146, in block_records
+    if all_marked(marks, "ins"):
+       ~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 122, in all_marked
+    toks = [m for line in marks for _, m in line]
+                                    ^^^^
+ValueError: too many values to unpack (expected 2)
+exit=1
+=== first/last word ===
+@@ -1 +1 @@
+[-alpha-]{+ALPHA+} beta [-gamma-]{+GAMMA+}
+exit=1
+=== far apart changes ===
+@@ -1,2 +1,2 @@
+The old lighthouse stood on the [-granite-]{+basalt+} headland,
+ its beam sweeping slow circles across the dark water.
+@@ -4,2 +4,2 @@
+ trimming the fraying rope and polishing the great glass.
+By morning the fog had lifted, and the sea lay [-still.-]{+calm.+}
+exit=1
+=== identical ===
+exit=0

@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "id": "XW-RESUME-CROSSFAM",
+  "title": "ADVERSARIAL-CASES-1 case 3 (ADV1-R1): cross-model RESUME — boot-time resume of a sol-MINTED session under gpt-5.6-terra, a DIFFERENT model than the one that wrote the history (the cross-boundary D-ENC/affinity axis of the S6 surface). SHAPE ADJUDICATION: the brief's draft used the SCHEMA-EXT-1 `persist_resume` op; the frozen engine's supported approximation is HEADLESS + `switch`(via=resume) — the headless driver's next turn re-boots the binary with `-m gpt-5.6-terra --resume <sid>`, i.e. a TRUE boot-time resume (session file loaded from disk), not an in-session set_model. Premise (LIVE, no seed, no cell): turn 1 on gpt-5.6-sol (strict responses row) mints the encitem_-id reasoning history — the .58 incident 01a09d0e shape (7 encitem_ items + encrypted_content, the az-vlq cell's live source). The seam under test: the .71 projector re-keys at SWITCH time on the storage form; a RESUME (load disk verbatim) MAY BYPASS the projector — the resume load path is the UNPROVEN seam (doctrine S6: 'boot-time resume onto a different model/wire than the session's minting wire'). HYPOTHESIS (brief surface 2 / doctrine S6): a sol session with encitem_ ids resumed under terra (cross-boundary) -> 503 affinity -> destructive strip (permanent silent loss, matrix §4.3-1); empty-id repair (.69/.77 ingress normalize) must hold on the wire either way; the carrier ciphertext (D-ENC, encrypted_content strip provider.rs:209) must not leak a decrypt failure. PREDICTED: PASS = the resume turn completes (exit 0, exact terminal token), the FINAL terra request is a 200, the encitem_ pin MISSES (normalize/projector fired on the resume load path), no affinity phrasing in any response capture, store=false. RED semantics: an encitem_ HIT on a terra request = the 503-affinity leak (OQ-12) = the S6 breach -> report-and-stop; a 400/503 FINAL on the first resumed turn = the S6 breach (replay 400 / affinity / D-ENC decrypt failure — the designed friendly string is the expected shape, anything else is a bug) -> report-and-stop with the verbatim phrasing; a binary-level resume REJECTION (non-zero exit with NO model request to terra) = the session is unrecoverable on this binary (the 01a09be2 class) = FINDING to adjudicate — resume-vs-switch path coverage is thin (ws9 s05/s06/s07, .78-B gated). STOP discipline (house rule): any unexpected failing pin or a new 400/503 phrasing outside the affinity/empty-id/decrypt classes -> capture the verbatim body from resp-*.jsonl and report-and-stop (STOP-1).",
+  "bead": "apex-dqa",
+  "suite": "session-resume",
+  "tier": "slim",
+  "driver": "headless",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "wirecap": true,
+  "env": {
+    "store": false
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Think step by step about recursion, then define it in one sentence."
+    },
+    {
+      "op": "switch",
+      "model": "gpt-5.6-terra",
+      "via": "resume"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: XW-RESUME-POSTSW1"
+    },
+    {
+      "op": "recon_note",
+      "note": "SHAPE NOTE (persist_resume approximation): the brief's XW-RESUME-CROSSFAM draft used `persist_resume` (SCHEMA-EXT-1; doctrine §6 — both streams independently hit the schema wall, the op set is settled by convergence). This case drives the SAME seam with supported ops: headless driver + switch(via=resume) = the binary re-boots with --resume <sid> -m gpt-5.6-terra, so the persisted chat_history.jsonl (sol-minted encitem_ reasoning items) is loaded VERBATIM from disk and re-keyed (or not) by whatever ingress path resume actually uses — the .69/.77 ingress-normalize surface vs the .71 projector's switch-time re-key. The STORAGE RECORD recon pins (chat_history.jsonl encitem_/reasoning survival) capture the disk-form consequence: if the resume 503s and the destructive strip fires, the on-disk history LOSES the reasoning items permanently (matrix §4.3-1) — the recon records which happened for the backup-only-recovery adjudication. REASONING-RIDE SURVIVAL: the ride_present pin is the anti-vacuous control — a MISS means the ride never crossed (nothing to strip), which makes the no_encitem guard vacuous-in-the-good-direction; the ride_present + storage recon pair disambiguates 'stripped on load' from 'never carried'."
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 4,
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error",
+        "label": "NO TERMINAL ERROR: a resume-turn error (400/503 fatal, binary rejection of the cross-model resume) surfaces here. Present = the S6 breach or the unrecoverable class -> pair with the wire pins and report-and-stop."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "XW-RESUME-POSTSW1",
+        "label": "RESUME SURVIVED: the post-resume terra turn completed with the exact terminal token — the session file loaded under the foreign model and the turn ran."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "id": "ride_present",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "any": true,
+        "grep": "\"type\": \"reasoning\"",
+        "label": "ANTI-VACUOUS (reasoning-ride survival across the resume): a post-resume terra request carried a reasoning INPUT item — the LIVE sol reasoning history actually crossed the resume boundary into a wire request. A MISS makes the encitem_ guard vacuous in the good direction (nothing to strip) — record which happened (pair with the STORAGE RECORD recon pins)."
+      },
+      {
+        "kind": "grep",
+        "id": "no_encitem",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "encitem_",
+        "label": "AFFINITY GUARD (the S6 breach pin): MISS = the encitem_ ids were stripped/re-keyed on the RESUME load path (the .69/.77 ingress normalize or the .71 projector fired on resume, not just switch). HIT = an encitem_ affinity marker leaked onto the foreign model's wire = the 503-affinity class (OQ-12, matrix §4.3-1) -> report-and-stop."
+      },
+      {
+        "kind": "resp_status",
+        "id": "terra_final_200",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "RESUME ACCEPTED: the FINAL terra request reached 200 — the replayed history is wire-accepted under the foreign model. A 400/503 final on the first resumed turn = the S6 breach (replay 400 / affinity / D-ENC decrypt) -> capture the phrasing (AFFINITY PHRASING recon) and report-and-stop."
+      },
+      {
+        "kind": "grep",
+        "id": "store_false",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"store\": true",
+        "label": "STORE=FALSE INVARIANT (ROE-1, S9 exfil watch): no captured request (sol OR terra) carries store=true — the proxy rejects store=true and a leak would be server-side persistence."
+      },
+      {
+        "kind": "recon",
+        "file": "resp-*.jsonl",
+        "grep": "not allowed to access model due to tags|decrypt|503|input\\[",
+        "label": "AFFINITY PHRASING CAPTURE (recon, non-scoring): the x-litellm-tags East-US-2 deployment-routing phrasing (the 401/503 affinity class, D-11 incident 01a09d0e lineage), any D-ENC decrypt-failure string (the designed friendly error is the expected shape), or an unclassified 400 phrasing — VERBATIM. A clean run shows nothing here; a sighting = the S6 breach evidence (STOP-1 if the phrasing is unclassified)."
+      },
+      {
+        "kind": "recon",
+        "base": "session",
+        "file": "chat_history.jsonl",
+        "grep": "encitem_",
+        "label": "STORAGE RECORD — MARKER SURVIVAL (recon, non-scoring): does the on-disk chat_history.jsonl STILL carry encitem_ ids after the resume turn? HIT = the disk form was NOT re-keyed (resume loaded verbatim; the projector did not fire on the load path); MISS = normalize/projector re-keyed the storage form. recon — always records, never fails."
+      },
+      {
+        "kind": "recon",
+        "base": "session",
+        "file": "chat_history.jsonl",
+        "grep": "\"type\": \"reasoning\"",
+        "label": "STORAGE RECORD — REASONING SURVIVAL (recon, non-scoring): the on-disk reasoning-item count after the resume turn. If the resume 503s and the DESTRUCTIVE strip fires, the history LOSES the reasoning items permanently (matrix §4.3-1, silent loss — backup-only recovery). 0 hits post-resume with pre-resume sol history present = the strip ate the ride = the S6 collapse evidence. recon — always records, never fails."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

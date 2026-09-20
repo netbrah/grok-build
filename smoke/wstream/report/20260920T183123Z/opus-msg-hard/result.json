@@ -1,0 +1,493 @@
+{
+  "cell": "opus-msg-hard",
+  "model": "claude-opus-5",
+  "api_backend": "messages",
+  "backend_class": "native",
+  "verdict": "PASS",
+  "invariants": [
+    {
+      "key": "status",
+      "expected": 200,
+      "actual": 200,
+      "ok": true
+    },
+    {
+      "key": "route",
+      "expected": "messages",
+      "actual": "messages",
+      "ok": true
+    },
+    {
+      "key": "n_model_calls_min",
+      "expected": ">= 1",
+      "actual": 11,
+      "ok": true
+    }
+  ],
+  "observations": {
+    "route": "messages",
+    "status": 200,
+    "n_model_calls": 11,
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "reasoning_present": false,
+    "reasoning_frames": 0,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": null,
+    "finish": "stop",
+    "budget_trap": false,
+    "final_text_nonempty": true,
+    "final_text_len": 53,
+    "usage": {
+      "input_tokens": 2,
+      "cache_creation_input_tokens": 29838,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 115,
+      "output_tokens_details": {
+        "thinking_tokens": 0
+      }
+    }
+  },
+  "analysis": {
+    "cell": "opus-msg-hard",
+    "route": "messages",
+    "expected_route": "messages",
+    "routes_mixed": false,
+    "status": 200,
+    "n_model_calls": 11,
+    "n_side_calls": 10,
+    "side_call_errors": [],
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "reasoning_present": false,
+    "reasoning_frames": 0,
+    "reasoning_tokens": 0,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": null,
+    "finish": "stop",
+    "budget_trap": false,
+    "final_text_len": 53,
+    "final_text_nonempty": true,
+    "usage": {
+      "input_tokens": 2,
+      "cache_creation_input_tokens": 29838,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 115,
+      "output_tokens_details": {
+        "thinking_tokens": 0
+      }
+    },
+    "n_frames_total": 34
+  },
+  "calls": [
+    {
+      "route": "messages",
+      "req_model": "claude-opus-5",
+      "req_stream": true,
+      "req_max_tokens": 100,
+      "status": 200,
+      "n_frames": 19,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 1,
+        "content_block_delta": 13,
+        "content_block_stop": 1,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 17,
+        "cache_creation_input_tokens": 872,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 51,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        }
+      },
+      "final_text": ""
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-opus-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 34,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 2,
+        "content_block_delta": 26,
+        "content_block_stop": 2,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 29838,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 115,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        }
+      },
+      "final_text": "I'll build the tool, create the fixtures, and run it."
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-opus-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 609,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 2,
+        "content_block_delta": 601,
+        "content_block_stop": 2,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 76,
+      "thinking_block": true,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Star",
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 267,
+        "cache_read_input_tokens": 29838,
+        "output_tokens": 2151,
+        "output_tokens_details": {
+          "thinking_tokens": 635
+        }
+      },
+      "final_text": ""
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-opus-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 161,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 3,
+        "content_block_delta": 151,
+        "content_block_stop": 3,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 23,
+      "thinking_block": true,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "I",
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 2231,
+        "cache_read_input_tokens": 30105,
+        "output_tokens": 1068,
+        "output_tokens_details": {
+          "thinking_tokens": 610
+        }
+      },
+      "final_text": ""
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-opus-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 27,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 1,
+        "content_block_delta": 21,
+        "content_block_stop": 1,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 2855,
+        "cache_read_input_tokens": 30105,
+        "output_tokens": 124,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        }
+      },
+      "final_text": ""
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-opus-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 187,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 3,
+        "content_block_delta": 177,
+        "content_block_stop": 3,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 42,
+      "thinking_block": true,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "With",
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 995,
+        "cache_read_input_tokens": 31700,
+        "output_tokens": 904,
+        "output_tokens_details": {
+          "thinking_tokens": 385
+        }
+      },
+      "final_text": "Let me verify the hunk headers against system `diff -U1` and check edge cases."
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-opus-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 210,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 3,
+        "content_block_delta": 200,
+        "content_block_stop": 3,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 20,
+      "thinking_block": true,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "I",
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 1547,
+        "cache_read_input_tokens": 32695,
+        "output_tokens": 778,
+        "output_tokens_details": {
+          "thinking_tokens": 170
+        }
+      },
+      "final_text": "Hunk headers match system `diff -U1`, except unified format omits `,1` for single-line ranges. Let me match that convention."
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-opus-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 145,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 1,
+        "content_block_delta": 139,
+        "content_block_stop": 1,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 2024,
+        "cache_read_input_tokens": 32695,
+        "output_tokens": 538,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        }
+      },
+      "final_text": ""
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-opus-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 175,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 3,
+        "content_block_delta": 165,
+        "content_block_stop": 3,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 38,
+      "thinking_block": true,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "I",
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 1600,
+        "cache_read_input_tokens": 33857,
+        "output_tokens": 870,
+        "output_tokens_details": {
+          "thinking_tokens": 301
+        }
+      },
+      "final_text": "zsh didn't word-split that loop, so the header comparison was vacuous. Redoing it properly."
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-opus-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 76,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 3,
+        "content_block_delta": 66,
+        "content_block_stop": 3,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 13,
+      "thinking_block": true,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "All",
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 1091,
+        "cache_read_input_tokens": 35457,
+        "output_tokens": 336,
+        "output_tokens_details": {
+          "thinking_tokens": 90
+        }
+      },
+      "final_text": "All checks pass. Cleaning up the scratch fixtures and doing the final run."
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-opus-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 148,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 1,
+        "content_block_delta": 142,
+        "content_block_stop": 1,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 1672,
+        "cache_read_input_tokens": 35457,
+        "output_tokens": 775,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        }
+      },
+      "final_text": "Done. `tools/minidiff.py` is a dependency-free Python 3 CLI (standard library only: `difflib`, `re`, `sys`) that diffs two files at line level, then re-diffs each changed line pair at word level so the specific substituted words are marked: removals as `[-word-]`, additions as `{+word+}`. It prints only changed hunks with 1 line of context and exits 1 on differences, 0 when identical.\n\n**One bug found and fixed.** My first version always wrote the two-number form in hunk headers (`@@ -6,2 +6,1 @@`). Unified diff format omits the length when a range covers exactly one line, so the correct header is `@@ -6,2 +6 @@`. I added a `format_range` helper and re-verified.\n\n**Verification performed:**\n\n| Check | Result |\n|---|---|\n| Hunk headers vs system `diff -U1`, 5 file pairs | all match, including single-line and empty-file ranges |\n| Full output vs `diff -U1` body, word markers stripped | byte-identical |\n| All 3 substituted words present | `granite`, `sixty`, `bell` each found |\n| Exit code, files differ | 1 |\n| Exit code, identical files | 0 |\n| Bad argument count / unreadable file | usage or error on stderr, exit 2 |\n\nThe three substitutions are `rocky`\u2192`granite` (line 1), `forty`\u2192`sixty` (line 3), and `horn`\u2192`bell` (line 5). Lines 2 and 4 are unchanged and appear only as context. No browser verification applies here, since this is a command-line tool with no web surface.\n\nExact diff output between `a.txt` and `b.txt` (exit code 1):\n\n```text\n@@ -1,5 +1,5 @@\n-The lighthouse stood alone on the [-rocky-] headland.\n+The lighthouse stood alone on the {+granite+} headland.\n Every night its lamp swept a slow arc across the water.\n-Fishermen steered by that pale beam for [-forty-] years.\n+Fishermen steered by that pale beam for {+sixty+} years.\n The keeper climbed the spiral stairs at dusk without fail.\n-When the fog rolled in, the [-horn-] answered the darkness.\n+When the fog rolled in, the {+bell+} answered the darkness.\n```"
+    }
+  ],
+  "turns": [
+    {
+      "turn": 1,
+      "exit_code": 0,
+      "killed": false,
+      "elapsed": 107.2,
+      "session_id": "01a0c016-5762-7d60-9aae-a07186b9dda9",
+      "n_events": 468
+    }
+  ],
+  "binary_sha256_12": "1463fe4cfb4e",
+  "wire_port": 60941,
+  "upstream": "https://llm-proxy-api.ai.eng.netapp.com",
+  "key_sha256_12": "9f3f56a263da",
+  "raw_key_hits": 0,
+  "ts": "20260920T183310Z"
+}

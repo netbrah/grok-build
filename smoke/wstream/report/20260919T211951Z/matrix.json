@@ -1,0 +1,20 @@
+{
+  "ts": "20260919T211951Z",
+  "cells": [
+    {
+      "cell": "sonnet-churn-msg",
+      "model": "sonnet-churn-msg",
+      "verdict": "PASS",
+      "route": "messages",
+      "expected_route": "messages",
+      "status": 200,
+      "n_model_calls": 1,
+      "all_stream": true,
+      "reasoning_present": false,
+      "reasoning_encrypted_content": false,
+      "reasoning_thinking_block": false,
+      "budget_trap": false,
+      "final_text_len": 0
+    }
+  ]
+}

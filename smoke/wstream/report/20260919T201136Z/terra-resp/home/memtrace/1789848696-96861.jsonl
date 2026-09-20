@@ -1,0 +1,6 @@
+{"ts_ms":1789848726838,"kind":"start","pid":96861,"version":"1.0.24"}
+{"ts_ms":1789848726863,"kind":"sample","footprint_bytes":63292328,"rss_bytes":123830272,"threads":60,"alloc":{"allocated":38943024,"active":63242240,"resident":77840384,"mapped":190332928,"retained":0,"metadata":11790248}}
+{"ts_ms":1789848756880,"kind":"sample","footprint_bytes":64652200,"rss_bytes":126369792,"threads":60,"alloc":{"allocated":39052032,"active":63668224,"resident":78938112,"mapped":191397888,"retained":0,"metadata":11799080}}
+{"ts_ms":1789848786891,"kind":"sample","footprint_bytes":68109224,"rss_bytes":130908160,"threads":60,"alloc":{"allocated":38342992,"active":63700992,"resident":82214912,"mapped":194674688,"retained":0,"metadata":11803304}}
+{"ts_ms":1789848816900,"kind":"sample","footprint_bytes":68256680,"rss_bytes":131219456,"threads":60,"alloc":{"allocated":39368832,"active":64143360,"resident":82100224,"mapped":194560000,"retained":0,"metadata":11809064}}
+{"ts_ms":1789848846911,"kind":"sample","footprint_bytes":68928424,"rss_bytes":132497408,"threads":60,"alloc":{"allocated":39861248,"active":65142784,"resident":83099648,"mapped":195559424,"retained":0,"metadata":11814056}}

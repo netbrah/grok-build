@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 215, in <module>
+    sys.exit(main(sys.argv))
+             ~~~~^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 208, in main
+    out = format_hunks(build_hunks(a_lines, b_lines))
+                       ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd/tools/minidiff.py", line 160, in build_hunks
+    n1, n2, m1, m2 = nxt
+    ^^^^^^^^^^^^^^
+ValueError: too many values to unpack (expected 4, got 5)
+exit=1

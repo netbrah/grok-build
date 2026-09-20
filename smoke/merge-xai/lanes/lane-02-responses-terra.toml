@@ -1,0 +1,62 @@
+# MERGE-XAI-SYNC frozen lane L-02 — gpt-5.6-terra on /v1/responses.
+# Bead apex-l2d.4 (06 §2 C-01 lane column: 'sol/terra responses + wiretap' —
+# terra is the C-01 sibling lane; no cell is terra-only, the lane is frozen so
+# the operator can re-point any L-01 cell at terra by swapping model +
+# where-filters, per the MXAI-C01 title note).
+#
+# FROZEN TEMPLATE: model + wire pinned; the launcher rewrites the PLACEHOLDER
+# base_urls at run time (same sed contract as L-01):
+#     s|^base_url = ".*"|base_url = "http://127.0.0.1:<wiretap-port>/v1"|
+#     s|^models_base_url = ".*"|models_base_url = "http://127.0.0.1:<wiretap-port>/v1"|
+# NEVER commit a live URL into this file (sweep-0). Port 0 = dead-port
+# placeholder (fail-closed when unrewritten). env_key = the ENV VAR NAME (the
+# L1 contract: ambient CODEX_LLM_PROXY_KEY only). [auth] intentionally ABSENT
+# (operator launcher supplies the hermetic auth stub).
+#
+# Row shape note: the live terra row omits api_backend (it inherits
+# [endpoints].default_api_backend = "responses"); the frozen lane pins it
+# EXPLICITLY on the row — explicit beats inherited for a frozen template.
+# The live row's 5-effort table (value/label/default; high default) + the
+# supports_reasoning_effort flag + extra_headers are carried verbatim.
+
+disable_web_search = true
+
+[model."gpt-5.6-terra"]
+base_url = "http://127.0.0.1:0/v1"
+api_backend = "responses"
+model_family = "codex"
+strict_responses_input = true
+context_window = 500000
+max_completion_token = 128000
+env_key = "CODEX_LLM_PROXY_KEY"
+supports_reasoning_effort = true
+
+[model."gpt-5.6-terra".extra_headers]
+x-litellm-tags = "East US 2"
+
+[[model."gpt-5.6-terra".reasoning_efforts]]
+value = "low"
+label = "Low Effort"
+
+[[model."gpt-5.6-terra".reasoning_efforts]]
+value = "medium"
+label = "Medium Effort"
+
+[[model."gpt-5.6-terra".reasoning_efforts]]
+value = "high"
+label = "High Effort"
+default = true
+
+[[model."gpt-5.6-terra".reasoning_efforts]]
+value = "max"
+label = "Max Effort"
+
+[[model."gpt-5.6-terra".reasoning_efforts]]
+value = "ultra"
+label = "Ultra Effort"
+
+[endpoints]
+models_base_url = "http://127.0.0.1:0/v1"
+default_api_backend = "responses"
+default_env_key = "CODEX_LLM_PROXY_KEY"
+default_context_window = 256000

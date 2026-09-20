@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "id": "MXAI-C01",
+  "title": "MERGE-XAI-SYNC C-01 (PIN S5/A2, exact-bytes retry invariant) — post-merge regression lane, gpt-5.6-sol on /v1/responses behind wiretap (frozen lane L-01, 06 §2 lane column). One bounded turn on the lane of record. Scored pins (live-verifiable without fault injection): (1) NO zstd content-encoding on ANY lane request capture (request_compression=None is the default; the A2 sibling seam build_encoded_request(builder, encoded) takes the already-validated carrier bytes and runs the identical should_compress/compress_body path — on our proxy the path is byte-identical to today's ours and must STAY uncompressed; a zstd header appearing = the seam or the proxy default regressed = defect); (2) the paired responses are not zstd-encoded (the compression=off default verified LIVE, per 06); (3) the turn recovers with exit 0 and no terminal error; (4) no request storm (1..2 lane requests). The EXACT-BYTES retry pair itself (retried body byte-identical to the original validated carrier) requires inducing a retried request (400-class or aborted turn): the live driver cannot induce one (wiretap2 is pass-through; no fault injection) — that arm is the zero-step mechanism case MXAI-C01-REPLAY (pre-placed original+retry pair, kind=golden byte pin, disabled until the wave-3 operator populates the fixture from a real retried-pair capture; sweep-0 redacted per fixtures/merge-xai/c-01-replay/META.json). VERDICT: PASS = all four scored pins green; the strict-bytes half of the cell is carried by C01-REPLAY once populated. STOP-AND-REPORT (house rule): any zstd header on either side, a storm, or a non-zero exit. NOTE (plan-text delta): 06's scenario column says 'induce a retried request on the messages route' while the lane column says 'sol/terra responses + wiretap'; the A2 seam is the messages-route sibling — this case runs the lane column (responses); the operator may re-point the same case at lane L-03 (sonnet /messages) by swapping model + where-filters only; C01-REPLAY is route-agnostic (fixture-defined). See smoke/merge-xai/README.md (DRIVER GAP C-01).",
+  "bead": "apex-l2d.4",
+  "suite": "salvage",
+  "tier": "full",
+  "driver": "headless",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "output_format": "streaming-json",
+  "wirecap": true,
+  "est_calls": 2,
+  "watchdog_s": 300,
+  "env": {
+    "store": false
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Compute 7^8432 mod 5557 using modular exponentiation. Show each squaring step briefly, then state the final remainder on its own line. Do not use any tools."
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error",
+        "label": "NO TERMINAL ERROR: the bounded turn completed without an unrecovered error (a Fatal-tail 400/503 here = retry-path regression on the post-merge client)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "count",
+        "id": "lane_ran",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "min": 1,
+        "max": 2,
+        "label": "CONTROL (anti-vacuous pin) + NO-RETRY-STORM: the lane turn produced 1-2 /v1/responses requests (1 = clean; 2 = one tolerated side call, e.g. title refresh). 0 = the probe never hit the wire = VACUOUS; >2 = storm around the turn = defect."
+      },
+      {
+        "kind": "grep",
+        "id": "no_req_zstd",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "zstd",
+        "label": "COMPRESSION-OFF PIN (A2, request side): no zstd content-encoding may appear on ANY /v1/responses request capture — request_compression=None is the default and the A2 seam must re-encode the validated carrier, never re-compress it, on our proxy."
+      },
+      {
+        "kind": "grep",
+        "id": "no_resp_zstd",
+        "file": "resp-*.jsonl",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "zstd",
+        "label": "COMPRESSION-OFF PIN (response side): no zstd content-encoding on the paired response captures — the proxy's compression=off default verified LIVE on the lane (06 C-01 assertion column)."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "field": "ts",
+        "label": "VERDICT RECORD (recon, newest lane request): capture timestamp for the coordinator's pairing when the C01-REPLAY fixture is populated from a real retried-pair capture (the ts ordering identifies original vs retry)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true,
+    "vacuous_if": [
+      {
+        "pin": "lane_ran",
+        "class": "model"
+      }
+    ]
+  },
+  "retry": {
+    "on_status": [
+      404,
+      502,
+      503
+    ],
+    "max_attempts": 1,
+    "backoff_s": 30
+  }
+}

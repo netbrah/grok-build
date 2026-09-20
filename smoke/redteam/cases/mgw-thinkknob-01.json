@@ -1,0 +1,64 @@
+{
+ "schema_version": 1,
+ "id": "MGW-THINKKNOB-01",
+ "title": "apex-ayl.118 RED ratchet (msgw sweep F3) — thinking display knobs unreachable on the messages wire: the case declares model/claude-sonnet-5/thinking_display=summarized (config_patch intent; the lenient row parser ignores the key pre-cut) and pins the display-on-enabled / updates / block_binding members of the thinking block on the /v1/messages requests. The trusted producer hardcodes the thinking shape (ST/messages.rs:470-482 — no display knob, no block binding, no config surface), so the declared value can never ride the wire. RED today (both red pins 0-hit); GREEN when the cut plumbs config -> thinking block shape. Control pin (class harness, plain assert): body.thinking ne null on the NEWEST /v1/messages request (nth:0) — wire-verified 20260920 redstack: the session_title auxiliary call fires FIRST (oldest, tool_choice-forced, no thinking block) so the main call is the newest, not the oldest; the row is thinking-capable and the main call always emits the thinking block, so a miss is a harness failure. The turn uses a thinking-forcing math prompt so the thinking block is non-vacuous.",
+ "bead": "apex-ayl.118",
+ "suite": "wire-shape",
+ "tier": "slim",
+ "driver": "headless",
+ "model": "claude-sonnet-5",
+ "wirecap": true,
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "config_patch": {
+  "model/claude-sonnet-5/thinking_display": "summarized"
+ },
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Find the remainder when 7^8432 is divided by 5557. Show your work using modular exponentiation. End your reply with exactly: MGW-THINKKNOB-OK",
+   "timeout_s": 240
+  }
+ ],
+ "watchdog_s": 420,
+ "est_calls": 3,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error",
+    "label": "NO TERMINAL ERROR: the turn completed (the red is the thinking-knob seam, not the turn)."
+   }
+  ],
+  "wire": [
+   {
+    "kind": "field",
+    "file": "req-*.json",
+   "where": { "method": "POST", "path": "/v1/messages" },
+    "nth": 0,
+    "path": "body.thinking",
+    "ne": null,
+    "label": "CONTROL (class harness): the NEWEST /v1/messages request (nth:0 = a main call — the session_title aux call fires first/oldest with no thinking block, wire-verified 20260920) carries a thinking block; a miss is a harness failure, never vacuous."
+   },
+   {
+    "kind": "grep",
+    "id": "mgw_thinkknob_red1",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/messages" },
+    "any": true,
+    "grep": "\"block_binding\"",
+    "label": "RED PIN (F3, member 1): a /v1/messages request carries the block_binding member of the thinking block. Pre-cut FAILs: the producer hardcodes the shape (ST/messages.rs:470-482) — the member is unemittable."
+   },
+   {
+    "kind": "grep",
+    "id": "mgw_thinkknob_red2",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/messages" },
+    "any": true,
+    "grep": "\"display\": \"updates\"",
+    "label": "RED PIN (F3, member 2): a /v1/messages request carries display=updates on the thinking block (the docs-named display knob). Pre-cut FAILs: unreachable (ST/messages.rs:470-482). RE-PIN RULE: if the cut emits display under a different key spelling, re-pin to the landed shape."
+   }
+  ]
+ },
+ "expected_red": { "id": "mgw-f3-thinkknob" }
+}

@@ -1,0 +1,32 @@
+{
+  "info": {
+    "id": "01a0c00d-6408-7bf3-840f-5f9998e7662e",
+    "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182136Z/sonnet-msg/cwd"
+  },
+  "agent_id": "ag1.f2a047b71b364a448e50d2561f0fed71",
+  "attempt_id": "at1.bca930bcb3464dcfbb71df6c94467920",
+  "session_summary": "Create word-level diff CLI tool with fixtures",
+  "created_at": "2026-09-20T18:21:38.212344Z",
+  "updated_at": "2026-09-20T18:23:29.444562Z",
+  "num_messages": 34,
+  "num_chat_messages": 29,
+  "current_model_id": "claude-sonnet-5",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "session_kind": "headless",
+  "git_root_dir": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/",
+  "git_remotes": [
+    "https://bitbucket.ngage.netapp.com/scm/apex/grok-build.git",
+    "https://github.com/netbrah/grok-build.git",
+    "https://github.com/xai-org/grok-build.git"
+  ],
+  "head_commit": "355cfe4ef2546bc2f0ac70735eafe4b521fdf95e",
+  "head_branch": "feat/first-class-responses-catalog",
+  "request_id": "a07df2dc-e308-48ec-b69c-b0e2c3c80800",
+  "grok_home": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182136Z/sonnet-msg/home",
+  "last_active_at": "2026-09-20T18:23:29.444562Z",
+  "generated_title": "Create word-level diff CLI tool with fixtures",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "xhigh"
+}

@@ -1,0 +1,5 @@
+FOUND: basalt
+FOUND: curved
+FOUND: watching
+substitutions: [('granite', 'basalt'), ('spiral', 'curved'), ('awake.', 'watching.')]
+fixture check OK: exactly 3 single-word substitutions

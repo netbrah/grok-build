@@ -1,0 +1,43 @@
+=== main fixture ===
+@@ -1,5 +1,5 @@
+The old lighthouse stood on the [-granite-]{+basalt+} headland,
+ its beam sweeping slow circles across the dark water.
+-Keepers climbed the spiral stairs each [-dusk-] without fail,
+-trimming the [-fraying-] rope and polishing the great glass.
++Keepers climbed the spiral stairs each {+dawn+} without fail,
++trimming the {+worn+} rope and polishing the great glass.
+ By morning the fog had lifted, and the sea lay still.
+exit=1
+=== delete line 2 ===
+@@ -1,3 +1,2 @@
+ The old lighthouse stood on the granite headland,
+-its beam sweeping slow circles across the dark water.
+ Keepers climbed the spiral stairs each dusk without fail,
+exit=1
+=== insert line after 1 ===
+@@ -1,2 +1,3 @@
+ The old lighthouse stood on the granite headland,
++Gulls wheeled overhead, indifferent to the light.
+ its beam sweeping slow circles across the dark water.
+exit=1
+=== empty vs one line ===
+@@ -0,0 +1 @@
++hello world
+exit=1
+=== first/last word ===
+@@ -1 +1 @@
+[-alpha-]{+ALPHA+} beta [-gamma-]{+GAMMA+}
+exit=1
+=== far apart changes ===
+@@ -1,2 +1,2 @@
+The old lighthouse stood on the [-granite-]{+basalt+} headland,
+ its beam sweeping slow circles across the dark water.
+@@ -4,2 +4,2 @@
+ trimming the fraying rope and polishing the great glass.
+By morning the fog had lifted, and the sea lay [-still.-]{+calm.+}
+exit=1
+=== identical ===
+exit=0
+=== missing file ===
+minidiff: [Errno 2] No such file or directory: '/nope.txt'
+exit=2

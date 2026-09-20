@@ -1,0 +1,178 @@
+{
+  "cell": "sonnet-msg",
+  "model": "claude-sonnet-5",
+  "api_backend": "messages",
+  "backend_class": "native",
+  "verdict": "PASS",
+  "invariants": [
+    {
+      "key": "status",
+      "expected": 200,
+      "actual": 200,
+      "ok": true
+    },
+    {
+      "key": "route",
+      "expected": "messages",
+      "actual": "messages",
+      "ok": true
+    },
+    {
+      "key": "n_model_calls_min",
+      "expected": ">= 1",
+      "actual": 2,
+      "ok": true
+    }
+  ],
+  "observations": {
+    "route": "messages",
+    "status": 200,
+    "n_model_calls": 2,
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 880,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": true,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "This",
+    "finish": "stop",
+    "budget_trap": false,
+    "final_text_nonempty": true,
+    "final_text_len": 122,
+    "usage": {
+      "input_tokens": 2,
+      "cache_creation_input_tokens": 29817,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 16821,
+      "output_tokens_details": {
+        "thinking_tokens": 16733
+      }
+    }
+  },
+  "analysis": {
+    "cell": "sonnet-msg",
+    "route": "messages",
+    "expected_route": "messages",
+    "routes_mixed": false,
+    "status": 200,
+    "n_model_calls": 2,
+    "n_side_calls": 1,
+    "side_call_errors": [],
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 880,
+    "reasoning_tokens": 16733,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": true,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "This",
+    "finish": "stop",
+    "budget_trap": false,
+    "final_text_len": 122,
+    "final_text_nonempty": true,
+    "usage": {
+      "input_tokens": 2,
+      "cache_creation_input_tokens": 29817,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 16821,
+      "output_tokens_details": {
+        "thinking_tokens": 16733
+      }
+    },
+    "n_frames_total": 911
+  },
+  "calls": [
+    {
+      "route": "messages",
+      "req_model": "claude-sonnet-5",
+      "req_stream": true,
+      "req_max_tokens": 100,
+      "status": 200,
+      "n_frames": 17,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 1,
+        "content_block_start": 1,
+        "content_block_delta": 11,
+        "content_block_stop": 1,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 957,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 50,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        }
+      },
+      "final_text": ""
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-sonnet-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 911,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 6,
+        "content_block_start": 3,
+        "content_block_delta": 896,
+        "content_block_stop": 3,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 880,
+      "thinking_block": true,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "This",
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 29817,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 16821,
+        "output_tokens_details": {
+          "thinking_tokens": 16733
+        }
+      },
+      "final_text": "I'll start by exploring the workspace to understand its structure and conventions before adding the new tool and fixtures."
+    }
+  ],
+  "turns": [
+    {
+      "turn": 1,
+      "exit_code": 1,
+      "killed": false,
+      "elapsed": 182.87,
+      "session_id": null,
+      "n_events": 897
+    }
+  ],
+  "binary_sha256_12": "f9e7a15d6b6b",
+  "wire_port": 59548,
+  "upstream": "https://llm-proxy-api.ai.eng.netapp.com",
+  "key_sha256_12": "9f3f56a263da",
+  "raw_key_hits": 0,
+  "ts": "20260919T201722Z"
+}

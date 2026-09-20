@@ -1,0 +1,1194 @@
+{
+  "n": 6,
+  "method": "POST",
+  "path": "/v1/responses",
+  "ts": "2026-09-20T17:54:26Z",
+  "headers": {
+    "content-type": "application/json",
+    "authorization": {
+      "masked": true,
+      "sha256_12": "12cd258ae281",
+      "len": 92
+    },
+    "x-litellm-tags": "East US 2",
+    "x-xai-token-auth": "xai-grok-cli",
+    "x-authenticateresponse": "authenticate-response",
+    "x-grok-client-mode": "headless",
+    "x-grok-client-version": "1.0.24",
+    "x-grok-conv-group-id": "26f59350-1670-591d-b9e0-6d0d67c1d9cd",
+    "x-grok-client-identifier": "grok-shell",
+    "user-agent": "grok-shell/1.0.24 (macos; aarch64)",
+    "traceparent": "00-fe4785e6f20d4c73d3ee011e8e479e19-75809c634d604ccd-01",
+    "x-grok-conv-id": "01a0bff4-5f70-7753-bd42-7ea4f8163c3e",
+    "x-grok-req-id": "851ca38e-d335-4c31-b639-cde918fa9ed6",
+    "x-grok-model-override": "gpt-5.6-terra",
+    "x-grok-session-id": "01a0bff4-5f70-7753-bd42-7ea4f8163c3e",
+    "x-grok-agent-id": "e841733e-47c1-5d05-bc86-123ad15de007",
+    "x-grok-turn-idx": "1",
+    "accept": "text/event-stream",
+    "x-grok-doom-loop-check": "1024",
+    "x-grok-exact-repetition-check": "64",
+    "accept-encoding": "gzip, br, deflate",
+    "host": "127.0.0.1:54240",
+    "content-length": "114532"
+  },
+  "body": {
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "input": [
+      {
+        "type": "message",
+        "role": "system",
+        "content": "You are Grok released by xAI. You are an autonomous agent that completes software engineering tasks. There is no human operator in this session. Your main goal is to complete the user's request, denoted within the <user_query> tag.\n\n<work_policy>\n- Keep every explicit requirement of the request in view until it is completed, superseded by the user, or genuinely blocked. If something is blocked, say so plainly rather than quietly dropping it.\n- Match your response to the user's intent. Implement clear action requests; answer questions, reviews, explanations, and planning requests without making unsolicited project edits.\n- For clear, reversible local work, do it in the current turn instead of asking permission conversationally or ending with an offer to do it later.\n- When the user explicitly asks you to use subagents or delegate work, those launches are part of the requested outcome: make the `spawn_subagent` calls near the start of the work. Saying you will delegate but never launching does NOT satisfy the request.\n- Claim that something is done, fixed, tested, or addressed only when tool output supports the claim. Otherwise state what you did not verify and why.\n- Keep changes scoped to what was asked. Match the surrounding code's comment and tooling conventions: comments should be short, factual, and only explain non-obvious constraints; never narrate your reasoning or implementation steps, and never leave placeholders for unrelated work using comments. Comments and suppressions must NOT substitute for fixing a problem.\n</work_policy>\n\n<tool_calling>\n- Use specialized tools instead of bash commands when possible, as this provides a better user experience. For file operations, prefer dedicated file tools (e.g., `read_file` for reading files instead of cat/head/tail, `search_replace` for editing and creating files instead of sed/awk). Reserve bash tools exclusively for actual system commands and terminal operations that require shell execution. NEVER use bash echo or other command-line tools to communicate thoughts, explanations, or instructions to the user. Output all communication directly in your response text instead.\n</tool_calling>\n\n<background_tasks>\n- Run a long-lived command you own (a build, test suite, or server) as a background command in `run_terminal_command`, then continue independent work; its completion is reported to you.\n- Use `monitor` for watch processes, polling, and ongoing observation of external conditions (CI status, log tailing, API polling), SPECIFICALLY for status changes.\n</background_tasks>\n\n<communication>\nCommunicate directly and concisely, in complete sentences. Concise means being selective about what you include, not clipping the prose: no telegraphic fragments, no shorthand the user hasn't used.\n  \nWrite every user-facing message for a reader who has NOT seen your tool calls, internal notes, or workspace documents:\n- Restate what you did and what you found in plain language. Do not assume the user remembers earlier messages or knows the state of the work.\n- Define project-specific terms, abbreviations, and codenames on first use. Never carry vocabulary from internal docs, rules, or skills into your replies unless the user used it first.\n- State facts literally. Do not invent metaphors, idioms, or catchy labels to describe technical work.\n\nLead with the answer:\n- Answer the user's actual question first \u2014 especially \"why\" questions \u2014 then give supporting detail.\n- Open with what is true or what to do. Do not open answers or sections with negations (\"It's not X\") or \"Do not...\" framing; make the point affirmatively, then contrast only if it adds information.\n- If the question is answerable from context, answer it. Do not respond with a clarifying question back, and do not dump raw data when the user wants the relevant subset.\n\nKeep intermediate progress updates short and infrequent. The final message must stand alone: what was done, what the outcome is, and the answer to what the user asked.\n\nNEVER coin acronyms, shorthand, or technical-sounding labels of your own. ALWAYS use terminology _already established_ in the conversation or provided context; otherwise describe the concept in plain language. Established, well-known technical vocabulary is fine.\n</communication>\n\n<formatting>\nYour text output is rendered as GitHub-flavored markdown (CommonMark). Use markdown actively when it aids the reader: bullet lists for parallel items, **bold** for emphasis, `inline code` for identifiers/paths/commands, and tables for short enumerable facts (file/line/status, before/after, quantitative data). For nesting markdown fences, NEVER nest equal-length fences - make the outer fence longer than every inner fence.\n</formatting>\n\n<browser_verification>\nWhen your work changes anything a user sees or interacts with in a web app (UI components, layout, styling, routing, or the state and data that pages render), you MUST verify your work in the browser before finishing, whenever browser tools are available.\n\nVerifying means more than confirming that the changed screen renders:\n1. Exercise the feature you changed end to end, interacting with it the way a user would.\n2. Visit every page and route that shares the state, data, or components you touched, and confirm the application still behaves consistently everywhere.\n3. Actively hunt for regressions in existing behavior; do not stop at the happy path.\n4. When layout or styling changed, check both desktop and mobile viewport sizes.\n\nIf verification reveals a problem, fix it and verify again before ending your turn.\n</browser_verification>"
+      },
+      {
+        "type": "message",
+        "role": "user",
+        "content": "<user_info>\nOS Version: macos\nShell: /bin/zsh\nWorkspace Path: /Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T175417Z/terra-resp/cwd\nToday's date: 2026-09-20\nNote: Prefer using relative paths over absolute paths as tool call args when possible.\n</user_info>\n\n<rules>\nThe rules section has a number of possible rules/memories/context that you should consider. In each subsection, we provide instructions about what information the subsection contains and how you should consider/follow the contents of the subsection.\n\n\n<user_rules description=\"These are rules set by the user that you should follow if appropriate.\">\n<user_rule>\nWhen implementing or fixing anything in a web application (UI, layout, styling, routing, client state, or rendered data), verify your work in the browser before declaring the task complete.\n\n**Use this verification workflow:**\n- Open the app with the available browser tools and exercise the changed feature end to end the way a real user would: click, type, submit, navigate.\n- A single render screenshot of the changed screen is NOT verification. Confirm behavior, not just appearance.\n- Check every page and route that shares the state, data, or components you touched. Application state must stay consistent across pages: if you changed how state is written or derived, verify the other surfaces that read it.\n- Hunt for regressions. The most common failure mode is a change that works in isolation but breaks existing behavior elsewhere in the app. Navigate the surrounding flows and look for what broke.\n- Verify the paths and edge states your change touches (empty states, error states, route and flag variants), not only the main path.\n- When layout or styling changed, check both desktop and mobile viewports.\n- If verification finds a problem, fix it and re-verify. Do not finish with unverified UI work.\n\nIf no browser tools are available, verify through the closest available substitute (tests, curl against the dev server, rendering scripts) and say what you could not verify.\n</user_rule>\n\n<user_rule>\n<!-- CODEGRAPH_START -->\n## CodeGraph\n\nIn repositories indexed by CodeGraph (a `.codegraph/` directory exists at the repo root), reach for it BEFORE grep/find or reading files when you need to understand or locate code:\n\n- **MCP tool** (when available): `codegraph_explore` answers most code questions in one call \u2014 the relevant symbols' verbatim source plus the call paths between them, including dynamic-dispatch hops grep can't follow. Name a file or symbol in the query to read its current line-numbered source. If it's listed but deferred, load it by name via tool search.\n- **Shell** (always works): `codegraph explore \"<symbol names or question>\"` prints the same output.\n\nIf there is no `.codegraph/` directory, skip CodeGraph entirely \u2014 indexing is the user's decision.\n<!-- CODEGRAPH_END -->\n# graphify\n- **graphify** (`~/.claude/skills/graphify/SKILL.md`) - any input to knowledge graph. Trigger: `/graphify`\nWhen the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.\n</user_rule>\n</user_rules>\n</rules>"
+      },
+      {
+        "type": "message",
+        "role": "user",
+        "content": "<system-reminder>\nThe following skills are available for use:\n\n- apex-auth-and-keys: Use when diagnosing APEX authentication failures (401, 403, model_not_supported), changing provider-key handling, adding a wire, debugging the Copilot activation gate, or onboarding a user who lacks provider tokens.\n  Absolute path: /Users/palanisd/.agents/skills/apex-auth-and-keys/SKILL.md\n- apex-copilot-testing: Use when testing or debugging the APEX GitHub Copilot CAPI wire, its device-flow bootstrap, ghu/gho exchange, proxy routing, provider-key unset gate, or personal failover from the LLM proxy.\n  Absolute path: /Users/palanisd/.agents/skills/apex-copilot-testing/SKILL.md\n- apex-deck-figures: Use when building, reviewing, or gating any chart, table, scatter plot, or data figure for an APEX deck (Dithy, KPI, portfolio) \u2014 anything where a rendered number must trace to the seam contract. Covers the projection grammar (what shape a claim becomes), the binding rules (may_present/slot outrank disposition), the SVG-only mandate, and the gate that reads chart geometry. Also use before cho\u2026\n  Absolute path: /Users/palanisd/.agents/skills/apex-deck-figures/SKILL.md\n- apex-fleet-deployment: Use when changing any SCS APEX fleet launcher, binary release, settings or defaults JSON, MCP wiring, model parameter, OPSEC material, installer, or rollback state.\n  Absolute path: /Users/palanisd/.agents/skills/apex-fleet-deployment/SKILL.md\n- apex-harness-development: Use when changing the APEX harness source, building or dogfooding a Linux SEA, promoting the harness binary to SCS, or modifying the bundled-skills pipeline.\n  Absolute path: /Users/palanisd/.agents/skills/apex-harness-development/SKILL.md\n- apex-headless-smoke-testing: Use when validating an APEX release or a launcher, binary, settings, MCP, model, or wire-protocol change before or after fleet promotion.\n  Absolute path: /Users/palanisd/.agents/skills/apex-headless-smoke-testing/SKILL.md\n- apex-ontap-source-topology: Use when resolving where ONTAP source lives for any APEX source-plane work (Lore temporal-provenance, code-intel SOMAP, Haystack, Mastra, clangd-rs) \u2014 GitHub Enterprise repo identity, dev vs devN, cluster NFS/PVC mounts, SCS checkouts, GHE token location, and build placement.\n  Absolute path: /Users/palanisd/.agents/skills/apex-ontap-source-topology/SKILL.md\n- apex-search-platform-ops: Use when publishing, pinning, deploying, rolling back, or diagnosing CI and Kubernetes delivery for APEX Mastra Search, Haystack, Zoekt, pipeline-config, or their stack repositories.\n  Absolute path: /Users/palanisd/.agents/skills/apex-search-platform-ops/SKILL.md\n- apex-settings-model-changes: Use when adding, updating, or removing APEX fleet models, model parameters, default selections, provider rows, or wireModelId mappings in SCS system settings.\n  Absolute path: /Users/palanisd/.agents/skills/apex-settings-model-changes/SKILL.md\n- apex-wire-capture: Use when investigating APEX wire fidelity, cross-provider model switching, cache_control placement, reasoning replay, tool history, or context-management failures involving long sessions, ACP resume, node distillation, snapshot sawtooths, or /compress.\n  Absolute path: /Users/palanisd/.agents/skills/apex-wire-capture/SKILL.md\n- argocd-readonly: Use when inspecting, deploying, syncing, or changing Argo CD applications, clusters, GitOps state, live manifests, repositories, or projects.\n  Absolute path: /Users/palanisd/.agents/skills/argocd-readonly/SKILL.md\n- beads: Use when working in a repository that uses bd or Beads for durable project task tracking, issue dependencies, blocker management, multi-session handoff, or shared work memory. Trigger when the user asks to find ready work, claim or close tasks, create follow-up work, inspect blockers, recover project context, or choose between local planning and persistent project tracking.\n  Absolute path: /Users/palanisd/.agents/skills/beads/SKILL.md\n- brainstorming: You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation.\n  Absolute path: /Users/palanisd/.agents/skills/brainstorming/SKILL.md\n- claude-api: Build, debug, and optimize Claude API / Anthropic SDK apps. Apps built with this skill should include prompt caching. Also handles migrating existing Claude API code between Claude model versions (4.5 \u2192 4.6, 4.6 \u2192 4.7, retired-model replacements). TRIGGER when: code imports `anthropic`/`@anthropic-ai/sdk`; user asks for the Claude API, Anthropic SDK, or Managed Agents; user adds/modifies/tu\u2026\n  Absolute path: /Users/palanisd/.agents/skills/claude-api/SKILL.md\n- codebase-memory: Use the codebase knowledge graph for structural code queries via the code\u2026\n  Use when: explore the codebase, understand the architecture, what functions exist, show me the structure, who calls this function, what does X call, trace the call chain, find callers of, show dependencies, impact analysis, dead code, unused functions, high fan-out, refactor candidates, code quality audit, graph query syntax, Cyp\u2026\n  Absolute path: /Users/palanisd/.agents/skills/codebase-memory/SKILL.md\n- cognee-memory: Ingest files, folders, and artifacts into the Cognee knowledge graph and recall past context.\n  Absolute path: /Users/palanisd/.agents/skills/cognee-memory/SKILL.md\n- dispatching-parallel-agents: Use when facing 2+ independent tasks that can be worked on without shared state or sequential dependencies\n  Absolute path: /Users/palanisd/.agents/skills/dispatching-parallel-agents/SKILL.md\n- docs-audit-and-refresh: Audit the repository's docs/ content against the current codebase, find missing, incorrect, or stale documentation, and refresh the affected pages\n  Use when: the user asks to review docs coverage, find outdated docs, compare docs with the current repo, or fix documentation drift across features, settings, tools, or integrations.\n  Absolute path: /Users/palanisd/.agents/skills/docs-audit-and-refresh/SKILL.md\n- docs-update-from-diff: Review local code changes with git diff and update the official docs under docs/ to match\n  Use when: the user asks to document current uncommitted work, sync docs with local changes, update docs after a feature or refactor, or when phrases like \"git diff\", \"local changes\", \"update docs\", or \"official docs\" appear.\n  Absolute path: /Users/palanisd/.agents/skills/docs-update-from-diff/SKILL.md\n- executing-plans: Use when you have a written implementation plan to execute in a separate session with review checkpoints\n  Absolute path: /Users/palanisd/.agents/skills/executing-plans/SKILL.md\n- find-skills: Helps users discover and install agent skills when they ask questions like \"how do I do X\", \"find a skill for X\", \"is there a skill that can...\", or express interest in extending capabilities. This skill should be used when the user is looking for functionality that might exist as an installable skill.\n  Absolute path: /Users/palanisd/.agents/skills/find-skills/SKILL.md\n- finishing-a-development-branch: Use when implementation is complete, all tests pass, and you need to decide how to integrate the work\n  Absolute path: /Users/palanisd/.agents/skills/finishing-a-development-branch/SKILL.md\n- frontend-design: Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Helps with aesthetic direction, typography, and making choices that don't read as templated defaults.\n  Absolute path: /Users/palanisd/.agents/skills/frontend-design/SKILL.md\n- gh-address-comments: Help address review/issue comments on the open GitHub PR for the current branch using gh CLI; verify gh auth first and prompt the user to authenticate if not logged in.\n  Absolute path: /Users/palanisd/.agents/skills/gh-address-comments/SKILL.md\n- gh-fix-ci: Use when a user asks to debug or fix failing GitHub PR checks that run in GitHub Actions; use `gh` to inspect checks and logs, summarize failure context, draft a fix plan, and implement only after explicit approval. Treat external providers (for example Buildkite) as out of scope and report only the details URL.\n  Absolute path: /Users/palanisd/.agents/skills/gh-fix-ci/SKILL.md\n- git: Git workflow and GitHub Enterprise PR operations for large ONTAP monorepo. All local git commands MUST be path-scoped to component directories. Server-side operations (PRs, comments, reviews) use gh CLI via GH_HOST.\n  Absolute path: /Users/palanisd/.agents/skills/git/SKILL.md\n- grok-session-triage: Diagnose grok-harness session errors while the run is hot or a\u2026\n  Use when: the operator says \"diagnose this session\", \"why did run X fail\", \"MCP call failed\", \"triage errors across sessions\", \"repro this wire error\", \"something errored in my last run\", \"why is codegraph failing\", \"triage all sessions since yesterday\", or names a failure class (codegraph, wirecap, pty, subagent, MCP). Read-only: never mod\u2026\n  Absolute path: /Users/palanisd/.agents/skills/grok-session-triage/SKILL.md\n- local-code-intelligence: Use when locating, understanding, or tracing code; assessing architecture, dependencies, callers, or impact; working across canonical, linked, or dirty Git worktrees; or setting up a first-time CodeGraph or Codebase Memory index for a repository.\n  Absolute path: /Users/palanisd/.agents/skills/local-code-intelligence/SKILL.md\n- mcp-builder: Guide for creating high-quality MCP (Model Context Protocol) servers that enable LLMs to interact with external services through well-designed tools\n  Use when: building MCP servers to integrate external APIs or services, whether in Python (FastMCP) or Node/TypeScript (MCP SDK).\n  Absolute path: /Users/palanisd/.agents/skills/mcp-builder/SKILL.md\n- netapp-dev-connectivity: Map of corporate-network secrets + proxy config on NetApp dev boxes (SCS, cyclrtp, any box with NFS /u\u2026\n  Use when: any tool needs JIRA/Confluence/ReviewBoard/LLM-proxy credentials, or when a Mac session needs to delegate API calls to a remote Linux box because the Mac lacks ~/.shell_common.sh. Agents MUST source ~/.bashrc (remote) or ~/.shell_common.sh (if present) before any curl; never echo or paste to\u2026\n  Absolute path: /Users/palanisd/.agents/skills/netapp-dev-connectivity/SKILL.md\n- netapp-llm-proxy: Use when validating NetApp LLM proxy connectivity, OpenAI-compatible or Anthropic wire behavior, prompt caching, assistant prefill, LiteLLM versions, or parameter-forwarding defects.\n  Absolute path: /Users/palanisd/.agents/skills/netapp-llm-proxy/SKILL.md\n- openai-docs: Use when the user asks how to build with OpenAI products or APIs and needs up-to-date official documentation with citations, help choosing the latest model for a use case, or explicit GPT-5.4 upgrade and prompt-upgrade guidance; prioritize OpenAI docs MCP tools, use bundled references only as helper context, and restrict any fallback browsing to official OpenAI domains.\n  Absolute path: /Users/palanisd/.agents/skills/openai-docs/SKILL.md\n- playwright: Use when the task requires automating a real browser from the terminal (navigation, form filling, snapshots, screenshots, data extraction, UI-flow debugging) via `playwright-cli` or the bundled wrapper script.\n  Absolute path: /Users/palanisd/.agents/skills/playwright/SKILL.md\n- pr-review: Reviews pull requests with code analysis and terminal smoke testing. Applies when examining code changes, running CLI tests, or when 'PR review', 'code review', 'terminal screenshot', 'visual test' is mentioned.\n  Absolute path: /Users/palanisd/.agents/skills/pr-review/SKILL.md\n- receiving-code-review: Use when receiving code review feedback, before implementing suggestions, especially if feedback seems unclear or technically questionable - requires technical rigor and verification, not performative agreement or blind implementation\n  Absolute path: /Users/palanisd/.agents/skills/receiving-code-review/SKILL.md\n- requesting-code-review: Use when completing tasks, implementing major features, or before merging to verify work meets requirements\n  Absolute path: /Users/palanisd/.agents/skills/requesting-code-review/SKILL.md\n- scs-ops: Use when running commands, transferring files, or deploying skills on SCS, especially when its csh login shell, remote build environment, or NFS paths affect command behavior.\n  Absolute path: /Users/palanisd/.agents/skills/scs-ops/SKILL.md\n- security-best-practices: Perform language and framework specific security best-practice reviews and suggest improvements\n  Use when: Trigger only when the user explicitly requests security best practices guidance, a security review/report, or secure-by-default coding help. Trigger only for supported languages (python, javascript/typescript, go). Do not trigger for general code review, debugging, or non-security tasks.\n  Absolute path: /Users/palanisd/.agents/skills/security-best-practices/SKILL.md\n- security-threat-model: Repository-grounded threat modeling that enumerates trust boundaries, assets, attacker capabilities, abuse paths, and mitigations, and writes a concise Markdown thre\u2026\n  Use when: Trigger only when the user explicitly asks to threat model a codebase or path, enumerate threats/abuse paths, or perform AppSec threat modeling. Do not trigger for general architecture summaries, code review, or non-security desi\u2026\n  Absolute path: /Users/palanisd/.agents/skills/security-threat-model/SKILL.md\n- sem: Use when inspecting code changes, reviewing commits or branches, tracing callers and dependencies, assessing blast radius, finding entity ownership, or gathering focused code context from a Git repository.\n  Absolute path: /Users/palanisd/.agents/skills/sem/SKILL.md\n- skill-creator: Guide for creating effective skills. This skill should be used when users want to create a new skill (or update an existing skill) that extends Codex's capabilities with specialized knowledge, workflows, or tool integrations.\n  Absolute path: /Users/palanisd/.agents/skills/skill-creator-openai/SKILL.md\n- skill-installer: Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo path\n  Use when: a user asks to list installable skills, install a curated skill, or install a skill from another repo (including private repos).\n  Absolute path: /Users/palanisd/.agents/skills/skill-installer/SKILL.md\n- subagent-driven-development: Use when executing implementation plans with independent tasks in the current session\n  Absolute path: /Users/palanisd/.agents/skills/subagent-driven-development/SKILL.md\n- systematic-debugging: Use when encountering any bug, test failure, or unexpected behavior, before proposing fixes\n  Absolute path: /Users/palanisd/.agents/skills/systematic-debugging/SKILL.md\n- terminal-capture: Automates terminal UI screenshot testing for CLI commands. Applies when reviewing PRs that affect CLI output, testing slash commands (/about, /context, /auth, /export), generating visual documentation, or when 'terminal screenshot', 'CLI test', 'visual test', or 'terminal-capture' is mentioned.\n  Absolute path: /Users/palanisd/.agents/skills/terminal-capture/SKILL.md\n- test-driven-development: Use when implementing any feature or bugfix, before writing implementation code\n  Absolute path: /Users/palanisd/.agents/skills/test-driven-development/SKILL.md\n- using-git-worktrees: Use when starting feature work that needs isolation from current workspace or before executing implementation plans - ensures an isolated workspace exists via native tools or git worktree fallback\n  Absolute path: /Users/palanisd/.agents/skills/using-git-worktrees/SKILL.md\n- using-superpowers: Use when starting any conversation - establishes how to find and use skills, requiring skill invocation before ANY response including clarifying questions\n  Absolute path: /Users/palanisd/.agents/skills/using-superpowers/SKILL.md\n- verification-before-completion: Use when about to claim work is complete, fixed, or passing, before committing or creating PRs - requires running verification commands and confirming output before making any success claims; evidence before assertions always\n  Absolute path: /Users/palanisd/.agents/skills/verification-before-completion/SKILL.md\n- weave: Use when previewing, performing, diagnosing, or validating Git merges, rebases, and cherry-picks where entity-level conflict handling may reduce false conflicts or explain real ones.\n  Absolute path: /Users/palanisd/.agents/skills/weave/SKILL.md\n- webapp-testing: Toolkit for interacting with and testing local web applications using Playwright. Supports verifying frontend functionality, debugging UI behavior, capturing browser screenshots, and viewing browser logs.\n  Absolute path: /Users/palanisd/.agents/skills/webapp-testing/SKILL.md\n- writing-plans: Use when you have a spec or requirements for a multi-step task, before touching code\n  Absolute path: /Users/palanisd/.agents/skills/writing-plans/SKILL.md\n- writing-skills: Use when creating new skills, editing existing skills, or verifying skills work before deployment\n  Absolute path: /Users/palanisd/.agents/skills/writing-skills/SKILL.md\n\nThe following workflows are available:\n\n- deep-research: Research a query with bounded parallelism, cross-check the evidence, and write a cited report\n  Use when: Compare, investigate, or research a question that needs sourced claims. /deep-research, research this, write a cited report.\n  Absolute path: /Users/palanisd/Projects/upstream/wt/grok-build-responses/crates/codegen/xai-grok-shell/src/session/workflows/deep_research.rhai\n</system-reminder>"
+      },
+      {
+        "type": "message",
+        "role": "user",
+        "content": "<system-reminder>\nMCP server connected:\n- pty (18 tools): Manage PTY sessions through tools. Use pty_spawn, pty_write, pty_read, pty_list, pty_kill, and pty_wait for the main PTY workflow. PTY reads are agent-first: default to compact page.text, request line_number_mode=embedded only when precise line references matter, and set capture_limit only when you need initial_output. output_view=raw cannot be combined with line_number_mode=embedded. Use ssh_connect, ssh_session_spawn, ssh_exec, ssh_run, ssh_read_file, ssh_write_file, ssh_list_dir, ssh_mkdir, ssh_tunnel_open, ssh_tunnel_close, ssh_list, and ssh_disconnect to manage SSH connections, remote sessions, remote files, tunnel summaries, and mount summaries. ssh_connect requires explicit auth_kind. SSH tunnels default to bind_host=127.0.0.1 and remote_host=127.0.0.1; non-loopback bind_host values must be explicitly allowed by policy. Resources expose read-only snapshots, including pty://sessions plus ssh://connections and ssh://tunnels. When SSH mount support is unavailable or a mount fails because local prerequisites are missing, read ssh://docs/mount-setup and the matching ssh://docs/mount-setup/{platform} guide before suggesting installation steps. Tasks are available as an optional enhancement.\n\nTo use MCP tools, you MUST call `search_tool` first to retrieve the tool's input schema before calling `use_tool`. NEVER guess parameter names \u2014 always use the exact schema returned by `search_tool`.\n</system-reminder>"
+      },
+      {
+        "type": "message",
+        "role": "user",
+        "content": "<system-reminder>\nMCP servers currently connecting (tools will become available shortly):\n- codebase-memory-mcp\n- codegraph\n- github\n\nDo not attempt to use tools from these servers yet. If the user's request likely requires one of these servers, mention that the server is still connecting and proceed with what you can do in the meantime.\n</system-reminder>"
+      },
+      {
+        "type": "message",
+        "role": "user",
+        "content": "<user_query>\nCreate a dependency-free Python 3 CLI at tools/minidiff.py that word-level diffs two text files given as argv[1] and argv[2]. It must print only the changed hunks (unified style, with 1 line of context) and exit 1 if any differences exist, 0 otherwise. Next: create fixtures a.txt (5 lines of prose about a lighthouse) and b.txt (same prose with exactly 3 single-word substitutions), run the tool on them, and confirm the output contains all 3 substituted words. If the tool misbehaves, debug and fix it until the run is clean. End with a final message containing the exact diff output between the two fixtures.\n</user_query>"
+      },
+      {
+        "type": "message",
+        "role": "user",
+        "content": "<system-reminder>\nMCP servers connected:\n- codebase-memory-mcp (17 tools): Graph first: search_graph for symbols, trace_path for relationships, get_code_snippet for source, query_graph for multi-hop, and get_architecture for overview. Use search_code/grep for literals or coverage gaps. Indexes auto-refresh. Check cited-path coverage; paginate.\n- codegraph (7 tools): # Codegraph \u2014 code intelligence over an indexed knowledge graph Codegraph is a SQLite knowledge graph of every symbol, edge, and file in the workspace \u2014 pre-computed structure you would otherwise re-derive by reading files (cached intelligence: thousands of parse/trace decisions you don't pay to re-reason each run). It indexes 30+ languages (TypeScript/JavaScript, Python, Go, Rust, Java, C#, C/C++, PHP, Ruby, Swift, Kotlin, and more) \u2014 don't assume a language here isn't covered. Reads are sub-millisecond; the index lags writes by ~1s through the file watcher. Reach for it BEFORE *and* while writing or editing code \u2014 not just for questions: one call returns the verbatim source PLUS who calls it and what it affects, so you edit with the blast radius in view. More accurate context, in far fewer tokens and round-trips than reading files yourself. ## One tool: codegraph_explore \u2014 use it instead of reading files There is a single tool, `codegraph_explore`, and it is Read-equivalent. It takes either a natural-language question or a bag of symbol/file names and returns the **verbatim, line-numbered source** of the relevant symbols grouped by file \u2014 the same `<n>\\t<line>` shape `Read` gives you, safe to `Edit` from \u2014 PLUS the call path among them (including dynamic-dispatch hops like callbacks, React re-render, and JSX children that grep can't follow) and a blast-radius summary of what depends on them. Whether you're answering \"how does X work\" or implementing a change (fixing a bug, adding a feature), call `codegraph_explore` before you Read. ONE call usually answers the whole question. Codegraph IS the pre-built search index \u2014 so running your own grep + read loop, or delegating the lookup to a separate file-reading sub-task/agent, repeats work codegraph already did and costs more for the same answer. A direct codegraph answer is typically one to a few calls; a grep/read exploration is dozens. ## How to query - **Almost any question \u2014 \"how does X work\", architecture, a bug, \"what/where is X\", or surveying \u2026 [truncated]\n- github (49 tools): The GitHub MCP Server provides tools to interact with GitHub platform. Tool selection guidance: 1. Use 'list_*' tools for broad, simple retrieval and pagination of all items of a type (e.g., all issues, all PRs, all branches) with basic filtering. 2. Use 'search_*' tools for targeted queries with specific criteria, keywords, or complex filters (e.g., issues with certain text, PRs by author, code containing functions). Context management: 1. Use pagination whenever possible with batches of 5-10 items. 2. Use minimal_output parameter set to true if the full information is not needed to accomplish a task. Tool usage guidance: 1. For 'search_*' tools: Use separate 'sort' and 'order' parameters if available for sorting results - do not include 'sort:' syntax in query strings. Query strings should contain only search criteria (e.g., 'org:google language:python'), not sorting instructions. Always call 'get_me' first to understand current user permissions and context. ## Issues Check 'list_issue_types' first for organizations to use proper issue types. Use 'search_issues' before creating new issues to avoid duplicates. Always set 'state_reason' when closing issues. ## Pull Requests PR review workflow: Always use 'pull_request_review_write' with method 'create' to create a pending review, then 'add_comment_to_pending_review' to add comments, and finally 'pull_request_review_write' with method 'submit_pending' to submit the review for complex reviews with line-specific comments. Before creating a pull request, search for pull request templates in the repository. Template files are called pull_request_template.md or they're located in '.github/PULL_REQUEST_TEMPLATE' directory. Use the template content to structure the PR description and then call create_pull_request tool.\n\nMCP servers that failed to connect:\n- code-graph (connection failed)\n- jenkins-jarvis (connection failed)\n\nTo use MCP tools, you MUST call `search_tool` first to retrieve the tool's input schema before calling `use_tool`. NEVER guess parameter names \u2014 always use the exact schema returned by `search_tool`.\n</system-reminder>"
+      },
+      {
+        "type": "reasoning",
+        "encrypted_content": "litellm_enc:bW9kZWxfaWQ6MGExM2RjZjY3Mjk1ZGI1MWZjYWJiMDRjYWE1NjNhZTEyNDE3MWU3MGYwMDY0M2Y5MWQwNzU3Nzg4MzU3ZDNjYQ==;gAAAAABqsB3S24WZMx0Gdy5HOh0eyV97cpJqjlo15paySfNk5aRR_UE-H8ctF2GA-4nRlCZkMRnhoya51ugLGZ369fdk3rl-j8txZ8wPqnoEzMqsnIyfCIDbyDooLgwb2MliRRo3rdA_sgFIraa_tL6dSUT25kVIY2LTpv3JOAre387e_T5QQ-3Iz3qRL9Yu9nme7wapn9llPauD9qx5KGGbfCAD0BwfrHpnQzPhaPs-ycNyAPBfLLSaOjW63gWZBfxKl8lK2QFVIdwmSNypelj7bpDLPcbyuyJ7N9CSl59urTwp32N8Pf0ijugySt2smsQJ83I6w_FXRiBEu-XSISZVW4JqBQgEMY48VIjzxtYwBQksTJ41CgNoNSqmkAt4EsxDhJF9_shidCdoRIELTimq4XJVwQNJZASTuol1-R1tajwj9-m0ul-CCQ9QoCA1Kh1WQ2bg9_wmY9dhxkWKwGR1kll18M7u39j2x7tcDsGImXlz5RwFf9XHm3vcnAPKanebkgZYegfhK6kCZxEyEbXa8Zzq_DXOacvZ_IbEEiDYOSUs_-uED8d0k72VyuGMeI4XpkrhgRvgKaqdmyjWnt96I6RlQyb3A6Lsw2vlE05blXt1mrk8ESOHqxSt2c-wstmIenrhHTizPNjJwFOkfMcZgJmPe8EIzRnS2UEEGmX1KX3BC7LaESuHsKtJIUwJO0O4IV2C1SVz0kRx2ti5yeRxSb3mnwx7VcEoxXTS-sj_21fnFrq4xJyfacflyZksDlgj-Np8ZOmnW6JDbmhqiMa1M9URGEwhb9zt4L82CxGK_MUI7_XIWjYlJtlnc96grjidR6eCW2t1aduAlkQtZx0QCKb88Nd8qm3DPzufp7xaa7tM99srH2AfpkHVxDfGojQ6dXdfUqL765QrRPeczUEjy7UBj52jCDvIXSoUvDLpzhwCwh592rP0tmbDt9zEiWVEPXFN8FUPfhqF2h2DMASvEBuOeGpDcjlqBIZaiCvxah1CAKNnC2OrchUO116mFZCZWivnSutLEZ3rmiKPRqcY6WL90ssCSpygIHixQITtUtHNMjD6TP7FykLpku_iJJ9cBe_5GOwPiwgvfrAliOlFpLTLVInEMLDhmGLHosFTZGcXu-z9kP-vta1lEuPLD2R31RC-aYcR_eAiqIw-JZgBNT0ExG3J-lPoKwssnZB_Th2VI8JSfaI8xoL70hZvnww5fd9iEdT53kRqgpSzgl6bCQzYKvHdmYFz10HMf8ZNrz8Z-hNQS_o8Rq5_W4MHR244uwQisIElAIV40FVbkufwAhs0rjJCJHxTwNyrluKy8cbAN6B-n840or5mbU5_bqVbM76fsJ7oWgS4IgO2HSRX38dR5s77HWXT5LZiBFiC9qiwB3Efovn51Hy0EtM3V4VzXjO-DGY8dA9T0g6YSQgpna0GgpWq42ZfeXTqB2m8m1mtq5T7hH4VJqj86wpCxW8TlDhZiAXc",
+        "summary": [
+          {
+            "type": "summary_text",
+            "text": "**Implementing user tasks**\n\nI'm focusing on how to implement the user's multi-step request. I think it\u2019s important first to read the skills related to using superpowers to get a good grasp. Brainstorming might be necessary, and I\u2019m considering TDD for writing plans. The system indicates that I should invoke the skills before giving a response, so I'll read the file first. It looks like there are at least three steps to take in this process."
+          }
+        ]
+      },
+      {
+        "type": "function_call",
+        "arguments": "{\"target_file\":\"/Users/palanisd/.agents/skills/using-superpowers/SKILL.md\",\"offset\":1,\"limit\":200,\"pages\":null,\"format\":null}",
+        "call_id": "call_ZPnMaqmkgdLH6t3PORoLZGfY",
+        "name": "read_file"
+      },
+      {
+        "type": "function_call",
+        "arguments": "{\"target_file\":\"/Users/palanisd/.agents/skills/brainstorming/SKILL.md\",\"offset\":1,\"limit\":240,\"pages\":null,\"format\":null}",
+        "call_id": "call_LZy0coYg43eZVNZTJvvhH0dg",
+        "name": "read_file"
+      },
+      {
+        "type": "function_call",
+        "arguments": "{\"target_file\":\"/Users/palanisd/.agents/skills/test-driven-development/SKILL.md\",\"offset\":1,\"limit\":260,\"pages\":null,\"format\":null}",
+        "call_id": "call_fRZFQiWSBw0vhN7FrAvrW8WH",
+        "name": "read_file"
+      },
+      {
+        "type": "function_call",
+        "arguments": "{\"target_file\":\"/Users/palanisd/.agents/skills/verification-before-completion/SKILL.md\",\"offset\":1,\"limit\":200,\"pages\":null,\"format\":null}",
+        "call_id": "call_5caYIfBSLZjkX8BsEONEq07D",
+        "name": "read_file"
+      },
+      {
+        "type": "function_call_output",
+        "call_id": "call_ZPnMaqmkgdLH6t3PORoLZGfY",
+        "output": "1\u2192---\nname: using-superpowers\ndescription: Use when starting any conversation - establishes how to find and use skills, requiring skill invocation before ANY response including clarifying questions\n---\n\n<SUBAGENT-STOP>\nIf you were dispatched as a subagent to execute a specific task, ignore this skill.\n</SUBAGENT-STOP>\n\n10\u2192<EXTREMELY-IMPORTANT>\nIf you think there is even a 1% chance a skill might apply to what you are doing, you ABSOLUTELY MUST invoke the skill.\n\nIF A SKILL APPLIES TO YOUR TASK, YOU DO NOT HAVE A CHOICE. YOU MUST USE IT.\n\nThis is not negotiable. You cannot rationalize your way out of this.\n</EXTREMELY-IMPORTANT>\n\n## The Rule\n\n20\u2192**Invoke relevant or requested skills BEFORE any response or action** \u2014 including clarifying questions, exploring the codebase, or checking files. If it turns out wrong for the situation, you don't have to use it.\n\n**Before entering plan mode:** if you haven't already brainstormed, invoke the brainstorming skill first.\n\nThen announce \"Using [skill] to [purpose]\" and follow the skill exactly. If it has a checklist, create a todo per item.\n\n## Skill Priority\n\nWhen multiple skills apply, process skills come first \u2014 they set the approach, then implementation skills (frontend-design, etc.) carry it out. Brainstorming and systematic-debugging are Superpowers' most common process skills, but the rule holds for any of them.\n\n30\u2192- \"Let's build X\" \u2192 superpowers:brainstorming first, then implementation skills.\n- \"Fix this bug\" \u2192 superpowers:systematic-debugging first, then domain skills.\n- \"Run an independent writer and a read-only team in parallel\" \u2192 use\n  `hybrid-subagent-team-orchestration` after the relevant planning/TDD skill. It\n  defines the separate writer/team control planes, durable handoff, review gates,\n  and team teardown. Use it only when that global or project skill is available.\n\n## Red Flags\n\nThese thoughts mean STOP\u2014you're rationalizing:\n40\u2192\n| Thought | Reality |\n|---------|---------|\n| \"This is just a simple question\" | Questions are tasks. Check for skills. |\n| \"I need more context first\" | Skill check comes BEFORE clarifying questions. |\n| \"Let me explore the codebase first\" | Skills tell you HOW to explore. Check first. |\n| \"I can check git/files quickly\" | Files lack conversation context. Check for skills. |\n| \"Let me gather information first\" | Skills tell you HOW to gather information. |\n| \"This doesn't need a formal skill\" | If a skill exists, use it. |\n| \"I remember this skill\" | Skills evolve. Read current version. |\n50\u2192| \"This doesn't count as a task\" | Action = task. Check for skills. |\n| \"The skill is overkill\" | Simple things become complex. Use it. |\n| \"I'll just do this one thing first\" | Check BEFORE doing anything. |\n| \"This feels productive\" | Undisciplined action wastes time. Skills prevent this. |\n| \"I know what that means\" | Knowing the concept \u2260 using the skill. Invoke it. |\n\n## Platform Adaptation\n\nIf your harness appears here, read its reference file for special instructions:\n\n60\u2192- Codex: `references/codex-tools.md`\n- Pi: `references/pi-tools.md`\n- Antigravity: `references/antigravity-tools.md`\n- Hermes Agent: `references/hermes-tools.md`\n\n## User Instructions\n\nUser instructions (CLAUDE.md, AGENTS.md, GEMINI.md, etc, direct requests) take precedence over skills, which in turn override default behavior. Only skip skill workflows or instructions when your human partner has explicitly told you to.\n"
+      },
+      {
+        "type": "function_call_output",
+        "call_id": "call_5caYIfBSLZjkX8BsEONEq07D",
+        "output": "1\u2192---\nname: verification-before-completion\ndescription: Use when about to claim work is complete, fixed, or passing, before committing or creating PRs - requires running verification commands and confirming output before making any success claims; evidence before assertions always\n---\n\n# Verification Before Completion\n\n## Overview\n\n10\u2192**Core principle:** Evidence before claims, always.\n\n**Violating the letter of this rule is violating the spirit of this rule.**\n\n## The Iron Law\n\n```\nNO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE\n```\n\n20\u2192If you haven't run the verification command in this message, you cannot claim it passes.\n\n## The Gate Function\n\n```\nBEFORE claiming any status or expressing satisfaction:\n\n1. IDENTIFY: What command proves this claim?\n2. RUN: Execute the FULL command (fresh, complete)\n3. READ: Full output, check exit code, count failures\n30\u21924. VERIFY: Does output confirm the claim?\n   - If NO: State actual status with evidence\n   - If YES: State claim WITH evidence\n5. ONLY THEN: Make the claim\n\nSkip any step = lying, not verifying\n```\n\n## Common Failures\n\n40\u2192| Claim | Requires | Not Sufficient |\n|-------|----------|----------------|\n| Tests pass | Test command output: 0 failures | Previous run, \"should pass\" |\n| Linter clean | Linter output: 0 errors | Partial check, extrapolation |\n| Build succeeds | Build command: exit 0 | Linter passing, logs look good |\n| Bug fixed | Test original symptom: passes | Code changed, assumed fixed |\n| Regression test works | Red-green cycle verified | Test passes once |\n| Agent completed | VCS diff shows changes | Agent reports \"success\" |\n| Requirements met | Line-by-line checklist | Tests passing |\n\n50\u2192## Red Flags - STOP\n\n- Using \"should\", \"probably\", \"seems to\"\n- Expressing satisfaction before verification (\"Great!\", \"Perfect!\", \"Done!\", etc.)\n- About to commit/push/PR without verification\n- Trusting agent success reports\n- Relying on partial verification\n- Thinking \"just this once\"\n- Tired and wanting work over\n- **ANY wording implying success without having run verification**\n60\u2192\n## Rationalization Prevention\n\n| Excuse | Reality |\n|--------|---------|\n| \"Should work now\" | RUN the verification |\n| \"I'm confident\" | Confidence \u2260 evidence |\n| \"Just this once\" | No exceptions |\n| \"Linter passed\" | Linter \u2260 compiler |\n| \"Agent said success\" | Verify independently |\n70\u2192| \"I'm tired\" | Exhaustion \u2260 excuse |\n| \"Partial check is enough\" | Partial proves nothing |\n| \"Different words so rule doesn't apply\" | Spirit over letter |\n\n## Key Patterns\n\n**Tests:**\n```\n\u2705 [Run test command] [See: 34/34 pass] \"All tests pass\"\n\u274c \"Should pass now\" / \"Looks correct\"\n80\u2192```\n\n**Regression tests (TDD Red-Green):**\n```\n\u2705 Write \u2192 Run (pass) \u2192 Revert fix \u2192 Run (MUST FAIL) \u2192 Restore \u2192 Run (pass)\n\u274c \"I've written a regression test\" (without red-green verification)\n```\n\n**Build:**\n```\n90\u2192\u2705 [Run build] [See: exit 0] \"Build passes\"\n\u274c \"Linter passed\" (linter doesn't check compilation)\n```\n\n**Requirements:**\n```\n\u2705 Re-read plan \u2192 Create checklist \u2192 Verify each \u2192 Report gaps or completion\n\u274c \"Tests pass, phase complete\"\n```\n\n100\u2192**Agent delegation:**\n```\n\u2705 Agent reports success \u2192 Check VCS diff \u2192 Verify changes \u2192 Report actual state\n\u274c Trust agent report\n```\n\n## When To Apply\n\n**ALWAYS before:**\n- ANY variation of success/completion claims\n110\u2192- ANY expression of satisfaction\n- ANY positive statement about work state\n- Committing, PR creation, task completion\n- Moving to next task\n- Delegating to agents\n\n**Rule applies to:**\n- Exact phrases\n- Paraphrases and synonyms\n- Implications of success\n120\u2192- ANY communication suggesting completion/correctness\n"
+      },
+      {
+        "type": "function_call_output",
+        "call_id": "call_LZy0coYg43eZVNZTJvvhH0dg",
+        "output": "1\u2192---\nname: brainstorming\ndescription: \"You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation.\"\n---\n\n# Brainstorming Ideas Into Designs\n\nHelp turn ideas into fully formed designs and specs through natural collaborative dialogue.\n\n10\u2192Start by classifying how much process the request needs, then work\nthrough your path: understand the context, refine the idea, present a\ndesign, and get your human partner's approval.\n\n<HARD-GATE>\nDo NOT invoke any implementation skill, write any code, scaffold any\nproject, or take any implementation action until you have told your\nhuman partner what you intend and they have approved it. This applies\nto EVERY task on EVERY path below \u2014 the ceremony scales with the task;\nthe approval gate never does.\n20\u2192</HARD-GATE>\n\n## Three Paths\n\nBefore your first question, classify the request and say the\nclassification out loud \u2014 \"this looks bounded, so I'll present a short\ndesign here rather than write a spec\" \u2014 so your human partner can\noverride it:\n\n- **Spike** \u2014 a feasibility question (\"can we...\", \"is it possible...\",\n30\u2192  \"quick and dirty is fine\") whose output is an answer, not code you\n  keep. Present the question and what you'll try in 2-3 sentences, get\n  a nod, then find out as cheaply as correctness allows. No design\n  doc, no spec file. Report findings as a recommendation; anything you\n  built stays labeled throwaway.\n- **Bounded** \u2014 a well-scoped change to code that already exists in\n  this repo: a new flag, a small endpoint, a one-file fix.\n  Understanding the kind of app is not enough \u2014 bounded means the flow\n  you are changing is already here to read. If there is no existing\n  flow to change, the task is not bounded. Ask the clarifying\n40\u2192  questions that matter, present a short design IN CHAT (a few\n  sentences to a few short paragraphs), and STOP. Implementation\n  starts only after your human partner says yes to that design \u2014 a\n  bounded task's approval is as hard a gate as an architectural\n  one. No spec file, no implementation plan document.\n- **Architectural** \u2014 new projects, new subsystems, changes that\n  restructure how components fit together or alter interfaces others\n  depend on. Follow the full process: questions, approaches, sectioned\n  design, written spec, then the writing-plans skill.\n\n50\u2192When in doubt between two paths, take the heavier one. The ratchet is\none-way: hidden complexity discovered mid-task upgrades the path \u2014\nstop, say so, and step up. Nothing downgrades mid-task.\n\n## Anti-Pattern: \"Too Simple To Need Approval\"\n\nEvery path ends with your human partner approving your intent before\nimplementation. A todo list, a single-function utility, a config\nchange \u2014 the design may be two sentences in chat, but you MUST present\nit and get approval. \"Simple\" tasks are where unexamined assumptions\n60\u2192cause the most wasted work. What scales with simplicity is the\nartifact, never the approval.\n\n## Red Flags\n\n| Thought | Reality |\n|---------|---------|\n| \"This is too simple to need a design\" | Simple means a short design, not no design. Two sentences in chat, then approval. |\n| \"I'll call it bounded and skip the spec\" | Reaching for a label to skip work IS the doubt \u2014 take the heavier path. |\n| \"It's bounded and the design is obvious \u2014 I'll start while they read it\" | The gate is the approval, not the design's length. Present, then stop until you hear yes. |\n70\u2192| \"I understand this kind of app, so it's bounded\" | Bounded measures the repo, not your familiarity. A new project has no existing flow \u2014 it is architectural. |\n| \"The spike works, so I'll keep the code\" | A spike's output is an answer. Keeping the code is a new request \u2014 classify it. |\n| \"It grew, but I'm almost done \u2014 no need to re-classify\" | Hidden complexity upgrades the path mid-task. Stop and say so. |\n| \"They approved the spike, so the follow-up change is approved too\" | Each task gets its own classification and its own approval. |\n\n## Checklist\n\nClassify first, announce the path, then create a task for each item on\nyour path and complete them in order.\n\n80\u2192**Spike:**\n1. **Explore project context** \u2014 enough to frame the probe\n2. **Present question + probe plan** \u2014 2-3 sentences\n3. **Get approval** \u2014 a nod is enough\n4. **Investigate** \u2014 as cheaply as correctness allows\n5. **Report findings** \u2014 a recommendation; label anything built as throwaway\n\n**Bounded:**\n1. **Explore project context** \u2014 check files, docs, recent commits\n2. **Ask clarifying questions** \u2014 one at a time, the ones that matter\n90\u21923. **Present short design in chat** \u2014 approach, files touched, testing\n4. **Get approval** \u2014 STOP and wait for an explicit yes; presenting the design and starting in the same breath is skipping the gate\n5. **Implement** \u2014 proceed with the normal development workflow (TDD applies); no plan document\n\n**Architectural:**\n1. **Explore project context** \u2014 check files, docs, recent commits\n2. **Offer the visual companion just-in-time** \u2014 NOT upfront. The first time a question would genuinely be clearer shown than described, offer it then (its own message); on approval its browser tab opens for you. If no visual question ever arises, never offer it. See the Visual Companion section below.\n3. **Ask clarifying questions** \u2014 one at a time, understand purpose/constraints/success criteria\n4. **Propose 2-3 approaches** \u2014 with trade-offs and your recommendation\n5. **Present design** \u2014 in sections scaled to their complexity, get user approval after each section\n100\u21926. **Write design doc** \u2014 save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit\n7. **Spec self-review** \u2014 quick inline check for placeholders, contradictions, ambiguity, scope (see below)\n8. **User reviews written spec** \u2014 ask user to review the spec file before proceeding\n9. **Transition to implementation** \u2014 invoke writing-plans skill to create implementation plan\n\n## Process Flow\n\n```dot\ndigraph brainstorming {\n    \"Classify: spike / bounded / architectural\" [shape=diamond];\n110\u2192    \"Present question + probe (2-3 sentences)\" [shape=box];\n    \"Ask clarifying questions (bounded)\" [shape=box];\n    \"Present short design in chat\" [shape=box];\n    \"Human approves?\" [shape=diamond];\n    \"Investigate; report recommendation\" [shape=doublecircle];\n    \"Implement via normal workflow (no plan doc)\" [shape=doublecircle];\n    \"Explore project context\" [shape=box];\n    \"Ask clarifying questions\" [shape=box];\n    \"Propose 2-3 approaches\" [shape=box];\n    \"Present design sections\" [shape=box];\n120\u2192    \"User approves design?\" [shape=diamond];\n    \"Write design doc\" [shape=box];\n    \"Spec self-review\\n(fix inline)\" [shape=box];\n    \"User reviews spec?\" [shape=diamond];\n    \"Invoke writing-plans skill\" [shape=doublecircle];\n    \"Hidden complexity? Upgrade path\" [shape=box];\n\n    \"Classify: spike / bounded / architectural\" -> \"Present question + probe (2-3 sentences)\" [label=\"spike\"];\n    \"Classify: spike / bounded / architectural\" -> \"Ask clarifying questions (bounded)\" [label=\"bounded\"];\n    \"Classify: spike / bounded / architectural\" -> \"Explore project context\" [label=\"architectural\"];\n130\u2192    \"Present question + probe (2-3 sentences)\" -> \"Human approves?\";\n    \"Ask clarifying questions (bounded)\" -> \"Present short design in chat\";\n    \"Present short design in chat\" -> \"Human approves?\";\n    \"Human approves?\" -> \"Investigate; report recommendation\" [label=\"spike: yes\"];\n    \"Human approves?\" -> \"Implement via normal workflow (no plan doc)\" [label=\"bounded: yes\"];\n    \"Hidden complexity? Upgrade path\" -> \"Classify: spike / bounded / architectural\";\n    \"Explore project context\" -> \"Ask clarifying questions\";\n    \"Ask clarifying questions\" -> \"Propose 2-3 approaches\";\n    \"Propose 2-3 approaches\" -> \"Present design sections\";\n    \"Present design sections\" -> \"User approves design?\";\n140\u2192    \"User approves design?\" -> \"Present design sections\" [label=\"no, revise\"];\n    \"User approves design?\" -> \"Write design doc\" [label=\"yes\"];\n    \"Write design doc\" -> \"Spec self-review\\n(fix inline)\";\n    \"Spec self-review\\n(fix inline)\" -> \"User reviews spec?\";\n    \"User reviews spec?\" -> \"Write design doc\" [label=\"changes requested\"];\n    \"User reviews spec?\" -> \"Invoke writing-plans skill\" [label=\"approved\"];\n}\n```\n\n**Terminal states are path-bound.** Architectural: the ONLY skill you\n150\u2192invoke after brainstorming is writing-plans \u2014 never frontend-design,\nmcp-builder, or any other implementation skill. Bounded: after\napproval, implementation proceeds directly through the normal\ndevelopment workflow; no plan document. Spike: the terminal state is a\nreported recommendation.\n\n## The Process\n\nThe subsections below serve the bounded and architectural paths (a\nspike stops at \"present the probe, get a nod\"). Sections from\n160\u2192**Exploring approaches** onward are architectural-path depth \u2014 for\nbounded work, context plus a few questions plus a short in-chat design\nis the whole process.\n\n**Understanding the idea:**\n\n- Check out the current project state first (files, docs, recent commits)\n- Before asking detailed questions, assess scope: if the request describes multiple independent subsystems (e.g., \"build a platform with chat, file storage, billing, and analytics\"), flag this immediately. Don't spend questions refining details of a project that needs to be decomposed first.\n- If the project is too large for a single spec, help the user decompose into sub-projects: what are the independent pieces, how do they relate, what order should they be built? Then brainstorm the first sub-project through the normal design flow. Each sub-project gets its own spec \u2192 plan \u2192 implementation cycle.\n- For appropriately-scoped projects, ask questions one at a time to refine the idea\n170\u2192- Prefer multiple choice questions when possible, but open-ended is fine too\n- Only one question per message - if a topic needs more exploration, break it into multiple questions\n- Focus on understanding: purpose, constraints, success criteria\n\n**Exploring approaches:**\n\n- Propose 2-3 different approaches with trade-offs\n- Present options conversationally with your recommendation and reasoning\n- Lead with your recommended option and explain why\n- YAGNI ruthlessly - remove unnecessary features from every approach and design\n180\u2192\n**Presenting the design:**\n\n- Once you believe you understand what you're building, present the design\n- Scale each section to its complexity: a few sentences if straightforward, up to 200-300 words if nuanced\n- Ask after each section whether it looks right so far\n- Cover: architecture, components, data flow, error handling, testing\n- Be ready to go back and clarify if something doesn't make sense\n\n**Design for isolation and clarity:**\n190\u2192\n- Break the system into smaller units that each have one clear purpose, communicate through well-defined interfaces, and can be understood and tested independently\n- For each unit, you should be able to answer: what does it do, how do you use it, and what does it depend on?\n- Can someone understand what a unit does without reading its internals? Can you change the internals without breaking consumers? If not, the boundaries need work.\n- Smaller, well-bounded units are also easier for you to work with - you reason better about code you can hold in context at once, and your edits are more reliable when files are focused. When a file grows large, that's often a signal that it's doing too much.\n\n**Working in existing codebases:**\n\n- Explore the current structure before proposing changes. Follow existing patterns.\n- Where existing code has problems that affect the work (e.g., a file that's grown too large, unclear boundaries, tangled responsibilities), include targeted improvements as part of the design - the way a good developer improves code they're working in.\n200\u2192- Don't propose unrelated refactoring. Stay focused on what serves the current goal.\n\n## After the Design (architectural path)\n\n**Documentation:**\n\n- Write the validated design (spec) to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`\n  - (User preferences for spec location override this default)\n- Use elements-of-style:writing-clearly-and-concisely skill if available\n- Commit the design document to git\n210\u2192\n**Spec Self-Review:**\nAfter writing the spec document, look at it with fresh eyes:\n\n1. **Placeholder scan:** Any \"TBD\", \"TODO\", incomplete sections, or vague requirements? Fix them.\n2. **Internal consistency:** Do any sections contradict each other? Does the architecture match the feature descriptions?\n3. **Scope check:** Is this focused enough for a single implementation plan, or does it need decomposition?\n4. **Ambiguity check:** Could any requirement be interpreted two different ways? If so, pick one and make it explicit.\n\nFix any issues inline. No need to re-review \u2014 just fix and move on.\n220\u2192\n**User Review Gate:**\nAfter the spec review loop passes, ask the user to review the written spec before proceeding:\n\n> \"Spec written and committed to `<path>`. Please review it and let me know if you want to make any changes before we start writing out the implementation plan.\"\n\nWait for the user's response. If they request changes, make them and re-run the spec review loop. Only proceed once the user approves.\n\n**Implementation:**\n\n230\u2192- Invoke the writing-plans skill to create a detailed implementation plan\n- Do NOT invoke any other skill. writing-plans is the next step.\n\n## Visual Companion\n\nA browser-based companion for showing mockups, diagrams, and visual options during brainstorming. Available as a tool \u2014 not a mode. Accepting the companion means it's available for questions that benefit from visual treatment; it does NOT mean every question goes through the browser.\n\n**Offering the companion (just-in-time):** Do NOT offer it upfront. Wait until a question would genuinely be clearer shown than told \u2014 a real mockup / layout / diagram question, not merely a UI *topic*. The first time that happens, offer it then, as its own message:\n> \"This next part might be easier if I show you \u2014 I can put together mockups, diagrams, and comparisons in a browser tab as we go. It's still new and can be token-intensive. Want me to? I'll open it for you.\"\n\n240\u2192**This offer MUST be its own message.** Only the offer \u2014 no clarifying question, summary, or other content. Wait for the user's response. If they accept, start the server with `--open` so their browser opens to the first screen automatically. If they decline, continue text-only and don't offer again unless they raise it.\n\n**Per-question decision:** Even after the user accepts, decide FOR EACH QUESTION whether to use the browser or the terminal. The test: **would the user understand this better by seeing it than reading it?**\n\n- **Use the browser** for content that IS visual \u2014 mockups, wireframes, layout comparisons, architecture diagrams, side-by-side visual designs\n- **Use the terminal** for content that is text \u2014 requirements questions, conceptual choices, tradeoff lists, A/B/C/D text options, scope decisions\n\nA question about a UI topic is not automatically a visual question. \"What does personality mean in this context?\" is a conceptual question \u2014 use the terminal. \"Which wizard layout works better?\" is a visual question \u2014 use the browser.\n\nIf they agree to the companion, read the detailed guide before proceeding:\n250\u2192`skills/brainstorming/visual-companion.md`\n"
+      },
+      {
+        "type": "function_call_output",
+        "call_id": "call_fRZFQiWSBw0vhN7FrAvrW8WH",
+        "output": "1\u2192---\nname: test-driven-development\ndescription: Use when implementing any feature or bugfix, before writing implementation code\n---\n\n# Test-Driven Development (TDD)\n\n## Overview\n\n10\u2192Write the test first. Watch it fail. Write minimal code to pass.\n\n**Core principle:** If you didn't watch the test fail, you don't know if it tests the right thing.\n\n**Violating the letter of the rules is violating the spirit of the rules.**\n\n## When to Use\n\n**Always:**\n- New features\n20\u2192- Bug fixes\n- Refactoring\n- Behavior changes\n\n**Exceptions (ask your human partner):**\n- Throwaway prototypes\n- Generated code\n- Configuration files\n\nThinking \"skip TDD just this once\"? Stop. That's rationalization.\n30\u2192\n## The Iron Law\n\n```\nNO PRODUCTION CODE WITHOUT A FAILING TEST FIRST\n```\n\nWrite code before the test? Delete it. Start over.\n\n**No exceptions:**\n40\u2192- Don't keep it as \"reference\"\n- Don't \"adapt\" it while writing tests\n- Don't look at it\n- Delete means delete\n\nImplement fresh from tests. Period.\n\n## Red-Green-Refactor\n\n```dot\n50\u2192digraph tdd_cycle {\n    rankdir=LR;\n    red [label=\"RED\\nWrite failing test\", shape=box, style=filled, fillcolor=\"#ffcccc\"];\n    verify_red [label=\"Verify fails\\ncorrectly\", shape=diamond];\n    green [label=\"GREEN\\nMinimal code\", shape=box, style=filled, fillcolor=\"#ccffcc\"];\n    verify_green [label=\"Verify passes\\nAll green\", shape=diamond];\n    refactor [label=\"REFACTOR\\nClean up\", shape=box, style=filled, fillcolor=\"#ccccff\"];\n    next [label=\"Next\", shape=ellipse];\n\n    red -> verify_red;\n60\u2192    verify_red -> green [label=\"yes\"];\n    verify_red -> red [label=\"wrong\\nfailure\"];\n    green -> verify_green;\n    verify_green -> refactor [label=\"yes\"];\n    verify_green -> green [label=\"no\"];\n    refactor -> verify_green [label=\"stay\\ngreen\"];\n    verify_green -> next;\n    next -> red;\n}\n```\n70\u2192\n### RED - Write Failing Test\n\nWrite one minimal test showing what should happen.\n\n<Good>\n```typescript\ntest('retries failed operations 3 times', async () => {\n  let attempts = 0;\n  const operation = () => {\n80\u2192    attempts++;\n    if (attempts < 3) throw new Error('fail');\n    return 'success';\n  };\n\n  const result = await retryOperation(operation);\n\n  expect(result).toBe('success');\n  expect(attempts).toBe(3);\n});\n90\u2192```\nClear name, tests real behavior, one thing\n</Good>\n\n<Bad>\n```typescript\ntest('retry works', async () => {\n  const mock = jest.fn()\n    .mockRejectedValueOnce(new Error())\n    .mockRejectedValueOnce(new Error())\n100\u2192    .mockResolvedValueOnce('success');\n  await retryOperation(mock);\n  expect(mock).toHaveBeenCalledTimes(3);\n});\n```\nVague name, tests mock not code\n</Bad>\n\n**Requirements:**\n- One behavior\n110\u2192- Clear name\n- Real code (no mocks unless unavoidable)\n\n### Verify RED - Watch It Fail\n\n**MANDATORY. Never skip.**\n\n```bash\nnpm test path/to/test.test.ts\n```\n120\u2192\nConfirm:\n- Test fails (not errors)\n- Failure message is expected\n- Fails because feature missing (not typos)\n\n**Test passes?** You're testing existing behavior. Fix test.\n\n**Test errors?** Fix error, re-run until it fails correctly.\n\n130\u2192### GREEN - Minimal Code\n\nWrite simplest code to pass the test.\n\n<Good>\n```typescript\nasync function retryOperation<T>(fn: () => Promise<T>): Promise<T> {\n  for (let i = 0; i < 3; i++) {\n    try {\n      return await fn();\n140\u2192    } catch (e) {\n      if (i === 2) throw e;\n    }\n  }\n  throw new Error('unreachable');\n}\n```\nJust enough to pass\n</Good>\n\n150\u2192<Bad>\n```typescript\nasync function retryOperation<T>(\n  fn: () => Promise<T>,\n  options?: {\n    maxRetries?: number;\n    backoff?: 'linear' | 'exponential';\n    onRetry?: (attempt: number) => void;\n  }\n): Promise<T> {\n160\u2192  // YAGNI\n}\n```\nOver-engineered\n</Bad>\n\nDon't add features, refactor other code, or \"improve\" beyond the test.\n\n### Verify GREEN - Watch It Pass\n\n170\u2192**MANDATORY.**\n\n```bash\nnpm test path/to/test.test.ts\n```\n\nConfirm:\n- Test passes\n- Other tests still pass\n- Output pristine (no errors, warnings)\n180\u2192\n**Test fails?** Fix code, not test.\n\n**Other tests fail?** Fix now.\n\n### REFACTOR - Clean Up\n\nAfter green only:\n- Remove duplication\n- Improve names\n190\u2192- Extract helpers\n\nKeep tests green. Don't add behavior.\n\n### Repeat\n\nNext failing test for next feature.\n\n## Good Tests\n\n200\u2192| Quality | Good | Bad |\n|---------|------|-----|\n| **Minimal** | One thing. \"and\" in name? Split it. | `test('validates email and domain and whitespace')` |\n| **Clear** | Name describes behavior | `test('test1')` |\n| **Shows intent** | Demonstrates desired API | Obscures what code should do |\n\nWhen writing or changing any test, read [writing-good-tests.md](writing-good-tests.md) for the rules that keep tests honest:\n- Name the production change that would make the test fail \u2014 before writing it\n- Assert on real behavior, never on mock behavior\n- Keep test-only code in test utilities, out of production classes\n210\u2192- Understand a dependency's side effects before mocking it\n\n## Common Rationalizations\n\n| Excuse | Reality |\n|--------|---------|\n| \"Too simple to test\" | Simple code breaks. Test takes 30 seconds. |\n| \"I'll test after\" | Tests written after pass immediately \u2014 which proves nothing. They may test the wrong thing, test the implementation instead of the behavior, or miss the edge case you forgot. You never watched it fail, so you never proved it can catch the bug. Test-first forces that failure. |\n| \"Tests after achieve same goals (spirit not ritual)\" | Tests-after answer \"what does this do?\"; tests-first answer \"what should this do?\" Tests written after are biased by the code you already wrote \u2014 you verify the cases you remembered, not the ones you'd have discovered. Coverage without proof the tests work. |\n| \"Already manually tested\" | Manual testing is ad-hoc: no record of what you covered, no way to re-run it when the code changes, easy to forget cases under pressure. \"Worked when I tried it\" \u2260 comprehensive. Automated tests run the same way every time. |\n220\u2192| \"Deleting X hours is wasteful\" | Sunk cost fallacy \u2014 that time is already spent either way. The real choice: rewrite with TDD (high confidence) vs. keep it and bolt tests on after (low confidence, likely bugs). Keeping code you can't trust is the waste. |\n| \"Keep as reference, write tests first\" | You'll adapt it. That's testing after. Delete means delete. |\n| \"Need to explore first\" | Fine. Throw away exploration, start with TDD. |\n| \"Test hard = design unclear\" | Listen to test. Hard to test = hard to use. |\n| \"TDD will slow me down\" | TDD IS the pragmatic path: catches bugs before commit, prevents regressions, lets you refactor without fear. \"Pragmatic\" shortcuts mean debugging in production \u2014 slower, not faster. |\n| \"Manual test faster\" | Manual doesn't prove edge cases. You'll re-test every change. |\n| \"Existing code has no tests\" | You're improving it. Add tests for existing code. |\n\n## Red Flags - STOP and Start Over\n\n230\u2192- Code before test\n- Test after implementation\n- Test passes immediately\n- Can't explain why test failed\n- Tests added \"later\"\n- Rationalizing \"just this once\"\n- \"I already manually tested it\"\n- \"Tests after achieve the same purpose\"\n- \"It's about spirit not ritual\"\n- \"Keep as reference\" or \"adapt existing code\"\n240\u2192- \"Already spent X hours, deleting is wasteful\"\n- \"TDD is dogmatic, I'm being pragmatic\"\n- \"This is different because...\"\n\n**All of these mean: Delete code. Start over with TDD.**\n\n## Example: Bug Fix\n\n**Bug:** Empty email accepted\n\n250\u2192**RED**\n```typescript\ntest('rejects empty email', async () => {\n  const result = await submitForm({ email: '' });\n  expect(result.error).toBe('Email required');\n});\n```\n\n**Verify RED**\n```bash\n260\u2192$ npm test\nFAIL: expected 'Email required', got undefined\n```\n\n**GREEN**\n```typescript\nfunction submitForm(data: FormData) {\n  if (!data.email?.trim()) {\n    return { error: 'Email required' };\n  }\n270\u2192  // ...\n}\n```\n\n**Verify GREEN**\n```bash\n$ npm test\nPASS\n```\n\n280\u2192**REFACTOR**\nExtract validation for multiple fields if needed.\n\n## Verification Checklist\n\nBefore marking work complete:\n\n- [ ] Every new function/method has a test\n- [ ] Watched each test fail before implementing\n- [ ] Each test failed for expected reason (feature missing, not typo)\n290\u2192- [ ] Wrote minimal code to pass each test\n- [ ] All tests pass\n- [ ] Output pristine (no errors, warnings)\n- [ ] Tests use real code (mocks only if unavoidable)\n- [ ] Edge cases and errors covered\n\nCan't check all boxes? You skipped TDD. Start over.\n\n## When Stuck\n\n300\u2192| Problem | Solution |\n|---------|----------|\n| Don't know how to test | Write wished-for API. Write assertion first. Ask your human partner. |\n| Test too complicated | Design too complicated. Simplify interface. |\n| Must mock everything | Code too coupled. Use dependency injection. |\n| Test setup huge | Extract helpers. Still complex? Simplify design. |\n\n## Debugging Integration\n\nBug found? Write failing test reproducing it. Follow TDD cycle. Test proves fix and prevents regression.\n310\u2192\nNever fix bugs without a test.\n\n## Final Rule\n\n```\nProduction code \u2192 test exists and failed first\nOtherwise \u2192 not TDD\n```\n\n320\u2192No exceptions without your human partner's permission.\n"
+      },
+      {
+        "type": "message",
+        "role": "developer",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "<multi_agent_mode>explicit_request_only</multi_agent_mode>"
+          }
+        ]
+      }
+    ],
+    "max_output_tokens": 128000,
+    "model": "gpt-5.6-terra",
+    "prompt_cache_key": "01a0bff4-5f70-7753-bd42-7ea4f8163c3e",
+    "reasoning": {
+      "effort": "high",
+      "summary": "concise"
+    },
+    "store": false,
+    "stream": true,
+    "tools": [
+      {
+        "type": "function",
+        "name": "run_terminal_command",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "command",
+            "description"
+          ],
+          "properties": {
+            "command": {
+              "description": "The bash command to run.",
+              "type": "string"
+            },
+            "timeout": {
+              "description": "Optional timeout in milliseconds (max 36000000). Default: 120000. Kill deadline for a command that is still in the foreground. This does not extend how long the tool waits: a foreground command still running after about 15s is moved to the background and you receive a task id. Once backgrounded, the command is no longer bound by this value; it runs until it exits (background cap 10h). If you do not receive a task id, the command was killed at timeout instead.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "default": 120000,
+              "maximum": 36000000
+            },
+            "description": {
+              "description": "One sentence explanation as to why this command needs to be run and how it contributes to the goal.",
+              "type": "string"
+            },
+            "background": {
+              "description": "Set to true for long-running commands that should run in the background (e.g., dev servers, long builds). Returns a task id immediately while the command keeps running in the background; you are notified on completion, so do not poll or sleep-wait for it.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "type": "object"
+        },
+        "description": "Run a bash command and return its output.\n\nUsage notes:\n  - You can specify an optional timeout in milliseconds (up to 36000000ms). Foreground commands block this tool for at most about 15s. A command still running at that point is moved to the background \u2014 it is not killed and has not timed out \u2014 and you receive a task id; wait for it with get_command_or_subagent_output. If you do not receive a task id, the command was killed at timeout instead. timeout is a separate kill deadline that only applies while the command is still in the foreground; once backgrounded the command runs until it exits (background cap 10h). Setting timeout never makes this tool wait longer than about 15s. Commands launched with background: true are not bounded by the default: with timeout omitted or 0 they run until they exit or are killed; a positive timeout still applies.\n  - Timeout enforcement:when the timeout fires on an explicit `background: true` command, the wrapper kills the child process group (SIGTERM, escalated to SIGKILL after a ~1s grace period). Descendants that did not detach via `setsid` / `nohup` will also be killed. `timeout: 0` in `background: true` mode disables the wrapper timeout entirely; the child's lifetime is owned by the model via kill_command_or_subagent.\n  - If the output exceeds 40000 characters, the middle is truncated (you keep the beginning and end) and the result includes the path to a log file with the full output, which you can read or search.\n  - You can use the background parameter to run the command in the background (e.g., dev servers, long builds): it returns a task id immediately and keeps running in the background. You are notified on completion, so do not poll or sleep-wait for it. You do not need to use '&' at the end of the command when using this parameter."
+      },
+      {
+        "type": "function",
+        "name": "read_file",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "target_file"
+          ],
+          "type": "object",
+          "properties": {
+            "target_file": {
+              "description": "The path of the file to read. You can use either a relative path in the workspace or an absolute path. If an absolute path is provided, it will be preserved as is.",
+              "type": "string"
+            },
+            "offset": {
+              "description": "The line number to start reading from. Only provide if the file is too large to read at once.",
+              "type": "integer",
+              "default": 1
+            },
+            "limit": {
+              "description": "The number of lines to read. Only provide if the file is too large to read at once.",
+              "type": "integer"
+            },
+            "pages": {
+              "description": "Page range for PDF files (e.g. '1-5', '3', '10-'). Required for PDFs with more than 10 pages. Max 20 pages per call. Ignored for non-PDF files.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "format": {
+              "description": "Output format for PDF files. 'image' (default) renders pages as images. 'text' extracts text content. Ignored for non-PDF files.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "description": "Read a file.\n\nUsage:\n- The target_file parameter can be a relative path in the workspace or an absolute path\n- By default, it reads up to 1000 lines starting from the beginning of the file\n- Line numbers (1-based) appear as anchors in the format LINE_NUMBER\u2192LINE_CONTENT on the first returned line and on every 10th line of the file; the lines in between show content only. Count from the nearest anchor when referring to a specific line\n- This tool can read PDF files (.pdf), PowerPoint files (.pptx), Jupyter notebooks (.ipynb files), and image files (e.g. PNG, JPG, etc).\n- When reading an image file the contents are presented visually as this tool uses multimodal LLMs."
+      },
+      {
+        "type": "function",
+        "name": "search_replace",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "file_path",
+            "old_string",
+            "new_string"
+          ],
+          "properties": {
+            "file_path": {
+              "description": "The path to the file to modify. You can use either a relative path in the workspace or an absolute path.",
+              "type": "string"
+            },
+            "old_string": {
+              "description": "The text to replace",
+              "type": "string"
+            },
+            "new_string": {
+              "description": "The text to replace it with (must be different from old_string)",
+              "type": "string"
+            },
+            "replace_all": {
+              "description": "Replace all occurrences of old_string (default false)",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "type": "object"
+        },
+        "description": "Replace an exact string in a file.\n\n- `read_file` prefixes each line with \"LINE_NUMBER\u2192\". That prefix is not part of the file: match only what comes after the \u2192, with its exact indentation.\n- `old_string` must match exactly one place in the file. If it appears more than once, add surrounding lines to make it unique, or set `replace_all` to change every occurrence (handy for renaming an identifier).\n- To create a new file, set `old_string` to an empty string."
+      },
+      {
+        "type": "function",
+        "name": "list_dir",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "target_directory"
+          ],
+          "type": "object",
+          "properties": {
+            "target_directory": {
+              "description": "Path to directory to list contents of, relative to the workspace root or absolute.",
+              "type": "string"
+            }
+          }
+        },
+        "description": "Lists files and directories in a given path.\nThe 'target_directory' parameter can be relative to the workspace root or absolute.\n\nOther details:\n    - The result does not display dot-files and dot-directories.\n    - Respects .gitignore patterns (files/directories ignored by git are not shown).\n    - Large directories are summarized with file counts and extension breakdowns instead of listing all files."
+      },
+      {
+        "type": "function",
+        "name": "grep",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "pattern"
+          ],
+          "type": "object",
+          "properties": {
+            "pattern": {
+              "description": "The regular expression pattern to search for in file contents (rg --regexp)",
+              "type": "string"
+            },
+            "path": {
+              "description": "File or directory to search in (rg pattern -- PATH). Defaults to workspace path.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "glob": {
+              "description": "Glob pattern (rg --glob GLOB -- PATH) to filter files (e.g. \"*.js\", \"*.{ts,tsx}\").",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "-B": {
+              "description": "Number of lines to show before each match (rg -B).",
+              "type": "integer"
+            },
+            "-A": {
+              "description": "Number of lines to show after each match (rg -A).",
+              "type": "integer"
+            },
+            "-C": {
+              "description": "Number of lines to show before and after each match (rg -C).",
+              "type": "integer"
+            },
+            "-i": {
+              "description": "Case insensitive search (rg -i).",
+              "type": "boolean",
+              "default": false
+            },
+            "type": {
+              "description": "File type to search (rg --type). Common types: js, py, rust, go, java, etc. More efficient than glob for standard file types.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "head_limit": {
+              "description": "Limit output to first N lines/entries, equivalent to \"| head -N\". Defaults to 200 lines or 500 entries.",
+              "type": "integer"
+            },
+            "multiline": {
+              "description": "Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall).",
+              "type": "boolean",
+              "default": false
+            }
+          }
+        },
+        "description": "Search file contents with regular expressions (ripgrep).\n\n- Full regex syntax, so escape literal special characters: `functionCall\\(`, or `interface\\{\\}` to find interface{} in Go.\n- Pass pattern as a raw regex string \u2014 no surrounding quotes.\n- Respects .gitignore unless you pass a broad glob like '--glob *'.\n- Only filter by 'type' or 'glob' when you are sure of the file type; import paths may not match source file types (.js vs .ts).\n- Output is ripgrep-style: ':' marks match lines, '-' marks context lines, grouped by file. Large results are capped and report \"at least\" counts."
+      },
+      {
+        "type": "function",
+        "name": "kill_command_or_subagent",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "task_id"
+          ],
+          "properties": {
+            "task_id": {
+              "description": "The task ID to terminate",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "description": "Terminate a running background task, monitor, or subagent.\n\nUsage notes:\n- Pass its task_id (a monitor's task_id is returned by monitor).\n- Sends SIGTERM/SIGKILL to a bash task or monitor; sends Cancel+Shutdown to a subagent.\n- Returns success if the task was killed or had already exited."
+      },
+      {
+        "type": "function",
+        "name": "todo_write",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "todos"
+          ],
+          "type": "object",
+          "properties": {
+            "merge": {
+              "description": "Optional. When true (default), merges the provided todos into the existing list by id \u2014 send only the items you are changing, and to flip status without changing content send just id + status. When false, the provided todos replace the existing list.",
+              "type": "boolean",
+              "default": true
+            },
+            "todos": {
+              "description": "Array of todo items to write to the workspace",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "description": "Unique identifier for the todo item",
+                    "type": "string"
+                  },
+                  "content": {
+                    "description": "The description/content of the todo item",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "status": {
+                    "description": "The status of the todo item: pending, in_progress, completed, or cancelled",
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "enum": [
+                      "pending",
+                      "in_progress",
+                      "completed",
+                      "cancelled",
+                      null
+                    ]
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              }
+            }
+          }
+        },
+        "description": "Create and manage a structured task list. The user sees this list live \u2014 it is your primary way to show progress.\n\nUse for any task with 3+ steps. Skip for trivial single-step work."
+      },
+      {
+        "type": "function",
+        "name": "get_command_or_subagent_output",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "properties": {
+            "task_ids": {
+              "description": "Task IDs to get output from. Pass one or more; for a single task use a one-element array. With a positive timeout_ms, multiple ids wait until all complete. Omit timeout_ms or pass 0 for a non-blocking snapshot.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "timeout_ms": {
+              "description": "Max wait time in milliseconds, up to 3600000 (~1 h). A positive value waits for completion; omit or pass 0 for a non-blocking status poll.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "default": null,
+              "maximum": 3600000
+            }
+          },
+          "type": "object",
+          "required": []
+        },
+        "description": "Get output and status from a background task, monitor, or subagent.\n\nUsage notes:\n- Pass task_ids with one or more ids from background=true commands or subagents (a monitor's task_id is returned by monitor); for a single task use a one-element array. Multiple ids with a positive timeout_ms wait until all complete\n- Omit timeout_ms or pass 0 for a non-blocking status snapshot; set a positive timeout_ms to wait up to that many milliseconds, capped at 3600000 (~1 h)\n- Returns current output, status, and exit code if completed\n- If output is large, use read_file on the output_file path"
+      },
+      {
+        "type": "function",
+        "name": "spawn_subagent",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "prompt",
+            "description"
+          ],
+          "properties": {
+            "prompt": {
+              "description": "The full task prompt for the subagent to execute.",
+              "type": "string"
+            },
+            "description": {
+              "description": "Short description of the task (3-5 words).",
+              "type": "string"
+            },
+            "subagent_type": {
+              "description": "Name of the subagent type to launch. Built-in types: \"general-purpose\", \"explore\", \"plan\". Additional user-defined types may also be available.",
+              "type": "string",
+              "default": "general-purpose"
+            },
+            "background": {
+              "description": "Returns immediately with a subagent_id. Use the task output tool to retrieve results. This is set to true by default.",
+              "type": "boolean",
+              "default": true
+            },
+            "isolation": {
+              "description": "Isolation mode: \"none\" (default, shared workspace) or \"worktree\" (isolated git worktree). Worktree mode prevents the child's edits from affecting the parent workspace until explicitly merged.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "none",
+                "worktree",
+                null
+              ]
+            },
+            "resume_from": {
+              "description": "Resume from a previously completed subagent's conversation. Pass the subagent_id returned by a prior task call. The new subagent continues the previous one's raw transcript with the new task prompt appended. The source must be completed (not running), belong to the current session, and use the same subagent_type.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "cwd": {
+              "description": "Explicit working directory for the subagent. The path must exist and be a directory. Mutually exclusive with isolation=\"worktree\". Ignored when resume_from is set (the resumed child inherits its source's cwd/worktree).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model": {
+              "description": "Optional model slug for this agent. If provided, it must resolve to one of the available model slugs. If omitted, the subagent uses the same model as the parent agent. Do not pass if resume_from is set (prior model will be used). Only choose an explicit model when the user directly requests it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "effort": {
+              "description": "Optional reasoning effort for this agent (e.g. \"low\", \"medium\", \"high\"). Must be a value the agent's model supports; it is rejected for models without a reasoning-effort menu (e.g. claude). If omitted, the agent inherits the parent session's reasoning effort.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "description": "Start a subagent that works on a task independently and reports back.\n\nAgent types:\n\n- **general-purpose**: General purpose agent for multi-step tasks. Has access to: run_terminal_command, read_file, search_replace, list_dir, grep, , and todo_write.\n- **explore**: Fast, read-only agent specialized for codebase exploration. Read-only \u2014 has access to: read_file, list_dir, grep.\n- **plan**: Software architect for planning implementation strategies. Read-only \u2014 has access to: read_file, list_dir, grep, , and todo_write. File editing and command execution are not available.\n- **codebase-memory-auditor**: Bounded-scope graph audit with check_index_coverage and source read/grep fallback.\n- **codebase-memory**: Default task-directed graph verification with check_index_coverage and source read/grep fallback.\n- **codebase-memory-scout**: Fast positive, provisional graph lookup with check_index_coverage and source read/grep fallback.\n- **codex-sol**: GPT-5.6 Sol on the /responses wire (Codex dialect, encrypted reasoning via East US 2).\n- **grok**: Grok-4.6 on the /responses wire (xAI native dialect).\n\n## Usage notes\n- When the agent is done, it returns a single message with its agent ID. Use that ID to resume the agent later for follow-up work.\n- background: Returns immediately with a subagent_id. Use get_command_or_subagent_output to retrieve results. This is set to true by default.\n- Subagents receive a compacted version of project instructions (AGENTS.md). If the task requires detailed conventions (e.g., build rules, testing patterns), include the relevant rules directly in the prompt.\n- When using the spawn_subagent tool, you must specify a subagent_type parameter to select which agent type to use.\n- When launching independent subagents, you MUST incorporate the results into the task based on requirements BEFORE concluding.\n\nResuming a previous agent (resume_from):\n- Use resume_from to continue a previously completed subagent's conversation. Pass the subagent_id returned by a prior spawn_subagent call. A resumed agent keeps its full transcript and tool state, so you only need to describe what changed since the last run \u2014 don't re-explain the original task.\n- The resumed agent must use the same subagent_type as the source.\n\nIsolation mode:\n- Use isolation to control the child's execution environment. With \"worktree\", the child runs in an isolated git worktree whose edits don't affect the parent workspace; the worktree is preserved after completion and its path is returned in the output.\n\nIf the user explicitly asks for the model of a subagent/task, you may ONLY use model slugs from this list:\n- Qwen3-Embedding-8B\n- answerai-colbert-small-v1\n- claude-haiku-4-5\n- claude-haiku-4-5-20251001\n- claude-haiku-4.5\n- claude-opus-5\n- claude-sonnet-5\n- gemini-3-flash-preview\n- gemini-3-pro-preview\n- gemini-3.1-flash-lite\n- gemini-3.1-flash-lite-preview\n- gemini-3.1-pro-preview\n- gemini-3.5-flash\n- gemini-3.5-flash-lite\n- gemini-3.6-flash\n- gemini-3.7-flash\n- gemini-3.8-flash\n- gemma-4-31b\n- glm-5.2\n- gpt-5.6-luna\n- gpt-5.6-sol\n- gpt-5.6-terra\n- grok-4.6\n- o1\n- o1-mini\n- o1-preview\n- o3\n- o3-mini\n- o4-mini\n- qwen3.8-27b\n- text-embedding-3-large\n- text-embedding-3-small\n- text-embedding-ada-002\n\nIf the user does not explicitly request a model, omit `model` to inherit the parent model."
+      },
+      {
+        "type": "function",
+        "name": "scheduler_create",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "properties": {
+            "task_id": {
+              "description": "Id of an existing task to update in place: provided fields replace old values, omitted ones are unchanged, the schedule keeps its phase, and an unknown id errors. Omit to create a task.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "interval": {
+              "description": "Interval between executions, e.g. \"5m\", \"2h\", \"1d\". Required to create; optional with task_id",
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "prompt": {
+              "description": "The prompt text to execute on each scheduled fire. Required to create; optional with task_id",
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "durable": {
+              "description": "Whether the task persists across sessions. Default: false. Create-only: ignored with task_id",
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "default": null
+            },
+            "fire_immediately": {
+              "description": "Whether to fire immediately on creation (true) or wait for the first interval (false). Default: false. Create-only: ignored with task_id",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "type": "object",
+          "required": []
+        },
+        "description": "Create a scheduled task that runs a prompt on a recurring interval, or update an existing one in place.\n\nUse this tool when a user asks you to loop, repeat, or schedule a prompt or a task.\n\nSet fire_immediately: true to also fire once on creation; by default the first run waits for the interval.\n\nTo change an existing task, pass its task_id: provided fields replace old values, omitted ones are unchanged, and the schedule keeps its phase. An unknown id errors.\n\nUsage notes:\n- Interval format: \"5m\" (minutes), \"2h\" (hours), \"1d\" (days), \"60s\" (seconds, min 60)\n- Maximum 50 scheduled tasks at once\n- Tasks auto-expire after 7 days\n- For one-time delayed work, run a background terminal command (e.g. `sleep 1800 && <command>`) instead; its completion notifies you"
+      },
+      {
+        "type": "function",
+        "name": "scheduler_delete",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "id"
+          ],
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "The task ID to cancel (from scheduler_create output)",
+              "type": "string"
+            }
+          }
+        },
+        "description": "Cancel a scheduled task by ID.\n\nReturns success: true if the task was found and removed, false if no task with that ID exists."
+      },
+      {
+        "type": "function",
+        "name": "scheduler_list",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {},
+          "required": []
+        },
+        "description": "List all active scheduled tasks with their IDs, prompts, intervals, and next fire times."
+      },
+      {
+        "type": "function",
+        "name": "monitor",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "command",
+            "description"
+          ],
+          "type": "object",
+          "properties": {
+            "command": {
+              "description": "Shell command or script. Each stdout line is an event; exit ends the watch.",
+              "type": "string"
+            },
+            "description": {
+              "description": "Short human-readable description of what you are monitoring (shown in every notification).",
+              "type": "string"
+            },
+            "timeout_ms": {
+              "description": "Kill the monitor after this deadline (ms). Default: 36000000 (10 hr). Max: 36000000 (10 hr).",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "default": 36000000
+            },
+            "persistent": {
+              "description": "Run for the lifetime of the session (no timeout). Stop with kill_command_or_subagent.",
+              "type": "boolean",
+              "default": false
+            }
+          }
+        },
+        "description": "Start a background monitor that streams events from a long-running script. Each stdout line is an event - you can keep working and notifications arrive in the chat. Exit ends the watch.\n\n**Output volume**: Every stdout line is a main-agent wake. Print only `DONE`/`FAILED`/`CANCELLED`. No progress or CHANGE lines. Use `grep --line-buffered` in pipes (plain `grep` buffers and delays events by minutes).\n\n**Responsiveness**: Emit `FAILED` to notify immediately when any required item fails; never wait for unrelated work to finish. Include every tracked failure signal in this immediate failure condition.\n\nSet `persistent: true` for session-length watches (PR monitoring, log tails) -- the monitor runs until you call kill_command_or_subagent or until the session ends. Otherwise it stops at `timeout_ms` (default 10h)."
+      },
+      {
+        "type": "function",
+        "name": "search_tool",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "query"
+          ],
+          "properties": {
+            "query": {
+              "description": "Keywords to match against tool names, server names, and descriptions.\nInclude the server name and action for best results\n(e.g. \"linear create issue\", \"slack read thread history\").",
+              "type": "string"
+            },
+            "limit": {
+              "description": "Maximum number of results to return (default 5).",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "minimum": 0,
+              "maximum": 255,
+              "default": 5
+            }
+          },
+          "type": "object"
+        },
+        "description": "Search for MCP tools by keyword and retrieve their input schemas.\n\nIf status is \"partial\", some servers may still be connecting."
+      },
+      {
+        "type": "function",
+        "name": "use_tool",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "tool_name",
+            "tool_input"
+          ],
+          "properties": {
+            "tool_name": {
+              "description": "The qualified name of the integration tool to call (e.g., \"linear__save_issue\").\nMust be a tool previously discovered via `search_tool`.",
+              "type": "string"
+            },
+            "tool_input": {
+              "description": "The arguments to pass to the tool, as a JSON object.\nUse the parameter schema returned by `search_tool` to construct this.",
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "type": "object"
+        },
+        "description": "Call an MCP integration tool.\n\nThe `tool_name` must be the qualified `server__tool` name (e.g., `linear__save_issue`). The `tool_input` must conform exactly to the tool's input schema as returned by `search_tool`."
+      },
+      {
+        "type": "function",
+        "name": "workflow",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "source"
+          ],
+          "type": "object",
+          "properties": {
+            "source": {
+              "description": "Exactly one workflow source. The `type` tag selects a registered name, inline script, script path, same-process resume, or a pause/stop of a run this session launched.",
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "description": "Name of a registered workflow (built-in, or discovered from the project `.grok/workflows/` or user `~/.grok/workflows/`).",
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "name"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "name"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "script": {
+                      "description": "Inline Rhai workflow script. It must start with a pure-literal `let meta = #{ name: ..., description: ... };` map. Before authoring, read the `create-workflow` skill's SKILL.md. Run the path-specific `validate_only` smoke check with representative args.",
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "script"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "script"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "script_path": {
+                      "description": "Path to a .rhai workflow script on disk.",
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "script_path"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "script_path"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "resume_from_run_id": {
+                      "description": "Resume a same-process paused run, continuing its original immutable source and args. A budget-limited run resumes only when `agent_budget` is passed with a higher cap. Process-restart interruptions are terminal.",
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "resume"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "resume_from_run_id"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "run_id": {
+                      "description": "Pause an active run this session launched, by its `run_id` or display name. Its child agents are cancelled and the run is marked paused; continue it with the `resume` source.",
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "pause"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "run_id"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "run_id": {
+                      "description": "Stop a run this session launched, by its `run_id` or display name. Its child agents are cancelled and the run is marked cancelled (finished). It keeps its journal, so `resume` can still continue it later.",
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "stop"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "type",
+                    "run_id"
+                  ]
+                }
+              ]
+            },
+            "agent_budget": {
+              "description": "Absolute cumulative cap on logical child-agent calls for this run. Every agent() and every parallel() item consumes one slot; schema retries do not. Defaults to 128 and may be set from 1 through 1,024. A panel that would exceed the remaining budget is rejected before any of its children launch.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 1,
+              "maximum": 1024,
+              "default": null
+            },
+            "args": {
+              "description": "JSON value bound to the script's `args` global. Use an object for named arguments.",
+              "default": null
+            },
+            "validate_only": {
+              "description": "Run a path-specific smoke check without launching: validate metadata, compile the full script, and execute the single path selected by the supplied args and canned host results. It does not exercise every branch or prove live tools and agent outputs work.",
+              "type": "boolean",
+              "default": false
+            }
+          }
+        },
+        "description": "Launch or control a workflow: a Rhai script that orchestrates subagents as one background run. Provide exactly one `source`: a registered workflow `name`, an inline `script`, a `script_path`, a same-process `resume`, or a `pause` / `stop` of a run this session launched (by `run_id` or display name). Optionally pass `args` (bound to the script's `args`) and `agent_budget`, an absolute cap on cumulative child-agent calls: every agent() and parallel() item consumes one slot (schema retries do not); default 128. The host also caps live children per run (32 by default, host-configured) \u2014 larger parallel() panels are queued and still act as a barrier. The call returns immediately; progress appears in `/workflow runs` and completion is reported automatically \u2014 do not poll or sleep-wait.\n\nPrefer a registered workflow when one fits; author a script for bounded fan-out over a known work list, staged research and verification, or several independent perspectives. Before writing or editing a script, read the `create-workflow` skill's SKILL.md. `validate_only: true` runs a path-specific smoke check (metadata, compile, one canned-host path) \u2014 not proof that every branch or live tool works.\n\nA started run gets a session-unique display name (e.g. `review-changes`, `review-changes-2`) \u2014 the handle to show the user, who manages runs with `/workflow pause|resume|stop <name>`; keep run IDs internal. To stop or pause a run yourself, call this tool with `source: { type: \"stop\", run_id }` or `{ type: \"pause\", run_id }` (run id or display name); both cancel the run's child agents and keep its journal, so either can be continued later with `resume`. Pause only applies to an active run; stop applies to any run that has not finished or hit its agent budget (a budget-limited run is already stopped and needs `resume` with a higher `agent_budget`). Each launch persists an editable `script_path`; edit it and launch as a new run to iterate. Use the `resume` source only for a same-process paused run (process restarts are terminal); it reuses the run's original immutable source and args, and a budget-limited run resumes only with a higher `agent_budget`. Save reusable scripts to `.grok/workflows/<name>.rhai`."
+      },
+      {
+        "type": "function",
+        "name": "enter_plan_mode",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {},
+          "required": []
+        },
+        "description": "Use this tool when a task has ambiguity about the right approach or when the user asks you to write a plan. This tool enables a read-only plan mode where you explore the codebase and create an implementation plan for the user."
+      },
+      {
+        "type": "function",
+        "name": "exit_plan_mode",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {},
+          "required": []
+        },
+        "description": "Exit plan mode and present your plan to the user.\n\nUse this after you have finished writing your plan to the plan file in plan mode."
+      },
+      {
+        "type": "function",
+        "name": "ask_user_question",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "questions"
+          ],
+          "properties": {
+            "questions": {
+              "description": "The questions to ask, each with its own options.",
+              "type": "array",
+              "items": {
+                "description": "A single question with its options.",
+                "type": "object",
+                "properties": {
+                  "question": {
+                    "description": "The question to ask, phrased as a full question.",
+                    "type": "string"
+                  },
+                  "options": {
+                    "description": "The choices for this question.",
+                    "type": "array",
+                    "items": {
+                      "description": "A single option within a question.",
+                      "type": "object",
+                      "properties": {
+                        "label": {
+                          "description": "Option text shown to the user. A few words at most.",
+                          "type": "string"
+                        },
+                        "description": {
+                          "description": "What picking this option means or implies.",
+                          "type": "string"
+                        },
+                        "preview": {
+                          "description": "Optional content shown while the option is focused \u2014 mockups, code snippets, anything the user should compare. Single-select questions only.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "label",
+                        "description"
+                      ]
+                    }
+                  },
+                  "multi_select": {
+                    "description": "Let the user pick more than one option (default false).",
+                    "type": [
+                      "boolean",
+                      "null"
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "question",
+                  "options"
+                ]
+              }
+            }
+          },
+          "type": "object"
+        },
+        "description": "Ask the user one or more multiple-choice questions.\n\n- Every question automatically gets an \"Other\" choice where the user can type their own answer.\n- Put your recommended option first and append \"(Recommended)\" to its label."
+      },
+      {
+        "type": "function",
+        "name": "send_feedback",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "title",
+            "details",
+            "type"
+          ],
+          "type": "object",
+          "properties": {
+            "title": {
+              "description": "Short summary for the draft.",
+              "type": "string"
+            },
+            "details": {
+              "description": "Short labeled bullets in this order: What happened, What the user said, Repro, optional Evidence, then optional verified Cause. Keep each to 1\u20133 lines; do not use narrative paragraphs.",
+              "type": "string"
+            },
+            "area": {
+              "description": "Optional product area; omit when unclear.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "description": "Feedback classification.",
+              "type": "string",
+              "enum": [
+                "bug",
+                "idea",
+                "missing_capability"
+              ]
+            },
+            "task_category": {
+              "description": "Optional task category; omit when unclear.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "code_edit",
+                "debug",
+                "explain",
+                "plan",
+                "shell",
+                "search",
+                "review",
+                "other",
+                null
+              ]
+            },
+            "failure_mode": {
+              "description": "Optional model-behavior failure mode; omit for a pure product or tool bug.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "overeager",
+                "stopped_early",
+                "unwanted_scope",
+                "didnt_ask_for_help",
+                "excessive_questions",
+                "subagent_overspawn",
+                "over_correction",
+                "ignored_instructions",
+                "hallucinated",
+                "sloppy_code",
+                "destructive",
+                "lost_context",
+                "stuck_in_a_loop",
+                "model_regression",
+                "disputed",
+                "wrong_tone",
+                "unclear_output",
+                "other",
+                null
+              ]
+            },
+            "draft_id": {
+              "description": "Existing local draft to update. When set, this call does not append a second draft.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "description": "# Overview\n\nSave or update user feedback for later review. Feedback is stored as local drafts and is never sent without explicit approval through the `/feedback` modal. This tool opens no UI and does not stop the current turn.\n\n# Invocation\n\nWhen the user types `/feedback` bare into the prompt bar, the modal opens with the Write and Drafts tabs. The Write tab is only for the user to hand-write feedback.\nIf the user types `/feedback` with text inline, the system inserts it like a skill. Only when feedback is requested that way, or the user explicitly wants you to update an existing feedback draft, may you use the draft_id field.\nWhen draft_id is set, update that existing draft. Do not duplicate drafts. draft_id is only a tool argument. Never write it into title, details, or area.\n\nWhen the user wants to share feedback implicitly, draft it with this tool, whether it is a product or model-behavior issue.\n\n# Usage\n\nWrite details as short labeled bullets in this order: What happened, What the user said, Repro, optional Evidence, then optional verified Cause.\nSet failure_mode only for model-behavior feedback; omit it for a pure product or tool bug.\nIf mapping feedback is incredibly unclear, only then may you use ask_user_question to confirm ambiguity with the user. Use this sparingly.\n\n# Confirmation\n\nAfter drafting feedback and ending your turn, tell the user they can verify and send it to the team by typing `/feedback` to open the modal and going to the Drafts section.\n\n# Misc\nThis session's drafts file is /Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T175417Z/terra-resp/home/sessions/%2FUsers%2Fpalanisd%2FProjects%2Fupstream%2Fwt%2Fgrok-build-responses%2Fsmoke%2Fwstream%2Freport%2F20260920T175417Z%2Fterra-resp%2Fcwd/01a0bff4-5f70-7753-bd42-7ea4f8163c3e/feedback_drafts.json.\nIf the user's feedback can be answered from the docs (for example UI element locations or setup), read the Grok Build docs locally or online and answer alongside the created draft.\n\nDoing the wrong amount of work\n- Overeager: Did more than asked, acted before being told, jumped in without enough info\n- Stopping early: Quit early, handed back work that could have been finished\n- Unwanted scope: Not stopping\n- Didn't ask for help: Didn't ask the user for help when stuck\n- Excessive questions: Asked clarifying questions when there was enough to proceed\n- Subagent overspawn: Launched more subagents than the task warranted\n- Over correction: Fixed feedback by swinging too far the other way\n\nWrong outputs\n- Instruction following: Ignored or missed explicit instructions or constraints\n- Overconfidence and hallucination: Stated something confidently that was wrong or fabricated\n- Code quality: Buggy, sloppy, or poorly structured code\n- Destructive actions: Did or risked something hard to reverse\n- Context and memory: Lost earlier context, forgot established facts, contradicted itself\n- Repetition and looping: Repeated output or retried the same failing action\n- Model regression: Behavior noticeably worse than a previous model version\n\nStyle\n- Dispute or decline: Refused or argued against a reasonable request\n- Tone or preachiness: Wrong tone \u2014 moralizing, condescending, sycophantic, verbose\n- Unclear output: Output was hard to read or interpret\n- Other: Model-behavior issue fitting none of the above"
+      },
+      {
+        "type": "function",
+        "name": "image_gen",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "prompt"
+          ],
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "description": "Text description of the image to generate.",
+              "type": "string"
+            },
+            "aspect_ratio": {
+              "description": "Aspect ratio of the generated image, decide it based on the user's request. Defaults to 'auto'. 1:1 for square (icons, profiles), 16:9 for wide (landscapes, cinematic), 9:16 for tall (phone wallpapers, stories), 3:2 for horizontal photos, 2:3 for vertical (portraits, posters).",
+              "type": "string",
+              "default": "auto"
+            }
+          }
+        },
+        "description": "Generate a new image from a text description using Imagine; returns the saved image's absolute path. When telling the user where it was saved, refer to it by its short session-relative path (e.g. `images/1.jpg`) rather than the absolute path, so it renders as a clickable link that opens the image. To produce multiple images, emit multiple tool calls with distinct prompts."
+      },
+      {
+        "type": "function",
+        "name": "image_edit",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "prompt",
+            "image"
+          ],
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "description": "A text description of the desired edit or transformation. Describe what the output image should look like, referencing the input image(s).",
+              "type": "string"
+            },
+            "image": {
+              "description": "Reference image(s) to condition the edit on. Each is one reference, in priority order: (1) a user attachment \u2014 its placeholder token, e.g. \"[Image #1]\" (attachments have no path you can see, so never invent one); (2) an absolute filesystem path the user gave you; (3) a `data:image/...;base64,...` URL.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "aspect_ratio": {
+              "description": "The aspect ratio of the output image. For single-image edits this is ignored \u2014 the output matches the input image's aspect ratio. For multi-image edits, defaults to 'auto'. Supported values: 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 2:1, 1:2, 19.5:9, 9:19.5, 20:9, 9:20, auto.",
+              "type": "string",
+              "default": "auto"
+            }
+          }
+        },
+        "description": "Edit or transform existing image(s) via the xAI Imagine API; use instead of image_gen for image-to-image work (preserve likeness, transfer style, remix). Returns the saved image's absolute path. When telling the user where it was saved, refer to it by its short session-relative path (e.g. `images/1.jpg`) rather than the absolute path, so it renders as a clickable link that opens the image. Each required `image` is one reference \u2014 a user-attachment token (e.g. \"[Image #1]\"), an absolute filesystem path, or a `data:image/...;base64,...` URL (see the `image` parameter for the resolution order and details)."
+      },
+      {
+        "type": "function",
+        "name": "image_to_video",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "image"
+          ],
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "description": "Optional prompt to guide the video generation model. If omitted, a natural animation applies automatically.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "image": {
+              "description": "Source image to animate. Provide an absolute filesystem path, HTTPS URL, or `data:image/...;base64,...` URL.",
+              "type": "string"
+            },
+            "duration": {
+              "description": "Duration of the video generation, either 6 or 10 seconds. Default to 6 unless the user requests longer.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "resolution_name": {
+              "description": "Resolution name of the video generation, only specify it when user asks for a specific resolution, either 480p or 720p. Defaults to 480p unless the user specifically requests for higher quality.",
+              "type": "string",
+              "default": "480p"
+            }
+          }
+        },
+        "description": "Generate a video from a single source image; returns the saved video's absolute path. When telling the user where it was saved, refer to it by its short session-relative path (e.g. `videos/1.mp4`) rather than the absolute path, so it renders as a clickable link that opens the video. Provide `image` for the image to animate and optionally a `prompt` to guide the animation. Use this tool when the user provides an image and wants it animated, turned into a video, or used as the first frame. Example: image_to_video(image=\"/Users/me/photo.jpg\", prompt=\"gentle camera push-in with wind moving the hair\", duration=6, resolution_name=\"480p\")"
+      },
+      {
+        "type": "function",
+        "name": "reference_to_video",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "prompt",
+            "aspect_ratio"
+          ],
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "description": "Prompt to guide the video generation model. Describe the desired video.",
+              "type": "string"
+            },
+            "images": {
+              "description": "Reference images, up to 7 entries; the images are used as style/content references for the generated video (people, objects, clothing, settings). Each entry may be an absolute filesystem path, HTTPS URL, or `data:image/...;base64,...` URL. Reference them in the prompt as `<IMAGE_0>`, `<IMAGE_1>`, ... May be empty when `voices` is provided.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "voices": {
+              "description": "Optional preset voices the subject(s) speak in, up to 3 entries, each a voice identifier from the built-in roster (e.g. \"ara\", \"eve\", \"leo\", \"rex\"; same voices as the xAI text-to-speech API; an unknown identifier fails with the list of available voices). Reference them in the prompt as `<AUDIO_0>`, `<AUDIO_1>`, `<AUDIO_2>`. Usable alongside `images` or on their own.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "aspect_ratio": {
+              "description": "Aspect ratio of the generated video, decide it based on the user's request. 1:1 for square (icons, profiles), 16:9 for wide (landscapes, cinematic), 9:16 for tall (phone wallpapers, stories), 4:3 or 3:2 for horizontal photos, 3:4 or 2:3 for vertical (portraits, posters).",
+              "type": "string"
+            },
+            "duration": {
+              "description": "Duration of the video in seconds, between 1 and 15. Defaults to 6.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "resolution_name": {
+              "description": "Resolution name of the video generation, only specify it when user asks for a specific resolution, either 480p or 720p. Defaults to 480p.",
+              "type": "string",
+              "default": "480p"
+            }
+          }
+        },
+        "description": "Generate a video from reference images and/or preset voices, guided by a required text prompt; returns the saved video's absolute path. When telling the user where it was saved, refer to it by its short session-relative path (e.g. `videos/1.mp4`) rather than the absolute path, so it renders as a clickable link that opens the video. Provide up to 7 `images` (style/content references: people, objects, clothing, settings) and/or up to 3 `voices` (preset voice identifiers the subjects speak in); at least one of either is required. Tag references in the prompt as `<IMAGE_0>`, `<IMAGE_1>`, ... and `<AUDIO_0>`, `<AUDIO_1>`, ... Use this tool when the user wants a video referencing existing images without locking the first frame, or wants a speaking subject with a specific voice. Example: reference_to_video(prompt=\"The person from <IMAGE_0> presents the product from <IMAGE_1>, speaking with the voice from <AUDIO_0>\", images=[\"/Users/me/host.jpg\", \"/Users/me/product.jpg\"], voices=[\"eve\"], aspect_ratio=\"16:9\", duration=10, resolution_name=\"480p\")"
+      },
+      {
+        "type": "function",
+        "name": "write",
+        "parameters": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "required": [
+            "file_path",
+            "content"
+          ],
+          "properties": {
+            "file_path": {
+              "description": "The absolute path to the file to write.",
+              "type": "string"
+            },
+            "content": {
+              "description": "The full file content to write.",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "description": "Create or overwrite a file.\n\n- Writing to an existing path replaces the file \u2014 read it first with the read_file tool.\n- Parent directories are created for you."
+      }
+    ]
+  }
+}

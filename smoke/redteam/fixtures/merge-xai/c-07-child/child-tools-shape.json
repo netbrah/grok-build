@@ -1,0 +1,33 @@
+{
+  "fixture": "c-07-child/child-tools-shape",
+  "kind": "REDACTED shape reference (not a capture): the tool surface of the v2 subagent child's first /v1/responses request under the M7 projection (06 §2 C-07: 'child tool specs = VerbatimMirror minus collab tools (wire assert on child's first request)').",
+  "absent": {
+    "tools": [
+      "send_subagent_message"
+    ],
+    "source": "SEND_SUBAGENT_MESSAGE_TOOL_NAME (xai-grok-tools implementations/grok_build/send_subagent_message.rs:10) — the drop the projection exists to make: the v1 root-only ActiveAgentMessage tool, which only the root session may use",
+    "verdict": "send_subagent_message PRESENT in the child's first request = the projection drop regressed = the M7 pin red -> STOP-AND-REPORT"
+  },
+  "present": {
+    "v2_collab_exempt": [
+      "send_message",
+      "followup_task",
+      "list_agents",
+      "wait_agent",
+      "interrupt_agent"
+    ],
+    "source": "V2_COLLABORATION_TOOL_NAMES (xai-grok-tools implementations/grok_build/native_agents.rs:259) — 'not spawn_agent, which rides the Task kind'; the child KEEPS these (exempt from the projection drop list) so siblings message each other through the mailbox",
+    "verdict": "a v2 collab tool ABSENT from the child = the exemption regressed = the mailbox round-trip breaks -> STOP-AND-REPORT",
+    "mirror_builtins_representative": [
+      "run_terminal_command",
+      "read_file",
+      "search_replace",
+      "list_dir",
+      "grep",
+      "write",
+      "todo_write"
+    ],
+    "mirror_note": "VerbatimMirror == the parent's full builtin surface minus the drop list, verbatim (so the child's request hits the parent's radix-cache prefix). The list above is REPRESENTATIVE — the scored spot-checks are the MXAI-C07 last:0 pins, not an exhaustive enumeration in this fixture."
+  },
+  "invariant": "child tools == parent tools - {send_subagent_message} + (the five v2 collab tools kept); every other ToolSpec field verbatim (radix-cache prefix stability)"
+}

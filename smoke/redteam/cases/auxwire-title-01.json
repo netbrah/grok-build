@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "id": "AUXWIRE-TITLE-01",
+  "title": "apex-ayl.84 (AUXMODEL-FALLBACK-WIRE-1) RED ratchet — the aux-model synthetic entry HARDCODES the Responses backend: resolve_aux_model_sampling_config (agent/config.rs:5532-5636 @0fc1060) builds the catalog-miss aux entry with ApiBackend::Responses + endpoints.resolve_inference_base_url() — NOT the session's own wire/base_url (pre-existing at union base 7c82fe7; the .81 cut widened exposure from explicit-overrides-only to every unset session — the F-N3 record). Trigger: the UNGATED one-shot session-title side call (apex-6t0 SESSION-TITLE-UNGATED-1 — build_title_request, session_summary.rs:130-172, tools exactly [session_title], max 100 output tokens, fires on the first non-empty content chunk of a title-less session with NO feature gate; the agent-smoke canary 20260919T154757Z_9f3f caught 2 of 6 captured model calls as session_title side calls WITH features.turn_summary=false, so the hermetic home's turn_summary=false patch does not suppress it). Case: headless claude-sonnet-5 (messages wire), one turn; the title side call fires mid-turn on the aux entry. RED today: the aux request rides /v1/responses (the hardcoded backend) inside a messages-wire session -> the session-wire pin ('generating the session title' system-prompt literal inside a /v1/messages request) 0-hits -> FAIL = RED-EXPECTED(auxmodel-responses-hardcode); the /v1/responses recon pin records the hardcoded-route occurrence (the pre-cut evidence surface). GREEN (post CUT: the synthetic entry inherits the session wire/base_url, or an explicit aux-wire seam): the aux call rides /v1/messages -> RED-CLEARED; re-pin rule: drop expected_red, the pin becomes the wire-inheritance contract (non-responses-session aux calls ride the session wire) — the responses-session invariance half of the bead acceptance stays unit-level (the .84 own test). Degradation mode = text fallback (not worse than today's 500) — hence P3, but this is exactly the seam the F-N3 note flags as .81-widened: on a messages-wire session the aux call currently hits a wire the session never used. Control (class harness): the main turn request rides /v1/messages (the session wire) AND the title side call fired at all (the literal is captured on SOME route) — a miss on either is a rig/premise failure (BLOCKED), never a model conclusion.",
+  "bead": "apex-ayl.84",
+  "suite": "wire-shape",
+  "tier": "slim",
+  "driver": "headless",
+  "model": "claude-sonnet-5",
+  "wire": "messages",
+  "wirecap": true,
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: AUXWIRE-TITLE-OK",
+      "timeout_s": 240
+    }
+  ],
+  "watchdog_s": 420,
+  "est_calls": 2,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error",
+        "label": "NO TERMINAL ERROR: the turn completed (the title side call is best-effort auxiliary — a dead aux call must not kill the main turn in either cut state)."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "AUXWIRE-TITLE-OK",
+        "label": "MAIN TURN COMPLETE: the messages-wire turn completed with the exact terminal text."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "field",
+        "file": "req-*.json",
+        "where": { "method": "POST", "path": "/v1/messages" },
+        "last": 0,
+        "path": "body.model",
+        "eq": "claude-sonnet-5",
+        "label": "CONTROL (class harness): the main (oldest) request rides the SESSION wire (/v1/messages) with the session model — the premise this case guards; a miss is a harness failure, never vacuous."
+      },
+      {
+        "kind": "grep",
+        "id": "title_call_fired",
+        "file": "req-*.json",
+        "where": { "method": "POST" },
+        "any": true,
+        "grep": "generating the session title",
+        "label": "CONTROL (class harness, apex-6t0 premise): the ungated one-shot title side call fired (its fixed system-prompt literal 'You are tasked with generating the session title.' appears in SOME captured request, on either route). A miss = the side call never happened (binary/canary divergence from apex-6t0) -> BLOCKED: the aux-wire seam was never exercised, no conclusion."
+      },
+      {
+        "kind": "grep",
+        "id": "aux_on_session_wire",
+        "file": "req-*.json",
+        "where": { "method": "POST", "path": "/v1/messages" },
+        "any": true,
+        "grep": "generating the session title",
+        "label": "RED PIN (apex-ayl.84 / F-N3): the title side call RIDES THE SESSION WIRE (/v1/messages) in a messages-wire session — the CUT contract (the synthetic aux entry inherits the session wire/base_url). Pre-cut FAILs: the hardcoded ApiBackend::Responses (agent/config.rs:5532-5636) routes the aux call to /v1/responses — the literal 0-hits on /v1/messages."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "where": { "method": "POST", "path": "/v1/responses" },
+        "grep": "generating the session title",
+        "label": "VERDICT RECORD: the title side call's occurrence on /v1/responses — the PRE-CUT evidence surface (the hardcoded-backend route in a messages-wire session, the .81-widened exposure made visible); 0 hits post-cut. Recon is always-ok (non-scoring)."
+      }
+    ]
+  },
+  "expected_red": {
+    "id": "auxmodel-responses-hardcode"
+  },
+  "scoring": {
+    "vacuous_if": [
+      {
+        "pin": "title_call_fired",
+        "class": "harness",
+        "note": "the ungated title side call never fired (canary divergence from apex-6t0, or a future gate landed) — the aux-wire seam was never exercised; BLOCKED, no conclusion."
+      }
+    ],
+    "require_wire_evidence": true
+  }
+}

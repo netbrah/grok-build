@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "prompt_mode": "extend",
+  "audience": "primary",
+  "include_browser_verification": true,
+  "agents_md_files": [
+    {
+      "file_name": "Claude.md",
+      "file_path": "/Users/palanisd/.claude/Claude.md",
+      "content": "<!-- CODEGRAPH_START -->\n## CodeGraph\n\nIn repositories indexed by CodeGraph (a `.codegraph/` directory exists at the repo root), reach for it BEFORE grep/find or reading files when you need to understand or locate code:\n\n- **MCP tool** (when available): `codegraph_explore` answers most code questions in one call — the relevant symbols' verbatim source plus the call paths between them, including dynamic-dispatch hops grep can't follow. Name a file or symbol in the query to read its current line-numbered source. If it's listed but deferred, load it by name via tool search.\n- **Shell** (always works): `codegraph explore \"<symbol names or question>\"` prints the same output.\n\nIf there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is the user's decision.\n<!-- CODEGRAPH_END -->\n# graphify\n- **graphify** (`~/.claude/skills/graphify/SKILL.md`) - any input to knowledge graph. Trigger: `/graphify`\nWhen the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.\n"
+    }
+  ],
+  "persona_summaries": [],
+  "build_timestamp_utc": "2026-09-18T20:06:44.455396+00:00",
+  "memory_enabled": false,
+  "memory_v2_enabled": false,
+  "os_name": "macos",
+  "shell_path": "/bin/zsh",
+  "working_directory": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260918T200643Z/grok-resp/cwd",
+  "current_date": "2026-09-18",
+  "is_non_interactive": true,
+  "system_prompt_label": "Grok"
+}

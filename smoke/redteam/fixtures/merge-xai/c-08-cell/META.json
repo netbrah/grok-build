@@ -1,0 +1,19 @@
+{
+  "fixture": "c-08-cell",
+  "cell": "C-08",
+  "cases": [
+    "MXAI-C08",
+    "MXAI-C08-BASELINE"
+  ],
+  "kind": "cell-seeded identity history (xwfix cell contract: pre_switch.json + expected.json)",
+  "status": "REDACTED SCAFFOLD \u2014 structurally complete; LOADED AT RUNTIME by the switch_model op (headless: seeded at case start; the seeder writes chat_history.jsonl VERBATIM + a summary.json carrying the FIXED agent_id 'ag1.xwfixcellseed0000000000000000' \u2014 run.py xwfix_seed_from_cell)",
+  "record_shapes": [
+    "system: {type, content} \u2014 the harness rewrites the system content at load time (interactive vs nonInteractive runtime prompt); _norm_storage_records EXCLUDES it from the storage-diff scoring (content-only, informational)",
+    "user: {type, content:[{type:text, text}]} \u2014 scored byte-for-byte (deep equality)",
+    "assistant: {type, content, tool_calls, model_id, reasoning_effort} \u2014 scored byte-for-byte (deep equality)"
+  ],
+  "expected_equals_pre_switch": true,
+  "why": "06 C-08 is an IDENTITY round-trip cell, not a storage-golden cell: the pre-minted identity (the seeder's fixed agent_id) must be ADOPTED by the cold resume, never re-minted (stamp_session_identity_if_absent stamps only when ABSENT). With expected.json == pre_switch.json the switch_model op's storage-form diff (xwfix_cell_diff.storage, scored at switch time) is trivially green \u2014 an incidental mechanism byproduct, labeled as such in both cases' recon_notes. The scored verdict surface: post-resume summary.json agent_id EQ the seeded id (identity_adopted) + attempt_id non-null (attempt_stamped) + T2 completion.",
+  "redaction": "sweep-0: no creds/host paths/IPs/secret URLs; model id + structural shapes stay (gpt-5.6-sol, reasoning_effort high \u2014 structural). The seed anchor nonce (MXAI-C08-SEED-ANCHOR / SEED-OK) is a case-owned literal, not a secret.",
+  "notes": "Both cases (post-merge + pre-merge baseline) seed from this SAME fixture \u2014 the seeded identity is a fixture constant, which is what makes the two runs directly comparable (06 C-08 'matches PRE-MERGE reference run')."
+}

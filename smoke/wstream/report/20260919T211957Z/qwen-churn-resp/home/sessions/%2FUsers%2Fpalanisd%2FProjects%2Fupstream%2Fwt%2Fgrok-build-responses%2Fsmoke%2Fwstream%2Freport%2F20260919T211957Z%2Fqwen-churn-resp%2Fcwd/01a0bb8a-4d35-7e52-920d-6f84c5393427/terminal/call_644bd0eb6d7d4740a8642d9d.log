@@ -1,0 +1,17 @@
+total 5120
+drwxr-xr-x@ 16 palanisd  staff      512 Sep  1 19:35 [1m[36m.[39;49m[0m
+drwxr-xr-x@  3 palanisd  staff       96 Sep  1 19:35 [1m[36m..[39;49m[0m
+drwxr-xr-x@  3 palanisd  staff       96 Sep  1 19:35 [1m[36m.cargo[39;49m[0m
+-rw-r--r--@  1 palanisd  staff        0 Sep  1 19:35 .cargo-ok
+drwxr-xr-x@ 12 palanisd  staff      384 Sep  1 19:35 [1m[36m.git[39;49m[0m
+-rw-r--r--@  1 palanisd  staff      239 Sep  1 19:35 .gitattributes
+drwxr-xr-x@  4 palanisd  staff      128 Sep  1 19:35 [1m[36m.github[39;49m[0m
+-rw-r--r--@  1 palanisd  staff       90 Sep  1 19:35 .gitignore
+-rw-r--r--@  1 palanisd  staff     1663 Sep  1 19:35 CONTRIBUTING.md
+-rw-r--r--@  1 palanisd  staff      259 Sep  1 19:35 Cargo.toml
+-rw-r--r--@  1 palanisd  staff     1071 Sep  1 19:35 LICENSE
+lrwxr-xr-x@  1 palanisd  staff       22 Sep  1 19:35 [1m[35mREADME.md[39;49m[0m -> async-openai/README.md
+drwxr-xr-x@  6 palanisd  staff      192 Sep  1 19:35 [1m[36masync-openai[39;49m[0m
+drwxr-xr-x@  5 palanisd  staff      160 Sep  1 19:35 [1m[36masync-openai-macros[39;49m[0m
+drwxr-xr-x@ 52 palanisd  staff     1664 Sep  1 19:35 [1m[36mexamples[39;49m[0m
+-rw-r--r--@  1 palanisd  staff  2598864 Sep  1 19:35 openapi.documented.yml

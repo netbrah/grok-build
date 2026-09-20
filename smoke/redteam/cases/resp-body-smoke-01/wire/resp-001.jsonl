@@ -1,0 +1,2 @@
+{"n": 1, "status": 200, "ts": "2026-09-19T00:00:01Z", "headers": {"content-type": "application/json"}}
+{"frame_index": 0, "frame": "{\"id\":\"resp_live_abc\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"resp-body-smoke-model\",\"output\":[{\"type\":\"message\",\"id\":\"msg_live_1\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"pong\"}]}],\"usage\":{\"input_tokens\":42,\"output_tokens\":7}}\n"}

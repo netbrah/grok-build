@@ -1,0 +1,31 @@
+{
+  "info": {
+    "id": "01a0bb8a-3597-7fd3-8610-3854fb7ab2ff",
+    "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T211951Z/sonnet-churn-msg/cwd"
+  },
+  "agent_id": "ag1.3297e8987b6949afb57cfcf0f15235f9",
+  "attempt_id": "at1.b153ba6fa1a94a5a96b205d2b113558e",
+  "session_summary": "",
+  "created_at": "2026-09-19T21:19:52.247113Z",
+  "updated_at": "2026-09-19T21:19:54.775590Z",
+  "num_messages": 3,
+  "num_chat_messages": 7,
+  "current_model_id": "claude-sonnet-5",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "session_kind": "headless",
+  "git_root_dir": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/",
+  "git_remotes": [
+    "https://bitbucket.ngage.netapp.com/scm/apex/grok-build.git",
+    "https://github.com/netbrah/grok-build.git",
+    "https://github.com/xai-org/grok-build.git"
+  ],
+  "head_commit": "49c4e549fb308d3824f7cb6ff93b4f3937fe9835",
+  "head_branch": "feat/first-class-responses-catalog",
+  "request_id": "13a22494-ee96-43c6-a13f-23d600de01f9",
+  "grok_home": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T211951Z/sonnet-churn-msg/home",
+  "last_active_at": "2026-09-19T21:19:54.775590Z",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "xhigh"
+}

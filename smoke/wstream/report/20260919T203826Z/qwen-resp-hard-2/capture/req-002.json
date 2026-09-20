@@ -1,0 +1,12 @@
+{
+  "n": 2,
+  "method": "GET",
+  "path": "/",
+  "ts": "2026-09-19T20:38:27Z",
+  "headers": {
+    "accept": "*/*",
+    "accept-encoding": "gzip, br, deflate",
+    "host": "127.0.0.1:63998"
+  },
+  "body": ""
+}

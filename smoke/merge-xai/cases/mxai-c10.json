@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "id": "MXAI-C10",
+  "title": "MERGE-XAI-SYNC C-10 (DRIFT 01 §3 S5/R5, concurrent-boot catalog isolation) — SINGLE-BOOT SMOKE ARM on the sol lane (L-01): a fresh hermetic boot + one echo turn; pins (1) BOOT CLEAN + TURN CLOSES (exit 0, done nonce, no terminal error); (2) CATALOG HYDRATION (the 06 C-10 'both complete catalog hydration' claim on the reachable single-boot surface): the boot fetches GET /v1/models through the wiretap (1..3 fetches), the first fetch returns 200 — the hydration path under OUR boot path post-merge (the same surface C-06 pins on its lane; this cell isolates the boot surface for the S5 row). The CONCURRENT-BOOT ARM (the actual S5/R5 claim: '2 simultaneous boots, one hermetic GROK_HOME; both complete catalog hydration; no clobbered startup settings' — the 1.0.25 isolation fix verified UNDER our boot path, the zero-conflict-visibility row of 01 §3) is NOT expressible in the driver: one boot per case per temp home (DRIVER GAP C-10). OPERATOR ARM (smoke/merge-xai/README.md runbook): two parallel dogfood boots sharing ONE hermetic GROK_HOME; both must complete + the pair's models_cache.json + startup settings must be conflict-free (the clobber check); the coordinator cross-references the operator pair report against this cell's single-boot record on the matrix board. VERDICT: PASS = single-boot hydration clean (this arm); the concurrent verdict is the operator arm — any scored red here = the boot surface regressed = STOP-AND-REPORT.",
+  "bead": "apex-l2d.4",
+  "suite": "wire-shape",
+  "tier": "full",
+  "driver": "headless",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "output_format": "streaming-json",
+  "wirecap": true,
+  "env": {
+    "store": false
+  },
+  "est_calls": 2,
+  "watchdog_s": 300,
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: MXAI-C10-OK"
+    },
+    {
+      "op": "recon_note",
+      "note": "CONCURRENT-BOOT ARM (DRIVER GAP C-10, operator-driven): this cell is the SINGLE-BOOT arm — the driver boots exactly one process per case in its own hermetic temp home, so the 06 C-10 two-simultaneous-boots premise (ONE shared GROK_HOME) is not expressible as steps. The operator arm (README runbook): launch two dogfood boots in parallel against ONE shared hermetic GROK_HOME (the 1.0.25 isolation fix's premise); compare (a) both boots complete their catalog hydration, (b) models_cache.json is not clobbered (both boots' catalog reads consistent; no torn write), (c) startup settings are not clobbered (the per-boot settings survive both boots). The board cross-references the pair report against this cell's single-boot record (catalog_fetched + catalog_200 + the ts record)."
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error",
+        "label": "BOOT CLEAN: the fresh hermetic boot + echo turn completed without a terminal error (a boot-time config/catalog parse failure = the S5 boot-path cluster regressed -> STOP)."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "MXAI-C10-OK",
+        "label": "SINGLE-BOOT TURN CLOSES: the post-boot turn delivered the exact terminal nonce."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "count",
+        "id": "catalog_fetched",
+        "file": "req-*.json",
+        "where": {
+          "method": "GET",
+          "path": {
+            "prefix": "/v1/models"
+          }
+        },
+        "min": 1,
+        "max": 3,
+        "label": "CATALOG HYDRATION PIN (the S5 reachable surface): the boot fetched GET /v1/models through the wiretap (1 = the clean shape; 2-3 = tolerated refreshes). 0 = the boot did NOT hydrate the catalog from the proxy (it rode the pre-aligned cache only) = the hydration path is dead on our boot path post-merge = defect."
+      },
+      {
+        "kind": "resp_status",
+        "id": "catalog_200",
+        "file": "req-*.json",
+        "where": {
+          "method": "GET",
+          "path": {
+            "prefix": "/v1/models"
+          }
+        },
+        "which": "first",
+        "status_in": [
+          200
+        ],
+        "label": "CATALOG ACCEPTED: the first /v1/models fetch returned 200 — the catalog hydrates from the proxy into models_cache.json under the post-merge boot path (the operator concurrent-arm compares the pair's caches against this single-boot reference)."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "field": "$.ts",
+        "label": "VERDICT RECORD (recon, newest capture): the capture timestamp anchor for the board — the operator's concurrent-arm pair report timestamps are compared against this single-boot record when the coordinator adjudicates the S5 row. (Recon field form reads the newest capture; the per-case wire dir is single-session.)"
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  },
+  "retry": {
+    "on_status": [
+      404,
+      502,
+      503
+    ],
+    "max_attempts": 1,
+    "backoff_s": 30
+  }
+}

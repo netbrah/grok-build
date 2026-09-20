@@ -1,0 +1,179 @@
+{
+  "cell": "grok-resp",
+  "model": "grok-4.6",
+  "api_backend": "responses",
+  "backend_class": "native",
+  "verdict": "PASS",
+  "invariants": [
+    {
+      "key": "status",
+      "expected": 200,
+      "actual": 200,
+      "ok": true
+    },
+    {
+      "key": "route",
+      "expected": "responses",
+      "actual": "responses",
+      "ok": true
+    },
+    {
+      "key": "n_model_calls_min",
+      "expected": ">= 1",
+      "actual": 2,
+      "ok": true
+    }
+  ],
+  "observations": {
+    "route": "responses",
+    "status": 200,
+    "n_model_calls": 2,
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": false,
+    "reasoning_frames": 0,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": null,
+    "finish": null,
+    "budget_trap": false,
+    "final_text_nonempty": true,
+    "final_text_len": 767,
+    "usage": {
+      "input_tokens": 7393,
+      "output_tokens": 364,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 7757,
+      "cost": 0.01697
+    }
+  },
+  "analysis": {
+    "cell": "grok-resp",
+    "route": "responses",
+    "expected_route": "responses",
+    "routes_mixed": false,
+    "status": 200,
+    "n_model_calls": 2,
+    "n_side_calls": 1,
+    "side_call_errors": [],
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": false,
+    "reasoning_frames": 0,
+    "reasoning_tokens": 0,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": null,
+    "finish": null,
+    "budget_trap": false,
+    "final_text_len": 767,
+    "final_text_nonempty": true,
+    "usage": {
+      "input_tokens": 7393,
+      "output_tokens": 364,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 7757,
+      "cost": 0.01697
+    },
+    "n_frames_total": 372
+  },
+  "calls": [
+    {
+      "route": "responses",
+      "req_model": "grok-4.6",
+      "req_stream": true,
+      "req_max_tokens": 100,
+      "status": 200,
+      "n_frames": 16,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 1,
+        "response.function_call_arguments.delta": 6,
+        "response.function_call_arguments.done": 1,
+        "response.output_item.done": 2,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": {
+        "input_tokens": 142,
+        "output_tokens": 64,
+        "total_tokens": 206,
+        "cost": 0.000668
+      },
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "grok-4.6",
+      "req_stream": true,
+      "req_max_tokens": 500000,
+      "status": 200,
+      "n_frames": 372,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 1,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 363,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.output_item.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": {
+        "input_tokens": 7393,
+        "output_tokens": 364,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 7757,
+        "cost": 0.01697
+      },
+      "final_text": "Compute \\(7^{8432} \\bmod 5557\\) by successive squaring. The exponent in binary is\n\\(8432 = 2^{13} + 2^7 + 2^6 + 2^5 + 2^4\\), so\n\\[\n7^{8432} \\equiv 7^{8192}\\cdot 7^{128}\\cdot 7^{64}\\cdot 7^{32}\\cdot 7^{16} \\pmod{5557}.\n\\]\n\nSquaring (all residues mod \\(5557\\)):\n\n- \\(7^{2} \\equiv 49\\)\n- \\(7^{4} \\equiv 2401\\)\n- \\(7^{8} \\equiv 2192\\)\n- \\(7^{16} \\equiv 3616\\)\n- \\(7^{32} \\equiv 5392\\)\n- \\(7^{64} \\equiv 4997\\)\n- \\(7^{128} \\equiv 2408\\)\n- \\(7^{256} \\equiv 2513\\)\n- \\(7^{512} \\equiv 2417\\)\n- \\(7^{1024} \\equiv 1482\\)\n- \\(7^{2048} \\equiv 1309\\)\n- \\(7^{4096} \\equiv 1925\\)\n- \\(7^{8192} \\equiv 4663\\)\n\nMultiply the bits that are set:\n\n- \\(4663 \\cdot 2408 \\equiv 3364\\)\n- \\(3364 \\cdot 4997 \\equiv 5540\\)\n- \\(5540 \\cdot 5392 \\equiv 2805\\)\n- \\(2805 \\cdot 3616 \\equiv 1355\\)\n\n1355"
+    }
+  ],
+  "turns": [
+    {
+      "turn": 1,
+      "exit_code": 0,
+      "killed": false,
+      "elapsed": 52.52,
+      "session_id": "01a0b841-c5e0-7803-9b53-1ac0484784ba",
+      "n_events": 368
+    }
+  ],
+  "binary_sha256_12": "f9e7a15d6b6b",
+  "wire_port": 51806,
+  "upstream": "https://llm-proxy-api.ai.eng.netapp.com",
+  "key_sha256_12": "9f3f56a263da",
+  "raw_key_hits": 0,
+  "ts": "20260919T060244Z"
+}

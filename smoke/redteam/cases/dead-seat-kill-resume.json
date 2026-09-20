@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "id": "DEAD-SEAT-KILL-RESUME",
+  "title": "ADVERSARIAL-CASES-1 case 4 (ADV1-R1): DEAD-SEAT — an agent seat dies mid-flight (SIGKILL mid-SSE-stream, the kill op) and the MAIN session must recover: wire + storage consequences. SEED-FREE LIVE (no cell, no seed; ws9-s03-stream-trunc lineage, XREPLAY-1/RT-R2 salvage shape): turn 1 mints the session (DEAD-SEAT-T1 nonce); the kill op starts a long in-flight essay turn and SIGKILLs the binary 4s in (mid-stream truncation: the request is in flight, partial frames captured, the process dies — the dead seat); the session is then resumed (switch via=resume, same model — the headless driver re-boots with --resume <sid>) and turn 2 must complete (DEAD-SEAT-T2). Verdict semantics: PASS = the main session SURVIVES its own seat's death — T2 completes with the exact terminal token (exit 0), a post-kill request REPLAYS the T1 nonce (history integrity: the persisted history is not corrupted by the mid-flight death), the qwen request count stays in 3..6 (no retry storm around the truncation), no request carries store=true. The partial-work question (does the killed turn's partial essay content persist into resumed wire context AND into the on-disk chat_history.jsonl) is a RECON RECORD, not a scored pin (donor/upstream vs our architectures intentionally differ in partial-turn persistence — semantics-not-bytes, ws9-s03 plan L130-131): a leak is an observed delta to adjudicate (S0/S1) on review, never a silent pass. RED semantics: a post-kill request that LACKS the T1 nonce = history corruption on a dead seat (S2 persistent fidelity loss) = defect; count >6 = a retry storm around the truncation (COMP-3 shape) = defect; T2 never completes / non-zero exit = the main session is unrecoverable after its own death (the 01a09be2-class collapse) = defect. STOP discipline (house rule): any unexpected failing pin or a new error phrasing -> report-and-stop (STOP-1). SUBAGENT-SEAT VARIANT — BLOCKED-BY apex-ayl.66 (doctrine DELTA-2, kiloecho-adversarial-doctrine §6): the true SUB-DEAD-SEAT case (spawn a CHILD seat, kill the child mid-flight, pin the parent's consequences) is NOT EXPRESSIBLE in the frozen engine (no spawn step op) and is FUNCTIONALLY BLOCKED: fresh-context children currently REFUSE coordinator-authorized work (COMMS-TRUST, COMMS-TRUST-FIX-1 apex-ayl.66 — the trusted launch channel), so a child-kill cell would RED on trust rather than on wire. Filed with blocked-by .66 per doctrine; re-run when .66 lands. This case covers the MAIN-seat dead-kill shape (the supported-op approximation) with the same verdict surfaces.",
+  "bead": "apex-dqa",
+  "suite": "salvage",
+  "tier": "slim",
+  "driver": "headless",
+  "model": "qwen3.8-27b",
+  "wire": "responses",
+  "wirecap": true,
+  "env": {
+    "store": false
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: DEAD-SEAT-T1"
+    },
+    {
+      "op": "kill",
+      "after_s": 4,
+      "prompt": "Write a 1200-word essay on the history of lighthouse automation, covering at least three named lighthouses and the inventors involved. Begin the essay immediately."
+    },
+    {
+      "op": "switch",
+      "model": "qwen3.8-27b",
+      "via": "resume"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: DEAD-SEAT-T2"
+    },
+    {
+      "op": "recon_note",
+      "note": "DEAD-SEAT WIRE+STORAGE CONSEQUENCES (recon-plan semantics): (1) HISTORY INTEGRITY is the scored claim — a post-kill request must replay the T1 nonce (the persisted history survived the mid-flight SIGKILL intact); (2) PARTIAL-LEAK is recorded twice, once per surface (wire: req recon 'lighthouses'; storage: chat_history.jsonl recon 'lighthouses') — wire-only leak = the partial turn persisted into context but not to disk (or vice versa); both = the partial essay is now permanent history; neither = clean discard (the donor architecture shape). The pair is the adjudication corpus, not a verdict. (3) SUBAGENT-SEAT VARIANT blocked-by apex-ayl.66 (COMMS-TRUST-FIX-1): fresh-context children refuse coordinator-authorized work, so a spawn+child-kill case would RED on the trust channel, not the wire — per doctrine DELTA-2 it is filed with blocked-by .66 and is NOT this case's verdict surface; the kill op here is the supported-op approximation of the dead seat (the seat that DIED is the session's own process — the main seat). (4) The kill is the EXPECTED terminal of step 1 (expect_kill default true — a kill does not FAIL the case); the honest-failure pins are T2 completion + exit 0 + history integrity."
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 4,
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "DEAD-SEAT-T2",
+        "label": "MAIN SESSION RECOVERED: after its own seat died mid-flight, the resumed session completed the post-kill turn with the exact terminal token. Absent = the main session is unrecoverable after the death (01a09be2-class collapse) -> report-and-stop."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "id": "t1_replay",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "any": true,
+        "grep": "DEAD-SEAT-T1",
+        "label": "HISTORY INTEGRITY (the scored claim): a post-kill request replays the pre-kill turn (T1 nonce in the resumed session's context) — the mid-flight SIGKILL did not corrupt the persisted history. MISS = the dead seat ate the history (S2 persistent fidelity loss) = defect -> report-and-stop."
+      },
+      {
+        "kind": "count",
+        "id": "qwen_band",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "min": 3,
+        "max": 6,
+        "label": "NO RETRY STORM AROUND THE DEATH: 3-4 = the clean shape (T1 + killed turn + resume turn, plus side calls); 5-6 = tolerated slack (one within-turn re-request or a compaction side call); >6 = same-payload retry storm around the truncation (COMP-3 shape) = defect -> report-and-stop."
+      },
+      {
+        "kind": "grep",
+        "id": "store_false",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"store\": true",
+        "label": "STORE=FALSE INVARIANT (ROE-1, S9 exfil watch): no captured request carries store=true — including the killed turn's in-flight request (a dead seat must not flip persistence semantics)."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "lighthouses",
+        "label": "PARTIAL-LEAK RECORD — WIRE (recon, non-scoring): records whether the killed turn's partial essay content ('lighthouses') persisted into any LATER request (resumed context). Present = the partial turn was persisted into context (an observed delta vs the discard-partial architecture — adjudicate S0/S1 on review); absent = clean discard. recon — always records, never fails."
+      },
+      {
+        "kind": "recon",
+        "base": "session",
+        "file": "chat_history.jsonl",
+        "grep": "lighthouses",
+        "label": "PARTIAL-LEAK RECORD — STORAGE (recon, non-scoring): records whether the killed turn's partial essay content landed in the on-disk chat_history.jsonl (the storage-side counterpart of the wire recon — the pair is the adjudication corpus: wire-only, storage-only, both, neither). recon — always records, never fails."
+      },
+      {
+        "kind": "recon",
+        "base": "session",
+        "file": "chat_history.jsonl",
+        "grep": "DEAD-SEAT-T1",
+        "label": "STORAGE INTEGRITY RECORD (recon, non-scoring): the on-disk history carries the pre-kill T1 turn (the disk-side counterpart of the scored T1-replay wire pin — a wire-replay MISS with a storage HIT points at the RESUME LOAD path, not the disk). recon — always records, never fails."
+      },
+      {
+        "kind": "recon",
+        "op": "recon",
+        "what": "final-text",
+        "file": "req-*.json",
+        "label": "VERDICT RECORD: merged ndjson final text head (the post-kill terminal output, verbatim). recon — always records, never fails."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

@@ -1,0 +1,46 @@
+== identical ==
+exit=0
+== mid-file change (mine) ==
+--- /var/folders/42/_lc4qb6d2wnd1x82w43h05nm0000gp/T/tmp.DVid3OnZY8/x.txt
++++ /var/folders/42/_lc4qb6d2wnd1x82w43h05nm0000gp/T/tmp.DVid3OnZY8/y.txt
+@@ -2,3 +2,3 @@
+ l2
+-l3
++l3{+ changed+}
+ l4
+exit=1
+== mid-file change (gnu diff -U1 header) ==
+@@ -2,3 +2,3 @@
+== pure delete (mine) ==
+--- /var/folders/42/_lc4qb6d2wnd1x82w43h05nm0000gp/T/tmp.DVid3OnZY8/x.txt
++++ /var/folders/42/_lc4qb6d2wnd1x82w43h05nm0000gp/T/tmp.DVid3OnZY8/del.txt
+@@ -2,5 +2,2 @@
+ l2
+-l3
+ l4
+-l5
+-l6
+exit=1
+== pure delete (gnu) ==
+@@ -2,5 +2,2 @@
+ l2
+-l3
+ l4
+-l5
+-l6
+== insert at top ==
+--- /var/folders/42/_lc4qb6d2wnd1x82w43h05nm0000gp/T/tmp.DVid3OnZY8/x.txt
++++ /var/folders/42/_lc4qb6d2wnd1x82w43h05nm0000gp/T/tmp.DVid3OnZY8/ins.txt
+@@ -1 +1,2 @@
++new
+ l1
+exit=1
+@@ -1 +1,2 @@
+== bad args ==
+usage: tools/minidiff.py FILE1 FILE2
+exit=2
+== missing file ==
+minidiff: [Errno 2] No such file or directory: 'nope.txt'
+exit=2
+== empty vs empty ==
+exit=0

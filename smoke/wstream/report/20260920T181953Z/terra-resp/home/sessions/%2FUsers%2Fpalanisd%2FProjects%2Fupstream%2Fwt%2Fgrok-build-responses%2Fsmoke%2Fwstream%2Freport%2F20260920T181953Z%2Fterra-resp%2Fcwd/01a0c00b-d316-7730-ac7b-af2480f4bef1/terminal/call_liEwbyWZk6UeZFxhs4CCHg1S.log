@@ -1,0 +1,19 @@
+..
+----------------------------------------------------------------------
+Ran 2 tests in 0.086s
+
+OK
+tests_exit=0
+tool_exit=1
+--- fixture diff ---
+@@ -1,4 +1,4 @@
+-The lighthouse stood on a [-weathered-] cliff above the harbor.
++The lighthouse stood on a {+windswept+} cliff above the harbor.
+-Each evening, its keeper polished the [-brass-] lens.
++Each evening, its keeper polished the {+silver+} lens.
+-At dusk, the beacon [-glowed-] across the quiet water.
++At dusk, the beacon {+shone+} across the quiet water.
+ Gulls circled the tower while fishing boats returned home.
+--- substitution check ---
+missing=[]
+substitution_check_exit=0

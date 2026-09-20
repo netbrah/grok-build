@@ -1,0 +1,50 @@
+{
+  "ts": "20260918T103021Z",
+  "cells": [
+    {
+      "cell": "ws9-s01-toolloop-sol",
+      "model": "ws9-s01-toolloop-sol",
+      "verdict": "PASS",
+      "route": "responses",
+      "expected_route": "responses",
+      "status": 200,
+      "n_model_calls": 4,
+      "all_stream": true,
+      "reasoning_present": false,
+      "reasoning_encrypted_content": false,
+      "reasoning_thinking_block": false,
+      "budget_trap": false,
+      "final_text_len": 0
+    },
+    {
+      "cell": "ws9-s12-alias-claude-msg",
+      "model": "ws9-s12-alias-claude-msg",
+      "verdict": "PASS",
+      "route": "messages",
+      "expected_route": "messages",
+      "status": 200,
+      "n_model_calls": 2,
+      "all_stream": true,
+      "reasoning_present": true,
+      "reasoning_encrypted_content": false,
+      "reasoning_thinking_block": true,
+      "budget_trap": false,
+      "final_text_len": 1315
+    },
+    {
+      "cell": "sol-resp",
+      "model": "sol-resp",
+      "verdict": "PASS",
+      "route": "responses",
+      "expected_route": "responses",
+      "status": 200,
+      "n_model_calls": 2,
+      "all_stream": true,
+      "reasoning_present": true,
+      "reasoning_encrypted_content": true,
+      "reasoning_thinking_block": false,
+      "budget_trap": false,
+      "final_text_len": 723
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+---ROLE---
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs-11-/// Role of messages in the API.
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs-12-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs-13-#[serde(rename_all = "lowercase")]
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs:14:pub enum Role {
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs-15-    #[default]
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs-16-    User,
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs-17-    Assistant,
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs-18-    System,
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs-19-    Developer,
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs-20-}
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs-21-
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs-22-/// Status of input/output items.
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs-23-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs-24-#[serde(rename_all = "snake_case")]
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs-25-pub enum OutputStatus {
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs-26-    InProgress,

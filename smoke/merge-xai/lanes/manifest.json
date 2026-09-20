@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "campaign": "MERGE-XAI-SYNC",
+  "bead": "apex-l2d.4",
+  "note": "Frozen lane config templates for the wave-3 serial matrix (06 §2 lane column; 06 §4 case-op authoring output). Each lane file is a FULL self-contained config.toml: model + wire pinned, base_urls are dead-port PLACEHOLDERS (http://127.0.0.1:0/v1) that the launcher rewrites at run time (the grok-dogfood.v2 sed contract: s|^base_url = .*| / s|^models_base_url = .*| -> the local wiretap port); a live URL is NEVER baked in (sweep-0). env_key carries the ENV VAR NAME of the ambient proxy key (the L1 contract; the value never ships). [auth] is absent from every template (host paths are sweep-0-forbidden; the operator's launcher supplies the hermetic auth stub). Model row shapes verified against the live catalog 2026-09-18/19 (the live rows' inherited fields are pinned EXPLICITLY on the row — explicit beats inherited for a frozen template; per-lane notes carry the deltas). NOT instantiated: a grok-4.6 /xai lane — no cell in the 06 §2 matrix needs the xai wire (06 §1 lists it conditionally, 'grok-4.6 where a cell needs the xai wire'; none does; if a wave-3 red adjudication demands one, it is an operator add, not a frozen-template gap).",
+  "lanes": {
+    "L-01": {
+      "file": "lane-01-responses-sol.toml",
+      "model": "gpt-5.6-sol",
+      "wire": "responses",
+      "api_backend": "responses",
+      "role": "PIN lane of record (sol/terra responses; the parent lane for every sol-parent cell)"
+    },
+    "L-02": {
+      "file": "lane-02-responses-terra.toml",
+      "model": "gpt-5.6-terra",
+      "wire": "responses",
+      "api_backend": "responses",
+      "role": "C-01 sibling lane (06 lane column 'sol/terra responses'); no cell is terra-only — the operator may re-point an L-01 cell at terra by swapping model + where-filters (MXAI-C01 title note)"
+    },
+    "L-03": {
+      "file": "lane-03-messages-sonnet.toml",
+      "model": "claude-sonnet-5",
+      "wire": "messages",
+      "api_backend": "messages",
+      "role": "the messages-wire pin lane (MW-1 cache-breakpoint sentinel C-03; the MW-3 stream-truncated message_stop condition C-02; M5 ours-side cache_ttl=1h pin on this row)"
+    },
+    "L-04": {
+      "file": "lane-04-responses-qwen.toml",
+      "model": "qwen3.8-27b",
+      "wire": "responses",
+      "api_backend": "responses",
+      "role": "cross-model switch target + child lane (C-04 switch target; C-07/C-13 spawned children; C-09 compaction arm); 3-effort menu {xhigh(default), medium, low} — no max/ultra tier (the C-04 projection pin rides this shape)"
+    }
+  },
+  "cells": {
+    "C-01": {
+      "cases": ["MXAI-C01", "MXAI-C01-REPLAY"],
+      "lane": "L-01 (the lane column 'sol/terra responses + wiretap' — the case runs the sol half; the operator may re-point at L-02 by swapping model + where-filters only; C01-REPLAY is route-agnostic, fixture-defined)"
+    },
+    "C-02": {
+      "cases": ["MXAI-C02", "MXAI-C02-TRUNC-SHAPE"],
+      "lane": "L-03 (06 says 'any lane'; messages is where the MW-3 message_stop condition lives — the live case is disabled pending the operator fault-injection arm; the TRUNC-SHAPE arm runs now, key-free)"
+    },
+    "C-03": {
+      "cases": ["MXAI-C03"],
+      "lane": "L-03 (sonnet /v1/messages — the cache-breakpoint pin lane)"
+    },
+    "C-04": {
+      "cases": ["MXAI-C04"],
+      "lane": "L-01 parent + L-04 child (in-session /model switch sol -> qwen3.8-27b; one ACP session spans both lanes)"
+    },
+    "C-05": {
+      "cases": ["MXAI-C05"],
+      "lane": "L-01 (06 says 'any'; the case pins the LIVE WIRE FACE of the 6-tier menu's top tier on sol — ultra cursor -> wire 'max' remap)"
+    },
+    "C-06": {
+      "cases": ["MXAI-C06"],
+      "lane": "L-01 (fresh hermetic boot on the lane of record; catalog hydration + CMO wire face)"
+    },
+    "C-07": {
+      "cases": ["MXAI-C07"],
+      "lane": "L-01 parent + L-04 child (sol parent spawns the v2 subagent on the qwen lane; the child's first request is the M7 projection surface)"
+    },
+    "C-08": {
+      "cases": ["MXAI-C08", "MXAI-C08-BASELINE"],
+      "lane": "L-01 (sol; identity round-trip through the cell-seeded session)"
+    },
+    "C-09": {
+      "cases": ["MXAI-C09"],
+      "lane": "L-04 (the qwen compaction arm — the 06 'image-heavy session' positive arm is the operator 47 MiB image-induction run, DRIVER GAP C-09)"
+    },
+    "C-10": {
+      "cases": ["MXAI-C10"],
+      "lane": "L-01 (single-boot smoke arm; the concurrent-boot pair is the operator arm, DRIVER GAP C-10)"
+    },
+    "C-11": {
+      "cases": ["MXAI-C11"],
+      "lane": "L-01 (sol; the background-task timeout induction rides the lane's tool surface)"
+    },
+    "C-12": {
+      "cases": ["MXAI-C12"],
+      "lane": "L-01 (sol; DISABLED — no driver interject step op; the operator manual ACP arm is the unblock, DRIVER GAP C-12)"
+    },
+    "C-13": {
+      "cases": ["MXAI-C13"],
+      "lane": "L-01 parent + L-04 child (the mxai_longprefix MCP server is operator-provisioned in the LIVE config; the parent admission arm + the M7 child-projection arm)"
+    },
+    "C-14": {
+      "cases": ["MXAI-C14"],
+      "lane": "L-01 (sol; hermetic-Mac grove-off arm; the deployment-class NFS arm is operator-driven on SCS, 06 §5)"
+    }
+  },
+  "serial_order": "PIN first (C-01..C-08 — they gate 'the merge didn't regress us'), then DRIFT (C-09..C-11), then ADOPT (C-12..C-14) — 06 §3 step 3; operator GO + budget ~$0.5-1.0 before the serial run",
+  "pre_wave3": "MXAI-C08-BASELINE on the CURRENT binary (06 §3 step 1 — the only pre-merge item; operator-driven; see the runbook in smoke/merge-xai/README.md)"
+}

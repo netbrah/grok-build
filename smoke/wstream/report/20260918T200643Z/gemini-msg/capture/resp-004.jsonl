@@ -1,0 +1,2 @@
+{"n": 4, "status": 403, "ts": "2026-09-18T20:16:16Z", "headers": {"Content-Length": "122", "Content-Security-Policy": "frame-ancestors 'none'", "Content-Type": "application/json", "Date": "Fri, 18 Sep 2026 20:16:16 GMT", "Server": "uvicorn", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Connection": "close"}}
+{"frame_index": 0, "frame": "{\"error\":{\"message\":\"Tool is blocked for model 'gemini-3.1-pro-preview'\",\"type\":\"auth_error\",\"param\":\"name\",\"code\":\"403\"}}"}

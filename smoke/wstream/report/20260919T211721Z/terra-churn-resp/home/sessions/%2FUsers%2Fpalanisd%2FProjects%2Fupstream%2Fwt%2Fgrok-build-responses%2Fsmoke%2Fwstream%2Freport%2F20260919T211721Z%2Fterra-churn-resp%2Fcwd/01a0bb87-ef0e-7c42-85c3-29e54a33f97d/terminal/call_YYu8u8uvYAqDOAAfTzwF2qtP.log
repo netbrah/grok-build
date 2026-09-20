@@ -1,0 +1,9 @@
+lines=220 bytes=25650
+exactly three executive lines before first heading: FAIL
+top five headings: PASS
+all evidence cited: PASS
+do not do at least three: PASS
+non-openai safeguards named: PASS
+wire verification sections: PASS
+ranked impact sections: PASS
+risk sections: PASS

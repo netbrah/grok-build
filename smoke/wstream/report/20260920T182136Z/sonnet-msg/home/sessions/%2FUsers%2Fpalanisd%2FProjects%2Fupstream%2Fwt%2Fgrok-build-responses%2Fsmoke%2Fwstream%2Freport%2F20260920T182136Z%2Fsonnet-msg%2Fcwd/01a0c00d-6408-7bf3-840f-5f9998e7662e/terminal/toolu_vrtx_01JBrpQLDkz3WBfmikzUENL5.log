@@ -1,0 +1,3 @@
+usage: tools/minidiff.py <file1> <file2>
+USAGE_EXIT:2
+SYNTAX_OK

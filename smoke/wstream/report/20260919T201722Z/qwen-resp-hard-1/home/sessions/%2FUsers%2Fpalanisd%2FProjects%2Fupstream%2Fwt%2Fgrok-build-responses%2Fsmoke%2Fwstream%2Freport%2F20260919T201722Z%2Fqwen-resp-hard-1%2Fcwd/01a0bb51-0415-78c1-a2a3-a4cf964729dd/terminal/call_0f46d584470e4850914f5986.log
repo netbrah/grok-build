@@ -1,0 +1,8 @@
+TOTAL_FAILS: 0
+FUZZ_RC=0
+=== a.txt vs b.txt: APPLY_OK
+=== /tmp/ma.txt vs /tmp/mc.txt: APPLY_OK
+=== /tmp/ma.txt vs /tmp/mb.txt: APPLY_OK
+=== /tmp/me.txt vs /tmp/mx.txt: APPLY_OK
+=== /tmp/mx.txt vs /tmp/me.txt: APPLY_OK
+TARGETED_OK

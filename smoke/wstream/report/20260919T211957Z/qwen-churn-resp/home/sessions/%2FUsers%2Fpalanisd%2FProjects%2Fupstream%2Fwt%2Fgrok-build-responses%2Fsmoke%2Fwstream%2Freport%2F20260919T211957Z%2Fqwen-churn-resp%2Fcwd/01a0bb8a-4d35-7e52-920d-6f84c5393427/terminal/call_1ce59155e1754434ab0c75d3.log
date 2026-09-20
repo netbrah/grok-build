@@ -1,0 +1,45 @@
+    2528 run_loop.rs
+    2348 sampler_turn.rs
+    3654 tool_calls.rs
+    4342 turn.rs
+   12872 total
+active_agent_message_presentation.rs
+active_agent_message_presentation_tests.rs
+auth_retry.rs
+auth_retry_tests.rs
+background_tasks.rs
+cancel.rs
+child_tool_projection.rs
+child_tool_projection_tests.rs
+context_snapshot.rs
+[1m[36mextensions[39;49m[0m
+extensions.rs
+goal.rs
+goal_support.rs
+hook_dispatch.rs
+hooks_plugins.rs
+image_strip.rs
+interjection.rs
+laziness.rs
+laziness_classifier.rs
+length_salvage.rs
+mcp.rs
+mcp_failed_reminder.rs
+mcp_init.rs
+mcp_snapshot.rs
+memory_dream.rs
+model_bound_strip.rs
+model_switch.rs
+named_workflow_args.rs
+notification_drain.rs
+parent_message.rs
+parent_message_tests.rs
+post_tool_use_delivery.rs
+post_tool_use_delivery_tests.rs
+prompt_build.rs
+prompt_queue.rs
+queue_mutation.rs
+rate_limit_waits.rs
+rate_limit_waits_tests.rs
+recap.rs
+reminders.rs

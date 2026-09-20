@@ -1201,6 +1201,11 @@ def main(argv=None):
     p = argparse.ArgumentParser(description="wstream wire-streaming matrix")
     p.add_argument("--selftest", action="store_true",
                    help="offline gate (no proxy, no binary)")
+    p.add_argument("--daemon", action="store_true",
+                   help="cut 0.5 (D-3): self-daemonize (setsid+double-fork) "
+                        "and register in smoke/runs.jsonl; logs to "
+                        "<report>/<ts>/run.log, pid to <report>/<ts>/daemon"
+                        ".pid — designed to be launched by smoke/sweepctl.py")
     p.add_argument("--reanalyze", metavar="RUN_TS",
                    help="re-score an existing run's captures (no proxy)")
     p.add_argument("--cell", help="run one cell by id")
@@ -1223,6 +1228,20 @@ def main(argv=None):
                    help="per-turn kill budget (seconds)")
     args = p.parse_args(argv)
 
+    if args.daemon:
+        # cut 0.5 (D-3): self-daemonize FIRST (m10); the daemon continues
+        # below with args.run_ts fixed so the log dir and the matrix dir
+        # share one timestamp.
+        if args.selftest or args.reanalyze:
+            p.error("--daemon is incompatible with --selftest/--reanalyze")
+        args.run_ts = utc_ts()
+        ddir = os.path.join(REPORT_ROOT, args.run_ts)
+        os.makedirs(ddir, exist_ok=True)
+        if os.path.dirname(HERE) not in sys.path:
+            sys.path.insert(0, os.path.dirname(HERE))
+        import lib.launch as _launch
+        _launch.self_daemonize(os.path.join(ddir, "run.log"),
+                               os.path.join(ddir, "daemon.pid"))
     if args.selftest:
         return selftest()
     if args.reanalyze:
@@ -1241,7 +1260,7 @@ def main(argv=None):
     log("wstream: %d cell(s) · bin sha256_12 %s · upstream %s" % (
         len(cells), sha256_12(_read_bin(args.bin)), args.upstream))
 
-    run_ts = utc_ts()
+    run_ts = getattr(args, "run_ts", None) or utc_ts()
     summary = []
     for cell in cells:
         r = run_cell(cell, args.bin, args.live_home, args.upstream,
@@ -1283,4 +1302,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    sys.exit(code)

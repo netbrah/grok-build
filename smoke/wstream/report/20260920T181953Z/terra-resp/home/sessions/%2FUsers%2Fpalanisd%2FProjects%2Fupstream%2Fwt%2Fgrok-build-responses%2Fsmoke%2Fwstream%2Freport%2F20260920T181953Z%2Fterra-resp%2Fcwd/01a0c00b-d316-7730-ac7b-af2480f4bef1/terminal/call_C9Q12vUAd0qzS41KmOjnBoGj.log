@@ -1,0 +1,105 @@
+codegraph=absent
+ M ../../../../../../.gitignore
+ M ../../../../../../Cargo.lock
+ M ../../../../../../Cargo.toml
+ M ../../../../../../crates/codegen/xai-grok-sampler/src/stream/responses.rs
+ M ../../../../../../crates/codegen/xai-grok-sampling-types/src/conversation.rs
+ M ../../../../../../crates/codegen/xai-grok-sampling-types/src/types.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/session/compaction.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/session/compaction_codex_remote_v2_tests.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/session/usage_file_tests.rs
+ M ../../../../../redteam/case.schema.json
+ M ../../../../../redteam/cases/at-vlq-vxg.json
+ M ../../../../../redteam/cases/xw-az-vlq.json
+ M ../../../../../redteam/cases/xw-vlq-vlg.json
+ M ../../../../../redteam/cases/xw-vxm-az.json
+ M ../../../../../redteam/cases/xw-vxm-vlg.json
+ M ../../../../../redteam/cases/xw-vxm-vlq.json
+ M ../../../../../redteam/grok-dogfood.v2
+ M ../../../../../redteam/run.py
+ M ../../../../../redteam/test_run.py
+ M ../../../../../redteam/test_run_golden.py
+ M ../../../../../run-compaction-smoke.sh
+ M ../../../../../run-matrix.sh
+ M ../../../../../run-smoke.sh
+ M ../../../../../triage/signatures.json
+ M ../../../../manifest.json
+ M ../../../../run.py
+?? ../../../../../../.coord_write_probe
+?? ../../../../../../.ma4_gate_probe
+?? ../../../../../../.ma4_probe_check
+?? ../../../../../../.ma4_write_probe
+?? ../../../../../../.tgrep/
+?? ../../../../../../.xreplay1_write_probe
+?? ../../../../../../grok/
+?? ../../../../../lib/
+?? ../../../../../merge-xai/
+?? ../../../../../redteam/cases/at-enc-probe-unpin.json
+?? ../../../../../redteam/cases/comp3-storm-vlq-vlg.json
+?? ../../../../../redteam/cases/cw-write-usage-01.json
+?? ../../../../../redteam/cases/dead-seat-kill-resume.json
+?? ../../../../../redteam/cases/mgw-45gen-01.json
+?? ../../../../../redteam/cases/mgw-betahdr-01.json
+?? ../../../../../redteam/cases/mgw-ctxmgt-01.json
+?? ../../../../../redteam/cases/mgw-srvtool-01.json
+?? ../../../../../redteam/cases/mgw-stopseq-01.json
+?? ../../../../../redteam/cases/mgw-stripread-01.json
+?? ../../../../../redteam/cases/mgw-svcseq-01.json
+?? ../../../../../redteam/cases/mgw-thinkknob-01.json
+?? ../../../../../redteam/cases/mgw-toolcache-01.json
+?? ../../../../../redteam/cases/mgw-toolctl-01.json
+?? ../../../../../redteam/cases/mgw-topk-01.json
+?? ../../../../../redteam/cases/mgw-ttlusage-01.json
+?? ../../../../../redteam/cases/mgw-userid-01.json
+?? ../../../../../redteam/cases/mxai-c01-replay
+?? ../../../../../redteam/cases/mxai-c01-replay.json
+?? ../../../../../redteam/cases/mxai-c01.json
+?? ../../../../../redteam/cases/mxai-c02-trunc-shape
+?? ../../../../../redteam/cases/mxai-c02-trunc-shape.json
+?? ../../../../../redteam/cases/mxai-c02.json
+?? ../../../../../redteam/cases/mxai-c03.json
+?? ../../../../../redteam/cases/mxai-c04.json
+?? ../../../../../redteam/cases/mxai-c05.json
+?? ../../../../../redteam/cases/mxai-c06.json
+?? ../../../../../redteam/cases/mxai-c07.json
+?? ../../../../../redteam/cases/mxai-c08-baseline.json
+?? ../../../../../redteam/cases/mxai-c08.json
+?? ../../../../../redteam/cases/mxai-c09.json
+?? ../../../../../redteam/cases/mxai-c10.json
+?? ../../../../../redteam/cases/mxai-c11.json
+?? ../../../../../redteam/cases/mxai-c12.json
+?? ../../../../../redteam/cases/mxai-c13.json
+?? ../../../../../redteam/cases/mxai-c14.json
+?? ../../../../../redteam/cases/ow-cachectl-01.json
+?? ../../../../../redteam/cases/ow-costctl-01.json
+?? ../../../../../redteam/cases/ow-metadata-01.json
+?? ../../../../../redteam/cases/ow-reasonsurf-01.json
+?? ../../../../../redteam/cases/resp-body-smoke-01.json
+?? ../../../../../redteam/cases/resp-body-smoke-01/
+?? ../../../../../redteam/cases/resp-stream-smoke-01.json
+?? ../../../../../redteam/cases/resp-stream-smoke-01/
+?? ../../../../../redteam/cases/xw-effort-clamp-3fam.json
+?? ../../../../../redteam/cases/xw-replay-r2-01.json
+?? ../../../../../redteam/cases/xw-resume-crossfam.json
+?? ../../../../../redteam/cases/xw-vxm-az-live.json
+?? ../../../../../redteam/fixtures/
+?? ../../../../../redteam/kiloecho/
+?? ../../../../../redteam/manifest.json
+?? ../../../../../redteam/test_parity_cachewrite.py
+?? ../../../../../redteam/test_parity_stablereminder.py
+?? ../../../../../redteam/test_sweepctl.py
+?? ../../../../../redteam/triage/
+?? ../../../../../sweepctl.py
+?? ../../../../cells/opus-churn-msg/
+?? ../../../../cells/opus-msg-hard/
+?? ../../../../cells/qwen-churn-resp/
+?? ../../../../cells/qwen-resp-hard-1/
+?? ../../../../cells/qwen-resp-hard-2/
+?? ../../../../cells/sonnet-churn-msg/
+?? ../../../../cells/sonnet-msg/
+?? ../../../../cells/terra-churn-resp/
+?? ../../../../cells/terra-resp/
+?? ../../../
+355cfe4 feat(sampler): XW-ENC-AFFINITY-1 (apex-mf6) — deployment-affinity-aware ciphertext retention + reactive strip-fallback
+4deb029 feat(session): STOPREASON-TYPED-1 (apex-ayl.49) — typed terminal stop reasons
+eed9048 fix(sampler): XW-EMPTYID-1 (apex-ayl.69) — synthesize xw_ ids for persisted empty-id reasoning items pre-send

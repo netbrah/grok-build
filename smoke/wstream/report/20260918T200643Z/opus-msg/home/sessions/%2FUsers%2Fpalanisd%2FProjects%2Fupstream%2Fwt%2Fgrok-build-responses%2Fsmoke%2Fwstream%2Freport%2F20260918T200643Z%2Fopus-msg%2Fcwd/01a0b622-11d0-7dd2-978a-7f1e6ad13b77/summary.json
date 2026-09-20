@@ -1,0 +1,32 @@
+{
+  "info": {
+    "id": "01a0b622-11d0-7dd2-978a-7f1e6ad13b77",
+    "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260918T200643Z/opus-msg/cwd"
+  },
+  "agent_id": "ag1.661ded3d17b844d1b395e0cac7a3d1e0",
+  "attempt_id": "at1.e87db3ae223d435999ab1c4a8b67ab28",
+  "session_summary": "Modular exponentiation: 7^8432 mod 5557 by hand",
+  "created_at": "2026-09-18T20:08:01.264233Z",
+  "updated_at": "2026-09-18T20:08:45.762263Z",
+  "num_messages": 4,
+  "num_chat_messages": 9,
+  "current_model_id": "claude-opus-5",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "session_kind": "headless",
+  "git_root_dir": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/",
+  "git_remotes": [
+    "https://bitbucket.ngage.netapp.com/scm/apex/grok-build.git",
+    "https://github.com/netbrah/grok-build.git",
+    "https://github.com/xai-org/grok-build.git"
+  ],
+  "head_commit": "7c82fe7c75e068ab778d5dffda9191fa8348f018",
+  "head_branch": "feat/first-class-responses-catalog",
+  "request_id": "a1bd7bf2-8a8c-4c5a-ae1e-3aea8a062eae",
+  "grok_home": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260918T200643Z/opus-msg/home",
+  "last_active_at": "2026-09-18T20:08:45.762263Z",
+  "generated_title": "Modular exponentiation: 7^8432 mod 5557 by hand",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

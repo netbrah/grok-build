@@ -1,0 +1,43 @@
+{
+ "schema_version": 1,
+ "id": "MGW-STOPSEQ-01",
+ "title": "apex-ayl.112 RED ratchet (msgw-sweep F2) — stop_sequences typed-unread on the /v1/messages wire: pins body.stop_sequences PRESENCE on the main /v1/messages request. No config declaration is possible pre-cut (config_patch is scalar-only; the future cut defines the config surface — array of strings per docs GA L1088-ish) and the producer hardcodes stop_sequences: None (ST/conversation/messages.rs:937). stop_sequences is the only stop control besides end-of-turn; ignoring it is dangerous (operators cannot cap a runaway model mid-sentence). RED today (field missing); GREEN when the cut plumbs config -> request -> wire.",
+ "bead": "apex-ayl.112",
+ "suite": "wire-shape",
+ "tier": "slim",
+ "driver": "headless",
+ "model": "claude-sonnet-5",
+ "wirecap": true,
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: MGW-STOPSEQ-OK",
+   "timeout_s": 180
+  }
+ ],
+ "watchdog_s": 300,
+ "est_calls": 2,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error",
+    "label": "NO TERMINAL ERROR: the turn completed (the red is the stop_sequences seam, not the turn)."
+   }
+  ],
+  "wire": [
+   {
+    "kind": "field",
+    "id": "mgw_stopseq_red",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/messages" },
+    "last": 0,
+    "path": "body.stop_sequences",
+    "label": "RED PIN (F2): body.stop_sequences present on the wire. Pre-cut FAILs: producer hardcodes None (messages.rs:937) so the path is missing."
+   }
+  ]
+ },
+ "expected_red": { "id": "mgw-f2-stopseq" }
+}

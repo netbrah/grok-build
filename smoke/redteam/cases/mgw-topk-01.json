@@ -1,0 +1,47 @@
+{
+ "schema_version": 1,
+ "id": "MGW-TOPK-01",
+ "title": "apex-ayl.112 RED ratchet (msgw-sweep F2) — top_k typed-unread on the /v1/messages wire: the case declares model/claude-sonnet-5/top_k=40 (config_patch intent; the lenient row parser ignores unknown keys pre-cut) and pins body.top_k eq 40 on the main /v1/messages request. The trusted producer hardcodes top_k: None (ST/conversation/messages.rs:933; the thinking x top_k x top_p exclusivity validation exists at ST/request_builder.rs:109,707-735 but is unreachable). RED today (field missing -> the field pin fails 'missing'); GREEN when the cut plumbs config -> ConversationRequest -> wire with the exclusivity validation live.",
+ "bead": "apex-ayl.112",
+ "suite": "wire-shape",
+ "tier": "slim",
+ "driver": "headless",
+ "model": "claude-sonnet-5",
+ "wirecap": true,
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "config_patch": {
+  "model/claude-sonnet-5/top_k": 40
+ },
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: MGW-TOPK-OK",
+   "timeout_s": 180
+  }
+ ],
+ "watchdog_s": 300,
+ "est_calls": 2,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error",
+    "label": "NO TERMINAL ERROR: the turn completed (the red is the top_k seam, not the turn)."
+   }
+  ],
+  "wire": [
+   {
+    "kind": "field",
+    "id": "mgw_topk_red",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/messages" },
+    "last": 0,
+    "path": "body.top_k",
+    "eq": 40,
+    "label": "RED PIN (F2): the operator-declared top_k=40 rides the wire. Pre-cut FAILs: producer hardcodes None (messages.rs:933) so the path is missing."
+   }
+  ]
+ },
+ "expected_red": { "id": "mgw-f2-topk" }
+}

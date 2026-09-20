@@ -1,0 +1,27 @@
+--- a.txt:
+The old lighthouse kept a steady flame above the bay.
+Keepers climbed the spiral stair at every dusk.
+Gulls wheeled between the rocks and the lantern glass.
+The beam swept the water and called ships home.
+No storm could silence its patient warning light.
+--- b.txt:
+The old lighthouse kept a flickering flame above the bay.
+Keepers climbed the spiral stair at every dusk.
+Gulls circled between the rocks and the lantern glass.
+The beam swept the water and called ships home.
+No squall could silence its patient warning light.
+--- minidiff a.txt b.txt:
+EXIT_DIFF=1
+@@ -1,5 +1,5 @@
+-The old lighthouse kept a steady flame above the bay.
++The old lighthouse kept a flickering flame above the bay.
+ Keepers climbed the spiral stair at every dusk.
+-Gulls wheeled between the rocks and the lantern glass.
++Gulls circled between the rocks and the lantern glass.
+ The beam swept the water and called ships home.
+-No storm could silence its patient warning light.
++No squall could silence its patient warning light.
+WORD_OK: flickering
+WORD_OK: circled
+WORD_OK: squall
+EXIT_SAME=0

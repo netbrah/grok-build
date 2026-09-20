@@ -1,0 +1,21 @@
+{
+  "ts": "20260917T204415Z",
+  "cells": [
+    {
+      "cell": "grok-resp",
+      "verdict": "PASS",
+      "route": "responses",
+      "expected_route": "responses",
+      "status": 200,
+      "n_model_calls": 2,
+      "all_stream": true,
+      "reasoning_present": false,
+      "reasoning_tokens": 0,
+      "reasoning_encrypted_content": false,
+      "reasoning_thinking_block": false,
+      "budget_trap": false,
+      "final_text_len": 941
+    }
+  ],
+  "reanalyzed": true
+}

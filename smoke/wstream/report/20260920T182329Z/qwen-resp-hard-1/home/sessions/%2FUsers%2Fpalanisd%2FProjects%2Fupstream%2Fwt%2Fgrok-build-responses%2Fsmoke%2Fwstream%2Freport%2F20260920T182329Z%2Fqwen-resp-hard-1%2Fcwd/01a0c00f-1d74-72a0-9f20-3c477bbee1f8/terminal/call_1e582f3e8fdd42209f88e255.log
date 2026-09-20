@@ -1,0 +1,12 @@
+--- a.txt
++++ b.txt
+@@ -1,5 +1,5 @@
+ The -old +ancient lighthouse stood on the black cliffs.
+ Its beam swept the dark water every night.
+ Keeper Marlow trimmed the -wick +lamp at dawn.
+ Fog rolled in from the north each spring.
+ Ships followed the steady -light +glow to harbor.
+exit=1
+found: ancient
+found: lamp
+found: glow

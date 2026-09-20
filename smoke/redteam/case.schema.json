@@ -42,6 +42,7 @@
         "mcp-tool",
         "cross-wire",
         "compaction",
+        "cache-economics",
         "salvage",
         "recon",
         "session-resume"
@@ -381,6 +382,13 @@
           "type": "boolean",
           "default": false,
           "description": "Expected 'store' field on /v1/responses requests (the deployment runs store=false: reasoning items are NOT persisted upstream — the Azure rejection class 'items are not persisted when store is false', XREPLAY-1 pin (3/3))."
+        },
+        "proxy": {
+          "type": "string",
+          "enum": [
+            "none"
+          ],
+          "description": "L1 key-free hermetic mode (apex-2o6): 'none' declares a ZERO-LIVE-OP case — no proxy key is read, the hermetic home's base_url points at a dead local port, steps must carry no live model op (LIVE_MODEL_OPS: turn/switch/switch_model/kill/compact/mcp_call/subagent) and no rows, and the wire inputs are PRE-PLACED at the case-file sibling <case-stem>/wire/ (copied if-absent into the run dir). The full runner executes a proxy:none-only roster with CODEX_LLM_PROXY_KEY unset (key_sha=none in the report header)."
         },
         "home": {
           "type": "string",
@@ -766,7 +774,7 @@
     "wire_assert": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Assert over wiretap captures (in-tree check_wire kinds: field, grep, size_lt, count, resp_status, recon, golden). PIN FORMS and the count-tolerance lesson: 'nth' selects within the WHERE-FILTERED set sorted by capture time (nth=0 = NEWEST); a static nth breaks when the actual match count N differs from the pin's assumption (the B-i case bug: nth:1 out-of-range at N=1 -> case FAIL that was a case bug, not a product defect). Count-tolerant forms: 'any: true' = passes if ANY matched file matches (fail-closed on an empty set — the anti-vacuous default for premise/control pins), 'last: N' = Nth-from-oldest (nth = len-1-N), and a companion 'count' assert (min/max) that makes nth selections unambiguous (XREPLAY-1's 'exactly two requests' pin). Rule for new cases: NEVER pin a static nth >= 1 without a sibling count assert that bounds N; premise pins use any: true. kind=golden = the declarative WIRE-FORM byte pin: the selected capture's FULL request body, canonically serialized and normalized per the 'normalize' list, must equal the 'golden' fixture — the one compare engine, also called by the switch_model op's wire hook (R1C: the retired cell_diff is NOT a kind; the op scores its storage form itself and its wire form through this golden compare).",
+      "description": "Assert over wiretap captures (in-tree check_wire kinds: field, grep, size_lt, count, resp_status, recon, golden, resp_body, resp_stream). kind=resp_body = the RESPONSE-SIDE byte pin: the selected request's paired non-stream response body (resp-NNN.jsonl frame lines concatenated + JSON-parsed) vs the 'golden' fixture through the shared golden core — the 'normalize' paths are BODY-ROOT-RELATIVE (unlike kind=golden's capture-root paths); the fixture's top-level 'status' as an INT asserts the HTTP status in the same pin (popped from both sides — the body's own status field is subsumed) while a STRING status stays in the body compare. kind=resp_stream = the STREAM-FRAME surface pin: SSE frames parsed (comment/keep-alive frames skipped), 'drop' event names removed, min_frames/max_frames band on the post-drop count, and the fixture frame sequence matched in order ('mode': 'subsequence' default, interleaved tolerated; 'exact' = 1:1) with per-frame golden compare on the frame's data object. PIN FORMS and the count-tolerance lesson: 'nth' selects within the WHERE-FILTERED set sorted by capture time (nth=0 = NEWEST); a static nth breaks when the actual match count N differs from the pin's assumption (the B-i case bug: nth:1 out-of-range at N=1 -> case FAIL that was a case bug, not a product defect). Count-tolerant forms: 'any: true' = passes if ANY matched file matches (fail-closed on an empty set — the anti-vacuous default for premise/control pins), 'last: N' = Nth-from-oldest (nth = len-1-N), and a companion 'count' assert (min/max) that makes nth selections unambiguous (XREPLAY-1's 'exactly two requests' pin). Rule for new cases: NEVER pin a static nth >= 1 without a sibling count assert that bounds N; premise pins use any: true. kind=golden = the declarative WIRE-FORM byte pin: the selected capture's FULL request body, canonically serialized and normalized per the 'normalize' list, must equal the 'golden' fixture — the one compare engine, also called by the switch_model op's wire hook (R1C: the retired cell_diff is NOT a kind; the op scores its storage form itself and its wire form through this golden compare).",
       "properties": {
         "id": {
           "type": "string",
@@ -782,7 +790,9 @@
             "count",
             "resp_status",
             "recon",
-            "golden"
+            "golden",
+            "resp_body",
+            "resp_stream"
           ]
         },
         "file": {
@@ -791,7 +801,7 @@
         },
         "golden": {
           "type": "string",
-          "description": "kind=golden: fixture path relative to <case>/wire/ (the same base the 'file' glob resolves against). The fixture is the EXPECTED request body as a JSON document — the capture's full 'body', not a body.input extraction — authored AFTER normalization (an explicit null at every position the 'normalize' paths hit). Compare: canonical JSON of the selected capture's full request body (json.dumps sort_keys + compact separators — object key order insensitive; list order SIGNIFICANT: the input[] conversation order is semantic and projection must not reorder it, so no order-insensitive list normalization exists) vs the fixture, after the 'normalize' paths are nulled in the capture. Selection reuses the count-tolerance machinery exactly (nth=0 newest, last:N, any:true fail-closed on an empty set) — keep the companion 'count' assert that bounds N (the B-i lesson) and the 'where' scope (G10: where is REQUIRED on this scored kind). On mismatch the assert FAILs with a structured field-level diff (first 5 diverging canonical paths with got/want snippets) written to the case report dir — the diff is the TDD RED artifact."
+          "description": "kind=golden/resp_body/resp_stream: fixture path relative to <case>/wire/ (the same base the 'file' glob resolves against). kind=golden: the fixture is the EXPECTED request body as a JSON document — the capture's full 'body', not a body.input extraction — authored AFTER normalization (an explicit null at every position the 'normalize' paths hit). Compare: canonical JSON of the selected capture's full request body (json.dumps sort_keys + compact separators — object key order insensitive; list order SIGNIFICANT: the input[] conversation order is semantic and projection must not reorder it, so no order-insensitive list normalization exists) vs the fixture, after the 'normalize' paths are nulled in the capture. kind=resp_body: the fixture is the EXPECTED response body document (top-level int 'status' = HTTP assert, see the wire_assert description); kind=resp_stream: the fixture is {status (int HTTP assert), mode, frames:[{event, data (authored AFTER per-frame normalization)}]}. Selection reuses the count-tolerance machinery exactly (nth=0 newest, last:N, any:true fail-closed on an empty set) — keep the companion 'count' assert that bounds N (the B-i lesson) and the 'where' scope (G10: where is REQUIRED on this scored kind). On mismatch the assert FAILs with a structured field-level diff (first 5 diverging canonical paths with got/want snippets) written to the case report dir — the diff is the TDD RED artifact."
         },
         "normalize": {
           "type": "array",
@@ -818,6 +828,11 @@
         "grep": {
           "type": "string",
           "description": "kind=grep: substring over the file's raw text. kind=recon: the line-filter for the recorded slice. Captures are pretty-printed JSON (2-space indent), so grep JSON shapes with the spaced form: '\"name\": \"use_tool\"', '\"type\": \"function_call_output\"'."
+        },
+        "regex": {
+          "type": "boolean",
+          "default": false,
+          "description": "kind=grep: true = 'grep' is a Python regex (re.search over the file's raw text) instead of a literal substring (the default, which every pre-existing case relies on). REQUIRED for resp-frame value-class pins: resp-NNN.jsonl carries each SSE payload JSON-ESCAPED inside the 'frame' string, so a literal needle must hand-escape every quote (the T21 escaped-quote precedent) and cannot express a class at all (e.g. 'non-zero'). Escape-tolerant form for an escaped-JSON key: key + optional-backslash + quote + optional whitespace + value class (worked example: CW-WRITE-USAGE-01). Frame payloads are COMPACT JSON — no space after the colon, so use \\s* rather than a literal space. Fail-closed: an uncompilable pattern is a harness failure, not a 0-hit. (CW-WRITE-USAGE-01 lesson: a literal '[1-9]' is four literal characters — the pin was silently dead and produced a false VACUOUS.)"
         },
         "absent": {
           "type": "boolean",
@@ -875,6 +890,31 @@
           "type": "integer",
           "minimum": 0,
           "description": "kind=size_lt: the selected file must be smaller than this many bytes (salvage/truncation budget pins)."
+        },
+        "drop": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "kind=resp_stream: SSE event names removed from the actual frame sequence BEFORE the count band + the subsequence/exact compare (volatile terminal bookkeeping, e.g. response.created)."
+        },
+        "min_frames": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "kind=resp_stream: minimum POST-DROP frame count (the storm-band floor; the COMP-3 pattern, response-side)."
+        },
+        "max_frames": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "kind=resp_stream: maximum POST-DROP frame count (the storm-band ceiling)."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "subsequence",
+            "exact"
+          ],
+          "description": "kind=resp_stream: 'subsequence' (default) = the fixture frames must appear IN ORDER in the post-drop actual sequence (interleaved chunks tolerated); 'exact' = 1:1 length + per-frame match (opt-in; the mint-from-capture roundtrip pattern)."
         },
         "base": {
           "type": "string",

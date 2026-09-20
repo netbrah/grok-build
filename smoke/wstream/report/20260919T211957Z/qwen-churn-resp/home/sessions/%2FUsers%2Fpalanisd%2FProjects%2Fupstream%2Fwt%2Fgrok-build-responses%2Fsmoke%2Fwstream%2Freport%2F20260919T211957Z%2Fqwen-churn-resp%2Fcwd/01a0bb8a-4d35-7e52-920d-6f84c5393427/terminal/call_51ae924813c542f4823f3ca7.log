@@ -1,0 +1,15 @@
+
+CodeGraph Status
+
+Project: /Users/palanisd/Projects/upstream/wt/grok-build-responses
+
+Index Statistics:
+  Files:     3,230
+  Nodes:     121,682
+  Edges:     559,454
+  DB Size:   545.89 MB
+  WAL Size:  0.01 MB
+  Backend:   node:sqlite — built-in (full WAL)
+  Journal:   wal
+
+Nodes by Kind:

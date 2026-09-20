@@ -1,0 +1,23 @@
+FF
+======================================================================
+FAIL: test_produces_no_output_for_identical_files (tests.test_minidiff.MinidiffTests.test_produces_no_output_for_identical_files)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T181953Z/terra-resp/cwd/tests/test_minidiff.py", line 47, in test_produces_no_output_for_identical_files
+    self.assertEqual(result.returncode, 0)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 2 != 0
+
+======================================================================
+FAIL: test_reports_word_substitution_in_a_unified_hunk (tests.test_minidiff.MinidiffTests.test_reports_word_substitution_in_a_unified_hunk)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T181953Z/terra-resp/cwd/tests/test_minidiff.py", line 37, in test_reports_word_substitution_in_a_unified_hunk
+    self.assertEqual(result.returncode, 1)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 2 != 1
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.102s
+
+FAILED (failures=2)

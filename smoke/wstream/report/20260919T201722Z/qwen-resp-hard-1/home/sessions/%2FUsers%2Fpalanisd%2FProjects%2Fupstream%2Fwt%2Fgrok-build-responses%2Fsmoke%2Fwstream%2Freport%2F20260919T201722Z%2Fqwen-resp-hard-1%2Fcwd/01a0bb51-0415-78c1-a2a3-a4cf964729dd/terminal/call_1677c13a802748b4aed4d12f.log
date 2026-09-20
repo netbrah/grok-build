@@ -1,0 +1,20 @@
+=== a.txt vs b.txt: APPLY_OK
+=== /tmp/ma.txt vs /tmp/mc.txt: APPLY_OK
+=== /tmp/ma.txt vs /tmp/mb.txt: APPLY_OK
+=== /tmp/me.txt vs /tmp/mx.txt: APPLY_OK
+=== /tmp/mx.txt vs /tmp/me.txt: APPLY_OK
+=== multi-hunk: APPLY_OK
+APPLY_OK
+APPLY_OK
+APPLY_OK
+Traceback (most recent call last):
+  File "<stdin>", line 33, in <module>
+  File "<frozen importlib._bootstrap_external>", line 759, in exec_module
+  File "<frozen importlib._bootstrap>", line 491, in _call_with_frames_removed
+  File "/tmp/check_hunk.py", line 29, in <module>
+    got = apply(la, p.stdout)
+  File "/tmp/check_hunk.py", line 16, in apply
+    assert lines_a[oi] == t, (lo, lines_a[oi], t)
+           ~~~~~~~^^^^
+IndexError: list index out of range
+ROUNDTRIP_FAILURES

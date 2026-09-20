@@ -1,0 +1,42 @@
+[02:01:51] wstream: 10 cell(s) · bin sha256_12 f9e7a15d6b6b · upstream https://llm-proxy-api.ai.eng.netapp.com
+[02:01:51] cell grok-resp: model=grok-4.6 backend=responses wire=responses turns=1
+[02:02:44] cell grok-resp: turn 1 exit=0 killed=False elapsed=52.5s sid=01a0b841
+[02:02:44] cell grok-resp: verdict=PASS
+[02:02:44] cell sol-resp: model=gpt-5.6-sol backend=responses wire=responses turns=1
+[02:03:12] cell sol-resp: turn 1 exit=0 killed=False elapsed=27.8s sid=01a0b842
+[02:03:13] cell sol-resp: verdict=PASS
+[02:03:13] cell opus-msg: model=claude-opus-5 backend=messages wire=messages turns=1
+[02:04:07] cell opus-msg: turn 1 exit=0 killed=False elapsed=54.5s sid=01a0b843
+[02:04:07] cell opus-msg: verdict=PASS
+[02:04:07] cell gemini-resp: model=gemini-3.1-pro-preview backend=responses wire=responses turns=1
+[02:05:03] cell gemini-resp: turn 1 exit=1 killed=False elapsed=54.9s sid=
+[02:05:03] cell gemini-resp: verdict=PASS
+[02:05:03] cell qwen-resp: model=qwen3.8-27b backend=responses wire=responses turns=1
+[02:08:03] cell qwen-resp: turn 1 exit=-9 killed=True elapsed=180.0s sid=
+[02:08:03] cell qwen-resp: verdict=PASS
+[02:08:03] cell glm-resp: model=glm-5.2 backend=responses wire=responses turns=1
+[02:09:33] cell glm-resp: turn 1 exit=0 killed=False elapsed=90.1s sid=01a0b847
+[02:09:33] cell glm-resp: verdict=PASS
+[02:09:33] cell sol-msg: model=gpt-5.6-sol backend=messages wire=messages turns=1
+[02:10:04] cell sol-msg: turn 1 exit=0 killed=False elapsed=30.0s sid=01a0b848
+[02:10:04] cell sol-msg: verdict=PASS
+[02:10:04] cell qwen-msg: model=qwen3.8-27b backend=messages wire=messages turns=1
+[02:10:09] cell qwen-msg: turn 1 exit=1 killed=False elapsed=5.2s sid=
+[02:10:09] cell qwen-msg: verdict=FAIL
+[02:10:09] cell gemini-msg: model=gemini-3.1-pro-preview backend=messages wire=messages turns=1
+[02:10:14] cell gemini-msg: turn 1 exit=1 killed=False elapsed=4.6s sid=
+[02:10:14] cell gemini-msg: verdict=FAIL
+[02:10:14] cell grok-chat: model=grok-4.6 backend=chat_completions wire=chat/completions turns=1
+[02:11:01] cell grok-chat: turn 1 exit=0 killed=False elapsed=46.7s sid=01a0b849
+[02:11:01] cell grok-chat: verdict=PASS
+[02:11:01] wstream done: 10 cell(s) · matrix /Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T060151Z/matrix.json
+[02:11:01]   grok-resp        verdict=PASS   route=responses        status=200 stream=True reasoning=False
+[02:11:01]   sol-resp         verdict=PASS   route=responses        status=200 stream=True reasoning=True
+[02:11:01]   opus-msg         verdict=PASS   route=messages         status=200 stream=True reasoning=True
+[02:11:01]   gemini-resp      verdict=PASS   route=responses        status=200 stream=True reasoning=True
+[02:11:01]   qwen-resp        verdict=PASS   route=responses        status=200 stream=True reasoning=True
+[02:11:01]   glm-resp         verdict=PASS   route=responses        status=200 stream=True reasoning=True
+[02:11:01]   sol-msg          verdict=PASS   route=messages         status=200 stream=True reasoning=False
+[02:11:01]   qwen-msg         verdict=FAIL   route=messages         status=400 stream=True reasoning=False
+[02:11:01]   gemini-msg       verdict=FAIL   route=messages         status=403 stream=True reasoning=False
+[02:11:01]   grok-chat        verdict=PASS   route=chat/completions status=200 stream=True reasoning=False

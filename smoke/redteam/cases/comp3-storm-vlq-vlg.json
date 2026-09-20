@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "id": "COMP3-STORM-VLQ-VLG",
+  "title": "ADVERSARIAL-CASES-1 case 2 (ADV1-R1): COMP-3 compact-storm boundary — the family switch colliding with the preemptive compaction arm. SEED-FREE LIVE (no cell, no seed — the brief's COMPACT-ACP-EXPLICIT draft used the SCHEMA-EXT-1 seed_context op, which the frozen engine does not have): a real qwen3.8-27b thinking turn (vlq seat, responses wire, vLLM-dialect) mints the model-minted reasoning history, then a mid-session ACP switch to glm-5.2 (vlg) is a FAMILY SWITCH (is_family_switch, model_switch.rs:60-68 — both model_family values set+distinct) that fires the preemptive lossy compact wall BEFORE the first post-switch request (wall model_switch.rs:144-163, the vlq-vlg live-behavior note reads 148-163; strip_reasoning_blocks, compaction_utils.rs:89-94 — the documented silent-loss class). The verdict surface is the CALL COUNT, not the phrasing (triage COMP-3 count-band row: c2<=18 band, R3 guard): if the compact request 400s on the target wire (the glm-5.2 vllm Responses->ChatCompletions shim rejecting responses-dialect content parts — signature #14 class; or the #16 W4 phrasing 'Unsupported Responses API input item type: compaction_trigger' if a v2 trigger item rides), the pre-.82 shape is the 15x same-payload compact storm (max_retries=15, incident 01a09be2 lineage — 'Compaction failed - this conversation can't be summarized.'); COMPACT-BOUNDARM-1 (apex-ayl.82) is the bounding arm under test: model-bound strip-once + stripped retry on BOTH compact paths + the byte-identical-replay stop (report-and-stop after one strip). PREDICTED: PASS = the post-switch turn completes (no acp_error), the glm request count lands in 1..18 (2 = clean compact+turn or compact-absent direct 200; 3..17 = the .82 storm class is recorded, not masked — the bound held), the FINAL glm request is a 200, and no request carries store=true. RED semantics: count >=18 = storm beyond the documented band = defect; a 400/503 FINAL on the glm boundary = the 01a09be2 collapse class (session unusable) = defect; a NEW 400 phrasing outside signatures #14/#16 = an unclassified shape = exercise failure (STOP-1: triage row + cell + bead, same session). STOP discipline (house rule): any unexpected failing pin (acp_error present, storm beyond band, watchdog, engine error) or a new error phrasing -> capture the verbatim body from resp-*.jsonl and report-and-stop.",
+  "bead": "apex-dqa",
+  "suite": "compaction",
+  "tier": "slim",
+  "driver": "acp",
+  "model": "qwen3.8-27b",
+  "wire": "responses",
+  "wirecap": true,
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "env": {
+    "store": false
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Think step by step: why does a hash table degrade toward a linked list as the load factor climbs past 1? Show the collision math, then the answer.",
+      "timeout_s": 300
+    },
+    {
+      "op": "switch",
+      "model": "glm-5.2",
+      "via": "acp"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: COMP3-VLQ-VLG-POSTSW1",
+      "timeout_s": 300
+    },
+    {
+      "op": "recon_note",
+      "note": "VERDICT SURFACE = CALL COUNT, not phrasing (the COMP-3 count-band row, R3 c2<=18 guard). The .82 COMPACT-BOUNDARM-1 (model-bound strip-once + stripped retry on BOTH compact paths + byte-identical-replay stop) is the bounding arm under test; the glm band 1..18 records the storm class without masking it: 3..17 = the pre-boundarm same-payload shape is still live but the bound held — a FINDING to adjudicate against the .82 close, never a silent pass; >=18 = defect beyond the documented band -> report-and-stop. NO-SEED live design: the live qwen turn mints the reasoning ride; if the wall's compact SUCCEEDS the ride is eaten (documented silent-loss class, vlq-vlg finding 3) and the band reads 2 — the RIDE RECORD recon pin distinguishes the two 2-shapes (compact+turn vs compact-absent direct) for coordinator review. The local self-summarize path is expected (remote_compaction_v2=false, live config line 429) — the xai-compact- req-id recon pin confirms which compact path rode the wire. A 400 FINAL on the glm boundary = the 01a09be2 collapse class -> STOP."
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 6,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "LIVENESS: the post-switch glm turn did not die — the storm (if any) was bounded and the turn completed. An acp_error here = the collapse class (01a09be2 lineage) or a classifier fall-through to Fatal (retry.rs:186) -> report-and-stop."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "count",
+        "id": "glm_band",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "glm-5.2"
+        },
+        "min": 1,
+        "max": 18,
+        "label": "COMP-3 BOUND (c2<=18, R3 guard): 2 = clean (compact 200 + post-switch 200) or compact-absent + direct 200; 3..17 = the .82 COMP-3 compact-storm class (same-payload compact retry, max_retries=15) + post-switch — recorded, not masked (the bound held, the arm's behavior is the finding); >=18 = storm beyond the documented band = defect -> report-and-stop."
+      },
+      {
+        "kind": "resp_status",
+        "id": "glm_final_200",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "glm-5.2"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "RECOVERY GATE: the FINAL glm request reached 200 (storm bounded + reactive strip/repair recovered, or a clean first-try). A 400/503 final = the compact storm did not recover = the 01a09be2 collapse class -> capture the phrasing (STORM PHRASING recon) and report-and-stop."
+      },
+      {
+        "kind": "grep",
+        "id": "store_false",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"store\": true",
+        "label": "STORE=FALSE INVARIANT (ROE-1, S9 exfil watch): no captured request (qwen OR glm) carries store=true — the proxy rejects store=true and a leak would be server-side persistence."
+      },
+      {
+        "kind": "recon",
+        "file": "resp-*.jsonl",
+        "grep": "Unsupported Responses API input item type|Compaction failed|input_text|array too long",
+        "label": "STORM PHRASING CAPTURE (recon, non-scoring): ANY 400/error body phrasing from the response captures, VERBATIM — signature #16 (W4 compaction_trigger), #14 (vllm shim input_text), or a NEW unclassified phrasing. A new shape = the classifier/triage deliverable (STOP-1). A clean run shows nothing here — that is expected."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "\"type\": \"reasoning\"",
+        "label": "RIDE RECORD (recon, non-scoring): records whether ANY captured request carried a reasoning input item — the qwen pre-switch requests = the premise ride (the live turn minted reasoning); glm post-switch requests = survival across the wall. All-MISS = the wall's lossy compact ate the ride (documented silent-loss class, vlq-vlg finding 3) or the premise turn minted none — adjudicate against the qwen request bodies on review."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "xai-compact-",
+        "label": "COMPACT-PATH RECORD (recon, non-scoring): the xai-compact- req-id lines — 1 hit = the local self-summarize compact fired on the wire (remote_compaction_v2=false, live config line 429); 0 = the wall compact did not ride the wire (or the remote arm flipped) — pair with the glm count band to adjudicate the storm shape."
+      },
+      {
+        "kind": "recon",
+        "base": "session",
+        "file": "compaction_requests/*.json",
+        "field": "$.attempts",
+        "label": "COMPACT ATTEMPT RECORD (recon, non-scoring): the compaction_requests artifact attempt count (ws9-s05 evidence surface) — 1 = clean or single strip-once; >1 = stripped-retry observed (the .82 boundarm arm behavior) for the storm-band adjudication. recon — always records, never fails."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

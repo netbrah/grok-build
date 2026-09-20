@@ -1,0 +1,11 @@
+{"ts_ms":1789928810976,"kind":"start","pid":68899,"version":"1.0.24"}
+{"ts_ms":1789928810978,"kind":"sample","footprint_bytes":62964648,"rss_bytes":122175488,"threads":61,"alloc":{"allocated":35669120,"active":59949056,"resident":76054528,"mapped":188514304,"retained":0,"metadata":11783336}}
+{"ts_ms":1789928840979,"kind":"sample","footprint_bytes":63194024,"rss_bytes":122437632,"threads":61,"alloc":{"allocated":35520392,"active":60162048,"resident":76070912,"mapped":188530688,"retained":0,"metadata":11784488}}
+{"ts_ms":1789928870981,"kind":"sample","footprint_bytes":63390632,"rss_bytes":122634240,"threads":61,"alloc":{"allocated":35515312,"active":60030976,"resident":76251136,"mapped":188710912,"retained":0,"metadata":11786024}}
+{"ts_ms":1789928900983,"kind":"sample","footprint_bytes":63374248,"rss_bytes":122617856,"threads":61,"alloc":{"allocated":35433120,"active":60014592,"resident":76201984,"mapped":188661760,"retained":0,"metadata":11786024}}
+{"ts_ms":1789928930985,"kind":"sample","footprint_bytes":63423400,"rss_bytes":122667008,"threads":61,"alloc":{"allocated":35503536,"active":60030976,"resident":76152832,"mapped":188612608,"retained":0,"metadata":11786024}}
+{"ts_ms":1789928960987,"kind":"sample","footprint_bytes":64897960,"rss_bytes":125648896,"threads":61,"alloc":{"allocated":36668272,"active":60948480,"resident":77856768,"mapped":190316544,"retained":0,"metadata":11789864}}
+{"ts_ms":1789928990989,"kind":"sample","footprint_bytes":67191720,"rss_bytes":129630208,"threads":61,"alloc":{"allocated":38398264,"active":62799872,"resident":80150528,"mapped":192577536,"retained":0,"metadata":11805224}}
+{"ts_ms":1789929020995,"kind":"sample","footprint_bytes":67601320,"rss_bytes":130695168,"threads":61,"alloc":{"allocated":39673632,"active":64339968,"resident":80756736,"mapped":193167360,"retained":0,"metadata":11815208}}
+{"ts_ms":1789929050999,"kind":"sample","footprint_bytes":69223336,"rss_bytes":132317184,"threads":61,"alloc":{"allocated":39918776,"active":64831488,"resident":82280448,"mapped":194691072,"retained":0,"metadata":11819048}}
+{"ts_ms":1789929081005,"kind":"sample","footprint_bytes":70271912,"rss_bytes":133578752,"threads":61,"alloc":{"allocated":40185696,"active":64962560,"resident":83525632,"mapped":195919872,"retained":0,"metadata":11826728}}

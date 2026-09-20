@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "id": "MXAI-C03",
+  "title": "MERGE-XAI-SYNC C-03 (PIN M5/MW-1, cache-breakpoint sentinel) — sonnet /v1/messages lane (frozen lane L-03, the ours' MW-1 pin ratified 'take ours' in 04 §1). Scenario per 06: a session whose history ends with an assistant message, then a NEW turn — the harness appends the synthetic-user sentinel and the TIP cache breakpoint must land on the SENTINEL, not the assistant block. Live shape (verified in-tree, xai-grok-sampling-types conversation/messages.rs:368-461 + messages_tests.rs MW-1 suite): trailing assistant with no tool_use → sentinel text '[Continue]' (with tool_use → '[Awaiting tool result]'); breakpoint layout = stable-HEAD system block carrying ttl '1h' (our cache_ttl='1h' config pin, M5 ours-side CMO field) + TIP breakpoint on the sentinel as plain 5m ephemeral (no ttl key — every 1h breakpoint precedes every 5m on the wire). Scored pins: (1) CONTROL (anti-vacuous): the LATEST messages request of the session carries cache_control at all (no cache_control = the breakpoint mechanism did not fire = VACUOUS); (2) SENTINEL: the latest request carries the '[Continue]' synthetic-user sentinel (the trailing-assistant shape was actually exercised); (3) TIP-ON-SENTINEL-REQUEST: the latest request (the one with the sentinel) carries the tip breakpoint (cache_control present on the same request); (4) HEAD-TTL-1H (our pin): the latest request carries ttl '1h' (the ours-side stable-head breakpoint survived the merge; a head without the 1h ttl = the theirs-side-only shape landed = our M5 cache_ttl pin regressed). PARTIAL DRIVER GAP (C-03): exact block-level placement — 'cache_control on the synthetic-user sentinel block, NOT on the assistant block' — is a positional JSON assertion the driver cannot express (grep is positional-agnostic; the sentinel/assistant block indices are not stable JSON paths). Best-effort: the recon pin records the cache_control context lines of the newest capture for coordinator review (the scored pins above bound the request-level shape; the block-level adjudication is the recon). VERDICT: PASS = all four scored pins green + recon reviewed; a '[Awaiting tool result]' sentinel instead of '[Continue]' (the tool_use variant) on this no-tool session = the sentinel selection regressed (adjudicate on the recon).",
+  "bead": "apex-l2d.4",
+  "suite": "cache-economics",
+  "tier": "full",
+  "driver": "headless",
+  "model": "claude-sonnet-5",
+  "wire": "messages",
+  "output_format": "streaming-json",
+  "wirecap": true,
+  "est_calls": 3,
+  "watchdog_s": 300,
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: MXAI-C03-T1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: MXAI-C03-T2"
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error",
+        "label": "NO TERMINAL ERROR: both turns completed without an unrecovered error (the two-turn session is the premise of the trailing-assistant shape)."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "MXAI-C03-T2",
+        "label": "SESSION ADVANCED: the second turn (the one that must carry the sentinel + tip breakpoint) closed with the exact terminal text — the trailing-assistant → new-turn sequence actually ran."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "id": "cache_control_present",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "nth": 0,
+        "grep": "cache_control",
+        "label": "CONTROL (anti-vacuous pin): the LATEST /v1/messages request of the session carries a cache_control breakpoint. 0-hit = the breakpoint mechanism never fired on the messages wire = VACUOUS (every other pin would score an empty shape)."
+      },
+      {
+        "kind": "grep",
+        "id": "sentinel_continue",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "nth": 0,
+        "grep": "[Continue]",
+        "label": "SENTINEL PIN (MW-1 three-part replay rule): the latest request — the new turn over a trailing-assistant session with no tool_use — carries the synthetic-user '[Continue]' sentinel. Absent = the trailing-assistant shape was not exercised (VACUOUS-adjacent; adjudicate) or the sentinel insertion regressed. A '[Awaiting tool result]' variant here would be the wrong sentinel for a no-tool session (adjudicate on the recon)."
+      },
+      {
+        "kind": "grep",
+        "id": "tip_breakpoint",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "nth": 0,
+        "grep": "ephemeral",
+        "label": "TIP BREAKPOINT PRESENT: the latest request carries the ephemeral breakpoint marker (tip + head). Combined with the sentinel pin this is the request-level form of 'cache_control lands on the sentinel request'; the block-level placement adjudication is the recon pin below (DRIVER GAP C-03, partial)."
+      },
+      {
+        "kind": "grep",
+        "id": "head_ttl_1h",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "nth": 0,
+        "grep": "\"ttl\": \"1h\"",
+        "label": "HEAD-TTL-1H PIN (the M5 ours-side cache_ttl pin, 04 §1 'take ours' MW-1): the latest request's stable-head breakpoint carries ttl 1h (config cache_ttl='1h' on claude-sonnet-5). A head breakpoint without the 1h ttl (the theirs-side-only 5m-everywhere shape) = our cache_ttl pin was dropped in the merge = defect -> STOP."
+      },
+      {
+        "kind": "count",
+        "id": "msg_calls",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "min": 2,
+        "max": 5,
+        "label": "REQUEST BAND: 2 = the clean shape (T1 + T2); 3-5 = tolerated side calls (title refresh etc.) around the two turns; <2 = the two-turn premise failed (adjudicate); >5 = storm -> STOP."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "cache_control",
+        "label": "PLACEMENT RECORD (recon, the partial-gap adjudication surface): the cache_control context lines across ALL message-request captures of this run — the block-level assertion (the TIP breakpoint sits on the synthetic-user sentinel block; the assistant block carries none) is NOT mechanically expressible in the driver (positional JSON path); the coordinator reviews this record against the MW-1 contract. A cache_control on an assistant-message block = the MW-1 pin regressed -> defect."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true,
+    "vacuous_if": [
+      {
+        "pin": "cache_control_present",
+        "class": "model"
+      },
+      {
+        "pin": "sentinel_continue",
+        "class": "model"
+      }
+    ]
+  },
+  "retry": {
+    "on_status": [
+      404,
+      502,
+      503
+    ],
+    "max_attempts": 1,
+    "backoff_s": 30
+  }
+}

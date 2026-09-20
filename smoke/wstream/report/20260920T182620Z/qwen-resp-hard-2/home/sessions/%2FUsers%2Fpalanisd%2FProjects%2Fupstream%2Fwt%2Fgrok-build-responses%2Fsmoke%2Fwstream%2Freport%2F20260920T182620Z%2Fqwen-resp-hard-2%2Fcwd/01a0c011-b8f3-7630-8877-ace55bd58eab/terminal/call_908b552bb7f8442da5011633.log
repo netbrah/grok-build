@@ -1,0 +1,19 @@
+substitution: 'granite' -> 'basalt'
+substitution: 'dusk' -> 'dawn'
+substitution: 'fraying' -> 'worn'
+fixtures verified: exactly 3 single-word substitutions
+--- final run ---
+@@ -1,5 +1,5 @@
+The old lighthouse stood on the [-granite-]{+basalt+} headland,
+ its beam sweeping slow circles across the dark water.
+-Keepers climbed the spiral stairs each [-dusk-] without fail,
+-trimming the [-fraying-] rope and polishing the great glass.
++Keepers climbed the spiral stairs each {+dawn+} without fail,
++trimming the {+worn+} rope and polishing the great glass.
+ By morning the fog had lifted, and the sea lay still.
+exit=1
+--- substituted words in output ---
+OK: basalt
+OK: dawn
+OK: worn
+VERIFICATION PASSED

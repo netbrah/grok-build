@@ -1,0 +1,8 @@
+ta: ['alpha', 'one', '<NL>', 'beta', 'two', '<NL>', 'gamma', 'three', '<NL>', 'delta', 'four', '<NL>']
+tb: ['alpha', 'one', '<NL>', 'gamma', 'three', '<NL>', 'delta', 'four', '<NL>']
+bounds_a: [(0, 3), (3, 6), (6, 9), (9, 12)]
+bounds_b: [(0, 3), (3, 6), (6, 9)]
+('equal', 0, 2, 0, 2)
+('delete', 2, 5, 2, 2)
+('equal', 5, 12, 2, 9)
+longest: Match(a=5, b=2, size=7)

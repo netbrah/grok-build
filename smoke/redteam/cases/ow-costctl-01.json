@@ -1,0 +1,75 @@
+{
+ "schema_version": 1,
+ "id": "OW-COSTCTL-01",
+ "title": "apex-ayl.118 RED ratchet (openai side sweep F2+F11, GREEN path apex-ayl.102/.104) — cost levers unreachable on the responses wire: the case declares model/gpt-5.6-sol/service_tier=auto, max_tool_calls=5, parallel_tool_calls=false (config_patch intent; the lenient row parser ignores the keys pre-cut) and pins each field on the /v1/responses requests. The fork hardcodes all three to None (ST/conversation/responses.rs:203 service_tier, :187 max_tool_calls, :190 parallel_tool_calls — sweep F2 + F11), so the cost levers can never ride the wire. RED today (all three red pins 0-hit); GREEN when the apex-ayl.102/.104 cuts plumb config -> wire. Control pin (class harness, plain assert): body.model eq gpt-5.6-sol on the main (oldest) request — the harness always sends the model, so a miss is a harness failure, never vacuous.",
+ "bead": "apex-ayl.118",
+ "suite": "wire-shape",
+ "tier": "slim",
+ "driver": "headless",
+ "model": "gpt-5.6-sol",
+ "wirecap": true,
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "config_patch": {
+  "model/gpt-5.6-sol/service_tier": "auto",
+  "model/gpt-5.6-sol/max_tool_calls": 5,
+  "model/gpt-5.6-sol/parallel_tool_calls": false
+ },
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: OW-COSTCTL-OK",
+   "timeout_s": 180
+  }
+ ],
+ "watchdog_s": 300,
+ "est_calls": 2,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error",
+    "label": "NO TERMINAL ERROR: the turn completed (the red is the cost-lever seam, not the turn)."
+   }
+  ],
+  "wire": [
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses" },
+    "last": 0,
+    "path": "body.model",
+    "eq": "gpt-5.6-sol",
+    "label": "CONTROL (class harness): the main request carries the session model — the harness always does; a miss is a harness failure, never vacuous."
+   },
+   {
+    "kind": "grep",
+    "id": "ow_costctl_red1",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses" },
+    "any": true,
+    "grep": "service_tier",
+    "label": "RED PIN (F2, member 1): a /v1/responses request carries service_tier. Pre-cut FAILs: the producer hardcodes None (responses.rs:203)."
+   },
+   {
+    "kind": "grep",
+    "id": "ow_costctl_red2",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses" },
+    "any": true,
+    "grep": "max_tool_calls",
+    "label": "RED PIN (F11, member 2): a /v1/responses request carries max_tool_calls. Pre-cut FAILs: the producer hardcodes None (responses.rs:187)."
+   },
+   {
+    "kind": "grep",
+    "id": "ow_costctl_red3",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses" },
+    "any": true,
+    "grep": "parallel_tool_calls",
+    "label": "RED PIN (F11, member 3): a /v1/responses request carries parallel_tool_calls. Pre-cut FAILs: the producer hardcodes None (responses.rs:190)."
+   }
+  ]
+ },
+ "expected_red": { "id": "ow-f2f11-costctl" }
+}

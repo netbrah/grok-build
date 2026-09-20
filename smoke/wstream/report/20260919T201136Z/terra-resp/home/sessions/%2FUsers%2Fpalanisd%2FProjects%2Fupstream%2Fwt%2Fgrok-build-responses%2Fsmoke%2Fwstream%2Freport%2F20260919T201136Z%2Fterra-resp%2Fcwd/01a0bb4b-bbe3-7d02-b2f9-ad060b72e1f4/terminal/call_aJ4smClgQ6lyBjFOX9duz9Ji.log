@@ -1,0 +1,23 @@
+FF
+======================================================================
+FAIL: test_identical_files_are_silent_and_successful (tools.test_minidiff.MiniDiffTest.test_identical_files_are_silent_and_successful)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T201136Z/terra-resp/cwd/tools/test_minidiff.py", line 76, in test_identical_files_are_silent_and_successful
+    self.assertEqual(result.returncode, 0)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 2 != 0
+
+======================================================================
+FAIL: test_reports_word_substitutions_in_a_single_context_hunk (tools.test_minidiff.MiniDiffTest.test_reports_word_substitutions_in_a_single_context_hunk)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T201136Z/terra-resp/cwd/tools/test_minidiff.py", line 59, in test_reports_word_substitutions_in_a_single_context_hunk
+    self.assertEqual(result.returncode, 1)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 2 != 1
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.112s
+
+FAILED (failures=2)

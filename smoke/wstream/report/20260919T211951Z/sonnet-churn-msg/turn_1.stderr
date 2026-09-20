@@ -1,0 +1,1 @@
+Error: Internal error: "request validation failed: context item message[0] estimates 10376 tokens; per-item limit 10000 (non-retryable, local)"

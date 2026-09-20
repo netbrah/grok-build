@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "id": "CW-STABLE-REMINDER-01",
+  "title": "apex-ayl.110 (STABLE-REMINDER-1) RED ratchet — mid-prefix dynamic MCP <system-reminder> byte churn invalidates the provider cache (H3 / v2 lever 4): pre-cut signature = cached tokens STUCK across turns while cache_write SPIKES (t21 redteam: req-006/007 cached stuck at 10,315 with cw 6,969/8,617; sol v2 medium n=7 cw=7,705 after a reminder change; 113,004 tok/turn cache_write at the worst instance; the D<->R one-time swap req-06->req-07 is the byte-level divergence point, ratified in 110-stable-reminder-sdd-ratify-root-20260919.md). DISABLED: the scored RED/GREEN contract requires a prefix-invariant assert kind (byte-identical shared prefix across consecutive requests + per-turn cached_tokens monotonicity) that the frozen runner does not have — owed to the runner lane (smoke/redteam/run.py, sibling-owned; bead note 2026-09-19: 'LIVE redteam ratchet CASE deferred — needs a new prefix-invariant assert kind in run.py'). The OFFLINE fixture ratchet is already live in the meantime: smoke/redteam/test_parity_stablereminder.py + fixtures/parity/110/ (--gate on the recorded t21 wire exit 1 = documented RED; post-cut captures -> exit 0 = GREEN). CONTRACT (runs once the kind lands): headless gpt-5.6-sol (responses wire — the churn-reproducing seat; it did NOT reproduce on v1 qwen at 99.0-99.7% cached, so the qwen arm is the cut's REGRESSION gate, a separate row, not a beneficiary of this pin), codegraph MCP cell so the dynamic reminder surface is live (the connecting->connected state transition mid-session is the byte-changing event), 3 turns. RED (pre-cut) = between T2 and T3 (reminder state unchanged) the shared request prefix is NOT byte-identical (D<->R flip class) AND/OR cached_tokens(T3) <= cached_tokens(T1) (stuck) with a cache_write spike on T3. GREEN (post-cut, append-only emission — NEVER rewrite an already-emitted reminder; state transitions emit as NEW tail-position reminders) = T2<->T3 shared prefix byte-identical (sha256), cached_tokens monotonically non-decreasing, total within the F6 drift band. FORBIDDEN-shape check (SDD binding): prefix-identity ALONE is insufficient — a frozen/stale reminder (byte-identical but stale state info) is a behavior regression; the pin must ride WITH a reminder-state-freshness recon (latest reminder text reflects the connected state). Re-pin rule: on first GREEN with the runner kind live, promote to hard asserts and drop the disabled flag; the qwen regression arm lands as its own row before the cut ships (bead acceptance: 'if this arm drifts, the cut does not ship').",
+  "bead": "apex-ayl.110",
+  "suite": "cache-economics",
+  "tier": "full",
+  "driver": "headless",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "wirecap": true,
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "disabled": true,
+  "reason": "Not expressible on the frozen runner: the scored contract needs the prefix-invariant assert kind (byte-identical shared prefix across consecutive requests + per-turn cached_tokens monotonicity) — owed to the sibling runner lane (smoke/redteam/run.py); the offline fixture ratchet (smoke/redteam/test_parity_stablereminder.py, --gate exit 1 = documented RED on the recorded t21 wire) covers the gap until then.",
+  "unblocks_at": "apex-ayl.110 runner prefix-invariant assert kind (run.py extension, sibling lane) + post-110-cut captures for the GREEN re-pin",
+  "mcp_calls": [
+    {
+      "id": "cw_mcp",
+      "server": "codegraph",
+      "tool": "codegraph_explore",
+      "args": {
+        "query": "patch_responses_request normalize_content_types",
+        "projectPath": "/Users/palanisd/Projects/upstream/wt/grok-build-responses"
+      },
+      "output_contains": "patch_responses_request",
+      "premise": "model"
+    }
+  ],
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Find the function that normalizes response content types in the sampler provider module, then reply with exactly: CW-STABLE-REMINDER-T1",
+      "timeout_s": 300
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: CW-STABLE-REMINDER-T2",
+      "timeout_s": 180
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: CW-STABLE-REMINDER-T3",
+      "timeout_s": 180
+    }
+  ],
+  "watchdog_s": 420,
+  "est_calls": 6,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error",
+        "label": "NO TERMINAL ERROR: all three turns completed (when the case unblocks, the red is the prefix/cached seam, not the turn)."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "CW-STABLE-REMINDER-T3",
+        "label": "THIRD TURN ALIVE: the final turn completed with the exact terminal text (the T2<->T3 prefix window both exist)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "field",
+        "file": "req-*.json",
+        "where": { "method": "POST", "path": "/v1/responses" },
+        "last": 0,
+        "path": "body.model",
+        "eq": "gpt-5.6-sol",
+        "label": "CONTROL (class harness): the main (oldest) request carries the session model — the harness always does; a miss is a harness failure, never vacuous."
+      },
+      {
+        "kind": "grep",
+        "id": "reminders_live",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "any": true,
+        "grep": "<system-reminder>",
+        "label": "CONTROL (churn premise): the dynamic MCP <system-reminder> surface is live in the main requests (quote-anchored at the opening — the t21 lesson: no closing quote in wire bodies). A miss = the MCP reminder never announced (rig/premise miss, not a model conclusion) -> the prefix contract is VACUOUS for this run."
+      },
+      {
+        "kind": "recon",
+        "file": "resp-*.jsonl",
+        "grep": "cached_tokens",
+        "label": "VERDICT RECORD: the per-turn usage lines (cached_tokens / cache_write surface) — the coordinator reads the stuck-vs-monotonic signature from these until the prefix-invariant kind lands (pre-cut expectation: cached stuck ~10,315-class with cw spikes; post-cut: monotonic non-decreasing). Recon is always-ok (non-scoring)."
+      }
+    ]
+  },
+  "scoring": {
+    "vacuous_if": [
+      {
+        "pin": "reminders_live",
+        "class": "harness",
+        "note": "the MCP reminder surface never went live — the churn premise did not hold; BLOCKED (rig), never VACUOUS (the MCP cell is case-controlled)."
+      }
+    ],
+    "require_wire_evidence": true
+  }
+}

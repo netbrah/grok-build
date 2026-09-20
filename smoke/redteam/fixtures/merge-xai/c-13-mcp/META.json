@@ -1,0 +1,24 @@
+{
+  "fixture": "c-13-mcp",
+  "cell": "C-13",
+  "cases": [
+    "MXAI-C13"
+  ],
+  "kind": "Operator-provisioned MCP stdio TEST DOUBLE (a fixture, NOT a harness extension): mcp-longprefix-stub.py — a stdlib-only JSON-RPC 2.0 newline-delimited server exposing exactly one tool whose QUALIFIED name crosses the 256-char admission edge (06 §2 C-13, ADOPT 01 §3 S6).",
+  "edge": {
+    "tool_name": "longprefix_tool_ + 'x'*284 = 300 chars (COMPUTED in the stub, never hardcoded — a rename cannot silently shrink the edge; the stub asserts the lengths at startup)",
+    "qualified_name": "mxai_longprefix__<tool> = 317 chars > 256 (the flat_mcp_tool_name double-underscore seam, FLAT_MCP_TOOL_NAME_DELIMITER = '__')",
+    "claim": "1.0.31 behavior under the merge: long-prefix MCP tools are ADMITTED (the base dropped them) AND the child_tool_projection passes them through (ours' M7 shape) — the parent-admission arm + the M7 child-projection arm of MXAI-C13"
+  },
+  "stub_behavior": {
+    "initialize": "echoes the client protocolVersion + capabilities:{tools:{}} + serverInfo:{name:'mxai_longprefix', version:'0.0.1'}",
+    "tools/list": "exactly ONE tool: the longprefix edge, inputSchema {type:'object', properties:{echo:{type:'string'}}, required:['echo']}",
+    "tools/call": "content:[{type:'text', text:<args.echo verbatim>}] — the MXAI-C13-ECHO / MXAI-C13-CHILD round-trips ride this echo; an unknown tool name -> -32602 Invalid params",
+    "notifications": "ignored (no response, per JSON-RPC) — covers notifications/initialized",
+    "unknown_request": "-32601 Method not found"
+  },
+  "offline_test": "PASS 2026-09-19 — the JSON-RPC line sequence (initialize → notifications/initialized → tools/list → tools/call echo → unknown method) piped through the stub; verified: single 300-char tool in tools/list, 317-char FQ, echo verbatim, no response to the notification, -32601 on the unknown method.",
+  "provisioning": "The operator adds [mcp_servers.mxai_longprefix] to the LIVE ~/.grok/config.toml — the hermetic home COPIES the live config, so the cell inherits the server (config_patch is scalar-only and cannot add [mcp_servers]; no other driver path provisions MCP servers). Shape (keys only, sweep-0 — the operator resolves the absolute stub path against their own checkout root): [mcp_servers.mxai_longprefix] / command = \"python3\" / args = [\"<absolute path to smoke/redteam/fixtures/merge-xai/c-13-mcp/mcp-longprefix-stub.py>\"].",
+  "blocked_semantics": "UNPROVISIONED = BLOCKED (harness class) via the lp_ann premise — the server's turn-boundary announcement never lands, and the verdict engine records BLOCKED, not red (the only harness-class premise in the wave-2 set, required by the drift gate).",
+  "redaction": "sweep-0: no creds/host paths/IPs/secret URLs anywhere in the stub or this META; case-owned literals only."
+}

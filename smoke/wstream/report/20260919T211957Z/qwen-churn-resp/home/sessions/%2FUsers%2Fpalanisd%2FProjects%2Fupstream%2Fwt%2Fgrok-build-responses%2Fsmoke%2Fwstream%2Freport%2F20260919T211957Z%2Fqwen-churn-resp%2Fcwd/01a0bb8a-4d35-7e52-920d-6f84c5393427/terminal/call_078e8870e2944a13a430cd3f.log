@@ -1,0 +1,19 @@
+            metadata: None,
+            model: req.model.clone(),
+            parallel_tool_calls: None,
+            previous_response_id: None,
+            prompt: None,
+    let insert_at = input
+        .last()
+        .filter(|item| item.get("role").and_then(Value::as_str) == Some("user"))
+        .map_or(input.len(), |_| input.len() - 1);
+    input.insert(insert_at, mode_item);
+}
+        // The SSE decoder (`deserialize_response_event`) has already rewritten `u.total_tokens` to `context_details.input + output`
+        let usage = response.usage.as_ref().map(|u| TokenUsage {
+            prompt_tokens: u.input_tokens,
+            completion_tokens: u.output_tokens,
+            total_tokens: u.total_tokens,
+            reasoning_tokens: u.output_tokens_details.reasoning_tokens,
+            cached_prompt_tokens: u.input_tokens_details.cached_tokens,
+            cache_creation_prompt_tokens: 0,

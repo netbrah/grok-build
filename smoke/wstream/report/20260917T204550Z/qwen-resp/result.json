@@ -1,0 +1,179 @@
+{
+  "cell": "qwen-resp",
+  "model": "qwen3.8-27b",
+  "api_backend": "responses",
+  "backend_class": "native",
+  "verdict": "PASS",
+  "invariants": [
+    {
+      "key": "status",
+      "expected": 200,
+      "actual": 200,
+      "ok": true
+    },
+    {
+      "key": "route",
+      "expected": "responses",
+      "actual": "responses",
+      "ok": true
+    },
+    {
+      "key": "n_model_calls_min",
+      "expected": ">= 1",
+      "actual": 2,
+      "ok": true
+    }
+  ],
+  "observations": {
+    "route": "responses",
+    "status": 200,
+    "n_model_calls": 2,
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 613,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "I",
+    "finish": null,
+    "budget_trap": false,
+    "final_text_nonempty": true,
+    "final_text_len": 834,
+    "usage": {
+      "input_tokens": 20381,
+      "input_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "output_tokens": 2246,
+      "output_tokens_details": {
+        "reasoning_tokens": 1683
+      },
+      "total_tokens": 22627
+    }
+  },
+  "analysis": {
+    "cell": "qwen-resp",
+    "route": "responses",
+    "expected_route": "responses",
+    "routes_mixed": false,
+    "status": 200,
+    "n_model_calls": 2,
+    "n_side_calls": 1,
+    "side_call_errors": [
+      500
+    ],
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 613,
+    "reasoning_tokens": 1683,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "I",
+    "finish": null,
+    "budget_trap": false,
+    "final_text_len": 834,
+    "final_text_nonempty": true,
+    "usage": {
+      "input_tokens": 20381,
+      "input_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "output_tokens": 2246,
+      "output_tokens_details": {
+        "reasoning_tokens": 1683
+      },
+      "total_tokens": 22627
+    },
+    "n_frames_total": 800
+  },
+  "calls": [
+    {
+      "route": "responses",
+      "req_model": "grok-4.6",
+      "req_stream": true,
+      "req_max_tokens": 100,
+      "status": 500,
+      "n_frames": 1,
+      "frame_types": {},
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": null,
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 800,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 612,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 2,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 174,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 613,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "I",
+      "finish": null,
+      "usage": {
+        "input_tokens": 20381,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 2246,
+        "output_tokens_details": {
+          "reasoning_tokens": 1683
+        },
+        "total_tokens": 22627
+      },
+      "final_text": "\n\nSince 5557 = 7 \u00d7 793, the answer is a multiple of 7: write 7^8432 \u2261 7k (mod 5557), where k \u2261 7^8431 (mod 793).\n\n**Reduce the exponent.** \u03bb(793) = \u03bb(11)\u00b7\u2026 lcm(\u03bb(11), \u03bb(72)) = lcm(10, 24) = 120, and 8431 = 70\u00b7120 + 31, so k \u2261 7^31 (mod 793).\n\n**Squaring steps (mod 793):**\n- 7\u00b2 = 49\n- 7\u2074 = 2401 \u2261 122\n- 7\u2078 = 122\u00b2 = 14884 \u2261 670\n- 7\u00b9\u2076 = 670\u00b2 = 448900 \u2261 242\n\n**Combine (31 = 16+8+4+2+1):**\n- 242\u00b7670 = 162140 \u2261 608 (so 7\u00b2\u2074)\n- 608\u00b7122 = 74176 \u2261 351 (so 7\u00b2\u2078)\n- 351\u00b749 = 17199 \u2261 12 (so 7\u00b3\u2070)\n- 12\u00b77 = 84 \u2192 k \u2261 84 (mod 793)\n\n**Check via CRT (mod 11, mod 72):** 84 \u2261 7 mod 11; 84 \u2261 12 mod 72. Cross-check: 7^8431 mod 11 = 7^31 = 7^(3\u00b710+1) \u2261 7 \u2713; mod 72, 7 has order 8 and 8431 \u2261 7 mod 8, 7\u2077 = 823543 \u2261 12 mod 72 \u2713. CRT gives k \u2261 84 mod 793.\n\n**Final answer:** 7^8432 \u2261 7\u00b784 = 588 (mod 5557)\n\n(Verified by hand arithmetic; no tools used.)\n\n973"
+    }
+  ],
+  "turns": [
+    {
+      "turn": 1,
+      "exit_code": 0,
+      "killed": false,
+      "elapsed": 30.39,
+      "session_id": "01a0b121-224f-7443-a049-84f1a1f12aab",
+      "n_events": 791
+    }
+  ],
+  "binary_sha256_12": "39f836e8633d",
+  "wire_port": 55141,
+  "upstream": "https://llm-proxy-api.ai.eng.netapp.com",
+  "key_sha256_12": "9f3f56a263da",
+  "raw_key_hits": 0,
+  "ts": "20260917T205456Z"
+}

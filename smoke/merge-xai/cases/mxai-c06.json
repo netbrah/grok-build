@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "id": "MXAI-C06",
+  "title": "MERGE-XAI-SYNC C-06 (PIN D12/M2, schema goldens + catalog hydration + CMO round-trip) — fresh hermetic boot on gpt-5.6-sol (frozen lane L-01): every case boots fresh (hermetic home = copied config + aligned models_cache), so the boot surface is exercised on the lane of record. SMOKE-SURFACED (this cell): (1) the boot completes (exit 0, echo turn closes); (2) CATALOG HYDRATION: the boot fetches GET /v1/models through the wiretap and the response is 200 — the catalog hydrates FROM THE PROXY into the hermetic home's models_cache.json (the hydration path under OUR boot path post-merge; the 1.0.25-class concurrent-boot isolation is the separate DRIFT cell C-10); (3) CMO WIRE FACE: the sol request carries the 'summary' CMO field (reasoning_summary, theirs-side member of the merged CMO). GATE-DEPENDENT (named, not smoke-mechanical): config.schema.json + config.reference.html golden match (D12 — the goldens are CRATE test fixtures; the wave-3 full gate step 6 runs them after the D12 golden regen) and the CMO round-trip of reasoning_summary+cache_ttl parsing (M15 drift guard — a crate test). The coordinator cross-checks the gate results against this cell's wire face on the matrix board. VERDICT: PASS = boot clean + hydration 200 + CMO summary field on the wire. STOP-AND-REPORT: a boot failure, a non-200 /v1/models, or a missing summary field (the CMO member dropped on the wire).",
+  "bead": "apex-l2d.4",
+  "suite": "wire-shape",
+  "tier": "full",
+  "driver": "headless",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "output_format": "streaming-json",
+  "wirecap": true,
+  "est_calls": 2,
+  "watchdog_s": 300,
+  "env": {
+    "store": false
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: MXAI-C06-OK"
+    },
+    {
+      "op": "recon_note",
+      "note": "GATE DEPENDENCY (named per 06 C-06): the config.schema.json + config.reference.html goldens (D12, regen'd LAST in the merge execution) and the CMO round-trip parse of reasoning_summary+cache_ttl (M15 drift guard) are CRATE TESTS in the wave-3 full gate (step 6) — not smoke-mechanical. This cell pins the LIVE boot + catalog-hydration surface + the CMO wire face; the matrix board cross-references both."
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error",
+        "label": "BOOT CLEAN: the fresh hermetic boot + first turn completed without a terminal error (a boot-time config parse failure = the M2/D12 cluster regressed -> STOP)."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "MXAI-C06-OK",
+        "label": "FRESH BOOT TURNS: the post-boot turn closed with the exact terminal text."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "count",
+        "id": "catalog_fetched",
+        "file": "req-*.json",
+        "where": {
+          "method": "GET",
+          "path": {
+            "prefix": "/v1/models"
+          }
+        },
+        "min": 1,
+        "max": 3,
+        "label": "CATALOG HYDRATION PIN: the boot fetched GET /v1/models through the wiretap (1 = the clean shape; 2-3 = tolerated refreshes). 0 = the boot did NOT hydrate the catalog from the proxy (it rode the pre-aligned cache only) = the hydration path is dead on our boot path post-merge = defect."
+      },
+      {
+        "kind": "resp_status",
+        "id": "catalog_200",
+        "file": "req-*.json",
+        "where": {
+          "method": "GET",
+          "path": {
+            "prefix": "/v1/models"
+          }
+        },
+        "which": "first",
+        "status_in": [
+          200
+        ],
+        "label": "CATALOG ACCEPTED: the first /v1/models fetch returned 200 — the catalog hydrates from the proxy into models_cache.json under the post-merge boot path."
+      },
+      {
+        "kind": "grep",
+        "id": "cmo_summary_wire",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "nth": 0,
+        "grep": "\"summary\"",
+        "label": "CMO WIRE FACE (M15/M2): the sol request carries the 'summary' CMO field (reasoning_summary, theirs-side member of the merged CMO) on the responses reasoning block — the CMO member survived the merge onto the wire. The struct-level ROUND-TRIP parse (both reasoning_summary + cache_ttl) is the M15 crate test in the full gate (named in the title)."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "field": "ts",
+        "label": "VERDICT RECORD (recon, newest request): the turn's capture timestamp — the boot-completion evidence anchor for the board."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  },
+  "retry": {
+    "on_status": [
+      404,
+      502,
+      503
+    ],
+    "max_attempts": 1,
+    "backoff_s": 30
+  }
+}

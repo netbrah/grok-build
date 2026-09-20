@@ -1,0 +1,55 @@
+{
+ "schema_version": 1,
+ "id": "MGW-BETAHDR-01",
+ "title": "apex-ayl.118 RED ratchet (msgw sweep F11) — anthropic-beta header seam absent end-to-end: the case declares model/claude-sonnet-5/anthropic_beta=thinking-display-updates-2026-08-18 (config_patch intent — the docs-named beta header value; the lenient row parser ignores the key pre-cut) and pins the anthropic-beta request header on the /v1/messages requests. The msgw sweep found 0/22 receipts: the messages request builder has no beta-header field, no config surface, no seam — the emitted header set is the fixed anthropic-version/x-api-key pair, so the display=updates capability (and every other beta-gated surface) is unreachable from config. RED today (no request carries the header — the grep pin 0-hits); GREEN when the cut plumbs config -> header. Control pin (class harness, plain assert): body.model eq claude-sonnet-5 on the main (oldest) request — the harness always sends the model, so a miss is a harness failure, never vacuous. RE-PIN RULE: if the cut makes the beta header conditional on actual beta-feature use, add a feature turn to this case and re-pin.",
+ "bead": "apex-ayl.118",
+ "suite": "wire-shape",
+ "tier": "slim",
+ "driver": "headless",
+ "model": "claude-sonnet-5",
+ "wirecap": true,
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "config_patch": {
+  "model/claude-sonnet-5/anthropic_beta": "thinking-display-updates-2026-08-18"
+ },
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: MGW-BETAHDR-OK",
+   "timeout_s": 180
+  }
+ ],
+ "watchdog_s": 300,
+ "est_calls": 2,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error",
+    "label": "NO TERMINAL ERROR: the turn completed (the red is the beta-header seam, not the turn)."
+   }
+  ],
+  "wire": [
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/messages" },
+    "last": 0,
+    "path": "body.model",
+    "eq": "claude-sonnet-5",
+    "label": "CONTROL (class harness): the main request carries the session model — the harness always does; a miss is a harness failure, never vacuous."
+   },
+   {
+    "kind": "grep",
+    "id": "mgw_betahdr_red",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/messages" },
+    "any": true,
+    "grep": "anthropic-beta",
+    "label": "RED PIN (F11): a /v1/messages request carries the anthropic-beta header (docs beta capability, representative of the 0/22-receipt absent surface). Pre-cut FAILs: no header seam exists — the builder emits only the fixed header set."
+   }
+  ]
+ },
+ "expected_red": { "id": "mgw-f11-betahdr" }
+}

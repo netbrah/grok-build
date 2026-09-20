@@ -1,0 +1,86 @@
+{
+  "n": 4,
+  "method": "POST",
+  "path": "/v1/responses",
+  "ts": "2026-09-20T18:26:22Z",
+  "headers": {
+    "content-type": "application/json",
+    "authorization": {
+      "masked": true,
+      "sha256_12": "12cd258ae281",
+      "len": 92
+    },
+    "x-xai-token-auth": "xai-grok-cli",
+    "x-authenticateresponse": "authenticate-response",
+    "x-grok-client-mode": "headless",
+    "x-grok-client-version": "1.0.24",
+    "x-grok-conv-group-id": "d67e8021-8d29-56b2-9c84-32bcd3852555",
+    "x-grok-client-identifier": "grok-shell",
+    "user-agent": "grok-shell/1.0.24 (macos; aarch64)",
+    "x-grok-conv-id": "",
+    "x-grok-req-id": "",
+    "x-grok-model-override": "qwen3.8-27b",
+    "x-grok-session-id": "",
+    "x-grok-agent-id": "",
+    "accept": "text/event-stream",
+    "accept-encoding": "gzip, br, deflate",
+    "host": "127.0.0.1:60258",
+    "content-length": "1973"
+  },
+  "body": {
+    "include": [
+      "reasoning.encrypted_content"
+    ],
+    "input": [
+      {
+        "type": "message",
+        "role": "system",
+        "content": "You are tasked with generating the session title. The user is asking almost always software engineering related questions on their codebase.\nWe describe the session title below\n# Session Title\nA short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler.\n\nYou will be given the user query below encapsulated in <user_query></user_query>.\n\nJust generate the session_title and nothing else"
+      },
+      {
+        "type": "message",
+        "role": "developer",
+        "content": [
+          {
+            "type": "text",
+            "text": "<multi_agent_mode>Multi-agent mode: explicit_request_only \u2014 subagents may be spawned only when the user explicitly requests.</multi_agent_mode>"
+          }
+        ]
+      },
+      {
+        "type": "message",
+        "role": "user",
+        "content": "<user_query>\nCreate a dependency-free Python 3 CLI at tools/minidiff.py that word-level diffs two text files given as argv[1] and argv[2]. It must print only the changed hunks (unified style, with 1 line of context) and exit 1 if any differences exist, 0 otherwise. Next: create fixtures a.txt (5 lines of prose about a lighthouse) and b.txt (same prose with exactly 3 single-word substitutions), run the tool on them, and confirm the output contains all 3 substituted words. If the tool misbehaves, debug and fix it until the run is clean. End with a final message containing the exact diff output between the two fixtures.\n</user_query>"
+      }
+    ],
+    "max_output_tokens": 100,
+    "model": "qwen3.8-27b",
+    "reasoning": {
+      "summary": "concise"
+    },
+    "store": false,
+    "stream": true,
+    "temperature": 1.0,
+    "tool_choice": "required",
+    "tools": [
+      {
+        "type": "function",
+        "name": "session_title",
+        "parameters": {
+          "type": "object",
+          "required": [
+            "session_title"
+          ],
+          "properties": {
+            "session_title": {
+              "type": "string",
+              "description": "Final session title, just 5-10 word descriptive title for the session. Super info dense, no filler."
+            }
+          },
+          "additionalProperties": false
+        },
+        "description": "Generate the session_title which we use for the user_message"
+      }
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+657:    /// usage policies.
+2524:    /// usage policies.
+2608:    /// Represents token usage details including input tokens, output tokens,
+2611:    pub usage: Option<ResponseUsage>,
+2902:    pub usage: ResponseUsage,
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs:2611:    pub usage: Option<ResponseUsage>,
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs:2902:    pub usage: ResponseUsage,

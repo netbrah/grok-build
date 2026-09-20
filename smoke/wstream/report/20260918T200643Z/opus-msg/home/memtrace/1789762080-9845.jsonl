@@ -1,0 +1,2 @@
+{"ts_ms":1789762110410,"kind":"start","pid":9845,"version":"1.0.24"}
+{"ts_ms":1789762110411,"kind":"sample","footprint_bytes":57820048,"rss_bytes":116228096,"threads":61,"alloc":{"allocated":34750360,"active":57884672,"resident":71368704,"mapped":183861248,"retained":0,"metadata":11749544}}

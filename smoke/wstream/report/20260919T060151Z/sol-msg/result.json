@@ -1,0 +1,160 @@
+{
+  "cell": "sol-msg",
+  "model": "gpt-5.6-sol",
+  "api_backend": "messages",
+  "backend_class": "override",
+  "verdict": "PASS",
+  "invariants": [
+    {
+      "key": "status",
+      "expected": 200,
+      "actual": 200,
+      "ok": true
+    },
+    {
+      "key": "route",
+      "expected": "messages",
+      "actual": "messages",
+      "ok": true
+    },
+    {
+      "key": "n_model_calls_min",
+      "expected": ">= 1",
+      "actual": 2,
+      "ok": true
+    }
+  ],
+  "observations": {
+    "route": "messages",
+    "status": 200,
+    "n_model_calls": 2,
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": false,
+    "reasoning_frames": 0,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": null,
+    "finish": "stop",
+    "budget_trap": false,
+    "final_text_nonempty": true,
+    "final_text_len": 847,
+    "usage": {
+      "input_tokens": 3,
+      "output_tokens": 2608,
+      "cache_creation_input_tokens": 16536
+    }
+  },
+  "analysis": {
+    "cell": "sol-msg",
+    "route": "messages",
+    "expected_route": "messages",
+    "routes_mixed": false,
+    "status": 200,
+    "n_model_calls": 2,
+    "n_side_calls": 1,
+    "side_call_errors": [],
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": false,
+    "reasoning_frames": 0,
+    "reasoning_tokens": null,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": null,
+    "finish": "stop",
+    "budget_trap": false,
+    "final_text_len": 847,
+    "final_text_nonempty": true,
+    "usage": {
+      "input_tokens": 3,
+      "output_tokens": 2608,
+      "cache_creation_input_tokens": 16536
+    },
+    "n_frames_total": 118
+  },
+  "calls": [
+    {
+      "route": "messages",
+      "req_model": "gpt-5.6-sol",
+      "req_stream": true,
+      "req_max_tokens": 100,
+      "status": 200,
+      "n_frames": 19,
+      "frame_types": {
+        "message_start": 1,
+        "content_block_start": 1,
+        "content_block_delta": 14,
+        "content_block_stop": 1,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 207,
+        "output_tokens": 27
+      },
+      "final_text": ""
+    },
+    {
+      "route": "messages",
+      "req_model": "gpt-5.6-sol",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 118,
+      "frame_types": {
+        "ping": 1,
+        "message_start": 1,
+        "content_block_start": 1,
+        "content_block_delta": 112,
+        "content_block_stop": 1,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 2608,
+        "cache_creation_input_tokens": 16536
+      },
+      "final_text": "\\[\n8432=8192+128+64+32+16.\n\\]\n\nSuccessive squaring modulo \\(5557\\):\n\n\\[\n\\begin{aligned}\n7^1 &\\equiv 7\\\\\n7^2 &\\equiv 7^2 \\equiv 49\\\\\n7^4 &\\equiv 49^2 \\equiv 2401\\\\\n7^8 &\\equiv 2401^2 \\equiv 2192\\\\\n7^{16} &\\equiv 2192^2 \\equiv 3616\\\\\n7^{32} &\\equiv 3616^2 \\equiv 5392\\\\\n7^{64} &\\equiv 5392^2 \\equiv 4997\\\\\n7^{128} &\\equiv 4997^2 \\equiv 2408\\\\\n7^{256} &\\equiv 2408^2 \\equiv 2513\\\\\n7^{512} &\\equiv 2513^2 \\equiv 2417\\\\\n7^{1024} &\\equiv 2417^2 \\equiv 1482\\\\\n7^{2048} &\\equiv 1482^2 \\equiv 1309\\\\\n7^{4096} &\\equiv 1309^2 \\equiv 1925\\\\\n7^{8192} &\\equiv 1925^2 \\equiv 4663\n\\end{aligned}\n\\pmod{5557}\n\\]\n\nTherefore,\n\n\\[\n\\begin{aligned}\n7^{8432}\n&\\equiv 4663\\cdot2408\\cdot4997\\cdot5392\\cdot3616\\\\\n&\\equiv 3364\\cdot4997\\cdot5392\\cdot3616\\\\\n&\\equiv 5540\\cdot5392\\cdot3616\\\\\n&\\equiv 2805\\cdot3616\\\\\n&\\equiv 1355 \\pmod{5557}.\n\\end{aligned}\n\\]\n\n\\[\n\\boxed{1355}\n\\]"
+    }
+  ],
+  "turns": [
+    {
+      "turn": 1,
+      "exit_code": 0,
+      "killed": false,
+      "elapsed": 30.04,
+      "session_id": "01a0b848-d22b-7740-bdd1-7b11949159d3",
+      "n_events": 117
+    }
+  ],
+  "binary_sha256_12": "f9e7a15d6b6b",
+  "wire_port": 53041,
+  "upstream": "https://llm-proxy-api.ai.eng.netapp.com",
+  "key_sha256_12": "9f3f56a263da",
+  "raw_key_hits": 0,
+  "ts": "20260919T061004Z"
+}

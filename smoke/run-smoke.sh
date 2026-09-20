@@ -5,7 +5,7 @@
 # Usage: smoke/run-smoke.sh [scenario-name ...]   (default: all)
 set -u
 cd "${0:A:h}/.."
-BIN=${BIN:-./target/debug/grok-responses}
+BIN=${BIN:-./target/release/grok-responses}
 TIMEOUT=${TIMEOUT:-120}
 [ -x "$BIN" ] || { echo "binary missing: $BIN (cargo build --bin grok-responses)" >&2; exit 2; }
 

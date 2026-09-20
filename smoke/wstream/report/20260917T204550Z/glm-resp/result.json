@@ -1,0 +1,138 @@
+{
+  "cell": "glm-resp",
+  "model": "glm-5.2",
+  "api_backend": "responses",
+  "backend_class": "native",
+  "verdict": "PASS",
+  "invariants": [
+    {
+      "key": "status",
+      "expected": 200,
+      "actual": 200,
+      "ok": true
+    },
+    {
+      "key": "route",
+      "expected": "responses",
+      "actual": "responses",
+      "ok": true
+    },
+    {
+      "key": "n_model_calls_min",
+      "expected": ">= 1",
+      "actual": 2,
+      "ok": true
+    }
+  ],
+  "observations": {
+    "route": "responses",
+    "status": 200,
+    "n_model_calls": 2,
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 4375,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "The",
+    "finish": null,
+    "budget_trap": false,
+    "final_text_nonempty": false,
+    "final_text_len": 0,
+    "usage": null
+  },
+  "analysis": {
+    "cell": "glm-resp",
+    "route": "responses",
+    "expected_route": "responses",
+    "routes_mixed": false,
+    "status": 200,
+    "n_model_calls": 2,
+    "n_side_calls": 1,
+    "side_call_errors": [
+      500
+    ],
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 4375,
+    "reasoning_tokens": null,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "The",
+    "finish": null,
+    "budget_trap": false,
+    "final_text_len": 0,
+    "final_text_nonempty": false,
+    "usage": null,
+    "n_frames_total": 4379
+  },
+  "calls": [
+    {
+      "route": "responses",
+      "req_model": "grok-4.6",
+      "req_stream": true,
+      "req_max_tokens": 100,
+      "status": 500,
+      "n_frames": 1,
+      "frame_types": {},
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": null,
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "glm-5.2",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 4379,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 1,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 4375
+      },
+      "reasoning_frames": 4375,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "The",
+      "finish": null,
+      "usage": null,
+      "final_text": ""
+    }
+  ],
+  "turns": [
+    {
+      "turn": 1,
+      "exit_code": -9,
+      "killed": true,
+      "elapsed": 180.01,
+      "session_id": null,
+      "n_events": 4377
+    }
+  ],
+  "binary_sha256_12": "39f836e8633d",
+  "wire_port": 55237,
+  "upstream": "https://llm-proxy-api.ai.eng.netapp.com",
+  "key_sha256_12": "9f3f56a263da",
+  "raw_key_hits": 0,
+  "ts": "20260917T205456Z"
+}

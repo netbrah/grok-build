@@ -1,0 +1,20 @@
+DIFF_EXIT=1
+FOUND: flickering
+FOUND: circled
+FOUND: squall
+--- word-level delta a vs b:
+6c6
+< steady
+---
+> flickering
+20c20
+< wheeled
+---
+> circled
+38c38
+< storm
+---
+> squall
+DELTA_RC=1
+--- identical-file test:
+IDENTICAL_EXIT=0

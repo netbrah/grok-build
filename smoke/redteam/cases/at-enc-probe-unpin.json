@@ -1,0 +1,52 @@
+{
+ "schema_version": 1,
+ "id": "AT-ENC-PROBE-UNPIN",
+ "title": "OVERWATCH mf6 BASELINE PROBE P2 (operator-directed, no-assumption): HEADER HYPOTHESIS \u2014 untagged sol multi-turn on a FROZEN config with x-litellm-tags removed (live-home override, everything else byte-identical to live config). 4 beefy no-tool turns so thinking fires and reasoning items mint real ciphertext. OBSERVE, do not predict: do rides leave on turn >=2; verbatim 503/400 phrasings on this proxy build; harness reaction per failure (code adjudication 2026-09-19 says both SIG-ENC-BOUNDARY phrasings already classify family-1 today -> expect COARSE whole-item strip + retry). Survival criterion: exit 0 + no acp_error (a Fatal brick = the finding, evidence in wire/resp captures). Recon-only probes; scored asserts = survival only. Report dir: report-at1/enc-probes/ (forensics, never commit).",
+ "bead": "overwatch-adversarial",
+ "suite": "cross-wire",
+ "tier": "slim",
+ "driver": "acp",
+ "model": "gpt-5.6-sol",
+ "wirecap": true,
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "No tools; answer directly in prose. Compute 7^8432 mod 5557 by repeated squaring. Show every squaring step modulo 5557, then the final product of the needed powers and the answer.",
+   "timeout_s": 300
+  },
+  {
+   "op": "turn",
+   "prompt": "No tools; answer directly. How many ways are there to tile a 2x7 rectangle with 2x1 dominoes? Derive the recurrence, then state the number.",
+   "timeout_s": 300
+  },
+  {
+   "op": "turn",
+   "prompt": "No tools; answer directly. Solve x^2 = 5 (mod 119) for all residue classes mod 119. Show the prime factorization of 119 and the CRT combination steps.",
+   "timeout_s": 300
+  },
+  {
+   "op": "turn",
+   "prompt": "No tools; answer directly. Verify your turn-1 result by a second method (Euler's theorem with phi(5557), or repeated squaring recomputed), and state whether the two methods agree.",
+   "timeout_s": 300
+  }
+ ],
+ "watchdog_s": 600,
+ "est_calls": 8,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "acp_error",
+    "label": "SURVIVAL (probe criterion): every turn completed \u2014 an unrecovered 503/400 (Fatal brick, or a second same-class after strip = D3 guard trip) surfaces here. Present = the finding; the wire captures below carry the mechanism."
+   }
+  ],
+  "wire": [
+   {
+    "kind": "recon",
+    "label": "PROBE P2 EVIDENCE \u2014 read the captures: for each req-NNN.json (model=gpt-5.6-sol, path /v1/responses) record: (1) number of reasoning items with encrypted_content (rides leaving), (2) resp-NNN.jsonl status (200 vs 503 + VERBATIM message), (3) whether a retry request follows the 503 and WHAT CHANGED in it (whole reasoning items dropped = coarse .58 strip; field-only drop = surgical). The baseline table in the findings doc is filled from these."
+   }
+  ]
+ }
+}

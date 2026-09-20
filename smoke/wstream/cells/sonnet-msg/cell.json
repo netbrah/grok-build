@@ -1,0 +1,40 @@
+{
+  "cell": "sonnet-msg",
+  "model": "claude-sonnet-5",
+  "api_backend": "messages",
+  "backend_class": "native",
+  "wire": "messages",
+  "turns": 1,
+  "prompt": "Create a dependency-free Python 3 CLI at tools/minidiff.py that word-level diffs two text files given as argv[1] and argv[2]. It must print only the changed hunks (unified style, with 1 line of context) and exit 1 if any differences exist, 0 otherwise. Next: create fixtures a.txt (5 lines of prose about a lighthouse) and b.txt (same prose with exactly 3 single-word substitutions), run the tool on them, and confirm the output contains all 3 substituted words. If the tool misbehaves, debug and fix it until the run is clean. End with a final message containing the exact diff output between the two fixtures.\n",
+  "invariants": {
+    "status": 200,
+    "route": "messages",
+    "n_model_calls_min": 1
+  },
+  "observe": [
+    "route",
+    "status",
+    "n_model_calls",
+    "all_stream",
+    "any_stream",
+    "req_stream_values",
+    "reasoning_present",
+    "reasoning_frames",
+    "reasoning_encrypted_content",
+    "reasoning_thinking_block",
+    "reasoning_thought_signature",
+    "reasoning_sample",
+    "finish",
+    "budget_trap",
+    "final_text_nonempty",
+    "final_text_len",
+    "usage"
+  ],
+  "open_questions": [
+    "PARITY-ARMS claude /messages arm vs recorded sol arm (same binary f9e7a15d6b6b)"
+  ],
+  "notes": "Model arm (parity campaign 2026-09-19): claude-sonnet-5 on the native messages wire with the v2 A/B hard question. Cross-model/cross-wire comparison vs the sol /responses arm \u2014 the axis is the model (and its native wire). Config: context_window = 500000 added (operator-mandated); reasoning high was already default. Prompt source: grok/plans/codex-parity-smoke/parity-prompt.txt (v1/v2 A/B arm prompt, byte-identical; 612 B).",
+  "priority": 2,
+  "enabled": true,
+  "owner": "coordinator parity-arms 2026-09-19"
+}

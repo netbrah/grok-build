@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "id": "RESP-BODY-SMOKE-01",
+  "title": "RESP-BODY-SMOKE-01 \u2014 worked example for the kind=resp_body wire assert (apex-2o6 HARNESS-UNIFY-IMPL-1 first cut, L1 key-free mode): a zero-step headless case whose wire inputs are PRE-PLACED (cases/resp-body-smoke-01/wire/, copy-if-absent into the run dir) and whose verdict is the RESPONSE-SIDE golden body pin \u2014 the captured non-stream response body (resp-001.jsonl frame lines concatenated + JSON-parsed) must equal expected_resp_body-01.json canonically (shared golden_compare_doc core: key-sorted compact, list order SIGNIFICANT) after the normalize paths null the volatile positions (id = upstream-issued resp_* per run; output.0.id = msg_* per run; usage = per-run token counts) and the fixture's top-level integer 'status' asserts the HTTP status in the same assert (a resp_status + resp_body pair collapsed into one pin). env.proxy='none' declares the L1 key-free hermetic mode: no proxy key is read, the hermetic home points at a dead local port, zero live ops \u2014 the full runner executes this case with CODEX_LLM_PROXY_KEY UNSET (that is the teeth: pre-apex-2o6 the runner FATALs at the key check).",
+  "bead": "apex-2o6",
+  "suite": "wire-shape",
+  "tier": "slim",
+  "model": "resp-body-smoke-model",
+  "driver": "headless",
+  "est_calls": 0,
+  "wirecap": false,
+  "env": {
+    "proxy": "none"
+  },
+  "steps": [],
+  "assert": {
+    "wire": [
+      {
+        "id": "resp_body_pin",
+        "kind": "resp_body",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "resp-body-smoke-model",
+          "headers.x-grok-session-id": "00000000-0000-4000-8000-000000000001"
+        },
+        "which": "last",
+        "golden": "expected_resp_body-01.json",
+        "normalize": [
+          "id",
+          "output.0.id",
+          "usage"
+        ],
+        "label": "RESPONSE-SIDE BYTE PIN: the selected request's paired response body, canonically compared with the three normalize paths (body-root-relative, unlike the request-side golden kind's capture-root paths) nulled, must equal the fixture; the fixture's top-level status (200) is asserted in the same pin. Mismatch = structured field-level diff (TDD RED artifact)."
+      },
+      {
+        "id": "count_scope",
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "resp-body-smoke-model",
+          "headers.x-grok-session-id": "00000000-0000-4000-8000-000000000001"
+        },
+        "min": 1,
+        "max": 1,
+        "label": "SCOPE BOUND (B-i companion): the where-filter matches exactly ONE capture so the resp_body selection is unambiguous."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

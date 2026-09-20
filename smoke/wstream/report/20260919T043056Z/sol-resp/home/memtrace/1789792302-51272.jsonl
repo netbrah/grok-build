@@ -1,0 +1,13 @@
+{"ts_ms":1789792332809,"kind":"start","pid":51272,"version":"1.0.24"}
+{"ts_ms":1789792332811,"kind":"sample","footprint_bytes":60703632,"rss_bytes":119717888,"threads":60,"alloc":{"allocated":36416392,"active":62783488,"resident":76513280,"mapped":188956672,"retained":0,"metadata":11803304}}
+{"ts_ms":1789792362811,"kind":"sample","footprint_bytes":60916624,"rss_bytes":120061952,"threads":60,"alloc":{"allocated":36817848,"active":62816256,"resident":76677120,"mapped":189120512,"retained":0,"metadata":11804072}}
+{"ts_ms":1789792392817,"kind":"sample","footprint_bytes":60965776,"rss_bytes":120127488,"threads":60,"alloc":{"allocated":36742856,"active":62914560,"resident":76677120,"mapped":189120512,"retained":0,"metadata":11804072}}
+{"ts_ms":1789792422821,"kind":"sample","footprint_bytes":60982160,"rss_bytes":120143872,"threads":60,"alloc":{"allocated":36760840,"active":62914560,"resident":76726272,"mapped":189169664,"retained":0,"metadata":11804456}}
+{"ts_ms":1789792452825,"kind":"sample","footprint_bytes":60752784,"rss_bytes":120127488,"threads":60,"alloc":{"allocated":36812424,"active":62816256,"resident":76693504,"mapped":189136896,"retained":0,"metadata":11804456}}
+{"ts_ms":1789792482830,"kind":"sample","footprint_bytes":60638096,"rss_bytes":120012800,"threads":60,"alloc":{"allocated":36799016,"active":62816256,"resident":76578816,"mapped":189022208,"retained":0,"metadata":11804456}}
+{"ts_ms":1789792512833,"kind":"sample","footprint_bytes":60654480,"rss_bytes":120029184,"threads":60,"alloc":{"allocated":36610536,"active":62881792,"resident":76578816,"mapped":189022208,"retained":0,"metadata":11804456}}
+{"ts_ms":1789792542835,"kind":"sample","footprint_bytes":60572560,"rss_bytes":120029184,"threads":60,"alloc":{"allocated":36375248,"active":63225856,"resident":76365824,"mapped":188809216,"retained":0,"metadata":11804840}}
+{"ts_ms":1789792572832,"kind":"sample","footprint_bytes":60720016,"rss_bytes":80412672,"threads":60,"alloc":{"allocated":36472848,"active":63094784,"resident":76529664,"mapped":188973056,"retained":0,"metadata":11805224}}
+{"ts_ms":1789792602838,"kind":"sample","footprint_bytes":60638096,"rss_bytes":80953344,"threads":60,"alloc":{"allocated":36399256,"active":62980096,"resident":76431360,"mapped":188874752,"retained":0,"metadata":11805224}}
+{"ts_ms":1789792632841,"kind":"sample","footprint_bytes":61408144,"rss_bytes":83787776,"threads":60,"alloc":{"allocated":36829528,"active":64880640,"resident":78708736,"mapped":191135744,"retained":0,"metadata":11820968}}
+{"ts_ms":1789792662846,"kind":"sample","footprint_bytes":61408144,"rss_bytes":83951616,"threads":60,"alloc":{"allocated":36780920,"active":64880640,"resident":78708736,"mapped":191135744,"retained":0,"metadata":11820968}}

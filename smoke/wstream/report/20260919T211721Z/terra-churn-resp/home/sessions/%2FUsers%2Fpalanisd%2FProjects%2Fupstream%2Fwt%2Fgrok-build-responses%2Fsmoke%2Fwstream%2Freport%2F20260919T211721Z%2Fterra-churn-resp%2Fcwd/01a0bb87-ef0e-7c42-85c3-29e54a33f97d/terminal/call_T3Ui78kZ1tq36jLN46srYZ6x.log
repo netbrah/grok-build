@@ -1,0 +1,22 @@
+lines=220 bytes=25650
+three-line executive summary at top: PASS
+top five headings: PASS
+all evidence cited: PASS
+do not do at least three: PASS
+non-openai safeguards named: PASS
+wire verification sections: PASS
+ranked impact sections: PASS
+risk sections: PASS
+--- top of deliverable ---
+The harness can close the measured first-party OpenAI gap by preserving one immutable request prefix and advancing work in fewer, larger model turns.
+On the identical gpt-5.6-sol task, matching the official 6-request shape rather than the harness's 16 requests targets a $0.3239 saving per run (64.4%; $0.5027 → $0.1788).
+Make this an OpenAI parity lane with explicit, testable wire contracts while retaining independent Responses/Messages profiles for Grok, Claude, qwen3.8-27b, glm-5.2, and other providers.
+
+# Harness Churn Redesign
+
+## Scope and design rule
+
+This is a transport-and-session redesign, not a universal rewrite of the existing model catalog or conversation types.  `xai-grok-sampling-types` remains the canonical typed conversation layer; `xai-grok-sampler` remains responsible for dialect-specific projection and stream decoding; `xai-grok-shell` remains responsible for agent/session control.  The new boundary is a **first-party OpenAI parity profile** selected by model authority, not by a string prefix scattered through the client.
+
+The profile applies only to OpenAI Codex-family models that use the Responses-compatible upstream contract, initially `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`.  It must be opt-in through explicit model capabilities and must never silently alter the request shape for qwen3.8-27b, glm-5.2, Claude, Grok, or an unknown/custom Responses-compatible provider.
+

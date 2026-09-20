@@ -1,0 +1,70 @@
+{
+  "n": 2,
+  "method": "POST",
+  "path": "/v1/responses",
+  "ts": "2026-09-19T00:00:02Z",
+  "headers": {
+    "content-type": "application/json",
+    "x-grok-session-id": "00000000-0000-4000-8000-000000000003"
+  },
+  "body": {
+    "model": "gpt-5.6-sol",
+    "input": [
+      {
+        "role": "user",
+        "content": "Compute 7^8432 mod 5557 using modular exponentiation. Show each squaring step briefly, then state the final remainder on its own line. Do not use any tools."
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "name": "run_terminal_command",
+        "description": "<redacted builtin tool schema>",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "description": "<redacted>"
+            },
+            "background": {
+              "type": "boolean"
+            },
+            "timeout": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "command"
+          ]
+        }
+      },
+      {
+        "type": "function",
+        "name": "read_file",
+        "description": "<redacted builtin tool schema>",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "<redacted>"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      }
+    ],
+    "tool_choice": "auto",
+    "reasoning": {
+      "effort": "max",
+      "summary": null
+    },
+    "store": false,
+    "max_output_tokens": 128000
+  }
+}

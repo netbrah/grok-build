@@ -1,0 +1,6 @@
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/response.rs:5:    ResponseUsage, SummaryTextContent,
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/responses/mod.rs:29:pub use crate::types::shared::ResponseUsage;
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/shared/response_usage.rs:18:pub struct ResponseUsage {
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/realtime/response.rs:14:pub struct RealtimeResponseUsage {
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/batches/batch.rs:7:use crate::types::batches::ResponseUsage;
+/Users/palanisd/.cargo/git/checkouts/async-openai-80cbf7d6f25979e0/95b52eb/async-openai/src/types/batches/mod.rs:10:pub use crate::types::shared::ResponseUsage;

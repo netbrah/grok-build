@@ -1,0 +1,69 @@
+{
+ "schema_version": 1,
+ "id": "MGW-STRIPREAD-01",
+ "title": "apex-ayl.112 RED ratchet (msgw-caching-receipts F2 — the dominant claude-side cache invalidator) — one-request thinking retention: strip_thinking_blocks (ST/conversation/messages.rs:266; xli S-031 = codex-rs first-party parity) drops every non-latest assistant's thinking, so an assistant turn's signed thinking survives EXACTLY the next request then is stripped — pinning steady-state cache reads at the last pre-reasoning prefix every turn (receipts: corpus claude turns serve only 43.2% of input as reads despite 73-98% per-turn steady state). Three headless turns: t1/t2 each induce a thinking block (adaptive on by default for sonnet-5), t3 replies. In the t3 request the FIRST assistant message is messages[1] (fixed index: u1,a1,u2,a2,u3). Control pin (class model): in the t2 request, messages[1].content[0].type == 'thinking' — proves t1 thought AND the one-request retention replays it (if t1 did not reason, the probe is VACUOUS, never a false red). RED PIN: in the t3 request, messages[1].content[0].type == 'thinking' — t1's thinking SURVIVES INTO THE THIRD REQUEST, i.e. retention is extended beyond one request (the apex-ayl.108 decision: extended verbatim replay buys the 5m mid-prefix cache across turns; server-side alternatives clear_thinking_20251015 / block_binding:drop_block also live on this decision). Pre-cut FAILs: a1's thinking is stripped by t3, so content[0] is 'text'/'tool_use'. GREEN when the retention extension (or an equivalent server-side keep-window) lands. Anthropic permits replaying earlier thinking verbatim (text+signature pairs are immutable), so the GREEN state is API-legal.",
+ "bead": "apex-ayl.112",
+ "suite": "wire-shape",
+ "tier": "slim",
+ "driver": "headless",
+ "model": "claude-sonnet-5",
+ "wirecap": true,
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Before answering, think through the reasoning step by step. What is 27*43? Is it larger or smaller than 31*39? Put your final one-line answer on the last line.",
+   "timeout_s": 300
+  },
+  {
+   "op": "turn",
+   "prompt": "Before answering, think through the reasoning step by step. A frog jumps 3 cm every second starting from 0. How many whole seconds until it has travelled at least 40 cm? Put your final one-line answer on the last line.",
+   "timeout_s": 300
+  },
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: MGW-STRIPREAD-OK",
+   "timeout_s": 120
+  }
+ ],
+ "watchdog_s": 900,
+ "est_calls": 6,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error",
+    "label": "NO TERMINAL ERROR: all three turns completed (the red is the retention policy, not the turns)."
+   }
+  ],
+  "wire": [
+   {
+   "kind": "field",
+   "id": "mgw_strip_ctl",
+   "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/messages", "body.messages[1].role": "assistant" },
+    "nth": 1,
+    "path": "body.messages[1].content[0].type",
+    "eq": "thinking",
+    "label": "CONTROL (class model): the t2 MAIN request (2nd-newest /v1/messages carrying an assistant at messages[1]; title/side calls excluded by the role filter) replays t1's thinking as messages[1].content[0] — proves t1 reasoned. FAIL (t1 did not think) = VACUOUS, never a false red."
+   },
+   {
+   "kind": "field",
+   "id": "mgw_strip_red",
+   "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/messages", "body.messages[1].role": "assistant" },
+    "nth": 0,
+    "path": "body.messages[1].content[0].type",
+    "eq": "thinking",
+    "label": "RED PIN (receipts F2): t1's thinking survives INTO the t3 MAIN request (newest /v1/messages with an assistant at messages[1]; title/side calls excluded by the role filter), i.e. retention > 1 request. Pre-cut FAILs: strip_thinking_blocks drops all non-latest thinking by t3, so content[0] is 'text' (or 'tool_use'). Live-verified layout (report-mgw-red-112-full): t2 main req carries a1=[thinking,text]; t3 main req carries a1=[text] (stripped) + a2=[thinking,text]."
+   }
+  ]
+ },
+ "scoring": {
+  "vacuous_if": [
+   { "pin": "mgw_strip_ctl", "class": "model" }
+  ]
+ },
+ "expected_red": { "id": "mgw-cache-stripread" }
+}

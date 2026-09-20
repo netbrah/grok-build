@@ -1,0 +1,24 @@
+.:
+total 16
+drwxr-xr-x@ 5 palanisd  staff  160 Sep 20 14:33 [1m[36m.[39;49m[0m
+drwx------@ 6 palanisd  staff  192 Sep 20 14:31 [1m[36m..[39;49m[0m
+-rw-r--r--@ 1 palanisd  staff  274 Sep 20 14:32 a.txt
+-rw-r--r--@ 1 palanisd  staff  276 Sep 20 14:32 b.txt
+drwxr-xr-x@ 3 palanisd  staff   96 Sep 20 14:31 [1m[36mtools[39;49m[0m
+
+tools:
+total 8
+drwxr-xr-x@ 3 palanisd  staff    96 Sep 20 14:31 [1m[36m.[39;49m[0m
+drwxr-xr-x@ 5 palanisd  staff   160 Sep 20 14:33 [1m[36m..[39;49m[0m
+-rwxr-xr-x@ 1 palanisd  staff  3465 Sep 20 14:32 [1m[31mminidiff.py[39;49m[0m
+=== FINAL RUN ===
+@@ -1,5 +1,5 @@
+-The lighthouse stood alone on the [-rocky-] headland.
++The lighthouse stood alone on the {+granite+} headland.
+ Every night its lamp swept a slow arc across the water.
+-Fishermen steered by that pale beam for [-forty-] years.
++Fishermen steered by that pale beam for {+sixty+} years.
+ The keeper climbed the spiral stairs at dusk without fail.
+-When the fog rolled in, the [-horn-] answered the darkness.
++When the fog rolled in, the {+bell+} answered the darkness.
+exit=1

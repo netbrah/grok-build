@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "id": "MXAI-C09",
+  "title": "MERGE-XAI-SYNC C-09 (DRIFT 01 §3 S3/R6, image-budget eviction -> compaction) — TEXT-ONLY BEST-EFFORT ARM on the qwen lane (L-04; 06 says 'image-heavy session' — the 47 MiB inline-image induction is NOT expressible in the driver: no image-attach step op and the seed is text-only; the positive arm is the operator image-induction run per smoke/redteam/fixtures/merge-xai/c-09-image/META.json, DRIVER GAP C-09 in smoke/merge-xai/README.md). What the text arm pins on the post-merge path under our code (S3 silent-drift row: verify NO behavior change): (1) COMPACTION COMPLETES: a reasoning turn + an echo turn + /compact + a post-compact turn all close (exit 0, no acp_error, the post-compact turn delivers its exact terminal nonce); (2) VERBATIM-INPUT STABILITY FACE: the POST-COMPACT qwen request reaches 200 (the compacted input re-hydrates and is accepted on the strict responses wire — a broken compaction input 400s; the 06 C-09 'no broken compaction input' assertion on the reachable surface); (3) NO COMP-3 STORM: the qwen request band is 3..10 across the four-step flow (a compact-induced same-payload re-request storm = the COMP-3 defect class); (4) EVICTION-PLACEHOLDER NEGATIVE CONTROL (recon, expected ABSENT): the image-eviction placeholder literal ('An earlier image was removed to keep the request within its size limit …') is recorded over the session chat_history — on a text-only seed the 47 MiB trigger (image_budget.rs IMAGE_COMPACT_TRIGGER_BYTES = 50-3 MiB; target 25 MiB) CANNOT fire, so a PRESENT sighting = the eviction path fired on a text-only session = the budget gate regressed = defect (adjudicate on the record). VERDICT: PASS = compaction completes + post-compact 200 + band clean + placeholder absent-from-record; any scored red -> STOP-AND-REPORT (house rule).",
+  "bead": "apex-l2d.4",
+  "suite": "compaction",
+  "tier": "full",
+  "driver": "acp",
+  "model": "qwen3.8-27b",
+  "wire": "responses",
+  "wirecap": true,
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "est_calls": 5,
+  "watchdog_s": 300,
+  "timeouts": {
+    "acp_init_s": 240
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Compute 7^8432 mod 5557 using modular exponentiation. Show each squaring step briefly, then state the final remainder on its own line. Do not use any tools."
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: MXAI-C09-ECHO"
+    },
+    {
+      "op": "compact"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: MXAI-C09-POST"
+    },
+    {
+      "op": "recon_note",
+      "note": "ARM SCOPE (recon_note, non-scoring): this is the TEXT-ONLY best-effort arm — the 06 C-09 scenario names an image-heavy session (exceed the 47 MB inline-image budget; the eviction placeholder must then be PRESENT in history). The driver cannot attach images (no image-attach step op; the seed is text-only), so the placeholder pin here runs as a NEGATIVE CONTROL (expected absent) and the positive arm is the operator image-induction run (fixture smoke/redteam/fixtures/merge-xai/c-09-image/META.json: the 47 MiB arm procedure + redaction). The scored surface of this arm is the compaction machinery itself (completes, re-hydrates, no storm) — the S3/R6 drift row's reachable half. The board cross-references both arms."
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "SESSION SURVIVES THE COMPACT: the /compact step and the post-compact turn did not die (a compact failure or a 400 on the re-hydrated input surfaces here) -> STOP."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "MXAI-C09-POST",
+        "label": "POST-COMPACT TURN COMPLETES: the turn after /compact delivered the exact terminal nonce — the compaction closed and the session continued on the compacted history."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "resp_status",
+        "id": "postcompact_200",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "VERBATIM-INPUT STABILITY FACE (the 06 C-09 'no broken compaction input' assertion on the reachable surface): the LAST qwen request (the post-compact turn's request, the compacted input) reached 200 — the compacted input re-hydrated and was accepted on the strict responses wire. A 400 here = the compaction produced a broken input = the S3 drift is live = defect -> STOP."
+      },
+      {
+        "kind": "count",
+        "id": "qwen_band",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "min": 3,
+        "max": 10,
+        "label": "NO COMP-3 STORM: 3-5 = the clean shape (reasoning turn + echo + post-compact, plus the compact side call); 6-10 = tolerated slack (within-turn re-requests around the compact); <3 = the four-step premise failed (adjudicate); >10 = same-payload retry storm around the compaction (COMP-3 shape) = defect -> STOP."
+      },
+      {
+        "kind": "recon",
+        "base": "session",
+        "file": "chat_history*.jsonl",
+        "grep": "An earlier image was removed to keep the request within its size limit",
+        "label": "EVICTION-PLACEHOLDER NEGATIVE CONTROL (recon, expected ABSENT on a text-only seed): the image-budget eviction placeholder literal (image_budget.rs, 47 MiB trigger) recorded over the session chat_history. ABSENT = the budget gate behaved (no images, no eviction) — the expected shape. PRESENT = the eviction path fired on a text-only session = the budget gate regressed = defect (adjudicate on the record; the positive arm is the operator 47 MiB image-induction run, DRIVER GAP C-09). recon — always records, never fails."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  },
+  "retry": {
+    "on_status": [
+      404,
+      502,
+      503
+    ],
+    "max_attempts": 1,
+    "backoff_s": 30
+  }
+}

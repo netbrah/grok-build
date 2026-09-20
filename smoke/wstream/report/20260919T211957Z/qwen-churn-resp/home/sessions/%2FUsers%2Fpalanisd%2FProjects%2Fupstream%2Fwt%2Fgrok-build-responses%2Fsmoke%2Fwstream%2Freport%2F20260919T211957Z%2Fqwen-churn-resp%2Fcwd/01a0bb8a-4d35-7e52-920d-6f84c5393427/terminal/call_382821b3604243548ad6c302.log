@@ -1,0 +1,7 @@
+[1m[36mbuild[39;49m[0m
+[1m[36mcodegen[39;49m[0m
+[1m[36mcommon[39;49m[0m
+---
+49c4e54 smoke(xwfix): re-pin az-az + az-vxm cell goldens to the .71 post-switch storage shape (bead apex-ayl.70-lane artifact repair; apex-ayl.71 re-run adjudication)
+5b2e74f fix(shell): CATALOG-LIVEHYDRATE-1 (apex-8jo) — ModelsFetchOutcome pub at the bootstrap signature boundary (base 7ca0b44)
+7ca0b44 feat(models): CATALOG-REQUIRED-CURATION-1 — full-row required overlay: 78 entries × 15-field curation contract, evidence fill + gate enforcement (bead apex-kb6; base 2440f68)

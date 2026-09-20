@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "id": "INGRESS77-SOL-FLAG-01",
+  "title": "apex-35d RED ratchet (R-B family-guard, CUT 1 — the exact 'RED test pinning flag=true + named-family row = no strip' the bead names, GREEN path apex-35d CUT 1) — the normalize_content_types opt-in is UNGUARDED on OpenAI-native rows: the R-B strip gate (provider.rs:179 '!is_openai_family(family) || normalize_content_types'; is_openai_family = xai|codex|openai|empty, provider.rs:185-190) fires input_text/output_text -> 'text' on EVERY row once the operator sets the flag — including a NAMED codex-family row like gpt-5.6-sol, exactly the unverified behavior the R-A safety argument rejected (the docs contract is a family-LESS-row opt-in for vLLM dialects). The case sets model/gpt-5.6-sol/normalize_content_types=true (config_patch intent) and pins that the OpenAI-native part types SURVIVE the SOL path. RED today (pre-cut): the strip fires -> no '\"type\": \"input_text\"' part in the main /v1/responses request -> the pin 0-hits -> FAIL = RED-EXPECTED(ingress77-rb-sol-flag-strip). The pre-cut run additionally documents the R-A exposure at the provider: the rewritten 'text'-typed user content parts are non-standard for the OpenAI Responses API — if the final request 400s, capture the verbatim body (the resp_status pin records the final status; a non-200 final here is a SECOND data point for the guard's necessity, adjudicate from the resp-*.jsonl, not a case bug). GREEN (post CUT 1: the flag can only arm on non-OpenAI-family rows): the input_text parts survive, the turn completes 200 -> RED-CLEARED; re-pin rule: drop expected_red, the pin becomes the standing contract guard (flag=true + named OpenAI-family row = no strip). Control (class harness): body.model eq sol on the main (oldest) request AND the request carries a user message content part — a miss means the rig did not build the turn (BLOCKED, never vacuous).",
+  "bead": "apex-35d",
+  "suite": "wire-shape",
+  "tier": "slim",
+  "driver": "headless",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "wirecap": true,
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "config_patch": {
+    "model/gpt-5.6-sol/normalize_content_types": true
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: INGRESS77-SOL-OK",
+      "timeout_s": 180
+    }
+  ],
+  "watchdog_s": 420,
+  "est_calls": 2,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error",
+        "label": "NO TERMINAL ERROR: the turn completed (pre-cut a provider 400 on the rewritten 'text'-typed parts surfaces here = the R-A exposure data point, part of the RED evidence, not a case bug)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "field",
+        "file": "req-*.json",
+        "where": { "method": "POST", "path": "/v1/responses" },
+        "last": 0,
+        "path": "body.model",
+        "eq": "gpt-5.6-sol",
+        "label": "CONTROL (class harness): the main (oldest) request carries the session model — the harness always does; a miss is a harness failure, never vacuous."
+      },
+      {
+        "kind": "grep",
+        "id": "has_user_msg",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "any": true,
+        "grep": "\"type\": \"message\"",
+        "label": "CONTROL (class harness, churn-free premise): the request carries a user message content part — the strip's surface must exist or the RED pin is meaningless (a miss = the rig did not build the turn -> BLOCKED)."
+      },
+      {
+        "kind": "grep",
+        "id": "rb_flag_no_strip",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "any": true,
+        "grep": "\"type\": \"input_text\"",
+        "label": "RED PIN (R-B family-guard / apex-35d CUT 1): a NAMED OpenAI-family row with normalize_content_types=true keeps the OpenAI-native input_text part type (the family guard: the flag may only arm on non-OpenAI-family rows). Pre-cut FAILs: the ungated gate (provider.rs:179) rewrites every input_text/output_text part to 'text' on the SOL path (normalize_content_types, provider.rs:356-373) — the field is unemittable on this row while the flag is set."
+      },
+      {
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "which": "last",
+        "status_in": [200],
+        "label": "FINAL ACCEPTED: the final sol request reached 200 (post-cut expectation; pre-cut a 400 here is the R-A provider-exposure data point — capture the verbatim body from resp-*.jsonl before adjudicating)."
+      }
+    ]
+  },
+  "expected_red": {
+    "id": "ingress77-rb-sol-flag-strip"
+  },
+  "scoring": {
+    "vacuous_if": [
+      {
+        "pin": "has_user_msg",
+        "class": "harness",
+        "note": "the request carries no user message content part — the strip's surface never existed; BLOCKED (rig), never VACUOUS."
+      }
+    ],
+    "require_wire_evidence": true
+  }
+}

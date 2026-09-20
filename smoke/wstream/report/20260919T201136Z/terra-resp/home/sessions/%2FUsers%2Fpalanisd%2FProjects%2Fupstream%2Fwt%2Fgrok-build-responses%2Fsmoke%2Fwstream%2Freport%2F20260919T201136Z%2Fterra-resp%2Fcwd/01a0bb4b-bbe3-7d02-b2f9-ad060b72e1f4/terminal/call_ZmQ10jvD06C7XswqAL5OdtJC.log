@@ -1,0 +1,103 @@
+/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T201136Z/terra-resp/cwd
+
+Repository root listing:
+total 0
+drwxr-xr-x@ 2 palanisd  staff   64 Sep 19 16:11 [1m[36m.[39;49m[0m
+drwx------@ 6 palanisd  staff  192 Sep 19 16:11 [1m[36m..[39;49m[0m
+
+Relevant paths:
+
+Git status:
+ M ../../../../../../.gitignore
+ M ../../../../../../crates/codegen/xai-chat-state/src/actor/request_builder.rs
+ M ../../../../../../crates/codegen/xai-chat-state/src/actor/state.rs
+ M ../../../../../../crates/codegen/xai-chat-state/src/actor/tests.rs
+ M ../../../../../../crates/codegen/xai-chat-state/src/commands.rs
+ M ../../../../../../crates/codegen/xai-chat-state/src/types.rs
+ M ../../../../../../crates/codegen/xai-grok-sampler/src/actor/state.rs
+ M ../../../../../../crates/codegen/xai-grok-sampler/src/client.rs
+ M ../../../../../../crates/codegen/xai-grok-sampler/src/config.rs
+ M ../../../../../../crates/codegen/xai-grok-sampler/src/provider.rs
+ M ../../../../../../crates/codegen/xai-grok-sampler/tests/ingress77_e2_r_b.rs
+ M ../../../../../../crates/codegen/xai-grok-sampler/tests/test_actor.rs
+ M ../../../../../../crates/codegen/xai-grok-sampling-types/src/conversation.rs
+ M ../../../../../../crates/codegen/xai-grok-sampling-types/src/conversation/messages.rs
+ M ../../../../../../crates/codegen/xai-grok-sampling-types/src/types.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/agent/config.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/agent/mvp_agent/reasoning_effort.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/agent/subagent/mod.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/agent/subagent/tests/mod.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/session/acp_session_impl/model_switch.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/session/acp_session_tests/auth_error_no_retry_tests.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/session/acp_session_tests/cancel_running_task_tests.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/session/acp_session_tests/idle_resume_tests.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/session/acp_session_tests/inline_auto_compact_flow_tests.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/session/acp_session_tests/memory_config_tests.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/session/acp_session_tests/session_model_slot_tests.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/session/acp_session_tests/support.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/session/compaction_inline_auto_compact_flow_tests.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/session/helpers/session_compact_reasoning_compaction_regression_tests.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/session/storage/jsonl/tests.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/test_support/lsp_runtime.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/src/tools/config.rs
+ M ../../../../../../crates/codegen/xai-grok-shell/tests/common/mod.rs
+ M ../../../../../redteam/case.schema.json
+ M ../../../../../redteam/cases/at-vlq-vxg.json
+ M ../../../../../redteam/cases/xw-az-vlq.json
+ M ../../../../../redteam/cases/xw-vlq-vlg.json
+ M ../../../../../redteam/cases/xw-vxm-az.json
+ M ../../../../../redteam/cases/xw-vxm-vlg.json
+ M ../../../../../redteam/cases/xw-vxm-vlq.json
+ M ../../../../../redteam/grok-dogfood.v2
+ M ../../../../../redteam/run.py
+ M ../../../../../redteam/test_run.py
+ M ../../../../../redteam/test_run_golden.py
+ M ../../../../../run-compaction-smoke.sh
+ M ../../../../../run-matrix.sh
+ M ../../../../../run-smoke.sh
+ M ../../../../../triage/signatures.json
+ M ../../../../manifest.json
+ M ../../../../run.py
+?? ../../../../../../.coord_write_probe
+?? ../../../../../../.ma4_gate_probe
+?? ../../../../../../.ma4_probe_check
+?? ../../../../../../.ma4_write_probe
+?? ../../../../../../.tgrep/
+?? ../../../../../../.xreplay1_write_probe
+?? ../../../../../../grok/
+?? ../../../../../lib/
+?? ../../../../../redteam/cases/at-enc-probe-unpin.json
+?? ../../../../../redteam/cases/comp3-storm-vlq-vlg.json
+?? ../../../../../redteam/cases/cw-write-usage-01.json
+?? ../../../../../redteam/cases/dead-seat-kill-resume.json
+?? ../../../../../redteam/cases/mgw-45gen-01.json
+?? ../../../../../redteam/cases/mgw-srvtool-01.json
+?? ../../../../../redteam/cases/mgw-stopseq-01.json
+?? ../../../../../redteam/cases/mgw-stripread-01.json
+?? ../../../../../redteam/cases/mgw-toolctl-01.json
+?? ../../../../../redteam/cases/mgw-topk-01.json
+?? ../../../../../redteam/cases/mgw-ttlusage-01.json
+?? ../../../../../redteam/cases/mgw-userid-01.json
+?? ../../../../../redteam/cases/resp-body-smoke-01.json
+?? ../../../../../redteam/cases/resp-body-smoke-01/
+?? ../../../../../redteam/cases/resp-stream-smoke-01.json
+?? ../../../../../redteam/cases/resp-stream-smoke-01/
+?? ../../../../../redteam/cases/xw-effort-clamp-3fam.json
+?? ../../../../../redteam/cases/xw-resume-crossfam.json
+?? ../../../../../redteam/cases/xw-vxm-az-live.json
+?? ../../../../../redteam/fixtures/
+?? ../../../../../redteam/kiloecho/
+?? ../../../../../redteam/manifest.json
+?? ../../../../../redteam/test_parity_cachewrite.py
+?? ../../../../../redteam/test_parity_stablereminder.py
+?? ../../../../../redteam/test_sweepctl.py
+?? ../../../../../redteam/triage/
+?? ../../../../../sweepctl.py
+?? ../../../../cells/opus-msg-hard/
+?? ../../../../cells/qwen-resp-hard-1/
+?? ../../../../cells/qwen-resp-hard-2/
+?? ../../../../cells/sonnet-msg/
+?? ../../../../cells/terra-resp/
+?? ../../../

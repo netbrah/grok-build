@@ -1,0 +1,16 @@
+{
+  "fixture": "c-03-cache",
+  "cell": "C-03",
+  "cases": [
+    "MXAI-C03"
+  ],
+  "kind": "Redacted /v1/messages request shape carrying the 06 §2 C-03 cache-breakpoint pins (messages-request-shape.json). Reference shape for coordinator cross-reference — the LIVE wire capture is the evidence (the driver's scored pins bound the request-level shape; block-level placement adjudicates on the recon, DRIVER GAP C-03 partial).",
+  "pins": {
+    "head_ttl_1h": "the last system block carries cache_control {type:ephemeral, ttl:1h} — the M5 ours-side cache_ttl pin survived the merge (lane L-03 row carries cache_ttl = \"1h\"; ANTHROPIC-WIRE-1 cut 3: only '1h' emits a ttl field, '5m'/absent → the wire's 5m default = no ttl field)",
+    "tip_on_sentinel": "the TIP breakpoint lands on the synthetic-user '[Continue]' sentinel block (the trailing-assistant-no-tool_use variant), serializing {type:ephemeral} with NO ttl field — 06: 'cache_control lands on the synthetic-user sentinel, not the assistant block'",
+    "assistant_none": "no cache_control anywhere on the assistant block(s)"
+  },
+  "crate_grounding": "xai-grok-sampling-types/src/conversation/messages.rs — repair_trailing_assistant (S-014: the synthetic user sentinel, '[Continue]' when the trailing assistant carries no tool_use, '[Awaiting tool result]' otherwise; runs before the cache window so the tip lands on the sentinel when it exists), mark_message_cache_breakpoint (TIP = CacheControl::ephemeral(), no ttl; skips Thinking blocks), apply_cache_breakpoints (head = last system block, the configured ttl lands on the stable head only); messages.rs CacheControl + cache_control_ttl. In-tree precedents: messages_tests.rs history_cache_control_lands_on_synthetic_user_after_trailing_assistant + test_messages_request_cache_ttl_lands_on_stable_head_only.",
+  "which_request": "MXAI-C03 scores the LATEST /v1/messages request of the 2-turn flow (nth:0). In the default config that is the title-refresh side call (title_refresh.rs: one tool-free model call over the whole conversation, parent_cached_request, history ending on T2's assistant reply — the trailing-assistant shape that triggers the sentinel; features.turn_summary defaults true). If the refresh is gated off in the home, the sentinel pin 0-hits and the case label routes that to adjudication — not a mechanical red.",
+  "redaction": "sweep-0: no creds/host paths/IPs/secret URLs; model id + structural shapes stay; all text fields are placeholders."
+}

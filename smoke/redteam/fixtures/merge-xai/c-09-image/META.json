@@ -1,0 +1,18 @@
+{
+  "fixture": "c-09-image",
+  "cell": "C-09",
+  "cases": [
+    "MXAI-C09"
+  ],
+  "kind": "Operator 47 MiB image-induction arm spec — the 06 §2 C-09 positive arm ('image-heavy session; exceed 47 MB inline-image budget') that the driver cannot run: no image-attach step op and the headless seed is text-only (DRIVER GAP C-09). MXAI-C09 runs the text-only best-effort arm on L-04 (compaction completes + post-compact 200 + no COMP-3 storm + placeholder ABSENT as the negative control).",
+  "mechanism": "xai-chat-state/src/image_budget.rs: MAX_REQUEST_BYTES = 50 MiB (the inference proxy's hard body ceiling, nginx proxy-body-size); IMAGE_COMPACT_TRIGGER_BYTES = 50 MiB - 3 MiB = 47 MiB (3 MiB headroom covers uncounted tool definitions + the request envelope; below the trigger every image stays so the KV-cache prefix remains byte-stable); IMAGE_COMPACT_RECLAIM_TARGET_BYTES = 25 MiB (half the hard limit — hysteresis: evict once, stay cache-warm; the compile-time assert keeps the two constants from drifting).",
+  "placeholder_literal": "[An earlier image was removed to keep the request within its size limit and is no longer visible. Do not describe or reason about its contents from memory; ask the user to re-share it if you need to see it again.]",
+  "placeholder_note": "IMAGE_COMPACT_PLACEHOLDER (image_budget.rs:7), VERBATIM — phrased so the model treats the image as gone (a silent strip would induce hallucination). Secondary literal for tool-result images (TOOL_IMAGE_COMPACT_NOTE, image_budget.rs:12): '[One or more images from this tool result were removed to keep the request within its size limit and are no longer visible. Do not describe or reason about their contents from memory.]'. Both can appear in the record of the operator arm.",
+  "procedure": [
+    "1. Operator arm (06 §2 C-09): an image-heavy session on the lane of record whose inline-image history exceeds the 47 MiB trigger (images attached via the operator's interactive/dogfood session — the driver cannot attach them).",
+    "2. Scored assertions per 06: (a) the eviction placeholder literal PRESENT in the history (the eviction fired); (b) the compaction completes; (c) verbatim-input stability holds — the post-compact request is 200 (no broken compaction input).",
+    "3. Redaction BEFORE commit: the image bytes are redacted to a size marker + hash (the blob is NEVER committed); the placeholder literals are case-owned strings, not secrets; the rest is sweep-0.",
+    "4. Board cross-reference: the MXAI-C09 negative control (placeholder ABSENT on the text-only seed — PRESENT there would mean the budget gate fired on text = regression) adjudicates against this arm's PRESENT record."
+  ],
+  "redaction": "sweep-0: the image blob is never committed (size marker + hash stand in for the bytes); no creds/host paths/IPs/secret URLs."
+}

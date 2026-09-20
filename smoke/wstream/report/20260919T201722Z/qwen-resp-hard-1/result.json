@@ -1,0 +1,1440 @@
+{
+  "cell": "qwen-resp-hard-1",
+  "model": "qwen3.8-27b",
+  "api_backend": "responses",
+  "backend_class": "native",
+  "verdict": "PASS",
+  "invariants": [
+    {
+      "key": "status",
+      "expected": 200,
+      "actual": 200,
+      "ok": true
+    },
+    {
+      "key": "route",
+      "expected": "responses",
+      "actual": "responses",
+      "ok": true
+    },
+    {
+      "key": "n_model_calls_min",
+      "expected": ">= 1",
+      "actual": 29,
+      "ok": true
+    }
+  ],
+  "observations": {
+    "route": "responses",
+    "status": 200,
+    "n_model_calls": 29,
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 7890,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "Let",
+    "finish": null,
+    "budget_trap": false,
+    "final_text_nonempty": true,
+    "final_text_len": 81,
+    "usage": {
+      "input_tokens": 20603,
+      "input_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "output_tokens": 20586,
+      "output_tokens_details": {
+        "reasoning_tokens": 20496
+      },
+      "total_tokens": 41189
+    }
+  },
+  "analysis": {
+    "cell": "qwen-resp-hard-1",
+    "route": "responses",
+    "expected_route": "responses",
+    "routes_mixed": false,
+    "status": 200,
+    "n_model_calls": 29,
+    "n_side_calls": 28,
+    "side_call_errors": [],
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 7890,
+    "reasoning_tokens": 20496,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "Let",
+    "finish": null,
+    "budget_trap": false,
+    "final_text_len": 81,
+    "final_text_nonempty": true,
+    "usage": {
+      "input_tokens": 20603,
+      "input_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "output_tokens": 20586,
+      "output_tokens_details": {
+        "reasoning_tokens": 20496
+      },
+      "total_tokens": 41189
+    },
+    "n_frames_total": 7916
+  },
+  "calls": [
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 100,
+      "status": 200,
+      "n_frames": 39,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 1,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 30,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 31,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "The",
+      "finish": "max_output_tokens",
+      "usage": {
+        "input_tokens": 561,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 98,
+        "output_tokens_details": {
+          "reasoning_tokens": 101
+        },
+        "total_tokens": 659
+      },
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 7916,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 7889,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 7,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 3,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 7890,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Let",
+      "finish": null,
+      "usage": {
+        "input_tokens": 20603,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 20586,
+        "output_tokens_details": {
+          "reasoning_tokens": 20496
+        },
+        "total_tokens": 41189
+      },
+      "final_text": "\n\nI'll start by checking the workspace state, then build the tool and fixtures.\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 60,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 5,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 7,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 5,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 18,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 12,
+        "response.function_call_arguments.done": 3,
+        "response.completed": 1
+      },
+      "reasoning_frames": 8,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "It",
+      "finish": null,
+      "usage": {
+        "input_tokens": 41252,
+        "input_tokens_details": {
+          "cached_tokens": 40960,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 1833,
+        "output_tokens_details": {
+          "reasoning_tokens": 16
+        },
+        "total_tokens": 43085
+      },
+      "final_text": "\n\nI'll create the tool using Python's stdlib `difflib` to perform word-level diffs and render only changed hunks with unified context, along with two fixtures.\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 41,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 15,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 5,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 16,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Alright",
+      "finish": null,
+      "usage": {
+        "input_tokens": 43278,
+        "input_tokens_details": {
+          "cached_tokens": 43008,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 170,
+        "output_tokens_details": {
+          "reasoning_tokens": 38
+        },
+        "total_tokens": 43448
+      },
+      "final_text": "\n\nNow run the tool on the fixtures and check the exit code:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 79,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 40,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 18,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 41,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "The",
+      "finish": null,
+      "usage": {
+        "input_tokens": 43581,
+        "input_tokens_details": {
+          "cached_tokens": 43264,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 386,
+        "output_tokens_details": {
+          "reasoning_tokens": 115
+        },
+        "total_tokens": 43967
+      },
+      "final_text": "\n\nThe tool runs cleanly with exit code 1. Now verify the 3 substituted words appear, confirm the fixtures differ by exactly 3 words, and test the identical-files path (exit 0, no output):\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 165,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 124,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 20,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 125,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Interesting",
+      "finish": null,
+      "usage": {
+        "input_tokens": 43992,
+        "input_tokens_details": {
+          "cached_tokens": 43776,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 634,
+        "output_tokens_details": {
+          "reasoning_tokens": 353
+        },
+        "total_tokens": 44626
+      },
+      "final_text": "\n\nThe `&&` chain was interrupted by the command substitution's exit status (1, which is as expected from the diff) \u2014 the check wasn't actually executed. Let me redo it with proper exit code handling:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 104,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 67,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 16,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 68,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "All",
+      "finish": null,
+      "usage": {
+        "input_tokens": 44736,
+        "input_tokens_details": {
+          "cached_tokens": 44544,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 537,
+        "output_tokens_details": {
+          "reasoning_tokens": 189
+        },
+        "total_tokens": 45273
+      },
+      "final_text": "\n\nAll checks pass. Quick robustness sanity check on line insert/delete and the usage-error path, to be sure the tool is sound beyond the fixture case:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 231,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 185,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 25,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 186,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "All",
+      "finish": null,
+      "usage": {
+        "input_tokens": 45425,
+        "input_tokens_details": {
+          "cached_tokens": 45056,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 705,
+        "output_tokens_details": {
+          "reasoning_tokens": 470
+        },
+        "total_tokens": 46130
+      },
+      "final_text": "\n\nAll good \u2014 the \"delete\" test just happened to compare files with no shared words (correct output for that case: the entire file becomes deletions). One more test with a true single-line deletion to verify hunk numbering:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 1001,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 962,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 18,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 963,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Interesting",
+      "finish": null,
+      "usage": {
+        "input_tokens": 46249,
+        "input_tokens_details": {
+          "cached_tokens": 46080,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 3059,
+        "output_tokens_details": {
+          "reasoning_tokens": 2649
+        },
+        "total_tokens": 49308
+      },
+      "final_text": "\n\nThe line-deletion case is outputting `-alpha one/+alpha one` (an identical line being marked as changed), but GNU diff leaves it as context. Let me try debugging the actual opcode alignment:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 4396,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 4315,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 60,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 4316,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Now",
+      "finish": null,
+      "usage": {
+        "input_tokens": 49515,
+        "input_tokens_details": {
+          "cached_tokens": 49152,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 13907,
+        "output_tokens_details": {
+          "reasoning_tokens": 11437
+        },
+        "total_tokens": 63422
+      },
+      "final_text": "\n\nFound it. The root cause is in how line-terminator sentinels interact with LCS alignment. When a line is deleted, `SequenceMatcher` matches the terminator of the *previous* line across the gap (`equal(0,2,0,2)`, `delete(2,5,2,2)` \u2014 the deleted span swallows `NL,beta,two`), so line 0 \"alpha one\" gets marked as modified even though all of its *words* are equal. The fix: demote a line that was modified only because of its terminator token (whose mapped partner line is word-for-word identical) to a context line, and base the exit code on the raw token diff. Let me rewrite the analysis:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 53,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 22,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 9,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 5,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 23,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Wait",
+      "finish": null,
+      "usage": {
+        "input_tokens": 63495,
+        "input_tokens_details": {
+          "cached_tokens": 63232,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 203,
+        "output_tokens_details": {
+          "reasoning_tokens": 71
+        },
+        "total_tokens": 63698
+      },
+      "final_text": "\n\nI introduced a typo in the trailing-context line (`len(len(lines_a) and lines_a)`). Fixing it:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 54,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 23,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 10,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 24,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Now",
+      "finish": null,
+      "usage": {
+        "input_tokens": 63725,
+        "input_tokens_details": {
+          "cached_tokens": 63488,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 450,
+        "output_tokens_details": {
+          "reasoning_tokens": 48
+        },
+        "total_tokens": 64175
+      },
+      "final_text": "\n\nNow re-run the full verification suite \u2014 fixtures, identical files, the deletion case against GNU, and the insert+change case:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 11432,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 11356,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 55,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 11357,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "progress",
+      "finish": null,
+      "usage": {
+        "input_tokens": 64488,
+        "input_tokens_details": {
+          "cached_tokens": 64000,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 32342,
+        "output_tokens_details": {
+          "reasoning_tokens": 30407
+        },
+        "total_tokens": 96830
+      },
+      "final_text": "\n\nI've identified the root cause of the remaining artifact: my line/span overlap test was matching *empty* token ranges against the line that straddles that point (a `delete` span with `j1==j2` was incorrectly flagging line 0), and the per-event line ranges were overlapping each other. I'll rewrite the analysis to track only lines that contain **changed word tokens**, pair old/new lines on a per-span basis, and render events (`sub`/`del`/`ins`) along the old-line axis \u2014 this will also properly handle the case where a mid-line insertion splits a line:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 103,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 69,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 13,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 70,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Run",
+      "finish": null,
+      "usage": {
+        "input_tokens": 96902,
+        "input_tokens_details": {
+          "cached_tokens": 64448,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 1179,
+        "output_tokens_details": {
+          "reasoning_tokens": 161
+        },
+        "total_tokens": 98081
+      },
+      "final_text": "\n\nNext, in addition to the full test battery, we'll perform a strict round-trip check: applying the hunk output to file A must accurately reconstruct file B:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 251,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 214,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 16,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 215,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "The",
+      "finish": null,
+      "usage": {
+        "input_tokens": 98904,
+        "input_tokens_details": {
+          "cached_tokens": 98048,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 1517,
+        "output_tokens_details": {
+          "reasoning_tokens": 608
+        },
+        "total_tokens": 100421
+      },
+      "final_text": "\n\nminidiff's output is now correct in all 5 cases (the deletion matches GNU exactly). There was a parsing bug in my check script's header parsing \u2014 I'll fix it and re-run:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 77,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 45,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 11,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 46,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "The",
+      "finish": null,
+      "usage": {
+        "input_tokens": 100694,
+        "input_tokens_details": {
+          "cached_tokens": 98880,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 951,
+        "output_tokens_details": {
+          "reasoning_tokens": 144
+        },
+        "total_tokens": 101645
+      },
+      "final_text": "\n\nThe multi-hunk output is correct \u2014 my checker just doesn't handle multiple hunks. Updating it to apply each hunk sequentially:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 597,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 557,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 19,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 558,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "There",
+      "finish": null,
+      "usage": {
+        "input_tokens": 102272,
+        "input_tokens_details": {
+          "cached_tokens": 101632,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 2300,
+        "output_tokens_details": {
+          "reasoning_tokens": 1500
+        },
+        "total_tokens": 104572
+      },
+      "final_text": "\n\nThere are two bugs in the checker script: `map(int, m.groups())` is also trying to parse the 5th (body) group, and zsh doesn't perform word splitting on `set -- $pair`. Fixing the checker now:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 277,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 236,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 20,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 237,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Interesting",
+      "finish": null,
+      "usage": {
+        "input_tokens": 104864,
+        "input_tokens_details": {
+          "cached_tokens": 104448,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 2095,
+        "output_tokens_details": {
+          "reasoning_tokens": 645
+        },
+        "total_tokens": 106959
+      },
+      "final_text": "\n\nThe hunk output is actually correct \u2014 my checker was failing to carry over the unchanged lines *between* hunks (l4\u2013l6) during the jump. This is a standard requirement for patch application. Fixing the checker now:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 205,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 158,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 26,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 159,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "All",
+      "finish": null,
+      "usage": {
+        "input_tokens": 107227,
+        "input_tokens_details": {
+          "cached_tokens": 106752,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 1331,
+        "output_tokens_details": {
+          "reasoning_tokens": 336
+        },
+        "total_tokens": 108558
+      },
+      "final_text": "\n\nAll the target round-trips are currently passing. The randomized test harness crashed on some trial \u2014 the checker went out of range, which means that for some random input, minidiff output an invalid hunk. I'll try to identify the failing trial with diagnostics enabled:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 8261,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 8178,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 62,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 8179,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Now",
+      "finish": null,
+      "usage": {
+        "input_tokens": 108984,
+        "input_tokens_details": {
+          "cached_tokens": 108544,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 24230,
+        "output_tokens_details": {
+          "reasoning_tokens": 22068
+        },
+        "total_tokens": 133214
+      },
+      "final_text": "\n\nThis time, a real bug has come to light \u2014 and it's not just trial 3 either (the missing `seen_old` guard was causing `-eta beta` to be output twice): in cases of large rewrites (trials 5\u20136), my assumption that \"word-clean old line = context line\" breaks down, because a word-clean line could correspond to a *different* new line. A principled fix: pair up lines through the word-level alignment (matched terminator first, then matched words), emit a line pair as context **only if both sides are word-identical**, and number the context lines from the actual pairing rather than from the shift calculation. Currently rewriting:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 38,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 10,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 7,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 11,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Run",
+      "finish": null,
+      "usage": {
+        "input_tokens": 133287,
+        "input_tokens_details": {
+          "cached_tokens": 133120,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 1251,
+        "output_tokens_details": {
+          "reasoning_tokens": 25
+        },
+        "total_tokens": 134538
+      },
+      "final_text": "\n\nNow the full test battery \u2014 targeted round-trips plus the 200-trial randomized fuzz:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 381,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 325,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 34,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 5,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 326,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "The",
+      "finish": null,
+      "usage": {
+        "input_tokens": 135082,
+        "input_tokens_details": {
+          "cached_tokens": 134400,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 2017,
+        "output_tokens_details": {
+          "reasoning_tokens": 841
+        },
+        "total_tokens": 137099
+      },
+      "final_text": "\n\nAll 200 fuzz trials are now generating correct hunks \u2014 the 3 \"failures\" are edge cases in the checker: for insertion hunks into an empty file (`@@ -0,0 +1,N @@`), the guard `oi > lo - 1` misfires (0 > -1). The minidiff output for these is correct. Fix the checker and run a larger fuzz:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 2118,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 2057,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 39,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 5,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 2058,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "There",
+      "finish": null,
+      "usage": {
+        "input_tokens": 137641,
+        "input_tokens_details": {
+          "cached_tokens": 136960,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 6505,
+        "output_tokens_details": {
+          "reasoning_tokens": 6111
+        },
+        "total_tokens": 144146
+      },
+      "final_text": "\n\nThe remaining failure is a class of ordering bug: in large rewrites, an unmatched new line's insertion axis (derived from the span start position) can get placed *before* the old line of a paired line, causing the `+` lines to be output out of order in the new file. The fix: compute the insertion axis from the line correspondence \u2014 place an unmatched new line `m` right after the last old line that was paired to a *smaller* new line:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 57,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 35,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 1,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 36,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Wait",
+      "finish": null,
+      "usage": {
+        "input_tokens": 144173,
+        "input_tokens_details": {
+          "cached_tokens": 144128,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 136,
+        "output_tokens_details": {
+          "reasoning_tokens": 89
+        },
+        "total_tokens": 144309
+      },
+      "final_text": "\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 40,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 12,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 6,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 5,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 13,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "`",
+      "finish": null,
+      "usage": {
+        "input_tokens": 144538,
+        "input_tokens_details": {
+          "cached_tokens": 144128,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 368,
+        "output_tokens_details": {
+          "reasoning_tokens": 35
+        },
+        "total_tokens": 144906
+      },
+      "final_text": "\n\n`spans` and `b2a` are now dead code \u2014 removing them:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 54,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 29,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 3,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 5,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 30,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Wait",
+      "finish": null,
+      "usage": {
+        "input_tokens": 144933,
+        "input_tokens_details": {
+          "cached_tokens": 144896,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 1314,
+        "output_tokens_details": {
+          "reasoning_tokens": 76
+        },
+        "total_tokens": 146247
+      },
+      "final_text": "\n\nRe-running the full verification:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 31,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 9,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 1,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 10,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "The",
+      "finish": null,
+      "usage": {
+        "input_tokens": 146605,
+        "input_tokens_details": {
+          "cached_tokens": 146176,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 96,
+        "output_tokens_details": {
+          "reasoning_tokens": 19
+        },
+        "total_tokens": 146701
+      },
+      "final_text": "\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 96,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 58,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 17,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 59,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "All",
+      "finish": null,
+      "usage": {
+        "input_tokens": 148211,
+        "input_tokens_details": {
+          "cached_tokens": 146688,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 473,
+        "output_tokens_details": {
+          "reasoning_tokens": 163
+        },
+        "total_tokens": 148684
+      },
+      "final_text": "\n\nAll 900 fuzz trials and all targeted round-trips pass. Final confirmation of the deliverables \u2014 fixture run, exit codes, substituted words, and cleanup of temp files:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 283,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 75,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 2,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 194,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 76,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "All",
+      "finish": null,
+      "usage": {
+        "input_tokens": 148980,
+        "input_tokens_details": {
+          "cached_tokens": 148480,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 779,
+        "output_tokens_details": {
+          "reasoning_tokens": 179
+        },
+        "total_tokens": 149759
+      },
+      "final_text": "\n\nEverything is complete and verified. Summary of the work:\n\n**Deliverables**\n- `tools/minidiff.py` \u2014 dependency-free Python 3 CLI (stdlib `difflib` + `sys` only). Tokenizes each file into words plus line-terminator sentinels, runs an LCS word diff, pairs lines through the alignment, and prints only changed hunks in unified style with 1 line of context. Exits 1 on any difference, 0 when identical, 2 on usage/IO errors.\n- `a.txt` \u2014 5 lines of lighthouse prose; `b.txt` \u2014 the same prose with exactly 3 single-word substitutions (`steady\u2192flickering`, `wheeled\u2192circled`, `storm\u2192squall`), confirmed by a word-level check.\n\n**Debugging** \u2014 the fixture run was clean on first try, but stress testing exposed two real bugs, both fixed:\n1. **Empty-range overlap bug**: a span with no tokens on one side matched the line straddling that point, flagging unchanged lines (and once double-emitting a `-` line). Fixed by restricting change detection to lines containing a *changed word token*.\n2. **Mis-ordered insertions in large rewrites**: unmatched new lines got their insertion axis from the span start, which could emit `+` lines out of new-file order. Fixed by placing an inserted line after the last old line paired to an earlier new line, and by treating a line pair as context only when both sides are word-identical.\n\n**Verification** \u2014 beyond the fixture: applying the tool's hunk output to file A reconstructs file B exactly (round-trip patch check), on the fixture, line-deletion (output matches `diff -U1`), line-insertion, mid-line insertion, multi-hunk, and empty-file cases \u2014 plus 900 randomized file pairs across word substitutions, line insertions/deletions, and swaps, all producing valid hunks with correct exit codes.\n\n**Final diff output** (`python3 tools/minidiff.py a.txt b.txt`, exit code 1):\n\n```\n@@ -1,5 +1,5 @@\n-The old lighthouse kept a steady flame above the bay.\n+The old lighthouse kept a flickering flame above the bay.\n Keepers climbed the spiral stair at every dusk.\n-Gulls wheeled between the rocks and the lantern glass.\n+Gulls circled between the rocks and the lantern glass.\n The beam swept the water and called ships home.\n-No storm could silence its patient warning light.\n+No squall could silence its patient warning light.\n```\n\nAll 3 substituted words (`flickering`, `circled`, `squall`) appear in the output, and running the tool on identical files prints nothing and exits 0."
+    }
+  ],
+  "turns": [
+    {
+      "turn": 1,
+      "exit_code": 0,
+      "killed": false,
+      "elapsed": 1262.73,
+      "session_id": "01a0bb51-0415-78c1-a2a3-a4cf964729dd",
+      "n_events": 38039
+    }
+  ],
+  "binary_sha256_12": "f9e7a15d6b6b",
+  "wire_port": 60163,
+  "upstream": "https://llm-proxy-api.ai.eng.netapp.com",
+  "key_sha256_12": "9f3f56a263da",
+  "raw_key_hits": 0,
+  "ts": "20260919T203826Z"
+}

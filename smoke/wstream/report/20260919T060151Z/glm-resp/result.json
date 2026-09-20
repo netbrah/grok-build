@@ -1,0 +1,192 @@
+{
+  "cell": "glm-resp",
+  "model": "glm-5.2",
+  "api_backend": "responses",
+  "backend_class": "native",
+  "verdict": "PASS",
+  "invariants": [
+    {
+      "key": "status",
+      "expected": 200,
+      "actual": 200,
+      "ok": true
+    },
+    {
+      "key": "route",
+      "expected": "responses",
+      "actual": "responses",
+      "ok": true
+    },
+    {
+      "key": "n_model_calls_min",
+      "expected": ">= 1",
+      "actual": 2,
+      "ok": true
+    }
+  ],
+  "observations": {
+    "route": "responses",
+    "status": 200,
+    "n_model_calls": 2,
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 4739,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "The",
+    "finish": null,
+    "budget_trap": false,
+    "final_text_nonempty": true,
+    "final_text_len": 1615,
+    "usage": {
+      "input_tokens": 19267,
+      "input_tokens_details": {
+        "cached_tokens": 0
+      },
+      "output_tokens": 10201,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 29468
+    }
+  },
+  "analysis": {
+    "cell": "glm-resp",
+    "route": "responses",
+    "expected_route": "responses",
+    "routes_mixed": false,
+    "status": 200,
+    "n_model_calls": 2,
+    "n_side_calls": 1,
+    "side_call_errors": [],
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 4739,
+    "reasoning_tokens": 0,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "The",
+    "finish": null,
+    "budget_trap": false,
+    "final_text_len": 1615,
+    "final_text_nonempty": true,
+    "usage": {
+      "input_tokens": 19267,
+      "input_tokens_details": {
+        "cached_tokens": 0
+      },
+      "output_tokens": 10201,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 29468
+    },
+    "n_frames_total": 5226
+  },
+  "calls": [
+    {
+      "route": "responses",
+      "req_model": "glm-5.2",
+      "req_stream": true,
+      "req_max_tokens": 100,
+      "status": 200,
+      "n_frames": 20,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 1,
+        "response.function_call_arguments.delta": 13,
+        "response.function_call_arguments.done": 1,
+        "response.output_item.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": {
+        "input_tokens": 326,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 28,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 354
+      },
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "glm-5.2",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 5226,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 4738,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 2,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 474,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 4739,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "The",
+      "finish": null,
+      "usage": {
+        "input_tokens": 19267,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 10201,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 29468
+      },
+      "final_text": "I'll reduce the exponent using Fermat's little theorem first, then square-and-multiply by hand.\n\n**Exponent reduction.** 5557 is prime (trial division up to \u221a5557 \u2248 74 finds no factor), and gcd(7, 5557) = 1, so 7^5556 \u2261 1 (mod 5557). Since 8432 = 5556 + 2876:\n\n7^8432 \u2261 7^2876 (mod 5557).\n\n**Binary of 2876:** 2876 = 2048 + 512 + 256 + 32 + 16 + 8 + 4 = 2^11 + 2^9 + 2^8 + 2^5 + 2^4 + 2^3 + 2^2. So I need 7^(2^k) for k = 2..11 and multiply those together.\n\n**Squaring steps** (each line is the previous value squared, reduced mod 5557; 7^(2^0)=7 is the seed):\n\n- 7^2 \u2261 49\n- 49^2 = 2401 \u2261 **2401** (k=2)\n- 2401^2 = 5,764,801; 5557\u00b71037 = 5,762,609 \u2192 **2192** (k=3)\n- 2192^2 = 4,804,864; 5557\u00b7864 = 4,801,248 \u2192 **3616** (k=4)\n- 3616^2 = 13,075,456; 5557\u00b72352 = 13,070,064 \u2192 **5392** (k=5)\n- 5392 \u2261 \u2212165; (\u2212165)^2 = 27,225; 27,225 \u2212 22,228 \u2192 **4997** (k=6)\n- 4997 \u2261 \u2212560; (\u2212560)^2 = 313,600; 313,600 \u2212 311,192 \u2192 **2408** (k=7)\n- 2408^2 = 5,798,464; 5557\u00b71043 = 5,795,951 \u2192 **2513** (k=8)\n- 2513^2 = 6,315,169; 5557\u00b71136 = 6,312,752 \u2192 **2417** (k=9)\n- 2417^2 = 5,841,889; 5557\u00b71051 = 5,840,407 \u2192 **1482** (k=10)\n- 1482^2 = 2,196,324; 5557\u00b7395 = 2,195,015 \u2192 **1309** (k=11)\n\n**Multiply the needed factors** (k = 11, 9, 8, 5, 4, 3, 2), reducing mod 5557 each step:\n\n- 1309 \u00b7 2417 = 3,163,853; 5557\u00b7569 = 3,161,933 \u2192 **1920**\n- 1920 \u00b7 2513 = 4,824,960; 5557\u00b7868 = 4,823,476 \u2192 **1484**\n- 1484 \u00b7 5392 \u2261 1484\u00b7(\u2212165) = \u2212244,860 \u2261 \u2212352 \u2192 **5205**\n- 5205 \u00b7 3616 \u2261 (\u2212352)\u00b73616 = \u22121,272,832 \u2261 \u2212279 \u2192 **5278**\n- 5278 \u00b7 2192 \u2261 (\u2212279)\u00b72192 = \u2212611,568 \u2261 \u2212298 \u2192 **5259**\n- 5259 \u00b7 2401 \u2261 (\u2212298)\u00b72401 = \u2212715,498 \u2261 \u22124202 \u2192 **1355**\n\n1355"
+    }
+  ],
+  "turns": [
+    {
+      "turn": 1,
+      "exit_code": 0,
+      "killed": false,
+      "elapsed": 90.12,
+      "session_id": "01a0b847-713d-7ca1-9b4a-ec79a1525fe0",
+      "n_events": 5217
+    }
+  ],
+  "binary_sha256_12": "f9e7a15d6b6b",
+  "wire_port": 52872,
+  "upstream": "https://llm-proxy-api.ai.eng.netapp.com",
+  "key_sha256_12": "9f3f56a263da",
+  "raw_key_hits": 0,
+  "ts": "20260919T060933Z"
+}

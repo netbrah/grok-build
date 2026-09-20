@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "id": "MXAI-C01-REPLAY",
+  "title": "MERGE-XAI-SYNC C-01 REPLAY ARM — zero-step mechanism case for the EXACT-BYTES retry invariant (PIN S5/A2, 06 §2 C-01 assertion column: 'retried body byte-identical to the original validated carrier'). Wire inputs are PRE-PLACED (cases/mxai-c01-replay/wire/, symlinked into the redteam case-stem dir; copy-if-absent into the run dir): req-001.json = the original validated carrier, req-002.json = the retried carrier, from ONE real 400-class or aborted-turn capture. The kind=golden pin compares the SECOND (retried) request's FULL body canonically (sort_keys + compact separators; list order SIGNIFICANT; ids NOT normalized — normalize list is EMPTY, the whole point is exact bytes) against expected-retry-body.json (the original carrier). A2 contract: the sibling seam build_encoded_request re-serializes the same validated carrier deterministically, so the retried body must equal the original byte-for-byte on our proxy (request_compression=None); any divergence = the seam re-encoded differently = the S5 pin regressed. count_scope bounds the where-set to exactly the 2-request pair (B-i companion: the golden's last:1 selection is unambiguous only when N is bounded). The case is DISABLED (scaffold): the golden fixture is a redacted structural placeholder until the wave-3 operator populates expected-retry-body.json + req-001/req-002 from a real capture (sweep-0: redact creds/host paths/IPs/secret-bearing URLs; model ids + structural shapes stay — see smoke/redteam/fixtures/merge-xai/c-01-replay/META.json for the population procedure). After population it runs in proxy:none L1 key-free mode (no proxy key, no live calls) or inside a live run (wiretap captures with the same name OVERWRITE the pre-placed files — the live capture is the evidence). VERDICT: PASS = exact canonical identity of the retried body to the original carrier. This is the mechanical half of C-01 that the live driver cannot induce (DRIVER GAP C-01, see smoke/merge-xai/README.md).",
+  "bead": "apex-l2d.4",
+  "suite": "salvage",
+  "tier": "full",
+  "driver": "headless",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "est_calls": 0,
+  "wirecap": false,
+  "env": {
+    "proxy": "none"
+  },
+  "disabled": true,
+  "reason": "Scaffold (wave-2 authoring): expected-retry-body.json is a redacted placeholder; populate req-001/req-002 + the golden from a real 400-class retried-pair capture (wave-3 operator arm; procedure in smoke/redteam/fixtures/merge-xai/c-01-replay/META.json). Live retry induction is itself a DRIVER GAP (wiretap2 has no fault injection) — see smoke/merge-xai/README.md.",
+  "unblocks_at": "wave-3 C-01 retried-pair capture (operator, dogfood wirecap on the lane of record)",
+  "steps": [],
+  "assert": {
+    "wire": [
+      {
+        "id": "retry_byte_identity",
+        "kind": "golden",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "last": 1,
+        "golden": "expected-retry-body.json",
+        "normalize": [],
+        "label": "EXACT-BYTES RETRY PIN (the A2 core, 06 C-01): the second (retried) request's FULL body, canonically serialized (sort_keys + compact separators, NO normalization — list order significant, ids included), must equal the original validated carrier fixture byte-for-byte. Empty normalize list is the assertion: a retry that re-encodes anything differently (field order is canonicalized away, but VALUES and LIST ORDER are not) FAILs with the structured field-level diff (TDD RED artifact)."
+      },
+      {
+        "id": "pair_scope",
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "min": 2,
+        "max": 2,
+        "label": "PAIR SCOPE BOUND (B-i companion): the where-filter matches exactly the original+retry pair — the golden's last:1 (second-oldest) selection is unambiguous because N is bounded here. A third request (side call or retry storm) or a missing retry (no pair) both FAIL this pin, so the byte pin can never silently score the wrong request."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

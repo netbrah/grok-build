@@ -1,0 +1,132 @@
+{
+  "cell": "gemini-msg",
+  "model": "gemini-3.1-pro-preview",
+  "api_backend": "messages",
+  "backend_class": "override",
+  "verdict": "FAIL",
+  "invariants": [
+    {
+      "key": "status",
+      "expected": 200,
+      "actual": 403,
+      "ok": false
+    },
+    {
+      "key": "route",
+      "expected": "messages",
+      "actual": "messages",
+      "ok": true
+    },
+    {
+      "key": "n_model_calls_min",
+      "expected": ">= 1",
+      "actual": 2,
+      "ok": true
+    }
+  ],
+  "observations": {
+    "route": "messages",
+    "status": 403,
+    "n_model_calls": 2,
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": false,
+    "reasoning_frames": 0,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": null,
+    "finish": null,
+    "budget_trap": false,
+    "final_text_nonempty": false,
+    "final_text_len": 0,
+    "usage": null
+  },
+  "analysis": {
+    "cell": "gemini-msg",
+    "route": "messages",
+    "expected_route": "messages",
+    "routes_mixed": false,
+    "status": 403,
+    "n_model_calls": 2,
+    "n_side_calls": 1,
+    "side_call_errors": [
+      403
+    ],
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": false,
+    "reasoning_frames": 0,
+    "reasoning_tokens": null,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": null,
+    "finish": null,
+    "budget_trap": false,
+    "final_text_len": 0,
+    "final_text_nonempty": false,
+    "usage": null,
+    "n_frames_total": 1
+  },
+  "calls": [
+    {
+      "route": "messages",
+      "req_model": "gemini-3.1-pro-preview",
+      "req_stream": true,
+      "req_max_tokens": 100,
+      "status": 403,
+      "n_frames": 1,
+      "frame_types": {},
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": null,
+      "final_text": ""
+    },
+    {
+      "route": "messages",
+      "req_model": "gemini-3.1-pro-preview",
+      "req_stream": true,
+      "req_max_tokens": 65536,
+      "status": 403,
+      "n_frames": 1,
+      "frame_types": {},
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": null,
+      "final_text": ""
+    }
+  ],
+  "turns": [
+    {
+      "turn": 1,
+      "exit_code": 1,
+      "killed": false,
+      "elapsed": 4.62,
+      "session_id": null,
+      "n_events": 3
+    }
+  ],
+  "binary_sha256_12": "f9e7a15d6b6b",
+  "wire_port": 53140,
+  "upstream": "https://llm-proxy-api.ai.eng.netapp.com",
+  "key_sha256_12": "9f3f56a263da",
+  "raw_key_hits": 0,
+  "ts": "20260919T061014Z"
+}

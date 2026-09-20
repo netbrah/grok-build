@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "id": "MXAI-C05",
+  "title": "MERGE-XAI-SYNC C-05 (PIN M17, 6-level effort menu) — OURS' 6-tier menu {ultra, max, xhigh, high, medium, low} must survive the merge (upstream's 4-item test would have caught a regression the OTHER way — 06 §2). The EXACT 'exactly 6 items' menu assertion is the crate golden (xai-grok-pager acp/model_state.rs:396 assert_eq!(ids, [\"ultra\",\"max\",\"xhigh\",\"high\",\"medium\",\"low\"]) — it runs in the wave-3 full gate, step 6). PARTIAL DRIVER GAP (C-05): the smoke driver cannot count slash-menu items (no command-menu op; ACP available_commands carries TOOL lists, not the /effort command menu) — so this cell pins the LIVE WIRE FACE of the menu's top tier instead: cursor pinned to ultra (config_patch models/default_reasoning_effort=ultra) on gpt-5.6-sol; the sol request must carry WIRE effort 'max' (the provider remap ultra->max, provider.rs:138-145 — the 6-tier menu's top tier reached the wire AND remapped correctly). Verdict semantics: PASS = exit 0 + no terminal error + the wire carries '\"effort\": \"max\"' on the sol turn (our ultra tier is alive and remaps); a raw '\"effort\": \"ultra\"' on the wire = the remap regressed (the local tier leaked); a DIFFERENT effort value or a 0-hit = the cursor pin did not take (a scored FAIL to report-and-adjudicate — rig miss vs menu regression — the D-4a gate forbids harness-class premises without mcp_calls, so the class is coordinator-adjudicated, not a mechanical menu verdict either way). The 6-item count itself: coordinator cross-check against the model_state crate-test result from the full gate (named in the README cell table). This is the closest the unmodified driver gets to 'open /effort post-merge'.",
+  "bead": "apex-l2d.4",
+  "suite": "wire-shape",
+  "tier": "full",
+  "driver": "headless",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "output_format": "streaming-json",
+  "wirecap": true,
+  "config_patch": {
+    "models/default_reasoning_effort": "ultra"
+  },
+  "est_calls": 2,
+  "watchdog_s": 300,
+  "env": {
+    "store": false
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Compute 7^8432 mod 5557 using modular exponentiation. Show each squaring step briefly, then state the final remainder on its own line. Do not use any tools."
+    },
+    {
+      "op": "recon_note",
+      "note": "VERDICT SURFACE: the scored pin is the WIRE FACE of the 6-tier menu's top tier (ultra cursor -> wire 'max' remap). The exact 6-item menu count is the crate golden (xai-grok-pager acp/model_state.rs:396) in the wave-3 full gate — coordinator cross-checks both surfaces in the matrix board. Recon records the actual wire effort value for the board."
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error",
+        "label": "NO TERMINAL ERROR: the ultra-cursor turn completed (a 400 'Unexpected reasoning effort' class on the wire = the M-1 class on a 6-tier value = the menu remap regressed -> STOP)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "id": "ultra_wire_max",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "nth": 0,
+        "grep": "\"effort\": \"max\"",
+        "label": "MENU TOP-TIER WIRE PIN (M17 ours' shape): the sol turn carried wire effort max — the cursor's ultra (tier 1 of OURS' 6-tier menu) reached the wire through the provider remap (ultra|Max -> 'max'). Absent = the ultra tier is gone from the menu/projection OR the cursor pin did not take — a scored FAIL to report-and-adjudicate on the recon effort record (rig miss vs menu regression; the D-4a gate forbids harness-class premises without mcp_calls, so the verdict engine cannot BLOCK here and the coordinator adjudicates the class under the stop-and-report house rule; the mechanical 6-item count itself lives in the crate golden)."
+      },
+      {
+        "kind": "grep",
+        "id": "no_raw_ultra",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"effort\": \"ultra\"",
+        "label": "REMINT GUARD: no raw 'ultra' may reach the wire (ultra is a LOCAL menu tier; the wire value is 'max'). A raw ultra on the wire = the remap seam regressed (the menu tier leaked unremapped) = defect -> STOP."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "\"effort\"",
+        "label": "EFFORT RECORD (recon, all sol requests): the verbatim wire effort values for the board — the coordinator cross-checks against the 6-item crate golden (model_state.rs:396) from the full gate (PARTIAL DRIVER GAP C-05: the menu COUNT is not smoke-mechanical)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  },
+  "retry": {
+    "on_status": [
+      404,
+      502,
+      503
+    ],
+    "max_attempts": 1,
+    "backoff_s": 30
+  }
+}

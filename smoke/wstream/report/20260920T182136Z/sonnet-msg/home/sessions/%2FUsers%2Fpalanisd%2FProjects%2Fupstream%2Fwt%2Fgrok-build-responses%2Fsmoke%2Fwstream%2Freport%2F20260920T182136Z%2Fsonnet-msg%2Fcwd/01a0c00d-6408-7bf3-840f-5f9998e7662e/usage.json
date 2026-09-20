@@ -1,0 +1,52 @@
+{
+  "sessionId": "01a0c00d-6408-7bf3-840f-5f9998e7662e",
+  "updatedAt": "2026-09-20T18:23:29.402366+00:00",
+  "session": {
+    "inputTokens": 255845,
+    "outputTokens": 9040,
+    "cachedReadTokens": 214602,
+    "cacheCreationTokens": 41227,
+    "reasoningTokens": 6428,
+    "totalTokens": 264885,
+    "modelCalls": 8,
+    "turnCount": 1,
+    "primaryModelId": "claude-sonnet-5",
+    "modelUsage": {
+      "claude-sonnet-5": {
+        "inputTokens": 255845,
+        "outputTokens": 9040,
+        "cachedReadTokens": 214602,
+        "cacheCreationTokens": 41227,
+        "reasoningTokens": 6428,
+        "totalTokens": 264885,
+        "modelCalls": 8
+      }
+    }
+  },
+  "turns": [
+    {
+      "turnNumber": 1,
+      "endedAt": "2026-09-20T18:23:29.402366+00:00",
+      "inputTokens": 255845,
+      "outputTokens": 9040,
+      "cachedReadTokens": 214602,
+      "cacheCreationTokens": 41227,
+      "reasoningTokens": 6428,
+      "totalTokens": 264885,
+      "modelCalls": 8,
+      "turnCount": 1,
+      "primaryModelId": "claude-sonnet-5",
+      "modelUsage": {
+        "claude-sonnet-5": {
+          "inputTokens": 255845,
+          "outputTokens": 9040,
+          "cachedReadTokens": 214602,
+          "cacheCreationTokens": 41227,
+          "reasoningTokens": 6428,
+          "totalTokens": 264885,
+          "modelCalls": 8
+        }
+      }
+    }
+  ]
+}

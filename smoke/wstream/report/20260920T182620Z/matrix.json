@@ -1,0 +1,20 @@
+{
+  "ts": "20260920T182620Z",
+  "cells": [
+    {
+      "cell": "qwen-resp-hard-2",
+      "model": "qwen-resp-hard-2",
+      "verdict": "PASS",
+      "route": "responses",
+      "expected_route": "responses",
+      "status": 200,
+      "n_model_calls": 17,
+      "all_stream": true,
+      "reasoning_present": true,
+      "reasoning_encrypted_content": false,
+      "reasoning_thinking_block": false,
+      "budget_trap": false,
+      "final_text_len": 83
+    }
+  ]
+}

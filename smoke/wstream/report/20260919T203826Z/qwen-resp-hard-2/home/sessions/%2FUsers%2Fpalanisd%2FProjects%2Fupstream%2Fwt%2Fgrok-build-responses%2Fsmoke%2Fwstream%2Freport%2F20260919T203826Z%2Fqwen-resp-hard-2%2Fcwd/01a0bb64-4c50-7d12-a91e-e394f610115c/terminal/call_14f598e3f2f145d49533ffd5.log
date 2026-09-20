@@ -1,0 +1,12 @@
+--- a.txt
++++ b.txt
+@@ -1,5 +1,5 @@
+-The old lighthouse stood on the granite cliff.
++The old lighthouse stood on the basalt cliff.
+ Its beam swept the dark water every twenty seconds.
+-Keepers climbed the spiral stair to trim the oil lamp.
++Keepers climbed the curved stair to trim the oil lamp.
+ Fog horns answered the ship in the morning mist.
+-By night the whole bay knew the tower was awake.
++By night the whole bay knew the tower was watching.
+exit=1

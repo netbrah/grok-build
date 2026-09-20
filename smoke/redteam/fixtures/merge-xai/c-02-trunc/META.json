@@ -1,0 +1,19 @@
+{
+  "fixture": "c-02-trunc",
+  "cell": "C-02",
+  "cases": [
+    "MXAI-C02-TRUNC-SHAPE",
+    "MXAI-C02"
+  ],
+  "kind": "Pre-placed truncated-SSE capture pair (smoke/merge-xai/wire/mxai-c02-trunc-shape/wire/: req-001.json = one redacted /v1/messages request; resp-001.jsonl = the truncated stream — 200 text/event-stream, message_start → content_block_start → three content_block_delta frames plus one keepalive comment line, then the stream ENDS: no message_stop, no [DONE], no frame past the last delta) + expected-trunc-frames.json (the kind=resp_stream golden: status 200, mode exact, explicit nulls at the volatile frame-data paths).",
+  "status": "SHAPE ARM PASS-verified offline 2026-09-19 (python3 smoke/redteam/run.py MXAI-C02-TRUNC-SHAPE --bin /bin/true → PASS on the real runner; redaction sweep 0 hits; the golden engine was verified positive on the canonical match and negative on a divergent frame). LIVE ARM awaits the operator fault-injection (DRIVER GAP C-02).",
+  "normalize_note": "The resp_stream golden's normalize paths are FRAME-DATA-ROOT-RELATIVE (engine: _frame_match → golden_compare_doc(actual_data, fx_data, normalize); in-tree precedent resp-stream-smoke-01 uses unprefixed paths + explicit fixture nulls). This fixture uses [\"message.id\",\"message.usage\",\"content_block.index\",\"index\",\"delta.text\"] — delta.text included so a LIVE truncated stream scores on its SHAPE, not on the redacted text. A \"data.\"-prefixed path is a no-op and was the wave-2 correction (see smoke/merge-xai/README.md, authoring corrections).",
+  "live_arm": [
+    "1. Operator fault layer cuts the L-03 stream AFTER the content deltas, BEFORE message_stop/[DONE] (wiretap2 cannot inject — DRIVER GAP C-02).",
+    "2. Enable MXAI-C02 (flip disabled:false in mxai-c02.json) and launch it against the injected stream.",
+    "3. The live capture OVERWRITES the pre-placed resp-001.jsonl (open('w') — the live capture is the evidence); the same expected-trunc-frames.json still scores it because the volatile parts are nulled by the normalize list.",
+    "4. The scored verdict surface is in mxai-c02.json: honest error terminal with the stream_truncated phrasing ('stream ended without done (no message_stop)', xai-grok-sampler stream/messages.rs, spec G6), wire capture carries no message_stop frame, no silent Completed.",
+    "5. RED semantics: a clean/error-free terminal after a KNOWN-injected truncation = the MW-3 pin regressed = the merge is NOT green on S4 (report-and-stop)."
+  ],
+  "redaction": "sweep-0: no creds/host paths/IPs/secret URLs; model id + frame structure stay (the shape is the pin); the delta texts are <redacted chunk N> placeholders."
+}

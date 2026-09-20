@@ -1,0 +1,27 @@
+{
+  "n": 1,
+  "method": "POST",
+  "path": "/v1/messages",
+  "ts": "2026-09-19T00:00:00Z",
+  "headers": {
+    "content-type": "application/json",
+    "x-grok-session-id": "00000000-0000-4000-8000-000000000004"
+  },
+  "body": {
+    "model": "claude-sonnet-5",
+    "system": [
+      {
+        "type": "text",
+        "text": "<redacted system prompt>"
+      }
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": "ping"
+      }
+    ],
+    "max_tokens": 100,
+    "stream": true
+  }
+}

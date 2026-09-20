@@ -1,0 +1,128 @@
+{
+ "bead": "apex-ayl.118 (wire-surface offline parity ratchet; gaps per grok/plans/redstack-wire-20260920.md)",
+ "extracted": "2026-09-20",
+ "source_capture": "smoke/redteam/report/ (sealed campaigns redstack-20260920 + redstack-20260920-fix2 + c95-84-20260920; no new proxy calls)",
+ "note": "Each fixture is ONE sealed request capture (pretty-printed envelope {n,method,path,ts,headers,body}, body parsed) \u2014 the NEWEST POST to the case's target path (the session_title aux call is the OLDEST POST, n=4, and is excluded) \u2014 or, for MGW-F12, the session usage.json from a claude-messages case home (home/sessions/**/usage.json). costctl-01.json serves OW-F2a/F2b/F2c and reasonsurf-01.json serves OW-F3/OW-F4 (one capture per source case). All sources redaction-swept by the harness capture pipeline; extractor re-scanned for key patterns (0 hits). Header values are the masked set the wirecap records (authorization as {len,masked,sha256_12}); the header KEY SET is what the header gaps pin. c95-84-20260920 rows: xresp-argtrunc-01.jsonl = the sealed resp-008.jsonl SSE capture (glm-5.2; the use_tool function_call_arguments.done frame with the proxy-truncated 202-char INVALID arguments, final '}' dropped, AND the 85-char VALID run_terminal_command echo .done in the same file); auxmodel-01-req-004.json = the wrong-wire aux request (POST /v1/responses, body.model probe-aux-01 \u2014 PRESENCE, inverted from the absence rows). openai/auxmodel-01-req-005.json is the main-call control (POST /v1/messages, claude-sonnet-5); it carries NO META row by design (+2 rows only) and is pinned by the test's shape tests instead.",
+ "fixtures": [
+  {
+   "fixture": "msgw/srvtool-01.json",
+   "sha256": "6b615e34d45a8952ddbace7448596cc193eba6379ffa9064cf54ada887126d25",
+   "source": "redstack-20260920/mgw-srvtool-01/wire/req-005.json",
+   "gap": "MGW-F1"
+  },
+  {
+   "fixture": "msgw/topk-01.json",
+   "sha256": "6f65606082f6404c03e2e0f376473f7e1f4c67f2e3c27c192e29083b0202fab5",
+   "source": "redstack-20260920/mgw-topk-01/wire/req-005.json",
+   "gap": "MGW-F2a"
+  },
+  {
+   "fixture": "msgw/stopseq-01.json",
+   "sha256": "827818b315a17b7a97eda70572cd736fe4edf20e6196bec0ddd9c99d99a0d648",
+   "source": "redstack-20260920/mgw-stopseq-01/wire/req-005.json",
+   "gap": "MGW-F2b"
+  },
+  {
+   "fixture": "msgw/userid-01.json",
+   "sha256": "8c919805ccd22e024c7c17f53c830e43fad4ff3d7244efd8c1e122b1236e3c82",
+   "source": "redstack-20260920/mgw-userid-01/wire/req-005.json",
+   "gap": "MGW-F2c"
+  },
+  {
+   "fixture": "msgw/thinkknob-01.json",
+   "sha256": "fcef11735ad18084b49444a19b946f50fe966db6258d700b8dbbb0efd097facd",
+   "source": "redstack-20260920-fix2/mgw-thinkknob-01/wire/req-006.json",
+   "gap": "MGW-F3"
+  },
+  {
+   "fixture": "msgw/toolctl-01.json",
+   "sha256": "874c8fffed41ef6df9f61e6f227e34778c559869864fa4826e55665ff4a2b506",
+   "source": "redstack-20260920/mgw-toolctl-01/wire/req-005.json",
+   "gap": "MGW-F5a"
+  },
+  {
+   "fixture": "msgw/toolcache-01.json",
+   "sha256": "89bd520a4ea1d70a737da1562d54c426d3fbc3b33258044bd68ae00fc3c44328",
+   "source": "redstack-20260920/mgw-toolcache-01/wire/req-005.json",
+   "gap": "MGW-F5b"
+  },
+  {
+   "fixture": "msgw/svcseq-01.json",
+   "sha256": "b8a14538150b8ad8000fd6e4e3a10a5786dc97523000137b2af21b39c8647f25",
+   "source": "redstack-20260920/mgw-svcseq-01/wire/req-005.json",
+   "gap": "MGW-F8"
+  },
+  {
+   "fixture": "msgw/ctxmgt-01.json",
+   "sha256": "3741cf53c44ae619bfb4447537f929bc891c1689360ffdefde09604fdc22ddbe",
+   "source": "redstack-20260920/mgw-ctxmgt-01/wire/req-005.json",
+   "gap": "MGW-F9"
+  },
+  {
+   "fixture": "msgw/betahdr-01.json",
+   "sha256": "245afeab9d43531fd842f57d0543b795d039e4b316e8fc9b4d65e8ec7b5e0399",
+   "source": "redstack-20260920/mgw-betahdr-01/wire/req-005.json",
+   "gap": "MGW-F11"
+  },
+  {
+   "fixture": "msgw/ttlusage-01.json",
+   "sha256": "30415bef0b7ead8eabf591277489eacf6adaa7e2efe0010d6e54f40155121114",
+   "source": "redstack-20260920/mgw-ttlusage-01/home/sessions/%2FUsers%2Fpalanisd%2FProjects%2Fupstream%2Fwt%2Fgrok-build-responses/01a0bfd1-d1c9-7a71-8233-05f8396d1475/usage.json",
+   "gap": "MGW-F12"
+  },
+  {
+   "fixture": "openai/cachectl-01.json",
+   "sha256": "9174a42249e957775d3b294c984a401aec3d14f3aecd903d8915137f25915268",
+   "source": "redstack-20260920/ow-cachectl-01/wire/req-009.json",
+   "gap": "OW-F1"
+  },
+  {
+   "fixture": "openai/costctl-01.json",
+   "sha256": "62e78a82ba58ead1f100e9686c7022131ea1e92aff7d24c016e9aa89dc9e63cf",
+   "source": "redstack-20260920/ow-costctl-01/wire/req-005.json",
+   "gap": "OW-F2a"
+  },
+  {
+   "fixture": "openai/costctl-01.json",
+   "sha256": "62e78a82ba58ead1f100e9686c7022131ea1e92aff7d24c016e9aa89dc9e63cf",
+   "source": "redstack-20260920/ow-costctl-01/wire/req-005.json",
+   "gap": "OW-F2b"
+  },
+  {
+   "fixture": "openai/costctl-01.json",
+   "sha256": "62e78a82ba58ead1f100e9686c7022131ea1e92aff7d24c016e9aa89dc9e63cf",
+   "source": "redstack-20260920/ow-costctl-01/wire/req-005.json",
+   "gap": "OW-F2c"
+  },
+  {
+   "fixture": "openai/reasonsurf-01.json",
+   "sha256": "c6a01c9e56595fd6c5dbbab62c35c80891b5de5768af049a8e15d3ccbd9a64a2",
+   "source": "redstack-20260920/ow-reasonsurf-01/wire/req-008.json",
+   "gap": "OW-F3"
+  },
+  {
+   "fixture": "openai/reasonsurf-01.json",
+   "sha256": "c6a01c9e56595fd6c5dbbab62c35c80891b5de5768af049a8e15d3ccbd9a64a2",
+   "source": "redstack-20260920/ow-reasonsurf-01/wire/req-008.json",
+   "gap": "OW-F4"
+  },
+  {
+   "fixture": "openai/metadata-01.json",
+   "sha256": "c7dc70c025a1073e63e48bb98903763a9152e47d009af108eb52968ed3439713",
+   "source": "redstack-20260920-fix2/ow-metadata-01/wire/req-005.json",
+   "gap": "OW-F9"
+  },
+  {
+   "fixture": "openai/xresp-argtrunc-01.jsonl",
+   "sha256": "75c78a01f9f063cdf2283a24a4254a6489d891074dd4eff3e26634ae72655d79",
+   "source": "c95-84-20260920/xresp-argtrunc-01/wire/resp-008.jsonl",
+   "gap": "apex-ayl.95"
+  },
+  {
+   "fixture": "openai/auxmodel-01-req-004.json",
+   "sha256": "c827c4ae7feee7e1158e803ab3e18946fc59e39b945621571b4cc8f2b6bdc192",
+   "source": "c95-84-20260920/auxmodel-wire-01/wire/req-004.json",
+   "gap": "apex-ayl.84"
+  }
+ ]
+}

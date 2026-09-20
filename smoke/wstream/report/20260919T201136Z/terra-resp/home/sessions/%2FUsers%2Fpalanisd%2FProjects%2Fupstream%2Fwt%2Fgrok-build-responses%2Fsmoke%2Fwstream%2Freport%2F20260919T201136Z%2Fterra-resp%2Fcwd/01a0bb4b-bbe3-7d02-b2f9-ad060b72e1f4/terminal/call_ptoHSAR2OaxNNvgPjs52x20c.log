@@ -1,0 +1,11 @@
+--- a.txt
++++ b.txt
+@@ -1,5 +1,5 @@
+ A weathered lighthouse watched over the rocky harbor.
+-At dusk, its [-golden-] beam swept across the waves.
++At dusk, its {+silver+} beam swept across the waves.
+-The keeper polished the [-brass-] lantern each morning.
++The keeper polished the {+copper+} lantern each morning.
+ Gulls circled the tower while fishermen returned home.
+-By dawn, the [-steadfast-] light welcomed every vessel.
++By dawn, the {+guiding+} light welcomed every vessel.

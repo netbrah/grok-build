@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "id": "MXAI-C02",
+  "title": "MERGE-XAI-SYNC C-02 (PIN S4/A4, MW-3 stream-truncated hard-fail) — the dogfood 'stream error (unknown)' incident class: a stream cut WITHOUT message_stop must hard-fail as SamplingEvent::Failed { error_type: stream_truncated, message: 'stream ended without done (no message_stop)' } (xai-grok-sampler stream/messages.rs, spec G6), NOT a silent Completed with partial content (the pre-MW-3 behavior; A4 ratifies MW-3 hard-fail SURVIVES the merge). Lane: claude-sonnet-5 on /v1/messages behind wiretap (frozen lane L-03; 06 says 'any lane' — messages is where the MW-3 message_stop condition lives). INDUCTION: wiretap-injected truncated SSE (06 §1: the dogfood wire-tap launcher cuts the stream after content deltas, before message_stop/[DONE]) — the harness CANNOT inject it (wiretap2 is pass-through; no fault injection): this live case is therefore DISABLED until the wave-3 operator fault-injection arm lands (DRIVER GAP C-02, see smoke/merge-xai/README.md). The capture-SHAPE half of the cell is executable NOW as MXAI-C02-TRUNC-SHAPE (pre-placed truncated resp, kind=resp_stream mode=exact — pins the 'no frame past the last delta' condition on the capture). When injection exists, launch this case against the injected stream: the scored pins below are the verdict surface. VERDICT: PASS = honest error terminal with the stream_truncated phrasing recorded, wire capture carries no message_stop frame, no silent Completed. RED semantics: a clean end/error-free terminal after a KNOWN-injected truncation = the MW-3 pin regressed = the merge is NOT green on S4 (report-and-stop). On first enable, if the binary-of-record exits 0 on a stream error, that is itself the silent-fail signal: keep exit:1 (the honest-failure terminal) and flag the phrasing in the recon.",
+  "bead": "apex-l2d.4",
+  "suite": "salvage",
+  "tier": "full",
+  "driver": "headless",
+  "model": "claude-sonnet-5",
+  "wire": "messages",
+  "output_format": "streaming-json",
+  "wirecap": true,
+  "est_calls": 1,
+  "watchdog_s": 300,
+  "disabled": true,
+  "reason": "DRIVER GAP C-02: wiretap2 (smoke/wiretap/wiretap.py) is a logging pass-through proxy with no stream-truncation fault injection; 06 §1 names the induction as 'wiretap-injected truncated SSE' via the dogfood wire-tap launcher. Until that arm exists, the live truncation cannot be induced hermetically. The shape arm (MXAI-C02-TRUNC-SHAPE) runs now.",
+  "unblocks_at": "wave-3 operator fault-injection arm (dogfood wire-tap launcher, mid-stream cut without message_stop)",
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Write a 1500-word essay about the history of lighthouses, covering at least three named lighthouses. Begin the essay immediately."
+    }
+  ],
+  "assert": {
+    "exit": 1,
+    "ndjson": [
+      {
+        "op": "present",
+        "event": "error",
+        "id": "trunc_error",
+        "label": "MW-3 HARD-FAIL PIN: after the injected mid-stream cut, the turn must surface an honest error terminal — the 'stream error (stream_truncated) … without done' class (spec G6). Absent error event = the turn terminated quietly = the incident class is live = defect."
+      },
+      {
+        "op": "recon",
+        "event": "error",
+        "field": "message",
+        "label": "PHRASING RECORD (recon): the verbatim error message — must read 'stream error (stream_truncated)…' (the MW-3 G6 shape). A 'stream error (unknown)' phrasing = the dogfood incident class is live post-merge = STOP (house rule)."
+      },
+      {
+        "op": "recon",
+        "event": "end",
+        "field": "stopReason",
+        "label": "SILENT-COMPLETED CHECK (recon): the end event's stopReason, if any end event follows the error — an end_turn/clean stop after a known-injected truncation is the pre-MW-3 silent-Completed shape = defect (adjudicate on this record; the scored surface is trunc_error)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "id": "wire_no_message_stop",
+        "file": "resp-*.jsonl",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "message_stop",
+        "label": "WIRE-SIDE TRUNCATION CONDITION: the truncated stream capture carries NO message_stop frame (the MW-3 'without done' condition on the wire — the injection cut the stream before the terminal frame). Present = the stream was not actually truncated = the premise failed = STOP (the error pin would then be scoring the wrong induction)."
+      },
+      {
+        "kind": "count",
+        "id": "no_storm",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "min": 1,
+        "max": 3,
+        "label": "NO RETRY STORM: 1-2 requests = the clean shape (the truncated turn + one tolerated side call); >3 = retry storm around the truncation = defect (COMP-3 shape). Note: the MW-3 hard-fail is a NON-retryable terminal (Failed, not a retryable status) — a storm here = the retry classifier regressed."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true,
+    "vacuous_if": [
+      {
+        "pin": "no_storm",
+        "class": "model"
+      }
+    ]
+  },
+  "retry": {
+    "on_status": [
+      502,
+      503
+    ],
+    "max_attempts": 0,
+    "backoff_s": 30
+  }
+}

@@ -1,0 +1,23 @@
+codegen/xai-grok-agent/src/config.rs:118:/// Bash tool with clearer model-facing names: `run_terminal_cmd` becomes `run_terminal_command` and `is_background` becomes `background`.
+codegen/xai-grok-agent/src/config.rs:121:        .with_name("run_terminal_command")
+codegen/xai-grok-agent/src/config.rs:347:/// `run_terminal_command` is omitted so exploration cannot mutate the workspace — the toolset enforces read-only, not just the prompt.
+codegen/xai-grok-agent/src/config.rs:370:            // search_replace and run_terminal_command intentionally omitted (read-only)
+codegen/xai-grok-agent/src/config.rs:1585:    /// Pins the `run_terminal_command` rename to the writing-phase taxonomy so a future rename can't silently degrade the spinner label.
+codegen/xai-grok-agent/src/prompt/template.rs:98:            (ToolKind::Execute, "run_terminal_command"),
+codegen/xai-grok-agent/src/prompt/template.rs:234:        // (todo_write / run_terminal_command lived in sections that the trimmed prompt no longer renders.)
+codegen/xai-grok-agent/src/builder.rs:2339:            names.contains(&"run_terminal_command".to_string()),
+codegen/xai-grok-agent/src/builder.rs:2340:            "Bash→run_terminal_command; got: {names:?}"
+codegen/xai-grok-agent/src/builder.rs:2376:        for dropped in ["enter_plan_mode", "exit_plan_mode", "run_terminal_command"] {
+---
+agent.rs
+builder.rs
+compaction.rs
+config.rs
+discovery.rs
+error.rs
+lib.rs
+[1m[36mplugins[39;49m[0m
+[1m[36mprompt[39;49m[0m
+repo.rs
+system_reminder.rs
+timing.rs

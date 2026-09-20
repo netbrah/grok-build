@@ -1,0 +1,47 @@
+{
+ "schema_version": 1,
+ "id": "MGW-45GEN-01",
+ "title": "apex-ayl.112 RED ratchet (msgw-sweep F4 / bead apex-ayl.111) — claude-opus-4-5 catalog overstatement: the catalog row (MD/default_models.json) pins ctx 1M / maxout 128K while the authoritative docs (MODEL/opus-4-5/overview.md @948d49c, line 13) say 200K context / 64K max output, and the pin source (ST/messages_model.rs:149-165) withholds exactly this slug as None (endpoint divergence). Pins body.max_tokens eq 64000 — the docs-truth cap — on the main /v1/messages request of a claude-opus-4-5 session. Today the wire carries 0 (pre-warm semantics for the withheld slug) or the catalog's 128000 — either way the pin FAILs. RED today; GREEN when the 4.5-gen rows + pins are corrected to the 64K truth. RE-PIN RULE: if apex-ayl.111's live A/B establishes the endpoint actually serves a larger cap, the pin value (not the pin location) is re-cut.",
+ "bead": "apex-ayl.112",
+ "suite": "wire-shape",
+ "tier": "slim",
+ "driver": "headless",
+ "model": "claude-opus-4-5",
+ "wirecap": true,
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "disabled": true,
+ "reason": "ENV-GATED (r1 run 2026-09-19T15:49Z): the baseline binary's live model list (target/release/grok-responses ed904f4270f0, models subcommand in the hermetic home) does not include ANY 4.5-gen claude row — only claude-sonnet-5 / claude-opus-5 / claude-haiku-4.5 family are live-provisioned in this environment (turn exited 1 pre-model-call with 'unknown model id', 0 wire calls). The F4 defect (catalog 1M/128K vs docs 200K/64K + withheld pin slug) is real and adjudicated (msgw-params-sweep-findings.md, first-hand re-verified against MD/default_models.json + MODEL/opus-4-5/overview.md L13); the live pin can only fire where a 4.5-gen model is provisioned.",
+ "unblocks_at": "apex-ayl.111 — live 4.5-gen provisioning (or a live A/B environment where claude-opus-4-5 resolves); then flip disabled=false and run",
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: MGW-45GEN-OK",
+   "timeout_s": 180
+  }
+ ],
+ "watchdog_s": 300,
+ "est_calls": 2,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error",
+    "label": "NO TERMINAL ERROR: the opus-4.5 turn completed (the red is the cap, not the turn)."
+   }
+  ],
+  "wire": [
+   {
+    "kind": "field",
+    "id": "mgw_45gen_red",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/messages" },
+    "last": 0,
+    "path": "body.max_tokens",
+    "eq": 64000,
+    "label": "RED PIN (F4/.111): opus-4.5 max_tokens = 64000 (docs truth @948d49c). Pre-cut FAILs: 0 (withheld slug, pre-warm) or 128000 (catalog overstatement)."
+   }
+  ]
+ },
+ "expected_red": { "id": "mgw-f4-45gen" }
+}

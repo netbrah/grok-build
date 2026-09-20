@@ -43,9 +43,10 @@
           "path": "/v1/responses",
           "body.model": "qwen3.8-27b"
         },
-        "any": true,
         "grep": "encitem_",
-        "label": "CONTROL (anti-vacuous, era-stable): a qwen request carried the seeded encitem_ rides \u2014 the foreign history actually crossed the wire (the .58 double-keyed trigger set: ids present, encrypted_content fields already stripped by D-ENC at request build, provider.rs:187-208). Present on the preemptive-compact request and/or the first post-switch 400; absent only if a .71-era projector re-keyed them first (RED-CLEARED era \u2014 re-pin then)."
+        "label": "XW RED-CLEARED (wire shape): NO qwen request carries an encitem_ ride \u2014 the .71 projector re-keyed the seeded 7 items before send (MA-3 all+absent form). A HIT = the re-key gap -> report-and-stop (.71 lane adjudicates).",
+        "all": true,
+        "absent": true
       },
       {
         "kind": "count",

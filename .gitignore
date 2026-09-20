@@ -6,3 +6,10 @@
 # redteam run evidence (local forensics, not source) + generated full matrix
 smoke/redteam/report/
 smoke/redteam/cases/rt-m6.json
+
+# apex-2o6 (HARNESS-UNIFY-IMPL-1): run-evidence + python byproducts
+smoke/redteam/report-*/
+smoke/redteam/__pycache__/
+smoke/**/derived-config.toml
+*.pyc
+smoke/runs.jsonl

@@ -1,0 +1,195 @@
+{
+  "schema_version": 1,
+  "id": "MXAI-C13",
+  "title": "MERGE-XAI-SYNC C-13 (ADOPT 01 §3 S6, MCP long-prefix admission) — the upstream 1.0.31 behavior: an MCP tool whose fully-qualified name exceeds the 256-byte cap is ADMITTED (the base DROPS it); and OUR M7 child_tool_projection passes it to spawned children (the ours-side shape that must survive the merge). The rig: a hermetic MCP stdio stub (smoke/redteam/fixtures/merge-xai/c-13-mcp/mcp-longprefix-stub.py — stdlib-only JSON-RPC newline-delimited; initialize + tools/list exposing ONE 300-char tool 'longprefix_tool_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' on server 'mxai_longprefix'; tools/call echoes args.echo — a test-double fixture, NOT a harness extension) whose qualified name 'mxai_longprefix__<300>' = 317 bytes (>256 — the admission edge). SETUP IS OPERATOR-DRIVEN (not a step-machine driver gap): config_patch is scalar-only and CANNOT add [mcp_servers.mxai_longprefix] (command/args are lists) — the operator provisions the server in the LIVE config from the stub fixture before the cell runs (README runbook; the hermetic home inherits the live mcp_servers block); an UNPROVISIONED server = BLOCKED (the harness-class premise lp_ann 0-hits — the announcement never reaches the wire), never a silent FAIL. PARENT ARM (turn 1 = announcement baseline; turn 2 = the coverage turn): a REAL use_tool round-trip to the 317-byte FQ tool with echo MXAI-C13-ECHO (discriminating pins: the escaped-JSON 'tool_name' key + the escaped-JSON FQ name — the prompt's plain mention and the announcement text cannot satisfy them). CHILD ARM (the M7 half, same turn): the parent spawns a qwen3.8-27b child instructed to call the SAME long-prefix tool with echo MXAI-C13-CHILD and finish, then wait_agents and quotes the child's result. SCORED PINS: (1) lp_ann (HARNESS premise — BLOCKED if 0-hit): the announcement '- mxai_longprefix (' reached the wire (the rig offered the tool); (2) lp_call + lp_tgt (MODEL premises): the parent issued a use_tool targeting the FQ name; (3) child_tool_closed (MODEL premise): the child's qwen request carries a function_call_output (the child round-trip CLOSED on the >256 tool — a real execution, not an emission); (4) done: the parent's terminal carries MXAI-C13-CALLED; (5) child_longprefix_ok (MODEL premise — THE M7 VERDICT): the parent's terminal carries MXAI-C13-CHILD — the child USED the >256 tool = the child_tool_projection passed it (ours' M7 shape under the merge); absent = the upstream base drop landed in the projection (or the model didn't spawn — the premise pass sorts it; the wire record adjudicates). VERDICT: PASS = all pins green (long-prefix admission + child projection both verified); VACUOUS = the model didn't take the path; BLOCKED = the server never announced. STOP-AND-REPORT: an acp_error, a 400/503 on the MCP boundary, or a child request storm.",
+  "bead": "apex-l2d.4",
+  "suite": "mcp-tool",
+  "tier": "full",
+  "driver": "acp",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "wirecap": true,
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "est_calls": 10,
+  "watchdog_s": 600,
+  "timeouts": {
+    "acp_init_s": 240,
+    "mcp_startup_s": 30,
+    "turn_s": 600
+  },
+  "mcp_calls": [
+    {
+      "id": "longprefix1",
+      "server": "mxai_longprefix",
+      "tool": "longprefix_tool_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "expect_name": "mxai_longprefix__longprefix_tool_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "via": "search_tool_use_tool",
+      "args": {
+        "echo": "MXAI-C13-ECHO"
+      },
+      "premise": "model",
+      "output_contains": "MXAI-C13-ECHO"
+    }
+  ],
+  "tool_calls": [
+    {
+      "id": "spawn1",
+      "tool": "spawn_agent",
+      "args": {
+        "task_name": "child",
+        "model": "qwen3.8-27b"
+      },
+      "premise": "model"
+    }
+  ],
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: MXAI-C13-OK"
+    },
+    {
+      "op": "turn",
+      "timeout_s": 600,
+      "prompt": "Perform exactly these tool uses, in this order, and no other tools: (1) use the use_tool tool to call the MCP tool on server mxai_longprefix (qualified name mxai_longprefix__longprefix_tool_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx) with argument echo 'MXAI-C13-ECHO'; (2) use the spawn_agent tool to start a background agent named child with model qwen3.8-27b (pass model: qwen3.8-27b in the tool arguments) and give it this task: use the use_tool tool to call the MCP tool on server mxai_longprefix (qualified name mxai_longprefix__longprefix_tool_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx) with argument echo 'MXAI-C13-CHILD', and only then finish; (3) use wait_agent to wait for the child to finish. When the tool result and the child's result are both in hand, reply with exactly: MXAI-C13-CALLED <the tool result> CHILD-RESULT <the child's final reply>"
+    },
+    {
+      "op": "recon_note",
+      "note": "SETUP PROVENANCE (recon_note, non-scoring): the [mcp_servers.mxai_longprefix] server must be provisioned in the LIVE config by the operator before this cell runs (the stub fixture smoke/redteam/fixtures/merge-xai/c-13-mcp/ is the double; config_patch cannot add it — scalar-only; README runbook C-13). Unprovisioned = BLOCKED via lp_ann (harness-class), never a silent FAIL. The >256 admission edge: qualified name = 317 bytes ('mxai_longprefix__' = 17 + tool name = 300); the base DROPS tools past the 256 cap, upstream 1.0.31 ADMITS them — the parent arm scores the admission, the child arm scores the M7 child_tool_projection passing the admitted tool through (ours' shape). The echo nonces (MXAI-C13-ECHO parent / MXAI-C13-CHILD child) are the round-trip payload proof: the stub echoes args.echo verbatim, so a nonce in a terminal that the model never read from a tool result cannot be parroted from the prompt into a RESULT (the result pins are the function_call_output shapes + the reply payload pins together)."
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "SESSION SURVIVES THE MCP BOUNDARY: an unrecovered 400/503 on the parent or the child MCP boundary surfaces here (Fatal tail) -> STOP (house rule: new phrasing = triage)."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "MXAI-C13-CALLED",
+        "label": "PARENT ROUND-TRIP CLOSED: the parent's terminal carries the CALLED nonce — the use_tool call to the >256 tool was issued AND the result (the stub's echo) came back into the reply (the parent arm of the 1.0.31 admission claim)."
+      },
+      {
+        "op": "text_contains",
+        "id": "child_longprefix_ok",
+        "value": "MXAI-C13-CHILD",
+        "label": "M7 CHILD-PROJECTION VERDICT (the ours-side half): the parent's terminal carries the child's echo nonce — the CHILD used the >256 tool (its result flowed child -> parent via the mailbox/wait and was quoted). Present = the child_tool_projection PASSED the long-prefix tool through to the child (ours' M7 shape survived the merge under the upstream admission). Absent = the upstream base drop landed in the projection (the child could not call the tool) = defect — OR the model never spawned the child (the premise pass sorts it; the child_tool_closed wire record adjudicates: closed-but-no-echo = projection defect; never-closed = spawn/model problem)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "id": "lp_ann",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "any": true,
+        "grep": "- mxai_longprefix (",
+        "label": "CONTROL (harness premise, BLOCKED if 0-hit): the mxai_longprefix MCP server's turn-boundary announcement ('MCP server(s) connected: - mxai_longprefix (1 tool): …') actually reached the lane's wire — the rig offered the long-prefix tool. 0-hit = the server was never provisioned/started (operator setup, README runbook C-13) = BLOCKED/HARNESS — no model or product conclusion is possible without the offer; NEVER a silent FAIL."
+      },
+      {
+        "kind": "grep",
+        "id": "lp_call",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "any": true,
+        "grep": "\\\"tool_name\\\":",
+        "label": "CONTROL (model premise, DISCRIMINATING FORM): a use_tool call was actually ISSUED — the escaped-JSON 'tool_name' key appears only in a real function_call's arguments (the responses wire JSON-encodes arguments as a string); the tools[] schema entry (single-level quotes) and the prompt (plain text) cannot match it. Only use_tool carries a tool_name parameter. 0-hit = VACUOUS (the model never called into MCP)."
+      },
+      {
+        "kind": "grep",
+        "id": "lp_tgt",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "any": true,
+        "grep": "\\\"mxai_longprefix__longprefix_tool_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\\"",
+        "label": "CONTROL (model premise, DISCRIMINATING FORM — THE >256 TARGET): a use_tool call targeted the DECLARED fully-qualified tool (the 317-byte FQ name in escaped-JSON form — the prompt carries the name plain without surrounding quotes, and the announcement lists the BARE tool name with no FQ prefix, so only a real call's arguments match). 0-hit = the parent never targeted the long-prefix tool (VACUOUS for the admission claim). HIT = the >256 name was ADMITTED onto the wire (the base would have DROPPED it — the 1.0.31 behavior under our code)."
+      },
+      {
+        "kind": "grep",
+        "id": "child_tool_closed",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "any": true,
+        "grep": "\"type\": \"function_call_output\"",
+        "label": "CHILD ROUND-TRIP CLOSED (model premise, the M7 half's wire face): a child (qwen) request carries a function_call_output item — the child's MCP call EXECUTED and its result was carried back into the child's context (proves execution on the child side, not merely emission). Combined with child_longprefix_ok (the child's echo in the parent's terminal): present+present = the child used the >256 tool (projection passed it); closed-but-echo-absent = the child ran a DIFFERENT tool or the echo was lost (adjudicate); absent = the child never closed a tool round-trip (spawn/model problem — the premise pass sorts it)."
+      },
+      {
+        "kind": "count",
+        "id": "child_calls",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "min": 1,
+        "max": 6,
+        "label": "CHILD REQUEST BAND: 2-4 = the clean shape (spawn + task + tool round-trip turns); 1 = the child ran one request (adjudicate); >6 = storm -> STOP."
+      },
+      {
+        "kind": "resp_status",
+        "id": "lp_final",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "which": "last",
+        "label": "VERDICT RECORD (evidence-only, machine-readable): the upstream HTTP status of the LAST sol request (no status_in — a 400 on the MCP round-trip is a tool-path FINDING surfaced by the round-trip pins, and the session-title side call (same body.model, 500s proxy-side) may land last, so an assertive status_in would false-fail — the t21 status_rec convention)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true,
+    "vacuous_if": [
+      {
+        "pin": "lp_ann",
+        "class": "harness",
+        "note": "the mxai_longprefix server never announced on the lane wire — operator provisioning missing (README runbook C-13) or the stub failed to start; the rig failed, no model/product conclusion is possible. BLOCKED, never FAIL."
+      },
+      {
+        "pin": "lp_call",
+        "class": "model",
+        "note": "no use_tool call was issued on the lane (escaped 'tool_name' 0-hit — the tools[] schema presence of use_tool does NOT count) — the model did not take the MCP-call path; the admission probe is meaningless."
+      },
+      {
+        "pin": "lp_tgt",
+        "class": "model",
+        "note": "no use_tool call targeted the 317-byte FQ name (escaped-form 0-hit — the prompt's plain mention does NOT count) — the declared long-prefix target was never called; the admission probe is meaningless."
+      },
+      {
+        "pin": "child_longprefix_ok",
+        "class": "model",
+        "note": "the child's echo nonce never reached the parent's terminal — the child did not use the >256 tool (model didn't spawn / child took a different path); the M7 projection verdict is uninterpretable (the child_tool_closed wire record adjudicates projection-defect vs spawn-problem on review)."
+      }
+    ]
+  },
+  "retry": {
+    "on_status": [
+      404,
+      502,
+      503
+    ],
+    "max_attempts": 1,
+    "backoff_s": 30
+  }
+}

@@ -1,0 +1,194 @@
+{
+ "schema_version": 1,
+ "id": "XRESP-ARGTRUNC-01",
+ "title": "apex-ayl.95 RED ratchet (XRESP-ARGTRUNC-1) — proxy-side truncation of the 203-char use_tool function_call_arguments on the responses wire (glm-5.2, LiteLLM 1.101.0rc2 chat-to-responses streaming transformation): the T21 vehicle (codegraph MCP + echo, SDD RED-1 prompt shape) re-issues the deterministic 203-char use_tool argument (sweep 5/5 identical; raw A/B /tmp/argtrunc-probe-20260919: /responses 202+INVALID final-brace-absent, /chat/completions 203+VALID, flat 263/90/111 intact => NOT a fixed cap, boundary-specific drop). RED today: the intact-tail pins 0-hit — the .done frame delivers 202 chars (outer-object '}' dropped, JSON invalid). GREEN when the proxy fix lands (SDD xrespargtrunc1-95-sdd.md byte contract, RED 1) — both witnesses flip together. The 111-char echo call is the in-run short-args-intact guard (SDD RED 3 lineage): it must round-trip even while the long call truncates. BOUNDARY CAVEAT (binding honesty): the trigger is boundary-specific — if the model's arg formatting ever drifts off the 203 boundary the red pins pass without the fix; the AUTHORITATIVE RED remains the proxy-lane raw probe (SDD RED 1), this case is the harness e2e witness. RE-PIN RULE: on proxy fix verify both red pins hit on first fire; if the arg drifted off-boundary (pins vacuously green), re-tune the mcp_calls query to restore boundary contact and re-lock.",
+ "bead": "apex-ayl.95",
+ "suite": "wire-shape",
+ "tier": "slim",
+ "driver": "headless",
+ "model": "glm-5.2",
+ "wire": "responses",
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "output_format": "streaming-json",
+ "watchdog_s": 300,
+ "est_calls": 6,
+ "wirecap": true,
+ "mcp_calls": [
+  {
+   "id": "cg1",
+   "server": "codegraph",
+   "tool": "codegraph_explore",
+   "expect_name": "codegraph__codegraph_explore",
+   "via": "search_tool_use_tool",
+   "args": {
+    "query": "strip_model_bound_state classify_error",
+    "maxFiles": 2,
+    "projectPath": "/Users/palanisd/Projects/upstream/wt/grok-build-responses"
+   },
+   "premise": "model",
+   "output_contains": "strip_model_bound_state"
+  }
+ ],
+ "tool_calls": [
+  {
+   "id": "sh1",
+   "tool": "run_terminal_command",
+   "args": {
+    "command": "echo XRESP-ARGTRUNC-ECHO"
+   },
+   "premise": "model",
+   "output_contains": "XRESP-ARGTRUNC-ECHO"
+  }
+ ],
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: XRESP-ARGTRUNC-OK",
+   "timeout_s": 300
+  },
+  {
+   "op": "turn",
+   "prompt": "Perform exactly these two tool calls, in this order, and no other tools: (1) use the use_tool tool to call the codegraph explore tool (qualified name codegraph__codegraph_explore) with arguments query 'strip_model_bound_state classify_error', maxFiles 2, projectPath /Users/palanisd/Projects/upstream/wt/grok-build-responses; (2) use the run_terminal_command tool to run the command: echo XRESP-ARGTRUNC-ECHO. After both tool results are in hand, reply with exactly two lines: line 1: XRESP-ARGTRUNC-DONE; line 2: the exact text the echo command printed.",
+   "timeout_s": 300
+  }
+ ],
+ "assert": {
+  "ndjson": [
+   {
+    "id": "term",
+    "op": "present",
+    "event": "end",
+    "label": "TURN COMPLETES: the tool-bearing turn reached the end terminal despite the truncated long-arg call (sweep sessions survived 5/5; a miss = session death, a rig-class failure to adjudicate first-hand)."
+   },
+   {
+    "id": "done",
+    "op": "text_contains",
+    "value": "XRESP-ARGTRUNC-DONE",
+    "label": "MODEL DELIVERED: the final reply carries the DONE nonce (model-generated output, cannot be pre-seeded from the prompt alone)."
+   },
+   {
+    "id": "echo_nd",
+    "op": "text_contains",
+    "value": "XRESP-ARGTRUNC-ECHO",
+    "label": "SHORT-ARGS-INTACT GUARD (SDD RED 3 lineage, in-run): the 111-char echo round-trip output reached the model's reply — short calls pass even while the 203-char call truncates. 0-hit = the short path is ALSO broken (wider than .95; adjudicate, do not silently attribute)."
+   }
+  ],
+  "wire": [
+   {
+    "id": "cg_ann",
+    "kind": "grep",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses", "body.model": "glm-5.2" },
+    "any": true,
+    "grep": "- codegraph (",
+    "label": "CONTROL (harness premise, anti-vacuous pin, T21 lineage): the codegraph MCP server's turn-boundary announcement reached the row's wire — the rig offered the MCP tool. 0 hits = BLOCKED/HARNESS (startup failure, missing binary, config not inherited), not VACUOUS."
+   },
+   {
+    "id": "cg_call",
+    "kind": "grep",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses", "body.model": "glm-5.2" },
+    "any": true,
+    "grep": "\\\"tool_name\\\":",
+    "label": "CONTROL (model premise, anti-vacuous pin, DISCRIMINATING FORM, T21 lineage): a use_tool call was actually ISSUED — the escaped-JSON form of the tool_name key appears only in a real function_call's arguments (the tools[] schema entry and the prompt cannot match). Head-anchored, so it survives the proxy truncation of the arg tail. 0 hits = VACUOUS."
+   },
+   {
+    "id": "cg_tgt",
+    "kind": "grep",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses", "body.model": "glm-5.2" },
+    "any": true,
+    "grep": "\\\"codegraph__codegraph_explore\\\"",
+    "label": "CONTROL (model premise, anti-vacuous pin, DISCRIMINATING FORM, T21 lineage): the declared fully-qualified MCP target was called. 0 hits = VACUOUS (wrong/absent target)."
+   },
+   {
+    "id": "sh_call",
+    "kind": "grep",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses", "body.model": "glm-5.2" },
+    "any": true,
+    "grep": "\\\"command\\\": \\\"echo XRESP-ARGTRUNC-ECHO\\\"",
+    "label": "CONTROL (model premise, anti-vacuous pin, DISCRIMINATING FORM, T21 lineage): the declared echo command was actually issued (escaped-JSON command+value appears only in a real call's arguments). 0 hits = VACUOUS."
+   },
+   {
+    "id": "model_f",
+    "kind": "field",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses", "body.model": "glm-5.2" },
+    "nth": 0,
+    "path": "$.body.model",
+    "eq": "glm-5.2",
+    "label": "MODEL ECHO (RT-M5/T21 lineage): the NEWEST matched row request carries the row's own model id — no cross-model misrouting. The session-title side call also matches the where filter (same body.model) and cannot false-fail this pin."
+   },
+   {
+    "id": "store_f",
+    "kind": "field",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses", "body.model": "glm-5.2" },
+    "nth": 0,
+    "path": "$.body.store",
+    "eq": false,
+    "label": "WIRE INVARIANT (env assumption, T21 lineage): the NEWEST matched row request carries store=false — the deployment runs responses with store off; the title side call carries it too."
+   },
+   {
+    "id": "argtrunc_red_resp",
+    "kind": "grep",
+    "file": "resp-*.jsonl",
+    "where": { "method": "POST", "path": "/v1/responses", "body.model": "glm-5.2" },
+    "any": true,
+    "grep": "responses\\\\\\\\\\\\\\\"}}",
+    "label": "RED PIN (proxy delivery witness): a function_call_arguments .done frame carries the INTACT 203-char use_tool arg tail (…responses\"}} — both closing braces before the string close). Pre-fix FAILs: the proxy delivers 202 chars, the final outer '}' dropped (invalid JSON) — the SDD RED 1 byte contract. GREENs only when the proxy fix lands. Needle verified first-hand against /tmp/argtrunc-probe-20260919 (202/invalid vs 203/valid) through the capture's double-JSON encoding; the tail is inside the arguments string value, so outer pretty-print/compact differences cannot affect it."
+   },
+   {
+    "id": "argtrunc_red_req",
+    "kind": "grep",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses", "body.model": "glm-5.2" },
+    "any": true,
+    "grep": "responses\\\\\\\"}}",
+    "label": "RED PIN (harness echo, second witness): a replayed function_call item in a later request carries the intact arg tail (single-encoded req capture). Pre-fix FAILs: the harness replays the truncated 202-char value (its salvage ran). Both red pins flip together on the proxy fix; if they ever disagree, adjudicate the capture first-hand before trusting either."
+   }
+  ]
+ },
+ "timeouts": {
+  "turn_s": 300,
+  "mcp_startup_s": 30
+ },
+ "retry": {
+  "on_status": [404, 502, 503],
+  "max_attempts": 1,
+  "backoff_s": 30,
+  "recheck_models": true
+ },
+ "scoring": {
+  "require_wire_evidence": true,
+  "vacuous_if": [
+   {
+    "pin": "cg_ann",
+    "class": "harness",
+    "note": "MCP server never announced on the row wire — rig failed (startup/config/binary); no model conclusion possible without the offer (T21 lineage)."
+   },
+   {
+    "pin": "cg_call",
+    "class": "model",
+    "note": "use_tool never issued on the responses wire (escaped-form 0-hit) — model did not take the tool path; probe meaningless for this cell."
+   },
+   {
+    "pin": "cg_tgt",
+    "class": "model",
+    "note": "no use_tool call targeted codegraph__codegraph_explore (escaped FQ-name 0-hit) — declared MCP target never called; probe meaningless."
+   },
+   {
+    "pin": "sh_call",
+    "class": "model",
+    "note": "the declared echo command was never issued (escaped command 0-hit) — plain builtin path not exercised; the short-args guard is meaningless."
+   }
+  ]
+ },
+ "env": {
+  "store": false,
+  "home": "hermetic",
+  "launcher": "runner"
+ },
+ "expected_red": { "id": "xresp-argtrunc-203" }
+}

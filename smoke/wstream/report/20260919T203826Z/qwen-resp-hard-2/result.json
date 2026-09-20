@@ -1,0 +1,796 @@
+{
+  "cell": "qwen-resp-hard-2",
+  "model": "qwen3.8-27b",
+  "api_backend": "responses",
+  "backend_class": "native",
+  "verdict": "PASS",
+  "invariants": [
+    {
+      "key": "status",
+      "expected": 200,
+      "actual": 200,
+      "ok": true
+    },
+    {
+      "key": "route",
+      "expected": "responses",
+      "actual": "responses",
+      "ok": true
+    },
+    {
+      "key": "n_model_calls_min",
+      "expected": ">= 1",
+      "actual": 15,
+      "ok": true
+    }
+  ],
+  "observations": {
+    "route": "responses",
+    "status": 200,
+    "n_model_calls": 15,
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 12968,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "Let",
+    "finish": null,
+    "budget_trap": false,
+    "final_text_nonempty": false,
+    "final_text_len": 2,
+    "usage": {
+      "input_tokens": 20544,
+      "input_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "output_tokens": 33400,
+      "output_tokens_details": {
+        "reasoning_tokens": 33280
+      },
+      "total_tokens": 53944
+    }
+  },
+  "analysis": {
+    "cell": "qwen-resp-hard-2",
+    "route": "responses",
+    "expected_route": "responses",
+    "routes_mixed": false,
+    "status": 200,
+    "n_model_calls": 15,
+    "n_side_calls": 14,
+    "side_call_errors": [],
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 12968,
+    "reasoning_tokens": 33280,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "Let",
+    "finish": null,
+    "budget_trap": false,
+    "final_text_len": 2,
+    "final_text_nonempty": false,
+    "usage": {
+      "input_tokens": 20544,
+      "input_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "output_tokens": 33400,
+      "output_tokens_details": {
+        "reasoning_tokens": 33280
+      },
+      "total_tokens": 53944
+    },
+    "n_frames_total": 12995
+  },
+  "calls": [
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 100,
+      "status": 200,
+      "n_frames": 40,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 1,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 31,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 32,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "The",
+      "finish": "max_output_tokens",
+      "usage": {
+        "input_tokens": 561,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 98,
+        "output_tokens_details": {
+          "reasoning_tokens": 101
+        },
+        "total_tokens": 659
+      },
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 12995,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 4,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 12967,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 4,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 1,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 7,
+        "response.function_call_arguments.done": 2,
+        "response.completed": 1
+      },
+      "reasoning_frames": 12968,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Let",
+      "finish": null,
+      "usage": {
+        "input_tokens": 20544,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 33400,
+        "output_tokens_details": {
+          "reasoning_tokens": 33280
+        },
+        "total_tokens": 53944
+      },
+      "final_text": "\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 34,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 7,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 6,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 8,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "The",
+      "finish": null,
+      "usage": {
+        "input_tokens": 54026,
+        "input_tokens_details": {
+          "cached_tokens": 20544,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 1715,
+        "output_tokens_details": {
+          "reasoning_tokens": 23
+        },
+        "total_tokens": 55741
+      },
+      "final_text": "\n\nEmpty workspace, Python 3.14 available. Creating the tool now.\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 48,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 4,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 19,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 4,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 1,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 8,
+        "response.function_call_arguments.done": 2,
+        "response.completed": 1
+      },
+      "reasoning_frames": 20,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Next",
+      "finish": null,
+      "usage": {
+        "input_tokens": 55814,
+        "input_tokens_details": {
+          "cached_tokens": 55552,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 252,
+        "output_tokens_details": {
+          "reasoning_tokens": 58
+        },
+        "total_tokens": 56066
+      },
+      "final_text": "\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 39,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 17,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 1,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 18,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Run",
+      "finish": null,
+      "usage": {
+        "input_tokens": 56196,
+        "input_tokens_details": {
+          "cached_tokens": 56064,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 122,
+        "output_tokens_details": {
+          "reasoning_tokens": 47
+        },
+        "total_tokens": 56318
+      },
+      "final_text": "\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 80,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 47,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 12,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 48,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "The",
+      "finish": null,
+      "usage": {
+        "input_tokens": 56460,
+        "input_tokens_details": {
+          "cached_tokens": 56192,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 373,
+        "output_tokens_details": {
+          "reasoning_tokens": 124
+        },
+        "total_tokens": 56833
+      },
+      "final_text": "\n\nFirst run is clean. Now verifying the substituted words are all present and the fixtures differ by exactly 3 words:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 97,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 60,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 16,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 61,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "All",
+      "finish": null,
+      "usage": {
+        "input_tokens": 56905,
+        "input_tokens_details": {
+          "cached_tokens": 56832,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 731,
+        "output_tokens_details": {
+          "reasoning_tokens": 161
+        },
+        "total_tokens": 57636
+      },
+      "final_text": "\n\nAll 3 words found and the fixtures are exact. Now running edge-case regression tests (identical files, re-wrapping, hunk splitting, insertions/deletions, error paths, and patch validity):\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 50,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 23,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 6,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 24,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "The",
+      "finish": null,
+      "usage": {
+        "input_tokens": 58341,
+        "input_tokens_details": {
+          "cached_tokens": 57600,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 604,
+        "output_tokens_details": {
+          "reasoning_tokens": 52
+        },
+        "total_tokens": 58945
+      },
+      "final_text": "\n\nzsh doesn't word-split unquoted variables \u2014 rerunning with a shell function:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 245,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 200,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 24,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 201,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "All",
+      "finish": null,
+      "usage": {
+        "input_tokens": 59330,
+        "input_tokens_details": {
+          "cached_tokens": 58880,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 1753,
+        "output_tokens_details": {
+          "reasoning_tokens": 553
+        },
+        "total_tokens": 61083
+      },
+      "final_text": "\n\nAll edge cases are working correctly. As the final verification, I'll confirm that the hunk output is a valid patch (i.e., applying it to `a.txt` accurately reconstructs `b.txt`), and perform a fuzz check that cross-references the hunk body against the system's `diff -U1`:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 297,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 264,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 12,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 265,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "There",
+      "finish": null,
+      "usage": {
+        "input_tokens": 61158,
+        "input_tokens_details": {
+          "cached_tokens": 60928,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 1775,
+        "output_tokens_details": {
+          "reasoning_tokens": 764
+        },
+        "total_tokens": 62933
+      },
+      "final_text": "\n\nThat failure is in my test harness's header parsing (I sliced off the first range token), not in the tool. Fixing the harness and re-running:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 169,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 129,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 19,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 130,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Another",
+      "finish": null,
+      "usage": {
+        "input_tokens": 62999,
+        "input_tokens_details": {
+          "cached_tokens": 62720,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 1544,
+        "output_tokens_details": {
+          "reasoning_tokens": 344
+        },
+        "total_tokens": 64543
+      },
+      "final_text": "\n\nAnother harness bug \u2014 I was consuming `o_cnt + n_cnt` lines per hunk, but since context lines are counted on both sides, the actual number of lines is `o_cnt + n_cnt \u2212 ctx_count`. Fixing the harness to split on the `@@` headers:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 927,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 886,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 20,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 887,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "The",
+      "finish": null,
+      "usage": {
+        "input_tokens": 64672,
+        "input_tokens_details": {
+          "cached_tokens": 64512,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 3663,
+        "output_tokens_details": {
+          "reasoning_tokens": 2629
+        },
+        "total_tokens": 68335
+      },
+      "final_text": "\n\nThe harness was still misparsing signed range tokens (`-1,5` \u2192 the leading `-` was breaking the start index). The tool's output itself has already been shown to be correct \u2014 I'm fixing the harness's parsing:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 110,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 83,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 6,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 84,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "All",
+      "finish": null,
+      "usage": {
+        "input_tokens": 68396,
+        "input_tokens_details": {
+          "cached_tokens": 68096,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 318,
+        "output_tokens_details": {
+          "reasoning_tokens": 231
+        },
+        "total_tokens": 68714
+      },
+      "final_text": "\n\nAll checks pass. One final confirmation run of the exact command:\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 35,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 3,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 13,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 3,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 1,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.function_call_arguments.delta": 4,
+        "response.function_call_arguments.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 14,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "A",
+      "finish": null,
+      "usage": {
+        "input_tokens": 68875,
+        "input_tokens_details": {
+          "cached_tokens": 68608,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 92,
+        "output_tokens_details": {
+          "reasoning_tokens": 33
+        },
+        "total_tokens": 68967
+      },
+      "final_text": "\n\n"
+    },
+    {
+      "route": "responses",
+      "req_model": "qwen3.8-27b",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 168,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 2,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 12,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 2,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 142,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 13,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "Done",
+      "finish": null,
+      "usage": {
+        "input_tokens": 68991,
+        "input_tokens_details": {
+          "cached_tokens": 68864,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 465,
+        "output_tokens_details": {
+          "reasoning_tokens": 34
+        },
+        "total_tokens": 69456
+      },
+      "final_text": "\n\nDone. `tools/minidiff.py` is a stdlib-only Python 3 CLI (uses only `sys` and `difflib`): it diffs the two files word-by-word, prints only changed hunks in unified style with 1 line of context, and exits 1 on differences / 0 on match (2 on usage or I/O errors). If line structure around a change can't be aligned between the files, it degrades to standard line-based unified diff for a valid representation.\n\nVerification performed:\n- **Fixture run** (above): exits 1, and all 3 substituted words \u2014 `basalt`, `curved`, `watching` \u2014 are present in the output; a word-by-word comparison confirms `b.txt` differs from `a.txt` in exactly those 3 words.\n- **Identical files**: no output, exit 0. **Same words with different line wrapping**: no output, exit 0 (word-level semantics, no false positives).\n- **Error paths**: wrong argv and missing file both exit 2 with a stderr message.\n- **Patch validity**: applying the tool's hunks to `a.txt` reconstructs `b.txt` byte-for-byte.\n- **Fuzz**: 300 random single-word edits \u2014 hunk bodies identical to the system `diff -U1` output every time.\n\nExact diff output between the two fixtures:\n\n```\n--- a.txt\n+++ b.txt\n@@ -1,5 +1,5 @@\n-The old lighthouse stood on the granite cliff.\n+The old lighthouse stood on the basalt cliff.\n Its beam swept the dark water every twenty seconds.\n-Keepers climbed the spiral stair to trim the oil lamp.\n+Keepers climbed the curved stair to trim the oil lamp.\n Fog horns answered the ship in the morning mist.\n-By night the whole bay knew the tower was awake.\n+By night the whole bay knew the tower was watching.\n```\n\n(exit status 1, as required when differences exist)"
+    }
+  ],
+  "turns": [
+    {
+      "turn": 1,
+      "exit_code": 0,
+      "killed": false,
+      "elapsed": 766.4,
+      "session_id": "01a0bb64-4c50-7d12-a91e-e394f610115c",
+      "n_events": 15098
+    }
+  ],
+  "binary_sha256_12": "f9e7a15d6b6b",
+  "wire_port": 63998,
+  "upstream": "https://llm-proxy-api.ai.eng.netapp.com",
+  "key_sha256_12": "9f3f56a263da",
+  "raw_key_hits": 0,
+  "ts": "20260919T205113Z"
+}

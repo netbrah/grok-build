@@ -1,0 +1,44 @@
+{
+ "schema_version": 1,
+ "id": "MGW-USERID-01",
+ "title": "apex-ayl.112 RED ratchet (msgw-sweep F2 / decision apex-ayl.109) — metadata.user_id absent from every claude receipt (0/22): the wire type + builder support exist, the trusted producer hardcodes metadata: None (ST/conversation/messages.rs:938). Pins body.metadata.user_id non-null on the main /v1/messages request. Note for the decision: metadata.user_id is NOT a cache partition key in the Anthropic API — adopting it buys isolation/observability (provider-side per-session traceability), not cache behavior; the GREEN shape (session-scoped user_id, the same UUID family as the openai-wire prompt_cache_key) is gated on apex-ayl.109. RED today (path missing); GREEN when the cut emits a non-null session-scoped user_id.",
+ "bead": "apex-ayl.112",
+ "suite": "wire-shape",
+ "tier": "slim",
+ "driver": "headless",
+ "model": "claude-sonnet-5",
+ "wirecap": true,
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: MGW-USERID-OK",
+   "timeout_s": 180
+  }
+ ],
+ "watchdog_s": 300,
+ "est_calls": 2,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error",
+    "label": "NO TERMINAL ERROR: the turn completed (the red is the metadata seam, not the turn)."
+   }
+  ],
+  "wire": [
+   {
+    "kind": "field",
+    "id": "mgw_userid_red",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/messages" },
+    "last": 0,
+    "path": "body.metadata.user_id",
+    "ne": null,
+    "label": "RED PIN (F2/.109): body.metadata.user_id non-null. Pre-cut FAILs: producer hardcodes metadata None (messages.rs:938) so the path is missing."
+   }
+  ]
+ },
+ "expected_red": { "id": "mgw-f2-userid" }
+}

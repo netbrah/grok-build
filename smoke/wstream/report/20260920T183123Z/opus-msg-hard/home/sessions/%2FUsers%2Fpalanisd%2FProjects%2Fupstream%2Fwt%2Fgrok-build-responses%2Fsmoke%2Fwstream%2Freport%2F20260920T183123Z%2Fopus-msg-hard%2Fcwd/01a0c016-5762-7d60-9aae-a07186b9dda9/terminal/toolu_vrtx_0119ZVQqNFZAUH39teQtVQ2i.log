@@ -1,0 +1,24 @@
+=== headers now match system diff? ===
+minidiff: cannot read a.txt b.txt: No such file or directory
+diff: a.txt b.txt: No such file or directory
+OK   a.txt b.txt  :: 
+minidiff: cannot read d1.txt d2.txt: No such file or directory
+diff: d1.txt d2.txt: No such file or directory
+OK   d1.txt d2.txt  :: 
+minidiff: cannot read e.txt a.txt: No such file or directory
+diff: e.txt a.txt: No such file or directory
+OK   e.txt a.txt  :: 
+minidiff: cannot read a.txt e.txt: No such file or directory
+diff: a.txt e.txt: No such file or directory
+OK   a.txt e.txt  :: 
+
+=== substituted-word assertion ===
+OK   contains {+granite+}
+OK   contains {+sixty+}
+OK   contains {+bell+}
+exit code = 1 (expect 1)
+
+=== identical still 0 ===
+exit=0
+=== unchanged lines suppressed: line count ===
+9

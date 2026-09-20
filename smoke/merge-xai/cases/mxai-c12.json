@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "id": "MXAI-C12",
+  "title": "MERGE-XAI-SYNC C-12 (ADOPT 01 §3 S10, interject during background wait) — the upstream interject behavior (xai-interjection-core: an interjection arriving mid background-wait INTERRUPTS the wait; the drain/queue composition carries the message — ours' native_activity flush + upstream parent_interject; no dropped message) is TUI-DRIVEN: the smoke driver has NO interject step op (headless = one prompt per process; ACP prompt() blocks until turn completion; the interjection surface is the TUI — the ws9-s10 lineage documents exactly this driver boundary). The case is DISABLED (scaffold, the ws9-s10 unblocked-shape convention): the unblocked shape is declared below and the CONTRACT AT ENABLE is the assert block (schema-validated now, scored at enable). UNBLOCKED SHAPE (never runs while disabled): an ACP session on sol (L-01) — the parent spawns a background worker (spawn_agent) and wait_agents for it (a long in-flight wait); MID-WAIT the operator interjects a user message containing exactly MXAI-C12-INTERJECT through the TUI interjection surface; the wait is INTERRUPTED (not resumed-after); the drain/queue composition (native_activity flush + parent_interject) carries the interjection to the parent with NO dropped message; the parent then completes with the composed worker result, replying MXAI-C12-WORKER-RESULT. CONTRACT AT ENABLE (the assert block): exit 0; no acp_error; the merged text carries MXAI-C12-INTERJECT (interject_drained — the interjection reached the parent's context) AND MXAI-C12-WORKER-RESULT (wait_composed — the wait re-composed around the interjection and still delivered the worker result). unblocks_at: a driver interject step op (a later wave extends the step machine) OR the operator's manual ACP arm (README runbook: an interactive ACP session with the operator driving the interjection by hand; the same two nonces are the scored surface). VERDICT (at enable): PASS = both nonces present + clean terminal; the drain/queue composition is the 06 C-12 'no dropped message' claim.",
+  "bead": "apex-l2d.4",
+  "suite": "recon",
+  "tier": "full",
+  "driver": "acp",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "wirecap": true,
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "est_calls": 5,
+  "watchdog_s": 300,
+  "timeouts": {
+    "acp_init_s": 240,
+    "turn_s": 600
+  },
+  "disabled": true,
+  "reason": "DRIVER GAP C-12: no interject step op in the frozen step machine (turn/switch/switch_model/kill/compact/idle/recon_note) — headless is one prompt per process and ACP prompt() waits for completion, so an interjection MID-WAIT cannot be injected by the driver; the interjection surface is TUI-driven (xai-interjection-core), and the ws9-s10 lineage documents this exact driver boundary. The unblocked shape + the contract-at-enable assert are declared (schema-validated); the row is SKIPped with this note until the gap closes.",
+  "unblocks_at": "a driver interject step op (later wave) OR the operator's manual ACP arm (README runbook; the MXAI-C12-INTERJECT / MXAI-C12-WORKER-RESULT nonces are the scored surface either way)",
+  "steps": [
+    {
+      "op": "turn",
+      "timeout_s": 600,
+      "prompt": "UNBLOCKED-SHAPE PLACEHOLDER (never runs while disabled): an ACP session on the sol route — the parent uses spawn_agent to start a background worker that takes a long time to finish, then wait_agents for it (the long in-flight wait). MID-WAIT the operator interjects a user message containing exactly: MXAI-C12-INTERJECT (the TUI interjection surface — this is the step the driver cannot express; at enable it is a step op, in the operator arm it is the operator's hand). The interjection must INTERRUPT the wait (the drain/queue composition: ours' native_activity flush + upstream parent_interject; no dropped message); after the interjection is drained the parent completes the wait and replies with exactly: MXAI-C12-WORKER-RESULT <the worker's final result>"
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "CONTRACT AT ENABLE: the interjection + re-composed wait did not brick the session (an interjection-handling panic/400/503 surfaces here) -> STOP."
+      },
+      {
+        "op": "text_contains",
+        "id": "interject_drained",
+        "value": "MXAI-C12-INTERJECT",
+        "label": "CONTRACT AT ENABLE — INTERJECTION DRAINED: the merged text carries the interjection nonce — the mid-wait interjection reached the parent's context (the native_activity flush + parent_interject drain landed it). Absent = the message was DROPPED (the 06 C-12 'no dropped message' claim failed) = defect -> STOP."
+      },
+      {
+        "op": "text_contains",
+        "id": "wait_composed",
+        "value": "MXAI-C12-WORKER-RESULT",
+        "label": "CONTRACT AT ENABLE — WAIT RE-COMPOSED: after the interjection interrupted the wait, the parent re-composed and still delivered the worker result (the queue composition preserved the in-flight wait's outcome). Absent = the interjection lost the wait (or the worker never ran — adjudicate on the wire) = defect -> STOP."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

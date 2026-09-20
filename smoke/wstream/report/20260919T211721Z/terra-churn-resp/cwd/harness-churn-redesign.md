@@ -1,0 +1,220 @@
+The harness can close the measured first-party OpenAI gap by preserving one immutable request prefix and advancing work in fewer, larger model turns.
+On the identical gpt-5.6-sol task, matching the official 6-request shape rather than the harness's 16 requests targets a $0.3239 saving per run (64.4%; $0.5027 → $0.1788).
+Make this an OpenAI parity lane with explicit, testable wire contracts while retaining independent Responses/Messages profiles for Grok, Claude, qwen3.8-27b, glm-5.2, and other providers.
+
+# Harness Churn Redesign
+
+## Scope and design rule
+
+This is a transport-and-session redesign, not a universal rewrite of the existing model catalog or conversation types.  `xai-grok-sampling-types` remains the canonical typed conversation layer; `xai-grok-sampler` remains responsible for dialect-specific projection and stream decoding; `xai-grok-shell` remains responsible for agent/session control.  The new boundary is a **first-party OpenAI parity profile** selected by model authority, not by a string prefix scattered through the client.
+
+The profile applies only to OpenAI Codex-family models that use the Responses-compatible upstream contract, initially `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`.  It must be opt-in through explicit model capabilities and must never silently alter the request shape for qwen3.8-27b, glm-5.2, Claude, Grok, or an unknown/custom Responses-compatible provider.
+
+The redesign has two invariants:
+
+1. **Prefix invariant:** after a request is sent, the next request must reproduce the prior request's cacheable input prefix byte-for-byte and item-for-item; only an append-only suffix may differ.
+2. **Turn invariant:** one model request is emitted only for a new user instruction, a completed batch of tool results, an intentional compaction/recovery boundary, or a terminal decision. Host bookkeeping, tool discovery, and partial tool completion are not model turns by themselves.
+
+The terms E1–E6 below refer to the supplied wire-verified evidence base.
+
+## Top 5 ranked changes
+
+### 1. Introduce a sealed, append-only Responses prefix ledger
+
+**Why this ranks first.** The ordering defect directly turns a warm, cacheable context into a permanently divergent prefix (E2), and the measured 2.81× cost gap is dominated by request/turn shape rather than price (E1).  A correct cache prefix is a prerequisite for every other optimization.
+
+**What to change — module and wire shape.**
+
+Create a `CanonicalTurnLog`/`SealedPrefix` boundary adjacent to the conversation projection in `xai-grok-sampling-types::conversation`, consumed by the Responses request builder in `xai-grok-sampler::client`.  It is an ordered vector of *already classified* items, not separate role buckets subsequently concatenated:
+
+```text
+[fixed bootstrap instructions, developer items, system-reminder user items,
+ prior user/assistant/reasoning/function-call/function-output items] + [new suffix]
+```
+
+Each item receives a stable sequence number at admission.  The request builder projects the complete ordered vector once for the selected dialect, then records: `(turn number, dialect, exact input-items JSON bytes or digest, prefix length, first differing item index)`.  It must not sort by role, merge “developer” and “system-reminder” collections, reconstruct historical items from multiple stores, or re-run a normalizer that moves an existing item.
+
+State machine:
+
+```text
+Collecting -> Seal(turn N) -> Sent(turn N) -> AppendOnly(turn N+1)
+                                  |                    |
+                                  | response items     | explicit compaction/new cold session only
+                                  v                    v
+                              Append output       New sealed prefix
+```
+
+`Seal` freezes the exact ordered projection for history.  On the next turn, the builder reuses that frozen projection and appends only newly admitted items.  Intentional compaction is the only allowed prefix replacement; it creates a new generation, records the reason, and expects one cold cache write.  Opaque raw Responses replay items, encrypted reasoning, and Codex compaction carriers must retain their original positions; their specialized replacement logic remains dialect-scoped rather than entering a generic reorder path.
+
+This should refine, rather than replace, the existing `ConversationRequest`, `input_items_json`, raw Responses replacement, prefix-stability, and deterministic-serialization seams.  It also keeps the upstream merge's `conversation`/`catalog_wire` work isolated from catalog authority and model-switch code.
+
+**Evidence.** E2 is the direct failure: developer and `<system-reminder>` user items swap once mid-session, leaving approximately 10.3k tokens pinned and causing 113–1,004 cache-write tokens on subsequent turns.  E1 shows why removing such avoidable rewrites matters at run level.
+
+**Expected token/cost impact.** E2 establishes a recurring avoidable cache-write range of **113–1,004 tokens per post-swap turn**, plus the loss of reuse for the roughly **10.3k-token** affected prefix.  The exact dollar saving depends on the provider's cache-read/cache-write tariff and turn count, so it must be measured rather than inferred from a generic token price.  At the campaign level, the ceiling is the E1 parity delta: `0.5027 - 0.1788 = $0.3239` per identical run, or `0.3239 / 0.5027 = 64.4%`.  This change removes one demonstrated source of that delta; it does not claim all of it.
+
+**Risk and regression surface.** Historical reasoning, function-call/result pairing, raw compacted-context replay, JSONL resume, and model switches are sensitive to item identity and order.  A “single canonical order” change must not normalize Grok, qwen3.8-27b, glm-5.2, or Claude into OpenAI item semantics; their existing dialect projections remain authoritative.  For qwen/glm Responses routes, enable the ledger only in observe-only mode until their byte-level replay fixtures prove identical output.  Do not alter tool-call ordering to repair this issue.
+
+**Wire-level verification plan.** Capture a multi-turn first-party OpenAI session containing a developer item, at least one `<system-reminder>` user item, a tool call/result, encrypted reasoning, and an explicit compaction boundary.  For every adjacent request pair within a prefix generation, assert:
+
+- the prior request's complete `input` array is an exact ordered prefix of the next request's `input` array;
+- the first mismatch index is the first genuinely appended item, never a historical developer/reminder item;
+- hashes and serialized byte slices for the frozen prefix match exactly;
+- `cache_write_tokens` returns to the normal warm behavior after the first stable request and a new cold write occurs only at the recorded compaction boundary.
+
+Run the same replay fixtures under qwen3.8-27b and glm-5.2 and assert their pre/post request JSON and response-item reconstruction remain unchanged.
+
+---
+
+### 2. Replace micro-turn advancement with a turn coordinator that batches completed tool work
+
+**Why this ranks second.** E1 reports 16 harness requests versus 6 official requests on the same task: ten avoidable requests, a 62.5% request-count reduction opportunity.  E5 proves that simply allowing parallel calls is not sufficient: the harness observed five function calls in one response yet still used 2.9× the turns.
+
+**What to change — module and state machine.**
+
+Put a `TurnCoordinator` at the `xai-grok-shell` session/`acp_session_impl` to sampler-request boundary.  It is the sole component permitted to schedule a continuation request.  It receives the decoded assistant output from `xai-grok-sampler`, starts all admitted function calls concurrently (subject to existing permission, cancellation, and resource limits), and buffers results keyed by the assistant call's original output index.
+
+The next Responses request contains one contiguous, deterministically ordered batch:
+
+```json
+[
+  {"type":"function_call", "call_id":"call_A", "...":"prior model output"},
+  {"type":"function_call", "call_id":"call_B", "...":"prior model output"},
+  {"type":"function_call_output", "call_id":"call_A", "output":"..."},
+  {"type":"function_call_output", "call_id":"call_B", "output":"..."}
+]
+```
+
+The precise field names stay owned by the existing dialect projector; the important contract is that outputs are appended once, in original function-call order, after the corresponding preserved model output.  Arrival order, task completion notifications, telemetry, and UI refreshes never schedule a model continuation.
+
+State machine:
+
+```text
+Idle
+  -> Sampling
+  -> ExecuteBatch(call set, outstanding count)
+  -> ReadyToContinue(one deterministic output batch)
+  -> Sampling
+
+ExecuteBatch -- cancellation / fatal session stop --> Stopped
+ExecuteBatch -- call timeout or tool error --> ReadyToContinue(error output for that call)
+Sampling -- final assistant answer --> Idle
+```
+
+A tool result is ready when all calls selected for that assistant turn reach terminal success/error/timeout, or when cancellation ends the session.  Preserve a bounded escape hatch for a provider protocol that explicitly requires streaming tool-result continuations; no profile gets that behavior by default.
+
+**Evidence.** E1 supplies the hard request/cost comparison.  E5 supplies the critical counterexample: five calls in one response did not translate into low turn count, so the defect lies in host continuation policy as well as model parallelism.
+
+**Expected token/cost impact.** E1 arithmetic gives the maximum observed request-count improvement: `16 - 6 = 10` fewer requests, or **62.5% fewer requests**.  If a five-call assistant output currently causes one continuation per result, batching replaces up to five continuations with one: at most **four continuation requests removed for that batch**.  Savings include each removed request's repeated prompt suffix and output, not merely function-call JSON.  The E1 price gap is **$0.3239/run (64.4%)**; attribute the realized share by comparing coordinator reason codes and per-turn usage before/after.
+
+**Risk and regression surface.** This may change latency, cancellation timing, approval prompts, and tools whose result is intentionally needed before another call begins.  Preserve dependency edges: calls explicitly chained by the model remain separate assistant turns; only calls emitted together are eligible for the batch.  qwen3.8-27b and glm-5.2 must retain their current scheduling profile until provider fixtures confirm that multiple outputs are accepted and associated correctly.  Claude Messages projects tool uses/results differently, so it must not consume this Responses batch representation.  Maintain the existing timeout/error result shape rather than dropping failed calls, or the next model request can become semantically invalid.
+
+**Wire-level verification plan.** Capture a fixture in which one assistant output contains five independent calls with deliberately shuffled completion times.  Verify one, not five, subsequent model request is emitted; its function outputs are in model output index order rather than completion order; each `call_id` appears exactly once; and cancellation/error produces one terminal output for every admitted call.  Compare final file/system effects with the current sequential fixture.  Run the qwen3.8-27b, glm-5.2, and Claude tool-use fixtures unchanged and assert their request count, request JSON/messages bodies, and tool/result association are unchanged unless that profile was explicitly opted in.
+
+---
+
+### 3. Snapshot a small, capability-selected tool catalog before the first OpenAI request
+
+**Why this ranks third.** Sending 29–31 built-in tools to a first-party Codex model adds prompt surface and makes accidental catalog mutation expensive.  More importantly, lazy MCP discovery consumes about two model turns per discovered tool (E4), directly violating the turn invariant and amplifying E1's request gap.
+
+**What to change — module and wire shape.**
+
+Split existing tool construction/projection into a session-start `ToolCatalogSnapshot` and a per-request renderer.  At session creation, before the first model call, the shell resolves enabled MCP servers, permissions, workspace mode, and model profile.  A host-side policy then chooses a compact named capability set (for example, core file/shell/search/edit capabilities plus already-enabled MCP tools relevant to the session mode) and freezes the resulting JSON schemas, names, and order.
+
+For the OpenAI parity profile, every request in a prefix generation carries the same stable `tools` array in the same order and with the same descriptions.  MCP discovery happens once at session setup, outside model turns.  Tool availability changes after the first request are represented as host state and applied only at an intentional tool-catalog generation boundary; that boundary is recorded as a deliberate cold-prefix event.  The model should not spend a discovery turn merely to learn that a configured tool exists.
+
+The model catalog/authority code decides which profile is eligible; `xai-grok-tools` and `xai-grok-shell` decide permissions and availability; `xai-grok-sampler` renders the frozen provider-specific schema.  Do not fold tool schemas into the generic conversation log: they are request configuration with their own stable-generation digest.
+
+**Evidence.** E4 directly identifies 29–31 built-ins and an approximately two-turn lazy-discovery cost per discovered tool.  E1 establishes that reducing turns is the dominant cost lever.  E2 means a catalog that mutates mid-session must be treated as a known cold-prefix event, not a silent cache miss.
+
+**Expected token/cost impact.** Each lazy-discovered tool has an observed lower-bound opportunity of **about two model turns**.  Relative to E1's 16-request harness run, that is **12.5% of total turns per discovered tool**; discovering five tools serially would consume roughly `5 × 2 = 10` turns, which equals the complete 16-to-6 request delta.  That is not a claim that all five were discovered in E1; it shows why discovery must be measured and removed from the ordinary path.  Schema-token savings depend on the selected catalog and must be reported as the stable `tools`-array token count before/after.
+
+**Risk and regression surface.** A catalog that is too small can reduce capability or make the model take inefficient detours; a catalog that is too broad recreates prompt overhead.  Treat capability selection as a policy with explicit allowlists, never a hidden heuristic that changes permissions.  Preserve qwen3.8-27b and glm-5.2 tool schema/adapters exactly: those models may depend on their current names, descriptions, or discovery behavior.  Preserve Claude's Messages tool definitions separately; it may have different schema constraints.  User-requested MCP configuration changes must remain visible and usable, but must create an explicit new catalog generation rather than mutate a warm OpenAI request in place.
+
+**Wire-level verification plan.** Capture session startup with configured MCP tools, then a multi-turn first-party run.  Show that discovery completes before request 1; request 1 through the final request of the generation have byte-identical `tools` arrays and a stable digest; and no assistant turn is spent invoking a catalog-discovery proxy for a configured capability.  Record tool-array token count and each `tool_catalog_generation` transition.  Replay baseline qwen3.8-27b, glm-5.2, and Claude fixtures and require identical tool arrays/message tools and identical discovery paths.
+
+---
+
+### 4. Make request controls and item limits explicit per dialect profile
+
+**Why this ranks fourth.** The first-party client currently omits `parallel_tool_calls`, letting the upstream default be true, while the official Codex client explicitly sends `false` (E5).  Separately, the Messages projection can locally brick a Claude session after a reasoning item exceeds 10,000 tokens (E6).  Both are examples of a generic request builder making an accidental, provider-visible decision.
+
+**What to change — module and wire shape.**
+
+Create a versioned `WireProfile`/capability table at the sampler boundary, selected from the authoritative model catalog.  It owns every provider-visible default that is currently represented as an omitted optional field or generic cap:
+
+```text
+OpenAI Codex Responses profile:
+  parallel_tool_calls: false  (serialized, never omitted)
+  stable tool-catalog generation: required
+  Responses prefix ledger: required
+
+Claude Messages profile:
+  parallel tool setting: current Claude-compatible behavior
+  reasoning replay: provider-specific opaque/text carrier
+  per-item safety limit: provider-specific, not the generic 10,000-token rule
+```
+
+The OpenAI wire renderer must serialize the literal JSON field `"parallel_tool_calls": false` for every first-party parity request.  The host coordinator from change 2 remains able to safely execute multiple calls returned by a model, so this wire setting never turns a valid returned call set into serial host execution.
+
+Replace `MAX_MODEL_CONTEXT_ITEM_TOKENS` as a universal policy with a profile-aware validation interface.  For Claude, do not reject a completed, replay-required reasoning item solely because it exceeds the harness's local 10,000-token generic estimate.  Project it according to documented Messages constraints: preserve valid opaque reasoning replay unchanged; segment only text-bearing projected content at legal block boundaries; and, if neither is valid, trigger an intentional pre-next-turn compaction path with a typed, recoverable outcome.  Never truncate a signed/encrypted reasoning item, and never convert this condition to a non-retryable local failure after the model already spent the turn.
+
+**Evidence.** E5 is direct parity evidence for an omitted provider-visible parameter.  E6 is direct evidence that the generic cap turns one high-reasoning response into a non-retryable session failure.
+
+**Expected token/cost impact.** The `parallel_tool_calls` field itself costs only a few request bytes; its value is behavioral parity, not a stand-alone token saving.  Measure its effect using the turn coordinator's request count and per-turn cache/write telemetry; accept it only if it is neutral or improves first-party turn count and task success.  The Claude correction eliminates a catastrophic failure/restart path.  One avoided restart avoids replaying the accumulated session prefix, but E6 gives no stable token total, so no dollar amount should be promised before capture.
+
+**Risk and regression surface.** `parallel_tool_calls: false` can alter first-party model planning, and applying it to a proxy/provider that interprets the field differently is risky.  It is therefore restricted to the explicit Codex profile.  Changing validation limits can admit requests that a provider rejects; retain body-size checks and provider-specific schema validation.  qwen3.8-27b and glm-5.2 must preserve current omission/default semantics and local validation unless their own profile is independently validated.  Claude must preserve exact reasoning signatures/opaque content and tool-use sequencing.
+
+**Wire-level verification plan.** For every first-party parity capture, assert the outbound body contains a boolean `parallel_tool_calls: false`, never an absent or `true` value.  Compare an identical task against the official request shape for field presence, tool-call count, turns, and result correctness.  For Claude, replay a >10,000-token reasoning item followed by another user turn: validate that request construction succeeds, the reasoning carrier is lossless or an explicit compaction request is recorded, and no local non-retryable `ItemTokenLimitExceeded` terminates the session.  Snapshot qwen3.8-27b/glm-5.2 request bodies before and after and require no changed field presence.
+
+---
+
+### 5. Record cache creation and prefix-generation telemetry, then enforce churn budgets in capture tests
+
+**Why this ranks fifth.** The harness currently receives `input_tokens_details.cache_write_tokens` but records `cacheCreationTokens: 0` in session `usage.json` (E3).  Without accurate accounting, the system cannot distinguish a real cache miss, a changed prefix, a tool-catalog rewrite, or a turn-count regression; cost fixes will regress silently.
+
+**What to change — module and state machine.**
+
+Extend the normalized sampler `TokenUsage`/session usage event at `xai-grok-sampler::stream::responses` and its shell persistence consumer to retain the wire's `cache_write_tokens` separately from cached-read tokens.  This field must travel losslessly from terminal response/SSE event through session persistence, `usage.json`, telemetry, and run summaries.  Do not derive it from prompt-token deltas.
+
+Add an append-only `ChurnRecord` per request:
+
+```json
+{
+  "request_sequence": 9,
+  "wire_profile": "openai_codex_responses_v1",
+  "prefix_generation": 2,
+  "input_prefix_digest": "...",
+  "tools_digest": "...",
+  "continuation_reason": "tool_batch_ready",
+  "input_tokens": 12345,
+  "cached_tokens": 10200,
+  "cache_write_tokens": 240
+}
+```
+
+This is diagnostic metadata, not model-visible prompt text.  State transitions are explicit: `warm` when the prior prefix digest/tool digest persists, `intentional_cold` for compaction/catalog/profile/new-session boundaries, and `unexpected_churn` for all other cache writes or prefix mismatches.  The last state emits an alert/test failure but never changes the live request; observability must not add a repair/retry turn.
+
+**Evidence.** E3 is direct proof of lost cache-write accounting.  E2 provides the failure pattern this instrumentation must reveal: stable-looking sessions that have persistent post-swap cache writes.  E1 provides the outcome metric: cost and request count must be reported together.
+
+**Expected token/cost impact.** This is an enabling change with **no direct token reduction**.  Its measurable payoff is attribution: the system can quantify the E2 range of 113–1,004 cache-write tokens per post-swap turn instead of reporting zero, reject regressions before rollout, and calculate the realized portion of the E1 **$0.3239/run** gap.  Do not claim a saving until a fixed capture reports it.
+
+**Risk and regression surface.** Usage field changes can break dashboards, JSON schema readers, resumed sessions, and providers that do not expose cache-write tokens.  Make the field optional/nullable for unsupported providers; zero is valid only when the wire explicitly reports zero, not when it is absent.  qwen3.8-27b, glm-5.2, Claude, and Grok must retain their existing usage semantics, with `cache_write_tokens: null` or their actual provider value rather than a fabricated OpenAI value.  Keep cost calculation provider-specific; cache creation tokens are observability, not a universal billing formula.
+
+**Wire-level verification plan.** Use a captured terminal Responses event containing nonzero `input_tokens_details.cache_write_tokens`.  Assert the exact integer appears in normalized usage, `usage.json`, and the run summary.  Then run a stable multi-turn OpenAI capture and an induced ordering-regression fixture: the former has one initial/intentional cold write followed by warm records, while the latter is labeled `unexpected_churn` with a digest mismatch and nonzero recorded cache writes.  Replay Messages, qwen3.8-27b, and glm-5.2 fixtures to verify unsupported values remain absent/null and no consumer treats absence as zero.
+
+## Rollout order and acceptance gate
+
+1. Land the prefix ledger and its replay/serialization tests first; do not enable the profile until exact-prefix captures pass.
+2. Add usage propagation and churn records next, so the remaining changes have trustworthy measurement.
+3. Add the frozen tool catalog and turn coordinator behind the first-party profile, then enable them on gpt-5.6-sol only.
+4. Add explicit first-party request fields and the Claude validation correction as separate profile-gated changes.
+5. Compare a fixed identical-task matrix with the official Codex CLI and retain raw request/response captures.  Promotion requires no semantic task regression, no unexpected prefix generation, no post-warm cache-write plateau, and a lower request count/cost.  Expand to terra and luna only after sol passes; non-OpenAI models remain on their existing profiles until their own fixtures pass.
+
+## DO NOT DO
+
+- **Do not globally sort or regroup conversation items by role.** It recreates E2 and can break reasoning/function-call pairing and raw provider replay.
+- **Do not hide cache churn by writing `cacheCreationTokens: 0` or inferring it from another counter.** The wire value must be preserved exactly or marked unavailable.
+- **Do not serialize tool calls one at a time merely because `parallel_tool_calls` is `false`.** That field is an upstream planning control; host execution must still safely batch valid sibling calls.
+- **Do not expose every tool or mutate the `tools` array lazily on every turn.** Both schema bloat and mid-session catalog rewrites worsen the prompt/cache problem; use an explicit snapshot generation.
+- **Do not apply the OpenAI parity profile to qwen3.8-27b, glm-5.2, Claude, Grok, or unknown proxy models by model-name guesswork.** Select only explicit catalog capabilities and keep their established dialect fixtures unchanged.
+- **Do not truncate, discard, or locally brick oversized Claude reasoning after it has been generated.** Preserve legal replay or take a typed, intentional compaction path before the next request.

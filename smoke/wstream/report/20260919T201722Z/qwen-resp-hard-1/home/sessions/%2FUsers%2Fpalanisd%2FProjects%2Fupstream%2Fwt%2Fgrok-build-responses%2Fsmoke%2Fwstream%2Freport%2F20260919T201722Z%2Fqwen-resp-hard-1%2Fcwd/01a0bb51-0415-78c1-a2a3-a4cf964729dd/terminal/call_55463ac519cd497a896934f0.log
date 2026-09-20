@@ -1,0 +1,58 @@
+FAIL seed 42 trial 47 rc 1 exp 1 apply_ok False
+A: ['delta theta zeta eps', 'theta theta gamma zeta', 'gamma theta', 'alpha alpha', 'alpha']
+B: ['gamma delta beta gamma', 'delta', 'zeta alpha theta theta']
+@@ -1,5 +2,3 @@
++delta
+-delta theta zeta eps
++gamma delta beta gamma
+-theta theta gamma zeta
++zeta alpha theta theta
+-gamma theta
+-alpha alpha
+-alpha
+
+FAIL seed 42 trial 94 rc 1 exp 1 apply_ok False
+A: ['zeta eta eta delta', 'beta', 'eps', 'zeta eps delta']
+B: ['theta eta', 'eps', 'eta beta', 'eps', 'beta eps eps', 'theta alpha theta beta', 'beta eta delta', 'delta eta', 'alpha eps delta', 'beta gamma zeta', 'gamma']
+@@ -1,4 +2,11 @@
++eps
+-zeta eta eta delta
++theta eta
+-beta
++eta beta
+ eps
++beta eps eps
++theta alpha theta beta
++beta eta delta
++delta eta
+-zeta eps delta
++alpha eps delta
++beta gamma zeta
++gamma
+
+FAIL seed 42 trial 165 rc 1 exp 1 apply_ok False
+A: ['eps delta beta', 'delta zeta alpha zeta', 'beta theta', 'theta', 'beta', 'alpha', 'zeta beta gamma alpha', 'alpha eps eta beta', 'alpha']
+B: ['eta eta beta', 'delta alpha theta eta', 'eta beta zeta alpha', 'zeta delta beta beta', 'beta', 'gamma eps', 'eta theta theta', 'delta gamma', 'alpha', 'eps eta', 'eps gamma gamma', 'eps zeta eps zeta']
+@@ -1,9 +1,12 @@
+-eps delta beta
++eta eta beta
++eta beta zeta alpha
+-delta zeta alpha zeta
++delta alpha theta eta
+-beta theta
+-theta
++zeta delta beta beta
+ beta
+-alpha
++gamma eps
++eta theta theta
+-zeta beta gamma alpha
+-alpha eps eta beta
++delta gamma
+ alpha
++eps eta
++eps gamma gamma
++eps zeta eps zeta
+
+TOTAL_FAILS: 3
+FUZZ_RC=1

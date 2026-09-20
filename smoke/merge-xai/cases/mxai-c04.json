@@ -1,0 +1,201 @@
+{
+  "schema_version": 1,
+  "id": "MXAI-C04",
+  "title": "MERGE-XAI-SYNC C-04 (PIN S1/D7/R2, model-switch slot + projection + merged CMO) — in-session /model switch sol -> qwen3.8-27b on the ACP driver (frozen lane L-01 for the parent; the qwen arm rides lane L-04). Scenario per 06: the v2 gate slot moves to the new model, the switch projection is applied, the merged CMO carries BOTH reasoning_summary (theirs) and cache_ttl (ours), and no foreign reasoning replays on the new wire (R8 suppression intact). Wire faces (the slot/CMO are struct-level; their observable wire surfaces are pinned here, the struct-level round-trip is the M15 crate test in the full gate): (1) SLOT MOVE: post-switch turns hit body.model=qwen3.8-27b on /v1/responses (the spec slot write is the only way the switch turns reach qwen); (2) PROJECTION: cursor pinned to ultra (config_patch models/default_reasoning_effort=ultra) — ultra is NOT in the qwen menu {xhigh, medium, low} (live config, re-verified 2026-09-18) so the switch must project to the TARGET DEFAULT xhigh on the qwen wire (the at-effort-2hop remap chain; the D7 A1-rewritten SessionModelSwitch carries the projection); a raw max/ultra on a qwen request = the R5 leak class = defect; (3) CMO-REASONING-SUMMARY (theirs-side field survived the merge): the qwen request carries the 'summary' CMO field on the wire (responses reasoning block); (4) CMO-CACHE-TTL (ours-side field): pinned wire-side on the messages lane by MXAI-C03 head_ttl_1h (cross-reference — the same CMO field); this cell records its presence on the responses surface via recon; (5) R8 SUPPRESSION: no sol-era encrypted_content may ride into ANY post-switch qwen request (the foreign-reasoning strip at the model boundary). PREMISE (anti-vacuous): a pre-switch sol request must carry real foreign reasoning items ('\"type\": \"reasoning\"' input) — 0-hit = the model produced no reasoning to suppress = VACUOUS. VERDICT: PASS = slot moved, projection = xhigh (no max/ultra leak), summary field present, R8 clean, final qwen turn 200 + exact terminal text. STOP-AND-REPORT: a 400/503 on the qwen boundary, a raw max/ultra wire effort on qwen, any encrypted_content on a qwen request, or an acp_error.",
+  "bead": "apex-l2d.4",
+  "suite": "cross-wire",
+  "tier": "full",
+  "driver": "acp",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "wirecap": true,
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "config_patch": {
+    "models/default_reasoning_effort": "ultra"
+  },
+  "est_calls": 8,
+  "watchdog_s": 300,
+  "timeouts": {
+    "acp_init_s": 240,
+    "acp_set_model_s": 300
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "timeout_s": 300,
+      "prompt": "Compute 7^8432 mod 5557 using modular exponentiation. Show each squaring step briefly, then state the final remainder on its own line. Do not use any tools."
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: MXAI-C04-S1"
+    },
+    {
+      "op": "switch",
+      "model": "qwen3.8-27b",
+      "via": "acp"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: MXAI-C04-Q1"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: MXAI-C04-Q2"
+    },
+    {
+      "op": "recon_note",
+      "note": "WIRE READ (recon_note, non-scoring): the qwen requests (body.model=qwen3.8-27b on /v1/responses) are the post-switch evidence — slot write (model), projection (effort xhigh), CMO reasoning_summary (summary field), R8 (encrypted_content absence). The sol requests carry the pre-switch foreign reasoning (the premise). The merged CMO's cache_ttl half is pinned wire-side on the messages lane by MXAI-C03 head_ttl_1h (same CMO field, different wire face); the struct-level CMO round-trip (M15 drift guard) is a crate test in the wave-3 full gate (06 C-06)."
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "SESSION SURVIVES THE SWITCH: the post-switch qwen turns did not die (200 directly, or a 400 recovered by the reactive strip) — a 400/503 on the qwen boundary surfacing here = the switch path regressed (S1/R2) -> STOP."
+      },
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "MXAI-C04-Q2",
+        "label": "POST-SWITCH TURN COMPLETES: the final qwen turn delivered the exact terminal text — both switch and post-switch turns closed."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "id": "sol_reasoning_ride",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "any": true,
+        "grep": "\"type\": \"reasoning\"",
+        "label": "CONTROL (anti-vacuous pin): a pre-switch sol request carried a reasoning INPUT item — real foreign reasoning exists to cross the model boundary. Without this, the R8 suppression pin is vacuous (the model produced no reasoning to suppress)."
+      },
+      {
+        "kind": "count",
+        "id": "slot_moved",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "min": 1,
+        "max": 4,
+        "label": "SLOT MOVE PIN (the v2 gate spec-slot write, 06 C-04): post-switch turns hit qwen3.8-27b on /v1/responses — 2 = the clean shape (Q1 + Q2); 1 = one switch turn landed (adjudicate); >4 = storm around the switch -> STOP. 0 = the slot did not move (the switch wrote nothing) = defect."
+      },
+      {
+        "kind": "grep",
+        "id": "qwen_effort_xhigh",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "nth": 0,
+        "grep": "\"effort\": \"xhigh\"",
+        "label": "SWITCH PROJECTION PIN (D7/R2): the newest qwen request carries wire effort xhigh — the carried ultra is NOT in the qwen menu {xhigh, medium, low}, so the switch projection must land on the TARGET DEFAULT xhigh. Absent = the projection did not apply (the raw cursor rode the boundary) = defect."
+      },
+      {
+        "kind": "grep",
+        "id": "qwen_no_max",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"effort\": \"max\"",
+        "label": "LEAK GUARD (R5 class): no raw 'max' effort (the sol ultra remap) may leak onto ANY qwen request — the carried value must project to the target default, never ride its raw/remapped value. Present = the projection gate regressed -> STOP."
+      },
+      {
+        "kind": "grep",
+        "id": "qwen_no_ultra",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"effort\": \"ultra\"",
+        "label": "LEAK GUARD: no raw 'ultra' local tier may reach the wire on a qwen request (ultra is a local menu tier, never a wire value)."
+      },
+      {
+        "kind": "grep",
+        "id": "cmo_summary_field",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "nth": 0,
+        "grep": "\"summary\"",
+        "label": "MERGED CMO — reasoning_summary (THEIRS-side field, 06 C-04): the post-switch qwen request carries the 'summary' CMO field on the responses reasoning block — the theirs-side CMO member survived the merge onto the wire. The struct-level round-trip (both fields, M15 drift guard) is the crate test in the full gate; the ours-side cache_ttl wire face is MXAI-C03 head_ttl_1h."
+      },
+      {
+        "kind": "grep",
+        "id": "r8_no_foreign_enc",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "encrypted_content",
+        "label": "R8 SUPPRESSION PIN (intact through the merge): NO sol-era encrypted_content item may survive into ANY post-switch qwen request — the foreign-reasoning strip at the model boundary must catch every boundary-marker item (0 tolerance). Present = foreign reasoning replayed on the new wire = defect -> STOP."
+      },
+      {
+        "kind": "resp_status",
+        "id": "qwen_final_200",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "qwen3.8-27b"
+        },
+        "which": "last",
+        "status_in": [
+          200
+        ],
+        "label": "POST-SWITCH ACCEPTED: the final qwen request reached 200 (the switch boundary did not 400/503 — a rejection here = new phrasing -> STOP, house rule)."
+      },
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "grep": "\"reasoning\"",
+        "label": "CMO-WIRE RECORD (recon, all qwen requests): the reasoning block shape on the post-switch wire (effort + summary values) — the coordinator's cross-reference for the merged CMO (both fields) alongside the M15 crate-test result from the full gate."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true,
+    "vacuous_if": [
+      {
+        "pin": "sol_reasoning_ride",
+        "class": "model"
+      }
+    ]
+  },
+  "retry": {
+    "on_status": [
+      404,
+      502,
+      503
+    ],
+    "max_attempts": 1,
+    "backoff_s": 30
+  }
+}

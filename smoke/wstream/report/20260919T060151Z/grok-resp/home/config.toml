@@ -1,0 +1,456 @@
+disable_web_search = true
+
+[model."grok-4.6"]
+base_url = "http://127.0.0.1:51806/v1"
+api_backend = "responses"
+model_family = "xai"
+env_key = "CODEX_LLM_PROXY_KEY"
+supports_backend_search = false
+context_window = 500000
+max_completion_tokens = 500000
+
+[model."gpt-5.6-sol"]
+base_url = "http://127.0.0.1:51806/v1"
+api_backend = "responses"
+model_family = "codex"
+strict_responses_input = true
+multi_agent_v2 = true
+max_completion_tokens = 128000
+env_key = "CODEX_LLM_PROXY_KEY"
+supports_backend_search = false
+reasoning_efforts = [
+    "low",
+    "medium",
+    "high",
+    "max",
+    "ultra",
+]
+
+[model."gpt-5.6-sol".extra_headers]
+x-litellm-tags = "East US 2"
+
+[model."glm-5.2"]
+multi_agent_v2 = true
+base_url = "http://127.0.0.1:51806/v1"
+api_backend = "responses"
+model_family = "glm"
+env_key = "CODEX_LLM_PROXY_KEY"
+context_window = 128000
+max_completion_tokens = 128000
+supports_backend_search = false
+supports_reasoning_effort = true
+
+[[model."glm-5.2".reasoning_efforts]]
+value = "high"
+label = "High Effort"
+default = true
+
+[[model."glm-5.2".reasoning_efforts]]
+value = "medium"
+label = "Medium Effort"
+
+[[model."glm-5.2".reasoning_efforts]]
+value = "low"
+label = "Low Effort"
+
+[model."qwen3.8-27b"]
+multi_agent_v2 = true
+base_url = "http://127.0.0.1:51806/v1"
+api_backend = "responses"
+env_key = "CODEX_LLM_PROXY_KEY"
+model_family = "qwen"
+max_completion_tokens = 128000
+supports_reasoning_effort = true
+
+[[model."qwen3.8-27b".reasoning_efforts]]
+value = "xhigh"
+label = "Xhigh Effort"
+default = true
+
+[[model."qwen3.8-27b".reasoning_efforts]]
+value = "medium"
+label = "Medium Effort"
+
+[[model."qwen3.8-27b".reasoning_efforts]]
+value = "low"
+label = "Low Effort"
+
+[model.claude-sonnet-5]
+multi_agent_v2 = true
+api_backend = "messages"
+cache_ttl = "1h"
+max_completion_tokens = 128000
+
+[[model.claude-sonnet-5.reasoning_efforts]]
+value = "low"
+label = "Low Effort"
+
+[[model.claude-sonnet-5.reasoning_efforts]]
+value = "medium"
+label = "Medium Effort"
+
+[[model.claude-sonnet-5.reasoning_efforts]]
+value = "high"
+label = "High Effort"
+default = true
+
+[[model.claude-sonnet-5.reasoning_efforts]]
+value = "xhigh"
+label = "Xhigh Effort"
+
+[[model.claude-sonnet-5.reasoning_efforts]]
+value = "max"
+label = "Max Effort"
+
+[model.claude-opus-5]
+api_backend = "messages"
+cache_ttl = "1h"
+context_window = 262144
+max_completion_tokens = 128000
+
+[model."claude-sonnet-4.5"]
+api_backend = "messages"
+cache_ttl = "1h"
+max_completion_tokens = 128000
+
+[model."claude-sonnet-4.6"]
+api_backend = "messages"
+cache_ttl = "1h"
+max_completion_tokens = 128000
+
+[model."claude-opus-4.6"]
+api_backend = "messages"
+cache_ttl = "1h"
+max_completion_tokens = 128000
+
+[model."claude-opus-4.7"]
+api_backend = "messages"
+cache_ttl = "1h"
+max_completion_tokens = 128000
+
+[model."claude-opus-4.8"]
+api_backend = "messages"
+cache_ttl = "1h"
+max_completion_tokens = 128000
+
+[model.claude-sonnet-4-5]
+api_backend = "messages"
+cache_ttl = "1h"
+max_completion_tokens = 128000
+
+[model.claude-sonnet-4-6]
+api_backend = "messages"
+cache_ttl = "1h"
+
+[model.claude-opus-4-6]
+api_backend = "messages"
+cache_ttl = "1h"
+max_completion_tokens = 128000
+
+[model.claude-opus-4-7]
+api_backend = "messages"
+cache_ttl = "1h"
+
+[model.claude-opus-4-8]
+api_backend = "messages"
+cache_ttl = "1h"
+
+[model."claude-opus-4.5"]
+api_backend = "messages"
+cache_ttl = "1h"
+max_completion_tokens = 128000
+
+[model.claude-opus-4-5]
+api_backend = "messages"
+cache_ttl = "1h"
+max_completion_tokens = 128000
+
+[model."claude-haiku-4.5"]
+api_backend = "messages"
+cache_ttl = "1h"
+max_completion_tokens = 64000
+
+[model.claude-haiku-4-5]
+api_backend = "messages"
+cache_ttl = "1h"
+max_completion_tokens = 64000
+
+[model.claude-haiku-4-5-20251001]
+api_backend = "messages"
+cache_ttl = "1h"
+max_completion_tokens = 64000
+
+[model.gemini-3-pro-preview]
+api_backend = "responses"
+max_completion_tokens = 65535
+supports_reasoning_effort = true
+
+[[model.gemini-3-pro-preview.reasoning_efforts]]
+value = "high"
+label = "High Effort"
+
+[[model.gemini-3-pro-preview.reasoning_efforts]]
+value = "medium"
+label = "Medium Effort"
+default = true
+
+[[model.gemini-3-pro-preview.reasoning_efforts]]
+value = "low"
+label = "Low Effort"
+
+[model."gemini-3.1-flash-lite-preview"]
+api_backend = "responses"
+max_completion_tokens = 65536
+supports_reasoning_effort = true
+
+[[model."gemini-3.1-flash-lite-preview".reasoning_efforts]]
+value = "high"
+label = "High Effort"
+
+[[model."gemini-3.1-flash-lite-preview".reasoning_efforts]]
+value = "medium"
+label = "Medium Effort"
+default = true
+
+[[model."gemini-3.1-flash-lite-preview".reasoning_efforts]]
+value = "low"
+label = "Low Effort"
+
+[model."gemini-3.1-pro-preview"]
+api_backend = "responses"
+max_completion_tokens = 65536
+supports_reasoning_effort = true
+
+[[model."gemini-3.1-pro-preview".reasoning_efforts]]
+value = "high"
+label = "High Effort"
+
+[[model."gemini-3.1-pro-preview".reasoning_efforts]]
+value = "medium"
+label = "Medium Effort"
+default = true
+
+[[model."gemini-3.1-pro-preview".reasoning_efforts]]
+value = "low"
+label = "Low Effort"
+
+[model."gemini-3.5-flash"]
+api_backend = "responses"
+max_completion_tokens = 65535
+supports_reasoning_effort = true
+
+[[model."gemini-3.5-flash".reasoning_efforts]]
+value = "high"
+label = "High Effort"
+
+[[model."gemini-3.5-flash".reasoning_efforts]]
+value = "medium"
+label = "Medium Effort"
+default = true
+
+[[model."gemini-3.5-flash".reasoning_efforts]]
+value = "low"
+label = "Low Effort"
+
+[model."gemini-3.7-flash"]
+api_backend = "responses"
+max_completion_tokens = 65536
+supports_reasoning_effort = true
+
+[[model."gemini-3.7-flash".reasoning_efforts]]
+value = "high"
+label = "High Effort"
+
+[[model."gemini-3.7-flash".reasoning_efforts]]
+value = "medium"
+label = "Medium Effort"
+default = true
+
+[[model."gemini-3.7-flash".reasoning_efforts]]
+value = "low"
+label = "Low Effort"
+
+[model.gemma-4-31b]
+api_backend = "chat_completions"
+max_completion_tokens = 65536
+
+[model."gpt-5.6-terra"]
+model_family = "codex"
+strict_responses_input = true
+max_completion_tokens = 128000
+context_window = 262144
+supports_reasoning_effort = true
+
+[model."gpt-5.6-terra".extra_headers]
+x-litellm-tags = "East US 2"
+
+[[model."gpt-5.6-terra".reasoning_efforts]]
+value = "low"
+label = "Low Effort"
+default = true
+
+[[model."gpt-5.6-terra".reasoning_efforts]]
+value = "medium"
+label = "Medium Effort"
+
+[[model."gpt-5.6-terra".reasoning_efforts]]
+value = "high"
+label = "High Effort"
+
+[[model."gpt-5.6-terra".reasoning_efforts]]
+value = "max"
+label = "Max Effort"
+
+[[model."gpt-5.6-terra".reasoning_efforts]]
+value = "ultra"
+label = "Ultra Effort"
+
+[model."gpt-5.6-luna"]
+model_family = "codex"
+strict_responses_input = true
+max_completion_tokens = 128000
+context_window = 262144
+supports_reasoning_effort = true
+
+[model."gpt-5.6-luna".extra_headers]
+x-litellm-tags = "East US 2"
+
+[[model."gpt-5.6-luna".reasoning_efforts]]
+value = "low"
+label = "Low Effort"
+default = true
+
+[[model."gpt-5.6-luna".reasoning_efforts]]
+value = "medium"
+label = "Medium Effort"
+
+[[model."gpt-5.6-luna".reasoning_efforts]]
+value = "high"
+label = "High Effort"
+
+[[model."gpt-5.6-luna".reasoning_efforts]]
+value = "max"
+label = "Max Effort"
+
+[[model."gpt-5.6-luna".reasoning_efforts]]
+value = "ultra"
+label = "Ultra Effort"
+
+[models]
+default = "claude-opus-5"
+default_reasoning_effort = "high"
+disabled_models = [
+    "claude-opus-4.5",
+    "claude-opus-4.6",
+    "claude-opus-4.7",
+    "claude-opus-4.8",
+    "claude-opus-4-5",
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-sonnet-4.5",
+    "claude-sonnet-4.6",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-6",
+    "gpt-3.5-turbo",
+    "gpt-35-turbo-0301",
+    "gpt-4",
+    "gpt-4-0314",
+    "gpt-4-32k",
+    "gpt-4-32k-0314",
+    "gpt-4-turbo",
+    "gpt-4-turbo-preview",
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4.1-nano",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "gpt-5",
+    "gpt-5-chat",
+    "gpt-5-codex",
+    "gpt-5-mini",
+    "gpt-5-nano",
+    "gpt-5.1",
+    "gpt-5.1-chat",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
+    "gpt-5.2",
+    "gpt-5.2-chat",
+    "gpt-5.2-codex",
+    "gpt-5.3-chat",
+    "gpt-5.3-codex",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.4-nano",
+    "gpt-5.5",
+]
+
+[endpoints]
+models_base_url = "http://127.0.0.1:51806/v1"
+default_api_backend = "responses"
+default_env_key = "CODEX_LLM_PROXY_KEY"
+default_context_window = 256000
+default_agent_type = "grok-build-plan"
+
+[auth]
+auth_provider_command = "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T060151Z/grok-resp/home/proxy-auth-stub.sh"
+auth_provider_label = "NetApp LLM Proxy (stub)"
+
+[marketplace]
+default_skills_installs_purged = true
+
+[cli]
+installer = "internal"
+
+[ui]
+max_thoughts_width = 120
+fork_secondary_model = "grok-4.6"
+yolo = false
+compact_mode = false
+permission_mode = "always-approve"
+
+[plugins]
+enabled = ["cognee"]
+disabled = ["cognee-memory"]
+
+[compat.claude]
+skills = true
+rules = true
+agents = true
+mcps = true
+hooks = false
+sessions = true
+
+[mcp_servers.codegraph]
+command = "codegraph"
+args = [
+    "serve",
+    "--mcp",
+ "--no-watch",]
+
+[mcp_servers.codegraph.env]
+CODEGRAPH_MCP_TOOLS = "explore,search,node,callers,callees,impact,status"
+
+[mcp_servers.codebase-memory-mcp]
+command = "/Users/palanisd/.local/bin/codebase-memory-mcp"
+
+[mcp_servers.codebase-memory-mcp.env]
+CBM_CACHE_DIR = "/Users/palanisd/.qwen/codebase-memory-mcp-cache"
+CBM_HOOK_DEADLINE_MS = "5000"
+
+[consent.answers.aup]
+version = 2
+account = "b@example.com"
+
+[consent.answers.tos]
+version = 2
+
+[features]
+remote_compaction_v2 = false
+multi_agent_v2 = true
+turn_summary = false
+
+[subagents]
+enabled = true
+max_depth = 2

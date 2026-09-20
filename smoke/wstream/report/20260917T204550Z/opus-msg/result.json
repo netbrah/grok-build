@@ -1,0 +1,164 @@
+{
+  "cell": "opus-msg",
+  "model": "claude-opus-5",
+  "api_backend": "messages",
+  "backend_class": "native",
+  "verdict": "PASS",
+  "invariants": [
+    {
+      "key": "status",
+      "expected": 200,
+      "actual": 200,
+      "ok": true
+    },
+    {
+      "key": "route",
+      "expected": "messages",
+      "actual": "messages",
+      "ok": true
+    },
+    {
+      "key": "n_model_calls_min",
+      "expected": ">= 1",
+      "actual": 2,
+      "ok": true
+    }
+  ],
+  "observations": {
+    "route": "messages",
+    "status": 200,
+    "n_model_calls": 2,
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 181,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": true,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "I",
+    "finish": "stop",
+    "budget_trap": false,
+    "final_text_nonempty": true,
+    "final_text_len": 995,
+    "usage": {
+      "input_tokens": 2,
+      "cache_creation_input_tokens": 28112,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 3699,
+      "output_tokens_details": {
+        "thinking_tokens": 3090
+      }
+    }
+  },
+  "analysis": {
+    "cell": "opus-msg",
+    "route": "messages",
+    "expected_route": "messages",
+    "routes_mixed": true,
+    "status": 200,
+    "n_model_calls": 2,
+    "n_side_calls": 1,
+    "side_call_errors": [
+      500
+    ],
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 181,
+    "reasoning_tokens": 3090,
+    "reasoning_encrypted_content": false,
+    "reasoning_thinking_block": true,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "I",
+    "finish": "stop",
+    "budget_trap": false,
+    "final_text_len": 995,
+    "final_text_nonempty": true,
+    "usage": {
+      "input_tokens": 2,
+      "cache_creation_input_tokens": 28112,
+      "cache_read_input_tokens": 0,
+      "output_tokens": 3699,
+      "output_tokens_details": {
+        "thinking_tokens": 3090
+      }
+    },
+    "n_frames_total": 279
+  },
+  "calls": [
+    {
+      "route": "responses",
+      "req_model": "grok-4.6",
+      "req_stream": true,
+      "req_max_tokens": 100,
+      "status": 500,
+      "n_frames": 1,
+      "frame_types": {},
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": null,
+      "final_text": ""
+    },
+    {
+      "route": "messages",
+      "req_model": "claude-opus-5",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 279,
+      "frame_types": {
+        "message_start": 1,
+        "ping": 2,
+        "content_block_start": 2,
+        "content_block_delta": 270,
+        "content_block_stop": 2,
+        "message_delta": 1,
+        "message_stop": 1
+      },
+      "reasoning_frames": 181,
+      "thinking_block": true,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": "I",
+      "finish": "stop",
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 28112,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 3699,
+        "output_tokens_details": {
+          "thinking_tokens": 3090
+        }
+      },
+      "final_text": "## Setup\n\n8432 in binary is `10000011110000` = 8192 + 128 + 64 + 32 + 16, so\n\n7^8432 = 7^16 \u00b7 7^32 \u00b7 7^64 \u00b7 7^128 \u00b7 7^8192 (mod 5557)\n\n## Repeated squaring of 7 (mod 5557)\n\n| exponent | value |\n|---|---|\n| 7^1 | 7 |\n| 7^2 | 49 |\n| 7^4 | 2401 |\n| 7^8 | 2401\u00b2 = 5,764,801 \u2192 **2192** |\n| 7^16 | 2192\u00b2 = 4,804,864 \u2192 **3616** |\n| 7^32 | 3616\u00b2 = 13,075,456 \u2192 **5392** |\n| 7^64 | 5392\u00b2 = 29,073,664 \u2192 **4997** |\n| 7^128 | 4997\u00b2 = 24,970,009 \u2192 **2408** |\n| 7^256 | 2408\u00b2 = 5,798,464 \u2192 **2513** |\n| 7^512 | 2513\u00b2 = 6,315,169 \u2192 **2417** |\n| 7^1024 | 2417\u00b2 = 5,841,889 \u2192 **1482** |\n| 7^2048 | 1482\u00b2 = 2,196,324 \u2192 **1309** |\n| 7^4096 | 1309\u00b2 = 1,713,481 \u2192 **1925** |\n| 7^8192 | 1925\u00b2 = 3,705,625 \u2192 **4663** |\n\n## Combining the needed factors\n\n- 3616 \u00b7 5392 = 19,497,472 \u2192 3516\n- 3516 \u00b7 4997 = 17,569,452 \u2192 3775\n- 3775 \u00b7 2408 = 9,090,200 \u2192 4505\n- 4505 \u00b7 4663 = 21,006,815 \u2192 1355\n\n(Cross-check: 5557 is prime, so by Fermat the exponent reduces to 8432 mod 5556 = 2876, which gives the same residue.)\n\n**1355**"
+    }
+  ],
+  "turns": [
+    {
+      "turn": 1,
+      "exit_code": 0,
+      "killed": false,
+      "elapsed": 39.48,
+      "session_id": "01a0b11f-2bd0-7243-aae5-fc54853b9fb8",
+      "n_events": 274
+    }
+  ],
+  "binary_sha256_12": "39f836e8633d",
+  "wire_port": 54686,
+  "upstream": "https://llm-proxy-api.ai.eng.netapp.com",
+  "key_sha256_12": "9f3f56a263da",
+  "raw_key_hits": 0,
+  "ts": "20260917T205456Z"
+}

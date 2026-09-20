@@ -1,0 +1,71 @@
+{
+  "state": {
+    "grok_build.ReportedTaskCompletions": {
+      "reported": [
+        "call_644bd0eb6d7d4740a8642d9d"
+      ]
+    },
+    "grok_build.Todo": {
+      "todos": {
+        "explore": {
+          "content": "Explore harness code for E1-E6 seams",
+          "priority": "medium",
+          "status": "completed"
+        },
+        "math": {
+          "content": "Write & run cost-arithmetic python script in cwd",
+          "priority": "medium",
+          "status": "completed"
+        },
+        "doc": {
+          "content": "Write harness-churn-redesign.md (top5, do-not-do, exec summary)",
+          "priority": "medium",
+          "status": "completed"
+        },
+        "final": {
+          "content": "Final message = exactly the 3-line exec summary",
+          "priority": "medium",
+          "status": "completed"
+        }
+      }
+    }
+  },
+  "params": {
+    "grok_build.ReadFile": {
+      "cursor_rules_on_read": false
+    },
+    "grok_build.ListDir": {
+      "max_output_chars": null
+    },
+    "grok_build.SearchReplace": {
+      "skip_read_before_edit": false,
+      "empty_old_string_does_not_override": false,
+      "unicode_normalized_fallback": false,
+      "include_user_edit_hint": true
+    },
+    "grok_build.Bash": {
+      "timeout_secs": null,
+      "max_timeout_secs": 36000.0,
+      "output_byte_limit": null,
+      "cmd_prefix": null,
+      "enabled_background": true,
+      "auto_background_on_timeout": true,
+      "foreground_block_budget_ms": null,
+      "max_block_until_ms": null,
+      "allow_background_operator": true,
+      "surface_bg_completion_reminders": true
+    },
+    "grok_build.AskUserQuestion": {
+      "timeout_enabled": true,
+      "timeout_secs": 1800,
+      "non_interactive": true
+    },
+    "grok_build.Grep": {
+      "max_output_bytes": null,
+      "max_chars_per_line": null
+    },
+    "grok_build.UseTool": {
+      "native_tool_correction": true
+    }
+  }
+}

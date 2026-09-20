@@ -55,9 +55,10 @@
           "path": "/v1/responses",
           "body.model": "gpt-5.6-terra"
         },
-        "any": true,
         "grep": "\"id\": \"\"",
-        "label": "XW RED (wire shape, TODAY only): a post-switch terra request ships the seeded id:'' reasoning items (the 400 trigger). Post-.71 this flips to absent \u2014 RE-PIN to absent:true at RED-CLEARED promotion; do not carry the present-pin forward."
+        "label": "XW RED-CLEARED (wire shape): NO post-switch terra request ships a seeded id:'' reasoning item \u2014 the .71 projector re-keyed the 5 items at switch time (MA-3 all+absent form). A HIT = the projector did not fire or the ride survived -> defect (report-and-stop; .71 lane adjudicates).",
+        "all": true,
+        "absent": true
       },
       {
         "kind": "count",

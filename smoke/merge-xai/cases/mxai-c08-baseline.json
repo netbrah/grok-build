@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "id": "MXAI-C08-BASELINE",
+  "title": "MERGE-XAI-SYNC C-08 BASELINE — the PRE-MERGE REFERENCE capture for the identity round-trip cell. 06 §3 step 1: 'Pre-wave-3: C-08 baseline capture (current binary)' — the ONLY item that must run BEFORE the wave-3 cutover, on the CURRENT binary-of-record, operator-driven (see smoke/merge-xai/README.md runbook: run this case with the current binary before the merge cutover; the report is the reference the post-merge MXAI-C08 run is diffed against). Same flow as MXAI-C08 (cell-seeded identity -> T1 -> SIGKILL mid-essay -> cold resume -> T2) on the same redacted c-08-cell fixture — the seeded identity is a FIXTURE CONSTANT (the xwfix seeder's fixed agent_id), so the baseline and post-merge runs are directly comparable (06 C-08: 'matches PRE-MERGE reference run'). RECON CASE (record-only, never fails; the row reports RECON, not PASS/FAIL): the recorded surfaces are (1) the final-text head (the T2 terminal — MXAI-C08B-T2 present = the baseline run completed the same flow), (2) the post-resume summary.json agent_id, (3) the post-resume summary.json attempt_id — these three values are the baseline reference the coordinator diffs against the post-merge MXAI-C08 artifact pins (identity_adopted/attempt_stamped): a post-merge agent_id that DIFFERS from this baseline (a re-mint) or an ABSENT/null attempt_id = the D9/Q9 identity round-trip regressed = the 01a09be2-class collapse. No scored pins by design. Lane: L-01 (sol responses).",
+  "bead": "apex-l2d.4",
+  "suite": "session-resume",
+  "tier": "full",
+  "driver": "headless",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "output_format": "streaming-json",
+  "wirecap": true,
+  "recon": true,
+  "env": {
+    "store": false
+  },
+  "est_calls": 4,
+  "watchdog_s": 300,
+  "steps": [
+    {
+      "op": "switch_model",
+      "model": "gpt-5.6-sol",
+      "via": "resume",
+      "cell": "smoke/redteam/fixtures/merge-xai/c-08-cell",
+      "note": "CELL SEED (baseline run, pre-merge binary): same redacted c-08-cell fixture as the post-merge run — the seeded identity is a fixture constant, which is what makes the two runs comparable. The op's storage-form diff (xwfix_cell_diff.storage) is an incidental mechanism byproduct in BOTH runs (expected.json == pre_switch.json by fixture design) and is ignored in this recon case."
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: MXAI-C08B-T1"
+    },
+    {
+      "op": "kill",
+      "after_s": 4,
+      "prompt": "Write a 1200-word essay on the history of lighthouse automation, covering at least three named lighthouses. Begin the essay immediately."
+    },
+    {
+      "op": "switch",
+      "model": "gpt-5.6-sol",
+      "via": "resume"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: MXAI-C08B-T2"
+    },
+    {
+      "op": "recon_note",
+      "note": "BASELINE PROVENANCE (recon_note): this report's identity records (final-text head + summary.json agent_id/attempt_id) are the PRE-MERGE REFERENCE for MXAI-C08. Operator runs it on the current binary-of-record BEFORE the wave-3 cutover (06 §3 step 1; README runbook). The coordinator diffs: post-merge agent_id must EQUAL this baseline's (the ADOPTION contract — stamp_session_identity_if_absent stamps only when absent, so the seeded value must survive both runs identically); attempt_id non-null in both; T2 terminal present in both. Any divergence = the identity round-trip behavior CHANGED across the merge (D9/Q9 verdict row), not a run failure."
+    }
+  ],
+  "assert": {
+    "wire": [
+      {
+        "kind": "recon",
+        "op": "recon",
+        "what": "final-text",
+        "file": "req-*.json",
+        "label": "BASELINE VERDICT RECORD (recon, never fails): the merged ndjson final-text head — must carry MXAI-C08B-T2 (the post-resume terminal) for the baseline run to be a valid reference; if the baseline run itself did not complete the flow, the capture is NOT a valid reference and the operator re-runs before the cutover (a baseline without a T2 terminal cannot adjudicate the post-merge run). recon — always records, never fails."
+      },
+      {
+        "kind": "recon",
+        "base": "session",
+        "file": "summary.json",
+        "field": "agent_id",
+        "label": "BASELINE REFERENCE — agent_id (recon, never fails): the post-resume session-dir summary.json agent_id under the CURRENT (pre-merge) binary. This value is the reference: the post-merge MXAI-C08 identity_adopted pin expects the same fixture-seeded value; a DIFFERENT pre-merge value here means the seeding mechanism itself differed and the coordinator must reconcile the two mechanisms before scoring the post-merge run. recon — always records, never fails."
+      },
+      {
+        "kind": "recon",
+        "base": "session",
+        "file": "summary.json",
+        "field": "attempt_id",
+        "label": "BASELINE REFERENCE — attempt_id (recon, never fails): the post-resume summary.json attempt_id under the current (pre-merge) binary — the identity struct's second member, non-null reference for the post-merge attempt_stamped pin. recon — always records, never fails."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  },
+  "retry": {
+    "on_status": [
+      404,
+      502,
+      503
+    ],
+    "max_attempts": 1,
+    "backoff_s": 30
+  }
+}

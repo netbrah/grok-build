@@ -1,0 +1,5217 @@
+{"type":"available_commands","tools":["run_terminal_command","read_file","search_replace","list_dir","grep","kill_command_or_subagent","todo_write","get_command_or_subagent_output","spawn_subagent","scheduler_create","scheduler_delete","scheduler_list","monitor","search_tool","use_tool","workflow","enter_plan_mode","exit_plan_mode","ask_user_question","send_feedback","image_gen","image_edit","image_to_video","reference_to_video","write","spawn_agent","send_message","followup_task","list_agents","wait_agent","interrupt_agent"],"commands":["compact","always-approve","context","plugins","reload-plugins","session-info","feedback","deep-research","workflow","goal","loop","apex-auth-and-keys","apex-copilot-testing","apex-deck-figures","apex-fleet-deployment","apex-harness-development","apex-headless-smoke-testing","apex-ontap-source-topology","apex-search-platform-ops","apex-settings-model-changes","apex-wire-capture","argocd-readonly","beads","brainstorming","claude-api","codebase-memory","cognee-memory","dispatching-parallel-agents","docs-audit-and-refresh","docs-update-from-diff","executing-plans","find-skills","finishing-a-development-branch","frontend-design","gh-address-comments","gh-fix-ci","git","grok-session-triage","local-code-intelligence","mcp-builder","netapp-dev-connectivity","netapp-llm-proxy","openai-docs","playwright","pr-review","receiving-code-review","requesting-code-review","scs-ops","security-best-practices","security-threat-model","sem","skill-creator","skill-installer","subagent-driven-development","systematic-debugging","terminal-capture","test-driven-development","using-git-worktrees","using-superpowers","verification-before-completion","weave","webapp-testing","writing-plans","writing-skills"]}
+{"type":"available_commands","tools":["run_terminal_command","read_file","search_replace","list_dir","grep","kill_command_or_subagent","todo_write","get_command_or_subagent_output","spawn_subagent","scheduler_create","scheduler_delete","scheduler_list","monitor","search_tool","use_tool","workflow","enter_plan_mode","exit_plan_mode","ask_user_question","send_feedback","image_gen","image_edit","image_to_video","reference_to_video","write","spawn_agent","send_message","followup_task","list_agents","wait_agent","interrupt_agent"],"commands":["compact","always-approve","context","plugins","reload-plugins","session-info","feedback","deep-research","workflow","goal","loop","apex-auth-and-keys","apex-copilot-testing","apex-deck-figures","apex-fleet-deployment","apex-harness-development","apex-headless-smoke-testing","apex-ontap-source-topology","apex-search-platform-ops","apex-settings-model-changes","apex-wire-capture","argocd-readonly","beads","brainstorming","claude-api","codebase-memory","cognee-memory","dispatching-parallel-agents","docs-audit-and-refresh","docs-update-from-diff","executing-plans","find-skills","finishing-a-development-branch","frontend-design","gh-address-comments","gh-fix-ci","git","grok-session-triage","local-code-intelligence","mcp-builder","netapp-dev-connectivity","netapp-llm-proxy","openai-docs","playwright","pr-review","receiving-code-review","requesting-code-review","scs-ops","security-best-practices","security-threat-model","sem","skill-creator","skill-installer","subagent-driven-development","systematic-debugging","terminal-capture","test-driven-development","using-git-worktrees","using-superpowers","verification-before-completion","weave","webapp-testing","writing-plans","writing-skills"]}
+{"type":"thought","data":"The"}
+{"type":"thought","data":" user wants"}
+{"type":"thought","data":" me to"}
+{"type":"thought","data":" compute "}
+{"type":"thought","data":"7^"}
+{"type":"thought","data":"843"}
+{"type":"thought","data":"2 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":" using modular"}
+{"type":"thought","data":" exponentiation"}
+{"type":"thought","data":", showing"}
+{"type":"thought","data":" each squ"}
+{"type":"thought","data":"aring step"}
+{"type":"thought","data":" briefly,"}
+{"type":"thought","data":" then stating"}
+{"type":"thought","data":" the final"}
+{"type":"thought","data":" remainder on"}
+{"type":"thought","data":" its own"}
+{"type":"thought","data":" line."}
+{"type":"thought","data":" They explicitly"}
+{"type":"thought","data":" said not"}
+{"type":"thought","data":" to use"}
+{"type":"thought","data":" any tools"}
+{"type":"thought","data":".\n\nLet"}
+{"type":"thought","data":" me compute"}
+{"type":"thought","data":" this by"}
+{"type":"thought","data":" hand."}
+{"type":"thought","data":" "}
+{"type":"thought","data":"8"}
+{"type":"thought","data":"432"}
+{"type":"thought","data":" in binary"}
+{"type":"thought","data":":"}
+{"type":"thought","data":" let"}
+{"type":"thought","data":" me find"}
+{"type":"thought","data":" the binary"}
+{"type":"thought","data":" representation.\n\n"}
+{"type":"thought","data":"843"}
+{"type":"thought","data":"2 /"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"421"}
+{"type":"thought","data":"6 r"}
+{"type":"thought","data":" 0"}
+{"type":"thought","data":"\n4"}
+{"type":"thought","data":"216"}
+{"type":"thought","data":" / "}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 210"}
+{"type":"thought","data":"8 r"}
+{"type":"thought","data":" 0"}
+{"type":"thought","data":"\n210"}
+{"type":"thought","data":"8 /"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1054"}
+{"type":"thought","data":" r "}
+{"type":"thought","data":"0\n"}
+{"type":"thought","data":"1054"}
+{"type":"thought","data":" / "}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":"27 r"}
+{"type":"thought","data":" 0"}
+{"type":"thought","data":"\n5"}
+{"type":"thought","data":"27 /"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"263"}
+{"type":"thought","data":" r "}
+{"type":"thought","data":"1\n"}
+{"type":"thought","data":"263"}
+{"type":"thought","data":" / "}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 131"}
+{"type":"thought","data":" r "}
+{"type":"thought","data":"1\n"}
+{"type":"thought","data":"131 /"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"65 r"}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":"\n65"}
+{"type":"thought","data":" / "}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 32"}
+{"type":"thought","data":" r "}
+{"type":"thought","data":"1\n"}
+{"type":"thought","data":"32 /"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"16 r"}
+{"type":"thought","data":" 0"}
+{"type":"thought","data":"\n16"}
+{"type":"thought","data":" / "}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 8"}
+{"type":"thought","data":" r "}
+{"type":"thought","data":"0\n"}
+{"type":"thought","data":"8 /"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"4 r"}
+{"type":"thought","data":" 0"}
+{"type":"thought","data":"\n4"}
+{"type":"thought","data":" / "}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":" r "}
+{"type":"thought","data":"0\n"}
+{"type":"thought","data":"2 /"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1 r"}
+{"type":"thought","data":" 0"}
+{"type":"thought","data":"\n1"}
+{"type":"thought","data":" / "}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 0"}
+{"type":"thought","data":" r "}
+{"type":"thought","data":"1\n\n"}
+{"type":"thought","data":"So reading"}
+{"type":"thought","data":" from bottom"}
+{"type":"thought","data":" to top"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"100000"}
+{"type":"thought","data":"111100"}
+{"type":"thought","data":"00\n\n"}
+{"type":"thought","data":"Let me"}
+{"type":"thought","data":" verify:"}
+{"type":"thought","data":" 8"}
+{"type":"thought","data":"432"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"819"}
+{"type":"thought","data":"2 +"}
+{"type":"thought","data":" 240"}
+{"type":"thought","data":" ="}
+{"type":"thought","data":" 8"}
+{"type":"thought","data":"192"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"128 +"}
+{"type":"thought","data":" 64"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"32 +"}
+{"type":"thought","data":" 16"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"819"}
+{"type":"thought","data":"2 +"}
+{"type":"thought","data":" 240"}
+{"type":"thought","data":". Wait"}
+{"type":"thought","data":" "}
+{"type":"thought","data":"128"}
+{"type":"thought","data":"+64"}
+{"type":"thought","data":"+32"}
+{"type":"thought","data":"+16"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"240."}
+{"type":"thought","data":" Yes"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"819"}
+{"type":"thought","data":"2+"}
+{"type":"thought","data":"240 ="}
+{"type":"thought","data":" 8"}
+{"type":"thought","data":"432"}
+{"type":"thought","data":". Good"}
+{"type":"thought","data":".\n\nSo"}
+{"type":"thought","data":" binary:"}
+{"type":"thought","data":" 100"}
+{"type":"thought","data":"000111"}
+{"type":"thought","data":"10000"}
+{"type":"thought","data":"\n\n"}
+{"type":"thought","data":"Let me"}
+{"type":"thought","data":" write it"}
+{"type":"thought","data":" out:"}
+{"type":"thought","data":" 8"}
+{"type":"thought","data":"432"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2"}
+{"type":"thought","data":"^13"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"7 +"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"^6"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"5 +"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"^4"}
+{"type":"thought","data":"\n8"}
+{"type":"thought","data":"192"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"128 +"}
+{"type":"thought","data":" 64"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"32 +"}
+{"type":"thought","data":" 16"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"843"}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" Yes!\n\n"}
+{"type":"thought","data":"So bits"}
+{"type":"thought","data":" set at"}
+{"type":"thought","data":" positions "}
+{"type":"thought","data":"4"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":" 6"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":" 13"}
+{"type":"thought","data":" (0"}
+{"type":"thought","data":"-indexed"}
+{"type":"thought","data":").\n\nNow"}
+{"type":"thought","data":" modular"}
+{"type":"thought","data":" exponentiation"}
+{"type":"thought","data":" by squ"}
+{"type":"thought","data":"aring."}
+{"type":"thought","data":" I'll"}
+{"type":"thought","data":" compute "}
+{"type":"thought","data":"7^("}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"k)"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7 for"}
+{"type":"thought","data":" k ="}
+{"type":"thought","data":" 0"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":", ...\n\n"}
+{"type":"thought","data":"m"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7.\n\n"}
+{"type":"thought","data":"Let me"}
+{"type":"thought","data":" factor"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":" to potentially"}
+{"type":"thought","data":" use CRT"}
+{"type":"thought","data":"."}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"... let"}
+{"type":"thought","data":" me check"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7 /"}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"793"}
+{"type":"thought","data":".86"}
+{"type":"thought","data":"... no"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7 /"}
+{"type":"thought","data":" 11"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"505"}
+{"type":"thought","data":".2"}
+{"type":"thought","data":" no"}
+{"type":"thought","data":". /"}
+{"type":"thought","data":"13"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"427"}
+{"type":"thought","data":".5"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /17"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"326"}
+{"type":"thought","data":".9"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /19"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"292"}
+{"type":"thought","data":".5"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /23"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"241"}
+{"type":"thought","data":".6"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /29"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"191"}
+{"type":"thought","data":".6"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /31"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"179."}
+{"type":"thought","data":"3 no"}
+{"type":"thought","data":". /"}
+{"type":"thought","data":"37 ="}
+{"type":"thought","data":" 150"}
+{"type":"thought","data":".2"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /41"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"135."}
+{"type":"thought","data":"5 no"}
+{"type":"thought","data":". /"}
+{"type":"thought","data":"43 ="}
+{"type":"thought","data":" 129"}
+{"type":"thought","data":".2"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /47"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"118."}
+{"type":"thought","data":"2 no"}
+{"type":"thought","data":". /"}
+{"type":"thought","data":"53 ="}
+{"type":"thought","data":" 104"}
+{"type":"thought","data":".8"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /59"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"94."}
+{"type":"thought","data":"2 no"}
+{"type":"thought","data":". /"}
+{"type":"thought","data":"61 ="}
+{"type":"thought","data":" 91"}
+{"type":"thought","data":".1"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /67"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"82."}
+{"type":"thought","data":"9 no"}
+{"type":"thought","data":". /"}
+{"type":"thought","data":"71 ="}
+{"type":"thought","data":" 78"}
+{"type":"thought","data":".3"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /73"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"76."}
+{"type":"thought","data":"1 no"}
+{"type":"thought","data":". sqrt"}
+{"type":"thought","data":"(55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":") "}
+{"type":"thought","data":"≈ "}
+{"type":"thought","data":"74."}
+{"type":"thought","data":"5."}
+{"type":"thought","data":" So check"}
+{"type":"thought","data":" primes up"}
+{"type":"thought","data":" to "}
+{"type":"thought","data":"74.\n\n"}
+{"type":"thought","data":"Let me"}
+{"type":"thought","data":" redo"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7."}
+{"type":"thought","data":" Is it"}
+{"type":"thought","data":" prime"}
+{"type":"thought","data":"? Let"}
+{"type":"thought","data":" me check"}
+{"type":"thought","data":" divis"}
+{"type":"thought","data":"ibility.\n"}
+{"type":"thought","data":"55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":" odd"}
+{"type":"thought","data":", not"}
+{"type":"thought","data":" div"}
+{"type":"thought","data":" by "}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" Sum digits"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":"+5"}
+{"type":"thought","data":"+5"}
+{"type":"thought","data":"+7"}
+{"type":"thought","data":"=22"}
+{"type":"thought","data":", not"}
+{"type":"thought","data":" div by"}
+{"type":"thought","data":" 3"}
+{"type":"thought","data":". Not"}
+{"type":"thought","data":" div by"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7/"}
+{"type":"thought","data":"7:"}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":"*79"}
+{"type":"thought","data":"3="}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":"*79"}
+{"type":"thought","data":"4="}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"8,"}
+{"type":"thought","data":" so no"}
+{"type":"thought","data":". /"}
+{"type":"thought","data":"11:"}
+{"type":"thought","data":" 11"}
+{"type":"thought","data":"*50"}
+{"type":"thought","data":"5="}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /13"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"13*"}
+{"type":"thought","data":"427"}
+{"type":"thought","data":"=55"}
+{"type":"thought","data":"51"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"13*"}
+{"type":"thought","data":"428"}
+{"type":"thought","data":"=55"}
+{"type":"thought","data":"64"}
+{"type":"thought","data":", no"}
+{"type":"thought","data":". /"}
+{"type":"thought","data":"17:"}
+{"type":"thought","data":" 17"}
+{"type":"thought","data":"*3"}
+{"type":"thought","data":"26="}
+{"type":"thought","data":"554"}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":" 17"}
+{"type":"thought","data":"*3"}
+{"type":"thought","data":"27="}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"9,"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /19"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"19*"}
+{"type":"thought","data":"292"}
+{"type":"thought","data":"=55"}
+{"type":"thought","data":"48"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"19*"}
+{"type":"thought","data":"293"}
+{"type":"thought","data":"=55"}
+{"type":"thought","data":"67"}
+{"type":"thought","data":", no"}
+{"type":"thought","data":". /"}
+{"type":"thought","data":"23:"}
+{"type":"thought","data":" 23"}
+{"type":"thought","data":"*24"}
+{"type":"thought","data":"1="}
+{"type":"thought","data":"554"}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":" 23"}
+{"type":"thought","data":"*24"}
+{"type":"thought","data":"2="}
+{"type":"thought","data":"556"}
+{"type":"thought","data":"6,"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /29"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"29*"}
+{"type":"thought","data":"191"}
+{"type":"thought","data":"=55"}
+{"type":"thought","data":"39"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"29*"}
+{"type":"thought","data":"192="}
+{"type":"thought","data":"556"}
+{"type":"thought","data":"8,"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /31"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"31*"}
+{"type":"thought","data":"179="}
+{"type":"thought","data":"554"}
+{"type":"thought","data":"9,"}
+{"type":"thought","data":" 31"}
+{"type":"thought","data":"*180"}
+{"type":"thought","data":"=55"}
+{"type":"thought","data":"80"}
+{"type":"thought","data":", no"}
+{"type":"thought","data":". /"}
+{"type":"thought","data":"37:"}
+{"type":"thought","data":" 37"}
+{"type":"thought","data":"*150"}
+{"type":"thought","data":"=55"}
+{"type":"thought","data":"50"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"37*"}
+{"type":"thought","data":"151="}
+{"type":"thought","data":"558"}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /41"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"41*"}
+{"type":"thought","data":"135="}
+{"type":"thought","data":"553"}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":" 41"}
+{"type":"thought","data":"*136"}
+{"type":"thought","data":"=55"}
+{"type":"thought","data":"76"}
+{"type":"thought","data":", no"}
+{"type":"thought","data":". /"}
+{"type":"thought","data":"43:"}
+{"type":"thought","data":" 43"}
+{"type":"thought","data":"*129"}
+{"type":"thought","data":"=55"}
+{"type":"thought","data":"47"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"43*"}
+{"type":"thought","data":"130="}
+{"type":"thought","data":"559"}
+{"type":"thought","data":"0,"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /47"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"47*"}
+{"type":"thought","data":"118="}
+{"type":"thought","data":"554"}
+{"type":"thought","data":"6,"}
+{"type":"thought","data":" 47"}
+{"type":"thought","data":"*119"}
+{"type":"thought","data":"=55"}
+{"type":"thought","data":"93"}
+{"type":"thought","data":", no"}
+{"type":"thought","data":". /"}
+{"type":"thought","data":"53:"}
+{"type":"thought","data":" 53"}
+{"type":"thought","data":"*104"}
+{"type":"thought","data":"=55"}
+{"type":"thought","data":"12"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"53*"}
+{"type":"thought","data":"105="}
+{"type":"thought","data":"556"}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /59"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"59*"}
+{"type":"thought","data":"94="}
+{"type":"thought","data":"554"}
+{"type":"thought","data":"6,"}
+{"type":"thought","data":" 59"}
+{"type":"thought","data":"*95"}
+{"type":"thought","data":"=5"}
+{"type":"thought","data":"605"}
+{"type":"thought","data":", no"}
+{"type":"thought","data":". /"}
+{"type":"thought","data":"61:"}
+{"type":"thought","data":" 61"}
+{"type":"thought","data":"*91"}
+{"type":"thought","data":"=55"}
+{"type":"thought","data":"51"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"61*"}
+{"type":"thought","data":"92="}
+{"type":"thought","data":"561"}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /67"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"67*"}
+{"type":"thought","data":"82="}
+{"type":"thought","data":"549"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":" 67"}
+{"type":"thought","data":"*83"}
+{"type":"thought","data":"=55"}
+{"type":"thought","data":"61"}
+{"type":"thought","data":", no"}
+{"type":"thought","data":". /"}
+{"type":"thought","data":"71:"}
+{"type":"thought","data":" 71"}
+{"type":"thought","data":"*78"}
+{"type":"thought","data":"=55"}
+{"type":"thought","data":"38"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"71*"}
+{"type":"thought","data":"79="}
+{"type":"thought","data":"560"}
+{"type":"thought","data":"9,"}
+{"type":"thought","data":" no."}
+{"type":"thought","data":" /73"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"73*"}
+{"type":"thought","data":"76="}
+{"type":"thought","data":"554"}
+{"type":"thought","data":"8,"}
+{"type":"thought","data":" 73"}
+{"type":"thought","data":"*77"}
+{"type":"thought","data":"=56"}
+{"type":"thought","data":"21"}
+{"type":"thought","data":", no"}
+{"type":"thought","data":".\n\nSo"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":" is prime"}
+{"type":"thought","data":"!"}
+{"type":"thought","data":" Good"}
+{"type":"thought","data":","}
+{"type":"thought","data":" that means"}
+{"type":"thought","data":" I can"}
+{"type":"thought","data":" use Ferm"}
+{"type":"thought","data":"at's"}
+{"type":"thought","data":" little theorem"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"7^("}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"6)"}
+{"type":"thought","data":" ≡"}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7.\n\n"}
+{"type":"thought","data":"843"}
+{"type":"thought","data":"2 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"56"}
+{"type":"thought","data":":"}
+{"type":"thought","data":" 8"}
+{"type":"thought","data":"432"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"6 ="}
+{"type":"thought","data":" 28"}
+{"type":"thought","data":"76"}
+{"type":"thought","data":". So"}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":"^8"}
+{"type":"thought","data":"432"}
+{"type":"thought","data":" ≡"}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":"^28"}
+{"type":"thought","data":"76"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7.\n\n"}
+{"type":"thought","data":"Now"}
+{"type":"thought","data":" "}
+{"type":"thought","data":"287"}
+{"type":"thought","data":"6 in"}
+{"type":"thought","data":" binary:"}
+{"type":"thought","data":" \n"}
+{"type":"thought","data":"287"}
+{"type":"thought","data":"6 /"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1438"}
+{"type":"thought","data":" r "}
+{"type":"thought","data":"0\n"}
+{"type":"thought","data":"1438"}
+{"type":"thought","data":" / "}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":"19 r"}
+{"type":"thought","data":" 0"}
+{"type":"thought","data":"\n7"}
+{"type":"thought","data":"19 /"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"359"}
+{"type":"thought","data":" r "}
+{"type":"thought","data":"1\n"}
+{"type":"thought","data":"359"}
+{"type":"thought","data":" / "}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 179"}
+{"type":"thought","data":" r "}
+{"type":"thought","data":"1\n"}
+{"type":"thought","data":"179 /"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"89 r"}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":"\n89"}
+{"type":"thought","data":" / "}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 44"}
+{"type":"thought","data":" r "}
+{"type":"thought","data":"1\n"}
+{"type":"thought","data":"44 /"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"22 r"}
+{"type":"thought","data":" 0"}
+{"type":"thought","data":"\n22"}
+{"type":"thought","data":" / "}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 11"}
+{"type":"thought","data":" r "}
+{"type":"thought","data":"0\n"}
+{"type":"thought","data":"11 /"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5 r"}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":"\n5"}
+{"type":"thought","data":" / "}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":" r "}
+{"type":"thought","data":"1\n"}
+{"type":"thought","data":"2 /"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1 r"}
+{"type":"thought","data":" 0"}
+{"type":"thought","data":"\n1"}
+{"type":"thought","data":" / "}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 0"}
+{"type":"thought","data":" r "}
+{"type":"thought","data":"1\n\n"}
+{"type":"thought","data":"So "}
+{"type":"thought","data":"287"}
+{"type":"thought","data":"6 ="}
+{"type":"thought","data":" 101"}
+{"type":"thought","data":"100"}
+{"type":"thought","data":"111100"}
+{"type":"thought","data":" in binary"}
+{"type":"thought","data":". Let"}
+{"type":"thought","data":" me verify"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"2048"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"512 +"}
+{"type":"thought","data":" 256"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"32"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"16 +"}
+{"type":"thought","data":" 8"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"4 ="}
+{"type":"thought","data":" 204"}
+{"type":"thought","data":"8+"}
+{"type":"thought","data":"512="}
+{"type":"thought","data":"2560"}
+{"type":"thought","data":", +"}
+{"type":"thought","data":"256="}
+{"type":"thought","data":"281"}
+{"type":"thought","data":"6,"}
+{"type":"thought","data":" +32"}
+{"type":"thought","data":"=28"}
+{"type":"thought","data":"48"}
+{"type":"thought","data":", +"}
+{"type":"thought","data":"16="}
+{"type":"thought","data":"286"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":" +8"}
+{"type":"thought","data":"=28"}
+{"type":"thought","data":"72"}
+{"type":"thought","data":", +"}
+{"type":"thought","data":"4="}
+{"type":"thought","data":"287"}
+{"type":"thought","data":"6."}
+{"type":"thought","data":" Yes!\n\n"}
+{"type":"thought","data":"So "}
+{"type":"thought","data":"287"}
+{"type":"thought","data":"6 ="}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"^11"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"9 +"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"^8"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"5 +"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"^4"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"3 +"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":".\n"}
+{"type":"thought","data":"Bits"}
+{"type":"thought","data":" set at"}
+{"type":"thought","data":" positions "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":" 3"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"8,"}
+{"type":"thought","data":" 9"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"11.\n\n"}
+{"type":"thought","data":"This is"}
+{"type":"thought","data":" still a"}
+{"type":"thought","data":" lot of"}
+{"type":"thought","data":" squaring"}
+{"type":"thought","data":" ("}
+{"type":"thought","data":"12 squ"}
+{"type":"thought","data":"arings"}
+{"type":"thought","data":" to"}
+{"type":"thought","data":" get"}
+{"type":"thought","data":" to "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"11)."}
+{"type":"thought","data":" Let me"}
+{"type":"thought","data":" just do"}
+{"type":"thought","data":" the squ"}
+{"type":"thought","data":"aring."}
+{"type":"thought","data":" Actually"}
+{"type":"thought","data":", maybe"}
+{"type":"thought","data":" I can"}
+{"type":"thought","data":" reduce further"}
+{"type":"thought","data":"?"}
+{"type":"thought","data":" No"}
+{"type":"thought","data":", Ferm"}
+{"type":"thought","data":"at gives"}
+{"type":"thought","data":" "}
+{"type":"thought","data":"7"}
+{"type":"thought","data":"^"}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"6 "}
+{"type":"thought","data":"≡ "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":" so"}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":"^8"}
+{"type":"thought","data":"432"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"7^("}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"6+"}
+{"type":"thought","data":"287"}
+{"type":"thought","data":"6)"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"7^"}
+{"type":"thought","data":"287"}
+{"type":"thought","data":"6."}
+{"type":"thought","data":" That's"}
+{"type":"thought","data":" the reduction"}
+{"type":"thought","data":".\n\nActually"}
+{"type":"thought","data":", let"}
+{"type":"thought","data":" me reconsider"}
+{"type":"thought","data":". Maybe"}
+{"type":"thought","data":" it"}
+{"type":"thought","data":"'s easier"}
+{"type":"thought","data":" to just"}
+{"type":"thought","data":" do modular"}
+{"type":"thought","data":" exponentiation"}
+{"type":"thought","data":" directly on"}
+{"type":"thought","data":" 8"}
+{"type":"thought","data":"432"}
+{"type":"thought","data":" with squ"}
+{"type":"thought","data":"aring"}
+{"type":"thought","data":" up to"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"^13"}
+{"type":"thought","data":". Either"}
+{"type":"thought","data":" way I"}
+{"type":"thought","data":" need to"}
+{"type":"thought","data":" square"}
+{"type":"thought","data":" up"}
+{"type":"thought","data":" to "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"13 or"}
+{"type":"thought","data":" up"}
+{"type":"thought","data":" to "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"11."}
+{"type":"thought","data":" Using Ferm"}
+{"type":"thought","data":"at saves"}
+{"type":"thought","data":" me"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":" squar"}
+{"type":"thought","data":"ings."}
+{"type":"thought","data":" Let me"}
+{"type":"thought","data":" use it"}
+{"type":"thought","data":":"}
+{"type":"thought","data":" compute"}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":"^28"}
+{"type":"thought","data":"76"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7.\n\n"}
+{"type":"thought","data":"Let me"}
+{"type":"thought","data":" compute"}
+{"type":"thought","data":" the squares"}
+{"type":"thought","data":"."}
+{"type":"thought","data":" m"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7.\n\n"}
+{"type":"thought","data":"a"}
+{"type":"thought","data":"0"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"7 ("}
+{"type":"thought","data":"this"}
+{"type":"thought","data":" is "}
+{"type":"thought","data":"7^("}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"0))\n"}
+{"type":"thought","data":"a1"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"7^"}
+{"type":"thought","data":"2 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"49\n"}
+{"type":"thought","data":"a2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"49^"}
+{"type":"thought","data":"2 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2401"}
+{"type":"thought","data":"\n"}
+{"type":"thought","data":"a3"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2401"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7 ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",76"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"801"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7.\n\n"}
+{"type":"thought","data":"Let"}
+{"type":"thought","data":" me compute"}
+{"type":"thought","data":" 240"}
+{"type":"thought","data":"1^"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",76"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"801"}
+{"type":"thought","data":". \n"}
+{"type":"thought","data":"55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":" * "}
+{"type":"thought","data":"1000"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"557"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"764"}
+{"type":"thought","data":",80"}
+{"type":"thought","data":"1 -"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",55"}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":"000 ="}
+{"type":"thought","data":" 207"}
+{"type":"thought","data":",80"}
+{"type":"thought","data":"1.\n"}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7 *"}
+{"type":"thought","data":" 37"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"205,"}
+{"type":"thought","data":"609"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"207,"}
+{"type":"thought","data":"801"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"205,"}
+{"type":"thought","data":"609"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"192.\n"}
+{"type":"thought","data":"So"}
+{"type":"thought","data":" a3"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"219"}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" Check"}
+{"type":"thought","data":" "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"37:"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*30"}
+{"type":"thought","data":"=166"}
+{"type":"thought","data":"7"}
+{"type":"thought","data":"10,"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*7"}
+{"type":"thought","data":"=38"}
+{"type":"thought","data":"899"}
+{"type":"thought","data":", total"}
+{"type":"thought","data":" 205"}
+{"type":"thought","data":"609"}
+{"type":"thought","data":". Yes"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"20780"}
+{"type":"thought","data":"1-"}
+{"type":"thought","data":"20560"}
+{"type":"thought","data":"9="}
+{"type":"thought","data":"219"}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" Good.\n\n"}
+{"type":"thought","data":"a4"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"219"}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"2 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"219"}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":",80"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"864"}
+{"type":"thought","data":".\n55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":" * "}
+{"type":"thought","data":"864"}
+{"type":"thought","data":" = ?"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*800"}
+{"type":"thought","data":"=4"}
+{"type":"thought","data":",4"}
+{"type":"thought","data":"45,"}
+{"type":"thought","data":"600."}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*64"}
+{"type":"thought","data":"=35"}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"648"}
+{"type":"thought","data":". Total"}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":",80"}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"248"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"804"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"64 -"}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":",80"}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"248"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":"616"}
+{"type":"thought","data":".\nSo"}
+{"type":"thought","data":" a4"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"361"}
+{"type":"thought","data":"6."}
+{"type":"thought","data":" Let me"}
+{"type":"thought","data":" double check"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*64"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"60="}
+{"type":"thought","data":"333420"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"4="}
+{"type":"thought","data":"22228"}
+{"type":"thought","data":", total"}
+{"type":"thought","data":" 35"}
+{"type":"thought","data":"56"}
+{"type":"thought","data":"48."}
+{"type":"thought","data":" 44"}
+{"type":"thought","data":"45"}
+{"type":"thought","data":"600"}
+{"type":"thought","data":"+35"}
+{"type":"thought","data":"56"}
+{"type":"thought","data":"48="}
+{"type":"thought","data":"480124"}
+{"type":"thought","data":"8."}
+{"type":"thought","data":" 480"}
+{"type":"thought","data":"486"}
+{"type":"thought","data":"4-"}
+{"type":"thought","data":"480124"}
+{"type":"thought","data":"8="}
+{"type":"thought","data":"361"}
+{"type":"thought","data":"6."}
+{"type":"thought","data":" Good.\n\n"}
+{"type":"thought","data":"a5"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"361"}
+{"type":"thought","data":"6^"}
+{"type":"thought","data":"2 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"361"}
+{"type":"thought","data":"6^"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 13"}
+{"type":"thought","data":",07"}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"456"}
+{"type":"thought","data":".\nLet"}
+{"type":"thought","data":" me reduce"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7 *"}
+{"type":"thought","data":" 200"}
+{"type":"thought","data":"0 ="}
+{"type":"thought","data":" 11"}
+{"type":"thought","data":",114"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"13,"}
+{"type":"thought","data":"075"}
+{"type":"thought","data":",45"}
+{"type":"thought","data":"6 -"}
+{"type":"thought","data":" 11"}
+{"type":"thought","data":",114"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"961"}
+{"type":"thought","data":",45"}
+{"type":"thought","data":"6.\n"}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7 *"}
+{"type":"thought","data":" 35"}
+{"type":"thought","data":"3 ="}
+{"type":"thought","data":" ? "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"350"}
+{"type":"thought","data":" ="}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":",9"}
+{"type":"thought","data":"44,"}
+{"type":"thought","data":"950"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"3 ="}
+{"type":"thought","data":" 16"}
+{"type":"thought","data":",67"}
+{"type":"thought","data":"1."}
+{"type":"thought","data":" Total "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"961"}
+{"type":"thought","data":",6"}
+{"type":"thought","data":"21."}
+{"type":"thought","data":" That's"}
+{"type":"thought","data":" slightly more"}
+{"type":"thought","data":" than "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"961"}
+{"type":"thought","data":",45"}
+{"type":"thought","data":"6."}
+{"type":"thought","data":" So "}
+{"type":"thought","data":"35"}
+{"type":"thought","data":"3"}
+{"type":"thought","data":" too"}
+{"type":"thought","data":" big."}
+{"type":"thought","data":" Try "}
+{"type":"thought","data":"352"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"96"}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"621"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"557"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"956"}
+{"type":"thought","data":",06"}
+{"type":"thought","data":"4."}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":",96"}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"456"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"956"}
+{"type":"thought","data":",06"}
+{"type":"thought","data":"4 ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",39"}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" "}
+{"type":"thought","data":"539"}
+{"type":"thought","data":"2 <"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":". So"}
+{"type":"thought","data":" a5"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"539"}
+{"type":"thought","data":"2.\n"}
+{"type":"thought","data":"Let me"}
+{"type":"thought","data":" verify:"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*235"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*200"}
+{"type":"thought","data":"0 +"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*35"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 11"}
+{"type":"thought","data":",114"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"956"}
+{"type":"thought","data":",06"}
+{"type":"thought","data":"4 ="}
+{"type":"thought","data":" 13"}
+{"type":"thought","data":",0"}
+{"type":"thought","data":"70,"}
+{"type":"thought","data":"064"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"13,"}
+{"type":"thought","data":"075"}
+{"type":"thought","data":",45"}
+{"type":"thought","data":"6 -"}
+{"type":"thought","data":" 13"}
+{"type":"thought","data":",0"}
+{"type":"thought","data":"70,"}
+{"type":"thought","data":"064"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"392"}
+{"type":"thought","data":". Good"}
+{"type":"thought","data":"."}
+{"type":"thought","data":" a5"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"539"}
+{"type":"thought","data":"2.\n\n"}
+{"type":"thought","data":"a6"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"539"}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"2 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":". Note"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":"392"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7 -"}
+{"type":"thought","data":" 165"}
+{"type":"thought","data":", so"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":"392"}
+{"type":"thought","data":" ≡"}
+{"type":"thought","data":" -165"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7."}
+{"type":"thought","data":" (-"}
+{"type":"thought","data":"165)^"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 27"}
+{"type":"thought","data":"225"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"272"}
+{"type":"thought","data":"25 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"4 ="}
+{"type":"thought","data":" 222"}
+{"type":"thought","data":"28."}
+{"type":"thought","data":" 27"}
+{"type":"thought","data":"225"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"22228"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"499"}
+{"type":"thought","data":"7."}
+{"type":"thought","data":" So a"}
+{"type":"thought","data":"6 ="}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":"997"}
+{"type":"thought","data":".\nCheck"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"539"}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 29"}
+{"type":"thought","data":",07"}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":"664"}
+{"type":"thought","data":". And"}
+{"type":"thought","data":" (-"}
+{"type":"thought","data":"165)^"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 27"}
+{"type":"thought","data":"225"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"272"}
+{"type":"thought","data":"25 -"}
+{"type":"thought","data":" 222"}
+{"type":"thought","data":"28 ="}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":"997"}
+{"type":"thought","data":". And"}
+{"type":"thought","data":" 290"}
+{"type":"thought","data":"7"}
+{"type":"thought","data":"3664"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7 should"}
+{"type":"thought","data":" be"}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":"997"}
+{"type":"thought","data":". Let"}
+{"type":"thought","data":" me verify"}
+{"type":"thought","data":" "}
+{"type":"thought","data":"5"}
+{"type":"thought","data":"392"}
+{"type":"thought","data":" ="}
+{"type":"thought","data":" "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7-"}
+{"type":"thought","data":"165,"}
+{"type":"thought","data":" yes "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7-"}
+{"type":"thought","data":"165"}
+{"type":"thought","data":"=5"}
+{"type":"thought","data":"392"}
+{"type":"thought","data":". Good"}
+{"type":"thought","data":". a"}
+{"type":"thought","data":"6 ="}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":"997"}
+{"type":"thought","data":".\n\na"}
+{"type":"thought","data":"7 ="}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":"997"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7."}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":"997"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7 -"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":"60,"}
+{"type":"thought","data":" so "}
+{"type":"thought","data":"≡ -"}
+{"type":"thought","data":"560"}
+{"type":"thought","data":". (-"}
+{"type":"thought","data":"560"}
+{"type":"thought","data":")^2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"313"}
+{"type":"thought","data":",600"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"313"}
+{"type":"thought","data":",600"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7:"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*56"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"311"}
+{"type":"thought","data":",192"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"313"}
+{"type":"thought","data":",600"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"311"}
+{"type":"thought","data":",192"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"408"}
+{"type":"thought","data":". So"}
+{"type":"thought","data":" a7"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2408"}
+{"type":"thought","data":".\nCheck"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*56"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"50="}
+{"type":"thought","data":"277"}
+{"type":"thought","data":"850,"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*6"}
+{"type":"thought","data":"=333"}
+{"type":"thought","data":"42,"}
+{"type":"thought","data":" total "}
+{"type":"thought","data":"311"}
+{"type":"thought","data":"192."}
+{"type":"thought","data":" 3"}
+{"type":"thought","data":"13600"}
+{"type":"thought","data":"-3"}
+{"type":"thought","data":"11192"}
+{"type":"thought","data":"=240"}
+{"type":"thought","data":"8."}
+{"type":"thought","data":" Good."}
+{"type":"thought","data":" a7"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2408"}
+{"type":"thought","data":".\n\na"}
+{"type":"thought","data":"8 ="}
+{"type":"thought","data":" 240"}
+{"type":"thought","data":"8^"}
+{"type":"thought","data":"2 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"2408"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"798"}
+{"type":"thought","data":",46"}
+{"type":"thought","data":"4.\n"}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"100"}
+{"type":"thought","data":"0 ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",55"}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":"000."}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",7"}
+{"type":"thought","data":"98,"}
+{"type":"thought","data":"464"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"557"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"241"}
+{"type":"thought","data":",46"}
+{"type":"thought","data":"4.\n"}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"43 ="}
+{"type":"thought","data":" 23"}
+{"type":"thought","data":"8,"}
+{"type":"thought","data":"951"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"241"}
+{"type":"thought","data":",46"}
+{"type":"thought","data":"4 -"}
+{"type":"thought","data":" 23"}
+{"type":"thought","data":"8,"}
+{"type":"thought","data":"951"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"513"}
+{"type":"thought","data":". So"}
+{"type":"thought","data":" a8"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"251"}
+{"type":"thought","data":"3.\n"}
+{"type":"thought","data":"Check "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"43:"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*40"}
+{"type":"thought","data":"=222"}
+{"type":"thought","data":"280,"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*3"}
+{"type":"thought","data":"=166"}
+{"type":"thought","data":"71,"}
+{"type":"thought","data":" total "}
+{"type":"thought","data":"238"}
+{"type":"thought","data":"951"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"241"}
+{"type":"thought","data":"464"}
+{"type":"thought","data":"-23"}
+{"type":"thought","data":"895"}
+{"type":"thought","data":"1="}
+{"type":"thought","data":"251"}
+{"type":"thought","data":"3."}
+{"type":"thought","data":" Good."}
+{"type":"thought","data":" a8"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"251"}
+{"type":"thought","data":"3.\n\n"}
+{"type":"thought","data":"a9"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"251"}
+{"type":"thought","data":"3^"}
+{"type":"thought","data":"2 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"251"}
+{"type":"thought","data":"3^"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 6"}
+{"type":"thought","data":",315"}
+{"type":"thought","data":",169"}
+{"type":"thought","data":".\n55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*100"}
+{"type":"thought","data":"0 ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",55"}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":"000."}
+{"type":"thought","data":" 6"}
+{"type":"thought","data":",315"}
+{"type":"thought","data":",169"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"557"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"758"}
+{"type":"thought","data":",169"}
+{"type":"thought","data":".\n55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*136"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"755"}
+{"type":"thought","data":",75"}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" 75"}
+{"type":"thought","data":"8,"}
+{"type":"thought","data":"169 -"}
+{"type":"thought","data":" 75"}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"752"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"417"}
+{"type":"thought","data":". So"}
+{"type":"thought","data":" a9"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"241"}
+{"type":"thought","data":"7.\n"}
+{"type":"thought","data":"Check "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"136:"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*100"}
+{"type":"thought","data":"=55"}
+{"type":"thought","data":"5700"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"36="}
+{"type":"thought","data":"20005"}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":" total "}
+{"type":"thought","data":"755"}
+{"type":"thought","data":"752"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"758"}
+{"type":"thought","data":"169-"}
+{"type":"thought","data":"755"}
+{"type":"thought","data":"752"}
+{"type":"thought","data":"=24"}
+{"type":"thought","data":"17"}
+{"type":"thought","data":". Good"}
+{"type":"thought","data":". a"}
+{"type":"thought","data":"9 ="}
+{"type":"thought","data":" 24"}
+{"type":"thought","data":"17"}
+{"type":"thought","data":".\n\na"}
+{"type":"thought","data":"10 ="}
+{"type":"thought","data":" 24"}
+{"type":"thought","data":"17"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7."}
+{"type":"thought","data":" 24"}
+{"type":"thought","data":"17"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"841"}
+{"type":"thought","data":",88"}
+{"type":"thought","data":"9.\n"}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"1000"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"557"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"841"}
+{"type":"thought","data":",88"}
+{"type":"thought","data":"9 -"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",55"}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":"000 ="}
+{"type":"thought","data":" 28"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"889"}
+{"type":"thought","data":".\n55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*51"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"283"}
+{"type":"thought","data":",40"}
+{"type":"thought","data":"7."}
+{"type":"thought","data":" 28"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"889"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"283"}
+{"type":"thought","data":",40"}
+{"type":"thought","data":"7 ="}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":",48"}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" So a"}
+{"type":"thought","data":"10 ="}
+{"type":"thought","data":" 148"}
+{"type":"thought","data":"2.\n"}
+{"type":"thought","data":"Check "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"51:"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*50"}
+{"type":"thought","data":"=27"}
+{"type":"thought","data":"7850"}
+{"type":"thought","data":", +"}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7="}
+{"type":"thought","data":"283"}
+{"type":"thought","data":"407"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"284"}
+{"type":"thought","data":"889"}
+{"type":"thought","data":"-28"}
+{"type":"thought","data":"340"}
+{"type":"thought","data":"7="}
+{"type":"thought","data":"1482"}
+{"type":"thought","data":". Good"}
+{"type":"thought","data":". a"}
+{"type":"thought","data":"10 ="}
+{"type":"thought","data":" 148"}
+{"type":"thought","data":"2.\n\n"}
+{"type":"thought","data":"a11"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1482"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7."}
+{"type":"thought","data":" 148"}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":",196"}
+{"type":"thought","data":",3"}
+{"type":"thought","data":"24.\n"}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"395"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"194"}
+{"type":"thought","data":",0"}
+{"type":"thought","data":"15."}
+{"type":"thought","data":" Hmm"}
+{"type":"thought","data":" let me"}
+{"type":"thought","data":" compute."}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*400"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"222,"}
+{"type":"thought","data":"800."}
+{"type":"thought","data":" Too"}
+{"type":"thought","data":" big."}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*39"}
+{"type":"thought","data":"5 ="}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*400"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"5 ="}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":",222"}
+{"type":"thought","data":",800"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"27,"}
+{"type":"thought","data":"785"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"195,"}
+{"type":"thought","data":"015"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"196,"}
+{"type":"thought","data":"324"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"195,"}
+{"type":"thought","data":"015"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"309"}
+{"type":"thought","data":". So"}
+{"type":"thought","data":" a11"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1309"}
+{"type":"thought","data":".\nCheck"}
+{"type":"thought","data":":"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*39"}
+{"type":"thought","data":"5 ="}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":",195"}
+{"type":"thought","data":",0"}
+{"type":"thought","data":"15."}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":",196"}
+{"type":"thought","data":",3"}
+{"type":"thought","data":"24 -"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":",195"}
+{"type":"thought","data":",0"}
+{"type":"thought","data":"15 ="}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":",30"}
+{"type":"thought","data":"9."}
+{"type":"thought","data":" Good"}
+{"type":"thought","data":". a"}
+{"type":"thought","data":"11 ="}
+{"type":"thought","data":" 130"}
+{"type":"thought","data":"9.\n\n"}
+{"type":"thought","data":"So the"}
+{"type":"thought","data":" squ"}
+{"type":"thought","data":"aring table"}
+{"type":"thought","data":" (7"}
+{"type":"thought","data":"^(2"}
+{"type":"thought","data":"^k"}
+{"type":"thought","data":") mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"):\nk"}
+{"type":"thought","data":"=0"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"7\n"}
+{"type":"thought","data":"k="}
+{"type":"thought","data":"1:"}
+{"type":"thought","data":" 49"}
+{"type":"thought","data":"\nk"}
+{"type":"thought","data":"=2"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"2401"}
+{"type":"thought","data":"\nk"}
+{"type":"thought","data":"=3"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"219"}
+{"type":"thought","data":"2\n"}
+{"type":"thought","data":"k="}
+{"type":"thought","data":"4:"}
+{"type":"thought","data":" 36"}
+{"type":"thought","data":"16"}
+{"type":"thought","data":"\nk"}
+{"type":"thought","data":"=5"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"539"}
+{"type":"thought","data":"2\n"}
+{"type":"thought","data":"k="}
+{"type":"thought","data":"6:"}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":"997"}
+{"type":"thought","data":"\nk"}
+{"type":"thought","data":"=7"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"2408"}
+{"type":"thought","data":"\nk"}
+{"type":"thought","data":"=8"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"251"}
+{"type":"thought","data":"3\n"}
+{"type":"thought","data":"k="}
+{"type":"thought","data":"9:"}
+{"type":"thought","data":" 24"}
+{"type":"thought","data":"17"}
+{"type":"thought","data":"\nk"}
+{"type":"thought","data":"=10"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"1482"}
+{"type":"thought","data":"\nk"}
+{"type":"thought","data":"=11"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"1309"}
+{"type":"thought","data":"\n\nNow"}
+{"type":"thought","data":" 28"}
+{"type":"thought","data":"76"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"11 +"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"^9"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"8 +"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"^5"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"4 +"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"^3"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" So I"}
+{"type":"thought","data":" multiply"}
+{"type":"thought","data":" a11"}
+{"type":"thought","data":" * a"}
+{"type":"thought","data":"9 *"}
+{"type":"thought","data":" a8"}
+{"type":"thought","data":" * a"}
+{"type":"thought","data":"5 *"}
+{"type":"thought","data":" a4"}
+{"type":"thought","data":" * a"}
+{"type":"thought","data":"3 *"}
+{"type":"thought","data":" a2"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7.\n\n"}
+{"type":"thought","data":"That is"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"1309"}
+{"type":"thought","data":" * "}
+{"type":"thought","data":"241"}
+{"type":"thought","data":"7 *"}
+{"type":"thought","data":" 25"}
+{"type":"thought","data":"13"}
+{"type":"thought","data":" * "}
+{"type":"thought","data":"539"}
+{"type":"thought","data":"2 *"}
+{"type":"thought","data":" 36"}
+{"type":"thought","data":"16"}
+{"type":"thought","data":" * "}
+{"type":"thought","data":"219"}
+{"type":"thought","data":"2 *"}
+{"type":"thought","data":" 240"}
+{"type":"thought","data":"1 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":".\n\nLet"}
+{"type":"thought","data":" me multiply"}
+{"type":"thought","data":" step by"}
+{"type":"thought","data":" step,"}
+{"type":"thought","data":" reducing mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":" each"}
+{"type":"thought","data":" time.\n\n"}
+{"type":"thought","data":"Start r"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1.\n\n"}
+{"type":"thought","data":"Multiply"}
+{"type":"thought","data":" by a"}
+{"type":"thought","data":"11 ="}
+{"type":"thought","data":" 130"}
+{"type":"thought","data":"9:"}
+{"type":"thought","data":" r ="}
+{"type":"thought","data":" 130"}
+{"type":"thought","data":"9.\n\n"}
+{"type":"thought","data":"Multiply by"}
+{"type":"thought","data":" a9"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"241"}
+{"type":"thought","data":"7:"}
+{"type":"thought","data":" r"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1309"}
+{"type":"thought","data":" * "}
+{"type":"thought","data":"241"}
+{"type":"thought","data":"7 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":".\n130"}
+{"type":"thought","data":"9 *"}
+{"type":"thought","data":" 24"}
+{"type":"thought","data":"17"}
+{"type":"thought","data":" = ?"}
+{"type":"thought","data":" 130"}
+{"type":"thought","data":"9*"}
+{"type":"thought","data":"2400"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":"141,"}
+{"type":"thought","data":"600."}
+{"type":"thought","data":" 130"}
+{"type":"thought","data":"9*"}
+{"type":"thought","data":"17 ="}
+{"type":"thought","data":" 22"}
+{"type":"thought","data":",25"}
+{"type":"thought","data":"3."}
+{"type":"thought","data":" Total "}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":"163,"}
+{"type":"thought","data":"853"}
+{"type":"thought","data":".\n55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*56"}
+{"type":"thought","data":"9 ="}
+{"type":"thought","data":" ? "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"500="}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"778"}
+{"type":"thought","data":",500"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"69="}
+{"type":"thought","data":"383"}
+{"type":"thought","data":",4"}
+{"type":"thought","data":"33."}
+{"type":"thought","data":" Total "}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":"161,"}
+{"type":"thought","data":"933"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":"163,"}
+{"type":"thought","data":"853"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":"161,"}
+{"type":"thought","data":"933"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"920"}
+{"type":"thought","data":". So"}
+{"type":"thought","data":" r ="}
+{"type":"thought","data":" 192"}
+{"type":"thought","data":"0.\n"}
+{"type":"thought","data":"Check "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"69"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"70="}
+{"type":"thought","data":"388"}
+{"type":"thought","data":"990"}
+{"type":"thought","data":", -"}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7="}
+{"type":"thought","data":"383"}
+{"type":"thought","data":"433"}
+{"type":"thought","data":". Yes"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"277"}
+{"type":"thought","data":"8500"}
+{"type":"thought","data":"+38"}
+{"type":"thought","data":"34"}
+{"type":"thought","data":"33="}
+{"type":"thought","data":"316"}
+{"type":"thought","data":"193"}
+{"type":"thought","data":"3."}
+{"type":"thought","data":" 3"}
+{"type":"thought","data":"1638"}
+{"type":"thought","data":"53"}
+{"type":"thought","data":"-3"}
+{"type":"thought","data":"1619"}
+{"type":"thought","data":"33"}
+{"type":"thought","data":"=192"}
+{"type":"thought","data":"0."}
+{"type":"thought","data":" Good."}
+{"type":"thought","data":" r ="}
+{"type":"thought","data":" 192"}
+{"type":"thought","data":"0.\n\n"}
+{"type":"thought","data":"Multiply by"}
+{"type":"thought","data":" a8"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"251"}
+{"type":"thought","data":"3:"}
+{"type":"thought","data":" r ="}
+{"type":"thought","data":" 192"}
+{"type":"thought","data":"0 *"}
+{"type":"thought","data":" 25"}
+{"type":"thought","data":"13"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7.\n"}
+{"type":"thought","data":"1920"}
+{"type":"thought","data":"*25"}
+{"type":"thought","data":"13"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1920"}
+{"type":"thought","data":"*250"}
+{"type":"thought","data":"0 +"}
+{"type":"thought","data":" 192"}
+{"type":"thought","data":"0*"}
+{"type":"thought","data":"13 ="}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":",800"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"24,"}
+{"type":"thought","data":"960"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"824"}
+{"type":"thought","data":",9"}
+{"type":"thought","data":"60.\n"}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"868"}
+{"type":"thought","data":" = ?"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*800"}
+{"type":"thought","data":"=4"}
+{"type":"thought","data":",4"}
+{"type":"thought","data":"45,"}
+{"type":"thought","data":"600."}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*68"}
+{"type":"thought","data":"=37"}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":"876"}
+{"type":"thought","data":". Total"}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"23,"}
+{"type":"thought","data":"476"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"824"}
+{"type":"thought","data":",9"}
+{"type":"thought","data":"60 -"}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"23,"}
+{"type":"thought","data":"476"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"484"}
+{"type":"thought","data":". So"}
+{"type":"thought","data":" r ="}
+{"type":"thought","data":" 148"}
+{"type":"thought","data":"4.\n"}
+{"type":"thought","data":"Check "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"68:"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*60"}
+{"type":"thought","data":"=333"}
+{"type":"thought","data":"420,"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*8"}
+{"type":"thought","data":"=44"}
+{"type":"thought","data":"456"}
+{"type":"thought","data":", total"}
+{"type":"thought","data":" 37"}
+{"type":"thought","data":"78"}
+{"type":"thought","data":"76."}
+{"type":"thought","data":" 44"}
+{"type":"thought","data":"45"}
+{"type":"thought","data":"600"}
+{"type":"thought","data":"+37"}
+{"type":"thought","data":"78"}
+{"type":"thought","data":"76="}
+{"type":"thought","data":"482"}
+{"type":"thought","data":"347"}
+{"type":"thought","data":"6."}
+{"type":"thought","data":" 48"}
+{"type":"thought","data":"249"}
+{"type":"thought","data":"60"}
+{"type":"thought","data":"-48"}
+{"type":"thought","data":"234"}
+{"type":"thought","data":"76"}
+{"type":"thought","data":"=148"}
+{"type":"thought","data":"4."}
+{"type":"thought","data":" Good."}
+{"type":"thought","data":" r ="}
+{"type":"thought","data":" 148"}
+{"type":"thought","data":"4.\n\n"}
+{"type":"thought","data":"Multiply by"}
+{"type":"thought","data":" a5"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"539"}
+{"type":"thought","data":"2:"}
+{"type":"thought","data":" r ="}
+{"type":"thought","data":" 148"}
+{"type":"thought","data":"4 *"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":"392"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7.\n"}
+{"type":"thought","data":"Note"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":"392"}
+{"type":"thought","data":" ≡"}
+{"type":"thought","data":" -165"}
+{"type":"thought","data":"."}
+{"type":"thought","data":" So r"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1484"}
+{"type":"thought","data":" * (-"}
+{"type":"thought","data":"165)"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7 ="}
+{"type":"thought","data":" -24"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"860"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7.\n"}
+{"type":"thought","data":"244"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"60 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"44 ="}
+{"type":"thought","data":" 24"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"508"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"244"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"60 -"}
+{"type":"thought","data":" 24"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"508"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"352"}
+{"type":"thought","data":". So"}
+{"type":"thought","data":" -24"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"860"}
+{"type":"thought","data":" ≡"}
+{"type":"thought","data":" -35"}
+{"type":"thought","data":"2 "}
+{"type":"thought","data":"≡ "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7-"}
+{"type":"thought","data":"352"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5205"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7."}
+{"type":"thought","data":" So r"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5205"}
+{"type":"thought","data":".\nLet"}
+{"type":"thought","data":" me double"}
+{"type":"thought","data":"-check"}
+{"type":"thought","data":" "}
+{"type":"thought","data":"1484"}
+{"type":"thought","data":"*5"}
+{"type":"thought","data":"392"}
+{"type":"thought","data":" directly:"}
+{"type":"thought","data":" 148"}
+{"type":"thought","data":"4*"}
+{"type":"thought","data":"539"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 148"}
+{"type":"thought","data":"4*"}
+{"type":"thought","data":"5000"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"1484"}
+{"type":"thought","data":"*39"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":",420"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"581"}
+{"type":"thought","data":",7"}
+{"type":"thought","data":"28 ="}
+{"type":"thought","data":" 8"}
+{"type":"thought","data":",001"}
+{"type":"thought","data":",7"}
+{"type":"thought","data":"28."}
+{"type":"thought","data":" "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"1440"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"8,"}
+{"type":"thought","data":"002,"}
+{"type":"thought","data":"080"}
+{"type":"thought","data":". Hmm"}
+{"type":"thought","data":" that's"}
+{"type":"thought","data":" slightly more"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"1439"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"8,"}
+{"type":"thought","data":"002,"}
+{"type":"thought","data":"080"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"557"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":"996"}
+{"type":"thought","data":",5"}
+{"type":"thought","data":"23."}
+{"type":"thought","data":" 8"}
+{"type":"thought","data":",001"}
+{"type":"thought","data":",7"}
+{"type":"thought","data":"28 -"}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":",99"}
+{"type":"thought","data":"6,"}
+{"type":"thought","data":"523"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"205."}
+{"type":"thought","data":" So r"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5205"}
+{"type":"thought","data":". \n"}
+{"type":"thought","data":"Wait"}
+{"type":"thought","data":", let"}
+{"type":"thought","data":" me re"}
+{"type":"thought","data":"compute "}
+{"type":"thought","data":"1484"}
+{"type":"thought","data":"*39"}
+{"type":"thought","data":"2:"}
+{"type":"thought","data":" 148"}
+{"type":"thought","data":"4*"}
+{"type":"thought","data":"400 ="}
+{"type":"thought","data":" 59"}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":"600;"}
+{"type":"thought","data":" 148"}
+{"type":"thought","data":"4*"}
+{"type":"thought","data":"8 ="}
+{"type":"thought","data":" 11"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"72;"}
+{"type":"thought","data":" 59"}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":"600 -"}
+{"type":"thought","data":" 11"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"72 ="}
+{"type":"thought","data":" 58"}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"728"}
+{"type":"thought","data":". Yes"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":"420,"}
+{"type":"thought","data":"000 +"}
+{"type":"thought","data":" 58"}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"728"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"8,"}
+{"type":"thought","data":"001,"}
+{"type":"thought","data":"728"}
+{"type":"thought","data":". \n"}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"1440"}
+{"type":"thought","data":":"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*100"}
+{"type":"thought","data":"0="}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"557"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":";"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*400"}
+{"type":"thought","data":"=2"}
+{"type":"thought","data":",222"}
+{"type":"thought","data":",800"}
+{"type":"thought","data":"; "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"40="}
+{"type":"thought","data":"222,"}
+{"type":"thought","data":"280."}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",55"}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":"000+"}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"222,"}
+{"type":"thought","data":"800+"}
+{"type":"thought","data":"222,"}
+{"type":"thought","data":"280="}
+{"type":"thought","data":"8,"}
+{"type":"thought","data":"002,"}
+{"type":"thought","data":"080"}
+{"type":"thought","data":". Yes"}
+{"type":"thought","data":" that"}
+{"type":"thought","data":"'s more"}
+{"type":"thought","data":" than "}
+{"type":"thought","data":"8,"}
+{"type":"thought","data":"001,"}
+{"type":"thought","data":"728"}
+{"type":"thought","data":". So"}
+{"type":"thought","data":" 144"}
+{"type":"thought","data":"0 too"}
+{"type":"thought","data":" big."}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*143"}
+{"type":"thought","data":"9 ="}
+{"type":"thought","data":" 8"}
+{"type":"thought","data":",002"}
+{"type":"thought","data":",0"}
+{"type":"thought","data":"80-"}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"557"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":"996"}
+{"type":"thought","data":",5"}
+{"type":"thought","data":"23."}
+{"type":"thought","data":" 8"}
+{"type":"thought","data":",001"}
+{"type":"thought","data":",7"}
+{"type":"thought","data":"28-"}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":"996"}
+{"type":"thought","data":",5"}
+{"type":"thought","data":"23 ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",205"}
+{"type":"thought","data":". r"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5205"}
+{"type":"thought","data":". Cons"}
+{"type":"thought","data":"istent with"}
+{"type":"thought","data":" the -"}
+{"type":"thought","data":"165 trick"}
+{"type":"thought","data":". Good"}
+{"type":"thought","data":"."}
+{"type":"thought","data":" r ="}
+{"type":"thought","data":" 520"}
+{"type":"thought","data":"5.\n\n"}
+{"type":"thought","data":"Multiply by"}
+{"type":"thought","data":" a4"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"361"}
+{"type":"thought","data":"6:"}
+{"type":"thought","data":" r ="}
+{"type":"thought","data":" 520"}
+{"type":"thought","data":"5 *"}
+{"type":"thought","data":" 36"}
+{"type":"thought","data":"16"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7.\n"}
+{"type":"thought","data":"Note"}
+{"type":"thought","data":" 520"}
+{"type":"thought","data":"5 ="}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"352"}
+{"type":"thought","data":", so"}
+{"type":"thought","data":" "}
+{"type":"thought","data":"5205"}
+{"type":"thought","data":" ≡"}
+{"type":"thought","data":" -35"}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" r ="}
+{"type":"thought","data":" -35"}
+{"type":"thought","data":"2 *"}
+{"type":"thought","data":" 36"}
+{"type":"thought","data":"16"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7 ="}
+{"type":"thought","data":" -1"}
+{"type":"thought","data":",27"}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"832"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7.\n"}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"272"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"32 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"229"}
+{"type":"thought","data":" = ?"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*200"}
+{"type":"thought","data":"=1"}
+{"type":"thought","data":",111"}
+{"type":"thought","data":",400"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"29="}
+{"type":"thought","data":"161,"}
+{"type":"thought","data":"153."}
+{"type":"thought","data":" Total "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"272"}
+{"type":"thought","data":",55"}
+{"type":"thought","data":"3."}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":",27"}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"832"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"272"}
+{"type":"thought","data":",55"}
+{"type":"thought","data":"3 ="}
+{"type":"thought","data":" 27"}
+{"type":"thought","data":"9."}
+{"type":"thought","data":" So -"}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"272"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"32 "}
+{"type":"thought","data":"≡ -"}
+{"type":"thought","data":"279"}
+{"type":"thought","data":" ≡"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"-27"}
+{"type":"thought","data":"9 ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":"278"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7."}
+{"type":"thought","data":" So"}
+{"type":"thought","data":" r ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":"278"}
+{"type":"thought","data":".\nLet"}
+{"type":"thought","data":" me verify"}
+{"type":"thought","data":" "}
+{"type":"thought","data":"520"}
+{"type":"thought","data":"5*"}
+{"type":"thought","data":"361"}
+{"type":"thought","data":"6 directly"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"5205"}
+{"type":"thought","data":"*36"}
+{"type":"thought","data":"16"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5205"}
+{"type":"thought","data":"*360"}
+{"type":"thought","data":"0 +"}
+{"type":"thought","data":" 520"}
+{"type":"thought","data":"5*"}
+{"type":"thought","data":"16 ="}
+{"type":"thought","data":" 18"}
+{"type":"thought","data":",7"}
+{"type":"thought","data":"38,"}
+{"type":"thought","data":"000 +"}
+{"type":"thought","data":" 83"}
+{"type":"thought","data":",280"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"18,"}
+{"type":"thought","data":"821"}
+{"type":"thought","data":",280"}
+{"type":"thought","data":". \n"}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"338"}
+{"type":"thought","data":"7 ="}
+{"type":"thought","data":" ? This"}
+{"type":"thought","data":" is getting"}
+{"type":"thought","data":" big"}
+{"type":"thought","data":". Let"}
+{"type":"thought","data":" me use"}
+{"type":"thought","data":" the -"}
+{"type":"thought","data":"352"}
+{"type":"thought","data":" result"}
+{"type":"thought","data":"."}
+{"type":"thought","data":" -"}
+{"type":"thought","data":"352"}
+{"type":"thought","data":"*36"}
+{"type":"thought","data":"16"}
+{"type":"thought","data":":"}
+{"type":"thought","data":" 36"}
+{"type":"thought","data":"16"}
+{"type":"thought","data":"*35"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 36"}
+{"type":"thought","data":"16"}
+{"type":"thought","data":"*300"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"361"}
+{"type":"thought","data":"6*"}
+{"type":"thought","data":"52 ="}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":",08"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"800 +"}
+{"type":"thought","data":" 188"}
+{"type":"thought","data":",03"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":",27"}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"832"}
+{"type":"thought","data":". Yes"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"272"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"32 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"279"}
+{"type":"thought","data":" (since"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*22"}
+{"type":"thought","data":"9="}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"272"}
+{"type":"thought","data":",55"}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":" remainder "}
+{"type":"thought","data":"279"}
+{"type":"thought","data":"). So"}
+{"type":"thought","data":" -1"}
+{"type":"thought","data":",27"}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"832"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7 ="}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"-27"}
+{"type":"thought","data":"9 ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":"278"}
+{"type":"thought","data":". r"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"527"}
+{"type":"thought","data":"8.\n"}
+{"type":"thought","data":"Check "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"229"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"22"}
+{"type":"thought","data":"9."}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*200"}
+{"type":"thought","data":"=1"}
+{"type":"thought","data":",111"}
+{"type":"thought","data":",400"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"29:"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*30"}
+{"type":"thought","data":"=166"}
+{"type":"thought","data":",7"}
+{"type":"thought","data":"10,"}
+{"type":"thought","data":" -55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"=161"}
+{"type":"thought","data":",153"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"111,"}
+{"type":"thought","data":"400+"}
+{"type":"thought","data":"161,"}
+{"type":"thought","data":"153="}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"272"}
+{"type":"thought","data":",55"}
+{"type":"thought","data":"3."}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":",27"}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"832"}
+{"type":"thought","data":"-1"}
+{"type":"thought","data":",27"}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"553"}
+{"type":"thought","data":"=27"}
+{"type":"thought","data":"9."}
+{"type":"thought","data":" Good."}
+{"type":"thought","data":" r ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":"278"}
+{"type":"thought","data":".\n\nMultiply"}
+{"type":"thought","data":" by a"}
+{"type":"thought","data":"3 ="}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"192"}
+{"type":"thought","data":": r"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"527"}
+{"type":"thought","data":"8 *"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"192"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7.\n"}
+{"type":"thought","data":"Note "}
+{"type":"thought","data":"527"}
+{"type":"thought","data":"8 ="}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"279"}
+{"type":"thought","data":", so"}
+{"type":"thought","data":" "}
+{"type":"thought","data":"527"}
+{"type":"thought","data":"8 "}
+{"type":"thought","data":"≡ -"}
+{"type":"thought","data":"279"}
+{"type":"thought","data":". r"}
+{"type":"thought","data":" = -"}
+{"type":"thought","data":"279"}
+{"type":"thought","data":" * "}
+{"type":"thought","data":"219"}
+{"type":"thought","data":"2 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":" = -"}
+{"type":"thought","data":"611"}
+{"type":"thought","data":",5"}
+{"type":"thought","data":"68 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":".\n6"}
+{"type":"thought","data":"11,"}
+{"type":"thought","data":"568"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7:"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*110"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"611"}
+{"type":"thought","data":",270"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"611"}
+{"type":"thought","data":",5"}
+{"type":"thought","data":"68 -"}
+{"type":"thought","data":" 6"}
+{"type":"thought","data":"11,"}
+{"type":"thought","data":"270 ="}
+{"type":"thought","data":" 29"}
+{"type":"thought","data":"8."}
+{"type":"thought","data":" So -"}
+{"type":"thought","data":"611"}
+{"type":"thought","data":",5"}
+{"type":"thought","data":"68 "}
+{"type":"thought","data":"≡ -"}
+{"type":"thought","data":"298"}
+{"type":"thought","data":" ≡"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"-29"}
+{"type":"thought","data":"8 ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":"259"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7."}
+{"type":"thought","data":" So r"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"525"}
+{"type":"thought","data":"9.\n"}
+{"type":"thought","data":"Check"}
+{"type":"thought","data":" 27"}
+{"type":"thought","data":"9*"}
+{"type":"thought","data":"219"}
+{"type":"thought","data":"2:"}
+{"type":"thought","data":" 27"}
+{"type":"thought","data":"9*"}
+{"type":"thought","data":"2"}
+{"type":"thought","data":"192"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"279"}
+{"type":"thought","data":"*200"}
+{"type":"thought","data":"0 +"}
+{"type":"thought","data":" 27"}
+{"type":"thought","data":"9*"}
+{"type":"thought","data":"192 ="}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"8,"}
+{"type":"thought","data":"000 +"}
+{"type":"thought","data":" 53"}
+{"type":"thought","data":",5"}
+{"type":"thought","data":"68 ="}
+{"type":"thought","data":" 6"}
+{"type":"thought","data":"11,"}
+{"type":"thought","data":"568"}
+{"type":"thought","data":". Yes"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"110 ="}
+{"type":"thought","data":" 6"}
+{"type":"thought","data":"11,"}
+{"type":"thought","data":"270."}
+{"type":"thought","data":" 6"}
+{"type":"thought","data":"11,"}
+{"type":"thought","data":"568"}
+{"type":"thought","data":"-6"}
+{"type":"thought","data":"11,"}
+{"type":"thought","data":"270 ="}
+{"type":"thought","data":" 29"}
+{"type":"thought","data":"8."}
+{"type":"thought","data":" So -"}
+{"type":"thought","data":"611"}
+{"type":"thought","data":",5"}
+{"type":"thought","data":"68 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"-29"}
+{"type":"thought","data":"8 ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":"259"}
+{"type":"thought","data":". r"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"525"}
+{"type":"thought","data":"9.\n\n"}
+{"type":"thought","data":"Multiply by"}
+{"type":"thought","data":" a2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2401"}
+{"type":"thought","data":": r"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"525"}
+{"type":"thought","data":"9 *"}
+{"type":"thought","data":" 240"}
+{"type":"thought","data":"1 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":".\nNote"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":"259"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7 -"}
+{"type":"thought","data":" 29"}
+{"type":"thought","data":"8,"}
+{"type":"thought","data":" so "}
+{"type":"thought","data":"525"}
+{"type":"thought","data":"9 "}
+{"type":"thought","data":"≡ -"}
+{"type":"thought","data":"298"}
+{"type":"thought","data":". r"}
+{"type":"thought","data":" = -"}
+{"type":"thought","data":"298"}
+{"type":"thought","data":" * "}
+{"type":"thought","data":"2401"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7 ="}
+{"type":"thought","data":" -7"}
+{"type":"thought","data":"15,"}
+{"type":"thought","data":"498"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7.\n"}
+{"type":"thought","data":"715"}
+{"type":"thought","data":",49"}
+{"type":"thought","data":"8 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"128 ="}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":"11,"}
+{"type":"thought","data":"296"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"715"}
+{"type":"thought","data":",49"}
+{"type":"thought","data":"8 -"}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":"11,"}
+{"type":"thought","data":"296"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"202."}
+{"type":"thought","data":" So -"}
+{"type":"thought","data":"715"}
+{"type":"thought","data":",49"}
+{"type":"thought","data":"8 "}
+{"type":"thought","data":"≡ -"}
+{"type":"thought","data":"4202"}
+{"type":"thought","data":" ≡"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"-420"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 135"}
+{"type":"thought","data":"5 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":". So"}
+{"type":"thought","data":" r ="}
+{"type":"thought","data":" 135"}
+{"type":"thought","data":"5.\n"}
+{"type":"thought","data":"Check "}
+{"type":"thought","data":"298"}
+{"type":"thought","data":"*240"}
+{"type":"thought","data":"1:"}
+{"type":"thought","data":" 29"}
+{"type":"thought","data":"8*"}
+{"type":"thought","data":"2401"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"298"}
+{"type":"thought","data":"*240"}
+{"type":"thought","data":"0 +"}
+{"type":"thought","data":" 29"}
+{"type":"thought","data":"8 ="}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":"15,"}
+{"type":"thought","data":"200 +"}
+{"type":"thought","data":" 29"}
+{"type":"thought","data":"8 ="}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":"15,"}
+{"type":"thought","data":"498"}
+{"type":"thought","data":". Yes"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"128:"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*100"}
+{"type":"thought","data":"=55"}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"700;"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*28"}
+{"type":"thought","data":"=155"}
+{"type":"thought","data":",5"}
+{"type":"thought","data":"96;"}
+{"type":"thought","data":" total "}
+{"type":"thought","data":"711"}
+{"type":"thought","data":",29"}
+{"type":"thought","data":"6."}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":"15,"}
+{"type":"thought","data":"498"}
+{"type":"thought","data":"-7"}
+{"type":"thought","data":"11,"}
+{"type":"thought","data":"296"}
+{"type":"thought","data":"=4"}
+{"type":"thought","data":",202"}
+{"type":"thought","data":". -"}
+{"type":"thought","data":"4202"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7 ="}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"-420"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 135"}
+{"type":"thought","data":"5."}
+{"type":"thought","data":" r ="}
+{"type":"thought","data":" 135"}
+{"type":"thought","data":"5.\n\n"}
+{"type":"thought","data":"So the"}
+{"type":"thought","data":" result"}
+{"type":"thought","data":" should"}
+{"type":"thought","data":" be "}
+{"type":"thought","data":"1355"}
+{"type":"thought","data":".\n\nWait"}
+{"type":"thought","data":", let"}
+{"type":"thought","data":" me double"}
+{"type":"thought","data":"-check the"}
+{"type":"thought","data":" bit"}
+{"type":"thought","data":" decomposition"}
+{"type":"thought","data":" of"}
+{"type":"thought","data":" 28"}
+{"type":"thought","data":"76"}
+{"type":"thought","data":" and that"}
+{"type":"thought","data":" I'm"}
+{"type":"thought","data":" multiplying the"}
+{"type":"thought","data":" right set"}
+{"type":"thought","data":" of a"}
+{"type":"thought","data":"_k.\n\n"}
+{"type":"thought","data":"287"}
+{"type":"thought","data":"6 ="}
+{"type":"thought","data":" 204"}
+{"type":"thought","data":"8 +"}
+{"type":"thought","data":" 512"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"256 +"}
+{"type":"thought","data":" 32"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"16 +"}
+{"type":"thought","data":" 8"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"4\n"}
+{"type":"thought","data":"= "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"11 +"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"^9"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"8 +"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"^5"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"4 +"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"^3"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"2.\n\n"}
+{"type":"thought","data":"So ex"}
+{"type":"thought","data":"ponents k"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"11,"}
+{"type":"thought","data":" 9"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"8,"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":" 3"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" Yes"}
+{"type":"thought","data":", that"}
+{"type":"thought","data":"'s a"}
+{"type":"thought","data":"11,"}
+{"type":"thought","data":" a9"}
+{"type":"thought","data":", a"}
+{"type":"thought","data":"8,"}
+{"type":"thought","data":" a5"}
+{"type":"thought","data":", a"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":" a3"}
+{"type":"thought","data":", a"}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" Correct"}
+{"type":"thought","data":".\n\nAnd"}
+{"type":"thought","data":" I used"}
+{"type":"thought","data":" Fermat"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"8"}
+{"type":"thought","data":"432"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"6 ="}
+{"type":"thought","data":" 28"}
+{"type":"thought","data":"76"}
+{"type":"thought","data":". Let"}
+{"type":"thought","data":" me re"}
+{"type":"thought","data":"-verify"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"6 +"}
+{"type":"thought","data":" 28"}
+{"type":"thought","data":"76"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"843"}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" Yes!"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"56"}
+{"type":"thought","data":"+28"}
+{"type":"thought","data":"76"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"843"}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" Good.\n\n"}
+{"type":"thought","data":"So "}
+{"type":"thought","data":"7^"}
+{"type":"thought","data":"843"}
+{"type":"thought","data":"2 "}
+{"type":"thought","data":"≡ "}
+{"type":"thought","data":"7^"}
+{"type":"thought","data":"287"}
+{"type":"thought","data":"6 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":" ("}
+{"type":"thought","data":"since gcd"}
+{"type":"thought","data":"(7"}
+{"type":"thought","data":",55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":")=1"}
+{"type":"thought","data":" and"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":" prime,"}
+{"type":"thought","data":" Ferm"}
+{"type":"thought","data":"at applies"}
+{"type":"thought","data":").\n\nResult"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1355"}
+{"type":"thought","data":".\n\nHmm"}
+{"type":"thought","data":", let"}
+{"type":"thought","data":" me double"}
+{"type":"thought","data":" check"}
+{"type":"thought","data":" by re"}
+{"type":"thought","data":"-do"}
+{"type":"thought","data":"ing the"}
+{"type":"thought","data":" multiplication chain"}
+{"type":"thought","data":" once"}
+{"type":"thought","data":" more carefully"}
+{"type":"thought","data":", since"}
+{"type":"thought","data":" a"}
+{"type":"thought","data":" single arithmetic"}
+{"type":"thought","data":" slip"}
+{"type":"thought","data":" would invalidate"}
+{"type":"thought","data":" it"}
+{"type":"thought","data":".\n\nS"}
+{"type":"thought","data":"qu"}
+{"type":"thought","data":"aring table"}
+{"type":"thought","data":" recap"}
+{"type":"thought","data":" ("}
+{"type":"thought","data":"each"}
+{"type":"thought","data":" ="}
+{"type":"thought","data":" prev"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7):\n"}
+{"type":"thought","data":"a0"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"7\n"}
+{"type":"thought","data":"a1"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"49 ✓"}
+{"type":"thought","data":" (7"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":")\na"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 240"}
+{"type":"thought","data":"1 ✓"}
+{"type":"thought","data":" (49"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2401"}
+{"type":"thought","data":")\na"}
+{"type":"thought","data":"3 ="}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"192"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"2401"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"764"}
+{"type":"thought","data":",80"}
+{"type":"thought","data":"1."}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*103"}
+{"type":"thought","data":"7 ="}
+{"type":"thought","data":" ? "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"1000"}
+{"type":"thought","data":"=5"}
+{"type":"thought","data":",55"}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":"000;"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*37"}
+{"type":"thought","data":"=205"}
+{"type":"thought","data":",60"}
+{"type":"thought","data":"9;"}
+{"type":"thought","data":" total"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",76"}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"609"}
+{"type":"thought","data":". Hmm"}
+{"type":"thought","data":" wait"}
+{"type":"thought","data":", that"}
+{"type":"thought","data":" doesn"}
+{"type":"thought","data":"'t match"}
+{"type":"thought","data":". Let"}
+{"type":"thought","data":" me re"}
+{"type":"thought","data":"compute."}
+{"type":"thought","data":" Earlier"}
+{"type":"thought","data":" I said"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*100"}
+{"type":"thought","data":"0="}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"557"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":","}
+{"type":"thought","data":" remainder "}
+{"type":"thought","data":"207,"}
+{"type":"thought","data":"801"}
+{"type":"thought","data":", then"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*37"}
+{"type":"thought","data":"=205"}
+{"type":"thought","data":",60"}
+{"type":"thought","data":"9,"}
+{"type":"thought","data":" remainder "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"192."}
+{"type":"thought","data":" So "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"1037"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"557"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":"+205"}
+{"type":"thought","data":",60"}
+{"type":"thought","data":"9 ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",76"}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"609"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"764"}
+{"type":"thought","data":",80"}
+{"type":"thought","data":"1 -"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",76"}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"609"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"192."}
+{"type":"thought","data":" ✓ a"}
+{"type":"thought","data":"3="}
+{"type":"thought","data":"219"}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" Good."}
+{"type":"thought","data":" (I"}
+{"type":"thought","data":" had written"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*103"}
+{"type":"thought","data":"7 implicitly"}
+{"type":"thought","data":" via"}
+{"type":"thought","data":" the"}
+{"type":"thought","data":" two-step"}
+{"type":"thought","data":"; consistent"}
+{"type":"thought","data":".)\n\na"}
+{"type":"thought","data":"4 ="}
+{"type":"thought","data":" 36"}
+{"type":"thought","data":"16"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"219"}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":",80"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"864"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"864"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"801"}
+{"type":"thought","data":",24"}
+{"type":"thought","data":"8."}
+{"type":"thought","data":" Remain"}
+{"type":"thought","data":"der "}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":"616"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":"\nLet"}
+{"type":"thought","data":" me verify"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"192"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"219"}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" (220"}
+{"type":"thought","data":"0-"}
+{"type":"thought","data":"8)^"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"40,"}
+{"type":"thought","data":"000 -"}
+{"type":"thought","data":" 35"}
+{"type":"thought","data":",200"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"64 ="}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":",80"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"864"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":"."}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*8"}
+{"type":"thought","data":"64:"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*8"}
+{"type":"thought","data":"64,"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*800"}
+{"type":"thought","data":"=4"}
+{"type":"thought","data":",4"}
+{"type":"thought","data":"45,"}
+{"type":"thought","data":"600,"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*64"}
+{"type":"thought","data":"=35"}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"648"}
+{"type":"thought","data":", total"}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":",80"}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"248"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"804"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"64-"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"801"}
+{"type":"thought","data":",24"}
+{"type":"thought","data":"8="}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":"616"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":"\n\n"}
+{"type":"thought","data":"a5"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"539"}
+{"type":"thought","data":"2:"}
+{"type":"thought","data":" 36"}
+{"type":"thought","data":"16"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"13,"}
+{"type":"thought","data":"075"}
+{"type":"thought","data":",45"}
+{"type":"thought","data":"6."}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*235"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 13"}
+{"type":"thought","data":",0"}
+{"type":"thought","data":"70,"}
+{"type":"thought","data":"064"}
+{"type":"thought","data":". Remain"}
+{"type":"thought","data":"der "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"392"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":"\n36"}
+{"type":"thought","data":"16"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":" ="}
+{"type":"thought","data":" (360"}
+{"type":"thought","data":"0+"}
+{"type":"thought","data":"16)^"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 12"}
+{"type":"thought","data":",9"}
+{"type":"thought","data":"60,"}
+{"type":"thought","data":"000 +"}
+{"type":"thought","data":" 115"}
+{"type":"thought","data":",200"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"256 ="}
+{"type":"thought","data":" 13"}
+{"type":"thought","data":",07"}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"456"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"2352"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"2000"}
+{"type":"thought","data":"=11"}
+{"type":"thought","data":",114"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":","}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*35"}
+{"type":"thought","data":"2="}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"956"}
+{"type":"thought","data":",06"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":" total "}
+{"type":"thought","data":"13,"}
+{"type":"thought","data":"070"}
+{"type":"thought","data":",06"}
+{"type":"thought","data":"4."}
+{"type":"thought","data":" 13"}
+{"type":"thought","data":",07"}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"456"}
+{"type":"thought","data":"-13"}
+{"type":"thought","data":",0"}
+{"type":"thought","data":"70,"}
+{"type":"thought","data":"064"}
+{"type":"thought","data":"=5"}
+{"type":"thought","data":",39"}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" ✓\n\n"}
+{"type":"thought","data":"a6"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"499"}
+{"type":"thought","data":"7:"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":"392"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":" mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"539"}
+{"type":"thought","data":"2 "}
+{"type":"thought","data":"≡ -"}
+{"type":"thought","data":"165."}
+{"type":"thought","data":" (-165"}
+{"type":"thought","data":")^2"}
+{"type":"thought","data":"="}
+{"type":"thought","data":"27,"}
+{"type":"thought","data":"225."}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*4"}
+{"type":"thought","data":"=22"}
+{"type":"thought","data":",228"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"27,"}
+{"type":"thought","data":"225-"}
+{"type":"thought","data":"22,"}
+{"type":"thought","data":"228="}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"997"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":"\n\n"}
+{"type":"thought","data":"a7"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2408"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"499"}
+{"type":"thought","data":"7^"}
+{"type":"thought","data":"2 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"499"}
+{"type":"thought","data":"7 "}
+{"type":"thought","data":"≡ -"}
+{"type":"thought","data":"560"}
+{"type":"thought","data":". (-"}
+{"type":"thought","data":"560"}
+{"type":"thought","data":")^2"}
+{"type":"thought","data":"=3"}
+{"type":"thought","data":"13,"}
+{"type":"thought","data":"600."}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*56"}
+{"type":"thought","data":"=3"}
+{"type":"thought","data":"11,"}
+{"type":"thought","data":"192."}
+{"type":"thought","data":" 3"}
+{"type":"thought","data":"13,"}
+{"type":"thought","data":"600-"}
+{"type":"thought","data":"311"}
+{"type":"thought","data":",192"}
+{"type":"thought","data":"=2"}
+{"type":"thought","data":",40"}
+{"type":"thought","data":"8."}
+{"type":"thought","data":" ✓\n\n"}
+{"type":"thought","data":"a8"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"251"}
+{"type":"thought","data":"3:"}
+{"type":"thought","data":" 240"}
+{"type":"thought","data":"8^"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",7"}
+{"type":"thought","data":"98,"}
+{"type":"thought","data":"464"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"1043"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"55"}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":"000+"}
+{"type":"thought","data":"238"}
+{"type":"thought","data":",95"}
+{"type":"thought","data":"1 ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",7"}
+{"type":"thought","data":"95,"}
+{"type":"thought","data":"951"}
+{"type":"thought","data":". Hmm"}
+{"type":"thought","data":","}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",7"}
+{"type":"thought","data":"98,"}
+{"type":"thought","data":"464"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"795"}
+{"type":"thought","data":",95"}
+{"type":"thought","data":"1 ="}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":",5"}
+{"type":"thought","data":"13."}
+{"type":"thought","data":" ✓ \n"}
+{"type":"thought","data":"Wait,"}
+{"type":"thought","data":" earlier I"}
+{"type":"thought","data":" computed"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*43"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"238"}
+{"type":"thought","data":",95"}
+{"type":"thought","data":"1 and"}
+{"type":"thought","data":" "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"1000"}
+{"type":"thought","data":"="}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"557"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":", so"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*104"}
+{"type":"thought","data":"3 ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",7"}
+{"type":"thought","data":"95,"}
+{"type":"thought","data":"951"}
+{"type":"thought","data":","}
+{"type":"thought","data":" remainder "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"798"}
+{"type":"thought","data":",46"}
+{"type":"thought","data":"4-"}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"795"}
+{"type":"thought","data":",95"}
+{"type":"thought","data":"1 ="}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":",5"}
+{"type":"thought","data":"13."}
+{"type":"thought","data":" ✓."}
+{"type":"thought","data":" ("}
+{"type":"thought","data":"Earlier"}
+{"type":"thought","data":" I wrote"}
+{"type":"thought","data":" 24"}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"464"}
+{"type":"thought","data":" as the"}
+{"type":"thought","data":" remainder after"}
+{"type":"thought","data":" subtract"}
+{"type":"thought","data":"ing "}
+{"type":"thought","data":"55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*100"}
+{"type":"thought","data":"0,"}
+{"type":"thought","data":" which is"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",7"}
+{"type":"thought","data":"98,"}
+{"type":"thought","data":"464"}
+{"type":"thought","data":"-5"}
+{"type":"thought","data":",55"}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":"000="}
+{"type":"thought","data":"241"}
+{"type":"thought","data":",46"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":" then "}
+{"type":"thought","data":"24"}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"464"}
+{"type":"thought","data":"-23"}
+{"type":"thought","data":"8,"}
+{"type":"thought","data":"951"}
+{"type":"thought","data":"=2"}
+{"type":"thought","data":",5"}
+{"type":"thought","data":"13."}
+{"type":"thought","data":" Consistent"}
+{"type":"thought","data":".) ✓"}
+{"type":"thought","data":"\n\na"}
+{"type":"thought","data":"9 ="}
+{"type":"thought","data":" 24"}
+{"type":"thought","data":"17"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"251"}
+{"type":"thought","data":"3^"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 6"}
+{"type":"thought","data":",315"}
+{"type":"thought","data":",169"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"1136"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"557"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":"+75"}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"752"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"6,"}
+{"type":"thought","data":"312"}
+{"type":"thought","data":",75"}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" 6"}
+{"type":"thought","data":",315"}
+{"type":"thought","data":",169"}
+{"type":"thought","data":"-6"}
+{"type":"thought","data":",3"}
+{"type":"thought","data":"12,"}
+{"type":"thought","data":"752"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"417"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":"\n25"}
+{"type":"thought","data":"13"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":" = ("}
+{"type":"thought","data":"2500"}
+{"type":"thought","data":"+13"}
+{"type":"thought","data":")^2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"6,"}
+{"type":"thought","data":"250,"}
+{"type":"thought","data":"000 +"}
+{"type":"thought","data":" 65"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"169 ="}
+{"type":"thought","data":" 6"}
+{"type":"thought","data":",315"}
+{"type":"thought","data":",169"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"136="}
+{"type":"thought","data":"755"}
+{"type":"thought","data":",75"}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" ✓.\n\n"}
+{"type":"thought","data":"a10"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1482"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"241"}
+{"type":"thought","data":"7^"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"41,"}
+{"type":"thought","data":"889"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"1051"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"557"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":"+28"}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":"407"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"840"}
+{"type":"thought","data":",40"}
+{"type":"thought","data":"7."}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"41,"}
+{"type":"thought","data":"889"}
+{"type":"thought","data":"-5"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"40,"}
+{"type":"thought","data":"407"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"482"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":"\n24"}
+{"type":"thought","data":"17"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":" = ("}
+{"type":"thought","data":"2400"}
+{"type":"thought","data":"+17"}
+{"type":"thought","data":")^2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"760"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"81,"}
+{"type":"thought","data":"600 +"}
+{"type":"thought","data":" 28"}
+{"type":"thought","data":"9 ="}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"41,"}
+{"type":"thought","data":"889"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"51="}
+{"type":"thought","data":"283"}
+{"type":"thought","data":",40"}
+{"type":"thought","data":"7."}
+{"type":"thought","data":" ✓.\n\n"}
+{"type":"thought","data":"a11"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1309"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"1482"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"196,"}
+{"type":"thought","data":"324"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"395"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"195,"}
+{"type":"thought","data":"015"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"196,"}
+{"type":"thought","data":"324"}
+{"type":"thought","data":"-2"}
+{"type":"thought","data":",195"}
+{"type":"thought","data":",0"}
+{"type":"thought","data":"15 ="}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":",30"}
+{"type":"thought","data":"9."}
+{"type":"thought","data":" ✓\n"}
+{"type":"thought","data":"1482"}
+{"type":"thought","data":"^2"}
+{"type":"thought","data":" = ("}
+{"type":"thought","data":"1500"}
+{"type":"thought","data":"-18"}
+{"type":"thought","data":")^2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"250,"}
+{"type":"thought","data":"000 -"}
+{"type":"thought","data":" 54"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"324"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"196,"}
+{"type":"thought","data":"324"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"395"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"400 -"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*5"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"222,"}
+{"type":"thought","data":"800-"}
+{"type":"thought","data":"27,"}
+{"type":"thought","data":"785"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"195,"}
+{"type":"thought","data":"015"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":".\n\nGood"}
+{"type":"thought","data":", squ"}
+{"type":"thought","data":"aring table"}
+{"type":"thought","data":" confirmed"}
+{"type":"thought","data":".\n\nNow"}
+{"type":"thought","data":" the product"}
+{"type":"thought","data":":"}
+{"type":"thought","data":" a11"}
+{"type":"thought","data":" * a"}
+{"type":"thought","data":"9 *"}
+{"type":"thought","data":" a8"}
+{"type":"thought","data":" * a"}
+{"type":"thought","data":"5 *"}
+{"type":"thought","data":" a4"}
+{"type":"thought","data":" * a"}
+{"type":"thought","data":"3 *"}
+{"type":"thought","data":" a2"}
+{"type":"thought","data":" mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"\n="}
+{"type":"thought","data":" 130"}
+{"type":"thought","data":"9 *"}
+{"type":"thought","data":" 24"}
+{"type":"thought","data":"17"}
+{"type":"thought","data":" * "}
+{"type":"thought","data":"251"}
+{"type":"thought","data":"3 *"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":"392"}
+{"type":"thought","data":" * "}
+{"type":"thought","data":"361"}
+{"type":"thought","data":"6 *"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"192"}
+{"type":"thought","data":" * "}
+{"type":"thought","data":"2401"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7.\n\n"}
+{"type":"thought","data":"Step "}
+{"type":"thought","data":"1:"}
+{"type":"thought","data":" "}
+{"type":"thought","data":"1309"}
+{"type":"thought","data":" * "}
+{"type":"thought","data":"241"}
+{"type":"thought","data":"7 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":".\n130"}
+{"type":"thought","data":"9*"}
+{"type":"thought","data":"241"}
+{"type":"thought","data":"7."}
+{"type":"thought","data":" Let"}
+{"type":"thought","data":" me re"}
+{"type":"thought","data":"compute."}
+{"type":"thought","data":" 130"}
+{"type":"thought","data":"9*"}
+{"type":"thought","data":"241"}
+{"type":"thought","data":"7 ="}
+{"type":"thought","data":" 130"}
+{"type":"thought","data":"9*("}
+{"type":"thought","data":"2400"}
+{"type":"thought","data":"+17"}
+{"type":"thought","data":") ="}
+{"type":"thought","data":" 130"}
+{"type":"thought","data":"9*"}
+{"type":"thought","data":"2400"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"1309"}
+{"type":"thought","data":"*17"}
+{"type":"thought","data":".\n130"}
+{"type":"thought","data":"9*"}
+{"type":"thought","data":"2400"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1309"}
+{"type":"thought","data":"*24"}
+{"type":"thought","data":"*100"}
+{"type":"thought","data":" = ("}
+{"type":"thought","data":"1309"}
+{"type":"thought","data":"*24"}
+{"type":"thought","data":")*100"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"1309"}
+{"type":"thought","data":"*24"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1309"}
+{"type":"thought","data":"*20"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"1309"}
+{"type":"thought","data":"*4"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"26,"}
+{"type":"thought","data":"180 +"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",23"}
+{"type":"thought","data":"6 ="}
+{"type":"thought","data":" 31"}
+{"type":"thought","data":",4"}
+{"type":"thought","data":"16."}
+{"type":"thought","data":" *"}
+{"type":"thought","data":"100 ="}
+{"type":"thought","data":" 3"}
+{"type":"thought","data":",141"}
+{"type":"thought","data":",600"}
+{"type":"thought","data":".\n130"}
+{"type":"thought","data":"9*"}
+{"type":"thought","data":"17 ="}
+{"type":"thought","data":" 130"}
+{"type":"thought","data":"9*"}
+{"type":"thought","data":"10 +"}
+{"type":"thought","data":" 130"}
+{"type":"thought","data":"9*"}
+{"type":"thought","data":"7 ="}
+{"type":"thought","data":" 13"}
+{"type":"thought","data":",0"}
+{"type":"thought","data":"90 +"}
+{"type":"thought","data":" 9"}
+{"type":"thought","data":",163"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"22,"}
+{"type":"thought","data":"253"}
+{"type":"thought","data":".\nTotal"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":"141"}
+{"type":"thought","data":",600"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"22,"}
+{"type":"thought","data":"253"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":"163,"}
+{"type":"thought","data":"853"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":"\n55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*56"}
+{"type":"thought","data":"9:"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*500"}
+{"type":"thought","data":"=2"}
+{"type":"thought","data":",7"}
+{"type":"thought","data":"78,"}
+{"type":"thought","data":"500;"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*69"}
+{"type":"thought","data":" ="}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*70"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7 ="}
+{"type":"thought","data":" 38"}
+{"type":"thought","data":"8,"}
+{"type":"thought","data":"990"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"557"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"383"}
+{"type":"thought","data":",4"}
+{"type":"thought","data":"33."}
+{"type":"thought","data":" Total "}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":"161,"}
+{"type":"thought","data":"933"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":"163,"}
+{"type":"thought","data":"853"}
+{"type":"thought","data":"-"}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":"161,"}
+{"type":"thought","data":"933"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"920"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":" r="}
+{"type":"thought","data":"1920"}
+{"type":"thought","data":".\n\nStep"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"1920"}
+{"type":"thought","data":" * "}
+{"type":"thought","data":"251"}
+{"type":"thought","data":"3 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":".\n192"}
+{"type":"thought","data":"0*"}
+{"type":"thought","data":"251"}
+{"type":"thought","data":"3 ="}
+{"type":"thought","data":" 192"}
+{"type":"thought","data":"0*"}
+{"type":"thought","data":"2500"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"1920"}
+{"type":"thought","data":"*13"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"800,"}
+{"type":"thought","data":"000 +"}
+{"type":"thought","data":" 24"}
+{"type":"thought","data":",9"}
+{"type":"thought","data":"60 ="}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"24,"}
+{"type":"thought","data":"960"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":"\n55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*8"}
+{"type":"thought","data":"68:"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*800"}
+{"type":"thought","data":"=4"}
+{"type":"thought","data":",4"}
+{"type":"thought","data":"45,"}
+{"type":"thought","data":"600;"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*68"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"70 -"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*2"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"388"}
+{"type":"thought","data":",9"}
+{"type":"thought","data":"90-"}
+{"type":"thought","data":"11,"}
+{"type":"thought","data":"114 ="}
+{"type":"thought","data":" 37"}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":"876"}
+{"type":"thought","data":". Total"}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"23,"}
+{"type":"thought","data":"476"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"824"}
+{"type":"thought","data":",9"}
+{"type":"thought","data":"60-"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"823"}
+{"type":"thought","data":",47"}
+{"type":"thought","data":"6 ="}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":",48"}
+{"type":"thought","data":"4."}
+{"type":"thought","data":" ✓ r"}
+{"type":"thought","data":"=148"}
+{"type":"thought","data":"4.\n\n"}
+{"type":"thought","data":"Step "}
+{"type":"thought","data":"3:"}
+{"type":"thought","data":" 148"}
+{"type":"thought","data":"4 *"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":"392"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7.\n"}
+{"type":"thought","data":"Using "}
+{"type":"thought","data":"539"}
+{"type":"thought","data":"2 "}
+{"type":"thought","data":"≡ -"}
+{"type":"thought","data":"165:"}
+{"type":"thought","data":" 148"}
+{"type":"thought","data":"4 *"}
+{"type":"thought","data":" (-165"}
+{"type":"thought","data":") ="}
+{"type":"thought","data":" -24"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"860"}
+{"type":"thought","data":". \n"}
+{"type":"thought","data":"148"}
+{"type":"thought","data":"4*"}
+{"type":"thought","data":"165 ="}
+{"type":"thought","data":" 148"}
+{"type":"thought","data":"4*"}
+{"type":"thought","data":"100 +"}
+{"type":"thought","data":" 148"}
+{"type":"thought","data":"4*"}
+{"type":"thought","data":"65 ="}
+{"type":"thought","data":" 148"}
+{"type":"thought","data":",400"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"96,"}
+{"type":"thought","data":"460"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"244"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"60."}
+{"type":"thought","data":" ✓ ("}
+{"type":"thought","data":"1484"}
+{"type":"thought","data":"*65"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"1484"}
+{"type":"thought","data":"*60"}
+{"type":"thought","data":"+"}
+{"type":"thought","data":"1484"}
+{"type":"thought","data":"*5"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"89,"}
+{"type":"thought","data":"040"}
+{"type":"thought","data":"+7"}
+{"type":"thought","data":",420"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"96,"}
+{"type":"thought","data":"460"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":")\n24"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"860"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7:"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*44"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"40 +"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*4"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"222,"}
+{"type":"thought","data":"280+"}
+{"type":"thought","data":"22,"}
+{"type":"thought","data":"228 ="}
+{"type":"thought","data":" 24"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"508"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"244"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"60-"}
+{"type":"thought","data":"244"}
+{"type":"thought","data":",50"}
+{"type":"thought","data":"8 ="}
+{"type":"thought","data":" 35"}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" So -"}
+{"type":"thought","data":"244"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"60 "}
+{"type":"thought","data":"≡ -"}
+{"type":"thought","data":"352"}
+{"type":"thought","data":" ≡"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",205"}
+{"type":"thought","data":" mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":" r="}
+{"type":"thought","data":"5205"}
+{"type":"thought","data":".\n\nStep"}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"5205"}
+{"type":"thought","data":" * "}
+{"type":"thought","data":"361"}
+{"type":"thought","data":"6 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":".\nUsing"}
+{"type":"thought","data":" 520"}
+{"type":"thought","data":"5 "}
+{"type":"thought","data":"≡ -"}
+{"type":"thought","data":"352"}
+{"type":"thought","data":": -"}
+{"type":"thought","data":"352"}
+{"type":"thought","data":" * "}
+{"type":"thought","data":"361"}
+{"type":"thought","data":"6 ="}
+{"type":"thought","data":" -("}
+{"type":"thought","data":"352"}
+{"type":"thought","data":"*36"}
+{"type":"thought","data":"16"}
+{"type":"thought","data":")."}
+{"type":"thought","data":" 35"}
+{"type":"thought","data":"2*"}
+{"type":"thought","data":"361"}
+{"type":"thought","data":"6 ="}
+{"type":"thought","data":" 36"}
+{"type":"thought","data":"16"}
+{"type":"thought","data":"*35"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 36"}
+{"type":"thought","data":"16"}
+{"type":"thought","data":"*300"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"361"}
+{"type":"thought","data":"6*"}
+{"type":"thought","data":"52 ="}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":",08"}
+{"type":"thought","data":"4,"}
+{"type":"thought","data":"800 +"}
+{"type":"thought","data":" 188"}
+{"type":"thought","data":",03"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":",27"}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"832"}
+{"type":"thought","data":". \n"}
+{"type":"thought","data":"361"}
+{"type":"thought","data":"6*"}
+{"type":"thought","data":"52 ="}
+{"type":"thought","data":" 36"}
+{"type":"thought","data":"16"}
+{"type":"thought","data":"*50"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"361"}
+{"type":"thought","data":"6*"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 180"}
+{"type":"thought","data":",800"}
+{"type":"thought","data":"+"}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":"232 ="}
+{"type":"thought","data":" 188"}
+{"type":"thought","data":",03"}
+{"type":"thought","data":"2."}
+{"type":"thought","data":" ✓."}
+{"type":"thought","data":" Total"}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":",27"}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"832"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":"\n1"}
+{"type":"thought","data":",27"}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"832"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7:"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*22"}
+{"type":"thought","data":"9 ="}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*200"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"29 ="}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":",111"}
+{"type":"thought","data":",400"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"161,"}
+{"type":"thought","data":"153 ="}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":",27"}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"553"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"272"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"32-"}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"272"}
+{"type":"thought","data":",55"}
+{"type":"thought","data":"3 ="}
+{"type":"thought","data":" 27"}
+{"type":"thought","data":"9."}
+{"type":"thought","data":" So -"}
+{"type":"thought","data":"1,"}
+{"type":"thought","data":"272"}
+{"type":"thought","data":",8"}
+{"type":"thought","data":"32 "}
+{"type":"thought","data":"≡ -"}
+{"type":"thought","data":"279"}
+{"type":"thought","data":" ≡"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",27"}
+{"type":"thought","data":"8."}
+{"type":"thought","data":" ✓ r"}
+{"type":"thought","data":"=5"}
+{"type":"thought","data":"278"}
+{"type":"thought","data":".\n\nStep"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"527"}
+{"type":"thought","data":"8 *"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"192"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7.\n"}
+{"type":"thought","data":"Using "}
+{"type":"thought","data":"527"}
+{"type":"thought","data":"8 "}
+{"type":"thought","data":"≡ -"}
+{"type":"thought","data":"279"}
+{"type":"thought","data":": -"}
+{"type":"thought","data":"279"}
+{"type":"thought","data":" * "}
+{"type":"thought","data":"219"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" -(27"}
+{"type":"thought","data":"9*"}
+{"type":"thought","data":"219"}
+{"type":"thought","data":"2)."}
+{"type":"thought","data":" 27"}
+{"type":"thought","data":"9*"}
+{"type":"thought","data":"219"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 27"}
+{"type":"thought","data":"9*"}
+{"type":"thought","data":"2000"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"279"}
+{"type":"thought","data":"*192"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"558"}
+{"type":"thought","data":",000"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"53,"}
+{"type":"thought","data":"568"}
+{"type":"thought","data":" ="}
+{"type":"thought","data":" 6"}
+{"type":"thought","data":"11,"}
+{"type":"thought","data":"568"}
+{"type":"thought","data":".\n27"}
+{"type":"thought","data":"9*"}
+{"type":"thought","data":"192 ="}
+{"type":"thought","data":" 27"}
+{"type":"thought","data":"9*"}
+{"type":"thought","data":"200 -"}
+{"type":"thought","data":" 27"}
+{"type":"thought","data":"9*"}
+{"type":"thought","data":"8 ="}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":",800"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"2,"}
+{"type":"thought","data":"232 ="}
+{"type":"thought","data":" 53"}
+{"type":"thought","data":",5"}
+{"type":"thought","data":"68."}
+{"type":"thought","data":" ✓."}
+{"type":"thought","data":" Total "}
+{"type":"thought","data":"611"}
+{"type":"thought","data":",5"}
+{"type":"thought","data":"68."}
+{"type":"thought","data":" ✓\n"}
+{"type":"thought","data":"611"}
+{"type":"thought","data":",5"}
+{"type":"thought","data":"68 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"110 ="}
+{"type":"thought","data":" 6"}
+{"type":"thought","data":"11,"}
+{"type":"thought","data":"270."}
+{"type":"thought","data":" 6"}
+{"type":"thought","data":"11,"}
+{"type":"thought","data":"568"}
+{"type":"thought","data":"-6"}
+{"type":"thought","data":"11,"}
+{"type":"thought","data":"270 ="}
+{"type":"thought","data":" 29"}
+{"type":"thought","data":"8."}
+{"type":"thought","data":" So -"}
+{"type":"thought","data":"611"}
+{"type":"thought","data":",5"}
+{"type":"thought","data":"68 "}
+{"type":"thought","data":"≡ -"}
+{"type":"thought","data":"298"}
+{"type":"thought","data":" ≡"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":",25"}
+{"type":"thought","data":"9."}
+{"type":"thought","data":" ✓ r"}
+{"type":"thought","data":"=5"}
+{"type":"thought","data":"259"}
+{"type":"thought","data":".\n\nStep"}
+{"type":"thought","data":" 6"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"525"}
+{"type":"thought","data":"9 *"}
+{"type":"thought","data":" 240"}
+{"type":"thought","data":"1 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":".\nUsing"}
+{"type":"thought","data":" 5"}
+{"type":"thought","data":"259"}
+{"type":"thought","data":" ≡"}
+{"type":"thought","data":" -29"}
+{"type":"thought","data":"8:"}
+{"type":"thought","data":" -29"}
+{"type":"thought","data":"8 *"}
+{"type":"thought","data":" 240"}
+{"type":"thought","data":"1 ="}
+{"type":"thought","data":" -(29"}
+{"type":"thought","data":"8*"}
+{"type":"thought","data":"2401"}
+{"type":"thought","data":"). "}
+{"type":"thought","data":"298"}
+{"type":"thought","data":"*240"}
+{"type":"thought","data":"1 ="}
+{"type":"thought","data":" 29"}
+{"type":"thought","data":"8*"}
+{"type":"thought","data":"2400"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"298"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"715"}
+{"type":"thought","data":",200"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"298"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"715"}
+{"type":"thought","data":",49"}
+{"type":"thought","data":"8."}
+{"type":"thought","data":" ✓\n"}
+{"type":"thought","data":"715"}
+{"type":"thought","data":",49"}
+{"type":"thought","data":"8 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":": "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"128 ="}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"*100"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7*"}
+{"type":"thought","data":"28 ="}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":"700 +"}
+{"type":"thought","data":" 155"}
+{"type":"thought","data":",5"}
+{"type":"thought","data":"96 ="}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":"11,"}
+{"type":"thought","data":"296"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"715"}
+{"type":"thought","data":",49"}
+{"type":"thought","data":"8-"}
+{"type":"thought","data":"711"}
+{"type":"thought","data":",29"}
+{"type":"thought","data":"6 ="}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":",202"}
+{"type":"thought","data":". So"}
+{"type":"thought","data":" -7"}
+{"type":"thought","data":"15,"}
+{"type":"thought","data":"498"}
+{"type":"thought","data":" ≡"}
+{"type":"thought","data":" -4"}
+{"type":"thought","data":",202"}
+{"type":"thought","data":" ≡"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"-420"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":",35"}
+{"type":"thought","data":"5."}
+{"type":"thought","data":" ✓ r"}
+{"type":"thought","data":"=135"}
+{"type":"thought","data":"5.\n\n"}
+{"type":"thought","data":"So the"}
+{"type":"thought","data":" final remainder"}
+{"type":"thought","data":" is "}
+{"type":"thought","data":"1355"}
+{"type":"thought","data":".\n\nLet"}
+{"type":"thought","data":" me just"}
+{"type":"thought","data":" sanity-check"}
+{"type":"thought","data":" the Ferm"}
+{"type":"thought","data":"at reduction"}
+{"type":"thought","data":" once more"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7 is"}
+{"type":"thought","data":" prime ("}
+{"type":"thought","data":"verified"}
+{"type":"thought","data":" by"}
+{"type":"thought","data":" trial division"}
+{"type":"thought","data":" up to"}
+{"type":"thought","data":" "}
+{"type":"thought","data":"74)."}
+{"type":"thought","data":" Ferm"}
+{"type":"thought","data":"at:"}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":"^(55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":"-1"}
+{"type":"thought","data":") ="}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":"^55"}
+{"type":"thought","data":"56"}
+{"type":"thought","data":" ≡"}
+{"type":"thought","data":" 1"}
+{"type":"thought","data":" mod "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":" since gcd"}
+{"type":"thought","data":"(7"}
+{"type":"thought","data":",55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":")=1"}
+{"type":"thought","data":" (55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":" not divisible"}
+{"type":"thought","data":" by "}
+{"type":"thought","data":"7,"}
+{"type":"thought","data":" confirmed:"}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":"*79"}
+{"type":"thought","data":"3="}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"1)."}
+{"type":"thought","data":" "}
+{"type":"thought","data":"843"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"56"}
+{"type":"thought","data":" + "}
+{"type":"thought","data":"287"}
+{"type":"thought","data":"6,"}
+{"type":"thought","data":" so "}
+{"type":"thought","data":"7^"}
+{"type":"thought","data":"843"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":"^55"}
+{"type":"thought","data":"56"}
+{"type":"thought","data":" * "}
+{"type":"thought","data":"7^"}
+{"type":"thought","data":"287"}
+{"type":"thought","data":"6 "}
+{"type":"thought","data":"≡ "}
+{"type":"thought","data":"1 *"}
+{"type":"thought","data":" 7"}
+{"type":"thought","data":"^28"}
+{"type":"thought","data":"76"}
+{"type":"thought","data":" "}
+{"type":"thought","data":"≡ "}
+{"type":"thought","data":"7^"}
+{"type":"thought","data":"287"}
+{"type":"thought","data":"6 mod"}
+{"type":"thought","data":" 55"}
+{"type":"thought","data":"57"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":"\n\n8"}
+{"type":"thought","data":"432"}
+{"type":"thought","data":" - "}
+{"type":"thought","data":"555"}
+{"type":"thought","data":"6 ="}
+{"type":"thought","data":" 28"}
+{"type":"thought","data":"76"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":"\n\nEverything"}
+{"type":"thought","data":" checks."}
+{"type":"thought","data":" The"}
+{"type":"thought","data":" answer is"}
+{"type":"thought","data":" 135"}
+{"type":"thought","data":"5.\n\n"}
+{"type":"thought","data":"Actually,"}
+{"type":"thought","data":" let me"}
+{"type":"thought","data":" also"}
+{"type":"thought","data":" double"}
+{"type":"thought","data":"-check that"}
+{"type":"thought","data":" I"}
+{"type":"thought","data":" don"}
+{"type":"thought","data":"'t have"}
+{"type":"thought","data":" an off"}
+{"type":"thought","data":"-by-one"}
+{"type":"thought","data":" in the"}
+{"type":"thought","data":" binary."}
+{"type":"thought","data":" 28"}
+{"type":"thought","data":"76"}
+{"type":"thought","data":":\n2"}
+{"type":"thought","data":"^11"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"2048"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"287"}
+{"type":"thought","data":"6-"}
+{"type":"thought","data":"2048"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"828"}
+{"type":"thought","data":"."}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"^9"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"512."}
+{"type":"thought","data":" 8"}
+{"type":"thought","data":"28-"}
+{"type":"thought","data":"512 ="}
+{"type":"thought","data":" 3"}
+{"type":"thought","data":"16."}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"^8"}
+{"type":"thought","data":" = "}
+{"type":"thought","data":"256."}
+{"type":"thought","data":" 3"}
+{"type":"thought","data":"16-"}
+{"type":"thought","data":"256 ="}
+{"type":"thought","data":" 60"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"5 ="}
+{"type":"thought","data":" 32"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"60-"}
+{"type":"thought","data":"32 ="}
+{"type":"thought","data":" 28"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"4 ="}
+{"type":"thought","data":" 16"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"28-"}
+{"type":"thought","data":"16 ="}
+{"type":"thought","data":" 12"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"3 ="}
+{"type":"thought","data":" 8"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"12-"}
+{"type":"thought","data":"8 ="}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"2 ="}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":". "}
+{"type":"thought","data":"4-"}
+{"type":"thought","data":"4 ="}
+{"type":"thought","data":" 0"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":"\n"}
+{"type":"thought","data":"So bits"}
+{"type":"thought","data":":"}
+{"type":"thought","data":" 11"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"9,"}
+{"type":"thought","data":" 8"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"5,"}
+{"type":"thought","data":" 4"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"3,"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":". ("}
+{"type":"thought","data":"Note "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"10="}
+{"type":"thought","data":"1024"}
+{"type":"thought","data":" not used"}
+{"type":"thought","data":","}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"^7"}
+{"type":"thought","data":"=128"}
+{"type":"thought","data":" not used"}
+{"type":"thought","data":", "}
+{"type":"thought","data":"2^"}
+{"type":"thought","data":"6="}
+{"type":"thought","data":"64 not"}
+{"type":"thought","data":" used,"}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"^1"}
+{"type":"thought","data":","}
+{"type":"thought","data":" 2"}
+{"type":"thought","data":"^0"}
+{"type":"thought","data":" not used"}
+{"type":"thought","data":".) \n"}
+{"type":"thought","data":"204"}
+{"type":"thought","data":"8+"}
+{"type":"thought","data":"512+"}
+{"type":"thought","data":"256+"}
+{"type":"thought","data":"32+"}
+{"type":"thought","data":"16+"}
+{"type":"thought","data":"8+"}
+{"type":"thought","data":"4 ="}
+{"type":"thought","data":" 28"}
+{"type":"thought","data":"76"}
+{"type":"thought","data":". ✓"}
+{"type":"thought","data":"\n\nGreat"}
+{"type":"thought","data":". Final"}
+{"type":"thought","data":" answer:"}
+{"type":"thought","data":" 135"}
+{"type":"thought","data":"5.\n\n"}
+{"type":"thought","data":"Now"}
+{"type":"thought","data":" I'll"}
+{"type":"thought","data":" write"}
+{"type":"thought","data":" this up"}
+{"type":"thought","data":" showing"}
+{"type":"thought","data":" each squ"}
+{"type":"thought","data":"aring step"}
+{"type":"thought","data":" briefly and"}
+{"type":"thought","data":" state"}
+{"type":"thought","data":" the final"}
+{"type":"thought","data":" remainder on"}
+{"type":"thought","data":" its own"}
+{"type":"thought","data":" line."}
+{"type":"thought","data":" I won"}
+{"type":"thought","data":"'t use"}
+{"type":"thought","data":" any tools"}
+{"type":"thought","data":"."}
+{"type":"text","data":"I"}
+{"type":"text","data":"'ll reduce"}
+{"type":"text","data":" the"}
+{"type":"text","data":" exponent using"}
+{"type":"text","data":" Fermat"}
+{"type":"text","data":"'s little"}
+{"type":"text","data":" theorem first"}
+{"type":"text","data":", then"}
+{"type":"text","data":" square-and"}
+{"type":"text","data":"-multiply"}
+{"type":"text","data":" by"}
+{"type":"text","data":" hand.\n\n"}
+{"type":"text","data":"**Ex"}
+{"type":"text","data":"ponent reduction"}
+{"type":"text","data":".**"}
+{"type":"text","data":" 55"}
+{"type":"text","data":"57"}
+{"type":"text","data":" is prime"}
+{"type":"text","data":" (trial"}
+{"type":"text","data":" division up"}
+{"type":"text","data":" to "}
+{"type":"text","data":"√55"}
+{"type":"text","data":"57"}
+{"type":"text","data":" ≈"}
+{"type":"text","data":" 74"}
+{"type":"text","data":" finds no"}
+{"type":"text","data":" factor),"}
+{"type":"text","data":" and gcd"}
+{"type":"text","data":"(7"}
+{"type":"text","data":", "}
+{"type":"text","data":"555"}
+{"type":"text","data":"7)"}
+{"type":"text","data":" = "}
+{"type":"text","data":"1,"}
+{"type":"text","data":" so "}
+{"type":"text","data":"7^"}
+{"type":"text","data":"555"}
+{"type":"text","data":"6 "}
+{"type":"text","data":"≡ "}
+{"type":"text","data":"1 ("}
+{"type":"text","data":"mod "}
+{"type":"text","data":"555"}
+{"type":"text","data":"7)."}
+{"type":"text","data":" Since"}
+{"type":"text","data":" 8"}
+{"type":"text","data":"432"}
+{"type":"text","data":" = "}
+{"type":"text","data":"555"}
+{"type":"text","data":"6 +"}
+{"type":"text","data":" 28"}
+{"type":"text","data":"76"}
+{"type":"text","data":":\n\n"}
+{"type":"text","data":"7^"}
+{"type":"text","data":"843"}
+{"type":"text","data":"2 "}
+{"type":"text","data":"≡ "}
+{"type":"text","data":"7^"}
+{"type":"text","data":"287"}
+{"type":"text","data":"6 ("}
+{"type":"text","data":"mod "}
+{"type":"text","data":"555"}
+{"type":"text","data":"7).\n\n"}
+{"type":"text","data":"**Binary"}
+{"type":"text","data":" of "}
+{"type":"text","data":"287"}
+{"type":"text","data":"6:**"}
+{"type":"text","data":" 28"}
+{"type":"text","data":"76"}
+{"type":"text","data":" = "}
+{"type":"text","data":"2048"}
+{"type":"text","data":" + "}
+{"type":"text","data":"512 +"}
+{"type":"text","data":" 256"}
+{"type":"text","data":" + "}
+{"type":"text","data":"32 +"}
+{"type":"text","data":" 16"}
+{"type":"text","data":" + "}
+{"type":"text","data":"8 +"}
+{"type":"text","data":" 4"}
+{"type":"text","data":" = "}
+{"type":"text","data":"2^"}
+{"type":"text","data":"11 +"}
+{"type":"text","data":" 2"}
+{"type":"text","data":"^9"}
+{"type":"text","data":" + "}
+{"type":"text","data":"2^"}
+{"type":"text","data":"8 +"}
+{"type":"text","data":" 2"}
+{"type":"text","data":"^5"}
+{"type":"text","data":" + "}
+{"type":"text","data":"2^"}
+{"type":"text","data":"4 +"}
+{"type":"text","data":" 2"}
+{"type":"text","data":"^3"}
+{"type":"text","data":" + "}
+{"type":"text","data":"2^"}
+{"type":"text","data":"2."}
+{"type":"text","data":" So I"}
+{"type":"text","data":" need "}
+{"type":"text","data":"7^("}
+{"type":"text","data":"2^"}
+{"type":"text","data":"k)"}
+{"type":"text","data":" for"}
+{"type":"text","data":" k ="}
+{"type":"text","data":" 2"}
+{"type":"text","data":".."}
+{"type":"text","data":"11 and"}
+{"type":"text","data":" multiply those"}
+{"type":"text","data":" together"}
+{"type":"text","data":".\n\n**"}
+{"type":"text","data":"Squ"}
+{"type":"text","data":"aring steps"}
+{"type":"text","data":"** ("}
+{"type":"text","data":"each line"}
+{"type":"text","data":" is the"}
+{"type":"text","data":" previous value"}
+{"type":"text","data":" squared,"}
+{"type":"text","data":" reduced mod"}
+{"type":"text","data":" 55"}
+{"type":"text","data":"57"}
+{"type":"text","data":";"}
+{"type":"text","data":" "}
+{"type":"text","data":"7^("}
+{"type":"text","data":"2^"}
+{"type":"text","data":"0)="}
+{"type":"text","data":"7 is"}
+{"type":"text","data":" the seed"}
+{"type":"text","data":"):\n\n-"}
+{"type":"text","data":" 7"}
+{"type":"text","data":"^2"}
+{"type":"text","data":" "}
+{"type":"text","data":"≡ "}
+{"type":"text","data":"49\n"}
+{"type":"text","data":"- "}
+{"type":"text","data":"49^"}
+{"type":"text","data":"2 ="}
+{"type":"text","data":" 240"}
+{"type":"text","data":"1 "}
+{"type":"text","data":"≡ **"}
+{"type":"text","data":"2401"}
+{"type":"text","data":"**"}
+{"type":"text","data":" (k"}
+{"type":"text","data":"=2"}
+{"type":"text","data":")\n-"}
+{"type":"text","data":" 240"}
+{"type":"text","data":"1^"}
+{"type":"text","data":"2 ="}
+{"type":"text","data":" 5"}
+{"type":"text","data":",76"}
+{"type":"text","data":"4,"}
+{"type":"text","data":"801"}
+{"type":"text","data":";"}
+{"type":"text","data":" 55"}
+{"type":"text","data":"57"}
+{"type":"text","data":"·103"}
+{"type":"text","data":"7 ="}
+{"type":"text","data":" 5"}
+{"type":"text","data":",76"}
+{"type":"text","data":"2,"}
+{"type":"text","data":"609"}
+{"type":"text","data":" → **"}
+{"type":"text","data":"219"}
+{"type":"text","data":"2**"}
+{"type":"text","data":" (k"}
+{"type":"text","data":"=3"}
+{"type":"text","data":")\n-"}
+{"type":"text","data":" 2"}
+{"type":"text","data":"192"}
+{"type":"text","data":"^2"}
+{"type":"text","data":" = "}
+{"type":"text","data":"4,"}
+{"type":"text","data":"804"}
+{"type":"text","data":",8"}
+{"type":"text","data":"64;"}
+{"type":"text","data":" 55"}
+{"type":"text","data":"57"}
+{"type":"text","data":"·8"}
+{"type":"text","data":"64 ="}
+{"type":"text","data":" 4"}
+{"type":"text","data":",80"}
+{"type":"text","data":"1,"}
+{"type":"text","data":"248"}
+{"type":"text","data":" → **"}
+{"type":"text","data":"361"}
+{"type":"text","data":"6**"}
+{"type":"text","data":" (k"}
+{"type":"text","data":"=4"}
+{"type":"text","data":")\n-"}
+{"type":"text","data":" 36"}
+{"type":"text","data":"16"}
+{"type":"text","data":"^2"}
+{"type":"text","data":" = "}
+{"type":"text","data":"13,"}
+{"type":"text","data":"075"}
+{"type":"text","data":",45"}
+{"type":"text","data":"6;"}
+{"type":"text","data":" 55"}
+{"type":"text","data":"57"}
+{"type":"text","data":"·235"}
+{"type":"text","data":"2 ="}
+{"type":"text","data":" 13"}
+{"type":"text","data":",0"}
+{"type":"text","data":"70,"}
+{"type":"text","data":"064"}
+{"type":"text","data":" → **"}
+{"type":"text","data":"539"}
+{"type":"text","data":"2**"}
+{"type":"text","data":" (k"}
+{"type":"text","data":"=5"}
+{"type":"text","data":")\n-"}
+{"type":"text","data":" 5"}
+{"type":"text","data":"392"}
+{"type":"text","data":" ≡"}
+{"type":"text","data":" −165"}
+{"type":"text","data":"; ("}
+{"type":"text","data":"−165"}
+{"type":"text","data":")^2"}
+{"type":"text","data":" = "}
+{"type":"text","data":"27,"}
+{"type":"text","data":"225;"}
+{"type":"text","data":" 27"}
+{"type":"text","data":",225"}
+{"type":"text","data":" − "}
+{"type":"text","data":"22"}
+{"type":"text","data":",228"}
+{"type":"text","data":" → **"}
+{"type":"text","data":"499"}
+{"type":"text","data":"7**"}
+{"type":"text","data":" (k"}
+{"type":"text","data":"=6"}
+{"type":"text","data":")\n-"}
+{"type":"text","data":" 4"}
+{"type":"text","data":"997"}
+{"type":"text","data":" ≡"}
+{"type":"text","data":" −5"}
+{"type":"text","data":"60;"}
+{"type":"text","data":" (−"}
+{"type":"text","data":"560"}
+{"type":"text","data":")^2"}
+{"type":"text","data":" = "}
+{"type":"text","data":"313"}
+{"type":"text","data":",600"}
+{"type":"text","data":"; "}
+{"type":"text","data":"3"}
+{"type":"text","data":"13,"}
+{"type":"text","data":"600 −"}
+{"type":"text","data":" 3"}
+{"type":"text","data":"11,"}
+{"type":"text","data":"192 →"}
+{"type":"text","data":" **240"}
+{"type":"text","data":"8**"}
+{"type":"text","data":" (k"}
+{"type":"text","data":"=7"}
+{"type":"text","data":")\n-"}
+{"type":"text","data":" 240"}
+{"type":"text","data":"8^"}
+{"type":"text","data":"2 ="}
+{"type":"text","data":" 5"}
+{"type":"text","data":",7"}
+{"type":"text","data":"98,"}
+{"type":"text","data":"464"}
+{"type":"text","data":"; "}
+{"type":"text","data":"555"}
+{"type":"text","data":"7·"}
+{"type":"text","data":"1043"}
+{"type":"text","data":" = "}
+{"type":"text","data":"5,"}
+{"type":"text","data":"795"}
+{"type":"text","data":",95"}
+{"type":"text","data":"1 →"}
+{"type":"text","data":" **25"}
+{"type":"text","data":"13"}
+{"type":"text","data":"** ("}
+{"type":"text","data":"k="}
+{"type":"text","data":"8)\n"}
+{"type":"text","data":"- "}
+{"type":"text","data":"251"}
+{"type":"text","data":"3^"}
+{"type":"text","data":"2 ="}
+{"type":"text","data":" 6"}
+{"type":"text","data":",315"}
+{"type":"text","data":",169"}
+{"type":"text","data":"; "}
+{"type":"text","data":"555"}
+{"type":"text","data":"7·"}
+{"type":"text","data":"1136"}
+{"type":"text","data":" = "}
+{"type":"text","data":"6,"}
+{"type":"text","data":"312"}
+{"type":"text","data":",75"}
+{"type":"text","data":"2 →"}
+{"type":"text","data":" **24"}
+{"type":"text","data":"17"}
+{"type":"text","data":"** ("}
+{"type":"text","data":"k="}
+{"type":"text","data":"9)\n"}
+{"type":"text","data":"- "}
+{"type":"text","data":"241"}
+{"type":"text","data":"7^"}
+{"type":"text","data":"2 ="}
+{"type":"text","data":" 5"}
+{"type":"text","data":",8"}
+{"type":"text","data":"41,"}
+{"type":"text","data":"889"}
+{"type":"text","data":"; "}
+{"type":"text","data":"555"}
+{"type":"text","data":"7·"}
+{"type":"text","data":"1051"}
+{"type":"text","data":" = "}
+{"type":"text","data":"5,"}
+{"type":"text","data":"840"}
+{"type":"text","data":",40"}
+{"type":"text","data":"7 →"}
+{"type":"text","data":" **148"}
+{"type":"text","data":"2**"}
+{"type":"text","data":" (k"}
+{"type":"text","data":"=10"}
+{"type":"text","data":")\n-"}
+{"type":"text","data":" 148"}
+{"type":"text","data":"2^"}
+{"type":"text","data":"2 ="}
+{"type":"text","data":" 2"}
+{"type":"text","data":",196"}
+{"type":"text","data":",3"}
+{"type":"text","data":"24;"}
+{"type":"text","data":" 55"}
+{"type":"text","data":"57"}
+{"type":"text","data":"·39"}
+{"type":"text","data":"5 ="}
+{"type":"text","data":" 2"}
+{"type":"text","data":",195"}
+{"type":"text","data":",0"}
+{"type":"text","data":"15 →"}
+{"type":"text","data":" **130"}
+{"type":"text","data":"9**"}
+{"type":"text","data":" (k"}
+{"type":"text","data":"=11"}
+{"type":"text","data":")\n\n**"}
+{"type":"text","data":"Multiply the"}
+{"type":"text","data":" needed"}
+{"type":"text","data":" factors**"}
+{"type":"text","data":" (k"}
+{"type":"text","data":" = "}
+{"type":"text","data":"11,"}
+{"type":"text","data":" 9"}
+{"type":"text","data":", "}
+{"type":"text","data":"8,"}
+{"type":"text","data":" 5"}
+{"type":"text","data":", "}
+{"type":"text","data":"4,"}
+{"type":"text","data":" 3"}
+{"type":"text","data":", "}
+{"type":"text","data":"2),"}
+{"type":"text","data":" reducing mod"}
+{"type":"text","data":" 55"}
+{"type":"text","data":"57"}
+{"type":"text","data":" each step"}
+{"type":"text","data":":\n\n"}
+{"type":"text","data":"- "}
+{"type":"text","data":"1309"}
+{"type":"text","data":" · "}
+{"type":"text","data":"241"}
+{"type":"text","data":"7 ="}
+{"type":"text","data":" 3"}
+{"type":"text","data":",163"}
+{"type":"text","data":",85"}
+{"type":"text","data":"3;"}
+{"type":"text","data":" 55"}
+{"type":"text","data":"57"}
+{"type":"text","data":"·56"}
+{"type":"text","data":"9 ="}
+{"type":"text","data":" 3"}
+{"type":"text","data":",161"}
+{"type":"text","data":",9"}
+{"type":"text","data":"33 →"}
+{"type":"text","data":" **192"}
+{"type":"text","data":"0**\n"}
+{"type":"text","data":"- "}
+{"type":"text","data":"1920"}
+{"type":"text","data":" · "}
+{"type":"text","data":"251"}
+{"type":"text","data":"3 ="}
+{"type":"text","data":" 4"}
+{"type":"text","data":",8"}
+{"type":"text","data":"24,"}
+{"type":"text","data":"960"}
+{"type":"text","data":"; "}
+{"type":"text","data":"555"}
+{"type":"text","data":"7·"}
+{"type":"text","data":"868"}
+{"type":"text","data":" = "}
+{"type":"text","data":"4,"}
+{"type":"text","data":"823"}
+{"type":"text","data":",47"}
+{"type":"text","data":"6 →"}
+{"type":"text","data":" **148"}
+{"type":"text","data":"4**\n"}
+{"type":"text","data":"- "}
+{"type":"text","data":"1484"}
+{"type":"text","data":" · "}
+{"type":"text","data":"539"}
+{"type":"text","data":"2 "}
+{"type":"text","data":"≡ "}
+{"type":"text","data":"1484"}
+{"type":"text","data":"·("}
+{"type":"text","data":"−165"}
+{"type":"text","data":") ="}
+{"type":"text","data":" −24"}
+{"type":"text","data":"4,"}
+{"type":"text","data":"860"}
+{"type":"text","data":" "}
+{"type":"text","data":"≡ −"}
+{"type":"text","data":"352"}
+{"type":"text","data":" → **"}
+{"type":"text","data":"5205"}
+{"type":"text","data":"**\n-"}
+{"type":"text","data":" 520"}
+{"type":"text","data":"5 ·"}
+{"type":"text","data":" 36"}
+{"type":"text","data":"16"}
+{"type":"text","data":" ≡"}
+{"type":"text","data":" (−"}
+{"type":"text","data":"352"}
+{"type":"text","data":")·"}
+{"type":"text","data":"361"}
+{"type":"text","data":"6 ="}
+{"type":"text","data":" −1"}
+{"type":"text","data":",27"}
+{"type":"text","data":"2,"}
+{"type":"text","data":"832"}
+{"type":"text","data":" ≡"}
+{"type":"text","data":" −27"}
+{"type":"text","data":"9 →"}
+{"type":"text","data":" **5"}
+{"type":"text","data":"278"}
+{"type":"text","data":"**\n-"}
+{"type":"text","data":" 5"}
+{"type":"text","data":"278"}
+{"type":"text","data":" · "}
+{"type":"text","data":"219"}
+{"type":"text","data":"2 "}
+{"type":"text","data":"≡ ("}
+{"type":"text","data":"−27"}
+{"type":"text","data":"9)"}
+{"type":"text","data":"·2"}
+{"type":"text","data":"192"}
+{"type":"text","data":" = −"}
+{"type":"text","data":"611"}
+{"type":"text","data":",5"}
+{"type":"text","data":"68 "}
+{"type":"text","data":"≡ −"}
+{"type":"text","data":"298"}
+{"type":"text","data":" → **"}
+{"type":"text","data":"525"}
+{"type":"text","data":"9**\n"}
+{"type":"text","data":"- "}
+{"type":"text","data":"525"}
+{"type":"text","data":"9 ·"}
+{"type":"text","data":" 240"}
+{"type":"text","data":"1 "}
+{"type":"text","data":"≡ ("}
+{"type":"text","data":"−29"}
+{"type":"text","data":"8)"}
+{"type":"text","data":"·240"}
+{"type":"text","data":"1 ="}
+{"type":"text","data":" −7"}
+{"type":"text","data":"15,"}
+{"type":"text","data":"498"}
+{"type":"text","data":" ≡"}
+{"type":"text","data":" −420"}
+{"type":"text","data":"2 →"}
+{"type":"text","data":" **135"}
+{"type":"text","data":"5**\n\n"}
+{"type":"text","data":"1355"}
+{"type":"available_commands","tools":["run_terminal_command","read_file","search_replace","list_dir","grep","kill_command_or_subagent","todo_write","get_command_or_subagent_output","spawn_subagent","scheduler_create","scheduler_delete","scheduler_list","monitor","search_tool","use_tool","workflow","enter_plan_mode","exit_plan_mode","ask_user_question","send_feedback","image_gen","image_edit","image_to_video","reference_to_video","write","spawn_agent","send_message","followup_task","list_agents","wait_agent","interrupt_agent","pty__pty_kill","pty__pty_list","pty__pty_read","pty__pty_spawn","pty__pty_wait","pty__pty_write","pty__ssh_connect","pty__ssh_disconnect","pty__ssh_exec","pty__ssh_list","pty__ssh_list_dir","pty__ssh_mkdir","pty__ssh_read_file","pty__ssh_run","pty__ssh_session_spawn","pty__ssh_tunnel_close","pty__ssh_tunnel_open","pty__ssh_write_file","github__add_comment_to_pending_review","github__add_issue_comment","github__add_reply_to_pull_request_comment","github__assign_copilot_to_issue","github__create_branch","github__create_or_update_file","github__create_pull_request","github__create_pull_request_with_copilot","github__create_repository","github__delete_file","github__delete_repository","github__fork_repository","github__get_commit","github__get_copilot_job_status","github__get_file_contents","github__get_label","github__get_latest_release","github__get_me","github__get_release_by_tag","github__get_tag","github__get_team_members","github__get_teams","github__issue_read","github__issue_write","github__list_branches","github__list_commits","github__list_issue_fields","github__list_issue_types","github__list_issues","github__list_pull_requests","github__list_releases","github__list_repository_collaborators","github__list_tags","github__merge_pull_request","github__pull_request_read","github__pull_request_review_write","github__push_files","github__request_copilot_review","github__run_secret_scanning","github__search_code","github__search_commits","github__search_issues","github__search_pull_requests","github__search_repositories","github__search_users","github__sub_issue_write","github__update_issue_comment","github__update_pull_request","github__update_pull_request_branch","codegraph__codegraph_search","codegraph__codegraph_callers","codegraph__codegraph_callees","codegraph__codegraph_impact","codegraph__codegraph_node","codegraph__codegraph_explore","codegraph__codegraph_status","codebase-memory-mcp__index_repository","codebase-memory-mcp__search_graph","codebase-memory-mcp__query_graph","codebase-memory-mcp__trace_path","codebase-memory-mcp__get_code_snippet","codebase-memory-mcp__get_file_outline","codebase-memory-mcp__get_graph_schema","codebase-memory-mcp__compare_graphs","codebase-memory-mcp__get_architecture","codebase-memory-mcp__search_code","codebase-memory-mcp__list_projects","codebase-memory-mcp__delete_project","codebase-memory-mcp__index_status","codebase-memory-mcp__check_index_coverage","codebase-memory-mcp__detect_changes","codebase-memory-mcp__manage_adr","codebase-memory-mcp__ingest_traces"],"commands":["compact","always-approve","context","plugins","reload-plugins","session-info","feedback","deep-research","workflow","goal","loop","apex-auth-and-keys","apex-copilot-testing","apex-deck-figures","apex-fleet-deployment","apex-harness-development","apex-headless-smoke-testing","apex-ontap-source-topology","apex-search-platform-ops","apex-settings-model-changes","apex-wire-capture","argocd-readonly","beads","brainstorming","claude-api","codebase-memory","cognee-memory","dispatching-parallel-agents","docs-audit-and-refresh","docs-update-from-diff","executing-plans","find-skills","finishing-a-development-branch","frontend-design","gh-address-comments","gh-fix-ci","git","grok-session-triage","local-code-intelligence","mcp-builder","netapp-dev-connectivity","netapp-llm-proxy","openai-docs","playwright","pr-review","receiving-code-review","requesting-code-review","scs-ops","security-best-practices","security-threat-model","sem","skill-creator","skill-installer","subagent-driven-development","systematic-debugging","terminal-capture","test-driven-development","using-git-worktrees","using-superpowers","verification-before-completion","weave","webapp-testing","writing-plans","writing-skills"]}
+{"type":"usage","usage":{"input_tokens":19267,"output_tokens":10201,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"reasoning_tokens":0}}
+{"type":"end","stopReason":"end_turn","sessionId":"01a0b847-713d-7ca1-9b4a-ec79a1525fe0","requestId":"b8af3c62-f681-4674-b537-b61dfdd2d28d","usage":{"input_tokens":19267,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":10201,"reasoning_tokens":0,"total_tokens":29468},"num_turns":1,"modelUsage":{"glm-5.2":{"inputTokens":19267,"outputTokens":10201,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"modelCalls":1}}}

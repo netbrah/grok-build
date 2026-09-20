@@ -1,0 +1,32 @@
+{
+  "info": {
+    "id": "01a0bb8a-4d35-7e52-920d-6f84c5393427",
+    "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T211957Z/qwen-churn-resp/cwd"
+  },
+  "agent_id": "ag1.49f61c4d57da4bdc9f8e6a4897125c20",
+  "attempt_id": "at1.7dd9e416fa774acebc60e58da05b8527",
+  "session_summary": "You are working on a real infrastructure design problem for",
+  "created_at": "2026-09-19T21:19:58.288097Z",
+  "updated_at": "2026-09-19T22:01:02.630Z",
+  "num_messages": 436,
+  "num_chat_messages": 247,
+  "current_model_id": "qwen3.8-27b",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "session_kind": "headless",
+  "git_root_dir": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/",
+  "git_remotes": [
+    "https://bitbucket.ngage.netapp.com/scm/apex/grok-build.git",
+    "https://github.com/netbrah/grok-build.git",
+    "https://github.com/xai-org/grok-build.git"
+  ],
+  "head_commit": "49c4e549fb308d3824f7cb6ff93b4f3937fe9835",
+  "head_branch": "feat/first-class-responses-catalog",
+  "request_id": "024b7a33-4abe-4915-a9a5-277f02072641",
+  "grok_home": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T211957Z/qwen-churn-resp/home",
+  "last_active_at": "2026-09-19T22:01:02.630Z",
+  "generated_title": "You are working on a real infrastructure design problem for",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "xhigh"
+}

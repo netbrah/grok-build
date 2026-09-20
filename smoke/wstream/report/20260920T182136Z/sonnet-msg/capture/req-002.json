@@ -1,0 +1,18 @@
+{
+  "n": 2,
+  "method": "GET",
+  "path": "/model_group/info",
+  "ts": "2026-09-20T18:21:37Z",
+  "headers": {
+    "authorization": {
+      "masked": true,
+      "sha256_12": "12cd258ae281",
+      "len": 92
+    },
+    "accept": "*/*",
+    "user-agent": "grok-shell/1.0.24 (macos; aarch64)",
+    "accept-encoding": "gzip, br, deflate",
+    "host": "127.0.0.1:59556"
+  },
+  "body": ""
+}

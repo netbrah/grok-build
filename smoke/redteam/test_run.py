@@ -2680,6 +2680,11 @@ class CampaignTest(unittest.TestCase):
         v["evidence_index"] = [{"file": "req-001.json"}]
         with open(p, "w") as fh:
             json.dump(v, fh)
+        # N5 (apex-ayl.91): the census is complete only when every sealed
+        # case has a persisted verdict — the fixture mirrors a complete
+        # campaign (CB previously had no verdict and was silently absent).
+        os.makedirs(os.path.join(cam, "cb"), exist_ok=True)
+        self._verdict(os.path.join(cam, "cb"), "CB", "CB", 1, "PASS", "PASS")
         self.assertEqual(run.validate_campaign(cam), [])
         # Retry overwrote earlier evidence: attempt-2 without attempt-1.
         p2 = os.path.join(cam, "cb2")
@@ -2745,6 +2750,102 @@ class CaseOrderTest(unittest.TestCase):
         run.CASES_DIR = d
         got = [c["id"] for c in self._load(["GHOST", "MIKE", "ALPHA"])]
         self.assertEqual(got, ["MIKE", "ALPHA"])
+
+
+class CampaignVerdictNitsTest(unittest.TestCase):
+    """apex-ayl.91 N1/N4/N5 (20260919T084258Z bookkeeping campaign):
+    SKIP rows persist a verdict (outcome SKIP), the validator stops
+    false-rejecting RECON/0-call mechanism rows as "incomplete
+    evidence", and it now catches missing verdicts and seal tampering."""
+
+    def _tmpdir(self):
+        return tempfile.mkdtemp(prefix="nits-")
+
+    @staticmethod
+    def _verdict(path, cell, status, outcome, calls, evidence):
+        with open(path, "w") as fh:
+            json.dump({"schema_version": 1, "campaign_id": "nits-test",
+                       "cell_id": cell, "case_id": cell, "attempt": 1,
+                       "status": status, "outcome": outcome,
+                       "model_calls": calls, "evidence_index": evidence,
+                       "verdict": {}, "killed": False}, fh)
+
+    def _sealed_campaign(self, d, cells):
+        run.seal_campaign(d, "nits-test", None, cells, mode="adhoc")
+        for c in cells:
+            os.makedirs(os.path.join(d, c.lower()), exist_ok=True)
+
+    def test_skip_row_persists_verdict_outcome_skip(self):
+        d = self._tmpdir()
+        try:
+            case = {"id": "S-1", "est_calls": 3}
+            row = run._skip_row(case, "budget: used=5 est=3 limit=5")
+            ctx = types.SimpleNamespace(verdict=None, retry_count=0)
+            args = types.SimpleNamespace(campaign_id="nits-test")
+            run._skip_verdict(d, case, row, ctx, args)
+            with open(os.path.join(d, "verdict.json")) as fh:
+                doc = json.load(fh)
+            self.assertEqual(doc["status"], "SKIP")
+            self.assertEqual(doc["outcome"], "SKIP")
+            self.assertEqual(doc["model_calls"], 0)
+            self.assertEqual(doc["evidence_index"], [])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_validator_rejects_missing_verdict(self):
+        d = self._tmpdir()
+        try:
+            self._sealed_campaign(d, ["A-1", "A-2"])
+            self._verdict(os.path.join(d, "a-1", "verdict.json"), "A-1",
+                          "PASS", "PASS", 2,
+                          [{"file": "req-001.json", "request_n": 1}])
+            rejs = run.validate_campaign(d)
+            missing = [r for r in rejs if "no verdict persisted" in r]
+            self.assertTrue(missing, rejs)
+            self.assertIn("A-2", missing[0])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_validator_rejects_broken_seal(self):
+        d = self._tmpdir()
+        try:
+            self._sealed_campaign(d, ["A-1"])
+            man_path = os.path.join(d, "campaign.json")
+            with open(man_path) as fh:
+                man = json.load(fh)
+            man["expected_cases"].append("TAMPERED")
+            with open(man_path, "w") as fh:
+                json.dump(man, fh)
+            rejs = run.validate_campaign(d)
+            self.assertTrue(any("seal broken" in r for r in rejs), rejs)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_validator_no_false_reject_recon_or_zero_call(self):
+        d = self._tmpdir()
+        try:
+            self._sealed_campaign(d, ["R-1", "Z-1"])
+            self._verdict(os.path.join(d, "r-1", "verdict.json"), "R-1",
+                          "RECON", "PASS", 2, [])
+            self._verdict(os.path.join(d, "z-1", "verdict.json"), "Z-1",
+                          "PASS", "PASS", 0, [])
+            rejs = run.validate_campaign(d)
+            self.assertFalse(any("incomplete evidence" in r for r in rejs),
+                             rejs)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_validator_still_rejects_pass_without_evidence(self):
+        d = self._tmpdir()
+        try:
+            self._sealed_campaign(d, ["P-1"])
+            self._verdict(os.path.join(d, "p-1", "verdict.json"), "P-1",
+                          "PASS", "PASS", 3, [])
+            rejs = run.validate_campaign(d)
+            self.assertTrue(any("incomplete evidence" in r for r in rejs),
+                             rejs)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 def main():

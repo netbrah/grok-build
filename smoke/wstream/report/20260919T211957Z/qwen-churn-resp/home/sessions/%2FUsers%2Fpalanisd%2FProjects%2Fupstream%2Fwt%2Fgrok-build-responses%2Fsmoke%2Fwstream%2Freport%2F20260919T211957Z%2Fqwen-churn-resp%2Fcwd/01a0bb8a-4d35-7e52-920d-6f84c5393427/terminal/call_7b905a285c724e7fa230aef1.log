@@ -1,0 +1,80 @@
+**Exploration: local validation per-item token cap reasoning item messages wire non-retryable**
+
+Found 67 symbols across 8 files.
+
+**Blast radius — what depends on these (update/verify before editing)**
+
+- `CompactionItem` (crates/common/xai-grok-compaction/src/item.rs:56) — 5 callers in `crates/common/xai-grok-compaction/src/history/filter.rs`, `crates/common/xai-grok-compaction/src/intra_compaction/fit.rs`, `crates/common/xai-grok-compaction/src/lib.rs`, `crates/common/xai-grok-compaction/src/select.rs` +1 more; no tests found within 3 caller hops
+- `CompactionItemBuilder` (crates/common/xai-grok-compaction/src/item.rs:104) — 5 callers in `crates/common/xai-grok-compaction/src/history/filter.rs`, `crates/common/xai-grok-compaction/src/inter_compaction/compact.rs`, `crates/common/xai-grok-compaction/src/intra_compaction/fit.rs`, `crates/common/xai-grok-compaction/src/lib.rs` +1 more; no tests found within 3 caller hops
+- `CompactionItemFactory` (crates/common/xai-grok-compaction/src/item.rs:149) — 3 callers in `crates/common/xai-grok-compaction/src/code_compaction/assemble.rs`, `crates/common/xai-grok-compaction/src/lib.rs`, `crates/common/xai-grok-compaction/src/code_compaction/compact.rs`; no tests found within 3 caller hops
+- `messages` (crates/codegen/xai-grok-sampling-types/src/messages.rs:55) — 4 callers in `crates/codegen/xai-grok-sampling-types/src/request_validation.rs`, `crates/codegen/xai-grok-sampling-types/src/request_builder.rs`; tested via callers: `crates/codegen/xai-grok-sampler/tests/request_validation_pre_http.rs`, `crates/codegen/xai-grok-config/src/signed_policy/claim_tests.rs` +3
+
+**Relationships**
+
+**extends:**
+- CompactionItemBuilder → CompactionItem
+
+**implements:**
+- MockItem → CompactionItem
+- MockItem → CompactionItem
+- MockItem → CompactionItem
+- MockItem → CompactionItem
+- MockItem → CompactionItemBuilder
+- MockItem → CompactionItemBuilder
+- MockItem → CompactionItemBuilder
+- MockItem → CompactionItemFactory
+- MockItem → CompactionItemFactory
+
+**calls:**
+- role → role
+- role → role
+- role → role
+- text → text
+- text → text
+- text → text
+- is_tool_result → is_tool_result
+- has_tool_requests → has_tool_requests
+- has_tool_requests → has_tool_requests
+- has_tool_requests → has_tool_requests
+- ... and 96 more
+
+**references:**
+- role → CompactionRole
+- compaction_summary_item → text
+- messages → Message
+- encode_caps → MessagesRequest
+- validate_messages_request_invariants → MessagesRequest
+- reasoning → ConversationItem
+- messages → Message
+- message_sequence → DraftMessageSequence
+- coding_data_sharing_lock → CodingDataSharingLock
+- value_display → CodingDataSharingLock
+- ... and 43 more
+
+**Source Code**
+
+> The code below is the **verbatim, current on-disk source** of these files — re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.
+
+**`crates/codegen/xai-hooks-plugins-types/src/lib.rs`** — references(references), calls(calls), item(function)
+
+```rust
+922	        assert_eq!(parsed.components, None);
+923	    }
+924	
+925	    fn item(name: &str, desc: Option<&str>) -> ComponentItem {
+926	        ComponentItem::new(name, desc.map(str::to_string))
+927	    }
+928	
+929	    #[test]
+930	    fn component_item_new_strips_control_chars_and_truncates() {
+```
+
+**`crates/codegen/xai-grok-pager/src/views/queue_pane.rs`** — QueueEntryWire(instantiates), QueueEntryWire(references), wire(function)
+
+```rust
+1055	mod tests {
+1056	    use super::*;
+1057	
+1058	    fn wire(id: &str, text: &str, pos: usize) -> QueueEntryWire {
+1059	        QueueEntryWire {
+1060	            id: id.into(),

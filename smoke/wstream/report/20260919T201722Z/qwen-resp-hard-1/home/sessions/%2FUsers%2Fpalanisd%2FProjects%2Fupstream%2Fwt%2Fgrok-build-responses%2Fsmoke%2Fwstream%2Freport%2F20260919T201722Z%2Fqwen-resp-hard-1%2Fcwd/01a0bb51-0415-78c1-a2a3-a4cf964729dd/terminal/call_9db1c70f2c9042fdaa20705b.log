@@ -1,0 +1,50 @@
+=== a.txt b.txt vs  ===
+usage: minidiff.py FILE_A FILE_B
+Traceback (most recent call last):
+  File "/tmp/check_hunk.py", line 25, in <module>
+    a, b = sys.argv[1], sys.argv[2]
+                        ~~~~~~~~^^^
+IndexError: list index out of range
+=== /tmp/ma.txt /tmp/mc.txt vs  ===
+usage: minidiff.py FILE_A FILE_B
+Traceback (most recent call last):
+  File "/tmp/check_hunk.py", line 25, in <module>
+    a, b = sys.argv[1], sys.argv[2]
+                        ~~~~~~~~^^^
+IndexError: list index out of range
+=== /tmp/ma.txt /tmp/mb.txt vs  ===
+usage: minidiff.py FILE_A FILE_B
+Traceback (most recent call last):
+  File "/tmp/check_hunk.py", line 25, in <module>
+    a, b = sys.argv[1], sys.argv[2]
+                        ~~~~~~~~^^^
+IndexError: list index out of range
+=== MULTI-HUNK ===
+Traceback (most recent call last):
+  File "/tmp/check_hunk.py", line 28, in <module>
+    got = apply(la, p.stdout)
+  File "/tmp/check_hunk.py", line 7, in apply
+    lo, lc, no, nc = map(int, m.groups())
+    ^^^^^^^^^^^^^^
+ValueError: invalid literal for int() with base 10: ' l1\n-l2\n+l2 CHANGED\n l3\n'
+=== EMPTY VS TEXT ===
+@@ -0,0 +1,1 @@
++x y
+RC=1
+Traceback (most recent call last):
+  File "/tmp/check_hunk.py", line 28, in <module>
+    got = apply(la, p.stdout)
+  File "/tmp/check_hunk.py", line 7, in apply
+    lo, lc, no, nc = map(int, m.groups())
+    ^^^^^^^^^^^^^^
+ValueError: invalid literal for int() with base 10: '+x y\n'
+@@ -1,1 +0,0 @@
+-x y
+RC=1
+Traceback (most recent call last):
+  File "/tmp/check_hunk.py", line 28, in <module>
+    got = apply(la, p.stdout)
+  File "/tmp/check_hunk.py", line 7, in apply
+    lo, lc, no, nc = map(int, m.groups())
+    ^^^^^^^^^^^^^^
+ValueError: invalid literal for int() with base 10: '-x y\n'

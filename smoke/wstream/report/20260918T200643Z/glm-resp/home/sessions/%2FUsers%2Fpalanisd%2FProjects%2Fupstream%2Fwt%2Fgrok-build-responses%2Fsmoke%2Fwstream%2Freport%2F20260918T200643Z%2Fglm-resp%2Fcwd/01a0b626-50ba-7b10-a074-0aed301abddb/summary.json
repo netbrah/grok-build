@@ -1,0 +1,32 @@
+{
+  "info": {
+    "id": "01a0b626-50ba-7b10-a074-0aed301abddb",
+    "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260918T200643Z/glm-resp/cwd"
+  },
+  "agent_id": "ag1.c7a89b6a2b4e424282b26ceca8bb6f40",
+  "attempt_id": "at1.b099b8ddf90647a3b618ec9b0c20c851",
+  "session_summary": "Modular Exponentiation 7^8432 mod 5557",
+  "created_at": "2026-09-18T20:12:39.511191Z",
+  "updated_at": "2026-09-18T20:12:41.541010Z",
+  "num_messages": 1,
+  "num_chat_messages": 6,
+  "current_model_id": "glm-5.2",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "session_kind": "headless",
+  "git_root_dir": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/",
+  "git_remotes": [
+    "https://bitbucket.ngage.netapp.com/scm/apex/grok-build.git",
+    "https://github.com/netbrah/grok-build.git",
+    "https://github.com/xai-org/grok-build.git"
+  ],
+  "head_commit": "7c82fe7c75e068ab778d5dffda9191fa8348f018",
+  "head_branch": "feat/first-class-responses-catalog",
+  "request_id": "2958fdbb-3ecf-4aa1-86bd-cabb319f9046",
+  "grok_home": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260918T200643Z/glm-resp/home",
+  "last_active_at": "2026-09-18T20:12:41.451545Z",
+  "generated_title": "Modular Exponentiation 7^8432 mod 5557",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

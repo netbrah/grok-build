@@ -1,0 +1,77 @@
+{
+ "schema_version": 1,
+ "id": "OW-REASONSURF-01",
+ "title": "apex-ayl.118 RED ratchet (openai side sweep F3+F4) — the reasoning surface is hardcoded and unextendable on the responses wire: the case pins (a) the fork's hardcoded reasoning.summary=concise (ST/conversation/responses.rs:200 — sweep F3, passes today; RE-PIN if the cut adds gating), and (b) RED pins on body.reasoning.context and body.reasoning.mode — both absent from the fork Reasoning type (FK response.rs:810-828 — sweep F4), so the operator cannot set the reasoning context (gpt-5.6 defaults to all_turns, uncontrollable) or the mode. RED today (both red paths missing -> the field pins fail 'missing'); GREEN when the cut extends the Reasoning surface with config plumbing. Two turns: a math T1 + an exact-OK T2. Control pin (class harness, plain assert): body.model eq gpt-5.6-sol on the main (oldest) request — the harness always sends the model, so a miss is a harness failure, never vacuous.",
+ "bead": "apex-ayl.118",
+ "suite": "wire-shape",
+ "tier": "slim",
+ "driver": "headless",
+ "model": "gpt-5.6-sol",
+ "wirecap": true,
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Find the remainder when 7^8432 is divided by 5557. Show your work using modular exponentiation. End your reply with exactly: OW-REASONSURF-T1",
+   "timeout_s": 240
+  },
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: OW-REASONSURF-OK",
+   "timeout_s": 180
+  }
+ ],
+ "watchdog_s": 420,
+ "est_calls": 4,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error",
+    "label": "NO TERMINAL ERROR: both turns completed (the red is the reasoning-surface seam, not the turn)."
+   }
+  ],
+  "wire": [
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses" },
+    "last": 0,
+    "path": "body.model",
+    "eq": "gpt-5.6-sol",
+    "label": "CONTROL (class harness): the main (oldest) request carries the session model — the harness always does; a miss is a harness failure, never vacuous."
+   },
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses" },
+    "last": 0,
+    "path": "body.reasoning.summary",
+    "eq": "concise",
+    "label": "CONTROL (class harness, F3 docs): the fork hardcodes reasoning.summary=concise (responses.rs:200) — passes today; documents the hardcode. RE-PIN if the cut adds config gating (the pin becomes the red's companion)."
+   },
+   {
+    "kind": "field",
+    "id": "ow_reasonsurf_ctx_red",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses" },
+    "last": 0,
+    "path": "body.reasoning.context",
+    "ne": null,
+    "label": "RED PIN (F4, member 1): the main request carries reasoning.context (the operator-settable reasoning context; gpt-5.6 defaults all_turns and is uncontrollable today). Pre-cut FAILs: the field is absent from the fork Reasoning type (FK response.rs:810-828) so the path is missing."
+   },
+   {
+    "kind": "field",
+    "id": "ow_reasonsurf_mode_red",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/responses" },
+    "last": 0,
+    "path": "body.reasoning.mode",
+    "ne": null,
+    "label": "RED PIN (F4, member 2): the main request carries reasoning.mode. Pre-cut FAILs: absent from the fork Reasoning type (FK response.rs:810-828) so the path is missing."
+   }
+  ]
+ },
+ "expected_red": { "id": "ow-f3f4-reasonsurf" }
+}

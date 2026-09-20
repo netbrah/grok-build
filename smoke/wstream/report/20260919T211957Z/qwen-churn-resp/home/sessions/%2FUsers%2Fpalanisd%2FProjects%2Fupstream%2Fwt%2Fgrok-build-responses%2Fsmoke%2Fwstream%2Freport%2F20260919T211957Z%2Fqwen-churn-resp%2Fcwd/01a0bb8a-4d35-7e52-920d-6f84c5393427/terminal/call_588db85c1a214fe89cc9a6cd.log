@@ -1,0 +1,4 @@
+  File "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260919T211957Z/qwen-churn-resp/cwd/churn_math.py", line 13
+    def $tok(n, rate):  # dollars for n tokens at $rate/M
+        ^
+SyntaxError: invalid syntax

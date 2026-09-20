@@ -1,0 +1,4 @@
+{"ts_ms":1789851103879,"kind":"start","pid":93967,"version":"1.0.24"}
+{"ts_ms":1789851103880,"kind":"sample","footprint_bytes":63914920,"rss_bytes":125124608,"threads":60,"alloc":{"allocated":38135584,"active":62586880,"resident":78233600,"mapped":190726144,"retained":0,"metadata":11796008}}
+{"ts_ms":1789851133886,"kind":"sample","footprint_bytes":65651624,"rss_bytes":94191616,"threads":60,"alloc":{"allocated":38218576,"active":63242240,"resident":79872000,"mapped":192364544,"retained":0,"metadata":11802920}}
+{"ts_ms":1789851163892,"kind":"sample","footprint_bytes":65782696,"rss_bytes":80330752,"threads":60,"alloc":{"allocated":37840736,"active":62996480,"resident":80019456,"mapped":192512000,"retained":0,"metadata":11805992}}

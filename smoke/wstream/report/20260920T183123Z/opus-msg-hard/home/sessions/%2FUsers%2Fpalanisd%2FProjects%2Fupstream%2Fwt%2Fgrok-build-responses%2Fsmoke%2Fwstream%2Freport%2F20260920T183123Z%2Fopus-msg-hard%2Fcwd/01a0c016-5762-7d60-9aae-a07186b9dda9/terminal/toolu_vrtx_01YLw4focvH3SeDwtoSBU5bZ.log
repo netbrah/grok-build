@@ -1,0 +1,50 @@
+--- system diff -U1 ---
+--- a.txt	2026-09-20 14:32:07
++++ b.txt	2026-09-20 14:32:07
+@@ -1,5 +1,5 @@
+-The lighthouse stood alone on the rocky headland.
++The lighthouse stood alone on the granite headland.
+ Every night its lamp swept a slow arc across the water.
+-Fishermen steered by that pale beam for forty years.
++Fishermen steered by that pale beam for sixty years.
+ The keeper climbed the spiral stairs at dusk without fail.
+-When the fog rolled in, the horn answered the darkness.
++When the fog rolled in, the bell answered the darkness.
+diff exit=1
+--- identical files ---
+exit=0
+--- pure add/delete ---
+@@ -2,3 +2,3 @@
+ two
+-[-three-]
++{+threeX+}
+ four
+@@ -6,2 +6,1 @@
+ six
+-seven
+exit=1
+--- vs system on that pair ---
+--- d1.txt	2026-09-20 14:32:23
++++ d2.txt	2026-09-20 14:32:23
+@@ -2,3 +2,3 @@
+ two
+-three
++threeX
+ four
+@@ -6,2 +6 @@
+ six
+-seven
+--- empty file ---
+@@ -0,0 +1,5 @@
++The lighthouse stood alone on the rocky headland.
++Every night its lamp swept a slow arc across the water.
++Fishermen steered by that pale beam for forty years.
++The keeper climbed the spiral stairs at dusk without fail.
++When the fog rolled in, the horn answered the darkness.
+exit=1
+--- bad args ---
+usage: minidiff.py OLD NEW
+exit=2
+--- missing file ---
+minidiff: cannot read nope.txt: No such file or directory
+exit=2

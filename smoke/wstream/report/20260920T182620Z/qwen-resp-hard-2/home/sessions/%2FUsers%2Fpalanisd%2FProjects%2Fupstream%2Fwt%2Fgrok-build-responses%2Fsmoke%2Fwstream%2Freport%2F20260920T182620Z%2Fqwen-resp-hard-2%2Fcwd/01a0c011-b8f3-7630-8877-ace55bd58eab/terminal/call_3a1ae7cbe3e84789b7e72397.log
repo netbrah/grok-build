@@ -1,0 +1,6 @@
+--- substituted words present ---
+OK: basalt
+OK: dawn
+OK: worn
+--- exit code on diff: 1 (expect 1) ---
+identical exit=0 (expect 0), output bytes=       0 (expect 0)

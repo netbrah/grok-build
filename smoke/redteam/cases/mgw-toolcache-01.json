@@ -1,0 +1,53 @@
+{
+ "schema_version": 1,
+ "id": "MGW-TOOLCACHE-01",
+ "title": "apex-ayl.118 RED ratchet (msgw sweep F5b, GREEN path apex-ayl.114) — per-tool cache_control absent on the messages wire: the case pins body.tools[0].cache_control on the main /v1/messages request. The F5 class (ST/conversation/messages.rs:848-853; ST/messages.rs:455-471) includes no per-tool cache_control: ToolParam is name/description/input_schema only, so no tool can carry a cache breakpoint and the tool-schema prefix is uncacheable as such. RED today (path missing -> the field pin fails 'missing'); GREEN when the apex-ayl.114 cut tags a tool with cache_control. Control pin (class harness, plain assert): body.tools[0].name ne null — the harness always emits tools (tools[0] is the session_title tool), so a miss is a harness failure, never vacuous. RE-PIN RULE: if the apex-ayl.114 SDD tags a different index or member, re-pin the red to that member.",
+ "bead": "apex-ayl.118",
+ "suite": "wire-shape",
+ "tier": "slim",
+ "driver": "headless",
+ "model": "claude-sonnet-5",
+ "wirecap": true,
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: MGW-TOOLCACHE-OK",
+   "timeout_s": 180
+  }
+ ],
+ "watchdog_s": 300,
+ "est_calls": 2,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error",
+    "label": "NO TERMINAL ERROR: the turn completed (the red is the tool-cache_control seam, not the turn)."
+   }
+  ],
+  "wire": [
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/messages" },
+    "last": 0,
+    "path": "body.tools[0].name",
+    "ne": null,
+    "label": "CONTROL (class harness): the main request carries at least one named tool (tools[0] = session_title) — the harness always does; a miss is a harness failure, never vacuous."
+   },
+   {
+    "kind": "field",
+    "id": "mgw_toolcache_red",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/messages" },
+    "last": 0,
+    "path": "body.tools[0].cache_control",
+    "ne": null,
+    "label": "RED PIN (F5b / apex-ayl.114): the first tool carries a cache_control breakpoint — the tool-schema prefix becomes cacheable. Pre-cut FAILs: ToolParam has no cache_control member so the path is missing."
+   }
+  ]
+ },
+ "expected_red": { "id": "mgw-f5-toolcache" }
+}

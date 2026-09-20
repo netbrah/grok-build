@@ -1,0 +1,46 @@
+{
+ "schema_version": 1,
+ "id": "MGW-SRVTOOL-01",
+ "title": "apex-ayl.112 RED ratchet (msgw-sweep F1) — server-tool surface absent end-to-end: the case declares model/claude-sonnet-5/server_tools=web_search (config_patch intent — the docs-named server tool, dated union member web_search_20250305; the lenient row parser ignores the key pre-cut) and pins the wire for the dated union member on the /v1/messages requests. All 20 server-tool types + mcp_servers/mcp_toolset have no type, no field, no seam (sweep §2.4); consequences pinned in the title: supports_backend_search:false is unflippable on every claude catalog row, stop_reason pause_turn + the 7 stop_details variants parse but can never fire, and the web_search cost levers (max_uses, user_location, domain allow/block lists) are unreachable. RED today (no request carries the member); GREEN when the cut adds the server-tool union member + config surface. The pin selects web_search_20250305 as the F1 representative (the supports_backend_search flip path); the other 19 members + mcp_toolset are covered by the same cut and re-pinned per SDD.",
+ "bead": "apex-ayl.112",
+ "suite": "wire-shape",
+ "tier": "slim",
+ "driver": "headless",
+ "model": "claude-sonnet-5",
+ "wirecap": true,
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "config_patch": {
+  "model/claude-sonnet-5/server_tools": "web_search"
+ },
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: MGW-SRVTOOL-OK",
+   "timeout_s": 180
+  }
+ ],
+ "watchdog_s": 300,
+ "est_calls": 2,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error",
+    "label": "NO TERMINAL ERROR: the turn completed (the red is the server-tool seam, not the turn)."
+   }
+  ],
+  "wire": [
+   {
+    "kind": "grep",
+    "id": "mgw_srvtool_red",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/messages" },
+    "any": true,
+    "grep": "web_search_20250305",
+    "label": "RED PIN (F1): a /v1/messages request carries the dated server-tool union member web_search_20250305 (docs GA tool union, representative of the 20-member absent surface). Pre-cut FAILs: no type, no field, no seam."
+   }
+  ]
+ },
+ "expected_red": { "id": "mgw-f1-srvtool" }
+}

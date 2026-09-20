@@ -1,0 +1,15 @@
+{
+ "bead": "apex-ayl.110",
+ "sdd": "grok/plans/xwire/110-stable-reminder-sdd-20260919.md",
+ "ratify": "grok/plans/xwire/110-stable-reminder-sdd-ratify-root-20260919.md",
+ "extracted": "2026-09-19",
+ "source_capture": "smoke/redteam/report/full-sweep-20260919T060150Z/t21-resp-sol-mcp-tool/wire/",
+ "note": "Main-loop request bodies req-004/006/007/008/009 (envelope 'body' key; side-calls 001/002/005 and the 3-item warmup req-003 excluded). Python json preserves document key order, so serialized prefixes are order-faithful; true serde wire bytes differ only in unicode escaping (ratify: req-04 vs req-06 common prefix 27,280 B true bytes / 27,363 B python-normalized upper bound). D<R on 004/006; one-time D<->R swap 006->007; permanent R<D on 007-009.",
+ "source_sha256": {
+  "req-004.json": "5e862cd7f204ac4fe5cc7540a068765b518d7a124dd96e2afcca3c5ef85cac4d",
+  "req-006.json": "fe9125cd05ee54969bdd2152a53639f82a07b037ae86e3c531a88ccd15656fa9",
+  "req-007.json": "0aed6a0facf1fb515754d56012013c53832b7fe2dd1f76d93514401e9199aed2",
+  "req-008.json": "0eb719f4b5a4e25da85d93133d3955d50338ba7b8f26d29109aec52900c3c95b",
+  "req-009.json": "f08d0da187b6d19c6b732f5d4b40e3ab11eedc0924b6aa4765d5308485a19ed9"
+ }
+}

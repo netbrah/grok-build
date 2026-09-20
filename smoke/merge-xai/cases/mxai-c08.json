@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "id": "MXAI-C08",
+  "title": "MERGE-XAI-SYNC C-08 (PIN D9/Q9/R8, cold-spawn identity round-trip) — a session with a MINTED identity -> hard stop (SIGKILL mid-turn) -> cold resume; the identity must be ADOPTED, never re-minted. Mechanism (crate-verified): SessionIdentity {agent_id, attempt_id} is stamped into the session-dir summary.json via stamp_session_identity_if_absent (summary_write.rs:319+) — it stamps only when ABSENT, so the identity the cell seeder pre-mints (the xwfix cell-seed FIXED agent_id 'ag1.xwfixcellseed0000000000000000', run.py xwfix_seed_from_cell) must SURVIVE the cold resume: post-resume summary.json agent_id EQ the seeded value = the ADOPTION pin (a re-minted or absent agent_id = the D9/Q9 identity round-trip regressed = the 01a09be2-class collapse). Flow (headless, the DEAD-SEAT-KILL-RESUME lineage): (1) the switch_model op seeds the session from the redacted cell fixture smoke/redteam/fixtures/merge-xai/c-08-cell (pre_switch.json VERBATIM, headless case-start seeding; the op's storage-form cell diff is an INCIDENTAL BYPRODUCT of this cell — expected.json == pre_switch.json by fixture design, so it is trivially green at switch time and is labeled in the recon_note, NOT the verdict surface); (2) T1 mints the live session turn (MXAI-C08-T1); (3) the kill op SIGKILLs the binary 4s into the in-flight essay turn (the hard stop / dead seat); (4) switch via=resume cold-boots the session with --resume; (5) T2 must complete with the exact terminal nonce (MXAI-C08-T2); (6) recon_note. SCORED PINS: exit 0; T2 done; identity_adopted (artifact summary.json agent_id EQ the seeded id); attempt_stamped (summary.json attempt_id non-null — the identity struct's second member landed). VERDICT RECORD: the x-grok-session-id header on the lane requests (the resume must REUSE the seeded session id — a new id after resume = the resume path regressed). BASELINE COMPARISON: the pre-merge reference is MXAI-C08-BASELINE (recon, same flow, nonces MXAI-C08B-*) — 06 §3 step 1 runs it on the CURRENT binary BEFORE the wave-3 cutover (operator-driven; the only pre-merge item); the coordinator diffs the identity records for the 06 C-08 'matches PRE-MERGE reference run' verdict row. Lane: L-01 (sol responses). STOP-AND-REPORT: a re-minted/absent agent_id, a null attempt_id, a T2 non-completion, or a non-zero exit.",
+  "bead": "apex-l2d.4",
+  "suite": "session-resume",
+  "tier": "full",
+  "driver": "headless",
+  "model": "gpt-5.6-sol",
+  "wire": "responses",
+  "output_format": "streaming-json",
+  "wirecap": true,
+  "env": {
+    "store": false
+  },
+  "est_calls": 4,
+  "watchdog_s": 300,
+  "steps": [
+    {
+      "op": "switch_model",
+      "model": "gpt-5.6-sol",
+      "via": "resume",
+      "cell": "smoke/redteam/fixtures/merge-xai/c-08-cell",
+      "note": "CELL SEED (xwfix mechanism, not a live switch): seeds the session from the redacted c-08-cell pre_switch.json VERBATIM at case start (headless ordering) — the pre-minted identity the ADOPTION pin scores against. The op's storage-form diff (xwfix_cell_diff.storage, scored at switch time) is an INCIDENTAL BYPRODUCT here: the fixture's expected.json == pre_switch.json (identity cells seed a golden-equal history; the 06 C-08 verdict is the identity round-trip, not a storage golden), so it is trivially green at switch time. Label: mechanism byproduct, not the verdict surface."
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: MXAI-C08-T1"
+    },
+    {
+      "op": "kill",
+      "after_s": 4,
+      "prompt": "Write a 1200-word essay on the history of lighthouse automation, covering at least three named lighthouses. Begin the essay immediately."
+    },
+    {
+      "op": "switch",
+      "model": "gpt-5.6-sol",
+      "via": "resume"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: MXAI-C08-T2"
+    },
+    {
+      "op": "recon_note",
+      "note": "VERDICT SURFACE (recon_note, non-scoring): the scored claims are (1) T2 completion (the session survives its own hard stop), (2) identity_adopted — post-resume summary.json agent_id EQ the cell-seeded 'ag1.xwfixcellseed0000000000000000' (stamp_session_identity_if_absent only stamps when ABSENT: a re-minted value = the D9/Q9 round-trip regressed), (3) attempt_stamped — the identity struct's attempt_id is non-null. The switch_model op's xwfix_cell_diff.storage row is the labeled mechanism byproduct (expected.json == pre_switch.json by fixture design). BASELINE: the coordinator compares this run's identity records (the x-grok-session-id recon + the agent_id/attempt_id artifact values) against MXAI-C08-BASELINE (pre-merge binary, pre-wave-3; 06 §3 step 1) — 'matches PRE-MERGE reference run' is the 06 C-08 verdict row."
+    }
+  ],
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "text_contains",
+        "id": "done",
+        "value": "MXAI-C08-T2",
+        "label": "COLD RESUME SURVIVES: after the mid-flight SIGKILL (the hard stop) and the --resume cold boot, the session completed the post-resume turn with the exact terminal token. Absent = the session is unrecoverable after its own death (01a09be2-class collapse) -> STOP."
+      }
+    ],
+    "artifact": [
+      {
+        "file": "summary.json",
+        "field": "agent_id",
+        "eq": "ag1.xwfixcellseed0000000000000000",
+        "id": "identity_adopted",
+        "label": "IDENTITY ADOPTION PIN (the D9/Q9 core, 06 C-08): the post-resume session-dir summary.json carries the cell-seeded agent_id VERBATIM — stamp_session_identity_if_absent (summary_write.rs:319+) stamps ONLY when the identity is absent, so the pre-minted identity must be ADOPTED by the resume path, never re-minted. A different value (re-mint) or absence = the identity round-trip regressed under the merge = defect -> STOP."
+      },
+      {
+        "file": "summary.json",
+        "field": "attempt_id",
+        "ne_null": true,
+        "id": "attempt_stamped",
+        "label": "IDENTITY STRUCT MEMBER 2: the summary.json attempt_id is non-null — the SessionIdentity {agent_id, attempt_id} struct stamped its second member onto the persisted session (the R8 identity-persistence surface). Null/absent = the stamp wrote a partial identity = defect -> STOP."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "recon",
+        "file": "req-*.json",
+        "field": "$.headers.x-grok-session-id",
+        "label": "VERDICT RECORD (recon, newest capture): the x-grok-session-id header — the resume must REUSE the seeded session id across the T1/kill/resume/T2 sequence; a different id after the resume = the resume path minted a new session identity = defect (adjudicate on the record; the scored surface is identity_adopted + attempt_stamped + T2). The per-case hermetic wire dir is single-session (all captures in this case carry the same session id; the recon field form reads the newest capture — the where filter is a scored-pin concept and does not apply to recon)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  },
+  "retry": {
+    "on_status": [
+      404,
+      502,
+      503
+    ],
+    "max_attempts": 1,
+    "backoff_s": 30
+  }
+}

@@ -1,0 +1,17 @@
+== gnu -U1 on fixtures ==
+--- a.txt	2026-09-19 16:52:04
++++ b.txt	2026-09-19 16:52:08
+@@ -1,4 +1,4 @@
+-The lighthouse stood alone on the rocky headland above the bay.
+-Its lamp turned through the fog every seven seconds without fail.
+-Gulls circled the gallery rail where the keeper once walked at dusk.
++The lighthouse stood alone on the granite headland above the bay.
++Its lamp turned through the fog every nine seconds without fail.
++Terns circled the gallery rail where the keeper once walked at dusk.
+ Salt wind scoured the white paint from the seaward wall each winter.
+gnu exit=1
+
+== header match check ==
+mine: @@ -1,4 +1,4 @@
+gnu : @@ -1,4 +1,4 @@
+HEADERS MATCH

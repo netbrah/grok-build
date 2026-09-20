@@ -1,0 +1,51 @@
+# MERGE-XAI-SYNC frozen lane L-04 — qwen3.8-27b on /v1/responses (the
+# cross-model switch target + child lane: C-04 sol->qwen in-session switch,
+# C-07/C-13 spawned children, C-09 compaction arm).
+# Bead apex-l2d.4 (06 §2 lane column: 'qwen (cross-model switch target)').
+#
+# FROZEN TEMPLATE: model + wire pinned; the launcher rewrites the PLACEHOLDER
+# base_urls at run time (same sed contract as L-01):
+#     s|^base_url = ".*"|base_url = "http://127.0.0.1:<wiretap-port>/v1"|
+#     s|^models_base_url = ".*"|models_base_url = "http://127.0.0.1:<wiretap-port>/v1"|
+# NEVER commit a live URL into this file (sweep-0). Port 0 = dead-port
+# placeholder (fail-closed when unrewritten). env_key = the ENV VAR NAME (the
+# L1 contract: ambient CODEX_LLM_PROXY_KEY only). [auth] intentionally ABSENT
+# (operator launcher supplies the hermetic auth stub).
+#
+# Row shape verified against the live catalog 2026-09-18/19 (qwen row:
+# api_backend responses, model_family qwen, multi_agent_v2 true,
+# supports_reasoning_effort true, max_completion_token 128000, 3-effort table
+# xhigh(default)/medium/low). The 3-effort table is carried verbatim — note
+# the menu has NO 'max'/'ultra' tier: the C-04 switch-projection pin rides
+# exactly this shape (a carried sol 'ultra' cursor must project to the TARGET
+# DEFAULT xhigh; a raw max/ultra on a qwen request = the R5 leak class).
+
+disable_web_search = true
+
+[model."qwen3.8-27b"]
+multi_agent_v2 = true
+base_url = "http://127.0.0.1:0/v1"
+api_backend = "responses"
+model_family = "qwen"
+env_key = "CODEX_LLM_PROXY_KEY"
+max_completion_token = 128000
+supports_reasoning_effort = true
+
+[[model."qwen3.8-27b".reasoning_efforts]]
+value = "xhigh"
+label = "Xhigh Effort"
+default = true
+
+[[model."qwen3.8-27b".reasoning_efforts]]
+value = "medium"
+label = "Medium Effort"
+
+[[model."qwen3.8-27b".reasoning_efforts]]
+value = "low"
+label = "Low Effort"
+
+[endpoints]
+models_base_url = "http://127.0.0.1:0/v1"
+default_api_backend = "responses"
+default_env_key = "CODEX_LLM_PROXY_KEY"
+default_context_window = 256000

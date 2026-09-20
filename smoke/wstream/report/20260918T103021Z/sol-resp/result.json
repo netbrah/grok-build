@@ -1,0 +1,182 @@
+{
+  "cell": "sol-resp",
+  "model": "gpt-5.6-sol",
+  "api_backend": "responses",
+  "backend_class": "native",
+  "verdict": "PASS",
+  "invariants": [
+    {
+      "key": "status",
+      "expected": 200,
+      "actual": 200,
+      "ok": true
+    },
+    {
+      "key": "route",
+      "expected": "responses",
+      "actual": "responses",
+      "ok": true
+    },
+    {
+      "key": "n_model_calls_min",
+      "expected": ">= 1",
+      "actual": 2,
+      "ok": true
+    }
+  ],
+  "observations": {
+    "route": "responses",
+    "status": 200,
+    "n_model_calls": 2,
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 99,
+    "reasoning_encrypted_content": true,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "**Calculating modular exponentiation manually**\n\nI",
+    "finish": null,
+    "budget_trap": false,
+    "final_text_nonempty": true,
+    "final_text_len": 723,
+    "usage": {
+      "input_tokens": 16516,
+      "input_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 16513
+      },
+      "output_tokens": 2438,
+      "output_tokens_details": {
+        "reasoning_tokens": 2044
+      },
+      "total_tokens": 18954,
+      "cost": 0.131337
+    }
+  },
+  "analysis": {
+    "cell": "sol-resp",
+    "route": "responses",
+    "expected_route": "responses",
+    "routes_mixed": false,
+    "status": 200,
+    "n_model_calls": 2,
+    "n_side_calls": 1,
+    "side_call_errors": [
+      500
+    ],
+    "all_stream": true,
+    "any_stream": true,
+    "req_stream_values": [
+      true,
+      true
+    ],
+    "reasoning_present": true,
+    "reasoning_frames": 99,
+    "reasoning_tokens": 2044,
+    "reasoning_encrypted_content": true,
+    "reasoning_thinking_block": false,
+    "reasoning_thought_signature": false,
+    "reasoning_sample": "**Calculating modular exponentiation manually**\n\nI",
+    "finish": null,
+    "budget_trap": false,
+    "final_text_len": 723,
+    "final_text_nonempty": true,
+    "usage": {
+      "input_tokens": 16516,
+      "input_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 16513
+      },
+      "output_tokens": 2438,
+      "output_tokens_details": {
+        "reasoning_tokens": 2044
+      },
+      "total_tokens": 18954,
+      "cost": 0.131337
+    },
+    "n_frames_total": 217
+  },
+  "calls": [
+    {
+      "route": "responses",
+      "req_model": "grok-4.6",
+      "req_stream": true,
+      "req_max_tokens": 100,
+      "status": 500,
+      "n_frames": 1,
+      "frame_types": {},
+      "reasoning_frames": 0,
+      "thinking_block": false,
+      "encrypted_content": false,
+      "thought_signature": false,
+      "reasoning_sample": null,
+      "finish": null,
+      "usage": null,
+      "final_text": ""
+    },
+    {
+      "route": "responses",
+      "req_model": "gpt-5.6-sol",
+      "req_stream": true,
+      "req_max_tokens": 128000,
+      "status": 200,
+      "n_frames": 217,
+      "frame_types": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 5,
+        "response.reasoning_summary_part.added": 1,
+        "response.reasoning_summary_text.delta": 91,
+        "response.reasoning_summary_text.done": 1,
+        "response.reasoning_summary_part.done": 1,
+        "response.output_item.done": 5,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 106,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.completed": 1
+      },
+      "reasoning_frames": 99,
+      "thinking_block": false,
+      "encrypted_content": true,
+      "thought_signature": false,
+      "reasoning_sample": "**Calculating modular exponentiation manually**\n\nI",
+      "finish": null,
+      "usage": {
+        "input_tokens": 16516,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 16513
+        },
+        "output_tokens": 2438,
+        "output_tokens_details": {
+          "reasoning_tokens": 2044
+        },
+        "total_tokens": 18954,
+        "cost": 0.131337
+      },
+      "final_text": "Since\n\\[\n8432=8192+128+64+32+16,\n\\]\ncompute successive squares modulo \\(5557\\):\n\n\\[\n\\begin{aligned}\n7^1 &\\equiv 7\\\\\n7^2 &\\equiv 7^2=49\\\\\n7^4 &\\equiv 49^2=2401\\\\\n7^8 &\\equiv 2401^2\\equiv2192\\\\\n7^{16} &\\equiv2192^2\\equiv3616\\\\\n7^{32} &\\equiv3616^2\\equiv5392\\\\\n7^{64} &\\equiv5392^2\\equiv4997\\\\\n7^{128} &\\equiv4997^2\\equiv2408\\\\\n7^{256} &\\equiv2408^2\\equiv2513\\\\\n7^{512} &\\equiv2513^2\\equiv2417\\\\\n7^{1024} &\\equiv2417^2\\equiv1482\\\\\n7^{2048} &\\equiv1482^2\\equiv1309\\\\\n7^{4096} &\\equiv1309^2\\equiv1925\\\\\n7^{8192} &\\equiv1925^2\\equiv4663\n\\end{aligned}\n\\]\n\nThus,\n\\[\n\\begin{aligned}\n7^{8432}\n&\\equiv 7^{8192}7^{128}7^{64}7^{32}7^{16}\\\\\n&\\equiv4663\\cdot2408\\cdot4997\\cdot5392\\cdot3616\\\\\n&\\equiv1355\\pmod{5557}.\n\\end{aligned}\n\\]\n\n1355"
+    }
+  ],
+  "turns": [
+    {
+      "turn": 1,
+      "exit_code": 0,
+      "killed": false,
+      "elapsed": 37.11,
+      "session_id": "01a0b412-d879-72d2-b920-add31d08a3a8",
+      "n_events": 202
+    }
+  ],
+  "binary_sha256_12": "e635d5d7f2fe",
+  "wire_port": 61455,
+  "upstream": "https://llm-proxy-api.ai.eng.netapp.com",
+  "key_sha256_12": "9f3f56a263da",
+  "raw_key_hits": 0,
+  "ts": "20260918T103245Z"
+}

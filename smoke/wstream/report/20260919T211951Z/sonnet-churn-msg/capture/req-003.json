@@ -1,0 +1,82 @@
+{
+  "n": 3,
+  "method": "POST",
+  "path": "/v1/messages",
+  "ts": "2026-09-19T21:19:53Z",
+  "headers": {
+    "content-type": "application/json",
+    "authorization": {
+      "masked": true,
+      "sha256_12": "12cd258ae281",
+      "len": 92
+    },
+    "x-xai-token-auth": "xai-grok-cli",
+    "x-authenticateresponse": "authenticate-response",
+    "x-grok-client-mode": "headless",
+    "x-grok-client-version": "1.0.24",
+    "x-grok-conv-group-id": "44a8ec82-1371-5f26-9acd-cb86ab5164d3",
+    "x-grok-client-identifier": "grok-shell",
+    "user-agent": "grok-shell/1.0.24 (macos; aarch64)",
+    "x-grok-conv-id": "",
+    "x-grok-req-id": "",
+    "x-grok-model-override": "claude-sonnet-5",
+    "x-grok-session-id": "",
+    "x-grok-agent-id": "",
+    "accept": "text/event-stream",
+    "accept-encoding": "gzip, br, deflate",
+    "host": "127.0.0.1:55710",
+    "content-length": "2142"
+  },
+  "body": {
+    "model": "claude-sonnet-5",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "<user_query>\nYou are working on a real infrastructure design problem for the grok-build agent harness (a Rust, OpenAI-Codex-style agent harness that runs OpenAI \"codex family\" models (gpt-5.6-sol/terra/luna), Anthropic models (claude-opus/sonnet), and others through an OpenAI-protocol-compatible proxy).\n\nCAMPAIGN GOAL: make first-party OpenAI models on this custom harness as cheap and efficient as they are on the official OpenAI Codex CLI. The core cost problem is \"upstream churn\": redundant token traffic to the model API \u2014 cache invalidation, cache re-writes, wasted turns, duplicated or reordered context.\n\nEVIDENCE BASE (wire-verified; cite these as E1-E6 in your doc):\nE1. A/B on identical task, official codex vs this harness, gpt-5.6-sol medium: codex $0.1788 / 6 LLM requests; harness $0.5027 / 16 requests (2.81x). Turn granularity (fewer, larger turns) is the dominant swing factor, not per-token price.\nE2. A mid-prefix item-ordering bug on the harness responses wire: a \"developer\" item and\n</user_query>",
+            "cache_control": {
+              "type": "ephemeral"
+            }
+          }
+        ]
+      }
+    ],
+    "max_tokens": 100,
+    "system": [
+      {
+        "type": "text",
+        "text": "You are tasked with generating the session title. The user is asking almost always software engineering related questions on their codebase.\nWe describe the session title below\n# Session Title\nA short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler.\n\nYou will be given the user query below encapsulated in <user_query></user_query>.\n\nJust generate the session_title and nothing else",
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      }
+    ],
+    "tools": [
+      {
+        "name": "session_title",
+        "description": "Generate the session_title which we use for the user_message",
+        "input_schema": {
+          "type": "object",
+          "required": [
+            "session_title"
+          ],
+          "properties": {
+            "session_title": {
+              "type": "string",
+              "description": "Final session title, just 5-10 word descriptive title for the session. Super info dense, no filler."
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    ],
+    "tool_choice": {
+      "type": "tool",
+      "name": "session_title"
+    },
+    "temperature": 1.0,
+    "stream": true
+  }
+}

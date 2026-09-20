@@ -1,0 +1,32 @@
+{
+  "info": {
+    "id": "01a0c011-b8f3-7630-8877-ace55bd58eab",
+    "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/cwd"
+  },
+  "agent_id": "ag1.b8b5ff7109ac445db0199718ecbc1092",
+  "attempt_id": "at1.481aa736354149648e228ba68cf9f324",
+  "session_summary": "Word-level diff CLI with fixtures",
+  "created_at": "2026-09-20T18:26:22.096060Z",
+  "updated_at": "2026-09-20T18:31:23.049144Z",
+  "num_messages": 94,
+  "num_chat_messages": 58,
+  "current_model_id": "qwen3.8-27b",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "session_kind": "headless",
+  "git_root_dir": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/",
+  "git_remotes": [
+    "https://bitbucket.ngage.netapp.com/scm/apex/grok-build.git",
+    "https://github.com/netbrah/grok-build.git",
+    "https://github.com/xai-org/grok-build.git"
+  ],
+  "head_commit": "355cfe4ef2546bc2f0ac70735eafe4b521fdf95e",
+  "head_branch": "feat/first-class-responses-catalog",
+  "request_id": "4c395c90-38bd-4968-828d-c7e02b1446fc",
+  "grok_home": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report/20260920T182620Z/qwen-resp-hard-2/home",
+  "last_active_at": "2026-09-20T18:31:23.049144Z",
+  "generated_title": "Word-level diff CLI with fixtures",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "xhigh"
+}

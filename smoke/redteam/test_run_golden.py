@@ -462,7 +462,13 @@ class SwitchModelOpTest(unittest.TestCase):
             session_dir = os.path.join(root, "session")
             os.makedirs(cell_dir)
             os.makedirs(session_dir)
-            expected = [{"type": "system", "content": "pin"}]
+            # USER-type record: system-record CONTENT is excluded from
+            # scoring by design (runtime-regenerated — the OVERWATCH-
+            # ADVERSARIAL r2 wave 2026-09-19 rig repair, commit on
+            # run.py only; test_system_content_excluded_from_scoring
+            # pins that behavior separately). A user record exercises
+            # the scored deep-equality teeth untouched.
+            expected = [{"type": "user", "content": "pin"}]
             with open(os.path.join(cell_dir, "expected.json"), "w") as fh:
                 json.dump(expected, fh)
             with open(os.path.join(session_dir, "chat_history.jsonl"),
@@ -472,11 +478,51 @@ class SwitchModelOpTest(unittest.TestCase):
             self.assertTrue(r.ok, r.detail)
             with open(os.path.join(session_dir, "chat_history.jsonl"),
                       "w") as fh:
-                fh.write(json.dumps({"type": "system",
+                fh.write(json.dumps({"type": "user",
                                      "content": "rewritten"}) + "\n")
             r2 = run.xwfix_cell_diff_storage(cell_dir, session_dir)
             self.assertFalse(r2.ok)
             self.assertIn("first_diff_index=0", r2.detail)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_system_content_excluded_from_scoring(self):
+        # OVERWATCH-ADVERSARIAL r2 wave (2026-09-19, run.py-only
+        # commit): the harness rewrites the system record with the
+        # runtime system prompt at session load, so a pinned system
+        # CONTENT can never match post-load — content-only system
+        # diffs are informational (ok=True, named in the detail),
+        # while any non-system diff still FAILs.
+        root = tempfile.mkdtemp(prefix="xwfix-cell-sys-")
+        try:
+            cell_dir = os.path.join(root, "cell")
+            session_dir = os.path.join(root, "session")
+            os.makedirs(cell_dir)
+            os.makedirs(session_dir)
+            expected = [{"type": "system", "content": "pin"},
+                        {"type": "user", "content": "keep"}]
+            with open(os.path.join(cell_dir, "expected.json"), "w") as fh:
+                json.dump(expected, fh)
+            with open(os.path.join(session_dir, "chat_history.jsonl"),
+                      "w") as fh:
+                fh.write(json.dumps(
+                    {"type": "system",
+                     "content": "runtime-regenerated prompt"}) + "\n"
+                    + json.dumps(expected[1]) + "\n")
+            r = run.xwfix_cell_diff_storage(cell_dir, session_dir)
+            self.assertTrue(r.ok, r.detail)
+            self.assertIn("system record content excluded", r.detail)
+            # A NON-SYSTEM diff in the same record set still FAILs.
+            with open(os.path.join(session_dir, "chat_history.jsonl"),
+                      "w") as fh:
+                fh.write(json.dumps(
+                    {"type": "system",
+                     "content": "runtime-regenerated prompt"}) + "\n"
+                    + json.dumps({"type": "user",
+                                  "content": "changed"}) + "\n")
+            r2 = run.xwfix_cell_diff_storage(cell_dir, session_dir)
+            self.assertFalse(r2.ok)
+            self.assertIn("first_diff_index=1", r2.detail)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -523,6 +569,398 @@ class GoldenCaseOfflineRunTest(unittest.TestCase):
                             by_kind.get("wire.count"))
         finally:
             shutil.rmtree(out, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# apex-2o6 HARNESS-UNIFY-IMPL-1 (first cut) — the response-side pin kinds
+# (resp_body / resp_stream) + the L1 proxy:none key-free mode + the recon
+# pin upgrade (ADV1-R1 engine gap, 2026-09-19).
+#
+# TDD map (RED-first; RED output captured in
+# smoke/redteam/report/2o6-red/, GREEN in report/2o6-green/):
+#   RespBodyMechanismTest   RED-1: the worked case passes the frozen
+#       schema + in-tree contract gate (pre-cut: the kind enum + the env
+#       additionalProperties reject it) and check_wire handles
+#       kind=resp_body against the pre-placed capture.
+#   RespBodyTeethTest       RED-2: corrupt a fixture field / flip the
+#       status line in a scratch copy -> FAIL with the structured diff.
+#   RespStreamMechanismTest RED-1/RED-2: subsequence pass (interleaved +
+#       dropped + comment frames), missing frame, exact-mode mint
+#       roundtrip + length teeth, count band, per-frame normalize nulling,
+#       fail-closed on a missing resp capture.
+#   ProxyNoneKeyFreeTest    RED-3: the full runner executes
+#       RESP-BODY-SMOKE-01 with CODEX_LLM_PROXY_KEY UNSET (pre-cut: FATAL
+#       at the key check, no report.json); the contract gate rejects a
+#       proxy:none case with a live op or without pre-placed wire inputs.
+#   ReconPinUpgradeTest     RED-4 (ADV1-R1 engine gap): the kind=recon
+#       grep was a LITERAL substring check over the NEWEST single file —
+#       a regex alternation is a structural no-op and earlier files are
+#       never read; the BRICK-phrasing capture (the adversarial case's
+#       core deliverable mechanism) needs regex + all-files.
+# ---------------------------------------------------------------------------
+
+RESPBODY_CASE = os.path.join(HERE, "cases", "resp-body-smoke-01.json")
+RESPBODY_WIRE = os.path.join(HERE, "cases", "resp-body-smoke-01", "wire")
+RESPSTREAM_CASE = os.path.join(HERE, "cases", "resp-stream-smoke-01.json")
+RESPSTREAM_WIRE = os.path.join(HERE, "cases", "resp-stream-smoke-01", "wire")
+
+
+def _pin(case_file, pin_id):
+    with open(case_file) as fh:
+        case = json.load(fh)
+    for a in case["assert"]["wire"]:
+        if a.get("id") == pin_id:
+            return a
+    raise AssertionError("pin %r not in %s" % (pin_id, case_file))
+
+
+def _scratch_wire(src_dir, mutate=None):
+    """Copy a pre-placed wire dir into a temp dir (the scratch-fixture
+    teeth pattern); mutate(wire_dir) runs on the copy."""
+    dst = tempfile.mkdtemp(prefix="scratch-wire-")
+    shutil.copytree(src_dir, os.path.join(dst, "wire"))
+    if mutate:
+        mutate(os.path.join(dst, "wire"))
+    return dst
+
+
+class RespBodyMechanismTest(unittest.TestCase):
+    def test_case_passes_schema_validation(self):
+        errs = run.validate_case_file(RESPBODY_CASE)
+        self.assertEqual(errs, [], "schema/contract gate rejected:\n%s"
+                         % "\n".join(errs))
+
+    def test_check_wire_resp_body_passes(self):
+        r = run.check_wire(_pin(RESPBODY_CASE, "resp_body_pin"), RESPBODY_WIRE)
+        self.assertTrue(r.ok, "resp_body pin failed: %s" % r.detail)
+        self.assertTrue(r.cite and r.cite.get("file"),
+                        "scored resp_body PASS needs a resolvable cite: %r"
+                        % r.cite)
+
+
+class RespBodyTeethTest(unittest.TestCase):
+    def test_corrupt_fixture_fails_with_field_diff(self):
+        def _corrupt(wire):
+            p = os.path.join(wire, "expected_resp_body-01.json")
+            with open(p) as fh:
+                d = json.load(fh)
+            d["output"][0]["content"][0]["text"] = "PONG"
+            with open(p, "w") as fh:
+                json.dump(d, fh)
+        root = _scratch_wire(RESPBODY_WIRE, _corrupt)
+        try:
+            r = run.check_wire(_pin(RESPBODY_CASE, "resp_body_pin"),
+                               os.path.join(root, "wire"))
+            self.assertFalse(r.ok, "corrupted fixture must FAIL")
+            diff_p = os.path.join(root, "golden-diff-resp_body_pin.json")
+            self.assertTrue(os.path.isfile(diff_p),
+                            "structured diff (the TDD RED artifact) not "
+                            "written to the report dir")
+            with open(diff_p) as fh:
+                div = json.load(fh)["divergences"]
+            self.assertTrue(any("text" in d["path"] for d in div), div)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_status_mismatch_fails(self):
+        def _flip_status(wire):
+            p = os.path.join(wire, "resp-001.jsonl")
+            with open(p) as fh:
+                lines = fh.read().splitlines()
+            rec = json.loads(lines[0])
+            rec["status"] = 500
+            lines[0] = json.dumps(rec)
+            with open(p, "w") as fh:
+                fh.write("\n".join(lines) + "\n")
+        root = _scratch_wire(RESPBODY_WIRE, _flip_status)
+        try:
+            r = run.check_wire(_pin(RESPBODY_CASE, "resp_body_pin"),
+                               os.path.join(root, "wire"))
+            self.assertFalse(r.ok, "status 500 vs fixture 200 must FAIL")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+class RespStreamMechanismTest(unittest.TestCase):
+    def test_case_passes_schema_validation(self):
+        errs = run.validate_case_file(RESPSTREAM_CASE)
+        self.assertEqual(errs, [], "schema/contract gate rejected:\n%s"
+                         % "\n".join(errs))
+
+    def test_subsequence_pass_interleaved_and_dropped(self):
+        r = run.check_wire(_pin(RESPSTREAM_CASE, "resp_stream_pin"),
+                           RESPSTREAM_WIRE)
+        self.assertTrue(r.ok, "subsequence pin failed: %s" % r.detail)
+
+    def test_missing_frame_fails(self):
+        def _drop_delta(wire):
+            p = os.path.join(wire, "resp-001.jsonl")
+            with open(p) as fh:
+                lines = fh.read().splitlines()
+            out = [ln for ln in lines
+                   if "output_text.delta" not in ln]
+            with open(p, "w") as fh:
+                fh.write("\n".join(out) + "\n")
+        root = _scratch_wire(RESPSTREAM_WIRE, _drop_delta)
+        try:
+            r = run.check_wire(_pin(RESPSTREAM_CASE, "resp_stream_pin"),
+                               os.path.join(root, "wire"))
+            self.assertFalse(r.ok, "missing fixture frame must FAIL")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_exact_mode_mint_roundtrip_and_length_teeth(self):
+        spec = dict(_pin(RESPSTREAM_CASE, "resp_stream_pin"))
+        # Mint an exact-mode fixture from the capture itself (all data
+        # frames, normalize-nulled) -> 1:1 PASS; then drop the last
+        # frame -> length mismatch FAIL.
+        with open(os.path.join(RESPSTREAM_WIRE, "resp-001.jsonl")) as fh:
+            status = None
+            frames = []
+            for ln in fh:
+                rec = json.loads(ln)
+                if status is None and isinstance(rec.get("status"), int):
+                    status = rec["status"]
+                fr = rec.get("frame")
+                if not isinstance(fr, str):
+                    continue
+                ev, datas = None, []
+                for line in fr.split("\n"):
+                    if line.startswith("event:"):
+                        ev = line[6:].strip()
+                    elif line.startswith("data:"):
+                        datas.append(line[5:].strip())
+                if not datas:
+                    continue
+                try:
+                    data = json.loads("\n".join(datas))
+                except Exception:
+                    data = None
+                frames.append((ev, data))
+        norm = spec["normalize"]
+        fxs = []
+        for ev, data in frames:
+            doc = data
+            for np_ in norm:
+                doc, _ap = run._golden_null_path(doc, np_)
+            fxs.append({"event": ev, "data": doc})
+        spec["mode"] = "exact"
+        spec["drop"] = []
+        spec["golden"] = "__exact_scratch__.json"
+        root = _scratch_wire(RESPSTREAM_WIRE)
+        try:
+            wdir = os.path.join(root, "wire")
+            with open(os.path.join(wdir, "__exact_scratch__.json"),
+                      "w") as fh:
+                json.dump({"status": status, "mode": "exact",
+                           "frames": fxs}, fh)
+            r = run.check_wire(spec, wdir)
+            self.assertTrue(r.ok,
+                            "exact mint roundtrip failed: %s" % r.detail)
+            p = os.path.join(wdir, "resp-001.jsonl")
+            with open(p) as fh:
+                lines = fh.read().splitlines()
+            with open(p, "w") as fh:
+                fh.write("\n".join(lines[:-1]) + "\n")
+            r = run.check_wire(spec, wdir)
+            self.assertFalse(r.ok, "exact mode must fail on length mismatch")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_count_band_binds(self):
+        spec = dict(_pin(RESPSTREAM_CASE, "resp_stream_pin"))
+        spec["max_frames"] = 2
+        r = run.check_wire(spec, RESPSTREAM_WIRE)
+        self.assertFalse(r.ok, "3 post-drop frames > max_frames=2 must FAIL")
+        self.assertIn("max_frames", r.detail)
+
+    def test_normalize_nulls_volatile_keeps_pinned(self):
+        def _reid(wire):
+            p = os.path.join(wire, "resp-001.jsonl")
+            with open(p) as fh:
+                txt = fh.read()
+            with open(p, "w") as fh:
+                fh.write(txt.replace("msg_live_s2", "msg_live_OTHER"))
+        root = _scratch_wire(RESPSTREAM_WIRE, _reid)
+        try:
+            r = run.check_wire(_pin(RESPSTREAM_CASE, "resp_stream_pin"),
+                               os.path.join(root, "wire"))
+            self.assertTrue(
+                r.ok,
+                "a normalized volatile id must not break the pin: %s"
+                % r.detail)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+        def _retext(wire):
+            p = os.path.join(wire, "resp-001.jsonl")
+            with open(p) as fh:
+                txt = fh.read()
+            with open(p, "w") as fh:
+                # The frame data rides ESCAPED inside the JSONL record
+                # string ("...\"delta\":\"pong\"..."), so the mutation
+                # must target the escaped form — the unescaped pattern
+                # was a silent no-op (TDD teeth: a no-op mutation
+                # makes this half of the test vacuous).
+                fh.write(txt.replace('\\"delta\\":\\"pong\\"',
+                                     '\\"delta\\":\\"x\\"'))
+        root = _scratch_wire(RESPSTREAM_WIRE, _retext)
+        try:
+            r = run.check_wire(_pin(RESPSTREAM_CASE, "resp_stream_pin"),
+                               os.path.join(root, "wire"))
+            self.assertFalse(r.ok, "a pinned non-volatile value must FAIL")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_fail_closed_no_resp_capture(self):
+        def _rm_resp(wire):
+            os.remove(os.path.join(wire, "resp-001.jsonl"))
+        root = _scratch_wire(RESPSTREAM_WIRE, _rm_resp)
+        try:
+            r = run.check_wire(_pin(RESPSTREAM_CASE, "resp_stream_pin"),
+                               os.path.join(root, "wire"))
+            self.assertFalse(r.ok, "missing resp capture is a harness failure")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+class ProxyNoneKeyFreeTest(unittest.TestCase):
+    def test_full_runner_key_free_pass(self):
+        out = tempfile.mkdtemp(prefix="resp-body-out-")
+        env = {k: v for k, v in os.environ.items()
+               if k != "CODEX_LLM_PROXY_KEY"}
+        try:
+            proc = subprocess.run(
+                [sys.executable, os.path.join(HERE, "run.py"),
+                 "RESP-BODY-SMOKE-01", "--out", out,
+                 "--live-home", run.DEFAULT_LIVE_HOME],
+                capture_output=True, text=True, timeout=300, cwd=HERE,
+                env=env)
+            report = os.path.join(out, "report.json")
+            self.assertTrue(
+                os.path.isfile(report),
+                "no report.json (pre-cut the runner FATALs at the key "
+                "check — the expected RED state):\n%s\n%s"
+                % (proc.stdout[-2000:], proc.stderr[-2000:]))
+            with open(report) as fh:
+                doc = json.load(fh)
+            rows = [r for r in doc.get("rows", [])
+                    if r.get("id") == "RESP-BODY-SMOKE-01"]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(
+                rows[0]["status"], "PASS",
+                "asserts: %s" % json.dumps(
+                    rows[0].get("asserts"), indent=1)[:2000])
+        finally:
+            shutil.rmtree(out, ignore_errors=True)
+
+    def test_proxy_none_rejects_live_op(self):
+        with open(RESPBODY_CASE) as fh:
+            case = json.load(fh)
+        case["steps"] = [{"op": "turn", "prompt": "x"}]
+        root = tempfile.mkdtemp(prefix="resp-none-bad-")
+        try:
+            p = os.path.join(root, "resp-body-smoke-01.json")
+            with open(p, "w") as fh:
+                json.dump(case, fh)
+            errs = run.validate_case_file(p)
+            self.assertTrue(any("proxy:none" in e for e in errs),
+                            "live op in a proxy:none case must be "
+                            "rejected: %s" % errs)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_proxy_none_requires_preplaced_wire(self):
+        with open(RESPBODY_CASE) as fh:
+            case = json.load(fh)
+        root = tempfile.mkdtemp(prefix="resp-none-nowire-")
+        try:
+            p = os.path.join(root, "resp-body-smoke-01.json")
+            with open(p, "w") as fh:
+                json.dump(case, fh)
+            errs = run.validate_case_file(p)
+            self.assertTrue(any("pre-placed" in e for e in errs),
+                            "proxy:none without pre-placed wire inputs "
+                            "must be rejected: %s" % errs)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+class ReconPinUpgradeTest(unittest.TestCase):
+    """ADV1-R1 engine gap (seat kiloecho_adv_case1_qwen, 2026-09-19):
+    the BRICK-phrasing recon pin's regex alternation was a structural
+    no-op — kind=recon greps a LITERAL substring over the NEWEST single
+    file. The upgrade: regex matching + all matched files."""
+
+    def _capture_dir(self, frames):
+        root = tempfile.mkdtemp(prefix="recon-")
+        wdir = os.path.join(root, "wire")
+        os.makedirs(wdir)
+        for i, txt in enumerate(frames):
+            with open(os.path.join(wdir, "resp-%03d.jsonl" % (i + 1)),
+                      "w") as fh:
+                fh.write(json.dumps({"n": i + 1, "status": 400,
+                                     "ts": "2026-09-19T00:00:00Z",
+                                     "headers": {}}) + "\n")
+                fh.write(json.dumps({"frame_index": 0, "frame": txt}) + "\n")
+        return wdir
+
+    def test_recon_regex_alternation_matches(self):
+        wdir = self._capture_dir(["error: Route is blocked (x)",
+                                  "error: array too long (y)"])
+        try:
+            spec = {"kind": "recon", "file": "resp-*.jsonl",
+                    "grep": "Route is blocked|array too long",
+                    "label": "recon regex alternation"}
+            r = run.check_wire(spec, wdir)
+            self.assertTrue(
+                r.ok, "regex alternation must match: %s" % r.detail)
+        finally:
+            shutil.rmtree(wdir, ignore_errors=True)
+
+    def test_recon_reads_all_files_not_just_newest(self):
+        # the needle is only in the OLDER capture (resp-001); the newest
+        # (resp-002) is clean — the pre-cut engine reads only the newest.
+        wdir = self._capture_dir(["error: array too long",
+                                  "clean frame"])
+        try:
+            spec = {"kind": "recon", "file": "resp-*.jsonl",
+                    "grep": "array too long", "label": "recon all-files"}
+            r = run.check_wire(spec, wdir)
+            self.assertTrue(
+                r.ok, "recon must read all matched files: %s" % r.detail)
+        finally:
+            shutil.rmtree(wdir, ignore_errors=True)
+
+
+class KeyHeuristicBoundaryTest(unittest.TestCase):
+    """2026-09-19 full-sweep dry run: the sk- branch of KEY_HEURISTIC
+    matched 'sk-' INSIDE a longer word. The az-vlq corpus fixture
+    (byte-pinned, do-not-edit) carries SDD doc filenames such as
+    `docs/.superpowers/sdd/code-intelligence-concordance/
+    task-4-codegraph-contract-research.md`, so the redaction sweep
+    reported 16 hits with ambient-key = 0 (all false positives).
+    Boundary rule: 'sk-' must not be preceded by [A-Za-z0-9] (a real
+    key is never word-interior), while standalone / quoted /
+    punct-adjacent key forms must still match."""
+
+    def test_word_interior_sk_does_not_match(self):
+        for frag in (
+            "docs/.superpowers/sdd/code-intelligence-concordance/task-4-codegraph-contract-research.md",
+            "`task-5-cbm-contract-research.md`",
+        ):
+            self.assertIsNone(
+                run.KEY_HEURISTIC.search(frag), "FP: %r" % frag)
+
+    def test_real_key_forms_still_match(self):
+        for frag in (
+            "sk-proj-abcdefghijklmnopqrstuvwxyz01",
+            ' "api_key": "sk-proj-abcdefghijklmnopqrstuvwxyz01"',
+            "Bearer sk-proj-abcdefghijklmnopqrstuvwxyz01",
+            "x-api-key=sk-proj-abcdefghijklmnopqrstuvwxyz01",
+        ):
+            self.assertIsNotNone(
+                run.KEY_HEURISTIC.search(frag), "missed: %r" % frag)
 
 
 if __name__ == "__main__":

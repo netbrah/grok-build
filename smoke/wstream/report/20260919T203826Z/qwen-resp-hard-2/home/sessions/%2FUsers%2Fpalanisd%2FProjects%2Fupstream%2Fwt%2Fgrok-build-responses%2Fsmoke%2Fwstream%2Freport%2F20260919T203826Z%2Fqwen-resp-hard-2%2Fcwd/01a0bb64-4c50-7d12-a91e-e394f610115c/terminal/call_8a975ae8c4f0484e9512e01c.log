@@ -1,0 +1,2 @@
+patch-validity OK: applying the hunks to a.txt reconstructs b.txt exactly
+fuzz OK: 300 random single-word edits, hunk bodies identical to system diff -U1

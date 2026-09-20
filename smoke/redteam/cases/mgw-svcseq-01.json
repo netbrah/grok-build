@@ -1,0 +1,55 @@
+{
+ "schema_version": 1,
+ "id": "MGW-SVCSEQ-01",
+ "title": "apex-ayl.118 RED ratchet (msgw sweep F8) — service_tier absent on the messages wire: the case declares model/claude-sonnet-5/service_tier=standard (config_patch intent; the lenient row parser ignores the key pre-cut) and pins 'service_tier' on the /v1/messages requests. The messages request builder has no service_tier field — the docs-named cost/sequencing lever has no type, no field, no seam (sweep F8). RED today (no request carries the field — the grep pin 0-hits); GREEN when the cut plumbs config -> wire. Control pin (class harness, plain assert): body.model eq claude-sonnet-5 on the main (oldest) request — the harness always sends the model, so a miss is a harness failure, never vacuous.",
+ "bead": "apex-ayl.118",
+ "suite": "wire-shape",
+ "tier": "slim",
+ "driver": "headless",
+ "model": "claude-sonnet-5",
+ "wirecap": true,
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "config_patch": {
+  "model/claude-sonnet-5/service_tier": "standard"
+ },
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: MGW-SVCSEQ-OK",
+   "timeout_s": 180
+  }
+ ],
+ "watchdog_s": 300,
+ "est_calls": 2,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error",
+    "label": "NO TERMINAL ERROR: the turn completed (the red is the service_tier seam, not the turn)."
+   }
+  ],
+  "wire": [
+   {
+    "kind": "field",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/messages" },
+    "last": 0,
+    "path": "body.model",
+    "eq": "claude-sonnet-5",
+    "label": "CONTROL (class harness): the main request carries the session model — the harness always does; a miss is a harness failure, never vacuous."
+   },
+   {
+    "kind": "grep",
+    "id": "mgw_svcseq_red",
+    "file": "req-*.json",
+    "where": { "method": "POST", "path": "/v1/messages" },
+    "any": true,
+    "grep": "service_tier",
+    "label": "RED PIN (F8): a /v1/messages request carries the service_tier field (the docs-named cost/sequencing lever). Pre-cut FAILs: no type, no field, no seam in the messages builder."
+   }
+  ]
+ },
+ "expected_red": { "id": "mgw-f8-svcseq" }
+}

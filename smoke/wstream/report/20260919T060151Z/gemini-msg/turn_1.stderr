@@ -1,0 +1,4 @@
+Error: Internal error: {
+  "message": "API error (status 403 Forbidden): auth_error: Tool is blocked for model 'gemini-3.1-pro-preview'",
+  "http_status": 403
+}

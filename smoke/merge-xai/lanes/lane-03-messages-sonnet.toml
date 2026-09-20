@@ -1,0 +1,59 @@
+# MERGE-XAI-SYNC frozen lane L-03 — claude-sonnet-5 on /v1/messages (the
+# messages-wire pin lane: MW-1 cache-breakpoint sentinel C-03 + the MW-3
+# stream-truncated condition C-02, where the message_stop terminal frame lives).
+# Bead apex-l2d.4 (06 §2 lane column: 'sonnet via /messages (cache-breakpoint
+# pin)').
+#
+# FROZEN TEMPLATE: model + wire pinned; the launcher rewrites the PLACEHOLDER
+# base_urls at run time (same sed contract as L-01):
+#     s|^base_url = ".*"|base_url = "http://127.0.0.1:<wiretap-port>/v1"|
+#     s|^models_base_url = ".*"|models_base_url = "http://127.0.0.1:<wiretap-port>/v1"|
+# NEVER commit a live URL into this file (sweep-0). Port 0 = dead-port
+# placeholder (fail-closed when unrewritten). env_key = the ENV VAR NAME (the
+# L1 contract: ambient CODEX_LLM_PROXY_KEY only). [auth] intentionally ABSENT
+# (operator launcher supplies the hermetic auth stub).
+#
+# Row shape note: the live sonnet row omits base_url + env_key (it inherits
+# [endpoints] defaults); the frozen lane pins them EXPLICITLY on the row —
+# explicit beats inherited for a frozen template. The M5 ours-side pin of
+# record is on this row: cache_ttl = "1h" (the stable-head breakpoint ttl —
+# MXAI-C03 head_ttl_1h pin). The 5-effort table (value/label/default; high
+# default) is carried verbatim from the live row.
+
+disable_web_search = true
+
+[model.claude-sonnet-5]
+base_url = "http://127.0.0.1:0/v1"
+api_backend = "messages"
+cache_ttl = "1h"
+multi_agent_v2 = true
+context_window = 500000
+max_completion_token = 128000
+env_key = "CODEX_LLM_PROXY_KEY"
+
+[[model.claude-sonnet-5.reasoning_efforts]]
+value = "low"
+label = "Low Effort"
+
+[[model.claude-sonnet-5.reasoning_efforts]]
+value = "medium"
+label = "Medium Effort"
+
+[[model.claude-sonnet-5.reasoning_efforts]]
+value = "high"
+label = "High Effort"
+default = true
+
+[[model.claude-sonnet-5.reasoning_efforts]]
+value = "xhigh"
+label = "Xhigh Effort"
+
+[[model.claude-sonnet-5.reasoning_efforts]]
+value = "max"
+label = "Max Effort"
+
+[endpoints]
+models_base_url = "http://127.0.0.1:0/v1"
+default_api_backend = "responses"
+default_env_key = "CODEX_LLM_PROXY_KEY"
+default_context_window = 256000
