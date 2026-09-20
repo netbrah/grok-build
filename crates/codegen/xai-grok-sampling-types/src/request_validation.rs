@@ -12,7 +12,7 @@
 //!   length must equal the count; typed failures distinguish counter
 //!   overflow, cap exceeded, allocation failure, and pass-length mismatch.
 //! - N3 per-item token cap (L1883-1893): inclusive
-//!   `MAX_MODEL_CONTEXT_ITEM_TOKENS = 10_000` over every final-projected
+//!   `MAX_MODEL_CONTEXT_ITEM_TOKENS = 100_000` over every final-projected
 //!   item (post-coalesce messages, system blocks, complete tool definitions).
 //! - N4 max_tokens range (L1860-1862): the full `u32` range (incl. 0) is
 //!   accepted; the validator carries no profile/policy parameter.
@@ -43,9 +43,9 @@ pub const MAX_MESSAGES_REQUEST_ITEMS: usize = 100_000;
 pub const MAX_ENCODED_MESSAGES_REQUEST_BYTES: u64 = 32_000_000;
 
 /// N3 (spec L1883-1884): "Codex defines the inclusive
-/// `MAX_MODEL_CONTEXT_ITEM_TOKENS = 10_000`." Inclusive: an item estimating
-/// exactly 10_000 tokens is accepted (strictly-greater rejects).
-pub const MAX_MODEL_CONTEXT_ITEM_TOKENS: u64 = 10_000;
+/// `MAX_MODEL_CONTEXT_ITEM_TOKENS = 100_000`." Inclusive: an item estimating
+/// exactly 100_000 tokens is accepted (strictly-greater rejects).
+pub const MAX_MODEL_CONTEXT_ITEM_TOKENS: u64 = 100_000;
 
 /// One capped item of the request (0-based index).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -356,8 +356,8 @@ fn encode_two_pass<S: FnMut(&mut dyn Write) -> std::io::Result<()>>(
 }
 
 /// N3 per-item gate: compact JSON of the item, then the model-visible token
-/// estimator (formula NOT normative; the 10_000 constant is). Strictly
-/// greater than the cap rejects, so exactly 10_000 is accepted (N3
+/// estimator (formula NOT normative; the 100_000 constant is). Strictly
+/// greater than the cap rejects, so exactly 100_000 is accepted (N3
 /// inclusive).
 fn check_item_tokens<T: Serialize>(item: &T, ref_: ItemRef) -> Result<(), RequestValidationError> {
     let item_json = serde_json::to_vec(item).map_err(|_| {
@@ -611,12 +611,12 @@ mod tests {
     /// Mapping decision (reported): the SDD's "single Text message" at-cap
     /// fixture is unreachable under the SDD's own gate order (count →
     /// per-item → body): a single 32MB item estimates ~8M tokens and trips
-    /// the N3 per-item cap (10_000) before the body cap can fire. N2's "many
+    /// the N3 per-item cap (100_000) before the body cap can fire. N2's "many
     /// individually small values cannot bypass it" is the operative reading,
     /// and this is the only at-cap shape that can validate Ok.
     const T3_MESSAGE_COUNT: usize = 1024;
     /// Uniform item byte length for the first N-1 messages (28 B overhead + pad).
-    const T3_UNIFORM_ITEM_BYTES: u64 = 31_242; // est 7_810 ≤ 10_000
+    const T3_UNIFORM_ITEM_BYTES: u64 = 31_242; // est 7_810 ≤ 100_000
 
     fn t3_request(over_by: u64) -> MessagesRequest {
         let probe_item = serde_json::to_vec(&text_message(MessageRole::User, "")).unwrap();
@@ -982,7 +982,7 @@ mod tests {
         );
     }
 
-    /// T8: an item whose compact JSON estimates EXACTLY 10_000 tokens is
+    /// T8: an item whose compact JSON estimates EXACTLY 100_000 tokens is
     /// accepted (N3 inclusive).
     #[test]
     fn item_at_cap_accept() {
@@ -996,11 +996,11 @@ mod tests {
         );
         let request = minimal_request(vec![message]);
         let encoded = validate_and_encode_messages_request(&request)
-            .expect("an item estimating exactly 10_000 tokens must be accepted (N3 inclusive)");
+            .expect("an item estimating exactly 100_000 tokens must be accepted (N3 inclusive)");
         assert!(!encoded.is_empty());
     }
 
-    /// T9: an item estimating 10_001 tokens is rejected with the typed
+    /// T9: an item estimating 100_001 tokens is rejected with the typed
     /// variant (N3).
     #[test]
     fn item_over_cap_reject() {
@@ -1013,7 +1013,7 @@ mod tests {
         assert_eq!(estimated, MAX_MODEL_CONTEXT_ITEM_TOKENS + 1);
         let request = minimal_request(vec![message]);
         let err = validate_and_encode_messages_request(&request)
-            .expect_err("an item estimating 10_001 tokens must be rejected (N3)");
+            .expect_err("an item estimating 100_001 tokens must be rejected (N3)");
         assert_eq!(
             err,
             RequestValidationError::ItemTokenLimitExceeded {
@@ -1095,7 +1095,7 @@ mod tests {
         let request =
             request_with_system(vec![text_message(MessageRole::User, "hi")], Some(at_cap));
         validate_and_encode_messages_request(&request)
-            .expect("a system Text estimating exactly 10_000 must be accepted (N3 inclusive)");
+            .expect("a system Text estimating exactly 100_000 must be accepted (N3 inclusive)");
     }
 
     /// T11: one cap item per complete ToolParam — over-cap rejects as
@@ -1335,7 +1335,7 @@ mod tests {
     }
 
     /// M-1 (R-1): image (40 KB base64) + a text part whose non-image JSON is
-    /// exactly 36_000 B (9_000 tokens) ⇒ 9_000 + 765 = 9_765 ≤ 10_000 ⇒
+    /// exactly 36_000 B (9_000 tokens) ⇒ 9_000 + 765 = 9_765 ≤ 100_000 ⇒
     /// accepted post-fix. Pre-fix: ≈19_240 est ⇒ rejected.
     #[test]
     fn t_img_mixed_large_image_under_cap_total() {
@@ -1361,7 +1361,7 @@ mod tests {
         let item_json = serde_json::to_vec(&message).unwrap();
         assert_eq!(item_json.len() as u64 - 40_960, 36_000);
         let encoded = validate_and_encode_messages_request(&minimal_request(vec![message]))
-            .expect("9_000 (text) + 765 (flat image) = 9_765 <= 10_000 must pass (R-1)");
+            .expect("9_000 (text) + 765 (flat image) = 9_765 <= 100_000 must pass (R-1)");
         assert!(!encoded.is_empty());
     }
 
