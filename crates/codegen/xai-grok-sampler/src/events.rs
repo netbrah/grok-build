@@ -240,6 +240,14 @@ pub enum SamplingErrorKind {
     EmptyResponse,
     MaxTokensTruncation,
     DoomLoopDetected,
+    /// The one deliberate exception to the "intentionally narrow" list above: a
+    /// DETERMINISTIC wire control signal (`pause_turn`), not a heuristic. The
+    /// dedicated kind is load-bearing — the L2-synthesized failure must survive
+    /// the `SamplingErrorInfo` round-trip as its typed non-retryable variant or
+    /// the retry classifier treats it as a transient 5xx and re-sends
+    /// (apex-ayl.49 N1; the SDD F1 `Api`-kind mapping was proven unable to
+    /// deliver N1 — deviation recorded in the driver report).
+    UnsupportedStopControl,
 }
 /// [`SamplingErrorKind::from_str`] error: the wire string matched no known kind (a newer peer's kind); callers degrade to untyped via `.ok()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,6 +268,7 @@ impl std::str::FromStr for SamplingErrorKind {
             "empty_response" => Self::EmptyResponse,
             "max_tokens_truncation" => Self::MaxTokensTruncation,
             "doom_loop_detected" => Self::DoomLoopDetected,
+            "unsupported_stop_control" => Self::UnsupportedStopControl,
             _ => return Err(UnknownSamplingErrorKind),
         })
     }
@@ -310,6 +319,16 @@ impl From<&SamplingError> for SamplingErrorInfo {
             // Local pre-HTTP cap violation: no wire status — same house
             // pattern as the other local configuration errors.
             SamplingError::RequestValidation(_) => (SamplingErrorKind::Api, None, None, None),
+            // Unsupported stop control (pause_turn): a DEDICATED kind (no wire
+            // status). The dedicated kind is what keeps `synthesize_from_info`
+            // (request_task.rs) from collapsing this L2-synthesized terminal
+            // into a generic retryable `Api { 500 }` — see the variant doc.
+            SamplingError::UnsupportedStopControl { .. } => (
+                SamplingErrorKind::UnsupportedStopControl,
+                None,
+                None,
+                None,
+            ),
         };
 
         let empty_response_context = match err {
@@ -548,6 +567,7 @@ mod tests {
             EmptyResponse,
             MaxTokensTruncation,
             DoomLoopDetected,
+            UnsupportedStopControl,
         ];
         for kind in all {
             // Exhaustive match, no `_` arm: a new variant refuses to compile this test until an arm is added
@@ -555,7 +575,9 @@ mod tests {
             // Only variants listed in `all` are round-trip-checked; the compiler cannot force those two edits
             match kind {
                 Auth | Http | Api | Serialization | IdleTimeout | RateLimited | EmptyResponse
-                | MaxTokensTruncation | DoomLoopDetected => {}
+                | MaxTokensTruncation
+                | DoomLoopDetected
+                | UnsupportedStopControl => {}
             }
             assert_eq!(kind.as_ref().parse(), Ok(kind));
         }

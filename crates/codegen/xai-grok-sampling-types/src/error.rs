@@ -197,6 +197,16 @@ pub enum SamplingError {
     /// outcome (the retry classifier falls through to its terminal Fatal arm).
     #[error("request validation failed: {0}")]
     RequestValidation(RequestValidationError),
+    /// The model requested an unsupported stop control (the messages wire
+    /// `pause_turn`, apex-ayl.49 item 2). A dedicated typed terminal error: the
+    /// failure terminates the stream before any outcome / projection / persistence
+    /// exists, so the turn is never committed (no durable item or call).
+    /// Non-retryable by construction — re-sending the same payload cannot change the
+    /// control the model requested (the retry classifier falls through to its
+    /// terminal Fatal arm, the 47a house pattern).
+    /// Provenance: frozen-spec@2cbc222c §6.3 L4281.
+    #[error("the model requested the unsupported control `{wire_reason}`; the turn was not committed")]
+    UnsupportedStopControl { wire_reason: String },
 }
 
 /// Semantic `error.code` the server stamps on invalid-image rejections, on both non-stream error bodies and mid-stream SSE error events.
@@ -616,7 +626,8 @@ impl SamplingError {
             | SamplingError::EmptyResponse { .. }
             | SamplingError::MaxTokensTruncation
             | SamplingError::DoomLoopDetected { .. }
-            | SamplingError::RequestValidation(_) => false,
+            | SamplingError::RequestValidation(_)
+            | SamplingError::UnsupportedStopControl { .. } => false,
         }
     }
 
@@ -636,6 +647,8 @@ impl SamplingError {
             SamplingError::DoomLoopDetected { .. } => true,
             // Local pre-HTTP cap violation: deterministic, never retry.
             SamplingError::RequestValidation(_) => false,
+            // Unsupported stop control (pause_turn): a deterministic typed terminal, never retry.
+            SamplingError::UnsupportedStopControl { .. } => false,
         }
     }
 
@@ -701,7 +714,8 @@ impl SamplingError {
             | SamplingError::EmptyResponse { .. }
             | SamplingError::MaxTokensTruncation
             | SamplingError::DoomLoopDetected { .. }
-            | SamplingError::RequestValidation(_) => false,
+            | SamplingError::RequestValidation(_)
+            | SamplingError::UnsupportedStopControl { .. } => false,
         }
     }
 
@@ -725,7 +739,8 @@ impl SamplingError {
             | SamplingError::EmptyResponse { .. }
             | SamplingError::MaxTokensTruncation
             | SamplingError::DoomLoopDetected { .. }
-            | SamplingError::RequestValidation(_) => false,
+            | SamplingError::RequestValidation(_)
+            | SamplingError::UnsupportedStopControl { .. } => false,
         }
     }
 
@@ -779,7 +794,8 @@ impl SamplingError {
             | SamplingError::EmptyResponse { .. }
             | SamplingError::MaxTokensTruncation
             | SamplingError::DoomLoopDetected { .. }
-            | SamplingError::RequestValidation(_) => false,
+            | SamplingError::RequestValidation(_)
+            | SamplingError::UnsupportedStopControl { .. } => false,
         }
     }
 }

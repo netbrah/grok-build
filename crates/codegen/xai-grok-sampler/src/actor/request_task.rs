@@ -782,8 +782,17 @@ async fn drive_l2(
                     // A content-filtered turn (Anthropic refusal, OpenAI
                     // content_filter stop reason) is legitimately content-less and
                     // deterministic — resampling it would retry-storm.
+                    // A context-full turn (apex-ayl.49, m-1) is the same class: the
+                    // prompt no longer fits, so resampling cannot help either.
+                    // Without this extension the typed terminal inverts a pre-cut
+                    // fail-fast into an `AttemptOutcome::Empty` retry storm and
+                    // `force_compact` never arms.
                     let content_filtered = response.stop_reason
-                        == Some(xai_grok_sampling_types::StopReason::ContentFilter);
+                        .is_some_and(|stop| matches!(
+                            stop,
+                            xai_grok_sampling_types::StopReason::ContentFilter
+                                | xai_grok_sampling_types::StopReason::ContextWindowExceeded
+                        ));
                     if !content_filtered && let Some(reason) = response.empty_reason() {
                         let context = build_empty_context(reason, &response);
                         return AttemptOutcome::Empty {
@@ -903,6 +912,22 @@ fn synthesize_from_info(info: &SamplingErrorInfo) -> SamplingError {
             triggers: info.doom_loop_triggers.clone().unwrap_or_default(),
             aborted_at_chunk: info.doom_loop_aborted_at_chunk,
         },
+        // The typed pause_turn terminal must survive this round-trip as its
+        // non-retryable variant (apex-ayl.49 N1): without a dedicated kind it
+        // would rebuild as a generic `Api { 500 }`, pass `is_retryable()`, and
+        // be re-sent as a transient 5xx — with a mock/fallback responder in
+        // play the failure is then silently swallowed as a fresh completion.
+        // `info.message` is the variant's rendered Display, so the control
+        // name is parsed back out of it (house pattern, cf.
+        // `serialization_from_rendered`).
+        SamplingErrorKind::UnsupportedStopControl => SamplingError::UnsupportedStopControl {
+            wire_reason: info
+                .message
+                .split('`')
+                .nth(1)
+                .unwrap_or("unknown")
+                .to_owned(),
+        },
     }
 }
 
@@ -1010,7 +1035,9 @@ fn strip_reason_for_image_error(err: &SamplingError) -> StripReason {
         | SamplingError::EmptyResponse { .. }
         | SamplingError::MaxTokensTruncation
         | SamplingError::DoomLoopDetected { .. }
-        | SamplingError::RequestValidation(_) => StripReason::PayloadHeuristic,
+        | SamplingError::RequestValidation(_)
+        // Unsupported stop control (pause_turn) blames no image — the default label.
+        | SamplingError::UnsupportedStopControl { .. } => StripReason::PayloadHeuristic,
     }
 }
 

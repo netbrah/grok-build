@@ -138,6 +138,11 @@ pub fn stream_messages<'a>(
         // The provider sends the matched stop sequence in `message_delta.stop_sequence` on a `stop_sequence`-terminated turn
         // It is carried through so the headless `streaming-messages-json` consumer can echo it
         let mut final_stop_sequence: Option<String> = None;
+        // L4282 (46b R3): the raw WIRE value of the terminal stop. Drives the
+        // post-loop unknown-value check — the projection is lossy
+        // (an unrecognized value projects to Stop), so the wire value, not the
+        // projection, names the unrecognized string
+        let mut final_wire_stop_reason: Option<messages::StopReason> = None;
 
         // Assistant-response accumulators (built up as ContentBlockStop events fire)
         // Reasoning is collected into a synthesized `rs::ReasoningItem`
@@ -162,6 +167,17 @@ pub fn stream_messages<'a>(
         let mut prev_output_tokens: u32 = 0;
         // R3: `message_stop` observed — the stream is only complete with it.
         let mut message_stop_seen = false;
+        // R2 (46c N-4): `message_start` observed — a second start is a terminal
+        // grammar error (spec L1980-1981); the guard also closes the
+        // start-after-delta overwrite class (a late start clobbering the
+        // already-observed terminal state)
+        let mut message_start_seen = false;
+        // L1976-1978 carve-out support (m-3): whether the terminal delta was
+        // seen, and whether any block event arrived AFTER it — a block event
+        // after the terminal is a spec-forbidden ordering the carve-out must
+        // not complete
+        let mut terminal_delta_seen = false;
+        let mut block_event_after_terminal = false;
 
         let mut stream = raw_stream;
         loop {
@@ -195,6 +211,25 @@ pub fn stream_messages<'a>(
 
             match event {
                 MessageStreamEvent::MessageStart { message } => {
+                    // R2 (46c N-4) + spec L1980-1981: a duplicate `message_start` is a
+                    // terminal grammar error — it overwrites the prior terminal state
+                    // (the start-after-delta overwrite class). Provenance:
+                    // frozen-spec@2cbc222c L1980-1981 (+ 46c N-4).
+                    if message_start_seen {
+                        let err = SamplingError::StreamError {
+                            error_type: "duplicate_message_start".to_owned(),
+                            message: "second message_start in the stream (duplicate starts are \
+                                     a terminal grammar error)"
+                                .to_owned(),
+                            code: None,
+                        };
+                        yield SamplingEvent::Failed {
+                            request_id: request_id.clone(),
+                            error: SamplingErrorInfo::from(&err),
+                        };
+                        return;
+                    }
+                    message_start_seen = true;
                     final_message_id = Some(message.id.clone());
                     final_model = Some(message.model.clone());
                     final_input_tokens = message.usage.input_tokens;
@@ -248,6 +283,9 @@ pub fn stream_messages<'a>(
                     index,
                     content_block,
                 } => {
+                    if terminal_delta_seen {
+                        block_event_after_terminal = true;
+                    }
                     if blocks.contains_key(&index) {
                         // R7 row 18: duplicate open index — recoverable
                         // (xli overwrites silently; grok warns and keeps the
@@ -379,6 +417,9 @@ pub fn stream_messages<'a>(
                 }
 
                 MessageStreamEvent::ContentBlockDelta { index, delta } => {
+                    if terminal_delta_seen {
+                        block_event_after_terminal = true;
+                    }
                     let delta_type = stream_delta_type(&delta);
                     if let Some(v) =
                         super::messages_invariants::check_content_block_delta(
@@ -483,6 +524,9 @@ pub fn stream_messages<'a>(
                 }
 
                 MessageStreamEvent::ContentBlockStop { index } => {
+                    if terminal_delta_seen {
+                        block_event_after_terminal = true;
+                    }
                     if let Some(v) =
                         super::messages_invariants::check_content_block_stop(
                             index,
@@ -582,42 +626,54 @@ pub fn stream_messages<'a>(
                         .stop_reason
                         .as_ref()
                         .map(messages::StopReason::wire_str);
+                    // L4282 (46b R3): capture the raw wire terminal for the
+                    // post-loop unknown-value check (the projection below is
+                    // lossy: an unrecognized value projects to Stop)
+                    final_wire_stop_reason = delta.stop_reason.clone();
                     // The matched stop sequence arrives on the same terminal delta (present only on a `stop_sequence` stop); carry it verbatim
                     if delta.stop_sequence.is_some() {
                         final_stop_sequence = delta.stop_sequence.clone();
                     }
-                    final_stop_reason = delta.stop_reason.map(|sr| match sr {
-                        messages::StopReason::EndTurn => StopReason::Stop,
-                        messages::StopReason::MaxTokens => StopReason::Length,
-                        messages::StopReason::StopSequence => StopReason::Stop,
-                        messages::StopReason::ToolUse => StopReason::ToolCalls,
-                        // The model declined to continue; whatever streamed is the complete response, so end the turn cleanly
-                        messages::StopReason::Refusal => StopReason::ContentFilter,
-                        messages::StopReason::PauseTurn => {
-                            // Anthropic Messages API expects the client to resend to continue; we end the turn instead
-                            tracing::warn!(
-                                wire_stop_reason = "pause_turn",
-                                "pause_turn ended the turn like stop (no auto-continue)"
-                            );
-                            StopReason::Stop
-                        }
-                        messages::StopReason::ModelContextWindowExceeded => {
-                            // Output-side overflow on a successful stream maps to the Length stop class
-                            // Compact-on-error recovery needs an Api error carrying model metadata and a prompt-side overflow; neither exists here
-                            tracing::warn!(
-                                wire_stop_reason = "model_context_window_exceeded",
-                                "context window hit mid-generation; mapping to the Length stop class"
-                            );
-                            StopReason::Length
-                        }
-                        messages::StopReason::Unknown(wire) => {
-                            tracing::warn!(
-                                wire_stop_reason = %wire,
-                                "unrecognized stop_reason in messages stream; treating as stop"
-                            );
-                            StopReason::Stop
-                        }
-                    });
+                    // A delta carrying a stop_reason IS the terminal delta
+                    // (grammar: one terminal per stream — spec L1976-1978)
+                    if let Some(sr) = delta.stop_reason {
+                        terminal_delta_seen = true;
+                        final_stop_reason = Some(match sr {
+                            messages::StopReason::EndTurn => StopReason::Stop,
+                            messages::StopReason::MaxTokens => StopReason::Length,
+                            messages::StopReason::StopSequence => StopReason::Stop,
+                            messages::StopReason::ToolUse => StopReason::ToolCalls,
+                            // The model declined to continue; whatever streamed is the complete response, so end the turn cleanly
+                            messages::StopReason::Refusal => StopReason::ContentFilter,
+                            // Spec L4281: pause_turn is a DEDICATED unsupported-control
+                            // failure — the failure terminates the stream before any
+                            // outcome, projection, persistence, telemetry, or accounting
+                            // exists (the L1995 principle). Provenance:
+                            // frozen-spec@2cbc222c §6.3 L4281.
+                            messages::StopReason::PauseTurn => {
+                                let err = SamplingError::UnsupportedStopControl {
+                                    wire_reason: "pause_turn".to_owned(),
+                                };
+                                yield SamplingEvent::Failed {
+                                    request_id: request_id.clone(),
+                                    error: SamplingErrorInfo::from(&err),
+                                };
+                                return;
+                            }
+                            // Spec L4280: a context-window completion is its own typed
+                            // terminal — NEVER length-salvaged (distinct from `Length`;
+                            // the item-1 invariant). Provenance:
+                            // frozen-spec@2cbc222c §6.3 L4280.
+                            messages::StopReason::ModelContextWindowExceeded => {
+                                StopReason::ContextWindowExceeded
+                            }
+                            // L4282: an unrecognized wire value still maps (so the stream
+                            // reaches the post-loop check); the B5 enforcement below
+                            // turns it into the stream-protocol error naming the wire
+                            // string
+                            messages::StopReason::Unknown(_) => StopReason::Stop,
+                        });
+                    }
                     let output_incoming = usage.output_tokens;
                     let input_incoming = usage.input_tokens.as_ref().copied();
                     // R2: usage counters are monotonic across
@@ -669,19 +725,48 @@ pub fn stream_messages<'a>(
                     // truncation — the provider never closed the block it
                     // (claiming) finished (xli eq-11/eq-19 shape).
                     if !blocks.is_empty() {
-                        let open: Vec<u32> = blocks.keys().copied().collect();
-                        let message = format!(
-                            "message_stop before all blocks ended (open indices: {open:?})"
-                        );
-                        yield SamplingEvent::Failed {
-                            request_id: request_id.clone(),
-                            error: SamplingErrorInfo::from(&SamplingError::StreamError {
-                                error_type: "unclosed_blocks".to_owned(),
-                                message,
-                                code: None,
-                            }),
-                        };
-                        return;
+                        // L1976-1978 carve-out (scope option approved in this cut): a
+                        // `max_tokens` terminal with exactly ONE open final `tool_use`
+                        // block is the spec's pinned exception — the provider cut the
+                        // stream mid-arguments; complete the call with the partial args
+                        // (the `LengthPolicy` verdict then makes it non-executing per
+                        // L2021-2022). Overlapping opens (SM8b) and any block event after
+                        // the terminal delta (m-3, spec-forbidden ordering) are NOT the
+                        // exception shape. Provenance: frozen-spec@2cbc222c L1976-1978.
+                        let carve_out = matches!(final_stop_reason, Some(StopReason::Length))
+                            && !block_event_after_terminal
+                            && blocks.len() == 1
+                            && matches!(
+                                blocks.values().next().map(|b| &b.block_type),
+                                Some(BlockType::ToolUse)
+                            );
+                        if !carve_out {
+                            let open: Vec<u32> = blocks.keys().copied().collect();
+                            let message = format!(
+                                "message_stop before all blocks ended (open indices: {open:?})"
+                            );
+                            yield SamplingEvent::Failed {
+                                request_id: request_id.clone(),
+                                error: SamplingErrorInfo::from(&SamplingError::StreamError {
+                                    error_type: "unclosed_blocks".to_owned(),
+                                    message,
+                                    code: None,
+                                }),
+                            };
+                            return;
+                        }
+                        let (_, state) = blocks
+                            .pop_first()
+                            .expect("the carve-out above checked exactly one open block");
+                        assistant_tool_calls.push(ToolCall {
+                            id: std::sync::Arc::<str>::from(state.tool_id),
+                            name: state.tool_name,
+                            arguments: std::sync::Arc::<str>::from(
+                                state
+                                    .authoritative_args
+                                    .unwrap_or_else(|| state.args_acc),
+                            ),
+                        });
                     }
                     // Final message complete; the loop exits naturally when the underlying stream ends
                     message_stop_seen = true;
@@ -740,6 +825,37 @@ pub fn stream_messages<'a>(
             return;
         }
 
+        // L4282 (46b R3): a terminal without a stop_reason is a stream-protocol
+        // error. Absent and JSON-null are indistinguishable at the DTO (A3) —
+        // both are errors; the stream never completes without a typed terminal.
+        if final_stop_reason.is_none() {
+            let err = SamplingError::StreamError {
+                error_type: "stop_reason_absent".to_owned(),
+                message: "the terminal message_delta carried no stop_reason".to_owned(),
+                code: None,
+            };
+            yield SamplingEvent::Failed {
+                request_id: request_id.clone(),
+                error: SamplingErrorInfo::from(&err),
+            };
+            return;
+        }
+        // L4282 (46b R3): an unrecognized wire stop_reason is a stream-protocol
+        // error naming the wire string (the raw wire value drives this check —
+        // the projection above is lossy)
+        if let Some(messages::StopReason::Unknown(wire)) = final_wire_stop_reason.as_ref() {
+            let err = SamplingError::StreamError {
+                error_type: "stop_reason_unknown".to_owned(),
+                message: format!("unrecognized stop_reason on the terminal delta: {wire}"),
+                code: None,
+            };
+            yield SamplingEvent::Failed {
+                request_id: request_id.clone(),
+                error: SamplingErrorInfo::from(&err),
+            };
+            return;
+        }
+
         // A `Length` stop is NOT failed here
         // The transform completes with `stop_reason=Length` and `drive_l2` decides fail-vs-salvage per the request's `LengthPolicy`
 
@@ -767,8 +883,18 @@ pub fn stream_messages<'a>(
             // The provider closes a block it cut mid-stream, so the trailing call's arguments may be silently truncated
             // Fail-vs-salvage belongs to the `LengthPolicy` gate
             final_stop_reason
-        } else if !assistant_tool_calls.is_empty() {
-            // Completed tool_use blocks win even over Refusal: the calls are real model output the agent loop must resolve
+        } else if !assistant_tool_calls.is_empty()
+            && !matches!(
+                final_stop_reason,
+                Some(StopReason::ContentFilter) | Some(StopReason::ContextWindowExceeded)
+            )
+        {
+            // Completed tool_use blocks win over a plain stop: the calls are real
+            // model output the agent loop must resolve. Refusal (spec L4278) and
+            // context-full (spec L4280) keep their typed terminals even with
+            // completed tools — the calls stay on the item and the shell rejects
+            // them pre-commit (never executing them). Provenance:
+            // frozen-spec@2cbc222c §6.3 L4278/L4280.
             Some(StopReason::ToolCalls)
         } else {
             final_stop_reason
@@ -782,7 +908,14 @@ pub fn stream_messages<'a>(
         // intentionally-truncated prefix is the 09-09 proven salvage shape
         // for `drive_l2`'s LengthPolicy (pinned by
         // max_tokens_with_tool_use_keeps_length_stop).
-        if stop_reason != Some(StopReason::Length) {
+        // `ContextWindowExceeded` terminals are the same cut-stream class
+        // (apex-ayl.49): the provider hit the context window mid-generation, so
+        // the prefix is as proven as the Length one and the typed terminal flows
+        // through unvalidated.
+        if !matches!(
+            stop_reason,
+            Some(StopReason::Length) | Some(StopReason::ContextWindowExceeded)
+        ) {
             for tc in &assistant_tool_calls {
                 if !tc.arguments.is_empty()
                     && serde_json::from_str::<serde_json::Value>(&tc.arguments).is_err()

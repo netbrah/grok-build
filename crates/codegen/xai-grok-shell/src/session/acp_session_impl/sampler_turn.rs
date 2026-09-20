@@ -106,7 +106,10 @@ pub(super) fn transient_retry_eligible(error: &xai_grok_sampler::SamplingErrorIn
         | SamplingErrorKind::RateLimited
         | SamplingErrorKind::EmptyResponse
         | SamplingErrorKind::MaxTokensTruncation
-        | SamplingErrorKind::DoomLoopDetected => false,
+        | SamplingErrorKind::DoomLoopDetected
+        // pause_turn is a dedicated typed terminal (apex-ayl.49 N1): deterministic,
+        // never transient-retry-eligible (re-sending cannot change the control)
+        | SamplingErrorKind::UnsupportedStopControl => false,
     }
 }
 

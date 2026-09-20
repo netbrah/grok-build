@@ -549,3 +549,428 @@ fn escalation_bumps_the_continuation_cap_outside_the_budget() {
         });
     });
 }
+
+// ============================================================================
+// STOPREASON-TYPED-1 (apex-ayl.49): stop-reason typed terminals — shell turn loop
+// Real turn loop against a scripted Messages backend. Reuses the salvage harness above.
+// Provenance: frozen-spec@2cbc222c §6.3 L4271-4286 (+ L1976-1978 / L1980-1981).
+// ============================================================================
+
+/// Messages SSE: a text-only turn terminated `stop_reason: "model_context_window_exceeded"`.
+fn messages_context_full_sse(text: &str) -> ScriptedResponse {
+    let events = vec![
+        serde_json::json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_ctx_full", "type": "message", "role": "assistant",
+                "content": [], "model": "test", "stop_reason": null,
+                "usage": {
+                    "input_tokens": 10, "output_tokens": 0,
+                    "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "text", "text": ""}
+        }),
+        serde_json::json!({
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "text_delta", "text": text}
+        }),
+        serde_json::json!({"type": "content_block_stop", "index": 0}),
+        serde_json::json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "model_context_window_exceeded"},
+            "usage": {"output_tokens": 5, "input_tokens": 10}
+        }),
+        serde_json::json!({"type": "message_stop"}),
+    ];
+    ScriptedResponse::sse(
+        events.into_iter().map(|e| SseEvent::data(e.to_string())).collect(),
+    )
+}
+
+/// Messages SSE: text + a CLOSED tool_use block, terminated
+/// `stop_reason: "model_context_window_exceeded"`.
+fn messages_context_full_with_tools_sse(
+    call_id: &str,
+    name: &str,
+    arguments: &str,
+) -> ScriptedResponse {
+    let events = vec![
+        serde_json::json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_ctx_tools", "type": "message", "role": "assistant",
+                "content": [], "model": "test", "stop_reason": null,
+                "usage": {
+                    "input_tokens": 10, "output_tokens": 0,
+                    "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "tool_use", "id": call_id, "name": name, "input": {}}
+        }),
+        serde_json::json!({
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": arguments}
+        }),
+        serde_json::json!({"type": "content_block_stop", "index": 0}),
+        serde_json::json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "model_context_window_exceeded"},
+            "usage": {"output_tokens": 5, "input_tokens": 10}
+        }),
+        serde_json::json!({"type": "message_stop"}),
+    ];
+    ScriptedResponse::sse(
+        events.into_iter().map(|e| SseEvent::data(e.to_string())).collect(),
+    )
+}
+
+/// Messages SSE: a CLOSED tool_use block, terminated `stop_reason: "refusal"` with a
+/// provider `stop_details` explanation (the Anthropic ToS auto-refusal shape).
+fn messages_refusal_with_tools_sse(
+    call_id: &str,
+    name: &str,
+    arguments: &str,
+    explanation: &str,
+) -> ScriptedResponse {
+    let events = vec![
+        serde_json::json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_refusal_tools", "type": "message", "role": "assistant",
+                "content": [], "model": "test", "stop_reason": null,
+                "usage": {
+                    "input_tokens": 10, "output_tokens": 0,
+                    "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "tool_use", "id": call_id, "name": name, "input": {}}
+        }),
+        serde_json::json!({
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": arguments}
+        }),
+        serde_json::json!({"type": "content_block_stop", "index": 0}),
+        serde_json::json!({
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": "refusal",
+                "stop_details": {"type": "refusal", "category": "frontier_llm", "explanation": explanation}
+            },
+            "usage": {"output_tokens": 5, "input_tokens": 10}
+        }),
+        serde_json::json!({"type": "message_stop"}),
+    ];
+    ScriptedResponse::sse(
+        events.into_iter().map(|e| SseEvent::data(e.to_string())).collect(),
+    )
+}
+
+/// Messages SSE: partial text streamed, then a terminal `stop_reason: "pause_turn"`.
+fn messages_pause_turn_sse(text: &str) -> ScriptedResponse {
+    let events = vec![
+        serde_json::json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_pause", "type": "message", "role": "assistant",
+                "content": [], "model": "test", "stop_reason": null,
+                "usage": {
+                    "input_tokens": 10, "output_tokens": 0,
+                    "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "text", "text": ""}
+        }),
+        serde_json::json!({
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "text_delta", "text": text}
+        }),
+        serde_json::json!({"type": "content_block_stop", "index": 0}),
+        serde_json::json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "pause_turn"},
+            "usage": {"output_tokens": 5, "input_tokens": 10}
+        }),
+        serde_json::json!({"type": "message_stop"}),
+    ];
+    ScriptedResponse::sse(
+        events.into_iter().map(|e| SseEvent::data(e.to_string())).collect(),
+    )
+}
+
+/// Messages SSE: ZERO visible content (no blocks), a bare terminal
+/// `stop_reason: "model_context_window_exceeded"` (the m-1 empty-resample shape).
+fn messages_context_full_empty_sse() -> ScriptedResponse {
+    let events = vec![
+        serde_json::json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_ctx_empty", "type": "message", "role": "assistant",
+                "content": [], "model": "test", "stop_reason": null,
+                "usage": {
+                    "input_tokens": 10, "output_tokens": 0,
+                    "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "model_context_window_exceeded"},
+            "usage": {"output_tokens": 0, "input_tokens": 10}
+        }),
+        serde_json::json!({"type": "message_stop"}),
+    ];
+    ScriptedResponse::sse(
+        events.into_iter().map(|e| SseEvent::data(e.to_string())).collect(),
+    )
+}
+
+/// SH1 (apex-ayl.49 item 1): a context-full turn EXITS the salvage loop.
+/// A salvage-enabled (subagent-tier) actor sees exactly ONE request (no free-escalation retry,
+/// no budgeted continue — pre-fix the Length-mapped context-full resampled >=2 times), the turn
+/// completes Ok with the typed terminal (projected to ACP MaxTokens), and force_compact is armed.
+#[test]
+fn context_full_exits_the_salvage_loop() {
+    block_on_session(|| {
+        current_thread_local(async {
+            let server = MockInferenceServer::start().await.expect("mock server");
+            // Enqueue enough identical context-full responses that a pre-fix salvage loop
+            // (Length-mapped) can never hang on a missing response; post-fix exactly one is used.
+            for _ in 0..8 {
+                server.enqueue_response(
+                    "/v1/messages",
+                    messages_context_full_sse("the answer was cut short"),
+                );
+            }
+            let actor = salvage_test_actor_on_backend(
+                &server,
+                0,
+                256_000,
+                xai_grok_sampling_types::ApiBackend::Messages,
+                true,
+            )
+            .await;
+            let outcome = run_prompt(&actor, "ctx-full-exit").await;
+            let ok = outcome.expect(
+                "a context-full turn completes Ok (typed terminal), it is never a turn error",
+            );
+            assert_eq!(
+                server.messages_request_count(),
+                1,
+                "context-window completion is never retried: exactly one request (L4286)"
+            );
+            assert_eq!(
+                ok.stop_reason,
+                acp::StopReason::MaxTokens,
+                "the context-full terminal projects to ACP MaxTokens"
+            );
+            assert!(
+                actor
+                    .compaction
+                    .force_compact
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                "the context-full turn arms force_compact for the next pre-turn compaction (L4286)"
+            );
+        });
+    });
+}
+
+/// SH2 (apex-ayl.49 item 1 + item 3): a context-full turn carrying a completed tool_use block is
+/// REJECTED before commit — exactly one request (no tool-execution round), the tool is NOT executed,
+/// the context-full assistant item is NOT committed to history, and the turn completes Ok with the
+/// typed terminal. Pre-fix (Length-mapped) it committed the item and `LengthPolicy` executed the call.
+#[test]
+fn context_full_rejects_tools_before_commit() {
+    block_on_session(|| {
+        current_thread_local(async {
+            let server = MockInferenceServer::start().await.expect("mock server");
+            for _ in 0..8 {
+                server.enqueue_response(
+                    "/v1/messages",
+                    messages_context_full_with_tools_sse("call_full", "do_thing", "{\"x\": 1}"),
+                );
+            }
+            let actor = salvage_test_actor_on_backend(
+                &server,
+                0,
+                256_000,
+                xai_grok_sampling_types::ApiBackend::Messages,
+                true,
+            )
+            .await;
+            let outcome = run_prompt(&actor, "ctx-full-reject-tools").await;
+            let ok = outcome.expect("a rejected context-full turn completes Ok (typed terminal)");
+            assert_eq!(
+                server.messages_request_count(),
+                1,
+                "reject-before-commit: no tool-execution round (a dispatch would resample)"
+            );
+            assert_eq!(
+                ok.stop_reason,
+                acp::StopReason::MaxTokens,
+                "the context-full terminal projects to ACP MaxTokens"
+            );
+            let conv = actor.chat_state_handle.get_conversation().await;
+            assert!(
+                !conv
+                    .iter()
+                    .any(|i| matches!(i, ConversationItem::Assistant(a) if !a.tool_calls.is_empty())),
+                "the rejected context-full response is NOT committed to history: {conv:#?}"
+            );
+        });
+    });
+}
+
+/// SH3 (apex-ayl.49 item 3): a refusal turn carrying a completed tool_use block is REJECTED before
+/// commit — no tool execution, the refusal assistant item is NOT committed, and the turn completes
+/// Ok with the Refusal terminal (the goal auto-pause path stays intact). Pre-fix the Q3 override
+/// turned refusal+tools into `ToolCalls`, committed the item, and dispatched the call.
+#[test]
+fn refusal_with_tools_rejected_before_commit() {
+    block_on_session(|| {
+        current_thread_local(async {
+            let server = MockInferenceServer::start().await.expect("mock server");
+            for _ in 0..8 {
+                server.enqueue_response(
+                    "/v1/messages",
+                    messages_refusal_with_tools_sse(
+                        "call_refused",
+                        "do_thing",
+                        "{\"x\": 1}",
+                        "This request was blocked.",
+                    ),
+                );
+            }
+            let actor = salvage_test_actor_on_backend(
+                &server,
+                0,
+                256_000,
+                xai_grok_sampling_types::ApiBackend::Messages,
+                true,
+            )
+            .await;
+            let outcome = run_prompt(&actor, "refusal-reject-tools").await;
+            let ok = outcome.expect("a rejected refusal turn completes Ok (Refusal terminal)");
+            assert_eq!(
+                server.messages_request_count(),
+                1,
+                "reject-before-commit: no tool-execution round"
+            );
+            assert_eq!(
+                ok.stop_reason,
+                acp::StopReason::Refusal,
+                "a rejected refusal keeps its Refusal terminal (goal auto-pause intact)"
+            );
+            let conv = actor.chat_state_handle.get_conversation().await;
+            assert!(
+                !conv
+                    .iter()
+                    .any(|i| matches!(i, ConversationItem::Assistant(a) if !a.tool_calls.is_empty())),
+                "the rejected refusal response is NOT committed to history: {conv:#?}"
+            );
+        });
+    });
+}
+
+/// SH4 (apex-ayl.49 item 2): a pause_turn turn FAILS with the dedicated error and commits nothing.
+/// The partial streamed text is NOT committed, no tool is dispatched, and the error is NOT classified
+/// as a max-tokens turn error (the mid-salvage empty-continuation arm cannot swallow it).
+/// Pre-fix pause_turn completed as a normal `Stop` (EndTurn) and committed the partial response.
+#[test]
+fn pause_turn_turn_fails_with_dedicated_error_no_commit() {
+    block_on_session(|| {
+        current_thread_local(async {
+            let server = MockInferenceServer::start().await.expect("mock server");
+            server.enqueue_response(
+                "/v1/messages",
+                messages_pause_turn_sse("partial answer before the pause"),
+            );
+            let actor = salvage_test_actor_on_backend(
+                &server,
+                0,
+                256_000,
+                xai_grok_sampling_types::ApiBackend::Messages,
+                true,
+            )
+            .await;
+            let outcome = run_prompt(&actor, "pause-turn-fail").await;
+            let err = outcome.expect_err(
+                "a pause_turn turn must fail with the dedicated error, not complete",
+            );
+            let err_str = format!("{err}");
+            assert!(
+                err_str.contains("pause_turn") && err_str.contains("unsupported control"),
+                "the dedicated error names the unsupported control, got: {err_str}"
+            );
+            // (d) NOT classified as a max-tokens turn error (M1: the mid-salvage arm cannot swallow it).
+            assert!(
+                !crate::sampling::error::is_max_tokens_turn_error(&err),
+                "pause_turn is not a max-tokens turn error (the mid-salvage arm must not fire)"
+            );
+            let conv = actor.chat_state_handle.get_conversation().await;
+            assert!(
+                !conv
+                    .iter()
+                    .any(|i| matches!(i, ConversationItem::Assistant(_))),
+                "the partial pause_turn response is NOT committed to history: {conv:#?}"
+            );
+        });
+    });
+}
+
+/// SH5 (apex-ayl.49 m-1): a context-full response with ZERO visible content completes TYPED with no
+/// empty-resample. Exactly ONE request (without the D1 exclusion extension the zero-content context-full
+/// would invert into an `AttemptOutcome::Empty` retry storm, >=2 requests), the turn is Ok with the typed
+/// terminal, and force_compact is armed.
+#[test]
+fn context_full_empty_response_completes_typed_no_resample() {
+    block_on_session(|| {
+        current_thread_local(async {
+            let server = MockInferenceServer::start().await.expect("mock server");
+            for _ in 0..8 {
+                server.enqueue_response("/v1/messages", messages_context_full_empty_sse());
+            }
+            let actor = salvage_test_actor_on_backend(
+                &server,
+                0,
+                256_000,
+                xai_grok_sampling_types::ApiBackend::Messages,
+                true,
+            )
+            .await;
+            let outcome = run_prompt(&actor, "ctx-full-empty-no-resample").await;
+            let ok = outcome.expect(
+                "a zero-content context-full turn completes Ok (typed terminal), not an empty-resample storm",
+            );
+            assert_eq!(
+                server.messages_request_count(),
+                1,
+                "no empty-resample: the D1 exclusion extension keeps the typed terminal flowing (m-1)"
+            );
+            assert_eq!(
+                ok.stop_reason,
+                acp::StopReason::MaxTokens,
+                "the context-full terminal projects to ACP MaxTokens"
+            );
+            assert!(
+                actor
+                    .compaction
+                    .force_compact
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                "the context-full turn arms force_compact for the next pre-turn compaction"
+            );
+        });
+    });
+}

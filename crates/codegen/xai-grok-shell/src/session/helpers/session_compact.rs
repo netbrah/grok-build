@@ -185,7 +185,10 @@ fn classify_sampling_error(err: SamplingError) -> CompactFailure {
         | SamplingError::Serialization(_)
         | SamplingError::IdleTimeout { .. }
         // Local pre-HTTP cap violation: deterministic — re-sending cannot fix it.
-        | SamplingError::RequestValidation(_) => true,
+        // Unsupported stop control (pause_turn): deterministic typed terminal — re-sending
+        // the same payload cannot change the control the model requested.
+        | SamplingError::RequestValidation(_)
+        | SamplingError::UnsupportedStopControl { .. } => true,
         SamplingError::Api { status, .. } => {
             status.is_client_error()
                 && *status != StatusCode::REQUEST_TIMEOUT

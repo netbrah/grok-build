@@ -123,9 +123,12 @@ pub struct SessionHandle {
     /// Plan mode tracker, shared with the session actor via Arc.
     /// Exposed so the `x.ai/toggle_plan_mode` handler can toggle plan mode without going through the session command channel.
     pub plan_mode: std::sync::Arc<parking_lot::Mutex<crate::session::plan_mode::PlanModeTracker>>,
-    /// Debug flag: when set to `true`, the next turn unconditionally triggers auto-compaction regardless of context window usage.
+    /// Compaction-arming flag: when set to `true`, the next turn unconditionally triggers auto-compaction regardless of context window usage.
     /// Consumed (reset to `false`) atomically on use via `compare_exchange`.
-    /// Set via `x.ai/debug/arm_auto_compact`.
+    /// Two arming sources (apex-ayl.49 K5): the debug handler `x.ai/debug/arm_auto_compact`,
+    /// and a context-full turn terminal (`CompletedStop::ContextWindowExceeded` — spec L4286:
+    /// "Context-window completion is never retried; its next turn may take the normal
+    /// pre-turn compaction path").
     pub force_compact: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub permission_handle: xai_grok_workspace::permission::PermissionHandle,
     /// The parent SessionActor's live `Auth401AttributionCallback` (if any).

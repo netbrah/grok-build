@@ -323,6 +323,13 @@ async fn thinking_block_emits_reasoning_channel_and_preserved_in_response() {
         Ok(thinking_delta),
         Ok(sig_delta),
         Ok(block_stop(0)),
+        // apex-ayl.49 B5 census (STOP-6, reported in the driver report): the
+        // L4282 terminal check makes a stream that ends at `message_stop`
+        // without a `message_delta` a protocol error (`stop_reason_absent`).
+        // This pre-existing fixture is completed with a terminal delta; every
+        // assertion below (thinking channel, signature preservation) is
+        // unchanged — the fixture models a spec-conformant stream.
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
         Ok(MessageStreamEvent::MessageStop),
     ];
     let raw = stream::iter(events).boxed();
@@ -539,34 +546,67 @@ async fn refusal_stop_message_flows_to_response() {
     }
 }
 
+/// SM2 (= Q2a split, apex-ayl.49 item 2): `pause_turn` is a typed terminal error, not a Stop.
+/// The failure terminates the stream before any outcome / projection / persistence exists (spec L1995).
 #[tokio::test]
-async fn pause_turn_and_unknown_stop_reasons_complete_as_stop() {
-    for stop in [
-        messages::StopReason::PauseTurn,
-        messages::StopReason::Unknown("mystery_reason".to_string()),
-    ] {
-        let label = format!("{stop:?}");
-        let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
-            Ok(message_start()),
-            Ok(text_block_start(0)),
-            Ok(text_delta(0, "partial answer")),
-            Ok(block_stop(0)),
-            Ok(message_delta_with_stop(stop)),
-            Ok(MessageStreamEvent::MessageStop),
-        ];
-        let raw = stream::iter(events).boxed();
-        let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
-        match evs.last().unwrap() {
-            SamplingEvent::Completed { response, .. } => {
-                assert_eq!(
-                    response.stop_reason,
-                    Some(StopReason::Stop),
-                    "{label} must end the turn like stop"
-                );
-            }
-            other => panic!("{label}: expected Completed, got {other:?}"),
+async fn pause_turn_terminal_fails_with_dedicated_error() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(text_block_start(0)),
+        Ok(text_delta(0, "partial answer")),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::PauseTurn)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+    match evs.last().unwrap() {
+        SamplingEvent::Failed { error, .. } => {
+            // The dedicated kind (apex-ayl.49 N1): it must survive the
+            // SamplingErrorInfo round-trip typed or the retry classifier
+            // treats the terminal as a transient 5xx (SH4 proves it)
+            assert_eq!(
+                error.kind,
+                crate::events::SamplingErrorKind::UnsupportedStopControl,
+                "pause_turn surfaces as the dedicated non-retryable error, got {}",
+                error.message
+            );
+            assert!(
+                !error.is_retryable,
+                "pause_turn is a deterministic typed terminal, never retryable"
+            );
+            assert!(
+                error.message.contains("pause_turn")
+                    && error.message.contains("unsupported control"),
+                "the dedicated error names the control, got {}",
+                error.message
+            );
         }
+        other => panic!("expected Failed(UnsupportedStopControl), got {other:?}"),
     }
+    assert!(
+        !evs.iter().any(|e| matches!(e, SamplingEvent::Completed { .. })),
+        "a pause_turn turn must never yield a Completed outcome"
+    );
+}
+
+/// SM3 (= Q2b split, apex-ayl.49 L4282): an unknown terminal stop_reason is a stream-protocol error.
+/// The wire string is named in the message (the DTO `Unknown` catch-all stays; the stream layer types the error).
+#[tokio::test]
+async fn unknown_stop_reason_terminal_is_stream_protocol_error() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(text_block_start(0)),
+        Ok(text_delta(0, "partial answer")),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::Unknown(
+            "mystery_reason".to_string()
+        ))),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+    assert_failed_stream_error(&evs, "stop_reason_unknown", "mystery_reason");
 }
 
 /// A plain `max_tokens` stop with only text completes with `stop_reason=Length` and keeps the partial text.
@@ -664,10 +704,12 @@ async fn max_tokens_tool_use_without_arg_deltas_collects_empty_arguments() {
     }
 }
 
-/// Pins the model_context_window_exceeded decision: it maps to the Length stop class and COMPLETES with the partial preserved.
-/// Fail-vs-salvage belongs to `drive_l2`, not this transform.
+/// SM1 (= Q1 re-pin, apex-ayl.49 item 1): `model_context_window_exceeded` maps to the TYPED
+/// `ContextWindowExceeded` terminal (distinct from `Length`) and COMPLETES with the partial preserved.
+/// Fail-vs-salvage belongs to `drive_l2`; a context-full response is never length-salvaged (it `Pass`es
+/// every `LengthPolicy`), so the actor gate and the shell salvage gate both structurally exit.
 #[tokio::test]
-async fn model_context_window_exceeded_completes_with_length_stop() {
+async fn model_context_window_exceeded_maps_to_typed_terminal() {
     let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
         Ok(message_start()),
         Ok(text_block_start(0)),
@@ -683,20 +725,32 @@ async fn model_context_window_exceeded_completes_with_length_stop() {
 
     match evs.last().unwrap() {
         SamplingEvent::Completed { response, .. } => {
-            assert_eq!(response.stop_reason, Some(StopReason::Length));
+            assert_eq!(
+                response.stop_reason,
+                Some(StopReason::ContextWindowExceeded),
+                "context-full is a distinct typed terminal, not Length"
+            );
+            assert_eq!(
+                response.raw_stop_reason.as_deref(),
+                Some("model_context_window_exceeded"),
+                "the verbatim wire string is preserved for consumers"
+            );
             assert_eq!(
                 response.assistant_text(),
                 "truncated answ",
                 "partial content must be preserved"
             );
         }
-        other => panic!("expected Completed(Length), got {other:?}"),
+        other => panic!("expected Completed(ContextWindowExceeded), got {other:?}"),
     }
 }
 
-/// Pins the override: completed tool_use blocks beat a terminal Refusal, so the agent loop still resolves the calls.
+/// SM5 (= Q3 inverted, apex-ayl.49 item 3): a refusal terminal carrying completed tool_use blocks
+/// KEEPS `ContentFilter` — the tool-use-wins override is removed for refusals. The tools stay on the item
+/// (native fields preserved, spec L4271) so the shell reject-before-commit gate can act on them.
+/// Provenance: frozen-spec@2cbc222c §6.3 L4271-4286.
 #[tokio::test]
-async fn refusal_after_tool_use_blocks_keeps_tool_calls_stop_reason() {
+async fn refusal_with_completed_tools_keeps_refusal_terminal() {
     let tool_start = MessageStreamEvent::ContentBlockStart {
         index: 0,
         content_block: ContentBlock::ToolUse {
@@ -725,15 +779,198 @@ async fn refusal_after_tool_use_blocks_keeps_tool_calls_stop_reason() {
 
     match evs.last().unwrap() {
         SamplingEvent::Completed { response, .. } => {
-            assert_eq!(response.tool_calls().len(), 1);
             assert_eq!(
                 response.stop_reason,
-                Some(StopReason::ToolCalls),
-                "tool_use blocks must win over the refusal stop_reason"
+                Some(StopReason::ContentFilter),
+                "a refusal keeps its typed terminal even with completed tools"
+            );
+            assert_eq!(
+                response.tool_calls().len(),
+                1,
+                "the tool call stays on the item (native fields preserved)"
             );
         }
-        other => panic!("expected Completed, got {other:?}"),
+        other => panic!("expected Completed(ContentFilter), got {other:?}"),
     }
+}
+
+/// SM4 (apex-ayl.49 L4282): a terminal delta carrying no stop_reason is a stream-protocol error,
+/// not a silent `Completed`. Absent and JSON-null are indistinguishable at the DTO (both collapse to
+/// `None`), so this single event shape covers both wire forms; the enforcement is the B5 terminal check.
+#[tokio::test]
+async fn terminal_stop_reason_absent_is_stream_protocol_error() {
+    let terminal_no_stop = MessageStreamEvent::MessageDelta {
+        delta: MessageDeltaBody {
+            stop_reason: None,
+            stop_sequence: None,
+            stop_details: WirePresence::missing(),
+            container: WirePresence::missing(),
+        },
+        usage: MessageDeltaUsage {
+            output_tokens: 5,
+            input_tokens: WirePresence::value(10),
+            cache_read_input_tokens: WirePresence::missing(),
+            cache_creation_input_tokens: WirePresence::missing(),
+            output_tokens_details: WirePresence::missing(),
+        },
+    };
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(text_block_start(0)),
+        Ok(text_delta(0, "partial answer")),
+        Ok(block_stop(0)),
+        Ok(terminal_no_stop),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+    assert_failed_stream_error(&evs, "stop_reason_absent", "stop_reason");
+}
+
+/// SM6 (apex-ayl.49 item 1): a context-full terminal carrying a completed tool_use block KEEPS
+/// `ContextWindowExceeded` — it bypasses the Length-wins arm AND the tool-use-wins override.
+#[tokio::test]
+async fn context_full_with_completed_tools_keeps_context_full_terminal() {
+    let tool_start = MessageStreamEvent::ContentBlockStart {
+        index: 0,
+        content_block: ContentBlock::ToolUse {
+            id: "call_full".into(),
+            name: "do_thing".into(),
+            input: serde_json::json!({}),
+            cache_control: None,
+        },
+    };
+    let arg_delta = MessageStreamEvent::ContentBlockDelta {
+        index: 0,
+        delta: StreamDelta::InputJsonDelta {
+            partial_json: "{}".into(),
+        },
+    };
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(tool_start),
+        Ok(arg_delta),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(
+            messages::StopReason::ModelContextWindowExceeded,
+        )),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            assert_eq!(
+                response.stop_reason,
+                Some(StopReason::ContextWindowExceeded),
+                "context-full keeps its typed terminal (not Length, not ToolCalls)"
+            );
+            assert_eq!(response.tool_calls().len(), 1, "the tool call stays on the item");
+        }
+        other => panic!("expected Completed(ContextWindowExceeded), got {other:?}"),
+    }
+}
+
+/// SM7 (apex-ayl.49 R2 / N-4, spec L1980-1981): a second `message_start` after the terminal delta
+/// is a typed terminal grammar error — the duplicate-start guard (it previously clobbered the
+/// already-final stop/container state silently).
+#[tokio::test]
+async fn duplicate_message_start_after_terminal_is_typed_error() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(text_block_start(0)),
+        Ok(text_delta(0, "hello")),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
+        // A second start after the terminal delta: the N-4 / L1980-1981 duplicate-start shape.
+        Ok(message_start()),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+    assert_failed_stream_error(&evs, "duplicate_message_start", "message_start");
+}
+
+/// SM8 (apex-ayl.49 scope option, spec L1976-1978): a `max_tokens` (Length) terminal with EXACTLY ONE
+/// open final client `tool_use` block and no block event after the terminal delta COMPLETES with
+/// `Length`, carrying the (partial) arguments. Pre-fix this shape hard-failed as `unclosed_blocks`;
+/// the partial JSON then flows to the `LengthPolicy` verdict, which makes it non-executing (L2021-2022).
+/// Provenance: frozen-spec@2cbc222c §6.3 L1976-1978.
+#[tokio::test]
+async fn max_tokens_with_open_final_tool_block_completes() {
+    let tool_start = MessageStreamEvent::ContentBlockStart {
+        index: 0,
+        content_block: ContentBlock::ToolUse {
+            id: "call_open".into(),
+            name: "do_thing".into(),
+            input: serde_json::json!({}),
+            cache_control: None,
+        },
+    };
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(tool_start),
+        Ok(input_delta(0, r#"{"x": "trunc"#)),
+        Ok(message_delta_with_stop(messages::StopReason::MaxTokens)),
+        // NO content_block_stop for index 0 — the block is left open at the terminal.
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            assert_eq!(
+                response.stop_reason,
+                Some(StopReason::Length),
+                "the pinned exception shape completes as Length"
+            );
+            assert_eq!(response.tool_calls().len(), 1, "the open tool block is carried");
+            assert_eq!(
+                response.tool_calls()[0].arguments.as_ref(),
+                r#"{"x": "trunc"#,
+                "the partial arguments are carried (the LengthPolicy verdict decides non-executing)"
+            );
+        }
+        other => panic!("expected Completed(Length), got {other:?}"),
+    }
+}
+
+/// SM8b (apex-ayl.49 m-3 guard pin, green-by-construction — NOT in the RED set): the carve-out requires
+/// EXACTLY ONE open block. Two overlapping open tool_use blocks at a `max_tokens` terminal still hard-fail
+/// as `unclosed_blocks` (the accumulator tolerates overlapping opens, so the carve-out must not swallow them).
+#[tokio::test]
+async fn carve_out_rejects_overlapping_open_blocks() {
+    let tool0 = MessageStreamEvent::ContentBlockStart {
+        index: 0,
+        content_block: ContentBlock::ToolUse {
+            id: "call_a".into(),
+            name: "do_thing".into(),
+            input: serde_json::json!({}),
+            cache_control: None,
+        },
+    };
+    let tool1 = MessageStreamEvent::ContentBlockStart {
+        index: 1,
+        content_block: ContentBlock::ToolUse {
+            id: "call_b".into(),
+            name: "do_thing".into(),
+            input: serde_json::json!({}),
+            cache_control: None,
+        },
+    };
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(tool0),
+        Ok(input_delta(0, "{\"a\": \"part")),
+        Ok(tool1),
+        Ok(input_delta(1, "{\"b\": \"part")),
+        Ok(message_delta_with_stop(messages::StopReason::MaxTokens)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+    assert_failed_stream_error(&evs, "unclosed_blocks", "open indices");
 }
 
 /// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/tests/stream_invariants.rs :: error_event_propagates_typed (re-expressed; grok surfaces the in-stream `error` event as a `Failed` terminal — already satisfied pre-MW-3, so this is the pinning re-expression, HI-C5-006)

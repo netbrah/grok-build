@@ -87,6 +87,12 @@ pub(crate) enum CompletedStop {
     MaxTokens,
     /// Content-filter refusal with the provider explanation (may be empty).
     Refusal(String),
+    /// The model's context window was exceeded mid-generation (messages wire
+    /// `model_context_window_exceeded`). Distinct from `MaxTokens`: never
+    /// length-salvaged, arms pre-turn compaction. Projects lossily to ACP
+    /// `MaxTokens` (the closest existing ACP semantic — the turn was capacity-bounded).
+    /// Provenance: frozen-spec@2cbc222c §6.3 L4280/L4286.
+    ContextWindowExceeded,
 }
 
 /// Outcome of `process_conversation_turn`, distinguishing normal completion from cancellation.

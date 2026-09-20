@@ -312,6 +312,14 @@ pub fn format_sampling_error(err: &SamplingError, retry_count: Option<u32>) -> S
         SamplingError::RequestValidation(e) => {
             format!("{}Request validation failed: {e}", retry_prefix)
         }
+        // Unsupported stop control (pause_turn) is a terminal error — it is never retried, so
+        // this notice arm is defensive (exhaustiveness); the message names the control.
+        SamplingError::UnsupportedStopControl { wire_reason } => {
+            format!(
+                "{}The model requested the unsupported control `{wire_reason}`; the turn was not committed.",
+                retry_prefix
+            )
+        }
     }
 }
 
@@ -368,6 +376,11 @@ pub(crate) fn clone_error(err: &SamplingError) -> SamplingError {
             aborted_at_chunk: *aborted_at_chunk,
         },
         SamplingError::RequestValidation(e) => SamplingError::RequestValidation(e.clone()),
+        SamplingError::UnsupportedStopControl { wire_reason } => {
+            SamplingError::UnsupportedStopControl {
+                wire_reason: wire_reason.clone(),
+            }
+        }
     }
 }
 

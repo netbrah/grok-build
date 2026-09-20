@@ -1686,6 +1686,11 @@ impl SessionActor {
                             CompletedStop::Refusal(_) => acp::StopReason::Refusal,
                             CompletedStop::MaxTokens => acp::StopReason::MaxTokens,
                             CompletedStop::EndTurn => acp::StopReason::EndTurn,
+                            // The context-full terminal projects lossily to ACP MaxTokens (the
+                            // closest existing ACP semantic — the turn was capacity-bounded; the
+                            // ACP enum is #[non_exhaustive] external, no variant is added).
+                            // Provenance: frozen-spec@2cbc222c §6.3 L4280 (ruling Q3).
+                            CompletedStop::ContextWindowExceeded => acp::StopReason::MaxTokens,
                         },
                         PromptCompletionKind::Completed,
                         structured_output,
@@ -3349,6 +3354,8 @@ impl SessionActor {
             let response_is_empty = response.is_empty();
             let turn_refused =
                 stop_reason == Some(xai_grok_sampling_types::StopReason::ContentFilter);
+            let turn_context_full =
+                stop_reason == Some(xai_grok_sampling_types::StopReason::ContextWindowExceeded);
             let refusal_explanation = response.stop_message.clone();
             let final_answer_text = json_schema.is_some().then(|| response.assistant_text());
             match length_salvage_streak.on_sample(
@@ -3370,6 +3377,69 @@ impl SessionActor {
                     }
                 }
                 LengthSalvageAction::NotSalvage => {}
+            }
+            // Spec L4278/L4284-85 (SDD G4, apex-ayl.49): a refused or context-full
+            // terminal carrying tool calls is REJECTED before commit — the
+            // provisional deltas may already have been shown, but no durable item
+            // or call is produced: record_response_items is skipped, the calls are
+            // never dispatched, and the turn completes with the typed terminal.
+            // Provenance: frozen-spec@2cbc222c §6.3 L4278/L4284-85.
+            if (turn_refused || turn_context_full) && !tool_calls.is_empty() {
+                // Generalize the refusal notice (G5): refusal-with-tools is NOT
+                // `response_is_empty`, so the reject path has its own emission.
+                let notice = if turn_refused {
+                    let mut n = "The model provider refused to generate a response \
+                                 for this turn (content filter)."
+                        .to_string();
+                    if let Some(explanation) = refusal_explanation.as_deref() {
+                        n.push_str("\n\nProvider explanation: ");
+                        n.push_str(explanation);
+                    }
+                    n
+                } else {
+                    "The model's context window was exceeded before the response \
+                     completed; the tool calls it returned were not executed."
+                        .to_string()
+                };
+                tracing::warn!(
+                    session_id = %self.session_info.id,
+                    refused = turn_refused,
+                    context_full = turn_context_full,
+                    tool_count = tool_calls.len(),
+                    "typed terminal carried tool calls — rejecting before commit (no durable item or call)"
+                );
+                self.send_update(
+                    acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
+                        acp::ContentBlock::Text(acp::TextContent::new(notice)),
+                    )),
+                    None,
+                )
+                .await;
+                self.finalize_turn_bookkeeping(
+                    req_id,
+                    std::mem::take(&mut turn_span_totals),
+                    turn_sampling,
+                )
+                .await;
+                if turn_context_full {
+                    // Spec L4286: context-window completion is never retried; the
+                    // next turn takes the normal pre-turn compaction path (K5:
+                    // the flag's second arming source)
+                    self.compaction
+                        .force_compact
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                return Ok(TurnOutcome::Completed {
+                    tools_called: turn_tools_called,
+                    structured_output: None,
+                    stop: if turn_refused {
+                        CompletedStop::Refusal(
+                            refusal_explanation.clone().unwrap_or_default(),
+                        )
+                    } else {
+                        CompletedStop::ContextWindowExceeded
+                    },
+                });
             }
             let usage_reported = response.usage.is_some();
             let response_item_count = response.items.len() as i64;
@@ -3582,11 +3652,24 @@ impl SessionActor {
                     }
                     _ => None,
                 };
+                // Spec L4286 (SDD K5): a context-full turn arms the next turn's
+                // normal pre-turn compaction path (the flag's second arming
+                // source, alongside the debug handler)
+                if turn_context_full {
+                    self.compaction
+                        .force_compact
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 return Ok(TurnOutcome::Completed {
                     tools_called: turn_tools_called,
                     structured_output,
                     stop: if turn_refused {
                         CompletedStop::Refusal(refusal_explanation.clone().unwrap_or_default())
+                    } else if turn_context_full {
+                        // Ordered AFTER `turn_refused`, BEFORE `salvage.is_truncated()`
+                        // (context-full never sets `truncated`, so order vs MaxTokens
+                        // is inert — pin SH1)
+                        CompletedStop::ContextWindowExceeded
                     } else if salvage.is_truncated() {
                         CompletedStop::MaxTokens
                     } else {

@@ -691,8 +691,13 @@ where
                         StopReason::Length,
                         Some(messages_types::StopReason::MaxTokens),
                     ),
+                    // A prompt-side overflow is the typed context-full terminal (apex-ayl.49
+                    // item 1): it is NEVER length-salvaged, so the salvage loop keyed on
+                    // `Length` exits structurally. The raw echo is preserved. Provenance:
+                    // frozen-spec@2cbc222c §6.3 L4280 (m-2: the with-tools case below still
+                    // projects ToolCalls — the recorded pre-existing divergence).
                     Some(INCOMPLETE_REASON_MAX_PROMPT_TOKENS) => (
-                        StopReason::Length,
+                        StopReason::ContextWindowExceeded,
                         Some(messages_types::StopReason::ModelContextWindowExceeded),
                     ),
                     // A time-limit cut is a Length cut with no Messages vocabulary word
@@ -722,7 +727,14 @@ where
         // On the Messages backend Length wins, so the `LengthPolicy` gate can refuse a possibly argument-truncated trailing call
         // The difference is deliberate; don't "fix" it here
         let (stop_reason, raw_stop_reason) = if has_tool_calls {
-            if matches!(incomplete_classification, Some((StopReason::Length, _))) {
+            // m-2: the conjunct covers BOTH cut classes — post the O1 remap a
+            // prompt-overflow classifies as `ContextWindowExceeded`, and the bare
+            // `Length` key would silently disable the only diagnostic on exactly
+            // the divergent with-tools case
+            if matches!(
+                incomplete_classification,
+                Some((StopReason::Length | StopReason::ContextWindowExceeded, _))
+            ) {
                 tracing::warn!(
                     request_id = %request_id,
                     "tool calls mask a length-truncated response; arguments may be truncated"
@@ -1012,14 +1024,16 @@ mod tests {
         );
     }
 
-    /// Context-window exhaustion ("max_prompt_tokens", the xAI extension) is also a Length cut, not the unknown-reason fallback.
-    /// It keeps its wire distinction in `raw_stop_reason`, in the Messages vocabulary.
+    /// Context-window exhaustion ("max_prompt_tokens", the xAI extension) maps to the TYPED
+    /// `ContextWindowExceeded` terminal (apex-ayl.49 O1 remap), not the salvageable `Length` class —
+    /// a prompt-side overflow can never be fixed by a salvage continue (provably futile). It keeps
+    /// its wire distinction in `raw_stop_reason`, in the Messages vocabulary.
     #[tokio::test]
-    async fn incomplete_max_prompt_tokens_maps_to_length() {
+    async fn incomplete_max_prompt_tokens_maps_to_context_window_exceeded() {
         assert_eq!(
             stop_reasons_for_incomplete("max_prompt_tokens").await,
             (
-                Some(StopReason::Length),
+                Some(StopReason::ContextWindowExceeded),
                 Some("model_context_window_exceeded".to_string())
             )
         );
@@ -1107,6 +1121,60 @@ mod tests {
                 assert_eq!(response.raw_stop_reason, None);
             }
             other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    /// OR1 (apex-ayl.49 m-2 guard pin, green-by-construction — NOT in the RED set): the deliberate
+    /// `has_tool_calls -> (ToolCalls, None)` rewrite (the recorded responses/messages precedence
+    /// asymmetry) WINS over the O1 `max_prompt_tokens` remap. A context-full Incomplete response
+    /// carrying a completed tool call still projects as `ToolCalls` — the L4280 with-tools divergence
+    /// persists on this wire (a later parity cut is its own bead). The truncation warn's `matches!`
+    /// conjunct is extended to `Length | ContextWindowExceeded` so the diagnostic is not silently
+    /// disabled post-remap (source-pinned; the warn is a tracing side-effect, asserted here by the
+    /// projected shape).
+    #[tokio::test]
+    async fn responses_with_tools_context_full_projects_toolcalls_with_warn() {
+        let mut response = build_response(rs_types::Status::Incomplete);
+        response.incomplete_details = Some(rs_types::IncompleteDetails {
+            reason: "max_prompt_tokens".into(),
+        });
+        response.output = vec![rs_types::OutputItem::FunctionCall(
+            rs_types::FunctionToolCall {
+                arguments: "{\"x\":1".into(),
+                call_id: "call_1".into(),
+                name: "do_thing".into(),
+                id: None,
+                status: None,
+            },
+        )];
+        let event =
+            rs::ResponseStreamEvent::ResponseIncomplete(rs_types::ResponseIncompleteEvent {
+                response,
+                sequence_number: 0,
+            });
+        let raw = stream::iter(vec![Ok(event)]).boxed();
+        let events = collect(stream_responses(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+            None,
+        ))
+        .await;
+        match events.last().unwrap() {
+            SamplingEvent::Completed { response, .. } => {
+                assert_eq!(
+                    response.stop_reason,
+                    Some(StopReason::ToolCalls),
+                    "the deliberate with-tools rewrite wins over the O1 remap (recorded divergence)"
+                );
+                assert_eq!(
+                    response.raw_stop_reason,
+                    None,
+                    "the pair stays coherent: no raw length reason rides along"
+                );
+            }
+            other => panic!("expected Completed(ToolCalls), got {other:?}"),
         }
     }
 

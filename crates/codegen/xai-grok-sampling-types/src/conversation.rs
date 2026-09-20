@@ -1212,6 +1212,13 @@ pub enum StopReason {
     ToolCalls,
     /// Content was filtered
     ContentFilter,
+    /// The model's context window was exceeded mid-generation (messages wire
+    /// `model_context_window_exceeded`; responses wire `max_prompt_tokens`
+    /// incomplete reason). Distinct from `Length`: NEVER length-salvaged (it
+    /// `Pass`es every `LengthPolicy`), so the actor and shell salvage gates both
+    /// structurally exit; arms pre-turn compaction for the next turn (spec L4286).
+    /// Provenance: frozen-spec@2cbc222c §6.3 L4280/L4286.
+    ContextWindowExceeded,
 }
 impl From<FinishReason> for StopReason {
     fn from(fr: FinishReason) -> Self {
@@ -5153,6 +5160,48 @@ mod tests {
             LengthPolicy::CompletePartial.verdict(&stop),
             LengthVerdict::Pass
         );
+    }
+
+    /// ST1 (apex-ayl.49 item 1): `ContextWindowExceeded` is a distinct stop class — it is NEVER
+    /// length-salvaged. For all three `LengthPolicy`s, a context-full response returns `Pass` (with
+    /// completed tools and text-only alike). This is the structural guarantee that the actor gate and
+    /// the shell salvage gate both structurally exit on context-full (spec L4286: "Context-window
+    /// completion is never retried").
+    #[test]
+    fn context_window_exceeded_is_not_a_length_stop() {
+        let ctx = |item: ConversationItem| {
+            let mut r = make_response(item);
+            r.stop_reason = Some(StopReason::ContextWindowExceeded);
+            r
+        };
+        let complete_tools = ctx(ConversationItem::assistant_tool_calls(vec![
+            ToolCall {
+                id: "tc1".into(),
+                name: "do_thing".into(),
+                arguments: "{\"x\": 1}".into(),
+            },
+        ]));
+        let text_only = ctx(ConversationItem::assistant("partial"));
+
+        // Distinct from Length — the whole point of the typed terminal.
+        assert_ne!(StopReason::ContextWindowExceeded, StopReason::Length);
+
+        for policy in [
+            LengthPolicy::Fail,
+            LengthPolicy::CompleteToolCalls,
+            LengthPolicy::CompletePartial,
+        ] {
+            assert_eq!(
+                policy.verdict(&complete_tools),
+                LengthVerdict::Pass,
+                "{policy:?} must Pass a context-full response with tools"
+            );
+            assert_eq!(
+                policy.verdict(&text_only),
+                LengthVerdict::Pass,
+                "{policy:?} must Pass a context-full text-only response"
+            );
+        }
     }
 
     #[test]

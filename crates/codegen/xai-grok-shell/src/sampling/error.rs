@@ -108,6 +108,12 @@ pub(crate) fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
         }
         SamplingError::Serialization(_) => acp::Error::invalid_params().data(err.to_string()),
         SamplingError::RequestValidation(_) => acp::Error::invalid_params().data(err.to_string()),
+        // Unsupported stop control (pause_turn): a model-side typed terminal, not a client
+        // parameter error — surfaces as internal_error carrying the dedicated Display message
+        // (names the control; the turn was not committed).
+        SamplingError::UnsupportedStopControl { .. } => {
+            acp::Error::internal_error().data(err.to_string())
+        }
         SamplingError::Api {
             status, message, ..
         } => match status {
