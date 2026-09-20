@@ -650,7 +650,7 @@ fn test_encrypted_reasoning_included_in_responses_api_request() {
             content: None,
             encrypted_content: Some("enc_secret_reasoning_chain".to_string()),
             status: None,
-        }),
+        }.into()),
         ConversationItem::Assistant(AssistantItem {
             content: "The answer is 4.".into(),
             tool_calls: vec![],
@@ -705,7 +705,7 @@ fn test_only_encrypted_reasoning_included_in_request() {
             content: None,
             encrypted_content: Some("enc_hidden_thoughts".to_string()),
             status: None,
-        }),
+        }.into()),
         ConversationItem::Assistant(AssistantItem {
             content: "Hi!".into(),
             tool_calls: vec![],
@@ -970,7 +970,7 @@ fn test_transform_cwd_rewrites_reasoning_sibling() {
             content: None,
             encrypted_content: None,
             status: None,
-        }),
+        }.into()),
         ConversationItem::Assistant(AssistantItem {
             content: format!("I edited {worktree}/src/main.rs").into(),
             tool_calls: vec![],
@@ -1157,7 +1157,7 @@ fn empty_reason_reasoning_only() {
                 content: None,
                 encrypted_content: None,
                 status: None,
-            }),
+            }.into()),
             ConversationItem::Assistant(AssistantItem {
                 content: String::new().into(),
                 tool_calls: Vec::new(),
@@ -1197,7 +1197,7 @@ fn build_responses_input_preserves_multi_turn_ordering() {
             content: None,
             encrypted_content: Some(format!("enc_{text}")),
             status: None,
-        })
+        }.into())
     }
     let items: Vec<ConversationItem> = vec![
         ConversationItem::system("you are helpful"),

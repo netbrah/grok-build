@@ -20,8 +20,16 @@ impl SessionActor {
     /// Post-wall hook for `handle_set_session_model` (sdd-71 §9 step 5): project the
     /// stored history for the cross-wire switch to `target_model`, persisting the
     /// result through the backup-gated, disk-acked seam.
-    pub(crate) async fn apply_switch_projection(&self, target_model: &str) {
-        let outcome = self.chat_state_handle.project_switch_history(target_model).await;
+    ///
+    /// `target_pin` (XW-ENC-AFFINITY-1, apex-mf6): the target row's
+    /// `x-litellm-tags` pin (`None` = untagged, empty-string normalized) —
+    /// the switch-time gate on the AZ->AZ row consults it against each
+    /// item's mint tag to decide store retention of the ciphertext.
+    pub(crate) async fn apply_switch_projection(&self, target_model: &str, target_pin: Option<&str>) {
+        let outcome = self
+            .chat_state_handle
+            .project_switch_history(target_model, target_pin)
+            .await;
         let (outcome_label, changed) = match outcome {
             StripOutcome::Applied { stripped } => ("applied", stripped),
             StripOutcome::NoMatch => ("no_match", 0),

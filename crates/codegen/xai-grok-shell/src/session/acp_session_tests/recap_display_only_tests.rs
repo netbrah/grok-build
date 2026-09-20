@@ -888,7 +888,7 @@ fn over_budget_recap_serializes_to_well_formed_messages_request() {
             content: None,
             encrypted_content: None,
             status: None,
-        })
+        }.into())
     };
     let mk_call = |id: &str| ToolCall {
         id: std::sync::Arc::from(id),
@@ -1493,7 +1493,7 @@ async fn auxiliary_calls_keep_the_main_turn_prefix() {
                 ConversationItem::user("explain the borrow checker"),
                 ConversationItem::Reasoning(xai_grok_sampling_types::synthesized_reasoning_item(
                     "recalling the aliasing rules",
-                )),
+                ).into()),
                 ConversationItem::assistant("it enforces shared-xor-mutable"),
             ];
             actor.chat_state_handle.replace_conversation(parent.clone());
@@ -1558,7 +1558,7 @@ async fn messages_side_calls_preserve_completed_reasoning() {
                     content: None,
                     encrypted_content: Some(format!("signature-{turn}")),
                     status: None,
-                })
+                }.into())
             };
             let parent = vec![
                 ConversationItem::system("you are a coding agent"),
@@ -1674,10 +1674,10 @@ async fn messages_side_calls_strip_reasoning_without_supported_thinking_effort()
                 let parent = vec![
                     ConversationItem::system("you are a coding agent"),
                     ConversationItem::user("first question"),
-                    ConversationItem::Reasoning(synthesized_reasoning_item("signed thinking")),
+                    ConversationItem::Reasoning(synthesized_reasoning_item("signed thinking").into()),
                     ConversationItem::assistant("first answer"),
                     ConversationItem::user("second question"),
-                    ConversationItem::Reasoning(synthesized_reasoning_item("more signed thinking")),
+                    ConversationItem::Reasoning(synthesized_reasoning_item("more signed thinking").into()),
                     ConversationItem::assistant("second answer"),
                     ConversationItem::user("third question"),
                     ConversationItem::assistant("third answer"),
@@ -1780,7 +1780,7 @@ async fn side_question_trims_reasoning_orphaned_by_mid_turn_truncation() {
                 ConversationItem::user("explain the borrow checker"),
                 ConversationItem::Reasoning(xai_grok_sampling_types::synthesized_reasoning_item(
                     "planning the file read",
-                )),
+                ).into()),
                 ConversationItem::Assistant(AssistantItem {
                     content: String::new().into(),
                     tool_calls: vec![ToolCall {

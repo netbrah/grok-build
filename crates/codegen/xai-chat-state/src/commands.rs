@@ -182,8 +182,14 @@ pub enum ChatStateCommand {
     /// with turn pushes). Replies with [`crate::StripOutcome`] after the disk ack:
     /// `Applied` means backup and rewrite both landed (`stripped` = changed-item
     /// count); `NoMatch` means the projection changed nothing.
+    ///
+    /// `target_pin` (XW-ENC-AFFINITY-1, apex-mf6): the target row's
+    /// `x-litellm-tags` pin (`None` = untagged) — feeds the switch-time gate
+    /// on the AZ->AZ row (the ciphertext is retained in the store only when
+    /// the mint tag is compatible with the target pin).
     ProjectSwitchHistory {
         target_model: String,
+        target_pin: Option<String>,
         reply: tokio::sync::oneshot::Sender<crate::StripOutcome>,
     },
 

@@ -28,7 +28,7 @@ fn model_bound_history() -> Vec<ConversationItem> {
             content: None,
             encrypted_content: Some("provider-signature".to_string()),
             status: None,
-        }),
+        }.into()),
         ConversationItem::BackendToolCall(BackendToolCallItem {
             kind: BackendToolKind::WebSearch(web_search),
         }),

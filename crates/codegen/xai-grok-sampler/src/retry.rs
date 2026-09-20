@@ -95,6 +95,17 @@ pub enum RetryDecision {
     /// retry budget (classified before the `max_retries == 0` fatal gate).
     RetryWithModelBoundStateStrip,
 
+    /// XW-ENC-AFFINITY-1 (apex-mf6): the surgical SIG-ENC-BOUNDARY arm —
+    /// the request's OWN ciphertext is boundary-incompatible (503
+    /// encryption-boundary phrasing / 400 invalid_encrypted_content).
+    /// BULK-STRIP every reasoning item's `encrypted_content` (carriers
+    /// excluded — retain-only) and retry once; the request task fails
+    /// closed (no-loop guard) when there is nothing left to strip.
+    /// PAYLOAD-ONLY: no store write, no ModelBoundStateStripped event.
+    /// HY placement: classified before the `max_retries == 0` fatal gate
+    /// (a boundary mismatch is recoverable at zero transport budget).
+    StripEncryptedAndRetry,
+
     EmitToSession(SamplingError),
 
     Fatal(SamplingError),
@@ -108,6 +119,16 @@ pub fn classify_error(
 ) -> RetryDecision {
     if err.is_auth_error() {
         return RetryDecision::EmitToSession(clone_error(err));
+    }
+    // XW-ENC-AFFINITY-1 (apex-mf6): the SIG-ENC-BOUNDARY class is a strict
+    // subset of family 1 (model-bound) — dispatch it to the SURGICAL arm
+    // above the coarse catch-all (D3: a mismatch means the REQUEST's
+    // routing is wrong, so the payload's reasoning ciphertext is stripped
+    // field-level and the store keeps ciphertext + mint_tag for
+    // re-pinning). HY placement: before the max_retries==0 fatal gate,
+    // mirror of the model-bound arm below.
+    if err.is_enc_boundary_error() {
+        return RetryDecision::StripEncryptedAndRetry;
     }
     // Opaque history is optional continuation state. When the provider rejects
     // it, strip the model-bound state and retry the portable transcript once
@@ -1333,5 +1354,112 @@ mod tests {
             assert!(!err.is_rate_limited());
             assert!(!err.is_image_processing_error());
         }
+    }
+}
+
+#[cfg(test)]
+mod enc_boundary_mf6_tests {
+    //! apex-mf6 (XW-ENC-AFFINITY-1) RED U2 dispatch + U3 arm — the
+    //! SIG-ENC-BOUNDARY class dispatches to the SURGICAL arm at the
+    //! classifier (above the model-bound check), while every other
+    //! encrypted-family shape keeps the coarse family-1 route. Pre-cut:
+    //! compile-fails (`RetryDecision::StripEncryptedAndRetry` absent and
+    //! the phrasings classify to `RetryWithModelBoundStateStrip`).
+
+    use super::*;
+    use xai_grok_sampling_types::{ApiErrorCode, SentCredential, SamplingError};
+    use reqwest::StatusCode;
+
+    const SIG_ENC_503: &str = "litellm.ServiceUnavailableError: The deployment that produced this encrypted_content is currently unavailable (likely cooled down), and no deployment on the same encryption boundary is configured. Retry later or configure a deployment with the same (api_base, api_key).. Received Model Group=qwen3.8-27b";
+
+    fn api_err(status: StatusCode, message: &str, code: Option<&str>) -> SamplingError {
+        SamplingError::Api {
+            status,
+            message: message.to_string().into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: code.map(|c| ApiErrorCode::Other(c.to_string())),
+        }
+    }
+
+    /// U2 — DISPATCH (the RED assert per SDD §4.1): both SIG-ENC-BOUNDARY
+    /// phrasings select the surgical arm at `classify_error` — NOT the
+    /// coarse `RetryWithModelBoundStateStrip` (which today is where the
+    /// family-1 predicate sends them). `max_retries = 3 > 0` so the
+    /// decision cannot be the universal zero-budget Fatal gate.
+    #[test]
+    fn sig_enc_boundary_dispatches_surgical_arm_u2() {
+        // 503 boundary (full + 280-capped, the live shape)
+        for message in [SIG_ENC_503, &SIG_ENC_503[..280]] {
+            let err = api_err(StatusCode::SERVICE_UNAVAILABLE, message, None);
+            let decision = classify_error(&err, 0, 3, RATE_LIMIT_RETRY_THRESHOLD);
+            assert!(
+                matches!(decision, RetryDecision::StripEncryptedAndRetry),
+                "SIG-ENC 503 must dispatch the surgical bulk-strip arm, got: {decision:?}"
+            );
+        }
+        // 400 invalid_encrypted_content (code-shaped and phrasing-shaped)
+        let err = api_err(
+            StatusCode::BAD_REQUEST,
+            "The encrypted content SYNTH could not be verified. Reason: Encrypted content could not be decrypted or parsed.",
+            Some("invalid_encrypted_content"),
+        );
+        let decision = classify_error(&err, 0, 3, RATE_LIMIT_RETRY_THRESHOLD);
+        assert!(
+            matches!(decision, RetryDecision::StripEncryptedAndRetry),
+            "SIG-ENC 400 must dispatch the surgical bulk-strip arm, got: {decision:?}"
+        );
+        let err = api_err(
+            StatusCode::BAD_REQUEST,
+            "The encrypted content SYNTH could not be verified. Reason: Encrypted content could not be decrypted or parsed.",
+            None,
+        );
+        let decision = classify_error(&err, 0, 3, RATE_LIMIT_RETRY_THRESHOLD);
+        assert!(
+            matches!(decision, RetryDecision::StripEncryptedAndRetry),
+            "SIG-ENC 400 (phrasing-only) must dispatch the surgical arm, got: {decision:?}"
+        );
+    }
+
+    /// U3 — the catch-all holds: a family-5 (F5 content-array-too-long)
+    /// 400 and a field-name-only encrypted 400 KEEP the coarse
+    /// `RetryWithModelBoundStateStrip` route (the family-1 arm + all other
+    /// needles stay the catch-all for other encrypted-family shapes, D3).
+    #[test]
+    fn non_sig_enc_encrypted_shapes_keep_coarse_route_u3() {
+        let err = api_err(
+            StatusCode::BAD_REQUEST,
+            "Invalid 'input[3].content': array too long (maxItems: 0).",
+            None,
+        );
+        let decision = classify_error(&err, 0, 3, RATE_LIMIT_RETRY_THRESHOLD);
+        assert!(
+            matches!(decision, RetryDecision::RetryWithModelBoundStateStrip),
+            "F5 must keep the coarse model-bound arm, got: {decision:?}"
+        );
+        let err = api_err(
+            StatusCode::BAD_REQUEST,
+            "Could not decrypt the provided encrypted_content. Ensure the value is the unmodified encrypted_content from a previous response.",
+            None,
+        );
+        let decision = classify_error(&err, 0, 3, RATE_LIMIT_RETRY_THRESHOLD);
+        assert!(
+            matches!(decision, RetryDecision::RetryWithModelBoundStateStrip),
+            "field-name-only encrypted 400 must keep the coarse arm (family-1 catch-all), got: {decision:?}"
+        );
+    }
+
+    /// U3 — placement: the surgical arm is NOT gated by the transport
+    /// retry budget (mirror of the HY placement of the model-bound arm):
+    /// `max_retries = 0` still dispatches the surgical arm for SIG-ENC.
+    #[test]
+    fn sig_enc_arm_not_gated_by_zero_budget_u3() {
+        let err = api_err(StatusCode::SERVICE_UNAVAILABLE, SIG_ENC_503, None);
+        let decision = classify_error(&err, 0, 0, RATE_LIMIT_RETRY_THRESHOLD);
+        assert!(
+            matches!(decision, RetryDecision::StripEncryptedAndRetry),
+            "SIG-ENC must be recoverable at zero transport budget (HY placement), got: {decision:?}"
+        );
     }
 }

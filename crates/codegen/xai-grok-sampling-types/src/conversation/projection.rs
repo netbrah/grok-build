@@ -39,7 +39,10 @@ use std::collections::HashSet;
 
 use serde_json::Value;
 
-use super::{BackendToolCallItem, BackendToolKind, ConversationItem};
+use super::{
+    BackendToolCallItem, BackendToolKind, ConversationItem, EncAffinityVerdict, ReasoningItemStore,
+    enc_affinity_gate,
+};
 use crate::catalog_wire::{CatalogFamily, catalog_family};
 use crate::messages_model::is_anthropic_model;
 use crate::rs::ReasoningItem;
@@ -77,10 +80,16 @@ pub struct ProjectedHistory {
 /// (D3 / sdd-71 §5: at runtime it is the target row's model id; in L0 unit
 /// tests the fixture cell name is passed explicitly so the 12/12 goldens
 /// reproduce).
+///
+/// `target_pin` (XW-ENC-AFFINITY-1, apex-mf6) is the target row's
+/// `x-litellm-tags` pin (`None` = untagged, an empty-string pin normalized
+/// at the call site): it feeds the switch-time gate on the one no-re-key
+/// AZ -> AZ row (design §3.4) and is inert everywhere else.
 pub fn project_switch_history(
     items: &[ConversationItem],
     target_model_id: &str,
     boundary: Boundary,
+    target_pin: Option<&str>,
 ) -> ProjectedHistory {
     // Vertex targets only — mirror the /messages build's D5 pairing
     // (`clean_orphaned_items`, conversation/messages.rs): a tool_result
@@ -111,6 +120,7 @@ pub fn project_switch_history(
                     target_model_id,
                     boundary,
                     reasoning_ord,
+                    target_pin,
                 )));
                 reasoning_ord += 1;
             }
@@ -146,16 +156,23 @@ fn forward_owner_model(items: &[ConversationItem], idx: usize) -> Option<&str> {
     })
 }
 
-/// One reasoning item through the ladder (sdd-71 §3 decision table).
+/// One reasoning item through the ladder (sdd-71 §3 decision table), with
+/// the XW-ENC-AFFINITY-1 (apex-mf6) gate on the one no-re-key AZ -> AZ row
+/// (design §3.4): the ciphertext is RETAINED in the store when the item's
+/// mint tag is compatible with the TARGET row's pin, stripped otherwise;
+/// every other tier keeps the .71 strip. The mint tag always rides the
+/// projected item (provenance survives the switch).
 fn project_reasoning(
-    r: &ReasoningItem,
+    r: &ReasoningItemStore,
     owner: Option<&str>,
     target_model_id: &str,
     boundary: Boundary,
     ord: usize,
-) -> ReasoningItem {
+    target_pin: Option<&str>,
+) -> ReasoningItemStore {
     // T0 — same model = same boundary (sdd-71 §2 rule (i); post-.75
-    // same-boundary KEEP default): verbatim, id + field markers kept.
+    // same-boundary KEEP default): verbatim, id + field markers kept (and
+    // the mint tag along) — the gate is never consulted for T0.
     if owner == Some(target_model_id) {
         return r.clone();
     }
@@ -170,7 +187,7 @@ fn project_reasoning(
     let mut id = if keep_original_id {
         r.id.clone()
     } else {
-        xw_reasoning_id(target_model_id, ord, r)
+        xw_reasoning_id(target_model_id, ord, &r.item)
     };
 
     // Invariant 4 (no empty id, the .69 class): a no-re-key id that is
@@ -178,15 +195,32 @@ fn project_reasoning(
     // with the T1 synthesis so no projected reasoning carries `id:""`. The
     // strict send path strips the id pre-send either way.
     if id.is_empty() {
-        id = xw_reasoning_id(target_model_id, ord, r);
+        id = xw_reasoning_id(target_model_id, ord, &r.item);
     }
 
-    ReasoningItem {
-        id,
-        summary: r.summary.clone(),
-        content: r.content.clone(),
-        encrypted_content: None,
-        status: r.status.clone(),
+    // XW-ENC-AFFINITY-1 (apex-mf6, design §3.4): the AZ -> AZ row is the
+    // one where the store may keep the ciphertext — the gate decides by
+    // (target row pin x item mint tag); Retain / RetainOptimistic keep it,
+    // Strip (and every non-AZ -> AZ tier) removes it (the .71 behavior).
+    let encrypted_content = if keep_original_id
+        && matches!(
+            enc_affinity_gate(target_pin, r.mint_tag.as_deref()),
+            EncAffinityVerdict::Retain | EncAffinityVerdict::RetainOptimistic
+        ) {
+        r.item.encrypted_content.clone()
+    } else {
+        None
+    };
+
+    ReasoningItemStore {
+        item: ReasoningItem {
+            id,
+            summary: r.summary.clone(),
+            content: r.content.clone(),
+            encrypted_content,
+            status: r.status.clone(),
+        },
+        mint_tag: r.mint_tag.clone(),
     }
 }
 

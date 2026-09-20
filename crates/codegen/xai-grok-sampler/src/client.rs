@@ -1068,6 +1068,12 @@ struct ClientDefaults {
     /// apex-ayl.86, ruling R-MENU-DERIVED) — carried from `SamplerConfig` and
     /// passed to `provider::patch_responses_request` (AXIS 1).
     ultra_wire_effort: Option<ReasoningEffort>,
+    /// XW-ENC-AFFINITY-1 (apex-mf6): the target row's deployment-affinity
+    /// pin (`extra_headers["x-litellm-tags"]`), or `None` for an untagged
+    /// row (an empty-string header is normalized to `None` at construction —
+    /// the operator's unpin toggle). Feeds the typed send-boundary gate
+    /// (`apply_enc_affinity_gate`) at the drop_orphaned sites.
+    enc_affinity_pin: Option<String>,
 }
 
 /// Endpoint URL builder, resolved once at client construction so each request only appends its path.
@@ -1550,6 +1556,11 @@ impl SamplingClient {
             normalize_content_types: config.normalize_content_types,
             reasoning_effort: config.reasoning_effort,
             ultra_wire_effort: config.ultra_wire_effort,
+            enc_affinity_pin: config
+                .extra_headers
+                .get(xai_grok_sampling_types::ENC_AFFINITY_PIN_HEADER)
+                .map(|value| value.as_str().to_string())
+                .filter(|value| !value.is_empty()),
         };
 
         let endpoint = EndpointTemplate::new(&config.base_url, &config.query_params);
@@ -2180,9 +2191,6 @@ impl SamplingClient {
         // Restore Codex compaction carriers (opaque provider items) at their
         // typed placeholder positions. Empty for every non-Codex request.
         patch_raw_input_replacements(&mut request_body, &request.raw_input_replacements)?;
-        // Transport seam: carrier ciphertext cannot round-trip the proxy's
-        // cross-deployment load balancing; strip it after the splice.
-        crate::provider::strip_encrypted_content_input(&mut request_body);
         // Transport seam: strict targets forbid non-empty reasoning.content
         // on replay (REPLAY-1); project per the per-model gate.
         crate::provider::project_strict_responses_input(
@@ -2352,9 +2360,6 @@ impl SamplingClient {
         // Restore Codex compaction carriers (opaque provider items) at their
         // typed placeholder positions. Empty for every non-Codex request.
         patch_raw_input_replacements(&mut request_body, &request.raw_input_replacements)?;
-        // Transport seam: carrier ciphertext cannot round-trip the proxy's
-        // cross-deployment load balancing; strip it after the splice.
-        crate::provider::strip_encrypted_content_input(&mut request_body);
         // Transport seam: strict targets forbid non-empty reasoning.content
         // on replay (REPLAY-1); project per the per-model gate.
         crate::provider::project_strict_responses_input(
@@ -2624,9 +2629,6 @@ impl SamplingClient {
         // the ingress sentinel web-search action pre-egress — the wire keeps
         // the provider's original action-less shape.
         xai_grok_sampling_types::strip_sentinel_web_search_actions(&mut request_body);
-        // Transport seam: carrier ciphertext cannot round-trip the proxy's
-        // cross-deployment load balancing; strip it after patching.
-        crate::provider::strip_encrypted_content_input(&mut request_body);
         // Transport seam: strict targets forbid non-empty reasoning.content
         // on replay (REPLAY-1); project per the per-model gate.
         crate::provider::project_strict_responses_input(
@@ -2693,6 +2695,24 @@ impl SamplingClient {
         // indexes against the typed item positions (before any
         // `raw_responses_input_replacements` computation / `into()`).
         request.drop_orphaned_tool_results();
+        // XW-ENC-AFFINITY-1 (apex-mf6): the typed send-boundary
+        // deployment-affinity gate (D-ENC retired — this is the only
+        // pre-serialization strip authority): per reasoning item, keep the
+        // ciphertext on the gate's retain arms (mint tag == row pin, or
+        // both untagged), strip on a known mismatch; carriers retain-only.
+        let (gate_stripped, gate_retained, gate_carriers) =
+            xai_grok_sampling_types::apply_enc_affinity_gate(
+                &mut request.items,
+                self.defaults.enc_affinity_pin.as_deref(),
+            );
+        if gate_stripped > 0 {
+            tracing::debug!(
+                stripped = gate_stripped,
+                retained = gate_retained,
+                carriers = gate_carriers,
+                "affinity gate: stripped mismatched reasoning ciphertext at the send seam"
+            );
+        }
         let request_body =
             self.codex_compaction_request_body(&request, instructions, include_compaction_trigger)?;
         let endpoint = self.endpoint("responses");
@@ -3283,6 +3303,24 @@ impl SamplingClient {
         // dangling `ToolResult`s before the splice-index computation below
         // (carrier splice indexes derive from the typed item positions).
         request.drop_orphaned_tool_results();
+        // XW-ENC-AFFINITY-1 (apex-mf6): the typed send-boundary
+        // deployment-affinity gate (D-ENC retired — this is the only
+        // pre-serialization strip authority): per reasoning item, keep the
+        // ciphertext on the gate's retain arms (mint tag == row pin, or
+        // both untagged), strip on a known mismatch; carriers retain-only.
+        let (gate_stripped, gate_retained, gate_carriers) =
+            xai_grok_sampling_types::apply_enc_affinity_gate(
+                &mut request.items,
+                self.defaults.enc_affinity_pin.as_deref(),
+            );
+        if gate_stripped > 0 {
+            tracing::debug!(
+                stripped = gate_stripped,
+                retained = gate_retained,
+                carriers = gate_carriers,
+                "affinity gate: stripped mismatched reasoning ciphertext at the send seam"
+            );
+        }
 
         // The hosted tools travel as raw JSON, spliced in after serialization by `splice_extra_tool_entries`, whose doc explains why each one does
         let extra_tools = xai_grok_sampling_types::extra_tool_entries(&request.hosted_tools);
@@ -3335,6 +3373,24 @@ impl SamplingClient {
         // dangling `ToolResult`s before the splice-index computation below
         // (carrier splice indexes derive from the typed item positions).
         request.drop_orphaned_tool_results();
+        // XW-ENC-AFFINITY-1 (apex-mf6): the typed send-boundary
+        // deployment-affinity gate (D-ENC retired — this is the only
+        // pre-serialization strip authority): per reasoning item, keep the
+        // ciphertext on the gate's retain arms (mint tag == row pin, or
+        // both untagged), strip on a known mismatch; carriers retain-only.
+        let (gate_stripped, gate_retained, gate_carriers) =
+            xai_grok_sampling_types::apply_enc_affinity_gate(
+                &mut request.items,
+                self.defaults.enc_affinity_pin.as_deref(),
+            );
+        if gate_stripped > 0 {
+            tracing::debug!(
+                stripped = gate_stripped,
+                retained = gate_retained,
+                carriers = gate_carriers,
+                "affinity gate: stripped mismatched reasoning ciphertext at the send seam"
+            );
+        }
 
         // The hosted tools travel as raw JSON, spliced in by `create_response` via `splice_extra_tool_entries`, whose doc explains why
         let extra_tools = xai_grok_sampling_types::extra_tool_entries(&request.hosted_tools);

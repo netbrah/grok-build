@@ -169,7 +169,14 @@ impl SessionActor {
         if !turn_in_flight
             && prev_model.as_deref() != Some(sampling_config.model.as_str())
         {
-            self.apply_switch_projection(&sampling_config.model).await;
+            // XW-ENC-AFFINITY-1 (apex-mf6): the target row's affinity pin
+            // (empty header = unpin → None) feeds the switch-time gate.
+            let target_pin = sampling_config
+                .extra_headers
+                .get(xai_grok_sampling_types::ENC_AFFINITY_PIN_HEADER)
+                .map(|value| value.as_str())
+                .filter(|value| !value.is_empty());
+            self.apply_switch_projection(&sampling_config.model, target_pin).await;
         }
         Ok(model_id)
     }

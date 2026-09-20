@@ -250,42 +250,14 @@ fn inject_multi_agent_mode_item(request_body: &mut Value, mode_text: &str) {
     input.insert(insert_at, mode_item);
 }
 
-/// Strip `encrypted_content` from replayed `reasoning` input items.
-///
-/// The LLM proxy load-balances the Responses API across Azure deployments
-/// with different API keys, and `encrypted_content` is only decryptable by
-/// the deployment that produced it:
-/// - `reasoning` items carry it as OPTIONAL on replay (it only preserves
-///   provider-side reasoning continuity). Replayed across deployments it
-///   400s with `invalid_encrypted_content`, so strip it: multi-call
-///   (tool-loop) turns keep working.
-/// - `compaction` / `context_compaction` carrier items carry it as
-///   REQUIRED. They are left untouched on purpose: with a proxy that
-///   session-pins /responses to one deployment the ciphertext round-trips,
-///   and stripping it would make carrier replay unrecoverably impossible
-///   (`missing_required_parameter`).
-fn strip_encrypted_content(input: &mut [Value]) {
-    for item in input.iter_mut() {
-        let Some(obj) = item.as_object_mut() else {
-            continue;
-        };
-        if obj.get("type").and_then(Value::as_str) == Some("reasoning") {
-            obj.remove("encrypted_content");
-        }
-    }
-}
-
-/// Strip `encrypted_content` from `reasoning` input items of a final
-/// Responses request body (see [`strip_encrypted_content`]).
-///
-/// Transport seam: call this after dialect patching AND after the raw Codex
-/// compaction-carrier splice, so typed reasoning items never reach the
-/// proxy carrying deployment-bound ciphertext.
-pub fn strip_encrypted_content_input(body: &mut Value) {
-    if let Some(input) = body.get_mut("input").and_then(Value::as_array_mut) {
-        strip_encrypted_content(input);
-    }
-}
+// XW-ENC-AFFINITY-1 (apex-mf6): the unconditional D-ENC body-level strip
+// (`strip_encrypted_content_input`) is RETIRED — the deployment-affinity
+// gate at the typed send seam (client.rs drop_orphaned sites,
+// `apply_enc_affinity_gate`) decides per item whether the ciphertext rides
+// the wire, and a body-level strip would destroy the retained arm (the
+// pin-compatible ciphertext is now the point of the cut). A wrong bet is
+// covered reactively: SIG-ENC-BOUNDARY 503/400 -> bulk strip + retry once
+// (`RetryDecision::StripEncryptedAndRetry`).
 
 /// Project replayed `reasoning` input items for targets that enforce the
 /// strict OpenAI/Azure Responses input schema (REPLAY-1).
@@ -584,51 +556,6 @@ mod tests {
     }
 
     #[test]
-    fn strip_encrypted_content_input_strips_reasoning_but_keeps_carriers() {
-        let mut body = serde_json::json!({
-            "input": [
-                {
-                    "id": "rs_01",
-                    "type": "reasoning",
-                    "content": [],
-                    "summary": [{"type": "summary_text", "text": "thinking..."}],
-                    "encrypted_content": "gAAAAA-reasoning"
-                },
-                {
-                    "id": "cmp_01",
-                    "type": "compaction",
-                    "summary": "opaque summary",
-                    "encrypted_content": "gAAAAA-compaction"
-                },
-                {
-                    "type": "message",
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": "hi"}]
-                }
-            ]
-        });
-        strip_encrypted_content_input(&mut body);
-        let input = body["input"].as_array().unwrap();
-        // Reasoning ciphertext is optional on replay -> stripped.
-        assert!(input[0].get("encrypted_content").is_none());
-        assert_eq!(input[0]["id"], "rs_01");
-        assert_eq!(input[0]["summary"][0]["text"], "thinking...");
-        // Compaction carriers REQUIRE their ciphertext (server-side context)
-        // -> kept intact for session-pinned proxies.
-        assert_eq!(input[1]["encrypted_content"], "gAAAAA-compaction");
-        assert_eq!(input[1]["id"], "cmp_01");
-        // Other items untouched.
-        assert_eq!(input[2]["content"][0]["type"], "input_text");
-    }
-
-    #[test]
-    fn strip_encrypted_content_input_noop_without_input_array() {
-        let mut body = serde_json::json!({"model": "gpt-5.6-sol"});
-        strip_encrypted_content_input(&mut body);
-        assert_eq!(body["model"], "gpt-5.6-sol");
-    }
-
-    #[test]
     fn patch_responses_request_dispatches_glm() {
         let mut body = serde_json::json!({
             "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
@@ -809,7 +736,8 @@ mod tests {
     /// W-1 Task 1 (T1) — non-disruption guard: every OpenAI-family value
     /// (`codex`, `xai`, `openai`, `""`) must produce exactly today's body:
     /// no content-type rewrite, no `compaction_trigger`, lenient reasoning
-    /// replay retained (content kept, encrypted_content stripped). If this
+    /// replay retained (content kept; encrypted_content rides the wire per
+    /// the mf6 typed-seam gate — the JSON seam no longer strips). If this
     /// test fails, the SOL/OpenAI path was disrupted.
     #[test]
     fn openai_families_are_byte_identical() {
@@ -826,7 +754,6 @@ mod tests {
             // delta 1); the targeted assertions (user part un-normalized,
             // reasoning retained, no compaction_trigger) are unaffected.
             patch_responses_request(&mut body, Some(family), None, false, None);
-            strip_encrypted_content_input(&mut body);
             let input = body["input"].as_array().unwrap();
             let user = input
                 .iter()
@@ -845,8 +772,9 @@ mod tests {
                 "family {family}: lenient reasoning.content replay must be retained"
             );
             assert!(
-                reasoning.get("encrypted_content").is_none(),
-                "family {family}: encrypted_content must be stripped on replay"
+                reasoning.get("encrypted_content").is_some(),
+                "family {family}: the JSON seam is pin-unaware post-mf6 — the \
+                 typed-seam affinity gate is the only strip authority"
             );
             assert!(
                 input.iter().all(|item| item.get("type").and_then(Value::as_str) != Some("compaction_trigger")),
@@ -929,8 +857,10 @@ mod tests {
     /// W-1 Task 2 (T2) — the post-fix contract for vLLM families (Option A
     /// + B): a normal qwen/glm turn body must (a) be normalized
     /// input_text->text, (b) carry no `compaction_trigger`, (c) carry no
-    /// `encrypted_content` anywhere under input (reasoning stripped; Codex
-    /// carriers cannot exist off the Codex dialect).
+    /// `encrypted_content` anywhere under input — re-armed for apex-mf6:
+    /// the unconditional body-level strip is retired, so the JSON seam is
+    /// PIN-UNAWARE (ciphertext present at seam input survives the seam;
+    /// the typed-seam affinity gate decided pre-serialization).
     ///
     /// Clause (d) AMENDED for apex-ayl.86 (ruling R-UNIFIED-ITEM): the
     /// pre-cut "no `<multi_agent_mode>` item off Codex" expectation (W-1
@@ -947,7 +877,6 @@ mod tests {
                 ]
             });
             patch_responses_request(&mut body, Some(family), Some(ReasoningEffort::Max), false, None);
-            strip_encrypted_content_input(&mut body);
             let input = body["input"].as_array().unwrap();
             // (a) shim normalization
             let user_part = input
@@ -961,10 +890,13 @@ mod tests {
                 input.iter().all(|item| item.get("type").and_then(Value::as_str) != Some("compaction_trigger")),
                 "family {family}: compaction_trigger must not appear"
             );
-            // (c) no ciphertext anywhere under input
+            // (c) mf6 (apex-mf6): the JSON seam is pin-unaware — the
+            // synthetic ciphertext present at seam input must SURVIVE the
+            // seam (the typed-seam gate is the only strip authority).
             assert!(
-                input.iter().all(|item| item.get("encrypted_content").is_none()),
-                "family {family}: encrypted_content must not ship under input"
+                input.iter().any(|item| item.get("encrypted_content").is_some()),
+                "family {family}: the JSON seam no longer strips — the \
+                 ciphertext must survive to the serialized body"
             );
             // (d) apex-ayl.86 (R-UNIFIED-ITEM): exactly one expanded
             // explicit-request-only item — the unified declaration rides
@@ -985,14 +917,17 @@ mod tests {
         }
     }
 
-    /// W-1 Task 3.3 — zero-`encrypted_content` pin for non-OpenAI bodies.
-    /// The strip seam removes it from replayed reasoning items; carrier
-    /// items (`compaction`/`context_compaction`/`agent_message`) can only be
-    /// minted by the Codex remote-compaction round-trip, which is
-    /// dialect-gated off for vLLM families — so a vLLM body carrying any of
-    /// them with ciphertext is a splice/serialization bug this pin catches.
+    /// W-1 Task 3.3 — RE-ARMED for XW-ENC-AFFINITY-1 (apex-mf6). The
+    /// pre-mf6 contract was zero-`encrypted_content` on non-OpenAI bodies
+    /// (the unconditional strip seam removed it). That strip is RETIRED:
+    /// the JSON seam is now PIN-UNAWARE — it no longer touches
+    /// `encrypted_content` at all. Ciphertext rides or is stripped at the
+    /// typed send seam (the affinity gate, `apply_enc_affinity_gate`) and
+    /// reactively (SIG-ENC-BOUNDARY fallback). This pin now asserts the
+    /// seam is INERT: a non-OpenAI body carrying ciphertext in at seam
+    /// input carries it out unchanged (the seam neither strips nor mints).
     #[test]
-    fn non_openai_bodies_carry_no_encrypted_content_under_input() {
+    fn non_openai_json_seam_is_inert_to_ciphertext_under_mf6() {
         for family in ["qwen", "glm"] {
             let mut body = serde_json::json!({
                 "input": [
@@ -1001,11 +936,11 @@ mod tests {
                 ]
             });
             patch_responses_request(&mut body, Some(family), None, true, None);
-            strip_encrypted_content_input(&mut body);
             let input = body["input"].as_array().unwrap();
             assert!(
-                input.iter().all(|item| item.get("encrypted_content").is_none()),
-                "family {family}: encrypted_content leaked under input"
+                input.iter().any(|item| item.get("encrypted_content") == Some(&serde_json::json!("gAAA"))),
+                "family {family}: the JSON seam must be inert — ciphertext in \
+                 survives unchanged (no strip, no mint)"
             );
         }
     }

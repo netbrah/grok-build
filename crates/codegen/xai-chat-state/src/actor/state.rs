@@ -318,7 +318,7 @@ mod tests {
         // max(4000, 4000*3/4)/4 = 1000, not the (4000+4000)/4 = 2000 double-count.
         let mut r = xai_grok_sampling_types::synthesized_reasoning_item("x".repeat(4000));
         r.encrypted_content = Some("e".repeat(4000));
-        assert_eq!(estimate_item_tokens(&ConversationItem::Reasoning(r)), 1000);
+        assert_eq!(estimate_item_tokens(&ConversationItem::Reasoning(r.into())), 1000);
     }
 
     #[test]
@@ -327,13 +327,13 @@ mod tests {
         let mut r = xai_grok_sampling_types::synthesized_reasoning_item("");
         r.summary.clear();
         r.encrypted_content = Some("e".repeat(4000));
-        assert_eq!(estimate_item_tokens(&ConversationItem::Reasoning(r)), 750);
+        assert_eq!(estimate_item_tokens(&ConversationItem::Reasoning(r.into())), 750);
     }
 
     #[test]
     fn reasoning_estimate_text_only_is_plain_bytes_per_token() {
         let r = xai_grok_sampling_types::synthesized_reasoning_item("x".repeat(4000));
-        assert_eq!(estimate_item_tokens(&ConversationItem::Reasoning(r)), 1000);
+        assert_eq!(estimate_item_tokens(&ConversationItem::Reasoning(r.into())), 1000);
     }
 
     #[test]

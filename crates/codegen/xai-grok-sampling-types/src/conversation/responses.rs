@@ -63,7 +63,7 @@ pub fn response_to_conversation_items(response: rs::Response) -> Vec<Conversatio
                 });
             }
             rs::OutputItem::Reasoning(r) => {
-                items.push(ConversationItem::Reasoning(r));
+                items.push(ConversationItem::Reasoning(r.into()));
             }
             rs::OutputItem::Compaction(compaction) => {
                 // Remote compaction v2 emits its encrypted replacement as a
@@ -98,6 +98,7 @@ pub fn response_to_conversation_items(response: rs::Response) -> Vec<Conversatio
                         id: local_id,
                         raw,
                         cross_provider_fallback: None,
+                        mint_tag: None,
                     }),
                 }));
             }
@@ -319,7 +320,7 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
             // `status` is output-only and rejected on input.
             let mut r = r.clone();
             r.status = None;
-            vec![rs::InputItem::Item(rs::Item::Reasoning(r))]
+            vec![rs::InputItem::Item(rs::Item::Reasoning(r.item))]
         }
         ConversationItem::Assistant(a) => {
             let mut items = Vec::new();

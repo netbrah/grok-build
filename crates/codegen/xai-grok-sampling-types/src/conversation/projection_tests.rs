@@ -21,7 +21,7 @@
 //! field are the §9-faithful minimal choices — `proj_items` is the single
 //! choke point if the GREEN cut names them differently.
 
-use super::projection::{project_switch_history, Boundary, ProjectedHistory};
+use super::projection::{model_boundary_class, project_switch_history, Boundary, ProjectedHistory};
 use super::*;
 
 /// The T2 co-projection placeholder — the pairing-integrity remedy (sdd-71 §4
@@ -74,6 +74,7 @@ fn xw_proj_orphaned_result_direction() {
         &items,
         "claude-sonnet-5",
         Boundary::Vertex,
+        None,
     );
     let out = proj_items(&history);
     let orphaned = out.iter().any(|item| {
@@ -107,6 +108,7 @@ fn xw_proj_carrier_survival() {
         &items,
         "qwen3.8-27b",
         Boundary::VLLenient,
+        None,
     );
     let out = proj_items(&history);
     assert_eq!(out.len(), 4, "carrier shape: projected record count changed");
@@ -147,6 +149,7 @@ fn xw_proj_boundary_decision_table() {
             &items,
             "gpt-5.6-sol",
             Boundary::AzStrict,
+            None,
         );
         let out = proj_items(&history);
         assert_eq!(out.len(), 3, "sol→sol: projected record count changed");
@@ -163,6 +166,7 @@ fn xw_proj_boundary_decision_table() {
             &items,
             "qwen3.8-27b",
             Boundary::VLLenient,
+            None,
         );
         let out = proj_items(&history);
         let ConversationItem::Reasoning(r) = &out[1] else {
@@ -182,12 +186,18 @@ fn xw_proj_boundary_decision_table() {
     }
     // (c) sol→terra — T1-by-target, NO re-key (the strict projector IS the
     // strip: it removes id+content pre-send; the store keeps the original id).
+    // mf6 (apex-mf6, design §3.4): the AZ->AZ row's ciphertext is
+    // gate-decided — here pin None x mint None = RetainOptimistic, so the
+    // ciphertext SURVIVES the store projection (the .71 unconditional strip
+    // is replaced by the gate; the wire layer + reactive fallback decide
+    // the rest at send time).
     {
         let (items, _) = boundary_row("gpt-5.6-sol", "encitem_foreign", "enc_foreign");
         let history = project_switch_history(
             &items,
             "gpt-5.6-terra",
             Boundary::AzStrict,
+            None,
         );
         let out = proj_items(&history);
         let ConversationItem::Reasoning(r) = &out[1] else {
@@ -198,9 +208,11 @@ fn xw_proj_boundary_decision_table() {
             "sol→terra: strict target must NOT re-key (schema form IS the strip), got {:?}",
             r.id
         );
-        assert!(
-            r.encrypted_content.is_none(),
-            "sol→terra: cross-boundary encrypted_content must be stripped"
+        assert_eq!(
+            r.item.encrypted_content.as_deref(),
+            Some("enc_foreign"),
+            "sol→terra (unpinned x untagged): RetainOptimistic — the ciphertext \
+             must SURVIVE the store projection (mf6 gate, design §3.4)"
         );
         assert_eq!(r.summary.len(), 1, "sol→terra: summary must be kept");
     }
@@ -208,7 +220,7 @@ fn xw_proj_boundary_decision_table() {
     // qwen↔glm are distinct vLLM deployments, matrix C4: never lump).
     {
         let (items, _) = boundary_row("qwen3.8-27b", "rs_qwen_1", "enc_qwen");
-        let history = project_switch_history(&items, "glm-5.2", Boundary::VLLenient);
+        let history = project_switch_history(&items, "glm-5.2", Boundary::VLLenient, None);
         let out = proj_items(&history);
         let ConversationItem::Reasoning(r) = &out[1] else {
             panic!("qwen→glm: reasoning slot lost");
@@ -231,6 +243,7 @@ fn xw_proj_boundary_decision_table() {
             &items,
             "claude-sonnet-5",
             Boundary::Vertex,
+            None,
         );
         let out = proj_items(&history);
         assert_eq!(
@@ -248,6 +261,7 @@ fn xw_proj_boundary_decision_table() {
             &items,
             "qwen3.8-27b",
             Boundary::VLLenient,
+            None,
         );
         let out = proj_items(&history);
         let ConversationItem::Reasoning(r) = &out[1] else {
@@ -286,6 +300,7 @@ fn xw_proj_id_grammar_canonical() {
         &items,
         "vxm-az",
         Boundary::AzStrict,
+        None,
     );
     let out = proj_items(&history);
     assert_eq!(
@@ -299,6 +314,7 @@ fn xw_proj_id_grammar_canonical() {
         &items,
         "az-vlq",
         Boundary::VLLenient,
+        None,
     );
     let out = proj_items(&history);
     assert_eq!(
@@ -323,7 +339,7 @@ fn xw_proj_byte_identity_nonprojected() {
         let (items, pre_values) = items_from_fixture(pre_json);
         let expected: Vec<serde_json::Value> =
             serde_json::from_str(exp_json).expect("expected mirror must be valid JSON");
-        let history = project_switch_history(&items, target, boundary);
+        let history = project_switch_history(&items, target, boundary, None);
         let out = proj_items(&history);
         assert_eq!(
             out.len(),
@@ -351,10 +367,10 @@ fn xw_proj_byte_identity_nonprojected() {
 #[test]
 fn xw_proj_idempotence() {
     for (items, target, boundary) in all_table2_shapes() {
-        let first = project_switch_history(&items, &target, boundary);
+        let first = project_switch_history(&items, &target, boundary, None);
         let first_values: Vec<serde_json::Value> =
             proj_items(&first).iter().map(as_value).collect();
-        let second = project_switch_history(proj_items(&first), &target, boundary);
+        let second = project_switch_history(proj_items(&first), &target, boundary, None);
         let second_values: Vec<serde_json::Value> =
             proj_items(&second).iter().map(as_value).collect();
         assert_eq!(
@@ -366,14 +382,18 @@ fn xw_proj_idempotence() {
 
 /// Table 2 case 7 — invariants 4 + 5 (sdd-71 §4) as single asserts over EVERY
 /// projected output: no reasoning item has `id:""` (the .69 class), and
-/// encrypted_content rides only same-boundary (owner model == target model).
+/// encrypted_content rides only same-boundary (owner model == target model)
+/// — EXCEPT the mf6 (apex-mf6) re-arm of the one no-re-key AZ->AZ row, where
+/// the switch-time gate may retain the ciphertext (design §3.4: every shape
+/// in this table is pre-mf6 / untagged, so only the RetainOptimistic arm —
+/// pin None x mint None — can keep it).
 ///
 /// Right-reason failure after the fn lands: `id:""` or cross-boundary
-/// ciphertext present.
+/// ciphertext present outside the gate's retain arms.
 #[test]
 fn xw_proj_no_empty_id_no_foreign_encrypted() {
     for (items, target, boundary) in all_table2_shapes() {
-        let out = proj_items(&project_switch_history(&items, &target, boundary)).to_vec();
+        let out = proj_items(&project_switch_history(&items, &target, boundary, None)).to_vec();
         for (i, item) in out.iter().enumerate() {
             let ConversationItem::Reasoning(r) = item else {
                 continue;
@@ -384,11 +404,24 @@ fn xw_proj_no_empty_id_no_foreign_encrypted() {
             );
             if r.encrypted_content.is_some() {
                 let owner = forward_owner_model(&out, i);
-                assert_eq!(
-                    owner.as_deref(),
-                    Some(target.as_str()),
+                // mf6 re-arm: the AZ->AZ row is the one no-re-key row where
+                // the gate may retain foreign (cross-deployment) ciphertext —
+                // here pin None (every shape in this table passes None) x
+                // the item's mint tag.
+                let az_az_gate_retain = boundary == Boundary::AzStrict
+                    && owner
+                        .as_deref()
+                        .map(model_boundary_class)
+                        == Some(Boundary::AzStrict)
+                    && matches!(
+                        enc_affinity_gate(None, r.mint_tag.as_deref()),
+                        EncAffinityVerdict::Retain | EncAffinityVerdict::RetainOptimistic
+                    );
+                assert!(
+                    owner.as_deref() == Some(target.as_str()) || az_az_gate_retain,
                     "invariant 5 ({target}): foreign encrypted_content survived projection \
-                     at index {i} (owner {owner:?})"
+                     at index {i} (owner {owner:?}) — allowed only T0 or the AZ->AZ \
+                     row under a gate retain arm"
                 );
             }
         }
@@ -408,6 +441,7 @@ fn xw_proj_surviving_call_keeps_result() {
         &items,
         "qwen3.8-27b",
         Boundary::VLLenient,
+        None,
     );
     let out = proj_items(&history);
     assert_eq!(
@@ -590,4 +624,244 @@ fn all_table2_shapes() -> Vec<(Vec<ConversationItem>, String, Boundary)> {
     let (items, _) = items_from(surviving_pair_shape());
     shapes.push((items, "qwen3.8-27b".to_string(), Boundary::VLLenient));
     shapes
+}
+
+// ============================================================================
+// apex-mf6 (XW-ENC-AFFINITY-1) U5 — the switch-time affinity gate
+//
+// Pre-cut: these compile-fail (the 4-arg `project_switch_history` is absent
+// — E0061 — and the `ReasoningItemStore` wrapper's `mint_tag` / `item`
+// fields are absent — E0609). Post-cut they are the U5 goldens: the AZ->AZ
+// row's ciphertext fate is decided by `enc_affinity_gate` (pin x mint_tag),
+// T0 and every non-AZ->AZ T1 row are gate-inert (T0 verbatim, T1 strip),
+// and `mint_tag` always survives the projection.
+//
+// The behavior change vs .71: an AZ->AZ switch with NEITHER a target pin
+// NOR a mint tag (the unpinned-unpinned row) now RETAINS the ciphertext
+// (RetainOptimistic) instead of stripping it — the store retains, the wire
+// layer decides at send time, and the reactive strip-fallback covers a
+// wrong bet (the N-1 layering; the .71 `no_foreign_encrypted` invariant
+// was re-armed to the mf6-aware form alongside the 4-arg call-site update).
+// ============================================================================
+
+/// The AZ->AZ minimal row with an explicit mint tag: [user,
+/// reasoning(id/encrypted/mint), assistant(model_id = owner)].
+fn az_az_pinned_row(
+    owner_model: &str,
+    reasoning_id: &str,
+    encrypted: &str,
+    mint_tag: Option<&str>,
+) -> Vec<ConversationItem> {
+    let (mut items, _) = boundary_row(owner_model, reasoning_id, encrypted);
+    for item in &mut items {
+        if let ConversationItem::Reasoning(r) = item {
+            r.mint_tag = mint_tag.map(str::to_owned);
+        }
+    }
+    items
+}
+
+/// The first reasoning item of a projected output (all U5 shapes have
+/// exactly one).
+fn first_reasoning(out: &[ConversationItem]) -> &super::ReasoningItemStore {
+    out.iter()
+        .find_map(|item| match item {
+            ConversationItem::Reasoning(r) => Some(r),
+            _ => None,
+        })
+        .expect("U5 shapes project exactly one reasoning item")
+}
+
+/// U5 arm 1 — pin x mint MATCH (exact string): the AZ->AZ row RETAINS its
+/// ciphertext in the storage form (the .71 behavior stripped it here).
+#[test]
+fn mf6_u5_az_az_pin_match_retains_ciphertext() {
+    let items = az_az_pinned_row(
+        "gpt-5.6-sol",
+        "encitem_mf6_match",
+        "litellm_enc:ZXlJbGVI;u5-match",
+        Some("East US 2"),
+    );
+    let history = project_switch_history(
+        &items,
+        "gpt-5.6-terra",
+        Boundary::AzStrict,
+        Some("East US 2"),
+    );
+    let out = proj_items(&history);
+    let r = first_reasoning(out);
+    assert_eq!(
+        r.item.encrypted_content.as_deref(),
+        Some("litellm_enc:ZXlJbGVI;u5-match"),
+        "pin == mint (exact string): the AZ->AZ row must RETAIN the ciphertext"
+    );
+    assert_eq!(r.id, "encitem_mf6_match", "AZ->AZ keeps the original id (no re-key)");
+    assert_eq!(
+        r.mint_tag.as_deref(),
+        Some("East US 2"),
+        "mint_tag always survives the projection"
+    );
+    // the storage form persists the mint tag (the as_value discipline)
+    assert_eq!(
+        as_value(&out[1])["mint_tag"],
+        serde_json::json!("East US 2"),
+        "stamped reasoning must serialize the mint_tag field"
+    );
+}
+
+/// U5 arm 2 — pin x mint MISMATCH (exact string, N-3 no case-folding):
+/// the ciphertext is stripped, the mint tag preserved.
+#[test]
+fn mf6_u5_az_az_pin_mismatch_strips_ciphertext() {
+    let items = az_az_pinned_row(
+        "gpt-5.6-sol",
+        "encitem_mf6_mismatch",
+        "litellm_enc:ZXlJbGVI;u5-mismatch",
+        Some("Sweden Central"),
+    );
+    let history = project_switch_history(
+        &items,
+        "gpt-5.6-terra",
+        Boundary::AzStrict,
+        Some("East US 2"),
+    );
+    let out = proj_items(&history);
+    let r = first_reasoning(out);
+    assert!(
+        r.item.encrypted_content.is_none(),
+        "pin != mint (exact-string mismatch): the AZ->AZ row must STRIP the ciphertext"
+    );
+    assert_eq!(
+        r.mint_tag.as_deref(),
+        Some("Sweden Central"),
+        "mint_tag is preserved even on the strip arm (provenance stays)"
+    );
+    assert_eq!(r.id, "encitem_mf6_mismatch", "AZ->AZ keeps the original id on strip too");
+}
+
+/// U5 arm 3 — pin present, mint ABSENT: an untagged mint under a known pin
+/// cannot be proven boundary-compatible -> STRIP.
+#[test]
+fn mf6_u5_az_az_pin_mint_absent_strips() {
+    let items =
+        az_az_pinned_row("gpt-5.6-sol", "encitem_mf6_nomint", "litellm_enc:ZXlJbGVI;u5-nomint", None);
+    let history = project_switch_history(
+        &items,
+        "gpt-5.6-terra",
+        Boundary::AzStrict,
+        Some("East US 2"),
+    );
+    let out = proj_items(&history);
+    let r = first_reasoning(out);
+    assert!(
+        r.item.encrypted_content.is_none(),
+        "pin present x mint absent: the AZ->AZ row must STRIP (unknown mint under a known pin)"
+    );
+}
+
+/// U5 arm 4 — NEITHER pin NOR mint (the unpinned-unpinned row, the
+/// az-az-unpin cell): RETAIN-OPTIMISTIC — the behavior change vs .71,
+/// which stripped here unconditionally. The wire layer decides at send
+/// time; the reactive strip-fallback covers a wrong bet.
+#[test]
+fn mf6_u5_az_az_unpinned_untagged_retains_optimistic() {
+    let items =
+        az_az_pinned_row("gpt-5.6-sol", "encitem_mf6_unpin", "litellm_enc:ZXlJbGVI;u5-unpin", None);
+    let history = project_switch_history(&items, "gpt-5.6-terra", Boundary::AzStrict, None);
+    let out = proj_items(&history);
+    let r = first_reasoning(out);
+    assert_eq!(
+        r.item.encrypted_content.as_deref(),
+        Some("litellm_enc:ZXlJbGVI;u5-unpin"),
+        "no pin x no mint: RetainOptimistic — the .71 strip is replaced by the gate"
+    );
+    assert!(r.mint_tag.is_none(), "untagged stays untagged");
+}
+
+/// U5 arm 5 — mint present, pin ABSENT (the deliberate unpin of a row that
+/// minted under a tag): the ciphertext belongs to a tagged deployment the
+/// target no longer addresses -> STRIP.
+#[test]
+fn mf6_u5_az_az_unpinned_minted_strips() {
+    let items = az_az_pinned_row(
+        "gpt-5.6-sol",
+        "encitem_mf6_unpinned_mint",
+        "litellm_enc:ZXlJbGVI;u5-unpinned-mint",
+        Some("East US 2"),
+    );
+    let history = project_switch_history(&items, "gpt-5.6-terra", Boundary::AzStrict, None);
+    let out = proj_items(&history);
+    let r = first_reasoning(out);
+    assert!(
+        r.item.encrypted_content.is_none(),
+        "mint present x pin absent: the AZ->AZ row must STRIP (deliberate unpin)"
+    );
+    assert_eq!(
+        r.mint_tag.as_deref(),
+        Some("East US 2"),
+        "the stale mint stays recorded (audit trail)"
+    );
+}
+
+/// U5 gate-inert row A — T0 (owner == target): verbatim clone, no gate
+/// consultation at all (same model = same boundary by construction), even
+/// with a pin present and a mint that would STRIP under the gate.
+#[test]
+fn mf6_u5_t0_same_model_is_gate_inert() {
+    let items = az_az_pinned_row(
+        "gpt-5.6-terra",
+        "encitem_mf6_t0",
+        "litellm_enc:ZXlJbGVI;u5-t0",
+        Some("Sweden Central"),
+    );
+    let history = project_switch_history(
+        &items,
+        "gpt-5.6-terra",
+        Boundary::AzStrict,
+        Some("East US 2"),
+    );
+    let out = proj_items(&history);
+    let r = first_reasoning(out);
+    assert_eq!(
+        r.item.encrypted_content.as_deref(),
+        Some("litellm_enc:ZXlJbGVI;u5-t0"),
+        "T0 is a verbatim clone — the gate is never consulted for same-model items"
+    );
+    assert_eq!(r.id, "encitem_mf6_t0", "T0 keeps the id verbatim");
+    assert_eq!(
+        r.mint_tag.as_deref(),
+        Some("Sweden Central"),
+        "T0 carries the mint tag along verbatim"
+    );
+}
+
+/// U5 gate-inert row B — a non-AZ->AZ T1 row (foreign origin, re-keyed):
+/// the ciphertext is stripped unconditionally, pin or no pin, mint or no
+/// mint (the affinity gate only re-rules the ONE no-re-key AZ->AZ row).
+#[test]
+fn mf6_u5_foreign_t1_row_strips_regardless_of_pin() {
+    let items = az_az_pinned_row(
+        "gpt-5.6-sol",
+        "encitem_mf6_t1",
+        "litellm_enc:ZXlJbGVI;u5-t1",
+        Some("East US 2"),
+    );
+    let history = project_switch_history(
+        &items,
+        "qwen3.8-27b",
+        Boundary::VLLenient,
+        Some("East US 2"),
+    );
+    let out = proj_items(&history);
+    let r = first_reasoning(out);
+    assert!(
+        r.item.encrypted_content.is_none(),
+        "foreign T1 row: the ciphertext is stripped regardless of pin/mint"
+    );
+    assert!(r.id.starts_with("xw_"), "foreign T1 row keeps the re-key");
+    assert_eq!(
+        r.mint_tag.as_deref(),
+        Some("East US 2"),
+        "the mint tag rides the re-keyed item too (provenance survives T1)"
+    );
 }

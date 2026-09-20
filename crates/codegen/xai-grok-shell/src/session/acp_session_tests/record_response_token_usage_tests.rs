@@ -62,7 +62,7 @@ async fn response_reasoning_does_not_inflate_model_reported_context() {
                         content: None,
                         encrypted_content: Some("r".repeat(984_000)),
                         status: None,
-                    }),
+                    }.into()),
                     ConversationItem::BackendToolCall(BackendToolCallItem {
                         kind: BackendToolKind::WebSearch(rs::WebSearchToolCall {
                             id: "search-1".to_string(),
@@ -156,7 +156,7 @@ async fn response_without_usage_keeps_model_output_as_estimated_growth() {
                         content: None,
                         encrypted_content: Some("r".repeat(4_000)),
                         status: None,
-                    }),
+                    }.into()),
                     ConversationItem::assistant("a".repeat(4_000)),
                 ],
                 usage: None,

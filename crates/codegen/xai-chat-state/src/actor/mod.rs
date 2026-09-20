@@ -302,9 +302,10 @@ impl ChatStateActor {
             }
             ChatStateCommand::ProjectSwitchHistory {
                 target_model,
+                target_pin,
                 reply,
             } => {
-                match self.project_switch_history(&target_model) {
+                match self.project_switch_history(&target_model, target_pin.as_deref()) {
                     None => {
                         let _ = reply.send(crate::StripOutcome::NoMatch);
                     }

@@ -580,6 +580,58 @@ impl SamplingError {
             || compaction_trigger_rejection
     }
 
+    /// XW-ENC-AFFINITY-1 (apex-mf6): the MORE-SPECIFIC SIG-ENC-BOUNDARY
+    /// class — a strict subset of family 1 of
+    /// [`Self::is_model_bound_history_error`], dispatched ABOVE it (in
+    /// `classify_error` and the request-task fast path) onto the surgical
+    /// bulk-strip arm instead of the coarse model-bound strip (D3
+    /// classifier composition). [`Self::is_model_bound_history_error`] and
+    /// its pinned tests stay byte-untouched (R-2): this predicate is
+    /// additive and never rewrites the family routes.
+    ///
+    /// 503 arm: litellm's EncryptedContentAffinityCheck boundary phrasing
+    /// (design §3.3, the verbatim live shape; both needles survive the
+    /// 280-char cap). 400 arm: Azure-direct / older-litellm
+    /// `invalid_encrypted_content` — the code is the primary needle, the
+    /// full verbatim phrasing the cap-surviving OR. P4 degradation: when a
+    /// long item id pushes the phrasing past the cap AND the code is
+    /// capped away, neither needle is present — this predicate is false
+    /// and the shape keeps the coarse family-1 catch-all (same strip
+    /// route, coarser dispatch).
+    pub fn is_enc_boundary_error(&self) -> bool {
+        let SamplingError::Api {
+            status,
+            message,
+            error_code,
+            ..
+        } = self
+        else {
+            return false;
+        };
+        let normalized = message.to_ascii_lowercase();
+        if *status == StatusCode::SERVICE_UNAVAILABLE {
+            // The verbatim 503 (design §3.3): "...no deployment on the
+            // same encryption boundary is configured..." — double-keyed
+            // (encrypted_content + encryption boundary) so a plain
+            // deployment 503 keeps its route.
+            return normalized.contains("encrypted_content")
+                && normalized.contains("encryption boundary");
+        }
+        if *status != StatusCode::BAD_REQUEST {
+            return false;
+        }
+        // `invalid_encrypted_content` code — the primary needle (it
+        // survives the 280-char cap when the phrasing does not).
+        let code_match = error_code
+            .as_ref()
+            .is_some_and(|code| code.as_str() == "invalid_encrypted_content");
+        // The verbatim Azure phrasing — the cap-surviving OR.
+        let phrasing_match = normalized.contains("encrypted content")
+            && normalized.contains("could not be verified")
+            && normalized.contains("could not be decrypted or parsed");
+        code_match || phrasing_match
+    }
+
     /// COMPACT-BOUNDARM-1 (apex-ayl.82): whether this error is the proxy's
     /// rejection of the `compaction_trigger` input item ITSELF (Family 9) —
     /// as opposed to a model-bound rejection of carried history state. The
@@ -2633,5 +2685,165 @@ mod tests {
                 "origin-TLS {code} must not be retried"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod enc_boundary_mf6_tests {
+    //! apex-mf6 (XW-ENC-AFFINITY-1) RED U2 — the MORE-SPECIFIC
+    //! SIG-ENC-BOUNDARY predicate (D3 classifier composition). Pre-cut:
+    //! compile-fails (`is_enc_boundary_error` absent). Post-cut: the two
+    //! verbatim phrasings match; every other class (F5, generic 503,
+    //! tags-config 401, the field-name-only 400) stays on its existing
+    //! route. `is_model_bound_history_error` and its A6-pinned tests are
+    //! byte-untouched by this cut (R-2).
+
+    use super::*;
+
+    /// The verbatim litellm EncryptedContentAffinityCheck 503 (design §3.3;
+    /// same constant the A6-pinned family-1 tests use — the SIG-ENC class
+    /// IS a subset of family-1, dispatched above it).
+    const SIG_ENC_503_MESSAGE: &str = "litellm.ServiceUnavailableError: The deployment that produced this encrypted_content is currently unavailable (likely cooled down), and no deployment on the same encryption boundary is configured. Retry later or configure a deployment with the same (api_base, api_key).. Received Model Group=qwen3.8-27b";
+
+    /// U2 — the 503 arm: verbatim phrasing, full and 280-char-capped
+    /// (the classifier sees the capped message; both shapes must match so
+    /// the surgical arm is reachable on every live truncation).
+    #[test]
+    fn enc_boundary_503_verbatim_full_and_truncated_u2() {
+        for (label, message) in [
+            ("full", SIG_ENC_503_MESSAGE),
+            ("truncated-280", &SIG_ENC_503_MESSAGE[..280]),
+        ] {
+            let err = SamplingError::Api {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                message: message.to_string().into(),
+                model_metadata: None,
+                retry_after_secs: None,
+                should_retry: None,
+                error_code: None,
+            };
+            assert!(
+                err.is_enc_boundary_error(),
+                "SIG-ENC-BOUNDARY 503 ({label}) must match the specific predicate"
+            );
+            // composition guarantee: the family-1 predicate stays true
+            // (the A6-pinned tests keep passing — re-routing happens above)
+            assert!(
+                err.is_model_bound_history_error(),
+                "SIG-ENC 503 ({label}) must remain family-1 model-bound (predicate byte-untouched)"
+            );
+        }
+    }
+
+    /// U2 — the 400 arm: the `invalid_encrypted_content` phrasing. The
+    /// error code is the primary needle (the verbatim Azure/litellm
+    /// reason sits past the 280 cap when the item id is long — P4), with
+    /// the full verbatim phrasing as the cap-surviving OR.
+    #[test]
+    fn enc_boundary_400_invalid_encrypted_content_u2() {
+        // code present, message short (the code is the primary needle)
+        let err = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: "litellm.BadRequestError: The encrypted content SYNT could not be verified. Reason: Encrypted content could not be decrypted or parsed.".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: Some(ApiErrorCode::Other("invalid_encrypted_content".to_string())),
+        };
+        assert!(err.is_enc_boundary_error(), "400 invalid_encrypted_content (code) must match");
+        assert!(
+            err.is_model_bound_history_error(),
+            "SIG-ENC 400 must remain family-1 model-bound (predicate byte-untouched)"
+        );
+
+        // DOCUMENTED DEGRADATION: a long item id pushes the verbatim phrasing
+        // past the 280-char cap, so BOTH needles are capped away and no
+        // error_code survives. The surgical SIG-ENC predicate must NOT match
+        // this (it would need phrasing that is not there); the coarse
+        // family-1 model-bound catch-all (message contains "encrypted")
+        // still carries it to the same strip route — coarser, but safe.
+        let long_item = "encitem_".to_string() + &"x".repeat(300);
+        let verbatim = format!(
+            "The encrypted content {long_item} could not be verified. Reason: Encrypted content could not be decrypted or parsed."
+        );
+        let err = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: verbatim[..280].to_string().into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(
+            !err.is_enc_boundary_error(),
+            "long-id 400 capped at 280 chars: phrasing needles are absent, \
+            surgical predicate must NOT match (falls to the coarse family-1 route)"
+        );
+        assert!(
+            err.is_model_bound_history_error(),
+            "long-id 400 degradation: coarse family-1 catch-all still catches it (strip route preserved)"
+        );
+
+        // the P4-exact short shape, no code field
+        let err = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: "The encrypted content SYNTH could not be verified. Reason: Encrypted content could not be decrypted or parsed.".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(err.is_enc_boundary_error(), "P4 verbatim 400 (no code) must match");
+    }
+
+    /// U2 — NEGATIVES: a genuine different 400 (F5 content-array-too-long)
+    /// must NOT match (keeps the family-5 coarse route); generic 503, the
+    /// tags-config 401 (family 6), and the field-name-only 400 (family-1
+    /// catch-all, not the SIG-ENC phrasing) must NOT match either.
+    #[test]
+    fn enc_boundary_negatives_keep_existing_routes_u2() {
+        // F5: strict-schema content-array rejection (family 5, coarse)
+        let err = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: "Invalid 'input[3].content': array too long (maxItems: 0).".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(!err.is_enc_boundary_error(), "F5 must NOT match SIG-ENC (stays family-5)");
+        assert!(err.is_model_bound_history_error(), "F5 must stay model-bound family-1-class");
+
+        // generic 503 overload (no boundary text)
+        let err = SamplingError::Api {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "litellm.ServiceUnavailableError: All models failed. Retry later.".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(!err.is_enc_boundary_error(), "generic 503 must NOT match SIG-ENC");
+
+        // family 6: the tags-config 401 (Auth-shaped)
+        let err = SamplingError::Auth {
+            message: "Not allowed to access model due to tags configuration.".into(),
+            credential: crate::SentCredential::Unknown,
+        };
+        assert!(!err.is_enc_boundary_error(), "tags-config 401 must NOT match SIG-ENC");
+
+        // family-1 catch-all: field-name-only 400 (no SIG-ENC phrasing, no
+        // invalid_encrypted_content code) — the family-1 arm stays the
+        // catch-all for other encrypted-family shapes (D3 composition)
+        let err = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: "Could not decrypt the provided encrypted_content. Ensure the value is the unmodified encrypted_content from a previous response.".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        assert!(!err.is_enc_boundary_error(), "field-name-only 400 must NOT match SIG-ENC (family-1 catch-all)");
+        assert!(err.is_model_bound_history_error(), "field-name-only 400 stays model-bound");
     }
 }

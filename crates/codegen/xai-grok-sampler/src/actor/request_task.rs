@@ -179,7 +179,7 @@ pub(crate) async fn run_request_task(
 
         match outcome {
             AttemptOutcome::Completed {
-                response,
+                mut response,
                 mut metrics,
             } => {
                 completion.merge_doom_loop_signals(
@@ -206,6 +206,19 @@ pub(crate) async fn run_request_task(
                     sampling_span.record("output_tokens", usage.completion_tokens);
                     sampling_span.record("reasoning_tokens", usage.reasoning_tokens);
                 }
+                // XW-ENC-AFFINITY-1 (apex-mf6): record the pin the client
+                // sent (or None — never an empty string) on every reasoning
+                // item + carrier of this response — the mint provenance the
+                // send-time gate and the switch projector consult later
+                // (store-side only; the wire shape is untouched).
+                xai_grok_sampling_types::stamp_reasoning_mint_tag(
+                    &mut response.items,
+                    config
+                        .extra_headers
+                        .get(xai_grok_sampling_types::ENC_AFFINITY_PIN_HEADER)
+                        .map(|value| value.as_str())
+                        .filter(|value| !value.is_empty()),
+                );
                 // Emit Completed only after the loop succeeds; the L2 stream's terminal event was suppressed by `run_one_attempt`
                 let terminal_event_queued = event_tx
                     .send(SamplingEvent::Completed {
@@ -396,7 +409,14 @@ async fn apply_retry_decision(
     // gates). For every non-model-bound error this is a no-op, and a genuine
     // credential 401 never matches the needle — it keeps the auth-gate
     // terminal path (key refresh).
-    let decision = if err.is_model_bound_history_error() {
+    // XW-ENC-AFFINITY-1 (apex-mf6): the surgical SIG-ENC-BOUNDARY check runs
+    // ABOVE the model-bound check (a strict subset of family 1): the
+    // request's own ciphertext is boundary-incompatible, so the payload is
+    // bulk-stripped (carriers excluded) with NO store write — the coarse
+    // model-bound arm (store-persisting) must never see this class.
+    let decision = if err.is_enc_boundary_error() {
+        RetryDecision::StripEncryptedAndRetry
+    } else if err.is_model_bound_history_error() {
         RetryDecision::RetryWithModelBoundStateStrip
     } else {
         classify_error(err, *retry_count, max_retries, rate_limit_threshold)
@@ -521,6 +541,45 @@ async fn apply_retry_decision(
             // XSWITCH-1 (apex-ayl.58): the consumer persists this strip to stored
             // history when the request terminals (house seam of ImagesStripped).
             emit_model_bound_stripped(event_tx, request_id, stripped);
+            emit_retrying(
+                event_tx,
+                request_id,
+                *retry_count,
+                max_retries.max(*retry_count),
+                err,
+            );
+            true
+        }
+        RetryDecision::StripEncryptedAndRetry => {
+            // XW-ENC-AFFINITY-1 (apex-mf6, design §3.3): the request's OWN
+            // ciphertext is boundary-incompatible (SIG-ENC-BOUNDARY 503/400)
+            // — BULK-STRIP every reasoning item's encrypted_content
+            // (carriers EXCLUDED — a stripped carrier payload is an
+            // unrecoverable 400) and retry once. A mismatch means the
+            // REQUEST's routing is wrong, so per-item selective strip would
+            // just cascade. PAYLOAD-ONLY: no store write, NO
+            // ModelBoundStateStripped event (that event makes the consumer
+            // persist the strip to stored history — the store keeps
+            // ciphertext + mint_tag; re-pinning recovers continuity).
+            let stripped =
+                xai_grok_sampling_types::strip_reasoning_encrypted_content(&mut request.items);
+            if stripped == 0 {
+                // Fail closed (the no-loop guard): nothing left to strip;
+                // a second same-class rejection is unreachable by
+                // construction, but if observed the turn fails with the
+                // original error (never a retry that would re-fail).
+                let terminal_event_queued = emit_failed(event_tx, request_id, err);
+                send_completion(completion, Err(clone_error(err)), terminal_event_queued);
+                return false;
+            }
+            // The request changed: the cached carrier is stale.
+            request.invalidate_encoded();
+            *retry_count += 1;
+            tracing::warn!(
+                stripped,
+                model = %config.model,
+                "SIG-ENC-BOUNDARY: bulk-stripped reasoning ciphertext (payload-only); retrying"
+            );
             emit_retrying(
                 event_tx,
                 request_id,
@@ -1647,14 +1706,17 @@ mod tests {
         ConversationRequest {
             items: vec![
                 t::ConversationItem::user("q1"),
-                t::ConversationItem::Reasoning(t::rs::ReasoningItem {
-                    id: "rs_mbs".to_string(),
-                    summary: vec![t::rs::SummaryPart::SummaryText(t::rs::SummaryTextContent {
-                        text: "private continuation".to_string(),
-                    })],
-                    content: None,
-                    encrypted_content: Some("provider-signature".to_string()),
-                    status: None,
+                t::ConversationItem::Reasoning(t::ReasoningItemStore {
+                    item: t::rs::ReasoningItem {
+                        id: "rs_mbs".to_string(),
+                        summary: vec![t::rs::SummaryPart::SummaryText(t::rs::SummaryTextContent {
+                            text: "private continuation".to_string(),
+                        })],
+                        content: None,
+                        encrypted_content: Some("provider-signature".to_string()),
+                        status: None,
+                    },
+                    mint_tag: None,
                 }),
                 t::ConversationItem::BackendToolCall(t::BackendToolCallItem {
                     kind: t::BackendToolKind::WebSearch(web_search),
@@ -1944,5 +2006,242 @@ mod tests {
             SamplingError::EventStreamError(msg) => assert_eq!(msg, "first"),
             other => panic!("expected EventStreamError, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod enc_boundary_mf6_tests {
+    //! apex-mf6 (XW-ENC-AFFINITY-1) RED U3 — the surgical
+    //! `StripEncryptedAndRetry` arm driven through the ACTUAL
+    //! `apply_retry_decision` seam. Pre-cut: compile-fails (the arm +
+    //! `ReasoningItemStore` wrapper are absent).
+
+    use super::*;
+    use reqwest::StatusCode;
+
+    fn sig_enc_request() -> ConversationRequest {
+        use xai_grok_sampling_types as t;
+        let carrier_raw = serde_json::json!({
+            "type": "compaction",
+            "encrypted_content": "litellm_enc:ZXlJbGVI;carrier-ciphertext",
+        });
+        ConversationRequest {
+            items: vec![
+                t::ConversationItem::user("q1"),
+                t::ConversationItem::Reasoning(t::ReasoningItemStore {
+                    item: t::rs::ReasoningItem {
+                        id: "encitem_sig_enc_1".to_string(),
+                        summary: vec![t::rs::SummaryPart::SummaryText(t::rs::SummaryTextContent {
+                            text: "minted under EU2".to_string(),
+                        })],
+                        content: None,
+                        encrypted_content: Some("litellm_enc:ZXlJbGVI;first".to_string()),
+                        status: None,
+                    },
+                    mint_tag: Some("East US 2".to_string()),
+                }),
+                t::ConversationItem::assistant("a1"),
+                t::ConversationItem::Reasoning(t::ReasoningItemStore {
+                    item: t::rs::ReasoningItem {
+                        id: "encitem_sig_enc_2".to_string(),
+                        summary: vec![t::rs::SummaryPart::SummaryText(t::rs::SummaryTextContent {
+                            text: "untagged mint".to_string(),
+                        })],
+                        content: None,
+                        encrypted_content: Some("litellm_enc:ZXlJbGVI;second".to_string()),
+                        status: None,
+                    },
+                    mint_tag: None,
+                }),
+                t::ConversationItem::BackendToolCall(t::BackendToolCallItem {
+                    kind: t::BackendToolKind::CodexRawInput(t::CodexRawInputItem {
+                        id: "codex_compaction_0".to_string(),
+                        raw: carrier_raw,
+                        cross_provider_fallback: None,
+                        mint_tag: Some("East US 2".to_string()),
+                    }),
+                }),
+                t::ConversationItem::user("q2"),
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_decision_sig_enc_boundary_bulk_strips_payload_only_u3() {
+        // D3 contract, driven end-to-end through the dispatch seam:
+        // Attempt 1: SIG-ENC-BOUNDARY 503 + ciphertext present -> BULK strip
+        // of every reasoning item (carriers EXCLUDED) -> exactly one retry
+        // with the mutated IN-FLIGHT master. PAYLOAD-ONLY: no store write,
+        // NO ModelBoundStateStripped event (the store keeps ciphertext +
+        // mint_tag; re-pinning recovers continuity).
+        // Attempt 2: the same rejection on the stripped request ->
+        // stripped == 0 -> terminal (the no-loop guard; unreachable by
+        // construction, the guard makes it safe).
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let (completion_tx, completion_rx) = oneshot::channel();
+        let mut completion = CompletionState::new(Some(completion_tx));
+        let mut retry_count = 0;
+        let mut request = sig_enc_request();
+        let config = SamplerConfig {
+            base_url: "http://localhost".into(),
+            model: "gpt-5.6-terra".into(),
+            ..Default::default()
+        };
+        let mut client = SamplingClient::new(config.clone()).expect("test client");
+        let err = SamplingError::Api {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "litellm.ServiceUnavailableError: The deployment that produced this encrypted_content is currently unavailable (likely cooled down), and no deployment on the same encryption boundary is configured. Retry later or configure a deployment with the same (api_base, api_key).".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: None,
+        };
+        let request_id = RequestId::from("sig-enc");
+        let cancel_token = CancellationToken::new();
+        let parent = tracing::Span::none();
+
+        let continue1 = apply_retry_decision(
+            &err,
+            &mut retry_count,
+            5,
+            &RetryPolicy::default(),
+            &event_tx,
+            &request_id,
+            &mut request,
+            &mut client,
+            &config,
+            &cancel_token,
+            &mut completion,
+            &parent,
+        )
+        .await;
+        assert!(continue1, "SIG-ENC-BOUNDARY with strippable ciphertext retries");
+        assert_eq!(retry_count, 1, "exactly one retry is debited (bounded max-1)");
+
+        // bulk: BOTH reasoning ciphertexts gone, field-level (items survive)
+        let mut reasoning_seen = 0;
+        for item in &request.items {
+            if let xai_grok_sampling_types::ConversationItem::Reasoning(r) = item {
+                reasoning_seen += 1;
+                assert!(r.item.encrypted_content.is_none(), "bulk strip removed every reasoning ciphertext");
+                // payload-only: the mint provenance survives the strip
+                // (the store keeps ciphertext + mint_tag; re-pin recovers)
+                let _ = r.mint_tag;
+            }
+        }
+        assert_eq!(reasoning_seen, 2, "reasoning items survive the FIELD-level bulk strip");
+        // carrier EXCLUDED: its ciphertext is intact (retain-only, D2)
+        let carrier_idx = request
+            .items
+            .iter()
+            .position(|i| matches!(i, xai_grok_sampling_types::ConversationItem::BackendToolCall(_)))
+            .expect("carrier present");
+        if let xai_grok_sampling_types::ConversationItem::BackendToolCall(b) = &request.items[carrier_idx] {
+            if let xai_grok_sampling_types::BackendToolKind::CodexRawInput(raw) = &b.kind {
+                assert!(
+                    raw.raw.get("encrypted_content").is_some(),
+                    "carriers are EXCLUDED from the bulk strip (retain-only)"
+                );
+            } else {
+                panic!("carrier kind changed");
+            }
+        } else {
+            panic!("carrier missing");
+        }
+
+        // PAYLOAD-ONLY: no ModelBoundStateStripped event (that event makes
+        // the consumer persist the strip to the STORE — D3 forbids it);
+        // the only events are the retry pair.
+        let ev1 = event_rx.recv().await.expect("first event");
+        assert!(
+            !matches!(ev1, SamplingEvent::ModelBoundStateStripped { .. }),
+            "D3: the surgical arm must NOT emit ModelBoundStateStripped (no store write)"
+        );
+        assert!(
+            matches!(ev1, SamplingEvent::Retrying { .. }),
+            "expected the retrying event first, got: {ev1:?}"
+        );
+        assert!(event_rx.try_recv().is_err(), "no further events (no strip event)");
+
+        // Attempt 2: nothing left to strip -> terminal, fail closed.
+        let continue2 = apply_retry_decision(
+            &err,
+            &mut retry_count,
+            5,
+            &RetryPolicy::default(),
+            &event_tx,
+            &request_id,
+            &mut request,
+            &mut client,
+            &config,
+            &cancel_token,
+            &mut completion,
+            &parent,
+        )
+        .await;
+        assert!(!continue2, "second same-class after bulk-strip is terminal (no-loop guard)");
+        assert_eq!(retry_count, 1, "no second retry is debited");
+        assert!(
+            matches!(event_rx.recv().await, Some(SamplingEvent::Failed { .. })),
+            "the terminal rejection emits a failed event"
+        );
+        let collected = completion_rx.await.expect("terminal completion sent");
+        assert!(collected.result.is_err(), "the turn fails with the original error");
+    }
+
+    #[tokio::test]
+    async fn retry_decision_sig_enc_400_dispatches_same_arm_u3() {
+        // the 400 invalid_encrypted_content shape takes the same surgical
+        // arm (D3: both verbatim phrasings, one class).
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let (completion_tx, _completion_rx) = oneshot::channel();
+        let mut completion = CompletionState::new(Some(completion_tx));
+        let mut retry_count = 0;
+        let mut request = sig_enc_request();
+        let config = SamplerConfig {
+            base_url: "http://localhost".into(),
+            model: "gpt-5.6-terra".into(),
+            ..Default::default()
+        };
+        let mut client = SamplingClient::new(config.clone()).expect("test client");
+        let err = SamplingError::Api {
+            status: StatusCode::BAD_REQUEST,
+            message: "The encrypted content SYNTH could not be verified. Reason: Encrypted content could not be decrypted or parsed.".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+            error_code: Some(ApiErrorCode::Other("invalid_encrypted_content".to_string())),
+        };
+        let request_id = RequestId::from("sig-enc-400");
+        let cancel_token = CancellationToken::new();
+        let parent = tracing::Span::none();
+        let continued = apply_retry_decision(
+            &err,
+            &mut retry_count,
+            5,
+            &RetryPolicy::default(),
+            &event_tx,
+            &request_id,
+            &mut request,
+            &mut client,
+            &config,
+            &cancel_token,
+            &mut completion,
+            &parent,
+        )
+        .await;
+        assert!(continued, "SIG-ENC 400 bulk-strips and retries once");
+        assert_eq!(retry_count, 1);
+        assert!(
+            request.items.iter().all(|i| {
+                !matches!(
+                    i,
+                    xai_grok_sampling_types::ConversationItem::Reasoning(r)
+                        if r.item.encrypted_content.is_some()
+                )
+            }),
+            "all reasoning ciphertext stripped on the 400 arm"
+        );
     }
 }

@@ -835,7 +835,7 @@ async fn family_switch_compacts_lossy_with_new_model() {
                     content: None,
                     encrypted_content: Some("tco_SEALEDCIPHERTEXT".to_string()),
                     status: None,
-                }),
+                }.into()),
                 ConversationItem::assistant_tool_calls(vec![xai_grok_sampling_types::ToolCall {
                     id: std::sync::Arc::<str>::from("call_xai_minted_id"),
                     name: "run_terminal_command".to_string(),
@@ -1969,7 +1969,7 @@ async fn xw_orphan_compact_model_bound_400_arms_strip_retry() {
                     content: None,
                     encrypted_content: Some("encitem_xw_orphan".to_string()),
                     status: None,
-                }),
+                }.into()),
                 ConversationItem::assistant("done"),
                 ConversationItem::user("compact me"),
             ]);

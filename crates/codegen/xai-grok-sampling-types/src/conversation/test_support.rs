@@ -161,7 +161,8 @@ pub(super) fn reasoning_sibling(
         content: None,
         encrypted_content: encrypted.map(str::to_owned),
         status: None,
-    })
+    }
+    .into())
 }
 
 pub(super) fn input_items_json(req: &ConversationRequest) -> Vec<serde_json::Value> {

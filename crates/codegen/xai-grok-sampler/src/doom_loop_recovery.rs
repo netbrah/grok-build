@@ -429,7 +429,7 @@ impl FailedResponseCapture {
                     let streamed_text = take_streamed(&mut streamed, &reasoning.id);
                     fit_reasoning(&mut reasoning, streamed_text, &mut reasoning_budget);
                     if reasoning_has_text(&reasoning) || reasoning.encrypted_content.is_some() {
-                        items.push(ConversationItem::Reasoning(reasoning));
+                        items.push(ConversationItem::Reasoning(reasoning.into()));
                     }
                 }
                 CapturedItem::Text(text) => {
@@ -458,7 +458,7 @@ impl FailedResponseCapture {
                 content: Some(vec![rs::ReasoningTextContent { text }]),
                 encrypted_content: None,
                 status: None,
-            }));
+            }.into()));
         }
         if !wire_carried_text {
             let text = text_budget.fit(&captured.output);

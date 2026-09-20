@@ -31,6 +31,7 @@ pub(crate) fn message_item(
                 id: message.message_id.clone(),
                 raw: message.native_wire_item().expect("native message"),
                 cross_provider_fallback: None,
+                mint_tag: None,
             }),
         }));
     }

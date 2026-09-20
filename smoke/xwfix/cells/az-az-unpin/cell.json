@@ -1,0 +1,54 @@
+{
+  "cell": "az-az-unpin",
+  "flip": {
+    "from": {
+      "family": "AZ",
+      "model": "gpt-5.6-sol",
+      "wire": "/v1/responses (litellm proxy, Azure deployment class)"
+    },
+    "to": {
+      "family": "AZ",
+      "model": "gpt-5.6-terra",
+      "wire": "/v1/responses (litellm proxy, Azure deployment class, strict_responses_input=true per the 16:30Z hardening), row UNPINNED via the case config_patch (model/gpt-5.6-terra/extra_headers/x-litellm-tags = \"\")"
+    }
+  },
+  "families": "AZ -> AZ (codex, same wire, target row unpinned)",
+  "status": "XW-ENC-AFFINITY-1 (apex-mf6) L2 live cell (2026-09-20): deployment-affinity-aware ciphertext retention. The case patches the TERRA row's x-litellm-tags to empty (sol row untouched); the ACP session is seeded with the byte-pinned synthetic canonical sol-phase history (2 reasoning rides id=encitem_* + encrypted_content + summary text, mint_tag ABSENT in the seed = untagged provenance), switches gpt-5.6-sol -> gpt-5.6-terra, then one post-switch turn. PREDICTED (mf6 gate, design xw-enc-affinity-design-20260919.md 3.2/3.4): switch-time projection target_pin=None; per ride mint_tag=None -> (None, None) = RETAIN OPTIMISTICALLY -> the switch rewrites NOTHING in storage -> expected.json byte-identical to pre_switch (T0 pattern, same as cells/az-az). SEND-TIME on the first terra request: pin absent + mint absent -> RetainOptimistic -> the 2 seeded rides CROSS the terra wire WITH encrypted_content. LIVE VERDICT BAND (design 5: a live mismatch is a lottery - do not gate on it): 200 on attempt 1 = LB converged on the same encryption boundary (count 1); 503 (encryption-boundary ServiceUnavailableError) -> the NEW reactive fallback (SIG-ENC-BOUNDARY retry class, bulk-strip + one retry) -> 200 (count 2). ANY outcome outside count 1..2, a non-200 FINAL, a second same-class failure after strip, or a wire-shape change (new field on the reasoning item) = defect beyond the documented surface -> report-and-stop.",
+  "mint": {
+    "date": "2026-09-20 (Z)",
+    "driver": "mf6 (apex-mf6, XW-ENC-AFFINITY-1)",
+    "basis": "XW-ENC-AFFINITY-1 design 2026-09-19; seed = byte-identical reuse of cells/az-az pre-switch history (target-independent pre-switch storage, A1.2)"
+  },
+  "recipe": "SYNTHETIC canonical sol-phase history (10 records): 2 reasoning items id=encitem_* + content:[] + encrypted_content (SYNTH-AZ-CIPHERTEXT deterministic placeholders, real ciphertext intentionally not reproduced) + non-empty summary_text; 2 tool pairs; assistant model_id gpt-5.6-sol; 209B interactive system head. Byte-identical to cells/az-az/pre_switch.json (sha256:12 379ade4065e6). NOTE (mf6): the seed deliberately carries NO mint_tag field - untagged provenance is exactly the (None, None) RetainOptimistic arm this cell exercises; after the first live post-mint turn on a pinned row the store-side items gain mint_tag (store-side only, skip_serializing_if=None keeps untagged rows byte-identical).",
+  "pre_switch": {
+    "file": "pre_switch.json",
+    "records": 10,
+    "composition": {
+      "system": 1,
+      "user": 3,
+      "reasoning": 2,
+      "assistant": 2,
+      "tool_result": 2
+    },
+    "note": "byte-identical to cells/az-az/pre_switch.json (sha256:12 379ade4065e6)"
+  },
+  "expected": {
+    "file": "expected.json",
+    "records": 10,
+    "projection": {
+      "all 10 records (storage form)": "T0 storage (mf6 gate-inert for untagged mints): target row UNPINNED (config_patch empties terra's x-litellm-tags -> target_pin=None) AND every seeded ride carries mint_tag=None -> enc_affinity_gate(None, None) = RetainOptimistic -> the AZ->AZ projector keeps the ciphertext on every ride -> the switch rewrites NOTHING in storage -> expected.json byte-identical to pre_switch (the az-az T0 pattern, re-derived under the mf6 gate). RED teeth: a gate that strips untagged rows (the design 3.2 'else -> STRIP' misreading) or a projector that drops the summary REDs this pin; a RetainOptimistic->Strip classification regression (N-3 exact-string gate drift) REDs the wire pin.",
+      "reasoning x2 (wire projection)": "SEND-TIME gate on the first post-switch terra request: pin absent + mint absent = RetainOptimistic -> encrypted_content CROSSES the wire (the behavioral delta vs the retired D-ENC, which stripped unconditionally at every /responses send). The ride keeps its post-strict-projection summary shape (summary text byte-verbatim from the seed); id/content handling is unchanged by mf6 (strict row strips id at send, as pre-mf6). If the proxy 503s the untagged-with-ciphertext request (boundary not converged), the reactive fallback bulk-strips and retries ONCE -> the retry request is ciphertext-free and 200 (count band 1..2 absorbs both)."
+    }
+  },
+  "invariants": [
+    "no record with id == '' (the seed rides carry encitem_ ids)",
+    "expected.json byte-identical to pre_switch (untagged-mint RetainOptimistic: no storage rewrite at switch time)",
+    "the first post-switch terra request carries the seeded encrypted_content (RetainOptimistic wire form) - a D-ENC-style unconditional strip regression REDs the case wire pin",
+    "at most ONE reactive fallback retry (bounded counter max-1/request); a second SIG-ENC-BOUNDARY failure after strip = STOP (design 3.3)",
+    "pairing integrity: every tool_result has a matching assistant tool_call (2/2)"
+  ],
+  "red_tests": [
+    "L2 live (enc-az-az-unpin): the switch_model case op seeds this cell, patches the terra row untagged, drives sol->terra via ACP set_model, asserts: storage T0 at switch time (expected.json byte pin); encrypted_content PRESENT on a terra request (RetainOptimistic wire form); FINAL terra request 200; count 1..2 (200-on-1 = converged boundary; 503->strip->200 = reactive fallback arm); no acp_error.",
+    "Any failing assert = a regression beyond the documented surface -> report-and-stop (A1 discipline). Documented teeth: untagged-strip gate drift REDs the encrypted_content-present pin; a fallback that loops or a non-200 final REDs the count/resp_status pins; a wire-shape change (new field on the reasoning item) is a hard STOP independent of pins."
+  ]
+}

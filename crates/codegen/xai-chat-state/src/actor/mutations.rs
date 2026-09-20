@@ -268,9 +268,15 @@ impl ChatStateActor {
     /// [`HistoryRewrite::SwitchProjection`]. Computed in-actor so the projection
     /// serializes with turn pushes (no read-then-write window across a new
     /// prompt). `None` when nothing changed, else changed count + disk ack.
+    ///
+    /// `target_pin` (XW-ENC-AFFINITY-1, apex-mf6): the target row's
+    /// `x-litellm-tags` pin (`None` = untagged) — feeds the switch-time gate
+    /// on the AZ->AZ row (the store keeps the ciphertext only when the item
+    /// mint tag is compatible with the target pin).
     pub(super) fn project_switch_history(
         &mut self,
         target_model: &str,
+        target_pin: Option<&str>,
     ) -> Option<(usize, tokio::sync::oneshot::Receiver<std::io::Result<()>>)> {
         let boundary =
             xai_grok_sampling_types::conversation::projection::model_boundary_class(target_model);
@@ -281,6 +287,7 @@ impl ChatStateActor {
                         conversation,
                         target_model,
                         boundary,
+                        target_pin,
                     )
                     .items;
                 let changed = projection_changed_count(conversation, &projected);

@@ -246,7 +246,7 @@ async fn chat_completions_compaction_does_not_panic_on_reasoning_sibling() {
             content: None,
             encrypted_content: None,
             status: None,
-        }),
+        }.into()),
         ConversationItem::assistant("I fixed it."),
         ConversationItem::user("Summarize the conversation so far."),
     ];

@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "id": "ENC-AZ-AZ-UNPIN",
+  "title": "XW-ENC-AFFINITY-1 (apex-mf6) L2 live: untagged-target-row optimistic retention. The case config_patch empties the TERRA row's x-litellm-tags (sol row untouched), seeds the ACP session with the byte-pinned canonical sol-phase history (cell az-az-unpin: 10 records, 2 reasoning rides id=encitem_* + encrypted_content + summary text, NO mint_tag = untagged provenance), switches gpt-5.6-sol -> gpt-5.6-terra MID-SESSION (ACP session/set_model, same-family (codex,codex) -> no wall, no lossy compact), then one post-switch turn. PREDICTED (design xw-enc-affinity-design-20260919.md 3.2/3.4 + in-tree gate conversation.rs enc_affinity_gate): switch-time projection target_pin=None, every ride mint_tag=None -> (None,None) = RetainOptimistic -> storage T0 (cell expected.json byte-identical to pre_switch, scored at switch time); SEND-TIME gate on the first terra request pin absent + mint absent = RetainOptimistic -> the seeded encrypted_content CROSSES the terra wire (the mf6 behavioral delta: the retired D-ENC stripped unconditionally at every /responses send). LIVE VERDICT BAND (design 5: a live mismatch is a lottery - do not gate on it): 200 on attempt 1 = LB converged on the same boundary (count 1); 503 (encryption-boundary ServiceUnavailableError) -> the NEW reactive fallback (SIG-ENC-BOUNDARY class, bulk-strip + exactly one retry) -> 200 (count 2). ANY outcome outside the band (count >2, non-200 FINAL, second same-class failure after strip, wire-shape change = new field on a reasoning item) = defect beyond the documented surface -> report-and-stop. Suite is cross-wire (the committed schema has no enc-affinity suite; the affinity semantics live in the pins).",
+  "bead": "apex-mf6",
+  "suite": "cross-wire",
+  "tier": "full",
+  "driver": "acp",
+  "model": "gpt-5.6-sol",
+  "wirecap": true,
+  "config_patch": {
+    "model/gpt-5.6-terra/extra_headers/x-litellm-tags": ""
+  },
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "steps": [
+    {
+      "op": "switch_model",
+      "model": "gpt-5.6-terra",
+      "via": "acp",
+      "cell": "smoke/xwfix/cells/az-az-unpin",
+      "assert_form": "storage"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: ENC-AZ-AZ-UNPIN-POSTSW1"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 2,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "TURN COMPLETES: the post-switch terra turn did not die (a set_model/turn error = regression beyond the documented surface -> report-and-stop)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "any": true,
+        "grep": "\"encrypted_content\":",
+        "label": "L2 RETAIN-OPTIMISTIC WIRE FORM: the seeded untagged ride (mint_tag absent) crossed the untagged terra request WITH encrypted_content — pin absent + mint absent = RetainOptimistic (design 3.2). Absent = a D-ENC-style unconditional strip (pre-mf6 behavior) or a gate misclassification of the (None,None) arm -> report-and-stop (the fallback arm is asserted hermetically by the classifier unit tests; the wire form here is the optimistic arm's pin)."
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "min": 1,
+        "max": 2,
+        "label": "VERDICT BAND (design 5: a live mismatch is a lottery): 1 = 200 on attempt 1 (LB converged on the same encryption boundary — warm-deployment convergence, MUST NOT be re-pinned to 1, design 6); 2 = 503 boundary error -> reactive bulk-strip fallback -> 200 (the NEW SIG-ENC-BOUNDARY retry arm doing its job). >2 = fallback loop or storm (the counter is max-1/request by construction) -> report-and-stop; 0 = the turn never fired -> report-and-stop."
+      },
+      {
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "which": "last",
+        "status_in": [
+            200
+          ],
+          "label": "FINAL ACCEPTED: the FINAL terra request in scope reached 200 (converged boundary on attempt 1, or the post-fallback-strip attempt 2). A non-200 final = brick / unclassified wire-error shape -> report-and-stop (house rule: a new shape is a finding, not a retry)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

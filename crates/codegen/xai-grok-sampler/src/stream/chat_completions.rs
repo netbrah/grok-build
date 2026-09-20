@@ -257,7 +257,7 @@ pub fn stream_chat_completions<'a>(
         if first_choice_seen {
             if !reasoning_acc.is_empty() {
                 items.push(ConversationItem::Reasoning(
-                    xai_grok_sampling_types::synthesized_reasoning_item(reasoning_acc),
+                    xai_grok_sampling_types::synthesized_reasoning_item(reasoning_acc).into(),
                 ));
             }
             items.push(ConversationItem::Assistant(AssistantItem {

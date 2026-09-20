@@ -65,7 +65,7 @@ fn assistant_with_reasoning_items(
                 content: None,
                 encrypted_content: None,
                 status: None,
-            },
+            }.into(),
         ));
     }
     out.push(ConversationItem::Assistant(AssistantItem {
@@ -192,7 +192,7 @@ fn flatten_skips_reasoning_when_encrypted_only() {
             content: None,
             encrypted_content: Some("opaque_base64".into()),
             status: None,
-        }),
+        }.into()),
         ConversationItem::Assistant(AssistantItem {
             content: "ok".into(),
             tool_calls: vec![],
@@ -223,7 +223,7 @@ fn flatten_skips_reasoning_when_text_is_empty() {
             content: None,
             encrypted_content: None,
             status: None,
-        }),
+        }.into()),
         ConversationItem::Assistant(AssistantItem {
             content: "ok".into(),
             tool_calls: vec![],

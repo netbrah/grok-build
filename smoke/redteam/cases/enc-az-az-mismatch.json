@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "id": "ENC-AZ-AZ-MISMATCH",
+  "title": "XW-ENC-AFFINITY-1 (apex-mf6) L2b live: pinned-mint x untagged-target = STRIP at switch (the mismatch arm, live). Fresh ACP session on gpt-5.6-sol (live row pinned, expected tag 'East US 2' — the live probe in the wave settles whether the live config still pins sol; an untagged sol row makes the D1 mint stamp None and is a REPORT finding, not a case edit). Two sol turns (O7 M-1: reasoning-forcing modular-exponentiation prompts at the strongest expressible effort 'max' — via the case's global [models] default_reasoning_effort config_patch, since the session wire effort resolves from the manager current (seeded from that global) projected onto the row menu, not from a row-level scalar; the original trivial echoes minted no rides, which made the zero-ciphertext pin VACUOUS and the reasoning-summary pin unsatisfiable, wave 20260920T072948Z; the terra-row tag-emptying patch below is UNTOUCHED): each response's reasoning item is mint-stamped (D1) with the sol row's pin, so by switch time every ride in the store carries mint_tag=Some(sol-pin). The case config_patch empties the TERRA row's x-litellm-tags, then a BARE switch op (session/set_model, no cell: the runner's switch_model op requires a cell whose storage golden is scored at switch time — a cell cannot pin runtime-generated pre-switch turns, so the mismatch switch is driven by the cell-less `switch` op and pinned on the wire only), then one post-switch turn. PREDICTED (design 3.2/3.4 + in-tree gate): switch-time projection target_pin=None, every ride mint_tag=Some(EU2) -> (None, Some) = STRIP -> the store loses ALL ciphertext at switch time; the first (and only) post-switch terra request therefore carries ZERO encrypted_content, the stripped rides still cross with their summary text (the strip removes only the field), the terra request is 200 on attempt 1 (nothing to trigger a boundary 503). ANY terra request carrying encrypted_content = gate misclassification of the (None,Some) arm (or an untagged sol row -> mint None -> RetainOptimistic — the live-probe disambiguation) -> report-and-stop. Suite is cross-wire (the committed schema has no enc-affinity suite; the affinity semantics live in the pins).",
+  "bead": "apex-mf6",
+  "suite": "cross-wire",
+  "tier": "full",
+  "driver": "acp",
+  "model": "gpt-5.6-sol",
+  "wirecap": true,
+  "config_patch": {
+    "model/gpt-5.6-terra/extra_headers/x-litellm-tags": "",
+    "models/default_reasoning_effort": "max"
+  },
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Find the remainder when 7^8432 is divided by 5557. Show your work step by step using modular exponentiation."
+    },
+    {
+      "op": "turn",
+      "prompt": "Now find the remainder when 7^8433 is divided by 5557. Show your work step by step using modular exponentiation."
+    },
+    {
+      "op": "switch",
+      "model": "gpt-5.6-terra",
+      "via": "acp"
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: ENC-MISMATCH-POSTSW1"
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 4,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "label": "ALL FOUR STEPS COMPLETE: no turn/set_model error (an ACP error = regression beyond the documented surface -> report-and-stop)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "all": true,
+        "absent": true,
+        "grep": "\"encrypted_content\":",
+        "label": "L2b MISMATCH STRIP (the core pin): NO terra request carries encrypted_content — every ride was mint-stamped under the pinned sol row and the switch-time gate (target pin None x mint Some) = STRIP, so the untagged terra request is ciphertext-free by construction. This pin doubles as the zero-503 detector: any ciphertext reaching the untagged row is exactly the boundary-503 trigger, so ciphertext-present and 503 are the same defect surface. Present = gate misclassification of the (None,Some) arm (or untagged-sol-row premise failure -> the wave's live probe disambiguates; either way report-and-stop, never a case edit)."
+      },
+      {
+        "kind": "grep",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "any": true,
+        "grep": "\"type\": \"reasoning\"",
+        "label": "POST-SWITCH REASONING SUMMARY PRESENT: the stripped rides still cross the terra wire as reasoning items carrying their summary text (the mf6 strip removes ONLY the encrypted_content field; id/summary handling is unchanged). Absent = over-strip (summary loss) or the post-switch turn never replayed history -> report-and-stop."
+      },
+      {
+        "kind": "count",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "min": 1,
+        "max": 2,
+        "label": "NO STORM: 1 = the clean path (no ciphertext ever reached the wire, 200 on attempt 1 — the expected outcome); 2 = the fallback arm fired once (which would ALSO red the ciphertext-absent pin — the band exists so the retry is recorded, not masked). >=3 = fallback loop (counter is max-1/request by construction) -> report-and-stop; 0 = the post-switch turn never fired -> report-and-stop."
+      },
+      {
+        "kind": "resp_status",
+        "file": "req-*.json",
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-terra"
+        },
+        "which": "last",
+        "status_in": [
+            200
+          ],
+          "label": "FINAL ACCEPTED: the FINAL terra request reached 200. A non-200 final = brick / unclassified wire-error shape -> report-and-stop."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

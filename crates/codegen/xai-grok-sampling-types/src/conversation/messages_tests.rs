@@ -201,7 +201,7 @@ fn test_messages_request_cache_breakpoint_skips_thinking() {
     reasoning.encrypted_content = Some("test_signature".to_string());
     let req = ConversationRequest::from_items(vec![
         ConversationItem::user("Fix the bug"),
-        ConversationItem::Reasoning(reasoning),
+        ConversationItem::Reasoning(reasoning.into()),
         ConversationItem::assistant("Fixed it."),
     ])
     .with_model("messages-compatible-model");
@@ -1206,7 +1206,8 @@ fn messages_wire_satisfies_adjacency_invariant_for_any_input() {
                         }
                     } else {
                         item
-                    }));
+                    }
+                    .into()));
                 }
                 _ => items.push(ConversationItem::tool_result(
                     format!("id_{}", next(&mut state) % 4),
@@ -1230,7 +1231,7 @@ fn messages_wire_satisfies_adjacency_invariant_for_any_input() {
 fn mk_reasoning(text: &str, signature: Option<&str>) -> ConversationItem {
     let mut item = crate::synthesized_reasoning_item(text);
     item.encrypted_content = signature.map(str::to_string);
-    ConversationItem::Reasoning(item)
+    ConversationItem::Reasoning(item.into())
 }
 
 /// Provenance: xli@3d4a08271e + audited-ledger xli@6d3784158c — codex-rs/provider-anthropic/src/wire.rs :: test_thinking_stripped_from_earlier_assistant_messages (adapted)
@@ -1351,7 +1352,7 @@ fn test_opus47_empty_thinking_with_signature_dropped() {
             content: None,
             encrypted_content: Some("Er4CCmUIDhACGAIqQMQHBF5Vrealsig==".to_string()),
             status: None,
-        }),
+        }.into()),
         ConversationItem::assistant("Real reply"),
     ]);
     let msgs = build_messages_request(&req);
@@ -2526,6 +2527,7 @@ fn fixture_g() -> ConversationRequest {
                         "encrypted_content": "RAW-SENTINEL-BLOB-000"
                     }),
                     cross_provider_fallback: None,
+                    mint_tag: None,
                 }),
             }),
             ConversationItem::tool_result("call_g1", "fn main() {}"),
@@ -2687,6 +2689,7 @@ fn backend_toolcall_compaction_carrier_never_surfaces_raw_sentinel() {
                         "encrypted_content": "CARRIER-SENTINEL-BLOB-DEADBEEF"
                     }),
                     cross_provider_fallback: None,
+                    mint_tag: None,
                 }),
             }),
         ],
@@ -2721,6 +2724,7 @@ fn backend_toolcall_message_carrier_renders_labeled_plaintext() {
                         "content": "deploy freeze on friday"
                     }),
                     cross_provider_fallback: None,
+                    mint_tag: None,
                 }),
             }),
         ],

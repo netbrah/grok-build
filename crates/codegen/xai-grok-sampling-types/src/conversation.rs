@@ -64,6 +64,167 @@ use crate::types::{
 // Core Conversation Types
 // ============================================================================
 
+/// Storage wrapper for a `Reasoning` item (XW-ENC-AFFINITY-1, apex-mf6).
+///
+/// Carries the mint provenance beside the item: `mint_tag` records the
+/// `x-litellm-tags` pin the client sent when this item's ciphertext was
+/// minted (`None` = minted untagged). Store-side only — never a wire field
+/// (the Responses wire 400s unknown fields; the wire projection is ours) —
+/// and it serializes into the chat_history.jsonl storage form with a serde
+/// default, so pre-mf6 (legacy) records load as `None`. A mint-`None`
+/// item re-serializes byte-identical to the pre-mf6 bare shape
+/// (`skip_serializing_if`), which the T0 as_value anchors depend on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReasoningItemStore {
+    #[serde(flatten)]
+    pub item: rs::ReasoningItem,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mint_tag: Option<String>,
+}
+
+impl std::ops::Deref for ReasoningItemStore {
+    type Target = rs::ReasoningItem;
+    fn deref(&self) -> &Self::Target {
+        &self.item
+    }
+}
+
+impl std::ops::DerefMut for ReasoningItemStore {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.item
+    }
+}
+
+impl From<rs::ReasoningItem> for ReasoningItemStore {
+    fn from(item: rs::ReasoningItem) -> Self {
+        Self {
+            item,
+            mint_tag: None,
+        }
+    }
+}
+
+/// The deployment-affinity pin header (XW-ENC-AFFINITY-1, apex-mf6): the
+/// `x-litellm-tags` extra header on a model row names the encryption
+/// boundary (tag set) the row's deployments share. An empty-string value
+/// is the operator's unpin toggle and is normalized to `None` at every
+/// call site (never a pin).
+pub const ENC_AFFINITY_PIN_HEADER: &str = "x-litellm-tags";
+
+/// The send-time gate's verdict for one ciphertext-bearing item
+/// (XW-ENC-AFFINITY-1, apex-mf6, design §3.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EncAffinityVerdict {
+    /// Pin present and the item minted under exactly that pin: the
+    /// ciphertext is boundary-compatible — deterministic retain.
+    Retain,
+    /// Neither pin nor mint: no boundary information at all — retain
+    /// optimistically (same-boundary odds 33–100% depending on group
+    /// fan-out; the reactive strip-fallback covers a wrong bet).
+    RetainOptimistic,
+    /// A known mismatch — pin present with the mint other/absent, or the
+    /// mint present under an absent pin (deliberate unpin): strip the
+    /// ciphertext (don't gamble).
+    Strip,
+}
+
+/// The deployment-affinity gate (XW-ENC-AFFINITY-1, apex-mf6, design §3.2):
+/// may a ciphertext minted under `mint_tag` ride a request whose target
+/// row carries pin `pin`? Exact-string comparison only (N-3: no
+/// case-folding — a re-spelled pin degrades to the safe STRIP arm).
+pub fn enc_affinity_gate(pin: Option<&str>, mint_tag: Option<&str>) -> EncAffinityVerdict {
+    match (pin, mint_tag) {
+        (Some(pin), Some(mint)) if pin == mint => EncAffinityVerdict::Retain,
+        (Some(_), Some(_)) => EncAffinityVerdict::Strip,
+        (Some(_), None) => EncAffinityVerdict::Strip,
+        (None, Some(_)) => EncAffinityVerdict::Strip,
+        (None, None) => EncAffinityVerdict::RetainOptimistic,
+    }
+}
+
+/// Send-time affinity gate walk (XW-ENC-AFFINITY-1, apex-mf6, design
+/// §3.2): per `Reasoning` item carrying ciphertext, consult
+/// [`enc_affinity_gate`] with the item's `mint_tag` and the target row's
+/// pin; the STRIP arm removes the `encrypted_content` field in place
+/// (field-level — id + summary survive). `CodexRawInput` carrier
+/// ciphertext is RETAIN-ONLY: it is counted (`carriers_retained`) but
+/// never mutated — a stripped carrier payload would 400
+/// (`missing_required_parameter`) unrecoverably (the sdd-71
+/// carrier-survival invariant), and the reactive fallback excludes
+/// carriers for the same reason. Items without ciphertext are unchanged.
+/// Returns `(stripped, retained, carriers_retained)`.
+pub fn apply_enc_affinity_gate(
+    items: &mut [ConversationItem],
+    pin: Option<&str>,
+) -> (usize, usize, usize) {
+    let mut stripped = 0;
+    let mut retained = 0;
+    let mut carriers = 0;
+    for item in items.iter_mut() {
+        match item {
+            ConversationItem::Reasoning(r) if r.item.encrypted_content.is_some() => {
+                match enc_affinity_gate(pin, r.mint_tag.as_deref()) {
+                    EncAffinityVerdict::Strip => {
+                        r.item.encrypted_content = None;
+                        stripped += 1;
+                    }
+                    EncAffinityVerdict::Retain | EncAffinityVerdict::RetainOptimistic => {
+                        retained += 1;
+                    }
+                }
+            }
+            ConversationItem::BackendToolCall(b) => {
+                if let BackendToolKind::CodexRawInput(raw) = &b.kind
+                    && raw.raw.get("encrypted_content").is_some()
+                {
+                    carriers += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    (stripped, retained, carriers)
+}
+
+/// Bulk strip every `Reasoning` item's ciphertext (XW-ENC-AFFINITY-1,
+/// apex-mf6, design §3.3 — the reactive strip-fallback's request-side
+/// payload mutation). Field-level (the items survive with id + summary),
+/// carriers EXCLUDED (retain-only — a stripped carrier payload is an
+/// unrecoverable 400). Idempotent: a second call finds nothing (the
+/// no-loop guard the retry arm relies on). Returns the items stripped.
+pub fn strip_reasoning_encrypted_content(items: &mut [ConversationItem]) -> usize {
+    let mut stripped = 0;
+    for item in items.iter_mut() {
+        if let ConversationItem::Reasoning(r) = item
+            && r.item.encrypted_content.is_some()
+        {
+            r.item.encrypted_content = None;
+            stripped += 1;
+        }
+    }
+    stripped
+}
+
+/// Mint stamp (XW-ENC-AFFINITY-1, apex-mf6, design §3.1): record the pin
+/// the client sent (or `None` — never an empty string) on every `Reasoning`
+/// item and `CodexRawInput` carrier of a response, at mint time (the
+/// request-task Completed branch, before the Completed event). Store-side
+/// provenance only — the send-time gate and the switch projector consult
+/// it later.
+pub fn stamp_reasoning_mint_tag(items: &mut [ConversationItem], pin: Option<&str>) {
+    for item in items.iter_mut() {
+        match item {
+            ConversationItem::Reasoning(r) => r.mint_tag = pin.map(str::to_owned),
+            ConversationItem::BackendToolCall(b) => {
+                if let BackendToolKind::CodexRawInput(raw) = &mut b.kind {
+                    raw.mint_tag = pin.map(str::to_owned);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// A single item in a conversation, the unified internal representation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -81,8 +242,10 @@ pub enum ConversationItem {
     /// Persisted to chat_history.jsonl for session replay/fork; Sent back to the Responses API as input items for context continuity; Rendered by the pager (search queries, sources, etc.).
     BackendToolCall(BackendToolCallItem),
     /// A reasoning item from the Responses API, stored as a sibling of the assistant message so that: N parallel `tco_*` reasoning items (one per backend tool call) round-trip losslessly without last-write-wins clobbering; The interleaved order of `[reasoning, tool_call, reasoning, ..., message]` produced by the model stays byte-stable across turns. That stability is what lets the server-side prefix KV-cache hit.
-    /// Wraps `rs::ReasoningItem` directly so no field is dropped on the way through.
-    Reasoning(rs::ReasoningItem),
+    /// Wraps [`ReasoningItemStore`] (the `rs::ReasoningItem` + the
+    /// XW-ENC-AFFINITY-1 mint provenance) so no field is dropped on the
+    /// way through and the mint tag round-trips with the storage form.
+    Reasoning(ReasoningItemStore),
 }
 
 /// System message content
@@ -353,6 +516,12 @@ pub struct CodexRawInputItem {
     /// away from Codex. It is never spliced into a Codex request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cross_provider_fallback: Option<String>,
+    /// The pin the client sent when this carrier's ciphertext was minted
+    /// (XW-ENC-AFFINITY-1, apex-mf6) — RETAIN-ONLY provenance (see
+    /// [`ReasoningItemStore`] and [`stamp_reasoning_mint_tag`]): the gate
+    /// counts carrier ciphertext but never strips it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mint_tag: Option<String>,
 }
 
 impl CodexRawInputItem {
@@ -1043,6 +1212,7 @@ pub fn codex_compact_output_to_conversation_items(
                 id: provider_id,
                 raw,
                 cross_provider_fallback: None,
+                mint_tag: None,
             }),
         }));
     }
@@ -1356,7 +1526,7 @@ impl ConversationResponse {
     /// Used by streaming consumers and the empty-response retry logic that previously inspected `AssistantItem.reasoning`.
     pub fn reasoning_items(&self) -> impl Iterator<Item = &rs::ReasoningItem> {
         self.items.iter().filter_map(|item| match item {
-            ConversationItem::Reasoning(r) => Some(r),
+            ConversationItem::Reasoning(r) => Some(&r.item),
             _ => None,
         })
     }
@@ -1949,7 +2119,7 @@ pub fn inject_streaming_reasoning_fallback(items: &mut Vec<ConversationItem>, te
         .unwrap_or(items.len());
     items.insert(
         pos,
-        ConversationItem::Reasoning(synthesized_reasoning_item(text)),
+        ConversationItem::Reasoning(synthesized_reasoning_item(text).into()),
     );
 }
 
@@ -1984,7 +2154,7 @@ pub fn upgrade_legacy_reasoning(
             };
             match item {
                 rs::OutputItem::Reasoning(r) => {
-                    siblings.push(ConversationItem::Reasoning(r));
+                    siblings.push(ConversationItem::Reasoning(r.into()));
                 }
                 rs::OutputItem::WebSearchCall(ws) if sibling_btc_ids_seen.insert(ws.id.clone()) => {
                     siblings.push(ConversationItem::BackendToolCall(BackendToolCallItem {
@@ -2023,7 +2193,7 @@ pub fn upgrade_legacy_reasoning(
             .unwrap_or("")
             .to_string();
         if let Some(item) = build_synthetic_reasoning(id, text, encrypted) {
-            siblings.push(ConversationItem::Reasoning(item));
+            siblings.push(ConversationItem::Reasoning(item.into()));
         }
         return siblings;
     }
@@ -2034,7 +2204,7 @@ pub fn upgrade_legacy_reasoning(
         && !rc.is_empty()
         && let Some(item) = build_synthetic_reasoning(String::new(), Some(rc), None)
     {
-        siblings.push(ConversationItem::Reasoning(item));
+        siblings.push(ConversationItem::Reasoning(item.into()));
     }
 
     siblings
@@ -2671,7 +2841,7 @@ mod compaction_item_bridge_tests {
         assert_eq!(
             CompactionItem::role(&ConversationItem::Reasoning(synthesized_reasoning_item(
                 "t"
-            ))),
+            ).into())),
             CompactionRole::Assistant
         );
     }
@@ -2810,7 +2980,8 @@ mod tests {
                 content: None,
                 encrypted_content: Some("provider-signature".to_string()),
                 status: None,
-            }),
+            }
+            .into()),
             ConversationItem::BackendToolCall(BackendToolCallItem {
                 kind: BackendToolKind::WebSearch(web_search),
             }),
@@ -5339,7 +5510,8 @@ mod tests {
                 content: None,
                 encrypted_content: None,
                 status: None,
-            }),
+            }
+            .into()),
             ConversationItem::Reasoning(rs::ReasoningItem {
                 id: "r2".to_string(),
                 summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
@@ -5348,7 +5520,8 @@ mod tests {
                 content: None,
                 encrypted_content: None,
                 status: None,
-            }),
+            }
+            .into()),
             ConversationItem::assistant("answer"),
         ];
 
@@ -5376,7 +5549,8 @@ mod tests {
                 content: None,
                 encrypted_content: None,
                 status: None,
-            }),
+            }
+            .into()),
         ];
         let msgs = conversation_to_chat_messages(items);
         assert_eq!(
@@ -5970,6 +6144,7 @@ mod tests {
                 id: "codex_compact_0_compaction".to_string(),
                 raw: raw.clone(),
                 cross_provider_fallback: Some("recent transcript".to_string()),
+                mint_tag: None,
             }),
         });
         let restored: ConversationItem =
@@ -6122,6 +6297,7 @@ mod tests {
                     id: "codex76".to_string(),
                     raw: codex_raw,
                     cross_provider_fallback: None,
+                    mint_tag: None,
                 }),
             }),
         ]);
@@ -6227,5 +6403,350 @@ mod tests {
         let real_typed: rs::WebSearchToolCallAction =
             serde_json::from_value(input[1]["action"].clone()).unwrap();
         assert!(!is_sentinel_web_search_action(&real_typed));
+    }
+}
+
+#[cfg(test)]
+mod enc_affinity_mf6_tests {
+    //! apex-mf6 (XW-ENC-AFFINITY-1) RED U1 + U4 — pre-cut these compile-fail
+    //! (the gate / wrapper / walk are absent); post-cut they are the goldens.
+
+    use super::*;
+
+    fn reasoning_with_ciphertext(mint_tag: Option<&str>) -> ConversationItem {
+        ConversationItem::Reasoning(ReasoningItemStore {
+            item: rs::ReasoningItem {
+                id: "encitem_bGl0ZWxsbTp0ZXN0".to_string(),
+                summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
+                    text: "cargo-check summary".to_string(),
+                })],
+                content: None,
+                encrypted_content: Some("litellm_enc:ZXlKbGVI;synth-ciphertext".to_string()),
+                status: None,
+            },
+            mint_tag: mint_tag.map(str::to_owned),
+        })
+    }
+
+    fn reasoning_no_ciphertext(mint_tag: Option<&str>) -> ConversationItem {
+        ConversationItem::Reasoning(ReasoningItemStore {
+            item: rs::ReasoningItem {
+                id: "encitem_none".to_string(),
+                summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
+                    text: "summary only".to_string(),
+                })],
+                content: None,
+                encrypted_content: None,
+                status: None,
+            },
+            mint_tag: mint_tag.map(str::to_owned),
+        })
+    }
+
+    /// U1 — the gate table: {pin? x mint_tag?} 4 arms, golden per arm
+    /// (design §3.2; N-3 exact-string, no case-folding).
+    #[test]
+    fn enc_gate_table_four_arms_u1() {
+        // pin present x mint same pin (exact string) -> RETAIN
+        assert_eq!(
+            enc_affinity_gate(Some("East US 2"), Some("East US 2")),
+            EncAffinityVerdict::Retain
+        );
+        // pin present x mint absent -> STRIP (unknown mint under a known pin)
+        assert_eq!(
+            enc_affinity_gate(Some("East US 2"), None),
+            EncAffinityVerdict::Strip
+        );
+        // pin present x mint OTHER tag -> STRIP (exact-string mismatch)
+        assert_eq!(
+            enc_affinity_gate(Some("East US 2"), Some("Sweden Central")),
+            EncAffinityVerdict::Strip
+        );
+        // N-3: no case-folding — a re-spelled pin degrades to the safe STRIP arm
+        assert_eq!(
+            enc_affinity_gate(Some("East US 2"), Some("east us 2")),
+            EncAffinityVerdict::Strip
+        );
+        assert_eq!(
+            enc_affinity_gate(Some("east us 2"), Some("East US 2")),
+            EncAffinityVerdict::Strip
+        );
+        // pin absent x mint absent -> RETAIN-OPTIMISTIC (the untagged arm)
+        assert_eq!(
+            enc_affinity_gate(None, None),
+            EncAffinityVerdict::RetainOptimistic
+        );
+        // pin absent x mint present -> STRIP (mint pinned elsewhere, deliberate unpin)
+        assert_eq!(
+            enc_affinity_gate(None, Some("East US 2")),
+            EncAffinityVerdict::Strip
+        );
+    }
+
+    /// U1 — the retain arms: pin-compatible ciphertext survives the
+    /// send-time walk (the pre-cut D-ENC stripped it unconditionally —
+    /// this is the behavior the cut restores).
+    #[test]
+    fn enc_gate_walk_retain_arm_u1() {
+        let mut items = vec![
+            ConversationItem::user("q"),
+            reasoning_with_ciphertext(Some("East US 2")),
+        ];
+        let (stripped, retained, carriers) =
+            apply_enc_affinity_gate(&mut items, Some("East US 2"));
+        assert_eq!((stripped, retained, carriers), (0, 1, 0));
+        if let ConversationItem::Reasoning(r) = &items[1] {
+            assert!(
+                r.item.encrypted_content.is_some(),
+                "same-pin item must RETAIN its ciphertext"
+            );
+        } else {
+            panic!("reasoning item missing");
+        }
+        // optimistic arm: untagged mint under an unpinned send also survives
+        let mut items = vec![reasoning_with_ciphertext(None)];
+        let (stripped, retained, carriers) = apply_enc_affinity_gate(&mut items, None);
+        assert_eq!((stripped, retained, carriers), (0, 1, 0));
+        if let ConversationItem::Reasoning(r) = &items[0] {
+            assert!(r.item.encrypted_content.is_some());
+        } else {
+            panic!("reasoning item missing");
+        }
+    }
+
+    /// U1 — the strip arms: known-mismatch ciphertext is removed
+    /// field-level (id + summary intact), carriers untouched.
+    #[test]
+    fn enc_gate_walk_strip_arm_u1() {
+        let mut items = vec![reasoning_with_ciphertext(None)];
+        let (stripped, retained, carriers) =
+            apply_enc_affinity_gate(&mut items, Some("East US 2"));
+        assert_eq!((stripped, retained, carriers), (1, 0, 0));
+        if let ConversationItem::Reasoning(r) = &items[0] {
+            assert!(r.item.encrypted_content.is_none());
+            assert_eq!(r.item.id, "encitem_bGl0ZWxsbTp0ZXN0", "id survives the field strip");
+            assert_eq!(
+                r.summary.first().and_then(|p| match p {
+                    rs::SummaryPart::SummaryText(t) => Some(t.text.as_str()),
+                    _ => None,
+                }),
+                Some("cargo-check summary"),
+                "summary survives the field strip"
+            );
+        } else {
+            panic!("reasoning item missing");
+        }
+        // mint pinned elsewhere under an unpinned send -> STRIP
+        let mut items = vec![reasoning_with_ciphertext(Some("East US 2"))];
+        let (stripped, retained, carriers) = apply_enc_affinity_gate(&mut items, None);
+        assert_eq!((stripped, retained, carriers), (1, 0, 0));
+        if let ConversationItem::Reasoning(r) = &items[0] {
+            assert!(r.item.encrypted_content.is_none());
+        } else {
+            panic!("reasoning item missing");
+        }
+    }
+
+    /// U1 — no-ciphertext passthrough: items without encrypted_content are
+    /// untouched (counts stay 0) and carriers are RETAIN-ONLY (counted,
+    /// never mutated — the gate's STRIP arm never fires for carriers).
+    #[test]
+    fn enc_gate_walk_passthrough_and_carrier_retain_only_u1() {
+        let carrier_raw = serde_json::json!({
+            "type": "compaction",
+            "encrypted_content": "litellm_enc:ZXlJbGVI;carrier-ciphertext",
+        });
+        let mut items = vec![
+            reasoning_no_ciphertext(Some("East US 2")),
+            ConversationItem::BackendToolCall(BackendToolCallItem {
+                kind: BackendToolKind::CodexRawInput(CodexRawInputItem {
+                    id: "codex_compaction_0".to_string(),
+                    raw: carrier_raw.clone(),
+                    cross_provider_fallback: None,
+                    mint_tag: Some("East US 2".to_string()),
+                }),
+            }),
+        ];
+        let (stripped, retained, carriers) =
+            apply_enc_affinity_gate(&mut items, Some("East US 2"));
+        assert_eq!((stripped, retained, carriers), (0, 0, 1));
+        // carrier ciphertext must survive even a known-mismatch (no-pin) send
+        let mut items = vec![
+            reasoning_no_ciphertext(None),
+            ConversationItem::BackendToolCall(BackendToolCallItem {
+                kind: BackendToolKind::CodexRawInput(CodexRawInputItem {
+                    id: "codex_compaction_0".to_string(),
+                    raw: carrier_raw.clone(),
+                    cross_provider_fallback: None,
+                    mint_tag: Some("Other Tag".to_string()),
+                }),
+            }),
+        ];
+        let (stripped, retained, carriers) = apply_enc_affinity_gate(&mut items, None);
+        assert_eq!((stripped, retained, carriers), (0, 0, 1));
+        if let ConversationItem::BackendToolCall(b) = &items[1] {
+            if let BackendToolKind::CodexRawInput(raw) = &b.kind {
+                assert!(
+                    raw.raw.get("encrypted_content").is_some(),
+                    "carrier ciphertext is RETAIN-ONLY: the gate never mutates it"
+                );
+            } else {
+                panic!("carrier missing");
+            }
+        } else {
+            panic!("carrier item missing");
+        }
+        // no reasoning item at all: pure passthrough
+        let mut items = vec![ConversationItem::user("hello")];
+        assert_eq!(apply_enc_affinity_gate(&mut items, Some("East US 2")), (0, 0, 0));
+    }
+
+    /// U3 support (store-side half lives in the sampler retry tests): the
+    /// D3 bulk strip removes every reasoning ciphertext, excludes carriers,
+    /// and is idempotent (the no-loop guard: the second call finds 0).
+    #[test]
+    fn enc_bulk_strip_carriers_excluded_idempotent_u3() {
+        let carrier_raw = serde_json::json!({
+            "type": "compaction",
+            "encrypted_content": "litellm_enc:ZXlJbGVI;carrier-ciphertext",
+        });
+        let mut items = vec![
+            reasoning_with_ciphertext(Some("East US 2")),
+            ConversationItem::user("mid"),
+            reasoning_with_ciphertext(None),
+            ConversationItem::BackendToolCall(BackendToolCallItem {
+                kind: BackendToolKind::CodexRawInput(CodexRawInputItem {
+                    id: "codex_compaction_0".to_string(),
+                    raw: carrier_raw,
+                    cross_provider_fallback: None,
+                    mint_tag: None,
+                }),
+            }),
+            reasoning_no_ciphertext(Some("East US 2")),
+        ];
+        assert_eq!(strip_reasoning_encrypted_content(&mut items), 2);
+        // carrier untouched
+        if let ConversationItem::BackendToolCall(b) = &items[3] {
+            if let BackendToolKind::CodexRawInput(raw) = &b.kind {
+                assert!(raw.raw.get("encrypted_content").is_some());
+            } else {
+                panic!("carrier missing");
+            }
+        } else {
+            panic!("carrier item missing");
+        }
+        // no-loop guard: nothing left to strip
+        assert_eq!(strip_reasoning_encrypted_content(&mut items), 0);
+    }
+
+    /// U1/U3 — mint stamping: the pin the client sent (or none) lands on
+    /// every reasoning item + carrier of the response.
+    #[test]
+    fn enc_mint_stamp_u1() {
+        let carrier_raw = serde_json::json!({
+            "type": "compaction",
+            "encrypted_content": "litellm_enc:ZXlJbGVI;carrier-ciphertext",
+        });
+        let mut items = vec![
+            reasoning_no_ciphertext(None),
+            ConversationItem::BackendToolCall(BackendToolCallItem {
+                kind: BackendToolKind::CodexRawInput(CodexRawInputItem {
+                    id: "codex_compaction_0".to_string(),
+                    raw: carrier_raw,
+                    cross_provider_fallback: None,
+                    mint_tag: None,
+                }),
+            }),
+            ConversationItem::user("u"),
+        ];
+        stamp_reasoning_mint_tag(&mut items, Some("East US 2"));
+        if let ConversationItem::Reasoning(r) = &items[0] {
+            assert_eq!(r.mint_tag.as_deref(), Some("East US 2"));
+        } else {
+            panic!("reasoning item missing");
+        }
+        if let ConversationItem::BackendToolCall(b) = &items[1] {
+            if let BackendToolKind::CodexRawInput(raw) = &b.kind {
+                assert_eq!(raw.mint_tag.as_deref(), Some("East US 2"));
+            } else {
+                panic!("carrier missing");
+            }
+        } else {
+            panic!("carrier item missing");
+        }
+        // untagged mint: the stamp records None (never an empty string)
+        let mut items = vec![reasoning_no_ciphertext(Some("stale"))];
+        stamp_reasoning_mint_tag(&mut items, None);
+        if let ConversationItem::Reasoning(r) = &items[0] {
+            assert_eq!(r.mint_tag, None);
+        } else {
+            panic!("reasoning item missing");
+        }
+    }
+
+    /// U4 — mint_tag round-trip: persist Some -> reload preserves it;
+    /// legacy JSONL (no mint_tag key, pre-mf6 shape) deserializes to None
+    /// (the serde default).
+    #[test]
+    fn enc_mint_tag_roundtrip_u4() {
+        let item = reasoning_with_ciphertext(Some("East US 2"));
+        let json = serde_json::to_string(&item).expect("serialize stamped item");
+        assert!(
+            json.contains(r#""mint_tag":"East US 2""#),
+            "stamped item must persist the mint_tag field: {json}"
+        );
+        let back: ConversationItem = serde_json::from_str(&json).expect("reload stamped");
+        if let ConversationItem::Reasoning(r) = &back {
+            assert_eq!(r.mint_tag.as_deref(), Some("East US 2"));
+            assert_eq!(r.item.id, "encitem_bGl0ZWxsbTp0ZXN0");
+            assert!(r.item.encrypted_content.is_some());
+        } else {
+            panic!("not a reasoning item after reload");
+        }
+
+        // legacy (pre-mf6) jsonl: the exact pre-cut shape without mint_tag
+        let legacy = serde_json::json!({
+            "type": "reasoning",
+            "id": "encitem_legacy",
+            "summary": [{"type": "summary_text", "text": "old session"}],
+            "encrypted_content": "litellm_enc:ZXlJbGVI;legacy",
+            "content": null,
+        });
+        let legacy_str = legacy.to_string();
+        let back: ConversationItem = serde_json::from_str(&legacy_str).expect("legacy load");
+        if let ConversationItem::Reasoning(r) = &back {
+            assert_eq!(r.mint_tag, None, "legacy jsonl must deserialize to mint_tag None");
+            assert_eq!(r.item.id, "encitem_legacy");
+        } else {
+            panic!("not a reasoning item after legacy reload");
+        }
+    }
+
+    /// U4 — byte-identity: a mint-None re-serialization is byte-identical
+    /// to the pre-mf6 bare shape (the T0 as_value anchor discipline — a
+    /// `mint_tag: null` emission would RED the 6-pkg gate).
+    #[test]
+    fn enc_mint_tag_none_byte_identity_u4() {
+        let item = reasoning_with_ciphertext(None);
+        let json = serde_json::to_string(&item).expect("serialize mint-None item");
+        assert!(
+            !json.contains("mint_tag"),
+            "mint-None must NOT emit the field (skip_serializing_if): {json}"
+        );
+        // field order + shape: mint-None item serializes exactly as the
+        // pre-mf6 bare ReasoningItem with the "type" tag
+        let expected: serde_json::Value = serde_json::to_value(&item).unwrap();
+        let mut keys: Vec<&str> = expected
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["encrypted_content", "id", "summary", "type"],
+            "mint-None key set must be the pre-mf6 key set: {keys:?}"
+        );
     }
 }

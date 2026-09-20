@@ -377,7 +377,7 @@ fn build_classifier_turns_projects_full_filtered_resident_prefix() {
             super::ConversationItem::assistant(format!("progress {index}")),
             super::ConversationItem::Reasoning(synthesized_reasoning_item(format!(
                 "analysis {index}"
-            ))),
+            )).into()),
             super::ConversationItem::tool_result(format!("noise-{index}"), "large result"),
         ]);
     }

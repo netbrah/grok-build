@@ -297,10 +297,23 @@ impl ChatStateHandle {
     /// See [`ChatStateCommand::ProjectSwitchHistory`] (XW-PROJECT-1, apex-ayl.71).
     /// Outcome is typed and disk-acknowledged like the strips; `Applied.stripped`
     /// carries the changed-item count.
-    pub async fn project_switch_history(&self, target_model: &str) -> crate::StripOutcome {
+    ///
+    /// `target_pin` (XW-ENC-AFFINITY-1, apex-mf6): the target row's
+    /// `x-litellm-tags` pin (`None` = untagged) — the switch-time gate on
+    /// the AZ->AZ row consults (target pin x item mint tag) to decide
+    /// whether the store keeps the reasoning ciphertext.
+    pub async fn project_switch_history(
+        &self,
+        target_model: &str,
+        target_pin: Option<&str>,
+    ) -> crate::StripOutcome {
         let target_model = target_model.to_owned();
         self.query("ProjectSwitchHistory", |reply| {
-            ChatStateCommand::ProjectSwitchHistory { target_model, reply }
+            ChatStateCommand::ProjectSwitchHistory {
+                target_model,
+                target_pin: target_pin.map(str::to_owned),
+                reply,
+            }
         })
         .await
         .unwrap_or(crate::StripOutcome::ActorUnavailable)

@@ -1321,7 +1321,7 @@ fn forked_initial_context_inherits_parent_across_reasoning() {
             ConversationItem::user("remember UNIQUE_FORK_MARKER_TEST"),
             ConversationItem::Reasoning(xai_grok_sampling_types::synthesized_reasoning_item(
                 "deliberating",
-            )),
+            ).into()),
             ConversationItem::assistant("ack"),
         ];
     let ctx = forked_initial_context(items);
@@ -1429,7 +1429,7 @@ fn verbatim_fork_keeps_items_byte_for_byte_when_small() {
             }),
             ConversationItem::Reasoning(xai_grok_sampling_types::synthesized_reasoning_item(
                 "thinking",
-            )),
+            ).into()),
             ConversationItem::assistant("ack"),
         ];
     let ctx = verbatim_or_normalize_fork(items, 256_000);
@@ -1869,6 +1869,7 @@ async fn bootstrap_fork_cross_model_child_gets_digest_not_raw_items() {
                     "encrypted_content": "SECRET_ENCRYPTED_BLOB"
                 }),
                 cross_provider_fallback: None,
+                mint_tag: None,
             }),
         }),
         ConversationItem::assistant_with_model("done investigating; no further notes", "model-a"),
@@ -3065,6 +3066,7 @@ async fn bootstrap_native_v2_cross_model_fork_gets_digest_not_raw_items() {
                     "encrypted_content": "SECRET_V2_BLOB"
                 }),
                 cross_provider_fallback: None,
+                mint_tag: None,
             }),
         }),
         ConversationItem::assistant_with_model("done investigating", "model-a"),

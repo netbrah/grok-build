@@ -560,7 +560,7 @@ mod tests {
             content: None,
             encrypted_content: None,
             status: None,
-        })
+        }.into())
     }
 
     fn mk_tool_call(id: &str, args: &str) -> xai_grok_sampling_types::ToolCall {

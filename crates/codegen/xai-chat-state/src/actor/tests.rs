@@ -715,7 +715,7 @@ async fn provider_counted_model_output_persists_without_bumping_estimate() {
     let h = TestHarness::new();
     h.handle.record_token_usage(100_000);
     h.handle.push_model_output(ConversationItem::Reasoning(
-        xai_grok_sampling_types::synthesized_reasoning_item("r".repeat(4_000)),
+        xai_grok_sampling_types::synthesized_reasoning_item("r".repeat(4_000)).into(),
     ));
 
     assert!(matches!(
@@ -963,7 +963,7 @@ async fn strip_model_bound_history_drops_reasoning_and_backend_tool_call() {
             content: None,
             encrypted_content: Some("provider-signature".to_string()),
             status: None,
-        }),
+        }.into()),
         ConversationItem::BackendToolCall(xai_grok_sampling_types::BackendToolCallItem {
             kind: xai_grok_sampling_types::BackendToolKind::WebSearch(web_search),
         }),
@@ -3393,7 +3393,7 @@ async fn get_trailing_assistant_report_skips_reasoning_between_segments() {
     let h = TestHarness::new();
     h.handle.push_user_message(ConversationItem::user("q"));
     h.handle.push_tool_result(ConversationItem::Reasoning(
-        xai_grok_sampling_types::synthesized_reasoning_item("r1"),
+        xai_grok_sampling_types::synthesized_reasoning_item("r1").into(),
     ));
     h.handle
         .push_assistant_response(ConversationItem::assistant("seg1"));
@@ -3402,7 +3402,7 @@ async fn get_trailing_assistant_report_skips_reasoning_between_segments() {
     // Reasoning models commit a reasoning sibling before each segment; the
     // turn loop pushes it via the same non-Assistant commit path used here.
     h.handle.push_tool_result(ConversationItem::Reasoning(
-        xai_grok_sampling_types::synthesized_reasoning_item("r2"),
+        xai_grok_sampling_types::synthesized_reasoning_item("r2").into(),
     ));
     h.handle
         .push_assistant_response(ConversationItem::assistant("seg2"));
@@ -3678,7 +3678,7 @@ async fn get_trailing_assistant_report_joins_later_reminderless_segments() {
     h.handle
         .push_assistant_response(ConversationItem::assistant("two, "));
     h.handle.push_tool_result(ConversationItem::Reasoning(
-        xai_grok_sampling_types::synthesized_reasoning_item("r"),
+        xai_grok_sampling_types::synthesized_reasoning_item("r").into(),
     ));
     h.handle
         .push_assistant_response(ConversationItem::assistant("three"));
@@ -4744,7 +4744,7 @@ fn reasoning_sibling(id: &str, encrypted: Option<&str>) -> ConversationItem {
         content: None,
         encrypted_content: encrypted.map(str::to_owned),
         status: None,
-    })
+    }.into())
 }
 
 /// Basic multi-turn prefix stability through build_request().

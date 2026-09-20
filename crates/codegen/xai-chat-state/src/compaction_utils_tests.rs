@@ -2331,7 +2331,7 @@ fn conversation_item_preserves_reasoning_siblings() {
             content: None,
             encrypted_content: Some("encrypted_sig".to_string()),
             status: None,
-        }),
+        }.into()),
         ConversationItem::Assistant(AssistantItem {
             content: "response".into(),
             tool_calls: vec![],
@@ -2355,7 +2355,7 @@ fn strip_reasoning_blocks_drops_reasoning_siblings() {
             content: None,
             encrypted_content: Some("encrypted_sig".to_string()),
             status: None,
-        }),
+        }.into()),
         ConversationItem::Assistant(AssistantItem {
             content: "response".into(),
             tool_calls: vec![],
@@ -2393,7 +2393,7 @@ fn prepare_for_summarization_drops_reasoning_sibling_on_mutated_assistant() {
             content: None,
             encrypted_content: Some("encrypted_sig".to_string()),
             status: None,
-        })
+        }.into())
     };
     let result = prepare_conversation_for_summarization(vec![
         ConversationItem::system("system"),
@@ -2445,7 +2445,7 @@ fn prepare_for_summarization_drops_standalone_reasoning_sibling() {
             content: None,
             encrypted_content: None,
             status: None,
-        }),
+        }.into()),
         ConversationItem::Assistant(AssistantItem {
             content: "plain text response".into(),
             tool_calls: vec![],
@@ -2473,7 +2473,7 @@ fn prepare_for_summarization_handles_multi_assistant_mixed_conversation() {
             content: None,
             encrypted_content: Some("sig".to_string()),
             status: None,
-        })
+        }.into())
     };
     let result = prepare_conversation_for_summarization(vec![
         ConversationItem::user("first turn"),
@@ -2563,7 +2563,7 @@ fn prepare_for_summarization_is_idempotent() {
             content: None,
             encrypted_content: Some("sig".to_string()),
             status: None,
-        }),
+        }.into()),
         ConversationItem::Assistant(AssistantItem {
             content: "hi".into(),
             tool_calls: vec![ToolCall {
@@ -2728,7 +2728,7 @@ fn verbatim_reasoning_kept_unless_messages_backend() {
                 content: None,
                 encrypted_content: Some("sig".to_string()),
                 status: None,
-            }),
+            }.into()),
             ConversationItem::assistant_tool_calls(vec![ToolCall {
                 id: "c1".into(),
                 name: "grep".to_string(),
@@ -3134,7 +3134,7 @@ fn fit_counts_encrypted_reasoning_against_budget() {
         content: None,
         encrypted_content: Some(big_enc),
         status: None,
-    });
+    }.into());
     let conv = vec![
         ConversationItem::system("sys"),
         reasoning, // old turn, huge by encrypted bytes, 0 by visible text

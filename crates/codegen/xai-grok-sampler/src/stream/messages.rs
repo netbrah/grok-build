@@ -948,7 +948,7 @@ pub fn stream_messages<'a>(
 
         let mut items: Vec<ConversationItem> = Vec::new();
         if let Some(r) = assistant_reasoning {
-            items.push(ConversationItem::Reasoning(r));
+            items.push(ConversationItem::Reasoning(r.into()));
         }
         items.push(assistant_item);
 
