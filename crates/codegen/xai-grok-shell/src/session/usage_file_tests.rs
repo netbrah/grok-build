@@ -235,3 +235,39 @@ fn covers_detects_same_process_vs_reset_ledger() {
     assert!(!smaller.covers(&bigger));
     assert!(smaller.covers(&UsageSummary::default()));
 }
+
+/// SDD 101 (apex-ayl.101) T3 — usage.json surfacing (acceptance second half): a turn whose
+/// `TokenUsage` carries `cache_creation_prompt_tokens = N` must serialize `usage.json` with
+/// `session.cacheCreationTokens == N` and the same on the `turns[0]` row (camelCase,
+/// byte-exact against the serialized `UsageSummary`). Values are the recorded sol-resp
+/// main-turn frame (fixtures/parity/101): input 16,595 / output 1,940 / cw 16,592.
+#[test]
+fn turn_with_cache_creation_serdes_cache_creation_tokens() {
+    let mut ledger = UsageLedger::default();
+    let tu = TokenUsage {
+        prompt_tokens: 16_595,
+        completion_tokens: 1_940,
+        total_tokens: 18_535,
+        reasoning_tokens: 1_552,
+        cached_prompt_tokens: 0,
+        cache_creation_prompt_tokens: 16_592,
+    };
+    ledger.record_main_loop_call("gpt-5.6-sol", &tu, Some(10), Some(1_217_720));
+    let first = UsageSummary::from_ledger(&ledger);
+    assert_eq!(first.cache_creation_tokens, 16_592);
+
+    let mut file = SessionUsageFile::new("sess-101");
+    file.apply_turn(1, "2026-09-19T06:03:12Z", &first, None);
+
+    assert_eq!(file.session.cache_creation_tokens, 16_592);
+    assert_eq!(file.session.input_tokens, 16_595);
+    assert_eq!(file.session.cached_read_tokens, 0);
+    assert_eq!(file.turns[0].usage.cache_creation_tokens, 16_592);
+    assert_eq!(file.turns[0].usage.input_tokens, 16_595);
+
+    let json = serde_json::to_string(&file).expect("serialize usage file");
+    let v: serde_json::Value = serde_json::from_str(&json).expect("re-parse");
+    assert_eq!(v["session"]["cacheCreationTokens"], 16_592);
+    assert_eq!(v["turns"][0]["cacheCreationTokens"], 16_592);
+    assert_eq!(v["session"]["inputTokens"], 16_595);
+}

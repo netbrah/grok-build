@@ -1404,7 +1404,7 @@ impl From<FinishReason> for StopReason {
 /// Token usage statistics, normalized across OpenAI Chat Completions, OpenAI Responses, and
 /// Anthropic Messages backends. `prompt_tokens` is always the FULL prompt size (uncached + cache
 /// reads + cache writes) and `cached_prompt_tokens` is only the cache-hit subset; do not subtract.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TokenUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
@@ -1415,7 +1415,8 @@ pub struct TokenUsage {
     #[serde(default)]
     pub cached_prompt_tokens: u32,
     /// Prompt tokens written to cache this call (Messages `cache_creation_input_tokens`, billed at ~1.25x).
-    /// Part of `prompt_tokens` but distinct from cache reads; 0 on backends without a cache-write signal.
+    /// OpenAI-family: `prompt_tokens_details.cache_write_tokens` (chat) /
+    /// `input_tokens_details.cache_write_tokens` (responses); 0 only when the backend reports none.
     #[serde(default)]
     pub cache_creation_prompt_tokens: u32,
 }
@@ -1435,6 +1436,10 @@ impl From<Usage> for TokenUsage {
             .prompt_tokens_details
             .as_ref()
             .map_or(0, |d| d.cached_tokens);
+        let cache_creation_prompt_tokens = u
+            .prompt_tokens_details
+            .as_ref()
+            .map_or(0, |d| d.cache_write_tokens);
         Self {
             prompt_tokens: u.prompt_tokens,
             completion_tokens: u.completion_tokens,
@@ -1444,7 +1449,7 @@ impl From<Usage> for TokenUsage {
                 .as_ref()
                 .map_or(0, |d| d.reasoning_tokens),
             cached_prompt_tokens,
-            cache_creation_prompt_tokens: 0,
+            cache_creation_prompt_tokens,
         }
     }
 }

@@ -537,6 +537,9 @@ pub struct Usage {
 pub struct PromptTokensDetails {
     #[serde(default)]
     pub cached_tokens: u32,
+    /// Chat-completions cache-write signal (openai-family); billed at ~1.25x.
+    #[serde(default)]
+    pub cache_write_tokens: u32,
     #[serde(default)]
     pub audio_tokens: u32,
 }
@@ -1584,5 +1587,71 @@ mod tests {
         let inner: &dyn TraceContext = &*cloned_trace;
         let downcast = inner.as_any().downcast_ref::<TestTrace>().unwrap();
         assert_eq!(downcast.0, "trace-data");
+    }
+
+    // SDD 101 (apex-ayl.101) T2 — chat path, DTO + mapper unit pins.
+
+    /// T2(i): the chat-completions usage fragment carries
+    /// `prompt_tokens_details.cache_write_tokens` (openai-family); the member parses to N
+    /// when present and defaults to 0 when absent (pre-field captures + backends that
+    /// omit the member keep working — the serde-default load-bearer).
+    #[test]
+    fn prompt_tokens_details_cache_write_tokens_serde_default() {
+        let present: PromptTokensDetails =
+            serde_json::from_str(r#"{"cached_tokens": 3, "cache_write_tokens": 7}"#)
+                .expect("parse");
+        assert_eq!(present.cached_tokens, 3);
+        assert_eq!(present.cache_write_tokens, 7);
+
+        let absent: PromptTokensDetails =
+            serde_json::from_str(r#"{"cached_tokens": 3}"#).expect("parse");
+        assert_eq!(absent.cached_tokens, 3);
+        assert_eq!(absent.cache_write_tokens, 0);
+    }
+
+    /// T2(ii): `From<Usage> for TokenUsage` carries
+    /// `prompt_tokens_details { cached_tokens: C, cache_write_tokens: N }` into
+    /// `TokenUsage { cached_prompt_tokens: C, cache_creation_prompt_tokens: N }` (whole-object pin).
+    #[test]
+    fn usage_to_token_usage_maps_cache_write_to_cache_creation() {
+        let usage = Usage {
+            prompt_tokens: 100,
+            completion_tokens: 20,
+            total_tokens: 120,
+            prompt_tokens_details: Some(PromptTokensDetails {
+                cached_tokens: 30,
+                cache_write_tokens: 70,
+                audio_tokens: 0,
+            }),
+            completion_tokens_details: None,
+            cost_in_usd_ticks: None,
+        };
+        let expected = crate::TokenUsage {
+            prompt_tokens: 100,
+            completion_tokens: 20,
+            total_tokens: 120,
+            reasoning_tokens: 0,
+            cached_prompt_tokens: 30,
+            cache_creation_prompt_tokens: 70,
+        };
+        assert_eq!(crate::TokenUsage::from(usage), expected);
+    }
+
+    /// T2(iii): absence path — `prompt_tokens_details: None` maps
+    /// `cache_creation_prompt_tokens` to 0 (no regression for backends that send no details).
+    #[test]
+    fn usage_to_token_usage_without_details_defaults_cache_creation_to_zero() {
+        let usage = Usage {
+            prompt_tokens: 100,
+            completion_tokens: 20,
+            total_tokens: 120,
+            prompt_tokens_details: None,
+            completion_tokens_details: None,
+            cost_in_usd_ticks: None,
+        };
+        let tu = crate::TokenUsage::from(usage);
+        assert_eq!(tu.prompt_tokens, 100);
+        assert_eq!(tu.cached_prompt_tokens, 0);
+        assert_eq!(tu.cache_creation_prompt_tokens, 0);
     }
 }

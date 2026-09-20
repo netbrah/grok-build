@@ -1,0 +1,14 @@
+{
+ "bead": "apex-ayl.101",
+ "sdd": "grok/plans/xwire/101-cachewrite-dto-sdd-20260919.md",
+ "ratify": "grok/plans/xwire/101-cachewrite-dto-sdd-ratify-root-20260919.md",
+ "extracted": "2026-09-19",
+ "source_capture": "smoke/wstream/report/20260919T060151Z/sol-resp/",
+ "source_session": "01a0b842-948a-75b3-bfa4-1d7e2d3c0b19",
+ "note": "response_completed_frame.json = main-turn response.completed frame (wire cache_write_tokens=16592). response_completed_frame_sidecall.json = side-call frame (cache_write_tokens=0 on a 224-token warm call). usage_recorded.json = same session's usage.json (cacheCreationTokens=0 = the recorded RED). All bodies redaction-swept by the harness capture pipeline; extractor re-scanned for key patterns (exit 3 on hit).",
+ "source_sha256": {
+  "resp-003.jsonl": "0915b3cdb141085a603fbeff5111213d80ce0d51070a739f11b319e3da662d8f",
+  "resp-004.jsonl": "d062b7301b1102c5fb82f04d14cda1bf2fc7f38d9d3c698b2f15e13385df8a37",
+  "usage.json": "9f8206ef4a575fdd427d40efd269ec3a6856098259eb0539efeebc32556abb90"
+ }
+}

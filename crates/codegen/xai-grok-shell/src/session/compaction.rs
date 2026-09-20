@@ -180,6 +180,26 @@ mod codex_remote_compaction_v2_tests;
 #[cfg(test)]
 #[path = "compaction_two_pass_prefire_helper_tests.rs"]
 mod two_pass_prefire_helper_tests;
+
+/// Maps the fork `ResponseUsage` returned by a Codex remote compaction v2 completion into the
+/// session ledger's `TokenUsage` (same fold path as the main loop: `record_model_call_usage`
+/// → `UsageSummary::from_ledger` → `usage.json`).
+fn codex_compaction_v2_token_usage(
+    usage: &async_openai::types::responses::ResponseUsage,
+) -> xai_grok_sampling_types::TokenUsage {
+    xai_grok_sampling_types::TokenUsage {
+        prompt_tokens: usage.input_tokens,
+        completion_tokens: usage.output_tokens,
+        total_tokens: usage.total_tokens,
+        reasoning_tokens: usage.output_tokens_details.reasoning_tokens,
+        cached_prompt_tokens: usage.input_tokens_details.cached_tokens,
+        cache_creation_prompt_tokens: usage
+            .input_tokens_details
+            .cache_write_tokens
+            .map(|v| v.max(0) as u32)
+            .unwrap_or(0),
+    }
+}
 impl SessionActor {
     /// Two-pass is active for this session when the flag resolved on at build and the agent is not one that keeps its single short self-summary.
     pub(crate) fn two_pass_active(&self) -> bool {
@@ -1019,15 +1039,7 @@ impl SessionActor {
                         "Codex remote compaction v2 stream completed"
                     );
                     if let Some(usage) = usage {
-                        let usage = xai_grok_sampling_types::TokenUsage {
-                            prompt_tokens: usage.input_tokens,
-                            completion_tokens: usage.output_tokens,
-                            total_tokens: usage.total_tokens,
-                            reasoning_tokens: usage.output_tokens_details.reasoning_tokens,
-                            cached_prompt_tokens: usage.input_tokens_details.cached_tokens,
-                            // Responses API has no cache-write signal.
-                            cache_creation_prompt_tokens: 0,
-                        };
+                        let usage = codex_compaction_v2_token_usage(usage);
                         let api_duration_ms = u64::try_from(attempt_started.elapsed().as_millis())
                             .unwrap_or(u64::MAX);
                         self.chat_state_handle.record_model_call_usage(

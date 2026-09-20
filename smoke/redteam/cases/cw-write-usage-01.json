@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "id": "CW-WRITE-USAGE-01",
+  "title": "apex-ayl.101 RED ratchet — cache_write_tokens dropped on the responses wire: a cold-home sol session gets a provider-REPORTED cache write (wire control) that the harness never records (usage.json session.cacheCreationTokens hardcoded 0 pre-cut, conversation.rs From<Usage> for TokenUsage). RED today; GREEN after CACHEWRITE-DTO-1 lands + fresh binary.",
+  "bead": "apex-ayl.101",
+  "suite": "cache-economics",
+  "tier": "full",
+  "driver": "headless",
+  "model": "gpt-5.6-sol",
+  "wirecap": true,
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "In under 150 words, explain the trade-offs between append-only log storage and in-place update storage for a session history file, with one concrete example of each.",
+      "timeout_s": 300
+    },
+    {
+      "op": "turn",
+      "prompt": "One sentence: which of the two storage styles is better for a crash-prone notebook, and why?",
+      "timeout_s": 300
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 2,
+  "assert": {
+    "exit": 0,
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "error",
+        "label": "NO TERMINAL ERROR: the turns completed (the red is the usage mapping, not the turn)."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "grep",
+        "id": "cw_provider_reported",
+        "file": "resp-*.jsonl",
+        "any": true,
+        "where": {
+          "method": "POST",
+          "path": "/v1/responses",
+          "body.model": "gpt-5.6-sol"
+        },
+        "regex": true,
+        "grep": "cache_write_tokens\\\\?\":\\s*[1-9]",
+        "label": "CONTROL (premise, class model): the provider REPORTS a non-zero input_tokens_details.cache_write_tokens on some captured response frame. regex over RAW capture text: the SSE payload is JSON-escaped inside the 'frame' string and compact (no space after the colon), hence the optional backslash before the quote + \\\\s* before the value class. 0-hit = no write observed this run = probe meaningless = VACUOUS (never a silent pass, never a false red)."
+      }
+    ],
+    "artifact": [
+      {
+        "id": "cw_recorded",
+        "file": "usage.json",
+        "field": "session.cacheCreationTokens",
+        "ne": 0,
+        "label": "RED PIN (pre-cut FAILs): the harness RECORDS the provider-reported cache write into usage.json session.cacheCreationTokens. Pre-CACHEWRITE-DTO-1 the From<Usage> for TokenUsage mapping hardcodes cache_creation_prompt_tokens: 0 (stale comment '0 on backends without a cache-write signal') — the drop is the defect. Post-cut + rebuild: non-zero on a cold-home session with a reported write."
+      }
+    ]
+  },
+  "scoring": {
+    "vacuous_if": [
+      {"pin": "cw_provider_reported", "class": "model"}
+    ]
+  }
+}

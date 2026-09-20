@@ -650,7 +650,11 @@ where
             total_tokens: u.total_tokens,
             reasoning_tokens: u.output_tokens_details.reasoning_tokens,
             cached_prompt_tokens: u.input_tokens_details.cached_tokens,
-            cache_creation_prompt_tokens: 0,
+            cache_creation_prompt_tokens: u
+                .input_tokens_details
+                .cache_write_tokens
+                .map(|v| v.max(0) as u32)
+                .unwrap_or(0),
         });
 
         let cost_usd_ticks = response
@@ -1849,6 +1853,64 @@ mod tests {
         match events.last().unwrap() {
             SamplingEvent::Completed { response, .. } => {
                 assert!(response.doom_loop_signals.is_empty());
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+    }
+
+    // SDD 101 (apex-ayl.101) T1 — G-series byte pin: the recorded sol-resp
+    // response.completed frame (smoke/redteam/fixtures/parity/101/
+    // response_completed_frame.json — wire input_tokens=16,595,
+    // cached_tokens=0, cache_write_tokens=16,592; capture
+    // smoke/wstream/report/20260919T060151Z/sol-resp, session
+    // 01a0b842-948a-75b3-bfa4-1d7e2d3c0b19, frame_index 116) must land in the
+    // terminal TokenUsage with cache_creation_prompt_tokens = 16,592.
+    // Pre-field control: the same frame minus the cache_write_tokens member
+    // (captures recorded before the field existed) still parses and maps 0.
+    const CACHEWRITE_RECORD_FRAME: &str =
+        include_str!("../../../../../smoke/redteam/fixtures/parity/101/response_completed_frame.json");
+
+    #[tokio::test]
+    async fn response_completed_cache_write_tokens_lands_in_token_usage() {
+        // (1) The recorded frame carries the wire member.
+        let event: rs::ResponseStreamEvent =
+            serde_json::from_str(CACHEWRITE_RECORD_FRAME).expect("recorded frame parses");
+        let raw = stream::iter(vec![Ok(event)]).boxed();
+        let events =
+            collect(stream_responses(raw, None, rid(), Duration::from_secs(60), None)).await;
+        match events.last().expect("terminal event") {
+            SamplingEvent::Completed { response, .. } => {
+                let usage = response.usage.as_ref().expect("terminal usage present");
+                assert_eq!(usage.prompt_tokens, 16_595);
+                assert_eq!(usage.cached_prompt_tokens, 0);
+                assert_eq!(
+                    usage.cache_creation_prompt_tokens, 16_592,
+                    "wire cache_write_tokens must land in TokenUsage.cache_creation_prompt_tokens"
+                );
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
+
+        // (2) Pre-field control: drop the member (old captures omit it).
+        let mut frame: serde_json::Value =
+            serde_json::from_str(CACHEWRITE_RECORD_FRAME).expect("parse");
+        frame["response"]["usage"]["input_tokens_details"]
+            .as_object_mut()
+            .expect("input_tokens_details is an object")
+            .remove("cache_write_tokens");
+        let stripped = serde_json::to_string(&frame).expect("re-serialize");
+        let event: rs::ResponseStreamEvent =
+            serde_json::from_str(&stripped).expect("pre-field frame parses");
+        let raw = stream::iter(vec![Ok(event)]).boxed();
+        let events =
+            collect(stream_responses(raw, None, rid(), Duration::from_secs(60), None)).await;
+        match events.last().expect("terminal event") {
+            SamplingEvent::Completed { response, .. } => {
+                let usage = response.usage.as_ref().expect("terminal usage present");
+                assert_eq!(
+                    usage.cache_creation_prompt_tokens, 0,
+                    "absent member must default to 0 (serde default keeps pre-field captures green)"
+                );
             }
             other => panic!("expected Completed, got {other:?}"),
         }

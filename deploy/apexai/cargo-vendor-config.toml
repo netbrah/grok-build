@@ -9,9 +9,9 @@ git = "https://github.com/helix-editor/nucleo.git"
 rev = "5b74652"
 replace-with = "vendored-sources"
 
-[source."git+https://github.com/our-forks/async-openai.git?rev=95b52ebdedf42143083cf3d6f0e0be7c84e9c808"]
-git = "https://github.com/our-forks/async-openai.git"
-rev = "95b52ebdedf42143083cf3d6f0e0be7c84e9c808"
+[source."git+https://github.com/netbrah/async-openai.git?rev=4d72e1d16920834f64843764f9f5f53131f26ddf"]
+git = "https://github.com/netbrah/async-openai.git"
+rev = "4d72e1d16920834f64843764f9f5f53131f26ddf"
 replace-with = "vendored-sources"
 
 [source.vendored-sources]

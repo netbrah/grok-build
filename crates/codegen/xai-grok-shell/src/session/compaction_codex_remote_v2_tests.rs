@@ -88,3 +88,35 @@ fn codex_remote_compaction_v2_excludes_two_pass_prefire_only_for_enabled_codex_r
         "an unlisted model family is not a v2 path"
     );
 }
+
+/// SDD 101 (apex-ayl.101) T4 — the compaction-completion usage construction must carry the
+/// fork `ResponseUsage.input_tokens_details.cache_write_tokens` into
+/// `TokenUsage.cache_creation_prompt_tokens`; the compaction usage folds into the SAME
+/// session ledger (`record_model_call_usage` → `UsageSummary::from_ledger` → `usage.json`)
+/// that the responses/chat paths ratchet, so a hardcoded 0 here would keep compaction
+/// turns' cache writes invisible in `usage.json`.
+#[test]
+fn codex_compaction_v2_usage_carries_cache_write_tokens() {
+    let usage = async_openai::types::responses::ResponseUsage {
+        input_tokens: 100,
+        input_tokens_details: async_openai::types::responses::InputTokenDetails {
+            cached_tokens: 30,
+            cache_write_tokens: Some(70),
+        },
+        output_tokens: 10,
+        output_tokens_details: async_openai::types::responses::OutputTokenDetails {
+            reasoning_tokens: 5,
+        },
+        total_tokens: 110,
+    };
+    let tu = super::codex_compaction_v2_token_usage(&usage);
+    assert_eq!(tu.prompt_tokens, 100);
+    assert_eq!(tu.completion_tokens, 10);
+    assert_eq!(tu.total_tokens, 110);
+    assert_eq!(tu.reasoning_tokens, 5);
+    assert_eq!(tu.cached_prompt_tokens, 30);
+    assert_eq!(
+        tu.cache_creation_prompt_tokens, 70,
+        "wire cache_write_tokens must land in TokenUsage.cache_creation_prompt_tokens"
+    );
+}
