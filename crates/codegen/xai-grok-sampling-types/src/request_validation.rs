@@ -464,6 +464,10 @@ pub fn validate_and_encode_messages_request(
 /// unchanged by the 47b split (D-1). Shared by the combined 47a entry
 /// point and `ValidatedMessagesRequest::encode` (the 47b typestate path),
 /// so every byte-identity pin (T8/T9/T13/T19) stays load-bearing on both.
+///
+/// Gate 2 (N3) is the extracted [`n3_item_caps`] — the gate order
+/// N1 → N3 → N2 and the intra-N3 sub-check order are unchanged by the
+/// extraction (apex-ayl.89).
 pub(crate) fn encode_caps(request: &MessagesRequest) -> Result<EncodedMessagesRequest, RequestValidationError> {
     // Gate 1 (N1, spec L1863): message count — zero serialization.
     if request.messages().len() > MAX_MESSAGES_REQUEST_ITEMS {
@@ -472,8 +476,31 @@ pub(crate) fn encode_caps(request: &MessagesRequest) -> Result<EncodedMessagesRe
         });
     }
     // Gate 2 (N3, spec L1883): per-item token cap over the final projected
-    // form — every element of `messages` (post-coalesce form), each system
-    // item, each complete tool definition.
+    // form — extracted to `n3_item_caps` (apex-ayl.89, C1-lite guardrail
+    // entry); position, order, and error precedence are unchanged.
+    n3_item_caps(request)?;
+    // Gate 3 (N2, spec L1873): two-pass encoded-body cap — counting pass
+    // (checked_add, no body buffer) → cap → try_reserve_exact → second
+    // pass → pass-length equality. Only the carrier bytes reach transport.
+    let bytes = encode_two_pass(
+        |w: &mut dyn Write| {
+            serde_json::to_writer(w, request)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        },
+        MAX_ENCODED_MESSAGES_REQUEST_BYTES,
+    )?;
+    Ok(EncodedMessagesRequest(bytes))
+}
+
+/// N3 (spec L1883): the per-item token cap over the final projected form —
+/// every element of `messages` (post-coalesce form), each system item, each
+/// complete tool definition. The intra-check order is messages → system
+/// blocks → tool definitions (a double violation reports the same
+/// `ItemRef`/error text pre/post extraction — fix-pass 1 m5). Extracted
+/// from `encode_caps` so the shell's validate-before-install compaction
+/// guard (apex-ayl.89, C1-lite) runs exactly the gate the wire request
+/// would face.
+fn n3_item_caps(request: &MessagesRequest) -> Result<(), RequestValidationError> {
     for (i, message) in request.messages().iter().enumerate() {
         check_message_tokens(message, ItemRef::MessageItem(i))?;
     }
@@ -498,17 +525,17 @@ pub(crate) fn encode_caps(request: &MessagesRequest) -> Result<EncodedMessagesRe
             check_item_tokens(tool, ItemRef::Tool(i))?;
         }
     }
-    // Gate 3 (N2, spec L1873): two-pass encoded-body cap — counting pass
-    // (checked_add, no body buffer) → cap → try_reserve_exact → second
-    // pass → pass-length equality. Only the carrier bytes reach transport.
-    let bytes = encode_two_pass(
-        |w: &mut dyn Write| {
-            serde_json::to_writer(w, request)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-        },
-        MAX_ENCODED_MESSAGES_REQUEST_BYTES,
-    )?;
-    Ok(EncodedMessagesRequest(bytes))
+    Ok(())
+}
+
+/// apex-ayl.89 (C1-lite guardrail entry): the N3 per-item cap over a
+/// final-form `MessagesRequest`, exposed for the shell's
+/// validate-before-install compaction guard. N3-only by design: N1/N2 are
+/// count/context gates unrelated to the compaction brick.
+pub fn check_messages_request_caps(
+    request: &MessagesRequest,
+) -> Result<(), RequestValidationError> {
+    n3_item_caps(request)
 }
 
 #[cfg(test)]
@@ -606,7 +633,7 @@ mod tests {
             + (T3_MESSAGE_COUNT as u64 - 1) * T3_UNIFORM_ITEM_BYTES;
         let last_item = MAX_ENCODED_MESSAGES_REQUEST_BYTES + over_by - fixed;
         assert!(
-            (item_overhead..=40_003).contains(&last_item),
+            (item_overhead..=((MAX_MODEL_CONTEXT_ITEM_TOKENS + 1) * 4 - 1)).contains(&last_item),
             "last item must stay under the per-item cap, got {last_item} bytes"
         );
         let uniform_pad = (T3_UNIFORM_ITEM_BYTES - item_overhead) as usize;
@@ -961,7 +988,7 @@ mod tests {
     fn item_at_cap_accept() {
         let overhead = serde_json::to_vec(&text_message(MessageRole::User, "")).unwrap().len()
             as u64;
-        let pad = (40_000 - overhead) as usize;
+        let pad = (MAX_MODEL_CONTEXT_ITEM_TOKENS * 4 - overhead) as usize;
         let message = text_message(MessageRole::User, &"a".repeat(pad));
         assert_eq!(
             est(&serde_json::to_vec(&message).unwrap()),
@@ -979,7 +1006,8 @@ mod tests {
     fn item_over_cap_reject() {
         let overhead = serde_json::to_vec(&text_message(MessageRole::User, "")).unwrap().len()
             as u64;
-        let pad = (40_004 - overhead) as usize; // 40_004 B → est 10_001
+        let pad =
+            ((MAX_MODEL_CONTEXT_ITEM_TOKENS + 1) * 4 - overhead) as usize; // (MAX+1)*4 B → est MAX+1
         let message = text_message(MessageRole::User, &"a".repeat(pad));
         let estimated = est(&serde_json::to_vec(&message).unwrap());
         assert_eq!(estimated, MAX_MODEL_CONTEXT_ITEM_TOKENS + 1);
@@ -1001,7 +1029,8 @@ mod tests {
     #[test]
     fn system_text_over_cap_reject() {
         // SystemParam::Text projects as a bare JSON string (2 quote bytes).
-        let over_pad = (40_004 - 2) as usize; // (len + 2) / 4 = 10_001
+        let over_pad =
+            ((MAX_MODEL_CONTEXT_ITEM_TOKENS + 1) * 4 - 2) as usize; // (len + 2) / 4 = MAX+1
         let over = SystemParam::Text("a".repeat(over_pad));
         assert_eq!(
             est(&serde_json::to_vec(&over).unwrap()),
@@ -1023,7 +1052,7 @@ mod tests {
         // ({"type":"text","text":""} overhead = 25 B).
         let block_over = TextBlock {
             r#type: "text".to_string(),
-            text: "a".repeat(40_004 - 25),
+            text: "a".repeat(((MAX_MODEL_CONTEXT_ITEM_TOKENS + 1) * 4 - 25) as usize),
             cache_control: None,
         };
         let request = request_with_system(
@@ -1057,7 +1086,8 @@ mod tests {
             .expect("under-cap system Blocks must pass (N3)");
 
         // Text exactly at the cap is accepted (inclusive).
-        let at_cap = SystemParam::Text("a".repeat(40_000 - 2));
+        let at_cap =
+            SystemParam::Text("a".repeat((MAX_MODEL_CONTEXT_ITEM_TOKENS * 4 - 2) as usize));
         assert_eq!(
             est(&serde_json::to_vec(&at_cap).unwrap()),
             MAX_MODEL_CONTEXT_ITEM_TOKENS
@@ -1084,7 +1114,7 @@ mod tests {
         let base_len = serde_json::to_vec(&base).unwrap().len() as u64;
         let over = ToolParam {
             name: "t".to_string(),
-            description: Some("a".repeat((40_004 - base_len) as usize)),
+            description: Some("a".repeat(((MAX_MODEL_CONTEXT_ITEM_TOKENS + 1) * 4 - base_len) as usize)),
             input_schema: schema.clone(),
         };
         let estimated = est(&serde_json::to_vec(&over).unwrap());
@@ -1194,7 +1224,9 @@ mod tests {
     /// (N3 "Validation uses the final projected form").
     #[test]
     fn coalesced_items_validated_as_final_form() {
-        let fragment = 20_000usize;
+        // (MAX*2) B per fragment: under-cap solo, over-cap coalesced —
+        // derived from the constant so it tracks any .47 cap change.
+        let fragment = (MAX_MODEL_CONTEXT_ITEM_TOKENS * 2) as usize;
         let conv = ConversationRequest {
             items: vec![
                 ConversationItem::user(&"a".repeat(fragment)),
@@ -1334,14 +1366,17 @@ mod tests {
     }
 
     /// M-1 (R-1): the flat-priced image still COUNTS against the cap — guards
-    /// against an "images free" over-correction. Text 39_000 B (9_750) + one
-    /// image (765) = 10_515 > 10_000 ⇒ ItemTokenLimitExceeded. The payload is
+    /// against an "images free" over-correction. Text
+    /// (MAX+1−IMAGE_TOKEN_ESTIMATE)×4 B + one flat-priced image
+    /// (IMAGE_TOKEN_ESTIMATE) = MAX+1 > MAX ⇒ ItemTokenLimitExceeded at the
+    /// exact over-cap boundary (sized from the constant). The payload is
     /// deliberately a different size than the under-cap test (8_192 chars) to
     /// pin size-independence of the flat price.
     #[test]
     fn t_img_priced_image_counts_against_cap() {
         let overhead = image_message_overhead();
-        let pad = (39_000 - overhead) as usize;
+        let pad = ((MAX_MODEL_CONTEXT_ITEM_TOKENS + 1 - IMAGE_TOKEN_ESTIMATE) * 4 - overhead)
+            as usize;
         let message = Message {
             role: MessageRole::User,
             content: MessageContent::Blocks(vec![
@@ -1359,14 +1394,17 @@ mod tests {
             ]),
         };
         let item_json = serde_json::to_vec(&message).unwrap();
-        assert_eq!(item_json.len() as u64 - 8_192, 39_000);
+        assert_eq!(
+            item_json.len() as u64 - 8_192,
+            (MAX_MODEL_CONTEXT_ITEM_TOKENS + 1 - IMAGE_TOKEN_ESTIMATE) * 4
+        );
         let err = validate_and_encode_messages_request(&minimal_request(vec![message]))
-            .expect_err("9_750 (text) + 765 (flat image) = 10_515 > 10_000 must be rejected (R-1)");
+            .expect_err("MAX+1−IMAGE_TOKEN_ESTIMATE + IMAGE_TOKEN_ESTIMATE = MAX+1 > MAX must be rejected (R-1)");
         assert_eq!(
             err,
             RequestValidationError::ItemTokenLimitExceeded {
                 item: ItemRef::MessageItem(0),
-                estimated_tokens: 9_750 + IMAGE_TOKEN_ESTIMATE,
+                estimated_tokens: MAX_MODEL_CONTEXT_ITEM_TOKENS + 1,
             }
         );
     }
@@ -1377,7 +1415,8 @@ mod tests {
     fn t_img_text_only_over_cap_still_rejected() {
         let overhead = serde_json::to_vec(&text_message(MessageRole::User, "")).unwrap().len()
             as u64;
-        let pad = (40_004 - overhead) as usize; // 40_004 B → est 10_001
+        let pad =
+            ((MAX_MODEL_CONTEXT_ITEM_TOKENS + 1) * 4 - overhead) as usize; // (MAX+1)*4 B → est MAX+1
         let message = text_message(MessageRole::User, &"a".repeat(pad));
         let request = minimal_request(vec![message]);
         let err = validate_and_encode_messages_request(&request)
@@ -1393,8 +1432,8 @@ mod tests {
 
     /// M-1 (R-1 Url clause): `ImageSource::Url` parts are NOT flat-priced —
     /// they stay at the plain JSON/4 estimate. Pinned at both the inclusive
-    /// boundary (40_000 B ⇒ 10_000 accepted) and the over-cap boundary
-    /// (40_004 B ⇒ 10_001 rejected).
+    /// boundary (MAX*4 B ⇒ MAX accepted) and the over-cap boundary
+    /// ((MAX+1)*4 B ⇒ MAX+1 rejected).
     #[test]
     fn t_img_url_image_estimated_at_plain_json_quarter() {
         fn url_message(url: String) -> Message {
@@ -1407,7 +1446,10 @@ mod tests {
             }
         }
         let overhead = serde_json::to_vec(&url_message(String::new())).unwrap().len() as u64;
-        for (target, expect_ok) in [(40_000u64, true), (40_004u64, false)] {
+        for (target, expect_ok) in [
+            (MAX_MODEL_CONTEXT_ITEM_TOKENS * 4, true),
+            ((MAX_MODEL_CONTEXT_ITEM_TOKENS + 1) * 4, false),
+        ] {
             let message = url_message("u".repeat((target - overhead) as usize));
             assert_eq!(
                 est(&serde_json::to_vec(&message).unwrap()),
@@ -1418,5 +1460,59 @@ mod tests {
                 validate_and_encode_messages_request(&minimal_request(vec![message]));
             assert_eq!(result.is_ok(), expect_ok, "target {target} B");
         }
+    }
+
+    /// apex-ayl.89 (RED 4 — guard not relaxed): a single REAL item sized
+    /// FROM the constant (MAX+1 tokens) is still rejected post-cut — the
+    /// cap still exists at its then-current value, and C3c never
+    /// truncates/splits real items. Written in the RED phase; it passes at
+    /// the pre-cut constant and must stay green post-cut (constant-
+    /// derived, so it tracks any .47 cap change).
+    #[test]
+    fn compactn3_red4_guard_not_relaxed_single_real_item_over_cap() {
+        let overhead =
+            serde_json::to_vec(&text_message(MessageRole::User, "")).unwrap().len() as u64;
+        let pad = ((MAX_MODEL_CONTEXT_ITEM_TOKENS + 1) * 4 - overhead) as usize;
+        let message = text_message(MessageRole::User, &"x".repeat(pad));
+        let estimated = est(&serde_json::to_vec(&message).unwrap());
+        assert_eq!(estimated, MAX_MODEL_CONTEXT_ITEM_TOKENS + 1);
+        let request = minimal_request(vec![message]);
+        let err = validate_and_encode_messages_request(&request)
+            .expect_err(
+                "a single real item over the per-item cap must stay rejected \
+                 (the guard is enforced, not relaxed)",
+            );
+        assert_eq!(
+            err,
+            RequestValidationError::ItemTokenLimitExceeded {
+                item: ItemRef::MessageItem(0),
+                estimated_tokens: MAX_MODEL_CONTEXT_ITEM_TOKENS + 1
+            }
+        );
+    }
+    /// apex-ayl.89 (GREEN — the new pub guardrail entry): N3-only semantics
+    /// of `check_messages_request_caps` — a sub-cap final-form request is
+    /// Ok, and a single over-cap item (sized from the constant) is rejected
+    /// with `ItemTokenLimitExceeded { estimated_tokens: MAX+1 }`.
+    #[test]
+    fn compactn3_green_check_messages_request_caps() {
+        // Sub-cap: Ok.
+        let request = minimal_request(vec![text_message(MessageRole::User, "hello")]);
+        check_messages_request_caps(&request)
+            .expect("a sub-cap final-form request must pass the N3 guardrail");
+        // Over-cap: Err at the exact boundary (MAX+1 tokens).
+        let overhead =
+            serde_json::to_vec(&text_message(MessageRole::User, "")).unwrap().len() as u64;
+        let pad = ((MAX_MODEL_CONTEXT_ITEM_TOKENS + 1) * 4 - overhead) as usize;
+        let over = minimal_request(vec![text_message(MessageRole::User, &"x".repeat(pad))]);
+        let err = check_messages_request_caps(&over)
+            .expect_err("a single over-cap item must be rejected by the N3 guardrail");
+        assert_eq!(
+            err,
+            RequestValidationError::ItemTokenLimitExceeded {
+                item: ItemRef::MessageItem(0),
+                estimated_tokens: MAX_MODEL_CONTEXT_ITEM_TOKENS + 1
+            }
+        );
     }
 }

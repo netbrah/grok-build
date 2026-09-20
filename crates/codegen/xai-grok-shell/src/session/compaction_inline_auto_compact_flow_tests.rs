@@ -1497,11 +1497,20 @@ async fn forked_prefix_released_under_pressure_and_stays_released() {
         })
         .await;
 }
-/// The pathological case: even the released (summarized) history exceeds the threshold because the system prompt alone is over budget.
-/// A forked session then sets sticky suppression instead of clearing it, WITHOUT a user-facing failure event.
-/// So AUTO is not immediately re-enabled while the compaction itself still reports success.
+/// The pathological case, rewritten for apex-ayl.89 (C1-lite): a
+/// candidate whose system prompt alone exceeds the per-item cap used to
+/// be installed silently — the session then bricks on EVERY subsequent
+/// turn (the N3 local rejection hits the system block pre-HTTP, so the
+/// old "compaction succeeds, session continues" expectation WAS the
+/// silent-brick defect class). Under the validate-before-install guard
+/// (Sites A/B) the same candidate now fails LOUD before anything is
+/// persisted or replaced: AUTO is suppressed stickily, the live
+/// conversation stays untouched, NO checkpoint is persisted (Site A
+/// fires first), and the manual trigger surfaces the Err through the
+/// slash path WITHOUT an AutoCompactFailed notification (manual is
+/// suppression-exempt — the notification is the AUTO-trigger contract).
 #[tokio::test(flavor = "current_thread")]
-async fn forked_release_still_over_threshold_suppresses_auto() {
+async fn over_cap_system_candidate_fails_loud_and_suppresses_auto() {
     use crate::session::compaction_config::SUPPRESS_STICKY;
     use xai_grok_test_support::MockInferenceServer;
     let local = tokio::task::LocalSet::new();
@@ -1533,31 +1542,53 @@ async fn forked_release_still_over_threshold_suppresses_auto() {
                 "seed must exceed threshold: {before}"
             );
             let result = actor.run_compact(None).await;
-            assert!(result.is_ok(), "compaction should succeed: {result:?}");
             assert!(
-                actor.compaction.prefix_released.load(Relaxed),
-                "prefix must be released under pressure"
+                result.is_err(),
+                "an over-cap candidate (system prompt alone over the per-item cap) \
+                 must fail LOUD at install — nothing may be installed (C1-lite, apex-ayl.89): \
+                 {result:?}"
             );
             assert_eq!(
                 actor.compaction.auto_compact_suppressed.load(Relaxed),
                 SUPPRESS_STICKY,
-                "an over-threshold released history must set sticky suppression"
+                "a caps failure must set sticky suppression (stops the auto re-loop)"
+            );
+            // Nothing installed, nothing persisted (Site A fires before
+            // the checkpoint persistence and the replace).
+            let conversation = actor.chat_state_handle.get_conversation().await;
+            assert_eq!(
+                conversation.len(),
+                prefix_len,
+                "the live conversation must stay untouched when the caps fail"
             );
             let mut saw_failure = false;
+            let mut saw_checkpoint = false;
             while let Ok(msg) = persistence_rx.try_recv() {
-                if let PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(notif)) =
-                    msg
-                    && matches!(
-                        &notif.update,
-                        crate::extensions::notification::SessionUpdate::AutoCompactFailed { .. }
-                    )
-                {
-                    saw_failure = true;
+                match &msg {
+                    PersistenceMsg::CompactionCheckpoint(_) => saw_checkpoint = true,
+                    PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(
+                        notif,
+                    )) => {
+                        if matches!(
+                            &notif.update,
+                            crate::extensions::notification::SessionUpdate::AutoCompactFailed {
+                                ..
+                            }
+                        ) {
+                            saw_failure = true;
+                        }
+                    }
+                    _ => {}
                 }
             }
             assert!(
+                !saw_checkpoint,
+                "Site A fires before the checkpoint persistence — nothing may be persisted"
+            );
+            assert!(
                 !saw_failure,
-                "successful compaction must not emit AutoCompactFailed"
+                "manual trigger: the Err surfaces through the slash path — \
+                 no AutoCompactFailed (that is the AUTO-trigger contract)"
             );
         })
         .await;
@@ -1998,6 +2029,275 @@ async fn xw_orphan_compact_model_bound_400_arms_strip_retry() {
             assert!(
                 !last.contains("xw_orphan_model_bound_reasoning"),
                 "the retry after the model-bound strip must not carry the model-bound reasoning; the last attempt still did"
+            );
+        })
+        .await;
+}
+
+// ============================================================================
+// apex-ayl.89 (COMPACT-N3-1) — C1-lite RED phase
+// ============================================================================
+
+/// apex-ayl.89 (cap-agnostic): over-cap content sized FROM the constant
+/// `MAX_MODEL_CONTEXT_ITEM_TOKENS` (self-adjusting — never a hardcoded
+/// cap number). At any cap value this is (MAX+1) tokens + slack.
+fn compactn3_over_cap_text(slack: usize) -> String {
+    "x".repeat((xai_grok_sampling_types::request_validation::MAX_MODEL_CONTEXT_ITEM_TOKENS + 1)
+        as usize
+        * 4
+        + slack)
+}
+
+/// apex-ayl.89 (RED 3/6 shared): drive AUTO compaction through the rig
+/// and assert the C1-lite loud-fail contract — `run_compact_inner`
+/// returns Err, the conversation is NOT replaced, NO checkpoint is
+/// persisted (Site A fires before persistence), AUTO is suppressed
+/// stickily, and — auto trigger — the `AutoCompactFailed` notification
+/// WAS emitted with the actionable cap message (fix-pass 1 M1 ordering:
+/// the notification goes out BEFORE the sticky store, else the
+/// run_compact_only Err arm's `!is_suppressed()` gate silences it).
+async fn compactn3_assert_caps_loud_fail(
+    actor: &Arc<SessionActor>,
+    persistence_rx: &mut mpsc::UnboundedReceiver<PersistenceMsg>,
+    seed_len: usize,
+) {
+    let _err = actor
+        .run_compact_only(
+            AutoCompactTriggerInfo {
+                tokens_used: 180_000,
+                context_window: 200_000,
+                percentage: 90,
+            },
+            false,
+        )
+        .await
+        .expect_err(
+            "an over-cap candidate history must fail LOUD at install (C1-lite); \
+             a silent install bricks the session (apex-ayl.89)",
+        );
+
+    // The conversation must NOT be replaced.
+    let conversation = actor.chat_state_handle.get_conversation().await;
+    assert_eq!(
+        conversation.len(),
+        seed_len,
+        "nothing may be installed when the caps fail: the live conversation stays untouched"
+    );
+
+    // Sticky suppression (stops the auto re-loop).
+    assert_eq!(
+        actor.compaction.auto_compact_suppressed.load(Relaxed),
+        crate::session::compaction_config::SUPPRESS_STICKY,
+        "a caps failure must suppress AUTO stickily"
+    );
+
+    use crate::extensions::notification::SessionUpdate as XaiSessionUpdate;
+    use crate::session::storage::SessionUpdate;
+    let mut saw_checkpoint = false;
+    let mut saw_auto_failed = false;
+    while let Ok(msg) = persistence_rx.try_recv() {
+        match &msg {
+            PersistenceMsg::CompactionCheckpoint(_) => saw_checkpoint = true,
+            PersistenceMsg::Update(SessionUpdate::Xai(notif)) => {
+                if let XaiSessionUpdate::AutoCompactFailed { error } = &notif.update {
+                    assert!(
+                        error.contains("violates the wire per-item cap"),
+                        "the notification must carry the actionable cap message: {error}"
+                    );
+                    assert!(
+                        error.contains("session not compacted"),
+                        "the notification must state the session continues uncompacted: {error}"
+                    );
+                    saw_auto_failed = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        !saw_checkpoint,
+        "Site A fires before the checkpoint persistence — nothing may be persisted"
+    );
+    assert!(
+        saw_auto_failed,
+        "the AUTO trigger must emit AutoCompactFailed (fix-pass 1 M1 ordering)"
+    );
+}
+
+/// apex-ayl.89 (RED 3b): apply path — a candidate history that fails the
+/// per-item caps (a single over-cap REAL item; C3c never truncates or
+/// splits real items) ⇒ `run_compact_inner` returns Err, the
+/// conversation is NOT replaced, NO checkpoint is persisted, AUTO is
+/// suppressed stickily, and the AutoCompactFailed notification is
+/// emitted.
+///
+/// PRE-CUT: no guard — the over-cap history is silently installed (the
+/// brick) and `run_compact_only` returns Ok ⇒ this test fails.
+#[tokio::test(flavor = "current_thread")]
+async fn compactn3_red3b_over_cap_real_item_loud_fail() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+            let (persistence_tx, mut persistence_rx) = mpsc::unbounded_channel();
+            let actor = Arc::new(
+                create_test_actor(180_000, 200_000, 85, gateway_tx, persistence_tx).await,
+            );
+            let server = xai_grok_test_support::MockInferenceServer::start()
+                .await
+                .expect("mock inference server");
+            let mut cfg = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .unwrap();
+            cfg.base_url = server.url();
+            actor.chat_state_handle.update_sampling_config(cfg);
+            // Small, non-degenerate summary; the over-cap item is the REAL query.
+            server.set_response("s".repeat(600));
+            actor.chat_state_handle.replace_conversation(vec![
+                ConversationItem::system("sys"),
+                ConversationItem::user(compactn3_over_cap_text(4)),
+                ConversationItem::assistant("ok"),
+            ]);
+            compactn3_assert_caps_loud_fail(&actor, &mut persistence_rx, 3).await;
+        })
+        .await;
+}
+
+/// apex-ayl.89 (RED 6b): apply path — repeated same-class: the session
+/// has NO real user turn, so the producer emits its two CM items
+/// (prefix + summary) ADJACENT; same class ⇒ merged under C3c into ONE
+/// over-cap message ⇒ Site A fails LOUD (auto notification + sticky +
+/// Err). PRE-CUT: silent brick — the installed history rejects the next
+/// turn locally. The summary (the rig-controllable CM) carries the
+/// over-cap size from the constant; the exact 2×(MAX/2+1)*4 shape is
+/// pinned at the helper level (RED 6a) — the producer's prefix CM is
+/// template-rendered and not size-controllable in this rig.
+#[tokio::test(flavor = "current_thread")]
+async fn compactn3_red6b_same_class_cm_run_loud_fail() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+            let (persistence_tx, mut persistence_rx) = mpsc::unbounded_channel();
+            let actor = Arc::new(
+                create_test_actor(180_000, 200_000, 85, gateway_tx, persistence_tx).await,
+            );
+            let server = xai_grok_test_support::MockInferenceServer::start()
+                .await
+                .expect("mock inference server");
+            let mut cfg = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .unwrap();
+            cfg.base_url = server.url();
+            actor.chat_state_handle.update_sampling_config(cfg);
+            // The summary CM carries the over-cap size (same-class merge
+            // with the small prefix CM ⇒ the coalesced run exceeds the cap).
+            server.set_response(compactn3_over_cap_text(4));
+            actor.chat_state_handle.replace_conversation(vec![
+                ConversationItem::system("sys"),
+                ConversationItem::system_reminder("reminder"),
+            ]);
+            compactn3_assert_caps_loud_fail(&actor, &mut persistence_rx, 2).await;
+        })
+        .await;
+}
+
+/// apex-ayl.89 (RED 3a): the guard helper itself — a single over-cap
+/// REAL item sized from the constant (`compactn3_over_cap_text`) ⇒
+/// `projected_caps_ok` fails with `ItemTokenLimitExceeded`. PRE-CUT: the
+/// helper does not exist ⇒ compile failure = RED.
+#[tokio::test(flavor = "current_thread")]
+async fn compactn3_red3a_projected_caps_ok_rejects_over_cap_real_item() {
+    use xai_grok_sampling_types::request_validation::RequestValidationError;
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+            let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel();
+            let actor = Arc::new(
+                create_test_actor(10_000, 200_000, 85, gateway_tx, persistence_tx).await,
+            );
+            let err = actor
+                .projected_caps_ok(&[ConversationItem::user(compactn3_over_cap_text(4))])
+                .await
+                .expect_err(
+                    "a single over-cap real item must fail the projected caps check \
+                     (C3c never truncates or splits real items)",
+                );
+            assert!(
+                matches!(
+                    err,
+                    RequestValidationError::ItemTokenLimitExceeded { .. }
+                ),
+                "the failure must be the N3 per-item cap: {err}"
+            );
+        })
+        .await;
+}
+
+/// apex-ayl.89 (RED 6a): the same-class shape at the helper level — two
+/// CM items each `(MAX/2 + 1) * 4` bytes (each sub-cap alone). Same class
+/// ⇒ C3c keeps them merged (same-class merging is kept by design) ⇒ the
+/// coalesced item exceeds the cap ⇒ `projected_caps_ok` fails loud. This
+/// is the guardrail's value beyond the pinned shape: the over-cap
+/// residual of a same-class run is C1-lite's job, never a silent brick.
+/// PRE-CUT: the helper does not exist ⇒ compile failure = RED.
+#[tokio::test(flavor = "current_thread")]
+async fn compactn3_red6a_same_class_cm_merge_over_cap() {
+    use xai_grok_sampling_types::request_validation::RequestValidationError;
+    use xai_grok_sampling_types::{
+        build_messages_request, ConversationRequest,
+    };
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+            let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel();
+            let actor = Arc::new(
+                create_test_actor(10_000, 200_000, 85, gateway_tx, persistence_tx).await,
+            );
+            let piece = (xai_grok_sampling_types::request_validation::MAX_MODEL_CONTEXT_ITEM_TOKENS
+                / 2
+                + 1) as usize
+                * 4;
+            let items = vec![
+                ConversationItem::system("sys"),
+                ConversationItem::user_meta("m".repeat(piece)),
+                ConversationItem::user_meta("n".repeat(piece)),
+            ];
+            // Same class ⇒ one merged user message (C3c keeps same-class
+            // merging); the merged estimate is over the per-item cap.
+            let projected = build_messages_request(&ConversationRequest {
+                items: items.clone(),
+                model: Some("claude-sonnet-5".to_string()),
+                ..Default::default()
+            });
+            let user_count = projected
+                .messages()
+                .iter()
+                .filter(|m| m.role == xai_grok_sampling_types::messages::MessageRole::User)
+                .count();
+            assert_eq!(
+                user_count, 1,
+                "same-class CM items must project as ONE merged user message"
+            );
+            let err = actor
+                .projected_caps_ok(&items)
+                .await
+                .expect_err(
+                    "the coalesced same-class CM run exceeds the per-item cap — \
+                     the install must be rejected (C1-lite)",
+                );
+            assert!(
+                matches!(
+                    err,
+                    RequestValidationError::ItemTokenLimitExceeded { .. }
+                ),
+                "the failure must be the N3 per-item cap: {err}"
             );
         })
         .await;
