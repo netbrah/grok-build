@@ -1653,3 +1653,161 @@ fn xsearch76_carrier_projects_to_bounded_placeholder_never_custom_tool_call() {
         "cross-provider search context must remain bounded"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// XW-EMPTYID-1 (apex-ayl.69) — first-send empty reasoning id repair.
+//
+// The messages-wire persist seam (sampler `src/stream/messages.rs`) persists
+// every reasoning item with `id: ""`. The first cross-wire replay onto a
+// strict responses target 400s on that empty id (incident 01a0b046, cell
+// vxm-az). Fix (sdd-69 §2): a first-send-time JSON body patch beside
+// `patch_reasoning_text_types` that synthesizes the shared xw_ grammar — the
+// one .71's switch-time projector uses (conversation/projection.rs; one rule
+// across goldens + L0 + send-time patch).
+//
+// Fixture: `fixtures/emptyid_x69/` — the 5 incident reasoning records
+// verbatim + minimal portable context (PROVENANCE.md there).
+//
+// RED stage 1: `emptyid_replay_request_builder_emits_no_empty_reasoning_id`
+// fails with a runtime assertion today. RED stage 2: the cases 2–3 that
+// follow it fail E0425 (`patch_reasoning_empty_ids` not defined yet).
+// GREEN: sdd-69 §4–§5.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const EMPTYID_X69_PRE: &str = include_str!("fixtures/emptyid_x69/pre_switch_emptyid.json");
+
+/// The vxm-az incident recipe through the current request-builder pipeline:
+/// fixture -> `ConversationRequest` -> `rs::CreateResponse` -> serialized
+/// body -> `patch_reasoning_text_types` (the in-situ patch position, the
+/// call the send pipeline makes on every /responses request).
+fn emptyid_x69_body() -> serde_json::Value {
+    let value: serde_json::Value =
+        serde_json::from_str(EMPTYID_X69_PRE).expect("fixture must be valid JSON");
+    let items: Vec<ConversationItem> = serde_json::from_value(value)
+        .expect("fixture records must deserialize to ConversationItem");
+    let req = ConversationRequest::from_items(items);
+    let cr: rs::CreateResponse = (&req).into();
+    let mut body = serde_json::to_value(&cr).expect("responses request must serialize");
+    patch_reasoning_text_types(&mut body);
+    body
+}
+
+#[test]
+fn emptyid_replay_request_builder_emits_no_empty_reasoning_id() {
+    let mut body = emptyid_x69_body();
+    // The fixed send pipeline (sdd-69 §2.2 placement): the empty-id repair
+    // runs immediately after patch_reasoning_text_types on every /responses
+    // send path. The RED stage 1 capture (this file's header) ran the
+    // pre-fix pipeline the helper models — it failed here naming all 5
+    // incident items; the fix makes that state unreachable pre-send.
+    patch_reasoning_empty_ids(&mut body, "vxm-az");
+    let input = body["input"]
+        .as_array()
+        .expect("responses body must carry an input array");
+    let empty_id_items: Vec<usize> = input
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| {
+            item.get("type").and_then(serde_json::Value::as_str) == Some("reasoning")
+                && item
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .is_none_or(str::is_empty)
+        })
+        .map(|(idx, _)| idx)
+        .collect();
+    assert!(
+        empty_id_items.is_empty(),
+        "reasoning items ride empty ids to the wire at input indices {empty_id_items:?}: \
+         persisted id:'' must be synthesized (xw_ grammar) or dropped pre-send (apex-ayl.69)"
+    );
+}
+
+/// Input indices of the reasoning items in the serialized body, in order
+/// (`ord` = 0-based among reasoning items — the grammar's {ord} slot).
+fn emptyid_x69_reasoning_indices(body: &serde_json::Value) -> Vec<usize> {
+    body["input"]
+        .as_array()
+        .expect("responses body must carry an input array")
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| {
+            item.get("type").and_then(serde_json::Value::as_str) == Some("reasoning")
+        })
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
+#[test]
+fn emptyid_synthesized_id_matches_xw_grammar_goldens() {
+    let mut body = emptyid_x69_body();
+    patch_reasoning_empty_ids(&mut body, "vxm-az");
+    let input = body["input"]
+        .as_array()
+        .expect("responses body must carry an input array");
+    let idx = emptyid_x69_reasoning_indices(&body);
+    assert_eq!(
+        idx,
+        vec![2, 3, 4, 5, 6],
+        "the 5 incident reasoning items, incident order"
+    );
+    let ids: Vec<&str> = idx
+        .iter()
+        .map(|&i| input[i]["id"].as_str().expect("id present post-patch"))
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            "xw_bcf9e9828796d9d08c350f8a",
+            "xw_f95ed93e0a9badbaccd12afa",
+            "xw_7157485b1997e6654dea85d5",
+            "xw_55ab10bbffec861ca557f6e6",
+            "xw_46a650fad66e55e6928d41b2",
+        ],
+        "outgoing ids must equal the pinned xw_ goldens (sdd-69 §2.5; 12/12 re-verified at dispatch)"
+    );
+}
+
+#[test]
+fn emptyid_patch_preserves_nonempty_ids_and_is_idempotent() {
+    let mut body = emptyid_x69_body();
+    // One vLLM-coined non-empty id (the rs_ family the lenient shim mints):
+    // the patch must not rewrite it.
+    {
+        let input = body["input"].as_array_mut().expect("input array");
+        let first = input
+            .iter_mut()
+            .find(|i| i.get("type").and_then(serde_json::Value::as_str) == Some("reasoning"))
+            .expect("a reasoning item");
+        first["id"] = serde_json::json!("rs_019x69pinned");
+    }
+    patch_reasoning_empty_ids(&mut body, "vxm-az");
+    let input = body["input"]
+        .as_array()
+        .expect("responses body must carry an input array");
+    let idx = emptyid_x69_reasoning_indices(&body);
+    // The vLLM-coined id is byte-identical (untouched).
+    assert_eq!(
+        input[idx[0]]["id"],
+        serde_json::json!("rs_019x69pinned"),
+        "non-empty ids must ride verbatim (no regression on native responses ids)"
+    );
+    // The remaining 4 empty ids are synthesized with the shared grammar;
+    // ord counts every reasoning item, so these equal goldens 1..5.
+    let goldens = [
+        "xw_bcf9e9828796d9d08c350f8a",
+        "xw_f95ed93e0a9badbaccd12afa",
+        "xw_7157485b1997e6654dea85d5",
+        "xw_55ab10bbffec861ca557f6e6",
+        "xw_46a650fad66e55e6928d41b2",
+    ];
+    let ids: Vec<&str> = idx[1..]
+        .iter()
+        .map(|&i| input[i]["id"].as_str().expect("synthesized id present"))
+        .collect();
+    assert_eq!(ids, goldens[1..], "ords 1..4 synthesize to goldens 1..5");
+    // Idempotence: the second pass is a byte no-op.
+    let first_pass = body.clone();
+    patch_reasoning_empty_ids(&mut body, "vxm-az");
+    assert_eq!(body, first_pass, "second patch pass must be a byte no-op");
+}

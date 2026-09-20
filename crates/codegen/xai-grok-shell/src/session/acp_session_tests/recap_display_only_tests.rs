@@ -8,14 +8,23 @@ use super::*;
 use xai_grok_sampling_types::ConversationItem;
 
 /// Serializes `items` the way a main turn would, so auxiliary calls can be compared against the real wire shape.
-fn main_turn_input(items: Vec<ConversationItem>) -> Vec<serde_json::Value> {
+///
+/// apex-ayl.69 (XW-EMPTYID-1): the egress path patches the outgoing body with
+/// `patch_reasoning_empty_ids` (sampler client.rs send sites, cell = session
+/// model), so the expected main-turn shape must ride the same patch — otherwise
+/// the prefix comparison pits post-patch actual against pre-patch expected.
+/// The xw_ id is content-addressed (cell|ord|content|summary), so the patched
+/// expected stays in lockstep with egress for any fixture content.
+fn main_turn_input(items: Vec<ConversationItem>, cell: &str) -> Vec<serde_json::Value> {
     let request = xai_grok_sampling_types::ConversationRequest {
         items: xai_chat_state::compaction_utils::ModelRequestHistory::from_raw(items).into_items(),
         model: Some("test-model".to_string()),
         ..Default::default()
     };
     let mapped = async_openai::types::responses::CreateResponse::from(&request);
-    serde_json::to_value(&mapped).expect("request serializes")["input"]
+    let mut body = serde_json::to_value(&mapped).expect("request serializes");
+    xai_grok_sampling_types::patch_reasoning_empty_ids(&mut body, cell);
+    body["input"]
         .as_array()
         .expect("input is an array")
         .clone()
@@ -26,8 +35,9 @@ fn assert_rides_parent_prefix(
     body: &serde_json::Value,
     parent: Vec<ConversationItem>,
     label: &str,
+    cell: &str,
 ) {
-    let expected = main_turn_input(parent);
+    let expected = main_turn_input(parent, cell);
     let raw = body["input"].as_array().expect("input must be present").clone();
     // apex-ayl.86 (R-UNIFIED-ITEM v2, census-fix-3 R-B): the auxiliary call
     // egresses through the PATCHED responses path, so its parent prefix
@@ -1471,6 +1481,8 @@ async fn auxiliary_calls_keep_the_main_turn_prefix() {
             let server = MockInferenceServer::start().await.unwrap();
             server.set_response("a summary");
             let mut cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            // apex-ayl.69: the egress cell is the session model; capture before the config moves.
+            let session_model = cfg.model.clone();
             cfg.base_url = server.url();
             cfg.api_backend = xai_grok_sampling_types::ApiBackend::Responses;
             actor.chat_state_handle.update_sampling_config(cfg);
@@ -1497,7 +1509,7 @@ async fn auxiliary_calls_keep_the_main_turn_prefix() {
                 .find(|r| r.path.contains("responses"))
                 .and_then(|r| r.body.as_ref())
                 .expect("btw body must be JSON");
-            assert_rides_parent_prefix(btw_body, parent.clone(), "/btw");
+            assert_rides_parent_prefix(btw_body, parent.clone(), "/btw", &session_model);
 
             actor.handle_recap(false).await;
             let requests = server.requests();
@@ -1507,7 +1519,7 @@ async fn auxiliary_calls_keep_the_main_turn_prefix() {
                 .find(|r| r.path.contains("responses"))
                 .and_then(|r| r.body.as_ref())
                 .expect("recap body must be JSON");
-            assert_rides_parent_prefix(recap_body, parent, "recap");
+            assert_rides_parent_prefix(recap_body, parent, "recap", &session_model);
         })
         .await;
 }

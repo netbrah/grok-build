@@ -228,7 +228,8 @@ fn is_carrier(b: &BackendToolCallItem) -> bool {
 /// - `{cell}` := the target row's model id (D3 slot binding; L0 tests pass
 ///   the fixture cell name).
 /// - `{ord}`  := 0-based index of the reasoning item among the reasoning
-///   records of the projected history.
+///   records of the projected history (the .69 send-time patch: among the
+///   request input's reasoning items).
 /// - A record whose storage form has no `content` key canonicalizes to `[]`
 ///   (that is what made the 12/12 goldens reproduce).
 /// - Canonicalization is Python `json.dumps` defaults, NOT serde_json's
@@ -239,9 +240,24 @@ fn xw_reasoning_id(cell: &str, ord: usize, r: &ReasoningItem) -> String {
         Some(parts) => serde_json::to_value(parts).expect("ReasoningTextContent must serialize"),
     };
     let summary = serde_json::to_value(&r.summary).expect("SummaryPart must serialize");
+    xw_reasoning_id_values(cell, ord, &content, &summary)
+}
 
-    let canonical_content = py_json_canonicalize(&content);
-    let canonical_summary = py_json_canonicalize(&summary);
+/// The shared xw_ id grammar core (sdd-71 §5; the .69 send-time patch
+/// `responses::patch_reasoning_empty_ids` calls this so the switch-time
+/// projector and the send-time repair share one rule — goldens + L0 +
+/// send-time patch can never disagree; the original `rs_`+hash proposal is
+/// superseded, sdd-69 §2.5). `content`/`summary` are the item's values as
+/// they ride the wire: a missing `content` canonicalizes as `[]` (the 12/12
+/// goldens' reproduction rule), a missing `summary` as `null`.
+pub(crate) fn xw_reasoning_id_values(
+    cell: &str,
+    ord: usize,
+    content: &Value,
+    summary: &Value,
+) -> String {
+    let canonical_content = py_json_canonicalize(content);
+    let canonical_summary = py_json_canonicalize(summary);
     let mut preimage = String::with_capacity(
         cell.len() + 32 + canonical_content.len() + canonical_summary.len(),
     );

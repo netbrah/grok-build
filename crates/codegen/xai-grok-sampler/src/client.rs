@@ -2160,6 +2160,10 @@ impl SamplingClient {
         // async-openai's ReasoningTextContent struct omits the `type` discriminator that the Responses API requires on input
         // Patch it in after serializing
         xai_grok_sampling_types::patch_reasoning_text_types(&mut request_body);
+        // apex-ayl.69 (XW-EMPTYID-1): messages-wire sessions persist reasoning
+        // ids as ""; synthesize the shared xw_ id pre-send (strict rows strip
+        // it again downstream — REPLAY-1 ordering preserved).
+        xai_grok_sampling_types::patch_reasoning_empty_ids(&mut request_body, &model_id);
         // Provider-specific patches (Codex Max/Ultra wire mapping, v2 policy,
         // content-type normalization for non-OpenAI shims).
         crate::provider::patch_responses_request(
@@ -2329,6 +2333,9 @@ impl SamplingClient {
         splice_extra_tool_entries(&mut request_body, extra_tool_entries);
         append_response_includes(&mut request_body, &self.defaults.extra_response_includes);
         xai_grok_sampling_types::patch_reasoning_text_types(&mut request_body);
+        // apex-ayl.69 (XW-EMPTYID-1): the streaming send path — same
+        // first-send empty-id repair as `create_response` above.
+        xai_grok_sampling_types::patch_reasoning_empty_ids(&mut request_body, &model_id);
         // Provider-specific patches (Codex Max/Ultra wire mapping, v2 policy,
         // content-type normalization for non-OpenAI shims).
         crate::provider::patch_responses_request(
@@ -2598,6 +2605,13 @@ impl SamplingClient {
         }
         splice_extra_tool_entries(&mut request_body, extra_tool_entries);
         xai_grok_sampling_types::patch_reasoning_text_types(&mut request_body);
+        // apex-ayl.69 (XW-EMPTYID-1): the compact request rides the full
+        // conversation as provider-visible input — empty ids would ride it
+        // too; cell = the compaction target row's model id.
+        xai_grok_sampling_types::patch_reasoning_empty_ids(
+            &mut request_body,
+            request.model.as_deref().unwrap_or_default(),
+        );
         // Provider-specific patches (Codex Max/Ultra wire mapping, v2 policy).
         crate::provider::patch_responses_request(
             &mut request_body,
@@ -6002,5 +6016,35 @@ mod tests {
         })
         .expect("sampling client");
         assert_eq!(client.defaults.ultra_wire_effort, Some(ReasoningEffort::Xhigh));
+    }
+
+    /// apex-ayl.69 (XW-EMPTYID-1) ordering pin (sdd-69 §3 case 4,
+    /// already-GREEN pin): the first-send empty-id patch runs BEFORE the
+    /// strict projector on every send path, so strict rows keep the
+    /// REPLAY-1 behavior — the projector strips the (synthesized) id
+    /// afterwards, exactly as it strips ids today.
+    #[test]
+    fn emptyid_patch_then_strict_projector_still_strips_id() {
+        let mut body = serde_json::json!({
+            "input": [
+                {
+                    "type": "reasoning",
+                    "id": "",
+                    "summary": [ { "type": "summary_text", "text": "t" } ]
+                }
+            ]
+        });
+        xai_grok_sampling_types::patch_reasoning_empty_ids(&mut body, "gpt-5.6-terra");
+        assert!(
+            body["input"][0]["id"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("xw_")),
+            "send-time patch must synthesize the xw_ id before the strict projector runs"
+        );
+        crate::provider::project_strict_responses_input(&mut body, true);
+        assert!(
+            body["input"][0].get("id").is_none(),
+            "strict rows keep REPLAY-1: the projector strips the reasoning id afterwards"
+        );
     }
 }

@@ -248,6 +248,56 @@ pub fn patch_reasoning_text_types(body: &mut serde_json::Value) {
     }
 }
 
+/// First-send repair for empty reasoning ids (apex-ayl.69, XW-EMPTYID-1).
+///
+/// messages-wire sessions persist reasoning items with `id: ""` (the
+/// sampler's `stream/messages.rs` persist seam). The first cross-wire replay
+/// onto a strict responses target 400s on that empty id (incident
+/// 01a0b046, cell vxm-az). The sampler calls this beside
+/// `patch_reasoning_text_types` on every /responses send path, so the
+/// repair is retroactive for ALL persisted sessions — no migration:
+///
+/// - A `type == "reasoning"` input item whose `id` is absent, `null`, or
+///   `""` gets the shared xw_ grammar — the .71 switch-time projector's
+///   `projection::xw_reasoning_id_values` core, so persisted-then-switched
+///   and direct-replay paths agree (one rule across goldens + L0 +
+///   send-time patch; the original `rs_`+hash proposal is superseded,
+///   sdd-69 §2.5): `content` := the item's `content` (absent → `[]`),
+///   `summary` := the item's `summary` (absent → `null`), `ord` := the
+///   0-based index of the item among the input's reasoning items.
+/// - Non-empty ids are untouched (vLLM-coined `rs_…` ids ride verbatim); the
+///   patch is idempotent by construction.
+///
+/// Ordering: the sampler runs this BEFORE `project_strict_responses_input`,
+/// so strict rows keep the REPLAY-1 behavior (the projector strips the id
+/// afterwards) and lenient rows get the synthesized id (maximum fidelity).
+pub fn patch_reasoning_empty_ids(body: &mut serde_json::Value, cell: &str) {
+    let Some(input) = body.get_mut("input").and_then(serde_json::Value::as_array_mut) else {
+        return;
+    };
+    let mut ord = 0usize;
+    for item in input.iter_mut() {
+        if item.get("type").and_then(|t| t.as_str()) != Some("reasoning") {
+            continue;
+        }
+        let has_empty_id = item
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(str::is_empty);
+        if has_empty_id {
+            let content = item
+                .get("content")
+                .cloned()
+                .unwrap_or(serde_json::Value::Array(Vec::new()));
+            let summary = item.get("summary").cloned().unwrap_or(serde_json::Value::Null);
+            item["id"] = serde_json::Value::String(super::projection::xw_reasoning_id_values(
+                cell, ord, &content, &summary,
+            ));
+        }
+        ord += 1;
+    }
+}
+
 pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<rs::InputItem> {
     match item {
         ConversationItem::System(s) => {
