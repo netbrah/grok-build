@@ -50,6 +50,5 @@
     "label": "RED PIN (F5, re-pinned): body.tool_choice.disable_parallel_tool_use eq true on the main /v1/messages request (nth:0 = NEWEST = MAIN; the pin path moved into tool_choice at the F5 cut — the docs-nested location, SDD F5 §3.7a; the title frame's tool_choice carries no member, so the pin must land on main). Pre-cut FAILs: no dptu type/field (the 3-variant ToolChoiceParam enum, None->Auto fallback) so the path is missing. GREEN shape: main-frame tool_choice = {'type':'auto','disable_parallel_tool_use':true}."
    }
   ]
- },
- "expected_red": { "id": "mgw-f5-toolctl" }
+ }
 }
