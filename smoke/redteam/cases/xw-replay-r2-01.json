@@ -1,7 +1,7 @@
 {
  "schema_version": 1,
  "id": "XW-REPLAY-R2-01",
- "title": "apex-ayl.118 RED ratchet (.62 R-1 cross-wire replay seam) — foreign reasoning replay across the responses family switch: qwen3.8-27b (responses wire, reasoning items) -> 2 turns (a thinking-forcing math T1, then an exact-OK T2 whose request replays T1's reasoning item) -> ACP switch -> gpt-5.6-sol -> 1 turn. The .62 R-1 contract: the post-switch sol /v1/responses request replays the qwen history INCLUDING the reasoning item (projected per the R-1 contract). Live evidence (exfilchain-20260920 RT-XREPLAY2): the post-switch sol wire is messages-only — zero reasoning items, zero rs_ ids. RED today (the red pin 0-hits on every sol request); GREEN = the replay lands per the R-1 contract or a re-adjudicated shape -> re-pin. Control pin (class model, scoring premise): a pre-switch qwen request carries a reasoning INPUT item — if qwen never reasoned, the probe is meaningless -> VACUOUS (never FAIL). Companion controls (plain asserts): no acp_error, no terminal error, no retry storm on sol (1..2 requests), the final sol request accepted 200 (directly, or via the reactive strip).",
+ "title": "apex-ayl.118 RED ratchet (.62 R-1 cross-wire replay seam) — foreign reasoning replay across the responses family switch: qwen3.8-27b (responses wire, reasoning items) -> 2 turns (a thinking-forcing math T1, then an exact-OK T2 whose request replays T1's reasoning item) -> ACP switch -> gpt-5.6-sol -> 1 turn. The .62 R-1 contract: the post-switch sol /v1/responses request replays the qwen history INCLUDING the reasoning item (projected per the R-1 contract). Live evidence (exfilchain-20260920 RT-XREPLAY2): the post-switch sol wire is messages-only — zero reasoning items, zero rs_ ids. RED today (the red pin 0-hits on every sol request); GREEN = the replay lands per the R-1 contract or a re-adjudicated shape -> re-pin. Control pin (class model, scoring premise): a pre-switch qwen request carries a reasoning INPUT item — if qwen never reasoned, the probe is meaningless -> VACUOUS (never FAIL). Companion controls (plain asserts): no acp_error, no terminal error, no retry storm on sol (1..2 requests), the final sol request accepted 200 (directly, or via the reactive strip). ADJUDICATED V1 SHAPE (GREEN, apex-ayl.123, 20260921): the item rides summary-only on the strict row (id/content stripped at send, provider.rs:419-434); the xw_ id lives store-side only. expected_red removed at the house ratchet flip — the red pin xw_r2_red landed as pinned per the RE-PIN RULE.",
  "bead": "apex-ayl.118",
  "suite": "cross-wire",
  "tier": "slim",
@@ -91,6 +91,5 @@
     "note": "qwen never reasoned in T1 -> the cross-wire replay probe is meaningless"
    }
   ]
- },
- "expected_red": { "id": "xw-replay-r2" }
+ }
 }
