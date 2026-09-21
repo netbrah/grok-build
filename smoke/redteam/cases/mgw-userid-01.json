@@ -39,6 +39,5 @@
     "label": "RED PIN (F2/.109, re-pinned): body.metadata.user_id non-null on the MAIN request (nth:0 = NEWEST = MAIN; aux/title frames lack metadata post-cut so the pin must select main). Pre-cut FAILs: producer hardcodes metadata None (messages.rs:938) so the path is missing."
    }
   ]
- },
- "expected_red": { "id": "mgw-f2-userid" }
+ }
 }
