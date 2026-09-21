@@ -146,7 +146,11 @@ impl SessionActor {
         if turn_in_flight && is_family_switch {
             tracing::warn!("Family-switch compact skipped: turn in flight");
         }
-        if is_family_switch && !turn_in_flight && self.history_has_model_minted_items().await {
+        if is_family_switch
+            && !turn_in_flight
+            && family_switch_compact_required(sampling_config.api_backend)
+            && self.history_has_model_minted_items().await
+        {
             self.abort_and_clear_prefire().await;
             let estimated_total_tokens = self.chat_state_handle.get_estimated_total_tokens().await;
             let context_window = new_context_window.get();
@@ -430,6 +434,29 @@ impl SessionActor {
     }
 }
 
+/// XW-XREPLAY-1 (apex-ayl.123): the family-switch compact must clear away
+/// foreign model-minted state ONLY when the TARGET wire cannot portably
+/// carry foreign reasoning items.
+/// - `Messages` (/v1/messages, Vertex rows): signed thinking blocks — reasoning
+///   text must be stripped for the summarizer (compaction.rs:1412-1415) and the
+///   /messages build has no portable foreign-reasoning site; the monorepo
+///   compact stands (pre-cut behavior preserved — GUARD-1 pin).
+/// - `ChatCompletions`: fail-closed — monorepo behavior stands (no portability
+///   evidence on that wire for foreign reasoning).
+/// - `Responses` (/v1/responses): foreign reasoning IS portable — the .71
+///   switch-time projection (T1 xw_ re-key + encrypted_content strip +
+///   summary/content kept, projection.rs:165-215) + the send-time strict/lenient
+///   projectors (strict: content+id stripped, summary rides — REPLAY-1
+///   wire-proven, provider.rs:419-434; lenient: verbatim — M1 wire-proven) +
+///   the mf6 affinity gate (ciphertext) + the 78a236f reactive net (400
+///   fallback) own the whole seam. The preemptive compact would replace the
+///   history BEFORE the projection runs and destroy the .62 R-1 replay — skip.
+fn family_switch_compact_required(
+    api_backend: xai_grok_sampling_types::ApiBackend,
+) -> bool {
+    !matches!(api_backend, xai_grok_sampling_types::ApiBackend::Responses)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,5 +638,29 @@ mod tests {
                 }
             })
             .await;
+    }
+
+    /// XW-XREPLAY-1 (apex-ayl.123): the family-switch compact gate requires
+    /// the compact only when the TARGET wire cannot portably carry foreign
+    /// reasoning — skipped on /v1/responses (the .71 switch-time projection
+    /// plus the send-time strict/lenient projectors own that seam), kept on
+    /// /v1/messages (signed-thinking invariant, compaction.rs:1412-1415) and
+    /// /v1/chat/completions (fail-closed: no portability evidence on that
+    /// wire for foreign reasoning).
+    #[test]
+    fn family_switch_compact_required_by_backend() {
+        use xai_grok_sampling_types::ApiBackend;
+        assert!(
+            !family_switch_compact_required(ApiBackend::Responses),
+            "Responses targets are skipped — the .71 projection owns the seam"
+        );
+        assert!(
+            family_switch_compact_required(ApiBackend::Messages),
+            "Messages targets keep the compact (signed-thinking invariant)"
+        );
+        assert!(
+            family_switch_compact_required(ApiBackend::ChatCompletions),
+            "ChatCompletions targets keep the compact (fail-closed)"
+        );
     }
 }

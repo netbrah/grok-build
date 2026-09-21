@@ -816,9 +816,49 @@ fn switch_target_config(model: &str, base_url: String) -> xai_grok_sampler::Samp
         ..Default::default()
     }
 }
-/// A family switch compacts with the new model over the lossy view: the request must contain nothing but plain `{role, content}` text messages.
+/// All renderable text of a conversation (system content, user text parts,
+/// assistant content) — the assertion surface for "the summary message
+/// replaced the history" vs "nothing was compacted".
+fn conversation_text(items: &[ConversationItem]) -> String {
+    let mut out = String::new();
+    for item in items {
+        match item {
+            ConversationItem::System(sys) => out.push_str(&sys.content),
+            ConversationItem::User(user) => {
+                for part in &user.content {
+                    if let xai_grok_sampling_types::ContentPart::Text { text } = part {
+                        out.push_str(text);
+                    }
+                }
+            }
+            ConversationItem::Assistant(assistant) => out.push_str(&assistant.content),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// An assistant item minted by `model` — the owner marker the .71
+/// switch-time projection reads (`forward_owner_model`).
+fn assistant_with_model(content: &str, model: &str) -> ConversationItem {
+    let mut item = ConversationItem::assistant(content);
+    if let ConversationItem::Assistant(assistant) = &mut item {
+        assistant.model_id = Some(model.to_string());
+    }
+    item
+}
+/// XW-XREPLAY-1 (apex-ayl.123), cf D1/FIX-PASS 2 — inversion of the pre-cut
+/// `family_switch_compacts_lossy_with_new_model` (whose name asserted the
+/// preemptive compact fires on this exact Responses-target setup and would
+/// now lie). A family switch to a /v1/responses target must NOT compact:
+/// foreign reasoning is portable on that wire (the .71 switch-time projection
+/// plus the send-time strict/lenient projectors own the seam), and a
+/// preemptive compact would replace the history before the projection runs
+/// and destroy the .62 R-1 replay. GUARD-1 (below) pins the retained compact
+/// on Messages targets; the .86 unified-item pin moves with the removed
+/// compact (its byte-exact home is the .86 lane's sampler tests).
 #[tokio::test(flavor = "current_thread")]
-async fn family_switch_compacts_lossy_with_new_model() {
+async fn family_switch_responses_target_skips_compact_and_preserves_history() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -862,58 +902,263 @@ async fn family_switch_compacts_lossy_with_new_model() {
                     85,
                 )
                 .await
+                .expect("the switch must succeed");
+            assert!(
+                server.requests().is_empty(),
+                "a /v1/responses target must not fire the preemptive family-switch compact"
+            );
+            let conversation = actor.chat_state_handle.get_conversation().await;
+            assert!(
+                conversation
+                    .iter()
+                    .any(|item| matches!(item, ConversationItem::Reasoning(_))),
+                "the foreign reasoning item must survive a Responses-target switch"
+            );
+            assert!(
+                !conversation_text(&conversation)
+                    .contains("This session is being continued from a previous conversation"),
+                "no continuation summary may replace the intact history"
+            );
+        })
+        .await;
+}
+/// XW-XREPLAY-1 (apex-ayl.123): a qwen -> sol family switch on the
+/// /v1/responses target must skip the preemptive compact and hand the INTACT
+/// history to the .71 switch-time projection — the T1 xw_ re-key for the
+/// VLLenient-owner items (encrypted_content None, summary/content/mint_tag
+/// kept). (a) pins the skip: no compaction sample, both reasoning items
+/// survive, no continuation summary, no AutoCompactStarted notification.
+/// (b) pins the projected store form against the same pub ST oracle the
+/// actor itself calls (cf M3): `project_switch_history` with the target's
+/// `model_boundary_class`.
+#[tokio::test(flavor = "current_thread")]
+async fn family_switch_responses_target_preserves_reasoning_for_projection() {
+    use xai_grok_sampling_types::conversation::projection::{
+        model_boundary_class, project_switch_history,
+    };
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+            let (persistence_tx, mut persistence_rx) = mpsc::unbounded_channel();
+            let actor =
+                Arc::new(create_test_actor(10_000, 200_000, 85, gateway_tx, persistence_tx).await);
+            let history = vec![
+                ConversationItem::system("sys"),
+                ConversationItem::user("solve 17*23"),
+                ConversationItem::Reasoning(xai_grok_sampling_types::rs::ReasoningItem {
+                    id: "rs_qwen_res-0".to_string(),
+                    summary: vec![xai_grok_sampling_types::rs::SummaryPart::SummaryText(
+                        xai_grok_sampling_types::rs::SummaryTextContent {
+                            text: "Let me multiply 17 and 23.".to_string(),
+                        },
+                    )],
+                    content: Some(vec![xai_grok_sampling_types::rs::ReasoningTextContent {
+                        text: "17*23 = 17*20 + 17*3 = 340 + 51 = 391.".to_string(),
+                    }]),
+                    encrypted_content: None,
+                    status: None,
+                }.into()),
+                assistant_with_model("The answer is 391.", "qwen3.8-27b"),
+                ConversationItem::user("now divide by 4"),
+                ConversationItem::Reasoning(xai_grok_sampling_types::rs::ReasoningItem {
+                    id: "rs_qwen_res-1".to_string(),
+                    summary: vec![xai_grok_sampling_types::rs::SummaryPart::SummaryText(
+                        xai_grok_sampling_types::rs::SummaryTextContent {
+                            text: "Divide 391 by 4.".to_string(),
+                        },
+                    )],
+                    content: Some(vec![xai_grok_sampling_types::rs::ReasoningTextContent {
+                        text: "391/4 = 97.75.".to_string(),
+                    }]),
+                    encrypted_content: None,
+                    status: None,
+                }.into()),
+                assistant_with_model("97.75.", "qwen3.8-27b"),
+            ];
+            actor.chat_state_handle.replace_conversation(history);
+            let pre_switch = actor.chat_state_handle.get_conversation().await;
+            let server = xai_grok_test_support::MockInferenceServer::start()
+                .await
+                .expect("mock inference server");
+            actor
+                .handle_set_session_model(
+                    switch_target_config("gpt-5.6-sol", server.url()),
+                    false,
+                    true,
+                    false,
+                    true,
+                    85,
+                )
+                .await
+                .expect("the switch must succeed");
+            // (a) the preemptive family-switch compact must be skipped.
+            assert!(
+                server.requests().is_empty(),
+                "a /v1/responses target must not fire the preemptive family-switch compact"
+            );
+            let post_switch = actor.chat_state_handle.get_conversation().await;
+            assert!(
+                !conversation_text(&post_switch)
+                    .contains("This session is being continued from a previous conversation"),
+                "no continuation summary may replace the intact history"
+            );
+            assert_eq!(
+                post_switch
+                    .iter()
+                    .filter(|item| matches!(item, ConversationItem::Reasoning(_)))
+                    .count(),
+                2,
+                "both foreign reasoning items must survive a Responses-target switch"
+            );
+            while let Ok(msg) = persistence_rx.try_recv() {
+                if let PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(notif)) =
+                    msg
+                    && let crate::extensions::notification::SessionUpdate::AutoCompactStarted {
+                        ..
+                    } = &notif.update
+                {
+                    panic!(
+                        "no AutoCompactStarted notification may be emitted \
+                         when the compact is skipped"
+                    );
+                }
+            }
+            // (b) the .71 projection must have re-keyed the items exactly as
+            // the pub ST oracle computes (the actor calls the same function).
+            let oracle = project_switch_history(
+                &pre_switch,
+                "gpt-5.6-sol",
+                model_boundary_class("gpt-5.6-sol"),
+                None,
+            )
+            .items;
+            let pre_reasoning: Vec<_> = pre_switch
+                .iter()
+                .filter_map(|item| match item {
+                    ConversationItem::Reasoning(store) => Some(store),
+                    _ => None,
+                })
+                .collect();
+            let post_reasoning: Vec<_> = post_switch
+                .iter()
+                .filter_map(|item| match item {
+                    ConversationItem::Reasoning(store) => Some(store),
+                    _ => None,
+                })
+                .collect();
+            let oracle_reasoning: Vec<_> = oracle
+                .iter()
+                .filter_map(|item| match item {
+                    ConversationItem::Reasoning(store) => Some(store),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                post_reasoning.len(),
+                oracle_reasoning.len(),
+                "the projected history must carry the same reasoning items as the oracle"
+            );
+            for idx in 0..post_reasoning.len() {
+                let got = post_reasoning[idx];
+                let pre = pre_reasoning[idx];
+                let want = oracle_reasoning[idx];
+                assert!(
+                    got.id.starts_with("xw_"),
+                    "the T1 re-key must mint an xw_ id, got {:?}",
+                    got.id
+                );
+                assert_eq!(
+                    got.item,
+                    want.item,
+                    "item {idx} must match the ST projection oracle (id/summary/content/encrypted_content)"
+                );
+                assert_eq!(
+                    got.mint_tag,
+                    pre.mint_tag,
+                    "the mint tag must ride the projected item"
+                );
+            }
+        })
+        .await;
+}
+/// XW-XREPLAY-1 (apex-ayl.123) GUARD-1 (cf M2, session-level): a Messages
+/// (/v1/messages) target KEEPS the preemptive family-switch compact — the
+/// signed-thinking invariant makes foreign reasoning non-portable on that
+/// wire (compaction strips reasoning text for the summarizer and the
+/// /messages build has no portable foreign-reasoning site). The monorepo
+/// compact rides the TARGET wire: one POST /v1/messages to the new model;
+/// the history is replaced by the continuation summary; and the messages-wire
+/// body carries ZERO <multi_agent_mode> items — wire-correct absence (the .86
+/// injection is responses-wire-only, provider.rs:181; its byte-exact presence
+/// pins live in the .86 lane's sampler tests).
+#[tokio::test(flavor = "current_thread")]
+async fn family_switch_messages_target_still_compacts_guard() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+            let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel();
+            let actor =
+                Arc::new(create_test_actor(10_000, 200_000, 85, gateway_tx, persistence_tx).await);
+            actor.chat_state_handle.replace_conversation(vec![
+                ConversationItem::system("sys"),
+                ConversationItem::user("hello"),
+                ConversationItem::Reasoning(xai_grok_sampling_types::rs::ReasoningItem {
+                    id: "tco_res-uuid_call-uuid-0".to_string(),
+                    summary: vec![],
+                    content: None,
+                    encrypted_content: Some("tco_SEALEDCIPHERTEXT".to_string()),
+                    status: None,
+                }.into()),
+                ConversationItem::assistant("done"),
+            ]);
+            let server = xai_grok_test_support::MockInferenceServer::start()
+                .await
+                .expect("mock inference server");
+            server.set_response("Summary of prior work. ".repeat(30));
+            let target = xai_grok_sampler::SamplerConfig {
+                api_key: Some("test-key".to_string()),
+                base_url: server.url(),
+                model: "claude-sonnet-5".to_string(),
+                context_window: 256_000,
+                api_backend: crate::sampling::ApiBackend::Messages,
+                ..Default::default()
+            };
+            actor
+                .handle_set_session_model(target, false, true, false, true, 85)
+                .await
                 .expect("compact failure is log-only; the switch must succeed");
             let requests = server.requests();
             assert!(
                 !requests.is_empty(),
-                "family switch must fire a compaction sample"
+                "a Messages-target family switch must still fire a compaction sample"
             );
-            let body = requests[0].body.as_ref().unwrap();
+            let request = &requests[0];
             assert_eq!(
-                body["model"], "new-model",
+                request.path, "/v1/messages",
+                "the monorepo compact rides the TARGET wire"
+            );
+            let body = request.body.as_ref().expect("captured body");
+            assert_eq!(
+                body["model"], "claude-sonnet-5",
                 "summarizer must be the NEW model"
             );
-            // apex-ayl.86 (R-UNIFIED-ITEM v2, census-fix-3 R-B): the unified
-            // `<multi_agent_mode>` developer item rides EVERY responses-wire
-            // request — including this summary-client (summarizer) body — so
-            // tolerate EXACTLY ONE of it (validating its shape); every OTHER
-            // item keeps the plain-string lossy-view contract.
-            let mut unified_mode_items = 0;
-            for message in body["input"].as_array().unwrap() {
-                let keys: Vec<&String> = message.as_object().unwrap().keys().collect();
-                assert!(
-                    keys.iter()
-                        .all(|k| *k == "type" || *k == "role" || *k == "content"),
-                    "lossy view must send plain text messages, got keys {keys:?} in {message}"
-                );
-                assert_eq!(message["type"], "message", "non-message item: {message}");
-                if message["role"] == "developer" {
-                    unified_mode_items += 1;
-                    let parts = message["content"].as_array().unwrap_or_else(|| {
-                        panic!("unified item must carry an array content: {message}")
-                    });
-                    assert_eq!(
-                        parts.len(),
-                        1,
-                        "unified item must be a single input_text part: {message}"
-                    );
-                    assert_eq!(parts[0]["type"], "input_text", "{message}");
-                    assert!(
-                        parts[0]["text"]
-                            .as_str()
-                            .is_some_and(|text| text.contains("<multi_agent_mode>")),
-                        "unified item must be the mode declaration: {message}"
-                    );
-                    continue;
-                }
-                assert!(
-                    message["content"].is_string(),
-                    "non-text content in {message}"
-                );
-            }
-            assert_eq!(
-                unified_mode_items, 1,
-                "exactly one injected <multi_agent_mode> item expected in the summarizer body, got {unified_mode_items}"
+            assert!(
+                !body.to_string().contains("<multi_agent_mode>"),
+                "the messages-wire summarizer body must carry zero <multi_agent_mode> items (responses-wire-only injection)"
+            );
+            let conversation = actor.chat_state_handle.get_conversation().await;
+            assert!(
+                conversation_text(&conversation)
+                    .contains("This session is being continued from a previous conversation"),
+                "the continuation summary must replace the compacted history"
+            );
+            assert!(
+                !conversation
+                    .iter()
+                    .any(|item| matches!(item, ConversationItem::Reasoning(_))),
+                "the foreign reasoning item must be compacted away on the Messages target"
             );
         })
         .await;

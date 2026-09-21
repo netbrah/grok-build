@@ -123,6 +123,12 @@
    "sha256": "c827c4ae7feee7e1158e803ab3e18946fc59e39b945621571b4cc8f2b6bdc192",
    "source": "c95-84-20260920/auxmodel-wire-01/wire/req-004.json",
    "gap": "apex-ayl.84"
+  },
+  {
+   "fixture": "xw/replay-r2-req-009.json",
+   "sha256": "5f9fe6c2e6f3b478dd68fe2701fc730c7db132f7515c1dfbe0bc86b9e098a829",
+   "source": "redstack-20260920/xw-replay-r2-01/wire/req-009.json",
+   "gap": "apex-ayl.123"
   }
  ]
 }

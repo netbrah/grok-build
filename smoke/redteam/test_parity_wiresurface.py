@@ -9,6 +9,7 @@ redstack-20260920-fix2 / c95-84-20260920 campaign captures, 19 of the 20
 gap pins show the wire surface the harness OWES is ABSENT from the newest
 main call of its source case (the 20th, apex-ayl.84, is an inverted
 PRESENCE pin — the wrong-wire aux request is PRESENT on /v1/responses) —
+the surfaces are:
 server tools in tools[], top_k, stop_sequences, metadata.user_id,
 emittable thinking display knobs, per-tool control (disable_parallel_tool_use)
 and per-tool cache_control, service_tier, context_management, the
@@ -18,6 +19,14 @@ max_tool_calls / parallel_tool_calls), reasoning.context / reasoning.mode,
 and the body+header identity surface — while the control pins hold
 (non-empty tools[], display == "summarized", the hardcoded
 reasoning.summary == "concise" documented as a doc-control pin).
+
+A 21st row was added by XW-XREPLAY-1 (apex-ayl.123): the cross-wire R-1
+finding. The sealed pre-cut post-switch gpt-5.6-sol request (n=9 of
+xw-replay-r2-01) replays the qwen history with ZERO reasoning items and
+zero rs_/xw_ ids (the foreign reasoning was compacted away pre-switch);
+green = the replayed item lands on the wire (summary-only on the strict
+row — id/content stripped at send, provider.rs:419-434; the xw_ id lives
+store-side only).
 
 Fixtures (fixtures/parity/wiresurface/, see META.json for sources + sha256s):
   msgw/srvtool-01.json      n=5 of mgw-srvtool-01  — 31 client tools, no
@@ -58,6 +67,11 @@ Fixtures (fixtures/parity/wiresurface/, see META.json for sources + sha256s):
   openai/auxmodel-01-req-005.json n=5 of the same case — POST /v1/messages
                             body.model claude-sonnet-5: the session's main
                             call, the wire the aux should inherit (control)
+  xw/replay-r2-req-009.json     n=9 of redstack-20260920/xw-replay-r2-01 —
+                            POST /v1/responses body.model gpt-5.6-sol: the
+                            post-switch sol request with 8 message items,
+                            ZERO reasoning items, zero rs_/xw_ ids (the .62
+                            R-1 finding, apex-ayl.123)
 
 Fixture = the NEWEST POST to the case's target path (the session_title
 auxiliary call is the OLDEST POST, n=4, and is excluded — same finding as
@@ -598,6 +612,48 @@ def green_84(doc, envelopes=None):
     return True, "no /v1/responses request carries the probe slug (aux inherits the session wire, or the slug is catalog-guarded)"
 
 
+def red_xw_r1(doc):
+    """apex-ayl.123 RED (the .62 R-1 finding, sealed pre-cut envelope): the
+    post-switch gpt-5.6-sol /v1/responses request replays the qwen history
+    but carries ZERO "type": "reasoning" input items and zero rs_/xw_ ids —
+    the foreign reasoning was compacted away pre-switch. Fixture validity
+    first (red_84 pattern): a drifted path/model means the defect evidence
+    is lost (re-mint?)."""
+    path = doc.get("path") if isinstance(doc, dict) else None
+    model = (doc.get("body") or {}).get("model") if isinstance(doc, dict) else None
+    if path != "/v1/responses":
+        return False, "fixture path %r is not /v1/responses — defect evidence lost (re-mint?)" % path
+    if model != "gpt-5.6-sol":
+        return False, "body.model %r is not gpt-5.6-sol on /v1/responses — defect evidence lost (re-mint?)" % model
+    inp = (doc.get("body") or {}).get("input") or []
+    reasoning = [i for i in inp if isinstance(i, dict) and i.get("type") == "reasoning"]
+    ids = json.dumps(inp)
+    if reasoning:
+        return False, "post-switch sol request carries %d reasoning item(s) — R-1 already met? re-mint or re-adjudicate" % len(reasoning)
+    if "rs_" in ids or "xw_" in ids:
+        return False, "post-switch sol request input carries rs_/xw_ ids — R-1 already met? re-mint or re-adjudicate"
+    return True, "R-1 finding holds: post-switch gpt-5.6-sol request carries zero reasoning items and zero rs_/xw_ ids"
+
+
+def green_xw_r1(doc):
+    """apex-ayl.123 GREEN (post-cut, re-minted envelope): the post-switch
+    gpt-5.6-sol /v1/responses request carries >=1 "type": "reasoning" input
+    item — the .62 R-1 contract. On the strict row the item rides
+    summary-only (id/content stripped at send, provider.rs:419-434); the
+    xw_ id lives store-side only (never on the wire)."""
+    path = doc.get("path") if isinstance(doc, dict) else None
+    model = (doc.get("body") or {}).get("model") if isinstance(doc, dict) else None
+    if path != "/v1/responses":
+        return False, "re-minted path %r is not /v1/responses — gate dir stale" % path
+    if model != "gpt-5.6-sol":
+        return False, "re-minted body.model %r is not gpt-5.6-sol — gate dir stale" % model
+    inp = (doc.get("body") or {}).get("input") or []
+    reasoning = [i for i in inp if isinstance(i, dict) and i.get("type") == "reasoning"]
+    if not reasoning:
+        return False, "post-switch sol request still carries zero reasoning items (pre-cut)"
+    return True, "R-1 replay lands: %d reasoning input item(s) in the post-switch gpt-5.6-sol request" % len(reasoning)
+
+
 def _key_pair_fns():
     """(red, green) assert pairs for the top-level body-key gaps, by gap id."""
     return {
@@ -680,6 +736,10 @@ GAP_SPECS = [
      "kind": "presence", "dirscan": True, "red": red_84, "green": green_84,
      "red_desc": "PRESENCE (inverted pin): /v1/responses carries body.model probe-aux-01",
      "green_desc": "no /v1/responses request carries the probe slug (session-wire aux or guarded)"},
+    {"gap": "apex-ayl.123", "wire": "cross-wire", "fixture": "xw/replay-r2-req-009.json", "n": 9,
+     "kind": "hard", "red": red_xw_r1, "green": green_xw_r1,
+     "red_desc": "post-switch sol /v1/responses: zero reasoning items, zero rs_/xw_ ids (the .62 R-1 finding)",
+     "green_desc": "post-switch sol /v1/responses: >=1 reasoning input item (R-1 replay lands)"},
 ]
 
 GAP_BY_ID = {spec["gap"]: spec for spec in GAP_SPECS}
@@ -712,13 +772,15 @@ ENVELOPE_PINS = {
     "openai/metadata-01.json": (5, "/v1/responses"),
     "openai/auxmodel-01-req-004.json": (4, "/v1/responses"),
     "openai/auxmodel-01-req-005.json": (5, "/v1/messages"),
+    "xw/replay-r2-req-009.json": (9, "/v1/responses"),
 }
 
 # body.model pins for the c95-84 auxmodel fixtures (defect slug + session-wire
-# control model).
+# control model) and the apex-ayl.123 R-1 replay fixture (post-switch target).
 MODEL_PINS = {
     "openai/auxmodel-01-req-004.json": "probe-aux-01",
     "openai/auxmodel-01-req-005.json": "claude-sonnet-5",
+    "xw/replay-r2-req-009.json": "gpt-5.6-sol",
 }
 
 # Per-gap outcomes recorded as the suite/gate runs; consumed by the coverage
@@ -894,8 +956,19 @@ class WireSurfaceParity(unittest.TestCase):
         self.assertEqual(main.get("path"), "/v1/messages", "control: main call rides the session wire")
         self.assertEqual((main.get("body") or {}).get("model"), "claude-sonnet-5", "control: main call model")
 
+    def test_xw_r1_replay_r2_reasoning(self):
+        """apex-ayl.123 (XW-XREPLAY-1) R-1 finding pin: the sealed pre-cut
+        post-switch gpt-5.6-sol /v1/responses request (n=9) replays the qwen
+        history with ZERO reasoning items and zero rs_/xw_ ids — the foreign
+        reasoning was compacted away pre-switch. Green (post-cut, re-minted
+        envelope): >=1 reasoning input item (the .62 R-1 contract; on the
+        strict row the item rides summary-only — id/content stripped at send,
+        provider.rs:419-434; the xw_ id lives store-side only)."""
+        self._red("apex-ayl.123")
+
     def test_meta_sha256_matches_fixtures(self):
-        """META.json lists all 20 gap rows (the +2 c95-84 rows; the control
+        """META.json lists all 21 gap rows (the +2 c95-84 rows + the apex-ayl.123
+        R-1 row; the control
         fixture has no row by design); every fixture hash re-verifies against
         the fixture bytes on disk."""
         entries = self.meta["fixtures"]
