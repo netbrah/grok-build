@@ -576,6 +576,8 @@ pub(crate) async fn spawn_session_actor(
         cache_ttl: sampling_config.cache_ttl.clone(),
         top_k: sampling_config.top_k,
         stop_sequences: sampling_config.stop_sequences.clone(),
+        disable_parallel_tool_use: sampling_config.disable_parallel_tool_use,
+        tool_cache_breakpoint: sampling_config.tool_cache_breakpoint,
     };
     let actor_pruning_config = xai_chat_state::PruningConfig {
         enabled: session_pruning_config.enabled,

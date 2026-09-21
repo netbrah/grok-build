@@ -79,6 +79,11 @@ impl ChatStateActor {
             tools: tool_definitions,
             hosted_tools: vec![],
             tool_choice: None,
+            // MGW F5 (apex-ayl.114): row-resolved tool control threads onto
+            // the request; the producer nests dptu into tool_choice and
+            // places the per-tool cache breakpoint.
+            disable_parallel_tool_use: self.state.sampling_config.disable_parallel_tool_use,
+            tool_cache_breakpoint: self.state.sampling_config.tool_cache_breakpoint,
             model: Some(self.state.sampling_config.model.clone()),
             temperature: self.state.sampling_config.temperature,
             max_output_tokens: self.state.sampling_config.max_completion_tokens,

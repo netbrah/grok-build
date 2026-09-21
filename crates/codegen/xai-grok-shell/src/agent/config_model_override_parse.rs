@@ -718,6 +718,8 @@ mod tests {
             cache_ttl: Some("1h".into()),
             top_k: None,
             stop_sequences: None,
+            disable_parallel_tool_use: None,
+            tools_cache_breakpoint: None,
         }
     }
 

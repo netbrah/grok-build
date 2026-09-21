@@ -3310,6 +3310,8 @@ fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
             cache_ttl: None,
             top_k: None,
             stop_sequences: None,
+            disable_parallel_tool_use: None,
+            tools_cache_breakpoint: None,
         },
         mtls_cert_dir: None,
         api_key: None,

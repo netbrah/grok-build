@@ -1,7 +1,7 @@
 {
  "schema_version": 1,
  "id": "MGW-TOOLCTL-01",
- "title": "apex-ayl.112 RED ratchet (msgw-sweep F5) — tool-control partial: the case declares model/claude-sonnet-5/disable_parallel_tool_use=true (config_patch intent; ignored pre-cut) and pins body.disable_parallel_tool_use eq true on the main /v1/messages request. F5 class = ToolChoice None->Auto fallback + no disable_parallel_tool_use + no per-tool cache_control (ST/conversation/messages.rs:848-853; ST/messages.rs:455-471); this pin selects the parallel-tool member (prefix-affecting: uncontrollable parallel tool use changes the transcript shape the cache hashes). The tools-cache_control member of F5 is deliberately NOT pinned here: its GREEN location (which tool carries the marker) is implementation-defined by the F5 cut SDD — re-pin as a second member after the SDD lands. Control pin (class harness): body.tools[0] exists — the harness always emits tools, so a miss is harness failure, not vacuous. RED today (field missing); GREEN when the cut plumbs the toggle.",
+ "title": "apex-ayl.112 RED ratchet (msgw-sweep F5) — tool-control partial: the case declares model/claude-sonnet-5/disable_parallel_tool_use=true via config_patch (bool row key; resolved config is Option<bool>; the producer nests the toggle into tool_choice per the docs) and pins body.tool_choice.disable_parallel_tool_use eq true on the main /v1/messages request. RE-PINNED at the F5 cut (apex-ayl.114): the pin path moved from the top level into tool_choice (the docs-nested location, SDD F5 §3.7a) and both pins re-expressed last:0 -> nth:0 = NEWEST = MAIN per runner _nth_select (frame order per the RED-112 empirical capture: TITLE oldest, MAIN newest; the title frame's tool_choice is {type:tool,name:session_title} WITHOUT the member, so the pin must land on main). F5 class = ToolChoice None->Auto fallback + no disable_parallel_tool_use + no per-tool cache_control (ST/conversation/messages.rs:847-853; ST/messages.rs:466-481); this pin selects the parallel-tool member (prefix-affecting: uncontrollable parallel tool use changes the transcript shape the cache hashes). GREEN shape on the main frame: tool_choice = {'type':'auto','disable_parallel_tool_use':true} (actor tool_choice None + dptu Some(true) -> explicit Auto{dptu}). The tools-cache_control member of F5 is deliberately NOT pinned here: covered by unit golden U-RED-4 (SDD F5 §6 ruling; a live marker case is a future lane). Control pin (class harness): body.tools[0] exists on the main frame — the harness always emits tools, so a miss is harness failure, not vacuous. Pre-cut RED: no dptu type/field and the 3-variant ToolChoiceParam enum (the None->Auto fallback dies at the cut) so the path is missing. GREEN when the cut plumbs the toggle.",
  "bead": "apex-ayl.112",
  "suite": "wire-shape",
  "tier": "slim",
@@ -35,19 +35,19 @@
     "kind": "field",
     "file": "req-*.json",
     "where": { "method": "POST", "path": "/v1/messages" },
-    "last": 0,
+    "nth": 0,
     "path": "body.tools[0]",
-    "label": "CONTROL (class harness): the main request carries at least one tool — the harness always does; a miss is a harness failure, never vacuous."
+    "label": "CONTROL (class harness): the main request (nth:0 = NEWEST = MAIN) carries at least one tool — the harness always does; a miss is a harness failure, never vacuous."
    },
    {
     "kind": "field",
     "id": "mgw_toolctl_red",
     "file": "req-*.json",
     "where": { "method": "POST", "path": "/v1/messages" },
-    "last": 0,
-    "path": "body.disable_parallel_tool_use",
+    "nth": 0,
+    "path": "body.tool_choice.disable_parallel_tool_use",
     "eq": true,
-    "label": "RED PIN (F5): the declared disable_parallel_tool_use=true rides the wire. Pre-cut FAILs: no type, no field (ToolParam is name/description/input_schema only) so the path is missing."
+    "label": "RED PIN (F5, re-pinned): body.tool_choice.disable_parallel_tool_use eq true on the main /v1/messages request (nth:0 = NEWEST = MAIN; the pin path moved into tool_choice at the F5 cut — the docs-nested location, SDD F5 §3.7a; the title frame's tool_choice carries no member, so the pin must land on main). Pre-cut FAILs: no dptu type/field (the 3-variant ToolChoiceParam enum, None->Auto fallback) so the path is missing. GREEN shape: main-frame tool_choice = {'type':'auto','disable_parallel_tool_use':true}."
    }
   ]
  },

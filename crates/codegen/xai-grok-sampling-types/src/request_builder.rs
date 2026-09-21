@@ -328,6 +328,7 @@ impl MessagesRequestBuilder {
             name,
             description,
             input_schema: input_schema.into_value(),
+            cache_control: None,
         });
         this
     }
@@ -772,11 +773,14 @@ pub(crate) fn validate_messages_request_invariants(
     // named — no V1 invariant reads them; a new variant is a build break.
     if let Some(choice) = request.tool_choice() {
         match choice {
-            ToolChoiceParam::Auto => {}
-            ToolChoiceParam::Any => {}
-            ToolChoiceParam::Tool { name } => {
+            ToolChoiceParam::Auto { .. } => {}
+            ToolChoiceParam::Any { .. } => {}
+            ToolChoiceParam::Tool { name, .. } => {
                 let _ = name;
             }
+            // F5 (apex-ayl.114): the GA none variant — no V1 invariant reads
+            // it either (closed-set completion; a future variant breaks here).
+            ToolChoiceParam::None => {}
         }
     }
     if let Some(output_config) = request.output_config() {
@@ -899,6 +903,7 @@ mod tests {
             )
             .tool_choice(ToolChoiceParam::Tool {
                 name: "lookup".to_string(),
+                disable_parallel_tool_use: None,
             })
             .temperature(Some(0.7))
             .top_p(None)
@@ -1767,7 +1772,9 @@ pub fn f() {
             .max_tokens(8192)
             .message_sequence(seq)
             .system(SystemParam::Text("system".to_string()))
-            .tool_choice(ToolChoiceParam::Any)
+            .tool_choice(ToolChoiceParam::Any {
+                disable_parallel_tool_use: None,
+            })
             .thinking(ThinkingConfig::Enabled { budget_tokens: 1024 })
             .output_config(OutputConfig {
                 effort: RequestPresence::value("high".to_string()),
@@ -1783,10 +1790,17 @@ pub fn f() {
 
         // The remaining closed-set variants, one request each.
         for (choice, thinking, max_tokens) in [
-            (ToolChoiceParam::Auto, ThinkingConfig::Disabled, 0u32),
+            (
+                ToolChoiceParam::Auto {
+                    disable_parallel_tool_use: None,
+                },
+                ThinkingConfig::Disabled,
+                0u32,
+            ),
             (
                 ToolChoiceParam::Tool {
                     name: "probe".to_string(),
+                    disable_parallel_tool_use: None,
                 },
                 ThinkingConfig::Adaptive { display: None },
                 64,

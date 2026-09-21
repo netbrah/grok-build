@@ -151,6 +151,17 @@ pub struct SamplerConfig {
     /// (empty/whitespace → `None`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_sequences: Option<Vec<String>>,
+    /// Row opt-in: disable parallel tool use (F5, apex-ayl.114); row key
+    /// `disable_parallel_tool_use` (bool). Nested into `tool_choice` on the
+    /// messages wire by the producer. `None` = toggle absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disable_parallel_tool_use: Option<bool>,
+    /// Row opt-in: per-tool cache breakpoint (F5, apex-ayl.114); the PLURAL
+    /// row key `tools_cache_breakpoint` (`off` | `last`) resolves to
+    /// `Option<ToolCacheBreakpoint>` at config resolution
+    /// (`off`/absent ⇒ `None`). SINGULAR field — do not unify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_cache_breakpoint: Option<xai_grok_sampling_types::conversation::ToolCacheBreakpoint>,
 }
 
 impl Default for SamplerConfig {
@@ -197,6 +208,8 @@ impl Default for SamplerConfig {
             ultra_wire_effort: None,
             top_k: None,
             stop_sequences: None,
+            disable_parallel_tool_use: None,
+            tool_cache_breakpoint: None,
         }
     }
 }

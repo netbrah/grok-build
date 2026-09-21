@@ -3113,3 +3113,217 @@ fn mgw_f2_thinking_top_k_gate_still_live() {
         );
     }
 }
+
+// ============================================================================
+// MGW F5 (apex-ayl.114) — tool control: disable_parallel_tool_use +
+// ToolChoice none + per-tool cache_control (typed-unread class, F5 cut).
+// ============================================================================
+
+#[test]
+fn mgw_f5_u_red_3_none_choice_maps_to_none_param() {
+    // U-RED-3 (true runtime RED): ConversationToolChoice::None must map to
+    // ToolChoiceParam::None and serialize {"type":"none"} — the None->Auto
+    // fallback dies (SDD §3.5; docs GA L1372-1376). Pre-cut the fallback
+    // emits {"type":"auto"} ⇒ this assert FAILS on a pre-cut build.
+    let mut req = messages_test_request(None);
+    req.tool_choice = Some(ConversationToolChoice::None);
+    let msgs = build_messages_request(&req);
+    let json = serde_json::to_value(&msgs).unwrap();
+    assert_eq!(
+        json.pointer("/tool_choice"),
+        Some(&serde_json::json!({"type": "none"})),
+        "None choice must serialize type=none (fallback dies): {json:#}"
+    );
+}
+
+#[test]
+fn mgw_f5_u_parity_2_compaction_shape_carries_type_none() {
+    // U-PARITY-2 (SDD §3.6, binding): the compaction summary call
+    // (session_compact.rs:517) emits ConversationToolChoice::None. Pre-cut
+    // the wire carried {"type":"auto"} (the fallback); post-cut
+    // {"type":"none"} — STRICTER and docs-correct (a summary call must not
+    // invoke tools). Compaction-shaped conversation (tool round-trip +
+    // system boundary) so the pin exercises the real projection path.
+    let mut req = ConversationRequest::from_items(vec![
+        ConversationItem::user("q1"),
+        assistant_with_calls(&[("c1", "read_file")]),
+        ConversationItem::tool_result("c1", "ok"),
+        ConversationItem::system("mid"),
+        ConversationItem::user("summarize"),
+    ])
+    .with_model("test-model");
+    req.tool_choice = Some(ConversationToolChoice::None);
+    let json = serde_json::to_value(&build_messages_request(&req)).unwrap();
+    assert_eq!(
+        json.pointer("/tool_choice"),
+        Some(&serde_json::json!({"type": "none"})),
+        "compaction shape must carry {{\"type\":\"none\"}} post-cut: {json:#}"
+    );
+}
+
+#[test]
+fn mgw_f5_u_parity_1_default_row_serialization_neutral() {
+    // U-PARITY-1 (green BOTH sides — the MW-2 byte-parity proof): a default
+    // row (no F5 keys set) serializes byte-identically pre/post cut.
+    // (a) Auto choice: the pre-cut unit variant serializes {"type":"auto"};
+    // post-cut Auto { disable_parallel_tool_use: None } must too (the
+    // unit->struct variant change is serialization-neutral for None dptu).
+    // (b) No choice + no toggle: the tool_choice key stays ABSENT.
+    let mut req = messages_test_request(None);
+    req.tool_choice = Some(ConversationToolChoice::Auto);
+    let json = serde_json::to_value(&build_messages_request(&req)).unwrap();
+    assert_eq!(
+        json.pointer("/tool_choice"),
+        Some(&serde_json::json!({"type": "auto"})),
+        "Auto must stay type=auto with no toggle (byte parity): {json:#}"
+    );
+    let req_none = messages_test_request(None);
+    let json_none = serde_json::to_value(&build_messages_request(&req_none)).unwrap();
+    assert!(
+        json_none.get("tool_choice").is_none(),
+        "no choice + no toggle ⇒ tool_choice key absent (pre-cut parity): {json_none:#}"
+    );
+}
+
+#[test]
+fn mgw_f5_u_red_1_dptu_with_no_choice_emits_explicit_auto() {
+    // U-RED-1 (compile RED pre-cut): operator declared the toggle with no
+    // explicit choice ⇒ emit explicit auto (behavior-preserving — auto is
+    // the default) carrying the toggle (SDD §3.5 None arm).
+    let mut req = messages_test_request(None);
+    req.disable_parallel_tool_use = Some(true);
+    let msgs = build_messages_request(&req);
+    let json = serde_json::to_value(&msgs).unwrap();
+    assert_eq!(
+        json.pointer("/tool_choice"),
+        Some(&serde_json::json!({
+            "type": "auto",
+            "disable_parallel_tool_use": true
+        })),
+        "dptu with no choice must emit explicit auto carrying the toggle: {json:#}"
+    );
+}
+
+#[test]
+fn mgw_f5_u_red_2_function_threads_dptu_including_explicit_false() {
+    // U-RED-2 (compile RED pre-cut): the toggle threads onto an explicit
+    // Tool choice; dptu = Some(false) emits explicit false (config
+    // fidelity — a false the operator set is NOT the same as absent).
+    for (dptu, expected) in [
+        (
+            Some(true),
+            serde_json::json!({
+                "type": "tool",
+                "name": "x",
+                "disable_parallel_tool_use": true
+            }),
+        ),
+        (
+            Some(false),
+            serde_json::json!({
+                "type": "tool",
+                "name": "x",
+                "disable_parallel_tool_use": false
+            }),
+        ),
+    ] {
+        let mut req = messages_test_request(None);
+        req.tool_choice = Some(ConversationToolChoice::Function("x".to_owned()));
+        req.disable_parallel_tool_use = dptu;
+        let msgs = build_messages_request(&req);
+        let json = serde_json::to_value(&msgs).unwrap();
+        assert_eq!(
+            json.pointer("/tool_choice"),
+            Some(&expected),
+            "dptu must thread onto the Tool choice (explicit false included): {json:#}"
+        );
+    }
+}
+
+#[test]
+fn mgw_f5_u_red_4_last_tool_carries_the_breakpoint() {
+    // U-RED-4 (compile RED pre-cut; FIX-PASS R1 assertion shape): 3 client
+    // tools + tool_cache_breakpoint = Last ⇒ the LAST tool carries
+    // cache_control ephemeral (ttl-less — the free 4th marker slot), the
+    // others None; the gate returns Ok with internal marker_count == 3
+    // (tool markers are invisible to the gate) and the request-wide WIRE
+    // marker total == 4 (3 message/system + 1 tool) ≤ the API 4-marker cap.
+    // Off/None ⇒ all None.
+    use crate::request_builder::DraftMessagesRequest;
+    use crate::request_validation::RequestValidationError;
+
+    let tools = vec![
+        ToolSpec {
+            name: "t0".to_owned(),
+            description: None,
+            parameters: serde_json::json!({"type": "object"}),
+        },
+        ToolSpec {
+            name: "t1".to_owned(),
+            description: None,
+            parameters: serde_json::json!({"type": "object"}),
+        },
+        ToolSpec {
+            name: "t2".to_owned(),
+            description: None,
+            parameters: serde_json::json!({"type": "object"}),
+        },
+    ];
+    let items = vec![
+        ConversationItem::user("q1"),
+        assistant_with_calls(&[("r4_1", "t0")]),
+        ConversationItem::tool_result("r4_1", "ok"),
+        ConversationItem::system("mid"),
+        ConversationItem::user("q2"),
+    ];
+
+    // Last: the final tool carries the ttl-less ephemeral marker.
+    let mut req = ConversationRequest::from_items(items.clone())
+        .with_model("test-model")
+        .with_tools(tools.clone());
+    req.tool_cache_breakpoint = Some(ToolCacheBreakpoint::Last);
+    let msgs = build_messages_request(&req);
+    let tool_params = msgs.tools().expect("tools projected");
+    let json = serde_json::to_value(&msgs).unwrap();
+    assert_eq!(
+        json.pointer("/tools/2/cache_control"),
+        Some(&serde_json::json!({"type": "ephemeral"})),
+        "tools[2] (last) must carry the ttl-less ephemeral marker: {json:#}"
+    );
+    assert!(tool_params[0].cache_control.is_none(), "tools[0] stays None");
+    assert!(tool_params[1].cache_control.is_none(), "tools[1] stays None");
+    assert!(json.pointer("/tools/0/cache_control").is_none());
+    assert!(json.pointer("/tools/1/cache_control").is_none());
+    // WIRE marker total == 4 (head + tip + system head + the tool marker);
+    // the gate counts only system+message blocks (3) ⇒ Ok.
+    let wire = serde_json::to_string(&msgs).unwrap();
+    let wire_markers = wire.matches("\"cache_control\"").count();
+    assert_eq!(
+        wire_markers, 4,
+        "wire marker total must be 4 (3 system/message + 1 tool): {wire}"
+    );
+    DraftMessagesRequest::new(msgs)
+        .validate()
+        .expect("gate must pass: 3 system+message markers, tool marker invisible to the gate");
+
+    // Off/None control: no tool marker at all (wire total back to 3).
+    for bp in [Some(ToolCacheBreakpoint::Off), None] {
+        let mut req_off = ConversationRequest::from_items(items.clone())
+            .with_model("test-model")
+            .with_tools(tools.clone());
+        req_off.tool_cache_breakpoint = bp;
+        let msgs_off = build_messages_request(&req_off);
+        for (i, t) in msgs_off.tools().expect("tools projected").iter().enumerate() {
+            assert!(t.cache_control.is_none(), "bp={bp:?}: tools[{i}] must stay None");
+        }
+        let wire_off = serde_json::to_string(&msgs_off).unwrap();
+        assert_eq!(
+            wire_off.matches("\"cache_control\"").count(),
+            3,
+            "bp={bp:?}: wire marker total back to 3: {wire_off}"
+        );
+        let _ = DraftMessagesRequest::new(msgs_off)
+            .validate()
+            .expect("gate passes without the tool marker");
+    }
+}

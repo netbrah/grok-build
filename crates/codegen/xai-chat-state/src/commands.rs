@@ -473,6 +473,8 @@ mod tests {
                 cache_ttl: None,
                 top_k: None,
                 stop_sequences: None,
+                disable_parallel_tool_use: None,
+                tool_cache_breakpoint: None,
             }),
         };
         let _ = ChatStateCommand::RecordAgentEditedPath {

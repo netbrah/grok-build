@@ -85,6 +85,8 @@ impl SessionActor {
                 cache_ttl: sampling_config.cache_ttl.clone(),
                 top_k: sampling_config.top_k,
                 stop_sequences: sampling_config.stop_sequences.clone(),
+                disable_parallel_tool_use: sampling_config.disable_parallel_tool_use,
+                tool_cache_breakpoint: sampling_config.tool_cache_breakpoint,
             });
         let existing = self.chat_state_handle.get_credentials().await;
         let session_key = self

@@ -861,24 +861,47 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     let tools: Option<Vec<ToolParam>> = if req.tools.is_empty() {
         None
     } else {
-        Some(
-            req.tools
-                .iter()
-                .map(|t| ToolParam {
-                    name: t.name.clone(),
-                    description: t.description.clone(),
-                    input_schema: t.parameters.clone(),
-                })
-                .collect(),
-        )
+        let mut mapped: Vec<ToolParam> = req
+            .tools
+            .iter()
+            .map(|t| ToolParam {
+                name: t.name.clone(),
+                description: t.description.clone(),
+                input_schema: t.parameters.clone(),
+                cache_control: None,
+            })
+            .collect();
+        if req.tool_cache_breakpoint == Some(ToolCacheBreakpoint::Last) && !mapped.is_empty() {
+            let last = mapped.len() - 1;
+            mapped[last].cache_control = Some(crate::messages::CacheControl::ephemeral());
+        }
+        Some(mapped)
     };
 
-    let tool_choice: Option<ToolChoiceParam> = req.tool_choice.as_ref().map(|tc| match tc {
-        ConversationToolChoice::Auto => ToolChoiceParam::Auto,
-        ConversationToolChoice::Required => ToolChoiceParam::Any,
-        ConversationToolChoice::Function(name) => ToolChoiceParam::Tool { name: name.clone() },
-        ConversationToolChoice::None => ToolChoiceParam::Auto, // ToolChoiceParam has no none variant, so fall back to the default
-    });
+    let dptu = req.disable_parallel_tool_use;
+    let tool_choice: Option<ToolChoiceParam> = match req.tool_choice.as_ref() {
+        Some(tc) => Some(match tc {
+            ConversationToolChoice::Auto => {
+                ToolChoiceParam::Auto {
+                    disable_parallel_tool_use: dptu,
+                }
+            }
+            ConversationToolChoice::Required => {
+                ToolChoiceParam::Any {
+                    disable_parallel_tool_use: dptu,
+                }
+            }
+            ConversationToolChoice::Function(name) => ToolChoiceParam::Tool {
+                name: name.clone(),
+                disable_parallel_tool_use: dptu,
+            },
+            // GA {"type":"none"} (docs L1372–1376): the fallback to Auto dies here.
+            ConversationToolChoice::None => ToolChoiceParam::None,
+        }),
+        // Operator declared the toggle with no explicit choice: emit explicit auto (behavior-preserving
+        // — auto is the default) carrying the toggle.
+        None => dptu.map(|v| ToolChoiceParam::Auto { disable_parallel_tool_use: Some(v) }),
+    };
 
     // WIRE-NEUTRAL-2 (apex-ayl.86): ultra is resolved at the REQUEST level,
     // not the enum level — `to_messages_api` still maps Ultra to the raw

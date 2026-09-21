@@ -16,6 +16,7 @@ use xai_grok_agent::prompt::skills::SkillsConfig;
 use xai_grok_login::{AuthManager, GrokComConfig, OidcAuthConfig};
 use xai_grok_sampler::{AuthScheme, SamplerConfig};
 use xai_grok_sampling_types::{
+    conversation::ToolCacheBreakpoint,
     CatalogFamily, CompactionAtTokens, CompactionsRemaining, REASONING_EFFORT_META_KEY,
     REASONING_EFFORTS_META_KEY, ReasoningEffort, ReasoningEffortOption,
     SamplingError,
@@ -1072,6 +1073,15 @@ pub struct ModelsConfig {
     /// resolution (empty → unset). `None` = unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_sequences: Option<String>,
+    /// Global disable-parallel-tool-use toggle (F5, apex-ayl.114); per-model
+    /// `[model.<id>]` values win. `None` = unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disable_parallel_tool_use: Option<bool>,
+    /// Global per-tool cache breakpoint (F5, apex-ayl.114), `off` | `last`
+    /// (case-insensitive; unknown values soft-refused at resolution);
+    /// per-model `[model.<id>]` values win. `None` = unset (Off).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools_cache_breakpoint: Option<String>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -3809,6 +3819,12 @@ fn apply_global_scalar_defaults(
         if let Some(v) = models.stop_sequences.clone() {
             info.stop_sequences.get_or_insert(v);
         }
+        if let Some(v) = models.disable_parallel_tool_use {
+            info.disable_parallel_tool_use.get_or_insert(v);
+        }
+        if let Some(v) = models.tools_cache_breakpoint.clone() {
+            info.tools_cache_breakpoint.get_or_insert(v);
+        }
     }
 }
 /// Built-in default models. Prefer `resolve_model_list()`.
@@ -3874,6 +3890,8 @@ pub(crate) struct ModelAuthorityView {
     pub cache_ttl: FieldAuthority<Option<String>>,
     pub top_k: FieldAuthority<Option<u32>>,
     pub stop_sequences: FieldAuthority<Option<String>>,
+    pub disable_parallel_tool_use: FieldAuthority<Option<bool>>,
+    pub tools_cache_breakpoint: FieldAuthority<Option<String>>,
     pub inference_branches: Vec<InferenceBranch>,
 }
 
@@ -4343,6 +4361,72 @@ fn model_authority_view(
         "stop_sequences replay diverged from the resolver for {key:?}"
     );
 
+    // ---- disable_parallel_tool_use / tools_cache_breakpoint: MGW F5
+    // (apex-ayl.114) — the `cache_ttl`/F2 chain verbatim (bool is Copy;
+    // the PLURAL row key stays a string here — resolution to
+    // Option<ToolCacheBreakpoint> happens in sampling_config_for_model).
+    let mut disable_parallel_tool_use = bundled_entry
+        .map(|b| b.info.disable_parallel_tool_use)
+        .unwrap_or_default();
+    let mut disable_parallel_tool_use_source = if !is_prefetched
+        && bundled_entry.is_some_and(|b| b.info.disable_parallel_tool_use.is_some())
+    {
+        FieldSource::BundledRow
+    } else {
+        FieldSource::BuiltIn
+    };
+    if let Some(row) = row {
+        disable_parallel_tool_use = row.info.disable_parallel_tool_use;
+        if row.info.disable_parallel_tool_use.is_some() {
+            disable_parallel_tool_use_source = FieldSource::ProxyRow;
+        }
+    }
+    if let Some(v) = override_cfg.and_then(|ov| ov.disable_parallel_tool_use) {
+        disable_parallel_tool_use = Some(v);
+        disable_parallel_tool_use_source = FieldSource::Config;
+    } else if disable_parallel_tool_use.is_none()
+        && let Some(v) = cfg.models.disable_parallel_tool_use
+    {
+        disable_parallel_tool_use = Some(v);
+        disable_parallel_tool_use_source = FieldSource::Config;
+    }
+    debug_assert_eq!(
+        disable_parallel_tool_use,
+        info.disable_parallel_tool_use,
+        "disable_parallel_tool_use replay diverged from the resolver for {key:?}"
+    );
+
+    let mut tools_cache_breakpoint = bundled_entry
+        .map(|b| b.info.tools_cache_breakpoint.clone())
+        .unwrap_or_default();
+    let mut tools_cache_breakpoint_source =
+        if !is_prefetched
+            && bundled_entry.is_some_and(|b| b.info.tools_cache_breakpoint.is_some())
+        {
+            FieldSource::BundledRow
+        } else {
+            FieldSource::BuiltIn
+        };
+    if let Some(row) = row {
+        tools_cache_breakpoint = row.info.tools_cache_breakpoint.clone();
+        if row.info.tools_cache_breakpoint.is_some() {
+            tools_cache_breakpoint_source = FieldSource::ProxyRow;
+        }
+    }
+    if let Some(v) = override_cfg.and_then(|ov| ov.tools_cache_breakpoint.as_ref()) {
+        tools_cache_breakpoint = Some(v.clone());
+        tools_cache_breakpoint_source = FieldSource::Config;
+    } else if tools_cache_breakpoint.is_none() && let Some(v) = &cfg.models.tools_cache_breakpoint
+    {
+        tools_cache_breakpoint = Some(v.clone());
+        tools_cache_breakpoint_source = FieldSource::Config;
+    }
+    debug_assert_eq!(
+        tools_cache_breakpoint,
+        info.tools_cache_breakpoint,
+        "tools_cache_breakpoint replay diverged from the resolver for {key:?}"
+    );
+
     // ---- m-2: enumerate every inference branch that can produce a
     // Messages backend, with honest reachability/fired flags.
     // AUTHORITY-47B-1: the row the resolver's inference seams actually
@@ -4420,6 +4504,14 @@ fn model_authority_view(
         stop_sequences: FieldAuthority {
             value: stop_sequences,
             source: stop_sequences_source,
+        },
+        disable_parallel_tool_use: FieldAuthority {
+            value: disable_parallel_tool_use,
+            source: disable_parallel_tool_use_source,
+        },
+        tools_cache_breakpoint: FieldAuthority {
+            value: tools_cache_breakpoint,
+            source: tools_cache_breakpoint_source,
         },
         inference_branches,
     }
@@ -4563,8 +4655,12 @@ pub(crate) fn entry_config_from_default_row(
         // MGW F2 (apex-ayl.113): the bundled catalog rows carry no top_k /
         // stop_sequences keys (xai-grok-models is off-scope; the operator
         // surface is config.toml).
+        // MGW F5 (apex-ayl.114): same ruling for the two tool-control keys
+        // (disable_parallel_tool_use / tools_cache_breakpoint).
         top_k: None,
         stop_sequences: None,
+        disable_parallel_tool_use: None,
+        tools_cache_breakpoint: None,
     }
 }
 fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryConfig> {
@@ -4750,6 +4846,17 @@ pub struct ModelEntryConfig {
     /// trimmed in `sampling_config_for_model` (empty → `None`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_sequences: Option<String>,
+    /// Disable parallel tool use (F5, apex-ayl.114); row key
+    /// `disable_parallel_tool_use` (bool). `None` = unset (absent on the
+    /// wire).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disable_parallel_tool_use: Option<bool>,
+    /// Per-tool cache breakpoint (F5, apex-ayl.114); PLURAL row key
+    /// `tools_cache_breakpoint`, `off` | `last` (case-insensitive; unknown
+    /// values soft-refused in `sampling_config_for_model`). SINGULAR struct
+    /// field — intentional, do not unify. `None` = unset (Off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools_cache_breakpoint: Option<String>,
 }
 /// Derives `PartialEq` on `f32`, which is fine for the current shape. Both `f32` fields default to `None`, so there's no parsed-vs-literal `0.7` float equality footgun.
 /// If a future default introduces `Some(0.7)`, this helper must be reworked (e.g. compare on tolerance, or switch to a bit-pattern compare).
@@ -4830,6 +4937,11 @@ pub struct ConfigModelOverride {
     pub top_k: Option<u32>,
     /// Custom stop strings (docs GA L1246), comma-separated. Absent = inherit.
     pub stop_sequences: Option<String>,
+    /// Disable parallel tool use (F5, apex-ayl.114). Absent = inherit.
+    pub disable_parallel_tool_use: Option<bool>,
+    /// Per-tool cache breakpoint (F5, apex-ayl.114), `off` | `last`.
+    /// Absent = inherit.
+    pub tools_cache_breakpoint: Option<String>,
 }
 impl ConfigModelOverride {
     pub(crate) fn apply(
@@ -4987,6 +5099,12 @@ impl ConfigModelOverride {
         if self.stop_sequences.is_some() {
             entry.info.stop_sequences = self.stop_sequences.clone();
         }
+        if self.disable_parallel_tool_use.is_some() {
+            entry.info.disable_parallel_tool_use = self.disable_parallel_tool_use;
+        }
+        if self.tools_cache_breakpoint.is_some() {
+            entry.info.tools_cache_breakpoint = self.tools_cache_breakpoint.clone();
+        }
         if self.api_key.is_some() {
             entry.api_key.clone_from(&self.api_key);
         }
@@ -5125,6 +5243,16 @@ pub struct ModelInfo {
     /// trimmed in `sampling_config_for_model` (empty → `None`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_sequences: Option<String>,
+    /// Disable parallel tool use (F5, apex-ayl.114); `None` = absent on the
+    /// wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disable_parallel_tool_use: Option<bool>,
+    /// Per-tool cache breakpoint (F5, apex-ayl.114); PLURAL row key
+    /// `tools_cache_breakpoint` (`off` | `last`), resolved to
+    /// `Option<ToolCacheBreakpoint>` in `sampling_config_for_model`
+    /// (`off`/absent ⇒ `None`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools_cache_breakpoint: Option<String>,
 }
 impl ModelInfo {
     /// Minimal fallback descriptor for an unknown model slug.
@@ -5175,6 +5303,8 @@ impl ModelInfo {
             cache_ttl: None,
             top_k: None,
             stop_sequences: None,
+            disable_parallel_tool_use: None,
+            tools_cache_breakpoint: None,
         }
     }
     pub(crate) fn from_config(entry: &ModelEntryConfig) -> Self {
@@ -5223,6 +5353,8 @@ impl ModelInfo {
             cache_ttl: entry.cache_ttl.clone(),
             top_k: entry.top_k,
             stop_sequences: entry.stop_sequences.clone(),
+            disable_parallel_tool_use: entry.disable_parallel_tool_use,
+            tools_cache_breakpoint: entry.tools_cache_breakpoint.clone(),
         }
     }
     /// Whether `id` is one of the ids this model sends: its own, or the one it uses at some effort.
@@ -5991,6 +6123,8 @@ pub(crate) fn resolve_aux_model_sampling_config(
             cache_ttl: None,
             top_k: None,
             stop_sequences: None,
+            disable_parallel_tool_use: None,
+            tools_cache_breakpoint: None,
         },
         mtls_cert_dir: None,
         api_key: Some(bearer),
@@ -6139,6 +6273,25 @@ pub(crate) fn sampling_config_for_model(
         }
         None => None,
     };
+    // MGW F5 (apex-ayl.114): the PLURAL `tools_cache_breakpoint` row key
+    // (string) resolves to Option<ToolCacheBreakpoint>; `off`/absent ⇒ None;
+    // an unknown value is SOFT-refused (tracing::warn! + fall back to Off —
+    // NOT a parse error; precedent = the cache_ttl match above).
+    let tool_cache_breakpoint = match info.tools_cache_breakpoint.as_deref() {
+        Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "off" => None,
+            "last" => Some(ToolCacheBreakpoint::Last),
+            other => {
+                tracing::warn!(
+                    model = %model_name,
+                    tools_cache_breakpoint = other,
+                    "unrecognized tools_cache_breakpoint (expected \"off\" or \"last\"); using off (no tool marker)"
+                );
+                None
+            }
+        },
+        None => None,
+    };
     let extra_response_includes = response_include_extensions(
         info.supports_backend_search,
         &api_backend,
@@ -6156,6 +6309,8 @@ pub(crate) fn sampling_config_for_model(
         api_backend,
         cache_ttl,
         stop_sequences,
+        disable_parallel_tool_use: info.disable_parallel_tool_use,
+        tool_cache_breakpoint,
         auth_scheme: credentials.auth_scheme,
         extra_headers,
         extra_response_includes,
@@ -6262,6 +6417,8 @@ fn resolve_hidden_default_web_search_sampling_config(
             cache_ttl: None,
             top_k: None,
             stop_sequences: None,
+            disable_parallel_tool_use: None,
+            tools_cache_breakpoint: None,
         },
         mtls_cert_dir: None,
         api_key: None,

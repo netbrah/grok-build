@@ -1095,6 +1095,8 @@ fn test_model_entry(
             cache_ttl: None,
             top_k: None,
             stop_sequences: None,
+            disable_parallel_tool_use: None,
+            tools_cache_breakpoint: None,
             variants: Vec::new(),
         },
         mtls_cert_dir: None,
@@ -2260,6 +2262,8 @@ fn model_info_from_config_propagates_use_concise() {
         cache_ttl: None,
         top_k: None,
         stop_sequences: None,
+        disable_parallel_tool_use: None,
+        tools_cache_breakpoint: None,
         variants: Vec::new(),
     };
     let info = ModelInfo::from_config(&entry);
@@ -2431,6 +2435,8 @@ fn model_info_from_config_propagates_agent_type() {
         cache_ttl: None,
         top_k: None,
         stop_sequences: None,
+        disable_parallel_tool_use: None,
+        tools_cache_breakpoint: None,
         variants: Vec::new(),
     };
     let info = ModelInfo::from_config(&entry);
@@ -2894,6 +2900,8 @@ fn inference_idle_timeout_propagates_to_model_info() {
         cache_ttl: None,
         top_k: None,
         stop_sequences: None,
+        disable_parallel_tool_use: None,
+        tools_cache_breakpoint: None,
         variants: Vec::new(),
     };
     let info = ModelInfo::from_config(&entry);
@@ -7558,6 +7566,8 @@ fn prefetch_model_entry(slug: &str, context_window: u64, api_backend: ApiBackend
             cache_ttl: None,
             top_k: None,
             stop_sequences: None,
+            disable_parallel_tool_use: None,
+            tools_cache_breakpoint: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
             variants: Vec::new(),

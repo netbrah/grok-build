@@ -1613,7 +1613,8 @@ mod presence_goldens {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum InventoryClass {
         // 46b truth pins 0 × PRESENT-Option: no row constructs this variant
-        // anymore, but the total assert keeps it in the truth table.
+        // anymore; F5 (apex-ayl.114) flipped `Tool.cache_control` into this class —
+        // the total assert keeps the variant in the truth table.
         #[allow(dead_code)]
         PresentOption,
         PresentRequestPresence,
@@ -1683,12 +1684,14 @@ mod presence_goldens {
                 exact_decl: Some("pub format: RequestPresence<OutputFormat>,"),
                 expected: InventoryClass::PresentRequestPresence,
             },
+            // F5 (apex-ayl.114): per-tool cache breakpoint landed — row flips
+            // Absent → PRESENT-Option (46-series same-commit truth discipline).
             InventoryRow {
                 spec_field: "Tool.cache_control",
                 struct_name: "ToolParam",
                 field: "cache_control",
-                exact_decl: None,
-                expected: InventoryClass::Absent,
+                exact_decl: Some("pub cache_control: Option<CacheControl>,"),
+                expected: InventoryClass::PresentOption,
             },
             InventoryRow {
                 spec_field: "Tool.eager_input_streaming",
@@ -1850,11 +1853,15 @@ mod presence_goldens {
             "46c truth: 3 × PRESENT-RequestPresence (46b, unchanged)"
         );
         assert_eq!(present_wire_presence, 12, "46c truth: 12 × PRESENT-WirePresence");
-        assert_eq!(present_option, 0, "46c truth: 0 × PRESENT-Option");
+        assert_eq!(
+            present_option,
+            1,
+            "46c truth: 1 × PRESENT-Option (F5: Tool.cache_control)"
+        );
         assert_eq!(
             absent,
-            6,
-            "46c truth: 6 × ABSENT (46a request-side, unchanged)"
+            5,
+            "46c truth: 5 × ABSENT (46a request-side, minus F5 Tool.cache_control)"
         );
     }
 

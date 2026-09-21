@@ -123,6 +123,8 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                     cache_ttl: None,
                     top_k: None,
                     stop_sequences: None,
+                    disable_parallel_tool_use: None,
+                    tool_cache_breakpoint: None,
                 },
                 Box::new(xai_chat_state::NullChatPersistence),
                 chat_event_tx,

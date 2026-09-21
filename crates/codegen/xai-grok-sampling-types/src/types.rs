@@ -1085,6 +1085,17 @@ pub struct SamplingConfig {
     /// comma-separated string, split + trimmed here (empty → None).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_sequences: Option<Vec<String>>,
+    /// Row opt-in: disable parallel tool use (F5, apex-ayl.114); row key
+    /// `disable_parallel_tool_use` (bool). Nested into `tool_choice` on the
+    /// messages wire (the producer owns the nesting).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disable_parallel_tool_use: Option<bool>,
+    /// Row opt-in: per-tool cache breakpoint (F5, apex-ayl.114); row key is
+    /// the PLURAL string `tools_cache_breakpoint` (`off` | `last`,
+    /// case-insensitive; unknown values soft-refused at the config layer).
+    /// Resolved here to `Option<ToolCacheBreakpoint>` (`off`/absent ⇒ None).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_cache_breakpoint: Option<crate::conversation::ToolCacheBreakpoint>,
     /// Model-resolved general retry budget paired with the rate-limit ceiling below.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_retries: Option<u32>,

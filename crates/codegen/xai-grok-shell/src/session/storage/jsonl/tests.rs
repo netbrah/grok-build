@@ -2351,6 +2351,8 @@ async fn retry_after_lost_ack_converges_memory_and_disk_to_authoritative_item() 
             cache_ttl: None,
             top_k: None,
             stop_sequences: None,
+            disable_parallel_tool_use: None,
+            tool_cache_breakpoint: None,
         },
         Box::new(persistence),
         event_tx,

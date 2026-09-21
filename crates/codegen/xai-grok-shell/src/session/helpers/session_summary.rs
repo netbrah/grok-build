@@ -466,7 +466,7 @@ mod tests {
         ));
         assert!(
             match messages_wire.tool_choice() {
-                Some(ToolChoiceParam::Tool { name }) => name == "session_title",
+                Some(ToolChoiceParam::Tool { name, .. }) => name == "session_title",
                 _ => false,
             },
             "messages wire must keep the forced tool tool_choice; got {:?}",

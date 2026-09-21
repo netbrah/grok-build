@@ -2518,6 +2518,8 @@ fn make_entry_config_with_id(
         cache_ttl: None,
         top_k: None,
         stop_sequences: None,
+        disable_parallel_tool_use: None,
+        tools_cache_breakpoint: None,
         variants: Vec::new(),
     }
 }

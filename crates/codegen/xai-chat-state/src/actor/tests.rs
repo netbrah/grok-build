@@ -39,6 +39,8 @@ fn test_config_with_window(context_window: u64) -> SamplingConfig {
         cache_ttl: None,
         top_k: None,
         stop_sequences: None,
+        disable_parallel_tool_use: None,
+        tool_cache_breakpoint: None,
     }
 }
 
@@ -1487,6 +1489,8 @@ async fn update_sampling_config_is_queryable() {
         cache_ttl: None,
         top_k: None,
         stop_sequences: None,
+        disable_parallel_tool_use: None,
+        tool_cache_breakpoint: None,
     };
     h.handle.update_sampling_config(new_config.clone());
 
@@ -1912,6 +1916,8 @@ async fn build_request_uses_sampling_config() {
         cache_ttl: Some("1h".to_string()),
         top_k: None,
         stop_sequences: None,
+        disable_parallel_tool_use: None,
+        tool_cache_breakpoint: None,
     };
     let h = TestHarness::with_config(vec![ConversationItem::user("hi")], config);
 
@@ -4455,6 +4461,8 @@ async fn sampling_config_survives_compaction_replacement() {
         cache_ttl: None,
         top_k: None,
         stop_sequences: None,
+        disable_parallel_tool_use: None,
+        tool_cache_breakpoint: None,
     };
 
     let h = TestHarness::with_config(
@@ -4549,6 +4557,8 @@ async fn model_metadata_lost_after_compaction_then_recovered_on_next_turn() {
         cache_ttl: None,
         top_k: None,
         stop_sequences: None,
+        disable_parallel_tool_use: None,
+        tool_cache_breakpoint: None,
     };
 
     let h = TestHarness::with_config(
@@ -4636,6 +4646,8 @@ async fn context_window_downgrade_triggers_auto_compact() {
         cache_ttl: None,
         top_k: None,
         stop_sequences: None,
+        disable_parallel_tool_use: None,
+        tool_cache_breakpoint: None,
     };
 
     let h = TestHarness::with_config(vec![], config);
@@ -5617,5 +5629,89 @@ async fn mgw_f2_actor_emits_os_user_hash_as_metadata_user_id() {
             json.get("metadata").is_none(),
             "unresolvable identity ⇒ metadata omitted (pre-cut parity): {json:#}"
         ),
+    }
+}
+
+// ============================================================================
+// MGW F5 (apex-ayl.114) — actor assembly: disable_parallel_tool_use +
+// tool_cache_breakpoint thread from the SamplingConfig onto the
+// ConversationRequest (the producer nests dptu into tool_choice and places
+// the per-tool cache breakpoint).
+// ============================================================================
+
+#[tokio::test]
+async fn mgw_f5_actor_threads_dptu_and_tool_cache_breakpoint_into_request() {
+    // U-RED (actor half, compile RED pre-cut): the row-resolved values reach
+    // the ConversationRequest the actor hands to the sampler.
+    use xai_grok_sampling_types::conversation::ToolCacheBreakpoint;
+    let mut config = test_config();
+    config.disable_parallel_tool_use = Some(true);
+    config.tool_cache_breakpoint = Some(ToolCacheBreakpoint::Last);
+    let mut h = TestHarness::with_config(vec![], config);
+    h.handle.push_user_message(ConversationItem::user("hello"));
+    let request = h
+        .handle
+        .build_request(
+            vec![],
+            None,
+            false,
+            None,
+            "conv-1".to_owned(),
+            "req-1".to_owned(),
+        )
+        .await
+        .expect("actor alive");
+    assert_eq!(
+        request.disable_parallel_tool_use,
+        Some(true),
+        "SamplingConfig.disable_parallel_tool_use must thread into the ConversationRequest"
+    );
+    assert_eq!(
+        request.tool_cache_breakpoint,
+        Some(ToolCacheBreakpoint::Last),
+        "SamplingConfig.tool_cache_breakpoint must thread into the ConversationRequest"
+    );
+}
+
+#[tokio::test]
+async fn mgw_f5_actor_default_keeps_tool_control_keys_absent() {
+    // U-PARITY (actor half, green both sides): default config (no F5 keys)
+    // ⇒ both fields None AND the projected wire carries no tool_choice key
+    // and no tool cache_control (the actor path hardcodes tool_choice None;
+    // None choice + no toggle ⇒ absent, pre-cut parity).
+    let mut h = TestHarness::with_config(vec![ConversationItem::user("hello")], test_config());
+    let request = h
+        .handle
+        .build_request(
+            vec![],
+            None,
+            false,
+            None,
+            "conv-1".to_owned(),
+            "req-1".to_owned(),
+        )
+        .await
+        .expect("actor alive");
+    assert!(
+        request.disable_parallel_tool_use.is_none(),
+        "default config ⇒ disable_parallel_tool_use None"
+    );
+    assert!(
+        request.tool_cache_breakpoint.is_none(),
+        "default config ⇒ tool_cache_breakpoint None"
+    );
+    let msgs = xai_grok_sampling_types::conversation::build_messages_request(&request);
+    let json = serde_json::to_value(&msgs).unwrap();
+    assert!(
+        json.get("tool_choice").is_none(),
+        "no choice + no toggle ⇒ tool_choice key absent (pre-cut parity): {json:#}"
+    );
+    if let Some(tools) = msgs.tools() {
+        for (i, t) in tools.iter().enumerate() {
+            assert!(
+                t.cache_control.is_none(),
+                "default config ⇒ tools[{i}].cache_control None: {json:#}"
+            );
+        }
     }
 }

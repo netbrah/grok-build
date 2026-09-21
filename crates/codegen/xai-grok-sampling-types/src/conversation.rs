@@ -51,6 +51,7 @@ fn sanitize_tool_arguments(id: &str, name: &str, arguments: Arc<str>) -> Arc<str
 }
 
 use serde::{Deserialize, Serialize};
+use schemars::JsonSchema;
 
 use crate::rs;
 use crate::tool_overrides::{ToolOverrides, WebSearchOptions, XSearchOptions, drop_empty};
@@ -956,6 +957,12 @@ pub struct ConversationRequest {
     pub hosted_tools: Vec<HostedTool>,
     /// Tool choice behavior
     pub tool_choice: Option<ConversationToolChoice>,
+    /// Row opt-in: disable parallel tool use (docs GA; nested into `tool_choice` on the wire).
+    pub disable_parallel_tool_use: Option<bool>,
+    /// Row opt-in: per-tool cache breakpoint placement ("off" default | "last").
+    /// SINGULAR field; the row key is PLURAL `tools_cache_breakpoint` (intentional —
+    /// do not unify the spelling).
+    pub tool_cache_breakpoint: Option<ToolCacheBreakpoint>,
     /// Model to use (if not using client default)
     pub model: Option<String>,
     /// Sampling temperature
@@ -1375,6 +1382,18 @@ pub enum ConversationToolChoice {
     Required,
     /// Model must use a specific tool
     Function(String),
+}
+
+/// Per-tool cache breakpoint placement (F5, apex-ayl.114): `Last` marks the
+/// final tool with a ttl-less ephemeral cache_control (spends the free 4th
+/// marker slot); `Off` (and `None` on resolved configs) = no tool marker.
+/// Row key `tools_cache_breakpoint` (plural) takes the string `off` | `last`
+/// (case-insensitive; unknown values are soft-refused at the config layer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCacheBreakpoint {
+    Off,
+    Last,
 }
 
 // ============================================================================

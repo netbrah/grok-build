@@ -829,6 +829,8 @@ async fn read_parent_sampling_config(
                 cache_ttl: cfg.cache_ttl.clone(),
                 top_k: cfg.top_k,
                 stop_sequences: cfg.stop_sequences.clone(),
+                disable_parallel_tool_use: cfg.disable_parallel_tool_use,
+                tool_cache_breakpoint: cfg.tool_cache_breakpoint,
                 stream_tool_calls: cfg.stream_tool_calls.unwrap_or(false),
                 idle_timeout_secs: None,
                 client_identifier: ctx.sampling_config.client_identifier.clone(),

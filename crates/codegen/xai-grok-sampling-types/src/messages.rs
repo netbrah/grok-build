@@ -468,15 +468,32 @@ pub struct ToolParam {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub input_schema: serde_json::Value,
+    /// Per-tool cache breakpoint (docs: CacheControlEphemeral on the tool entry; tools hash into
+    /// the prefix earlier than system). Set by the producer ONLY for the last tool when the row
+    /// opts in via `tools_cache_breakpoint = "last"` (§3.5) — spends the free 4th marker slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
 }
 
-/// Tool choice (Anthropic Messages API format)
+/// Tool choice (Anthropic Messages API format, GA create.md L1328–1376).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolChoiceParam {
-    Auto,
-    Any,
-    Tool { name: String },
+    Auto {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        disable_parallel_tool_use: Option<bool>,
+    },
+    Any {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        disable_parallel_tool_use: Option<bool>,
+    },
+    Tool {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        disable_parallel_tool_use: Option<bool>,
+    },
+    /// GA `{"type":"none"}` — the model may not use tools (docs L1372–1376; no dptu member on this variant).
+    None,
 }
 
 /// Three modes per the Anthropic Messages API: Adaptive: 4.6+ models, API decides budget; Enabled: 4.0-4.5 models,

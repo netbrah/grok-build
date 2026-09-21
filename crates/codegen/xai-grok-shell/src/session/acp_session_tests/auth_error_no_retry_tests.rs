@@ -1632,6 +1632,8 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
              cache_ttl: None,
              top_k: None,
              stop_sequences: None,
+             disable_parallel_tool_use: None,
+             tool_cache_breakpoint: None,
              };
             let _ = actor
                 .handle_set_session_model(cfg, false, false, false, true, 85)
@@ -1745,6 +1747,8 @@ async fn switch_to_first_party_model_drops_minted_provider_token() {
              cache_ttl: None,
              top_k: None,
              stop_sequences: None,
+             disable_parallel_tool_use: None,
+             tool_cache_breakpoint: None,
              };
             let _ = actor
                 .handle_set_session_model(cfg, false, false, false, true, 85)

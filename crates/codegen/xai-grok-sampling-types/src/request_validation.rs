@@ -706,14 +706,19 @@ mod tests {
                         "type": "object",
                         "properties": { "key": { "type": "integer" } }
                     }),
+                    cache_control: None,
                 },
                 ToolParam {
                     name: "plain".to_string(),
                     description: None,
                     input_schema: serde_json::json!({ "type": "object" }),
+                    cache_control: None,
                 },
             ]),
-            tool_choice: Some(ToolChoiceParam::Tool { name: "lookup".to_string() }),
+            tool_choice: Some(ToolChoiceParam::Tool {
+                name: "lookup".to_string(),
+                disable_parallel_tool_use: None,
+            }),
             temperature: Some(0.7),
             top_p: None,
             top_k: None,
@@ -1110,12 +1115,14 @@ mod tests {
             name: "t".to_string(),
             description: Some(String::new()),
             input_schema: schema.clone(),
+            cache_control: None,
         };
         let base_len = serde_json::to_vec(&base).unwrap().len() as u64;
         let over = ToolParam {
             name: "t".to_string(),
             description: Some("a".repeat(((MAX_MODEL_CONTEXT_ITEM_TOKENS + 1) * 4 - base_len) as usize)),
             input_schema: schema.clone(),
+            cache_control: None,
         };
         let estimated = est(&serde_json::to_vec(&over).unwrap());
         assert_eq!(estimated, MAX_MODEL_CONTEXT_ITEM_TOKENS + 1);
@@ -1136,6 +1143,7 @@ mod tests {
             name: "t".to_string(),
             description: Some("a small tool".to_string()),
             input_schema: schema,
+            cache_control: None,
         };
         let request =
             request_with_tools(vec![text_message(MessageRole::User, "hi")], vec![under]);

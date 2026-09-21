@@ -508,6 +508,13 @@
             "null"
           ]
         },
+        "disable_parallel_tool_use": {
+          "description": "Disable parallel tool use (F5, apex-ayl.114). Absent = inherit.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "env_http_headers": {
           "additionalProperties": {
             "type": "string"
@@ -689,6 +696,13 @@
           "format": "float",
           "type": [
             "number",
+            "null"
+          ]
+        },
+        "tools_cache_breakpoint": {
+          "description": "Per-tool cache breakpoint (F5, apex-ayl.114), `off` | `last`.\nAbsent = inherit.",
+          "type": [
+            "string",
             "null"
           ]
         },
@@ -2426,6 +2440,13 @@
           ],
           "description": "Persisted effort for the default model; applied in `resolve_model_catalog`."
         },
+        "disable_parallel_tool_use": {
+          "description": "Global disable-parallel-tool-use toggle (F5, apex-ayl.114); per-model\n`[model.<id>]` values win. `None` = unset.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "disabled_models": {
           "description": "Remove these model IDs from the catalog entirely. Wins over `hidden_models`.",
           "items": {
@@ -2531,6 +2552,13 @@
           "format": "float",
           "type": [
             "number",
+            "null"
+          ]
+        },
+        "tools_cache_breakpoint": {
+          "description": "Global per-tool cache breakpoint (F5, apex-ayl.114), `off` | `last`\n(case-insensitive; unknown values soft-refused at resolution);\nper-model `[model.<id>]` values win. `None` = unset (Off).",
+          "type": [
+            "string",
             "null"
           ]
         },
@@ -3089,6 +3117,13 @@
             "null"
           ]
         },
+        "disable_parallel_tool_use": {
+          "description": "Row opt-in: disable parallel tool use (F5, apex-ayl.114); row key\n`disable_parallel_tool_use` (bool). Nested into `tool_choice` on the\nmessages wire by the producer. `None` = toggle absent.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "doom_loop_recovery": {
           "anyOf": [
             {
@@ -3231,6 +3266,17 @@
             "number",
             "null"
           ]
+        },
+        "tool_cache_breakpoint": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ToolCacheBreakpoint"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Row opt-in: per-tool cache breakpoint (F5, apex-ayl.114); the PLURAL\nrow key `tools_cache_breakpoint` (`off` | `last`) resolves to\n`Option<ToolCacheBreakpoint>` at config resolution\n(`off`/absent ⇒ `None`). SINGULAR field — do not unify."
         },
         "top_k": {
           "description": "Top-k sampling (docs GA L3060); row key `top_k` (u32 scalar),\nresolved by the shell (MGW F2, apex-ayl.113). `None` = absent on the wire.",
@@ -3926,6 +3972,14 @@
         }
       },
       "type": "object"
+    },
+    "ToolCacheBreakpoint": {
+      "description": "Per-tool cache breakpoint placement (F5, apex-ayl.114): `Last` marks the\nfinal tool with a ttl-less ephemeral cache_control (spends the free 4th\nmarker slot); `Off` (and `None` on resolved configs) = no tool marker.\nRow key `tools_cache_breakpoint` (plural) takes the string `off` | `last`\n(case-insensitive; unknown values are soft-refused at the config layer).",
+      "enum": [
+        "off",
+        "last"
+      ],
+      "type": "string"
     },
     "ToolsConfig": {
       "description": "Tool behavior configuration (`[tools]` in config.toml).\nControls cross-cutting tool behavior such as `.gitignore` filtering.",
