@@ -24,6 +24,7 @@ use crate::actor::request_metadata::{
 };
 use crate::client::{ApiBackend, SamplingClient};
 use crate::config::{RetryPolicy, SamplerConfig};
+use crate::provider::MultiAgentModeAnchor;
 use crate::doom_loop_recovery::{FailedResponseCapture, append_recovery_context};
 use crate::events::{SamplingErrorInfo, SamplingErrorKind, SamplingEvent, StripReason};
 use crate::handle::CollectedSamplingResult;
@@ -74,7 +75,10 @@ enum AttemptOutcome {
 
 /// Run a single sampling request to completion (or final failure).
 ///
-/// Returns the request id so the actor can clean it up from `active_requests` via [`tokio::task::JoinSet::join_next`].
+/// Returns the request id (so the actor can clean it up from `active_requests` via
+/// [`tokio::task::JoinSet::join_next`]) and the `<multi_agent_mode>` anchor as it stands after
+/// this request's egress (STABLE-REMINDER-1, apex-ayl.110 — the actor writes it back to the
+/// per-session state; a request that never reached the responses seam returns it unchanged).
 pub(crate) async fn run_request_task(
     request_id: RequestId,
     request: ConversationRequest,
@@ -83,7 +87,12 @@ pub(crate) async fn run_request_task(
     event_tx: mpsc::UnboundedSender<SamplingEvent>,
     cancel_token: CancellationToken,
     completion: Option<oneshot::Sender<CollectedSamplingResult>>,
-) -> RequestId {
+    multi_agent_mode_anchor: Option<MultiAgentModeAnchor>,
+) -> (RequestId, Option<MultiAgentModeAnchor>) {
+    // STABLE-REMINDER-1 (apex-ayl.110): the per-session `<multi_agent_mode>`
+    // anchor, cloned from the actor state at Submit; the responses egress
+    // may update it, and it is returned for the actor's write-back.
+    let mut d_anchor = multi_agent_mode_anchor;
     let mut completion = CompletionState::new(completion);
     let idle_timeout = Duration::from_secs(
         config
@@ -104,7 +113,7 @@ pub(crate) async fn run_request_task(
         Err(err) => {
             let terminal_event_queued = emit_failed(&event_tx, &request_id, &err);
             send_completion(&mut completion, Err(err), terminal_event_queued);
-            return request_id;
+            return (request_id, d_anchor);
         }
     };
 
@@ -134,7 +143,7 @@ pub(crate) async fn run_request_task(
         );
         if cancel_token.is_cancelled() {
             handle_cancellation(&event_tx, &request_id, &mut completion);
-            return request_id;
+            return (request_id, d_anchor);
         }
 
         // REQVALID-1 47b (D-5, SP-2): the retry loop owns the messages-wire
@@ -150,7 +159,7 @@ pub(crate) async fn run_request_task(
                 Err(err) => {
                     let terminal_event_queued = emit_failed(&event_tx, &request_id, &err);
                     send_completion(&mut completion, Err(err), terminal_event_queued);
-                    return request_id;
+                    return (request_id, d_anchor);
                 }
             }
         }
@@ -166,6 +175,7 @@ pub(crate) async fn run_request_task(
             &cancel_token,
             doom_check,
             Arc::clone(&output_observed),
+            &mut d_anchor,
         )
         .instrument(sampling_span.clone())
         .await;
@@ -232,7 +242,7 @@ pub(crate) async fn run_request_task(
                     Ok((*response, metrics)),
                     terminal_event_queued,
                 );
-                return request_id;
+                return (request_id, d_anchor);
             }
             AttemptOutcome::Empty {
                 context,
@@ -271,7 +281,7 @@ pub(crate) async fn run_request_task(
                 )
                 .await
                 {
-                    return request_id;
+                    return (request_id, d_anchor);
                 }
             }
             AttemptOutcome::Failed {
@@ -294,7 +304,7 @@ pub(crate) async fn run_request_task(
                             Err(clone_error(&error)),
                             terminal_event_queued,
                         );
-                        return request_id;
+                        return (request_id, d_anchor);
                     }
                     let backoff = retry_mod::doom_loop_backoff(doom_retry_count + 1);
                     doom_retry_count += 1;
@@ -330,7 +340,7 @@ pub(crate) async fn run_request_task(
                         continue;
                     }
                     handle_cancellation(&event_tx, &request_id, &mut completion);
-                    return request_id;
+                    return (request_id, d_anchor);
                 }
                 if !apply_retry_decision(
                     &error,
@@ -348,12 +358,12 @@ pub(crate) async fn run_request_task(
                 )
                 .await
                 {
-                    return request_id;
+                    return (request_id, d_anchor);
                 }
             }
             AttemptOutcome::Cancelled => {
                 handle_cancellation(&event_tx, &request_id, &mut completion);
-                return request_id;
+                return (request_id, d_anchor);
             }
             AttemptOutcome::InitFailed { error } => {
                 if !apply_retry_decision(
@@ -372,7 +382,7 @@ pub(crate) async fn run_request_task(
                 )
                 .await
                 {
-                    return request_id;
+                    return (request_id, d_anchor);
                 }
             }
         }
@@ -661,6 +671,7 @@ async fn run_one_attempt(
     cancel_token: &CancellationToken,
     doom_check: Option<xai_grok_sampling_types::DoomLoopRecoveryPolicy>,
     output_observed: Arc<AtomicBool>,
+    d_anchor: &mut Option<MultiAgentModeAnchor>,
 ) -> AttemptOutcome {
     let length_policy = request.length_policy;
     match client.api_backend() {
@@ -686,7 +697,7 @@ async fn run_one_attempt(
         }
         ApiBackend::Responses => {
             let (raw, metadata, doom_loop) =
-                match client.conversation_stream_responses(request).await {
+                match client.conversation_stream_responses(request, d_anchor).await {
                     Ok(parts) => parts,
                     Err(e) => return AttemptOutcome::InitFailed { error: e },
                 };

@@ -640,8 +640,16 @@ pub(crate) async fn generate_session_compact(
                 x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
                 ..Default::default()
             };
-            let stream_result =
-                await_unless_cancelled(cancel, client.conversation_stream_responses(request))
+                let stream_result =
+                // STABLE-REMINDER-1 (apex-ayl.110): side-call path (no
+                // per-session anchor) — `&mut None`. This request carries
+                // the real session conv-id, so the conv-id keyed entry gate
+                // takes Anchor(None): D lands at TAIL on this one-shot
+                // request; the write-back target is this discarded local.
+                await_unless_cancelled(
+                    cancel,
+                    client.conversation_stream_responses(request, &mut None),
+                )
                     .await?;
             let mut stream = match stream_result {
                 Ok((s, _metadata, _doom_loop)) => s,

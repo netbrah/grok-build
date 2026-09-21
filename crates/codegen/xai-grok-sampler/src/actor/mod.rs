@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::commands::SamplerCommand;
 use crate::config::{RetryPolicy, SamplerConfig};
+use crate::provider::MultiAgentModeAnchor;
 use crate::events::SamplingEvent;
 use crate::handle::SamplerHandle;
 use state::{ActiveRequest, ActorState};
@@ -23,8 +24,10 @@ pub struct SamplerActor {
     event_tx: mpsc::UnboundedSender<SamplingEvent>,
     state: ActorState,
     /// The actor's run loop selects on `cmd_rx.recv()` and `tasks.join_next()`.
-    /// A finished task returns its `RequestId` so the actor can clean up `active_requests`.
-    tasks: JoinSet<RequestId>,
+    /// A finished task returns its `RequestId` (for `active_requests` cleanup) and the
+    /// `<multi_agent_mode>` anchor as it stands after the egress (STABLE-REMINDER-1,
+    /// apex-ayl.110 — written back to the per-session state on join).
+    tasks: JoinSet<(RequestId, Option<MultiAgentModeAnchor>)>,
 }
 
 impl SamplerActor {
@@ -53,9 +56,14 @@ impl SamplerActor {
                 // Prefer cleaning up finished tasks before processing new commands, so `active_requests` does not stay stale longer than necessary
                 Some(joined) = self.tasks.join_next(), if !self.tasks.is_empty() => {
                     match joined {
-                        Ok(request_id) => {
+                        Ok((request_id, anchor)) => {
                             // Task finished normally; remove from active set unless the user has already cancelled it (Cancel removes it too)
                             self.state.remove(&request_id);
+                            // STABLE-REMINDER-1 (apex-ayl.110): the request owned the
+                            // per-session `<multi_agent_mode>` anchor for the life of its
+                            // egress; write the post-egress state back (unchanged for
+                            // requests that never reached the responses seam).
+                            self.state.multi_agent_mode_anchor = anchor;
                         }
                         Err(join_err) => {
                             tracing::warn!(
@@ -101,6 +109,10 @@ impl SamplerActor {
                 let effective_config = config
                     .map(|b| *b)
                     .unwrap_or_else(|| self.state.config.clone());
+                // STABLE-REMINDER-1 (apex-ayl.110): the task owns a clone of the
+                // per-session `<multi_agent_mode>` anchor; its write-back on join is
+                // authoritative (in-memory only, never persisted).
+                let multi_agent_mode_anchor = self.state.multi_agent_mode_anchor.clone();
                 let event_tx = self.event_tx.clone();
                 let retry_policy = self.state.retry_policy.clone();
                 let request_inner = *request;
@@ -112,6 +124,7 @@ impl SamplerActor {
                     event_tx,
                     cancel_token,
                     completion_tx,
+                    multi_agent_mode_anchor,
                 ));
             }
             SamplerCommand::Cancel { request_id } => {

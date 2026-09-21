@@ -25,9 +25,13 @@
 //!   codex family renders the frozen bare keyword (the binding codex
 //!   bytes); every other family renders the expanded self-explanatory
 //!   sentence wrapped in the same tag. The item rides EVERY responses-wire
-//!   request — main turns, subagent turns, and summary-client requests —
-//!   and is stripped (tag-based, form-agnostic) and re-injected before the
-//!   last user message on every request.
+//!   request — main turns, subagent turns, and summary-client requests.
+//!   Placement (STABLE-REMINDER-1, apex-ayl.110 — the M-append mechanism):
+//!   `Anchor` requests pin D at its anchored input position for the life of
+//!   the conversation prefix (first injection AND every post-reset re-anchor
+//!   place D at the TAIL — the single uniform anchor rule); `Legacy`
+//!   requests keep the pre-cut placement (before the last user message,
+//!   tail when the input ends elsewhere — byte-binding, T2).
 //!
 //! The wire seam carries NO flag (R-NO-FLAG). The `multi_agent_v2` argument
 //! this cut deleted was homonym #1 of the three `multi_agent_v2` concepts:
@@ -68,6 +72,7 @@
 //! decoder-side contribution lands in `sampler/src/client.rs` dialect
 //! machinery + `sampler/src/stream/responses.rs`, not this file.
 
+use sha2::Digest;
 use serde_json::Value;
 use xai_grok_sampling_types::ReasoningEffort;
 
@@ -129,13 +134,18 @@ const EXPLICIT_REQUEST_ONLY_MULTI_AGENT_MODE_TEXT_EXPANDED: &str =
 /// doc). `normalize_content_types` is the apex-ayl.77 E2 named opt-in for
 /// family-less rows (ruling R-B, binding flag spec); the item injection
 /// runs BEFORE the normalization so a fresh item is swept with the rest of
-/// the input (T10).
+/// the input (T10). `d_anchor` is the caller-side `<multi_agent_mode>`
+/// placement state (STABLE-REMINDER-1, apex-ayl.110): the anchor's home is
+/// the sampler actor's per-session state (in-memory only, never persisted);
+/// this fn only reads/writes it for `Anchor` requests — caller-side state
+/// the cut adds, not part of the pure patch (SDD §4(b), R2B-4).
 pub fn patch_responses_request(
     request_body: &mut Value,
     model_family: Option<&str>,
     reasoning_effort: Option<ReasoningEffort>,
     normalize_content_types: bool,
     ultra_wire_effort: Option<ReasoningEffort>,
+    d_anchor: &mut DAnchorState,
 ) {
     let family = model_family.unwrap_or_default();
 
@@ -168,7 +178,7 @@ pub fn patch_responses_request(
     } else {
         EXPLICIT_REQUEST_ONLY_MULTI_AGENT_MODE_TEXT_EXPANDED
     };
-    inject_multi_agent_mode_item(request_body, mode_text);
+    inject_multi_agent_mode_item(request_body, mode_text, d_anchor);
 
     // Content-type normalization for non-OpenAI providers whose Responses
     // shim expects "text" instead of "input_text"/"output_text". The named
@@ -224,13 +234,83 @@ fn patch_codex_responses_request(
     }
 }
 
-/// Inject the unified `<multi_agent_mode>` developer item (SDD §3.4):
-/// render the mode text in the tag, strip any stale item in either form
-/// (tag-based, form-agnostic), then insert the fresh item just before the
-/// last user message — appending when the input ends on something other
-/// than a user message (the pre-cut codex placement, byte-binding; T2
-/// pins index 4 for a [u,a,u,a] input).
-fn inject_multi_agent_mode_item(request_body: &mut Value, mode_text: &str) {
+/// STABLE-REMINDER-1 (apex-ayl.110) — the raw-prefix fingerprint carried by
+/// the `<multi_agent_mode>` anchor: sha256 over the compact serde_json
+/// serialization of `input[0..position]` (the raw items before D's anchor
+/// position, as seen at the seam — every pre-seam patch is a pure function
+/// of item content, so identical items fingerprint identically on every
+/// request). A fingerprint mismatch is exactly the offline-visible
+/// signature of a declared reset (compaction / prune epoch / memory upsert
+/// / taxonomy reset, SDD §6): the raw prefix diverged, the anchor is
+/// stale, and D re-anchors at the TAIL (the single uniform rule).
+///
+/// `pub` (not `pub(crate)`) because the type rides the pub client entries'
+/// signatures (`conversation_stream_responses`/`conversation_responses`
+/// take `&mut Option<MultiAgentModeAnchor>`); the FIELDS stay
+/// `pub(crate)` — construction and inspection are sampler-internal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiAgentModeAnchor {
+    /// Index at which D was injected into the request's `input` array.
+    pub(crate) position: usize,
+    pub(crate) prefix_sha: [u8; 32],
+}
+
+/// Per-request placement state for the unified `<multi_agent_mode>`
+/// developer item (D). STABLE-REMINDER-1 (apex-ayl.110) — the M-append
+/// mechanism (SDD §2.1, round-1 ADJUDICATION).
+#[derive(Debug, Default)]
+pub enum DAnchorState {
+    /// Pre-cut legacy placement: retain + insert before the last user
+    /// message (tail when the input ends on something other than a user
+    /// message). The entry gate is CONV-ID keyed, not caller keyed: only
+    /// requests with an EMPTY `x_grok_conv_id` take Legacy (byte-identical
+    /// to pre-cut). Side calls that carry a conv-id (compact = the real
+    /// session id; recap/dream/flush/aux = synthetic ids) take the Anchor
+    /// path with a discarded per-call anchor state — a one-slot TAIL D
+    /// placement on one-shot requests, outside the SDD §4(a) acceptance
+    /// subset, with no anchor write-back (gate2-110-qwen-r2 M1).
+    #[default]
+    Legacy,
+    /// M-append: D is pinned at its anchored input position for the life of
+    /// the conversation prefix — first injection AND every post-reset
+    /// re-anchor place D at the TAIL (the single uniform anchor rule). A
+    /// changed mode text lands as a sanctioned one-time IN-PLACE update at
+    /// the anchor (SDD §6 taxonomy item 2) — never a move. The `None`
+    /// anchor is the first-injection state.
+    Anchor(Option<MultiAgentModeAnchor>),
+}
+
+/// sha256 over the compact serde_json serialization of `input[0..position]`
+/// (see `MultiAgentModeAnchor::prefix_sha`).
+fn prefix_fingerprint(input: &[Value], position: usize) -> [u8; 32] {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(
+        serde_json::to_vec(&input[..position]).expect("input prefix serializes to JSON"),
+    );
+    hasher.finalize().into()
+}
+
+/// Inject the unified `<multi_agent_mode>` developer item (SDD §3.2 step 4,
+/// STABLE-REMINDER-1 / apex-ayl.110 — the M-append cut).
+///
+/// Render the mode text in the tag, strip any stale item (tag-based,
+/// form-agnostic — defensive: the raw input never carries D, it is
+/// seam-injected only), then place the fresh item per `d_anchor`:
+///
+/// - `Legacy` — the pre-cut placement, byte-binding: before the last user
+///   message, tail when the input ends on something other than a user
+///   message (T2 pins index 4 for a [u,a,u,a] input).
+/// - `Anchor` — D is pinned at the anchored index while the raw prefix
+///   through it is unchanged (the byte-identical-prefix invariant, SDD
+///   §2.3); `None` or a stale fingerprint (a declared reset diverged the
+///   raw prefix) re-anchors at the TAIL. Inserting at the pinned index with
+///   a changed mode text is the sanctioned in-place D-content update
+///   (SDD §6 taxonomy item 2): same position, fresh bytes.
+fn inject_multi_agent_mode_item(
+    request_body: &mut Value,
+    mode_text: &str,
+    d_anchor: &mut DAnchorState,
+) {
     let rendered = format!("{MULTI_AGENT_MODE_OPEN_TAG}{mode_text}{MULTI_AGENT_MODE_CLOSE_TAG}");
 
     let Some(input) = request_body.get_mut("input").and_then(Value::as_array_mut) else {
@@ -243,11 +323,38 @@ fn inject_multi_agent_mode_item(request_body: &mut Value, mode_text: &str) {
         "role": "developer",
         "content": [{ "type": "input_text", "text": rendered }],
     });
-    let insert_at = input
-        .last()
-        .filter(|item| item.get("role").and_then(Value::as_str) == Some("user"))
-        .map_or(input.len(), |_| input.len() - 1);
+
+    let insert_at = match d_anchor {
+        DAnchorState::Legacy => input
+            .last()
+            .filter(|item| item.get("role").and_then(Value::as_str) == Some("user"))
+            .map_or(input.len(), |_| input.len() - 1),
+        DAnchorState::Anchor(anchor) => {
+            let pinned = anchor.as_ref().is_some_and(|a| {
+                a.position <= input.len()
+                    && prefix_fingerprint(input, a.position) == a.prefix_sha
+            });
+            if pinned {
+                // M-append pin: D stays put while the shared prefix is
+                // byte-identical (SDD §2.3) — new items land AFTER D.
+                anchor.as_ref().expect("pinned implies Some").position
+            } else {
+                // First injection, or a declared reset diverged the raw
+                // prefix: re-anchor at the TAIL (single uniform rule).
+                input.len()
+            }
+        }
+    };
     input.insert(insert_at, mode_item);
+
+    if let DAnchorState::Anchor(anchor) = d_anchor {
+        // The items before D's final position are the raw prefix the next
+        // request must reproduce byte-identically.
+        *anchor = Some(MultiAgentModeAnchor {
+            position: insert_at,
+            prefix_sha: prefix_fingerprint(input, insert_at),
+        });
+    }
 }
 
 // XW-ENC-AFFINITY-1 (apex-mf6): the unconditional D-ENC body-level strip
@@ -437,7 +544,7 @@ mod tests {
         });
         // apex-ayl.86: the item block moved to the unified path — the test
         // now drives the public entry (assertions unchanged).
-        patch_responses_request(&mut body, Some("codex"), Some(ReasoningEffort::Ultra), false, None);
+        patch_responses_request(&mut body, Some("codex"), Some(ReasoningEffort::Ultra), false, None, &mut DAnchorState::default());
         let input = body["input"].as_array().unwrap();
         // developer item inserted before the user message
         assert_eq!(input.len(), 2);
@@ -458,7 +565,7 @@ mod tests {
             ]
         });
         // apex-ayl.86: the item block moved to the unified path (assertions unchanged).
-        patch_responses_request(&mut body, Some("codex"), Some(ReasoningEffort::Max), false, None);
+        patch_responses_request(&mut body, Some("codex"), Some(ReasoningEffort::Max), false, None, &mut DAnchorState::default());
         let input = body["input"].as_array().unwrap();
         assert_eq!(input[0]["role"], "developer");
         assert!(
@@ -478,7 +585,7 @@ mod tests {
             ]
         });
         // apex-ayl.86: the item block moved to the unified path (assertions unchanged).
-        patch_responses_request(&mut body, Some("codex"), Some(ReasoningEffort::Ultra), false, None);
+        patch_responses_request(&mut body, Some("codex"), Some(ReasoningEffort::Ultra), false, None, &mut DAnchorState::default());
         let input = body["input"].as_array().unwrap();
         assert_eq!(input.len(), 2);
         assert!(
@@ -546,7 +653,7 @@ mod tests {
         // apex-ayl.86: the wire-seam `multi_agent_v2` argument is deleted —
         // item injection is unconditional; `ultra_wire_effort` is None (codex
         // arm ignores it — T7).
-        patch_responses_request(&mut body, Some("codex"), Some(ReasoningEffort::Ultra), false, None);
+        patch_responses_request(&mut body, Some("codex"), Some(ReasoningEffort::Ultra), false, None, &mut DAnchorState::default());
         // codex gets web_search access + ultra→max + v2 policy
         assert_eq!(body["tools"][0]["external_web_access"], true);
         assert_eq!(body["reasoning"]["effort"], "max");
@@ -560,7 +667,7 @@ mod tests {
         let mut body = serde_json::json!({
             "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
         });
-        patch_responses_request(&mut body, Some("glm"), None, false, None);
+        patch_responses_request(&mut body, Some("glm"), None, false, None, &mut DAnchorState::default());
         // glm gets content-type normalization but no codex patches
         assert_eq!(body["input"][0]["content"][0]["type"], "text");
     }
@@ -579,7 +686,7 @@ mod tests {
         let mut body = serde_json::json!({
             "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
         });
-        patch_responses_request(&mut body, Some("xai"), None, false, None);
+        patch_responses_request(&mut body, Some("xai"), None, false, None, &mut DAnchorState::default());
         // Wire effort untouched: no `reasoning` object minted for a
         // sub-ultra (None) effort.
         assert!(body.get("reasoning").is_none());
@@ -753,7 +860,7 @@ mod tests {
             // The unified item is a new byte below the user item (SDD §5
             // delta 1); the targeted assertions (user part un-normalized,
             // reasoning retained, no compaction_trigger) are unaffected.
-            patch_responses_request(&mut body, Some(family), None, false, None);
+            patch_responses_request(&mut body, Some(family), None, false, None, &mut DAnchorState::default());
             let input = body["input"].as_array().unwrap();
             let user = input
                 .iter()
@@ -804,7 +911,7 @@ mod tests {
             })
         };
         let mut body = make_body();
-        patch_responses_request(&mut body, Some("codex"), Some(ReasoningEffort::Max), false, None);
+        patch_responses_request(&mut body, Some("codex"), Some(ReasoningEffort::Max), false, None, &mut DAnchorState::default());
         assert!(
             body["input"]
                 .as_array()
@@ -815,7 +922,7 @@ mod tests {
         );
         for family in ["qwen", "glm", "xai", "openai", ""] {
             let mut body = make_body();
-            patch_responses_request(&mut body, Some(family), Some(ReasoningEffort::Max), false, None);
+            patch_responses_request(&mut body, Some(family), Some(ReasoningEffort::Max), false, None, &mut DAnchorState::default());
             assert!(
                 body["input"].as_array().unwrap().iter().any(is_multi_agent_mode_item),
                 "family {family} must carry the unified <multi_agent_mode> developer item (R-UNIFIED-ITEM)"
@@ -834,7 +941,7 @@ mod tests {
                     {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}
                 ]
             });
-            patch_responses_request(&mut body, Some(family), None, true, None);
+            patch_responses_request(&mut body, Some(family), None, true, None, &mut DAnchorState::default());
             // apex-ayl.86: the unified item now lands before the last user
             // message, so look the user/assistant parts up by role instead
             // of index (the pin's intent is unchanged: shim normalization).
@@ -876,7 +983,7 @@ mod tests {
                     {"type": "reasoning", "id": "rs_9", "content": [{"type": "reasoning_text", "text": "t"}], "encrypted_content": "gAAA"}
                 ]
             });
-            patch_responses_request(&mut body, Some(family), Some(ReasoningEffort::Max), false, None);
+            patch_responses_request(&mut body, Some(family), Some(ReasoningEffort::Max), false, None, &mut DAnchorState::default());
             let input = body["input"].as_array().unwrap();
             // (a) shim normalization
             let user_part = input
@@ -935,7 +1042,7 @@ mod tests {
                     {"type": "reasoning", "id": "rs_7", "encrypted_content": "gAAA", "summary": [{"type": "summary_text", "text": "s"}]}
                 ]
             });
-            patch_responses_request(&mut body, Some(family), None, true, None);
+            patch_responses_request(&mut body, Some(family), None, true, None, &mut DAnchorState::default());
             let input = body["input"].as_array().unwrap();
             assert!(
                 input.iter().any(|item| item.get("encrypted_content") == Some(&serde_json::json!("gAAA"))),
@@ -982,7 +1089,7 @@ mod tests {
             // Post-cut the unified item lands at input[0] for these families
             // and its part type is also `input_text` (normalization skipped),
             // so this status-quo assertion holds unchanged (SDD §3.7).
-            patch_responses_request(&mut body, Some(family), None, false, None);
+            patch_responses_request(&mut body, Some(family), None, false, None, &mut DAnchorState::default());
             assert_eq!(
                 body["input"][0]["content"][0]["type"], "input_text",
                 "family {family}: named OpenAI-native family must keep skipping normalization"
@@ -1008,7 +1115,7 @@ mod tests {
             // Post-cut the unified item lands at input[0]; for the empty
             // family its part type is also `input_text` (normalization
             // skipped), so the status-quo assertion holds unchanged (SDD §3.7).
-            patch_responses_request(&mut body, family.as_deref(), None, false, None);
+            patch_responses_request(&mut body, family.as_deref(), None, false, None, &mut DAnchorState::default());
             assert_eq!(
                 body["input"][0]["content"][0]["type"], "input_text",
                 "family {family:?}: empty family currently skips normalization (status-quo pin)"
@@ -1047,7 +1154,7 @@ mod tests {
         // Post-cut the unified item lands at input[0]; for the empty family
         // its part type is also `input_text` (normalization skipped), so the
         // WAVE-C status-quo assertion holds unchanged (SDD §3.7).
-        patch_responses_request(&mut body, None, None, false, None);
+        patch_responses_request(&mut body, None, None, false, None, &mut DAnchorState::default());
         assert_eq!(
             body["input"][0]["content"][0]["type"], "input_text",
             "empty family must SKIP normalize_content_types"
@@ -1062,7 +1169,7 @@ mod tests {
         // Post-cut the unified item lands at input[0]; for qwen the
         // normalization sweeps it to `text` like the rest of the input, so
         // the WAVE-C assertion holds unchanged (SDD §3.7).
-        patch_responses_request(&mut body, Some("qwen"), None, false, None);
+        patch_responses_request(&mut body, Some("qwen"), None, false, None, &mut DAnchorState::default());
         assert_eq!(
             body["input"][0]["content"][0]["type"], "text",
             "qwen family must keep normalizing input_text -> text"
@@ -1133,6 +1240,7 @@ mod tests {
             Some(ReasoningEffort::Ultra),
             false,
             Some(ReasoningEffort::Xhigh),
+            &mut DAnchorState::default(),
         );
         assert_eq!(body["reasoning"]["effort"], "xhigh");
         assert_eq!(
@@ -1160,13 +1268,13 @@ mod tests {
                 assistant_item("a2")
             ]
         });
-        patch_responses_request(&mut body, Some("qwen"), Some(ReasoningEffort::Medium), false, None);
+        patch_responses_request(&mut body, Some("qwen"), Some(ReasoningEffort::Medium), false, None, &mut DAnchorState::default());
         let input = body["input"].as_array().unwrap();
         assert_eq!(input.len(), 5);
         assert_eq!(input[4]["role"], "developer", "append at end when the last item is not a user message");
         // [assistant, user] -> index 1 (before the last user message).
         let mut body = serde_json::json!({ "input": [assistant_item("a1"), user_item("u1")] });
-        patch_responses_request(&mut body, Some("qwen"), Some(ReasoningEffort::Medium), false, None);
+        patch_responses_request(&mut body, Some("qwen"), Some(ReasoningEffort::Medium), false, None, &mut DAnchorState::default());
         let input = body["input"].as_array().unwrap();
         assert_eq!(input.len(), 3);
         assert_eq!(input[1]["role"], "developer", "item lands before the last user message");
@@ -1178,7 +1286,7 @@ mod tests {
         // is rewritten input_text -> text (R5, pinned by T10), so the
         // injected literal form is only observable on a family the
         // normalize pass skips.
-        patch_responses_request(&mut body, Some("xai"), Some(ReasoningEffort::Medium), false, None);
+        patch_responses_request(&mut body, Some("xai"), Some(ReasoningEffort::Medium), false, None, &mut DAnchorState::default());
         let input = body["input"].as_array().unwrap();
         assert_eq!(input.len(), 2);
         assert_eq!(input[1]["role"], "developer");
@@ -1218,6 +1326,7 @@ mod tests {
             Some(ReasoningEffort::Ultra),
             false,
             Some(ReasoningEffort::Xhigh),
+            &mut DAnchorState::default(),
         );
         assert_eq!(body["reasoning"]["effort"], "xhigh");
         assert_eq!(body["input"].as_array().unwrap().len(), 2, "both stale forms stripped, one fresh item remains");
@@ -1230,7 +1339,7 @@ mod tests {
         // Mode change: re-patch the same body at max -> the proactive item is
         // replaced by the expanded explicit item (sub-ultra leaves the wire
         // effort untouched, so "xhigh" stays).
-        patch_responses_request(&mut body, Some("qwen"), Some(ReasoningEffort::Max), false, None);
+        patch_responses_request(&mut body, Some("qwen"), Some(ReasoningEffort::Max), false, None, &mut DAnchorState::default());
         assert_eq!(body["reasoning"]["effort"], "xhigh", "sub-ultra re-patch does not touch the wire effort");
         assert_eq!(
             mode_item_text(&body),
@@ -1245,7 +1354,7 @@ mod tests {
     #[test]
     fn menuless_ultra_falls_back_to_max() {
         let mut body = serde_json::json!({ "input": [user_item("hi")] });
-        patch_responses_request(&mut body, Some("qwen"), Some(ReasoningEffort::Ultra), false, None);
+        patch_responses_request(&mut body, Some("qwen"), Some(ReasoningEffort::Ultra), false, None, &mut DAnchorState::default());
         assert_eq!(body["reasoning"]["effort"], "max");
         assert_eq!(
             mode_item_text(&body),
@@ -1265,7 +1374,7 @@ mod tests {
             ReasoningEffort::Low,
         ] {
             let mut body = serde_json::json!({ "input": [user_item("hi")] });
-            patch_responses_request(&mut body, Some("qwen"), Some(effort), false, Some(ReasoningEffort::Xhigh));
+            patch_responses_request(&mut body, Some("qwen"), Some(effort), false, Some(ReasoningEffort::Xhigh), &mut DAnchorState::default());
             assert!(
                 body.get("reasoning").is_none(),
                 "no reasoning object minted for sub-ultra {effort:?}"
@@ -1371,7 +1480,7 @@ mod tests {
                 .and_then(Value::as_str)
                 .unwrap_or_else(|| panic!("T6 golden key {key:?} missing or not a string"));
             let mut real_body = sol_body();
-            patch_responses_request(&mut real_body, Some("codex"), effort, false, None);
+            patch_responses_request(&mut real_body, Some("codex"), effort, false, None, &mut DAnchorState::default());
             let mut replica_body = sol_body();
             legacy_codex_patch(&mut replica_body, effort);
             assert_eq!(
@@ -1402,6 +1511,7 @@ mod tests {
             Some(ReasoningEffort::Ultra),
             false,
             Some(ReasoningEffort::High),
+            &mut DAnchorState::default(),
         );
         assert_eq!(body["reasoning"]["effort"], "max");
         assert_eq!(
@@ -1422,6 +1532,7 @@ mod tests {
             Some(ReasoningEffort::Ultra),
             false,
             Some(ReasoningEffort::High),
+            &mut DAnchorState::default(),
         );
         assert_eq!(body["reasoning"]["effort"], "high");
         assert_eq!(
@@ -1431,7 +1542,7 @@ mod tests {
             )
         );
         let mut body = serde_json::json!({ "input": [user_item("hi")] });
-        patch_responses_request(&mut body, Some("xai"), Some(ReasoningEffort::Low), false, None);
+        patch_responses_request(&mut body, Some("xai"), Some(ReasoningEffort::Low), false, None, &mut DAnchorState::default());
         assert!(body.get("reasoning").is_none());
         assert_eq!(
             mode_item_text(&body),
@@ -1451,7 +1562,7 @@ mod tests {
             "Multi-agent mode: explicit_request_only — subagents may be spawned only when the user explicitly requests.";
         let read_mode_text = |family: Option<&str>, effort: Option<ReasoningEffort>| -> String {
             let mut body = serde_json::json!({ "input": [user_item("hi")] });
-            patch_responses_request(&mut body, family, effort, false, None);
+            patch_responses_request(&mut body, family, effort, false, None, &mut DAnchorState::default());
             let items = body["input"]
                 .as_array()
                 .unwrap()
@@ -1491,6 +1602,7 @@ mod tests {
             Some(ReasoningEffort::Ultra),
             false,
             Some(ReasoningEffort::Xhigh),
+            &mut DAnchorState::default(),
         );
         assert_eq!(
             mode_items(&body)[0]["content"][0]["type"],
@@ -1498,7 +1610,7 @@ mod tests {
             "qwen (shim class) sweeps the fresh item input_text -> text"
         );
         let mut body = serde_json::json!({ "input": [user_item("hi")] });
-        patch_responses_request(&mut body, Some("codex"), Some(ReasoningEffort::Ultra), false, None);
+        patch_responses_request(&mut body, Some("codex"), Some(ReasoningEffort::Ultra), false, None, &mut DAnchorState::default());
         assert_eq!(
             mode_items(&body)[0]["content"][0]["type"],
             "input_text",
@@ -1511,7 +1623,7 @@ mod tests {
     #[test]
     fn codex_none_effort_gets_explicit_bare_item() {
         let mut body = serde_json::json!({ "input": [user_item("hi")] });
-        patch_responses_request(&mut body, Some("codex"), None, false, None);
+        patch_responses_request(&mut body, Some("codex"), None, false, None, &mut DAnchorState::default());
         assert_eq!(
             mode_item_text(&body),
             "<multi_agent_mode>explicit_request_only</multi_agent_mode>"
@@ -1530,6 +1642,7 @@ mod tests {
             Some(ReasoningEffort::Ultra),
             false,
             Some(ReasoningEffort::High),
+            &mut DAnchorState::default(),
         );
         assert_eq!(body["reasoning"]["effort"], "high");
         assert!(body.get("input").is_none(), "no input array => no item, no panic");
@@ -1560,7 +1673,7 @@ mod tests {
             })
         };
         for (label, mut body) in [("subagent", subagent_body()), ("summary", summary_body())] {
-            patch_responses_request(&mut body, Some("qwen"), Some(ReasoningEffort::Medium), false, None);
+            patch_responses_request(&mut body, Some("qwen"), Some(ReasoningEffort::Medium), false, None, &mut DAnchorState::default());
             assert_eq!(mode_items(&body).len(), 1, "{label} sub-ultra turn carries exactly one unified item");
             assert_eq!(
                 mode_item_text(&body),
@@ -1576,6 +1689,7 @@ mod tests {
                 Some(ReasoningEffort::Ultra),
                 false,
                 Some(ReasoningEffort::Xhigh),
+                &mut DAnchorState::default(),
             );
             assert_eq!(body["reasoning"]["effort"], "xhigh");
             assert_eq!(mode_items(&body).len(), 1, "{label} ultra turn carries exactly one unified item");
@@ -1599,7 +1713,7 @@ mod tests {
                 "model": "qwen3.8-27b",
                 "input": [user_item("Ship the menu rollout and verify the wire.")]
             });
-            patch_responses_request(&mut body, Some("qwen"), effort, false, ultra_wire);
+            patch_responses_request(&mut body, Some("qwen"), effort, false, ultra_wire, &mut DAnchorState::default());
             body
         };
         // Switch-driven state (apply_supported_effort, post-projection).
@@ -1626,3 +1740,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "provider_stable_reminder_tests.rs"]
+mod stable_reminder_tests;

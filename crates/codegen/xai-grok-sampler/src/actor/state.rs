@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{RetryPolicy, SamplerConfig};
+use crate::provider::MultiAgentModeAnchor;
 use crate::types::RequestId;
 
 /// `cancel_token` is owned by the actor (cloned into the spawned per-request task).
@@ -17,6 +18,11 @@ pub(crate) struct ActorState {
     pub(crate) active_requests: HashMap<RequestId, ActiveRequest>,
     pub(crate) config: SamplerConfig,
     pub(crate) retry_policy: RetryPolicy,
+    /// STABLE-REMINDER-1 (apex-ayl.110): the per-session `<multi_agent_mode>`
+    /// anchor (in-memory only, never persisted). The actor owns it; each
+    /// request task borrows it for the life of the egress and returns it,
+    /// so the anchor survives across requests for the life of the session.
+    pub(crate) multi_agent_mode_anchor: Option<MultiAgentModeAnchor>,
 }
 
 impl ActorState {
@@ -25,6 +31,7 @@ impl ActorState {
             active_requests: HashMap::new(),
             config,
             retry_policy,
+            multi_agent_mode_anchor: None,
         }
     }
 

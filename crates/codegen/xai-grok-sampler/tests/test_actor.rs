@@ -2255,8 +2255,11 @@ async fn codex_remote_compaction_v2_carries_live_auth_and_splices_next_turn() {
     // splice the exact provider item at the typed placeholder's position.
     let mut next_turn = ConversationRequest::from_items(vec![result.compaction_item]);
     next_turn.model = Some("gpt-5.6-sol".into());
+    // STABLE-REMINDER-1 (apex-ayl.110): test client has no per-session
+    // anchor state — `&mut None` (conv-id gating keeps this Legacy,
+    // i.e. byte-identical to the pre-cut wire shape the test asserts).
     let _stream = client
-        .conversation_stream_responses(next_turn)
+        .conversation_stream_responses(next_turn, &mut None)
         .await
         .expect("next-turn stream starts");
     server.shutdown();

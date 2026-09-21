@@ -38,7 +38,9 @@ use xai_grok_sampling_types::request_validation::EncodedMessagesRequest;
 
 use crate::config::{AuthScheme, OriginClientInfo, SamplerConfig};
 use crate::events::SamplingErrorInfo;
-use crate::provider::{ResponsesWireDialect, responses_wire_dialect_for_model_family};
+use crate::provider::{
+    DAnchorState, MultiAgentModeAnchor, ResponsesWireDialect, responses_wire_dialect_for_model_family,
+};
 use crate::span_timing::{ERROR, STATUS_CODE, SUCCESS, StreamSpanTiming};
 use crate::stream_classify::{chat_chunk_class, message_event_class, responses_stream_item_class};
 use crate::types::ResponsesStreamItem;
@@ -2129,6 +2131,7 @@ impl SamplingClient {
     pub async fn create_response(
         &self,
         mut request: CreateResponseWrapper,
+        d_anchor: &mut DAnchorState,
     ) -> Result<rs::Response> {
         self.apply_response_defaults(&mut request)?;
 
@@ -2183,6 +2186,7 @@ impl SamplingClient {
             self.defaults.reasoning_effort,
             self.defaults.normalize_content_types,
             self.defaults.ultra_wire_effort,
+            d_anchor,
         );
         // apex-ayl.77 (donor parity, open-grok@049664b5 client.rs:2406): strip
         // the ingress sentinel web-search action pre-egress — the wire keeps
@@ -2270,6 +2274,7 @@ impl SamplingClient {
     pub async fn create_response_stream(
         &self,
         request: CreateResponseWrapper,
+        d_anchor: &mut DAnchorState,
     ) -> Result<(
         BoxStream<'static, Result<ResponsesStreamItem>>,
         Option<ResponseModelMetadata>,
@@ -2281,10 +2286,10 @@ impl SamplingClient {
             model_id = request.inner.model.as_deref().unwrap_or(""),
         );
         if region.span().is_disabled() {
-            self.create_response_stream_inner(request, region).await
+            self.create_response_stream_inner(request, region, d_anchor).await
         } else {
             let span = region.span().clone();
-            self.create_response_stream_inner(request, region)
+            self.create_response_stream_inner(request, region, d_anchor)
                 .instrument(span)
                 .await
         }
@@ -2295,6 +2300,7 @@ impl SamplingClient {
         &self,
         mut request: CreateResponseWrapper,
         region: crate::span_timing::Region,
+        d_anchor: &mut DAnchorState,
     ) -> Result<(
         BoxStream<'static, Result<ResponsesStreamItem>>,
         Option<ResponseModelMetadata>,
@@ -2352,6 +2358,7 @@ impl SamplingClient {
             self.defaults.reasoning_effort,
             self.defaults.normalize_content_types,
             self.defaults.ultra_wire_effort,
+            d_anchor,
         );
         // apex-ayl.77 (donor parity, open-grok@049664b5 client.rs:2833): strip
         // the ingress sentinel web-search action pre-egress — the wire keeps
@@ -2573,6 +2580,7 @@ impl SamplingClient {
         request: &ConversationRequest,
         instructions: &str,
         include_compaction_trigger: bool,
+        d_anchor: &mut DAnchorState,
     ) -> Result<serde_json::Value> {
         let extra_tool_entries = xai_grok_sampling_types::extra_tool_entries(&request.hosted_tools);
         let raw_input_replacements = request.raw_responses_input_replacements(
@@ -2624,6 +2632,7 @@ impl SamplingClient {
             request.reasoning_effort,
             self.defaults.normalize_content_types,
             self.defaults.ultra_wire_effort,
+            d_anchor,
         );
         // apex-ayl.77 (donor parity, open-grok@049664b5 client.rs:3038): strip
         // the ingress sentinel web-search action pre-egress — the wire keeps
@@ -2714,7 +2723,12 @@ impl SamplingClient {
             );
         }
         let request_body =
-            self.codex_compaction_request_body(&request, instructions, include_compaction_trigger)?;
+            self.codex_compaction_request_body(
+                &request,
+                instructions,
+                include_compaction_trigger,
+                &mut DAnchorState::default(),
+            )?;
         let endpoint = self.endpoint("responses");
         let mut beta_headers = HeaderMap::new();
         beta_headers.insert(
@@ -3284,6 +3298,7 @@ impl SamplingClient {
     pub async fn conversation_stream_responses(
         &self,
         mut request: ConversationRequest,
+        d_anchor: &mut Option<MultiAgentModeAnchor>,
     ) -> Result<(
         BoxStream<'static, Result<ResponsesStreamItem>>,
         Option<ResponseModelMetadata>,
@@ -3337,6 +3352,12 @@ impl SamplingClient {
 
         let responses_request: rs::CreateResponse = (&request).into();
 
+        // STABLE-REMINDER-1 (apex-ayl.110): the conv-id gate decision is
+        // computed before the wrapper below takes ownership of
+        // `x_grok_conv_id` (Anchor for non-empty conv-id — including
+        // conv-id-carrying side calls; Legacy only for empty conv-id).
+        let has_conv_id = x_grok_conv_id.as_deref().is_some_and(|id| !id.is_empty());
+
         let mut wrapper = CreateResponseWrapper::new(responses_request);
         wrapper.x_grok_conv_id = x_grok_conv_id;
         wrapper.x_grok_req_id = x_grok_req_id;
@@ -3351,13 +3372,31 @@ impl SamplingClient {
             wrapper.trace = Some(trace);
         }
 
-        self.create_response_stream(wrapper).await
+        // STABLE-REMINDER-1 (apex-ayl.110): conv-id keyed gating —
+        // non-empty `x_grok_conv_id` takes the M-append Anchor path
+        // (main-loop requests hold the per-session anchor; conv-id-
+        // carrying side calls pass a discarded per-call anchor, so their
+        // D lands at TAIL and nothing is written back); EMPTY conv-id
+        // keeps the pre-cut Legacy placement byte-identical (SDD §4(a)
+        // acceptance subset). The post-egress anchor is written back only
+        // into the caller's own slot (gate2-110-qwen-r2 M1).
+        let mut d_anchor_state = if has_conv_id {
+            DAnchorState::Anchor(std::mem::take(d_anchor))
+        } else {
+            DAnchorState::Legacy
+        };
+        let result = self.create_response_stream(wrapper, &mut d_anchor_state).await;
+        if let DAnchorState::Anchor(anchor) = d_anchor_state {
+            *d_anchor = anchor;
+        }
+        result
     }
 
     /// Send a conversation request using the Responses API (non-streaming).
     pub async fn conversation_responses(
         &self,
         mut request: ConversationRequest,
+        d_anchor: &mut Option<MultiAgentModeAnchor>,
     ) -> Result<rs::Response> {
         self.apply_conversation_defaults(&mut request)?;
 
@@ -3407,6 +3446,11 @@ impl SamplingClient {
 
         let responses_request: rs::CreateResponse = (&request).into();
 
+        // STABLE-REMINDER-1 (apex-ayl.110): conv-id gate decision (see
+        // `conversation_stream_responses` above) — computed before the
+        // wrapper takes ownership of `x_grok_conv_id`.
+        let has_conv_id = x_grok_conv_id.as_deref().is_some_and(|id| !id.is_empty());
+
         let mut wrapper = CreateResponseWrapper::new(responses_request);
         wrapper.x_grok_conv_id = x_grok_conv_id;
         wrapper.x_grok_req_id = x_grok_req_id;
@@ -3421,7 +3465,19 @@ impl SamplingClient {
             wrapper.trace = Some(trace);
         }
 
-        self.create_response(wrapper).await
+        // STABLE-REMINDER-1 (apex-ayl.110): conv-id gating — see
+        // `conversation_stream_responses` above (Anchor for non-empty
+        // conv-id, incl. conv-id-carrying side calls; Legacy for empty).
+        let mut d_anchor_state = if has_conv_id {
+            DAnchorState::Anchor(std::mem::take(d_anchor))
+        } else {
+            DAnchorState::Legacy
+        };
+        let result = self.create_response(wrapper, &mut d_anchor_state).await;
+        if let DAnchorState::Anchor(anchor) = d_anchor_state {
+            *d_anchor = anchor;
+        }
+        result
     }
 
     /// Send a conversation request using the Anthropic Messages API (streaming).
@@ -3523,7 +3579,11 @@ impl SamplingClient {
                 crate::stream::collect_response(events).await
             }
             ApiBackend::Responses => {
-                let (raw, meta, doom_loop) = self.conversation_stream_responses(request).await?;
+                // STABLE-REMINDER-1 (apex-ayl.110): collect is a side-call API —
+                // per-call anchor (never persisted across collect calls); conv-id
+                // gating inside the entry decides Anchor vs Legacy.
+                let (raw, meta, doom_loop) =
+                    self.conversation_stream_responses(request, &mut None).await?;
                 let events =
                     crate::stream::stream_responses(raw, meta, request_id, idle_timeout, doom_loop);
                 crate::stream::collect_response(events).await
@@ -3868,13 +3928,13 @@ mod tests {
         wrapper.extra_tool_entries = vec![serde_json::json!({"type": "x_search"})];
         if streaming {
             let (_stream, _model_metadata, _doom_loop_collector) = client
-                .create_response_stream(wrapper)
+                .create_response_stream(wrapper, &mut DAnchorState::default())
                 .await
                 .expect("streaming request should succeed");
         } else {
             request.tools = None;
             client
-                .create_response(CreateResponseWrapper::new(request))
+                .create_response(CreateResponseWrapper::new(request), &mut DAnchorState::default())
                 .await
                 .expect("unary request should succeed");
         }
@@ -5765,7 +5825,12 @@ mod tests {
             xai_grok_sampling_types::ConversationItem::user("hello"),
         ]);
         let body = client
-            .codex_compaction_request_body(&request, "authoritative compact instructions", true)
+            .codex_compaction_request_body(
+                &request,
+                "authoritative compact instructions",
+                true,
+                &mut DAnchorState::default(),
+            )
             .unwrap();
         assert_eq!(body["instructions"], "authoritative compact instructions");
         let input = body["input"].as_array().unwrap();
@@ -5808,7 +5873,7 @@ mod tests {
                 .unwrap_or(0)
         };
         let default_body = client
-            .codex_compaction_request_body(&request, "", true)
+            .codex_compaction_request_body(&request, "", true, &mut DAnchorState::default())
             .unwrap();
         assert_eq!(
             count_triggers(&default_body),
@@ -5816,7 +5881,7 @@ mod tests {
             "the default remote-compaction-v2 body carries exactly one trailing compaction_trigger item: {default_body:?}"
         );
         let suppressed_body = client
-            .codex_compaction_request_body(&request, "", false)
+            .codex_compaction_request_body(&request, "", false, &mut DAnchorState::default())
             .unwrap();
         assert_eq!(
             count_triggers(&suppressed_body),

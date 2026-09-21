@@ -11,7 +11,7 @@
 //! RED state this target is compile-RED (Wave C) while `--lib` (Wave A) and
 //! `xai-grok-sampling-types` (Wave B) record their reds independently.
 
-use xai_grok_sampler::provider::patch_responses_request;
+use xai_grok_sampler::provider::{DAnchorState, patch_responses_request};
 
 /// R-B invariant, no-flag side: with `normalize_content_types` unset, a
 /// family-less row (`None` or `Some("")`) keeps skipping content-type
@@ -27,7 +27,7 @@ fn ingress77_e2_r_b_no_flag_empty_family_skips_normalization() {
         });
         // apex-ayl.86: wire-seam arg deleted; `ultra_wire_effort` None (the
         // no-flag branch of the invariant, SDD §3.7).
-        patch_responses_request(&mut body, family.as_deref(), None, false, None);
+        patch_responses_request(&mut body, family.as_deref(), None, false, None, &mut DAnchorState::default());
         assert_eq!(
             body["input"][0]["content"][0]["type"], "input_text",
             "family {family:?}: no-flag empty family must keep skipping normalization (status-quo pin)"
@@ -50,7 +50,7 @@ fn ingress77_e2_r_b_flag_set_empty_family_normalization_fires() {
         });
         // apex-ayl.86: wire-seam arg deleted; `ultra_wire_effort` None (the
         // named-flag opt-in branch, SDD §3.7).
-        patch_responses_request(&mut body, family.as_deref(), None, true, None);
+        patch_responses_request(&mut body, family.as_deref(), None, true, None, &mut DAnchorState::default());
         assert_eq!(
             body["input"][0]["content"][0]["type"], "text",
             "family {family:?}: flag-set empty family must normalize input_text -> text"

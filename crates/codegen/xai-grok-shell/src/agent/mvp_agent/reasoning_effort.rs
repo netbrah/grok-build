@@ -438,6 +438,7 @@ mod tests {
             Some(ReasoningEffort::Ultra),
             false,
             ultra_wire,
+            &mut xai_grok_sampler::provider::DAnchorState::default(),
         );
         assert_eq!(body["reasoning"]["effort"], "xhigh");
         let developer_items: Vec<&Value> = body["input"]
