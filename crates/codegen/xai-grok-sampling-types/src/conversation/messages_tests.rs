@@ -2078,6 +2078,17 @@ fn r1_emptied_user_message_removed_after_adjacency_strip() {
 /// Fresh-written: MW-2 spec D6 alternation PROPERTY test. For the six focus
 /// sequences (a)-(f) — including the D2 double-sentinel `[A]` case — the
 /// post-build message list never contains two consecutive same-role messages.
+///
+/// apex-ayl.89 (C3c carve-out, fix-pass 1 m7): the property holds for
+/// CM-free runs — the six shapes above, none of which carries a
+/// CompactionMeta item. CM-containing runs are carved out BY DESIGN: the
+/// compaction metadata pieces (CompactionMeta | real | CompactionMeta |
+/// SystemReminder) project as consecutive user messages, each sub-cap
+/// (I2); the local invariant gate (request_builder.rs) does not reject
+/// consecutive users, and Anthropic merges same-role messages
+/// server-side (wire-safe). The over-cap residual of a same-class merge
+/// is C1-lite's job — the shell's validate-before-install compaction
+/// guard (Sites A/B) rejects it loudly instead of installing a brick.
 #[test]
 fn post_build_messages_never_contain_consecutive_same_role() {
     fn assert_alternates(messages: &[crate::messages::Message], label: &str) {
@@ -2815,5 +2826,188 @@ fn success_tool_result_omits_is_error_key() {
     assert!(
         tool_result_blocks > 0,
         "the walk must find the tool_result block it pins: {json}"
+    );
+}
+
+// ============================================================================
+// apex-ayl.89 (COMPACT-N3-1) — C3c RED phase
+// ============================================================================
+
+/// apex-ayl.89 (RED 1 helper): per-user-message content blocks of a
+/// projected request — text blocks verbatim, tool_result blocks labeled.
+fn compactn3_user_block_texts(projected: &crate::messages::MessagesRequest) -> Vec<Vec<String>> {
+    projected
+        .messages()
+        .iter()
+        .filter(|m| m.role == crate::messages::MessageRole::User)
+        .map(|m| match &m.content {
+            crate::messages::MessageContent::Blocks(blocks) => blocks
+                .iter()
+                .map(|b| match b {
+                    crate::messages::ContentBlock::Text { text, .. } => text.clone(),
+                    crate::messages::ContentBlock::ToolResult { .. } => {
+                        "[tool_result]".to_string()
+                    }
+                    _ => "[non-text]".to_string(),
+                })
+                .collect(),
+            crate::messages::MessageContent::Text(t) => vec![t.clone()],
+        })
+        .collect()
+}
+
+/// The pinned frozen-checkpoint 5-item shape (dogfood session
+/// 01a0b095-fa5e-7590-9533-ae51c9634c45): System 5,888 B + four adjacent
+/// User items at the checkpoint piece sizes (CM 3,981 / REAL 104 /
+/// CM 18,940 / SR 23,376).
+fn compactn3_pinned_items() -> Vec<ConversationItem> {
+    vec![
+        ConversationItem::system("A".repeat(5_888)),
+        ConversationItem::user_meta("B".repeat(3_981)),
+        ConversationItem::user("C".repeat(104)),
+        ConversationItem::user_meta("D".repeat(18_940)),
+        ConversationItem::system_reminder("E".repeat(23_376)),
+    ]
+}
+
+/// apex-ayl.89 (RED 1a — I2/I3): the pinned 5-item shape must project to
+/// FOUR separate user messages under C3c (the CM | REAL | CM | SR run
+/// splits on class change), each far under the N3 per-item cap; a later
+/// REAL prompt ("sitrep?") is its own message (I3) and the caps stay Ok.
+///
+/// PRE-CUT: R1 coalesces the 4-user run into ONE message — the failing
+/// assertion below is the SHAPE predicate, not N3.
+#[test]
+fn compactn3_pinned_shape_projects_four_user_messages() {
+    let items = compactn3_pinned_items();
+    let projected = build_messages_request(&ConversationRequest {
+        items: items.clone(),
+        model: Some("claude-sonnet-5".to_string()),
+        ..Default::default()
+    });
+
+    // I2: four separate user messages at the pinned piece sizes.
+    let user_blocks = compactn3_user_block_texts(&projected);
+    assert_eq!(
+        user_blocks.len(),
+        4,
+        "the CM | REAL | CM | SR run must project as 4 user messages (C3c class-scoped flush, apex-ayl.89); got {user_blocks:?}"
+    );
+    let sizes: Vec<usize> = user_blocks.iter().map(|b| b[0].len()).collect();
+    assert_eq!(
+        sizes,
+        vec![3_981, 104, 18_940, 23_376],
+        "each pinned metadata piece must stay its own sub-cap message"
+    );
+
+    // N3: post-cut every pinned piece is sub-cap, so the full gate is Ok.
+    // (Pre-cut this is unreachable — the shape assertion fails first.)
+    crate::request_validation::validate_and_encode_messages_request(&projected)
+        .expect("post-cut: every pinned piece is sub-cap, so the full gate must be Ok");
+
+    // I3: the next REAL prompt appended to the same run is its own
+    // message and the caps stay Ok.
+    let mut items2 = items;
+    items2.push(ConversationItem::user("sitrep?"));
+    let projected2 = build_messages_request(&ConversationRequest {
+        items: items2,
+        model: Some("claude-sonnet-5".to_string()),
+        ..Default::default()
+    });
+    let user_blocks2 = compactn3_user_block_texts(&projected2);
+    assert_eq!(
+        user_blocks2.len(),
+        5,
+        "the appended real prompt must be a 5th user message (I3)"
+    );
+    assert_eq!(
+        user_blocks2.last().unwrap()[0],
+        "sitrep?",
+        "the real prompt must never re-absorb the metadata run (I3)"
+    );
+    crate::request_validation::validate_and_encode_messages_request(&projected2)
+        .expect("I3: the appended real prompt keeps the request sub-cap");
+}
+
+/// apex-ayl.89 (RED 1b helper): the ≥3 non-CM parity shapes (fix-pass 1
+/// m6). None carries a CompactionMeta item — under C3c their projections
+/// must stay BYTE-IDENTICAL to the pre-cut output (I1, zero re-pins).
+fn compactn3_parity_shapes() -> Vec<(&'static str, ConversationRequest)> {
+    vec![
+        (
+            "p1_alternation",
+            ConversationRequest::from_items(vec![
+                ConversationItem::system("sys"),
+                ConversationItem::user("hello"),
+                ConversationItem::assistant("hi"),
+                ConversationItem::user("world"),
+                ConversationItem::assistant("bye"),
+            ])
+            .with_model("claude-sonnet-5"),
+        ),
+        (
+            // R1 core: adjacent REAL users coalesce — C3c must not split.
+            "p2_adjacent_real_users",
+            ConversationRequest::from_items(vec![
+                ConversationItem::system("sys"),
+                ConversationItem::user("one"),
+                ConversationItem::user("two"),
+                ConversationItem::assistant("reply"),
+            ])
+            .with_model("claude-sonnet-5"),
+        ),
+        (
+            // A non-CM synthetic (SystemReminder) inside a user run:
+            // pre-cut it coalesces with the real items; C3c must keep
+            // that byte-for-byte (no CM in the run ⇒ no class flush).
+            "p3_reminder_in_user_run",
+            ConversationRequest::from_items(vec![
+                ConversationItem::user("a"),
+                ConversationItem::system_reminder("r"),
+                ConversationItem::user("b"),
+                assistant_with_calls(&[("p3_1", "read_file")]),
+                ConversationItem::tool_result("p3_1", "ok"),
+                ConversationItem::assistant("done"),
+            ])
+            .with_model("claude-sonnet-5"),
+        ),
+        (
+            // System-boundary flush mid-run + tool round-trip.
+            "p4_system_boundary_flush",
+            ConversationRequest::from_items(vec![
+                ConversationItem::user("q1"),
+                assistant_with_calls(&[("p4_1", "t")]),
+                ConversationItem::tool_result("p4_1", "r1"),
+                ConversationItem::system("mid"),
+                ConversationItem::user("q2"),
+            ])
+            .with_model("claude-sonnet-5"),
+        ),
+    ]
+}
+
+
+/// apex-ayl.89 (RED 1b — I1 parity guard): the projections of the four
+/// non-CM shapes from `compactn3_parity_shapes()`, captured PRE-CUT and
+/// pinned byte-for-byte (fix-pass 1 m6: ≥3 shapes). C3c must not change
+/// any run that contains no CompactionMeta item — these projections stay
+/// BYTE-IDENTICAL post-cut (zero re-pins; any drift fails here).
+#[test]
+fn compactn3_non_cm_shapes_byte_identical_to_pre_cut() {
+    let mut joined = String::new();
+    for (name, req) in compactn3_parity_shapes() {
+        joined.push_str(&format!(
+            "{name}\t{}\n",
+            serde_json::to_string(&build_messages_request(&req)).unwrap()
+        ));
+    }
+    assert_eq!(
+        joined,
+        r#"p1_alternation	{"model":"claude-sonnet-5","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]},{"role":"assistant","content":[{"type":"text","text":"hi"}]},{"role":"user","content":[{"type":"text","text":"world","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"bye"}]},{"role":"user","content":[{"type":"text","text":"[Continue]","cache_control":{"type":"ephemeral"}}]}],"max_tokens":128000,"system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral"}}]}
+p2_adjacent_real_users	{"model":"claude-sonnet-5","messages":[{"role":"user","content":[{"type":"text","text":"one"},{"type":"text","text":"two","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"reply"}]},{"role":"user","content":[{"type":"text","text":"[Continue]","cache_control":{"type":"ephemeral"}}]}],"max_tokens":128000,"system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral"}}]}
+p3_reminder_in_user_run	{"model":"claude-sonnet-5","messages":[{"role":"user","content":[{"type":"text","text":"a"},{"type":"text","text":"r"},{"type":"text","text":"b"}]},{"role":"assistant","content":[{"type":"tool_use","id":"p3_1","name":"read_file","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"p3_1","content":"ok","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"done"}]},{"role":"user","content":[{"type":"text","text":"[Continue]","cache_control":{"type":"ephemeral"}}]}],"max_tokens":128000}
+p4_system_boundary_flush	{"model":"claude-sonnet-5","messages":[{"role":"user","content":[{"type":"text","text":"q1","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"tool_use","id":"p4_1","name":"t","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"p4_1","content":"r1"}]},{"role":"user","content":[{"type":"text","text":"q2","cache_control":{"type":"ephemeral"}}]}],"max_tokens":128000,"system":[{"type":"text","text":"mid","cache_control":{"type":"ephemeral"}}]}
+"#,
+        "a non-CM projection drifted from its pre-cut bytes (I1 parity, apex-ayl.89)"
     );
 }

@@ -582,7 +582,13 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     // R1: ONE user-role buffer — consecutive user text and tool_result
     // content merges into a single user message, flushed on an assistant
     // role change (or a System boundary).
+    // C3c carve-out (apex-ayl.89): a run that contains a CompactionMeta
+    // item flushes on a synthetic-class change (see the User arm), so the
+    // compaction metadata pieces project as separate sub-cap user
+    // messages; CM-free runs keep the plain R1 coalescing byte-for-byte.
     let mut pending_user: Vec<ContentBlock> = Vec::new();
+    let mut pending_user_cm = false;
+    let mut pending_user_class: Option<SyntheticReason> = None;
 
     // R8: model-identity thinking suppression. Set when an Assistant item
     // with model_id Some(m) and m != model_slug is translated; Reasoning
@@ -657,6 +663,8 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 // R1 edge: System flushes the pending user run (no message is
                 // produced) and clears the R8 flag.
                 flush_user(&mut pending_user, &mut messages);
+                pending_user_cm = false;
+                pending_user_class = None;
                 r8_suppress_thinking = false;
                 system_blocks.push(TextBlock {
                     r#type: "text".to_string(),
@@ -669,10 +677,27 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 // R1: accumulate instead of pushing a fresh user message per
                 // item (xli append_to_role merge, wire.rs:1071) — consecutive
                 // user-role content becomes ONE user message.
+                // C3c (apex-ayl.89): within a run that contains a
+                // CompactionMeta item, a synthetic-class change flushes the
+                // run first, so each compaction metadata piece and the real
+                // query stay their own sub-cap messages. `cm_present` is
+                // assigned after the flush on purpose: a same-class run
+                // never re-splits, so adjacent real users (and adjacent
+                // same-tag items) keep coalescing exactly as pre-cut.
+                let class = u.synthetic_reason.clone();
+                let cm_present =
+                    pending_user_cm || matches!(class, Some(SyntheticReason::CompactionMeta));
+                if cm_present && !pending_user.is_empty() && pending_user_class != class {
+                    flush_user(&mut pending_user, &mut messages);
+                }
+                pending_user_cm = cm_present;
+                pending_user_class = class;
                 pending_user.extend(content_parts_to_anthropic_blocks(&u.content));
             }
             ConversationItem::Assistant(a) => {
                 flush_user(&mut pending_user, &mut messages);
+                pending_user_cm = false;
+                pending_user_class = None;
                 // R8: every Assistant item sets or clears the suppression
                 // flag (mismatched model_id sets it; matched/None clears it).
                 r8_suppress_thinking =
@@ -740,6 +765,8 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             // No native equivalent, so emit synthetic text to retain context.
             ConversationItem::BackendToolCall(b) => {
                 flush_user(&mut pending_user, &mut messages);
+                pending_user_cm = false;
+                pending_user_class = None;
                 pending_assistant.push(ContentBlock::Text {
                     text: b.text_summary(),
                     cache_control: None,
@@ -748,6 +775,8 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             // `tco_*` blobs carry only `signature`; real reasoning sets `thinking`
             ConversationItem::Reasoning(r) => {
                 flush_user(&mut pending_user, &mut messages);
+                pending_user_cm = false;
+                pending_user_class = None;
                 let thinking = reasoning_item_text(r);
                 let signature = r
                     .encrypted_content

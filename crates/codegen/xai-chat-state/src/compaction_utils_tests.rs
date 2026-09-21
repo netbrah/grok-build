@@ -3152,3 +3152,85 @@ fn fit_counts_encrypted_reasoning_against_budget() {
         "recent turn must survive"
     );
 }
+
+/// apex-ayl.89 (RED 2): the producer's pinned 5-item shape (checkpoint
+/// 01a0b095: System 5,888 / CM 3,981 / REAL 104 / CM 18,940 / SR 23,376).
+///
+/// PRE-CUT: the projection is ONE coalesced user message whose compact
+/// JSON estimates over the then-current `MAX_MODEL_CONTEXT_ITEM_TOKENS`
+/// (the .89 brick) — the failing assertion below is the SHAPE predicate
+/// (4 vs 1 user messages); the N3 assertion carries the red edge.
+///
+/// POST-CUT: the shape projects as 4 separate user messages and the full
+/// gate is Ok (every piece sub-cap).
+#[tokio::test]
+async fn compactn3_pinned_producer_shape_red_edge() {
+    use xai_grok_sampling_types::messages::MessageRole;
+    use xai_grok_sampling_types::{
+        build_messages_request, request_validation, ConversationRequest,
+    };
+
+    // The REAL query: 104 chars AFTER the producer's wrap_user_query.
+    let wrapped_len = "<user_query>\n".len() + "\n</user_query>".len();
+    let raw_query = "q".repeat(104 - wrapped_len);
+    let conversation = vec![
+        ConversationItem::system("s".repeat(5_888)),
+        ConversationItem::user(raw_query),
+    ];
+    let state_context =
+        CompactionStateContext::build(&conversation, CompactionInputs::default()).await;
+    // The summary CM carries the continuation preamble; size the raw
+    // summary so the formatted item is EXACTLY the pinned 18,940.
+    let preamble_len = format_compact_summary_content("").len();
+    let compacted = build_compacted_history(CompactedHistoryInput {
+        system_message: ConversationItem::system("s".repeat(5_888)),
+        user_message_prefix: "p".repeat(3_981),
+        agents_md_reminder: None,
+        state_context: &state_context,
+        compaction_summary: "m".repeat(18_940 - preamble_len),
+        system_reminder: Some("r".repeat(23_376)),
+        summary_before_recent: false,
+        transcript_hint: None,
+        summary_count: 0,
+    });
+    assert_eq!(compacted.len(), 5, "pinned producer shape: 5 items");
+    // The producer items must carry the exact pinned checkpoint sizes.
+    let item_sizes: Vec<usize> = compacted
+        .iter()
+        .skip(1)
+        .map(|i| i.text_content().len())
+        .collect();
+    assert_eq!(
+        item_sizes,
+        vec![3_981, 104, 18_940, 23_376],
+        "the checkpoint user pieces must carry the pinned sizes"
+    );
+
+    let projected = build_messages_request(&ConversationRequest {
+        items: compacted.clone(),
+        model: Some("claude-sonnet-5".to_string()),
+        ..Default::default()
+    });
+
+    // SHAPE (the pre-cut failing assertion — NOT N3): C3c must split the
+    // CM | REAL | CM | SR run into 4 user messages.
+    let user_count = projected
+        .messages()
+        .iter()
+        .filter(|m| m.role == MessageRole::User)
+        .count();
+    assert_eq!(
+        user_count,
+        4,
+        "pre-cut: R1 coalesces the pinned 4-user run into ONE message (the .89 brick shape); C3c must project 4 (apex-ayl.89)"
+    );
+
+    // Red edge at the then-current constant: pre-cut the coalesced item
+    // is over the per-item cap (ItemTokenLimitExceeded — the brick);
+    // post-cut every piece is sub-cap and the full gate is Ok.
+    let gate = request_validation::validate_and_encode_messages_request(&projected);
+    assert!(
+        gate.is_ok(),
+        "post-cut: every pinned piece is sub-cap, so the full gate must be Ok; pre-cut this is the ItemTokenLimitExceeded brick"
+    );
+}

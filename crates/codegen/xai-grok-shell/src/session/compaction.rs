@@ -28,7 +28,10 @@ use xai_chat_state::compaction_utils::{
     prepare_conversation_for_verbatim_summarization, sanitize_compacted_history,
     validate_compacted_history,
 };
-use xai_grok_sampling_types::{drop_model_bound_items, ApiBackend, ConversationItem};
+use xai_grok_sampling_types::{
+    build_messages_request, drop_model_bound_items, request_validation::RequestValidationError,
+    ApiBackend, ConversationItem, ConversationRequest,
+};
 /// Prefix on the early-guard failure payloads below; the user-facing normalizer strips it (the renderer prepends its own headline).
 const COMPACTION_FAILED_GUARD_PREFIX: &str = "Compaction failed: ";
 /// Human-readable "next fire" for a scheduled loop in the compaction reminder.
@@ -1344,6 +1347,76 @@ impl SessionActor {
         );
         Ok(())
     }
+    // apex-ayl.89 (C1-lite): project the candidate history to its final
+    // Messages form and run the N3 per-item caps. Items + the session's
+    // CURRENT model + the session's cache_ttl (tools are uniform across
+    // every turn of the session — not a compaction-specific vector; an
+    // over-cap tool definition bricks every turn regardless of
+    // compaction — pre-existing, out of scope). model + cache_ttl come
+    // from the SAME source the turn's request uses (request_builder.rs:85
+    // — chat-state actor turn-request source; sampler_turn.rs:777 — shell
+    // client-config source; both read sampling_config.cache_ttl, and
+    // get_sampling_config() here is the same state as the actor side —
+    // fix-pass 2 R5; the compaction summarization call at :1404 is the
+    // precedent) so R8 thinking suppression and the head system block's
+    // ttl field project identically (fix-pass 1 m1/m2).
+    async fn projected_caps_ok(
+        &self,
+        history: &[ConversationItem],
+    ) -> Result<(), RequestValidationError> {
+        let cfg = self.chat_state_handle.get_sampling_config().await;
+        let request = ConversationRequest {
+            items: history.to_vec(),
+            model: cfg.as_ref().map(|c| c.model.clone()),
+            cache_ttl: cfg.and_then(|c| c.cache_ttl),
+            ..Default::default() // conversation.rs:778 derives Default (fix-pass 1 m3)
+        };
+        let projected = build_messages_request(&request);
+        xai_grok_sampling_types::request_validation::check_messages_request_caps(&projected)
+    }
+
+    /// apex-ayl.89 (C1-lite): the fail-loud contract for a pre-install
+    /// per-item cap failure — nothing is persisted, nothing replaced.
+    /// The ordering below is BINDING (fix-pass 1 M1): on the AUTO trigger
+    /// the `AutoCompactFailed` notification goes out BEFORE the sticky
+    /// suppression store — the `run_compact_only` Err arm's
+    /// `!cancelled && !is_suppressed()` gate (compaction_config.rs:189)
+    /// would otherwise silence it. Manual trigger: no notification — the
+    /// Err already surfaces through the slash path, which never consults
+    /// the suppression gate (no double-emit anywhere: by the time any Err
+    /// reaches that arm, the sticky store has run).
+    async fn reject_over_cap_install(
+        &self,
+        e: &RequestValidationError,
+        auto_trigger: bool,
+    ) -> acp::Error {
+        use crate::extensions::notification::SessionUpdate as XaiSessionUpdate;
+        tracing::error!(
+            session_id = %self.session_info.id,
+            error = %e,
+            "compaction: candidate history violates the wire per-item cap — \
+             install rejected, session not compacted"
+        );
+        let detail = format!(
+            "compaction produced a history that violates the wire per-item cap \
+             ({e}); session not compacted — rewind to before compaction (reliable \
+             escape); retry /compact only if the overage was coalescing — an \
+             intrinsic over-cap piece re-fails deterministically"
+        );
+        let acp_error = acp::Error::internal_error().data(detail);
+        if auto_trigger {
+            self.send_xai_notification(XaiSessionUpdate::AutoCompactFailed {
+                error: Self::failure_with_retry_guidance(
+                    &crate::sampling::error::acp_error_message(&acp_error),
+                ),
+            })
+            .await;
+        }
+        self.compaction
+            .auto_compact_suppressed
+            .store(SUPPRESS_STICKY, std::sync::atomic::Ordering::Relaxed);
+        acp_error
+    }
     /// Inner implementation of compaction that supports an optional `auto_continue` payload for the checkpoint.
     #[tracing::instrument(
         name = "session.compact_inner",
@@ -2381,6 +2454,14 @@ impl SessionActor {
                 summary_count,
             })
         };
+        // apex-ayl.89 (C1-lite, Site A): validate the final-form
+        // projection of the candidate history BEFORE any persistence or
+        // replace — an over-cap install bricks every subsequent turn with
+        // a local pre-HTTP rejection. Fail loud; nothing is persisted,
+        // nothing replaced.
+        if let Err(e) = self.projected_caps_ok(&compacted_history).await {
+            return Err(self.reject_over_cap_install(&e, auto_trigger).await);
+        }
         let post_compaction_ms = apply_start.elapsed().as_millis() as u64;
         let prompt_index_at_compaction = self.chat_state_handle.get_prompt_index().await;
         let original_user_info = self
@@ -2432,6 +2513,15 @@ impl SessionActor {
             )
             .await
         };
+        // apex-ayl.89 (C1-lite, Site B): re-check the FINAL post-fork
+        // value — fork resolution can change the projection (preserving an
+        // inherited prefix). Documented residual: the checkpoint was
+        // already persisted with the base shape (which passed Site A); the
+        // live conversation is unchanged and the next successful
+        // compaction overwrites the checkpoint.
+        if let Err(e) = self.projected_caps_ok(&compacted_history).await {
+            return Err(self.reject_over_cap_install(&e, auto_trigger).await);
+        }
         let new_len = compacted_history.len();
         self.chat_state_handle
             .replace_conversation_for_compaction(compacted_history);
