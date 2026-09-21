@@ -42,6 +42,5 @@
     "label": "VALUE PIN (F2, re-pinned): body.stop_sequences[0] eq 'MGW-STOPSEQ-END' on the main /v1/messages request (nth:0 = NEWEST = MAIN). Pre-cut FAILs: the lenient row parser drops the unknown key and the producer hardcodes None (messages.rs:937) so the path is missing."
    }
   ]
- },
- "expected_red": { "id": "mgw-f2-stopseq" }
+ }
 }
