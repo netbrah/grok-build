@@ -23,15 +23,35 @@
  "est_calls": 2,
  "assert": {
   "exit": 1,
-  "ndjson": [
+ "ndjson": [
+  {
+    "op": "present",
+    "event": "error",
+    "id": "mgw_topk_err",
+    "label": "VALIDATION-PROOF (F2, scored): the row-declared top_k=40 reaches the request and the turn dies locally with an error event (pre-cut the lenient parser drops the key, the turn completes clean, 0 error events = RED)."
+   },
    {
-    "op": "text_contains",
+    "op": "eq",
+    "event": "error",
+    "field": "message",
     "id": "mgw_topk_gate",
-    "value": "fields 'thinking' and 'top_k' are mutually exclusive",
-    "label": "VALIDATION-PROOF (F2): the row-declared top_k=40 reaches the request and is rejected by the LOCAL Gate 4/5 thinking x top_k mutual-exclusion check pre-HTTP (Display: request validation failed: fields 'thinking' and 'top_k' are mutually exclusive (non-retryable, local)). Post-cut the turn dies here; pre-cut the lenient parser drops the key and the turn completes clean (RED)."
+    "value": "Internal error: \"request validation failed: fields 'thinking' and 'top_k' are mutually exclusive (non-retryable, local)\"",
+    "label": "VALIDATION-PROOF (F2, scored): the error event carries the verbatim Gate 4/5 thinking x top_k mutual-exclusion message (re-pin 2026-09-21, coordinator adjudication: the original ndjson.text_contains pin reads only acp_message events in ACP mode (run.py:623-626) and could structurally never see the local validation error event; behavior verified correct at 04706ce — exit 1 + verbatim message). The eq pin is the G10-clean scored exact-message pin; the wire recon below is the recorded stdout artifact."
+   },
+   {
+    "op": "recon",
+    "event": "error",
+    "label": "VERDICT RECORD: the last ndjson error event (the exact message is scored by the eq pin above; the stdout capture below is the recorded artifact)."
    }
   ],
-  "wire": []
- },
- "expected_red": { "id": "mgw-f2-topk" }
+  "wire": [
+   {
+    "kind": "recon",
+    "any": true,
+    "file": "stdout.ndjson.0",
+    "grep": "fields 'thinking' and 'top_k' are mutually exclusive",
+    "label": "PHRASING EVIDENCE (recon, non-scoring — G10: scored wire asserts need request-semantics where; the stdout capture is the recorded artifact): the captured binary stdout carries the verbatim local Gate 4/5 rejection pre-HTTP."
+   }
+  ]
+ }
 }
