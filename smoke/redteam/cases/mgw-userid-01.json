@@ -1,7 +1,7 @@
 {
  "schema_version": 1,
  "id": "MGW-USERID-01",
- "title": "apex-ayl.112 RED ratchet (msgw-sweep F2 / decision apex-ayl.109) — metadata.user_id absent from every claude receipt (0/22): the wire type + builder support exist, the trusted producer hardcodes metadata: None (ST/conversation/messages.rs:938). Pins body.metadata.user_id non-null on the main /v1/messages request. Note for the decision: metadata.user_id is NOT a cache partition key in the Anthropic API — adopting it buys isolation/observability (provider-side per-session traceability), not cache behavior; the GREEN shape (session-scoped user_id, the same UUID family as the openai-wire prompt_cache_key) is gated on apex-ayl.109. RED today (path missing); GREEN when the cut emits a non-null session-scoped user_id.",
+ "title": "apex-ayl.112 RED ratchet (msgw-sweep F2 / decision apex-ayl.109) — metadata.user_id absent from every claude receipt (0/22): the wire type + builder support exist, the trusted producer hardcodes metadata: None (ST/conversation/messages.rs:938). RE-PINNED at the F2 cut (apex-ayl.113, FIX-PASS 4): the GREEN shape is the DETERMINISTIC SHA-256 OS-USER hash (identity = getpwuid_r(geteuid()) pw_name on unix, env USER/LOGNAME fallback; windows USERNAME w/ USERDOMAIN\\ prefix; hash over 'grok-responses:metadata-user-id:v1:<identity>' -> 64 lowercase hex), ALWAYS EMITTED on the main-turn actor path — auxiliary requests (title etc.) do NOT emit metadata. Pins body.metadata.user_id non-null on the MAIN /v1/messages request (nth:0 = NEWEST = MAIN per runner _nth_select — CRITICAL: aux/title frames lack metadata post-cut, so the pin must land on main or a ne-on-missing-path FAIL would mask the green). Note for the decision: metadata.user_id is NOT a cache partition key in the Anthropic API — adopting it buys isolation/observability (provider-side per-user traceability), not cache behavior; the shape is gated on apex-ayl.109. RED today (path missing); GREEN when the cut emits the non-null OS-user hash on the main request.",
  "bead": "apex-ayl.112",
  "suite": "wire-shape",
  "tier": "slim",
@@ -33,10 +33,10 @@
     "id": "mgw_userid_red",
     "file": "req-*.json",
     "where": { "method": "POST", "path": "/v1/messages" },
-    "last": 0,
+    "nth": 0,
     "path": "body.metadata.user_id",
     "ne": null,
-    "label": "RED PIN (F2/.109): body.metadata.user_id non-null. Pre-cut FAILs: producer hardcodes metadata None (messages.rs:938) so the path is missing."
+    "label": "RED PIN (F2/.109, re-pinned): body.metadata.user_id non-null on the MAIN request (nth:0 = NEWEST = MAIN; aux/title frames lack metadata post-cut so the pin must select main). Pre-cut FAILs: producer hardcodes metadata None (messages.rs:938) so the path is missing."
    }
   ]
  },

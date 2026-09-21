@@ -968,6 +968,20 @@ pub struct ConversationRequest {
     pub cache_ttl: Option<String>,
     /// Top-p sampling
     pub top_p: Option<f32>,
+    /// Top-k sampling (docs GA L3060). DEPRECATED on models released after Opus 4.6
+    /// (API 400s any value there) and mutually exclusive with `thinking` locally
+    /// (request_builder.rs Gate 4/5, :703-750) — so on this fleet it is a live knob
+    /// only on pre-4.6, non-thinking rows (e.g. claude-haiku-4-5). None = absent (default).
+    pub top_k: Option<u32>,
+    /// Custom stop strings (docs GA L1246). Row value is a comma-separated string
+    /// (scalar-safe for config_patch); split + trimmed, empty → None.
+    pub stop_sequences: Option<Vec<String>>,
+    /// Opaque per-USER id for wire `metadata.user_id` (docs GA L1196: uuid/hash/
+    /// opaque, ≤512, abuse detection; L1199–1201: NO names/identifying info).
+    /// apex-ayl.109 as AMENDED (FIX-PASS 4): deterministic SHA-256 hash of the OS
+    /// user identity (process-global, msgw_user_id_hash) — NOT the session id,
+    /// NOT a model-row attribute.
+    pub user_id: Option<String>,
     /// Custom headers for xAI tracking
     pub x_grok_conv_id: Option<String>,
     pub x_grok_req_id: Option<String>,

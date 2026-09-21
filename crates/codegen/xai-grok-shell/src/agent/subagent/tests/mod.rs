@@ -2654,6 +2654,8 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
             stream_tool_calls: None,
             laziness_detector: crate::agent::config::LazinessDetectorPerModelConfig::default(),
             cache_ttl: None,
+            top_k: None,
+            stop_sequences: None,
             variants: Vec::new(),
         },
         mtls_cert_dir: None,
@@ -2886,6 +2888,8 @@ fn test_sampling_config(model_slug: &str) -> xai_grok_sampling_types::SamplingCo
         ultra_wire_effort: None,
         stream_tool_calls: None,
         cache_ttl: None,
+        top_k: None,
+        stop_sequences: None,
     }
 }
 fn spawn_test_parent_chat_state(model_slug: &str) -> xai_chat_state::ChatStateHandle {

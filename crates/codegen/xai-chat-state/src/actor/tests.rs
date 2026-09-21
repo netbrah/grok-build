@@ -37,6 +37,8 @@ fn test_config_with_window(context_window: u64) -> SamplingConfig {
         ultra_wire_effort: None,
         stream_tool_calls: None,
         cache_ttl: None,
+        top_k: None,
+        stop_sequences: None,
     }
 }
 
@@ -1483,6 +1485,8 @@ async fn update_sampling_config_is_queryable() {
         ultra_wire_effort: None,
         stream_tool_calls: None,
         cache_ttl: None,
+        top_k: None,
+        stop_sequences: None,
     };
     h.handle.update_sampling_config(new_config.clone());
 
@@ -1906,6 +1910,8 @@ async fn build_request_uses_sampling_config() {
         ultra_wire_effort: None,
         stream_tool_calls: None,
         cache_ttl: Some("1h".to_string()),
+        top_k: None,
+        stop_sequences: None,
     };
     let h = TestHarness::with_config(vec![ConversationItem::user("hi")], config);
 
@@ -4447,6 +4453,8 @@ async fn sampling_config_survives_compaction_replacement() {
         ultra_wire_effort: None,
         stream_tool_calls: None,
         cache_ttl: None,
+        top_k: None,
+        stop_sequences: None,
     };
 
     let h = TestHarness::with_config(
@@ -4539,6 +4547,8 @@ async fn model_metadata_lost_after_compaction_then_recovered_on_next_turn() {
         ultra_wire_effort: None,
         stream_tool_calls: None,
         cache_ttl: None,
+        top_k: None,
+        stop_sequences: None,
     };
 
     let h = TestHarness::with_config(
@@ -4624,6 +4634,8 @@ async fn context_window_downgrade_triggers_auto_compact() {
         ultra_wire_effort: None,
         stream_tool_calls: None,
         cache_ttl: None,
+        top_k: None,
+        stop_sequences: None,
     };
 
     let h = TestHarness::with_config(vec![], config);
@@ -5528,4 +5540,82 @@ async fn restore_snapshot_restores_all_fields() {
     assert_eq!(idx, 1);
     let tokens = h.handle.get_total_tokens().await;
     assert_eq!(tokens, 500);
+}
+
+// ============================================================================
+// MGW F2 (apex-ayl.113) — actor assembly: top_k / stop_sequences thread
+// from the SamplingConfig; metadata.user_id = the OS-user hash (FIX-PASS 4).
+// ============================================================================
+
+#[tokio::test]
+async fn mgw_f2_actor_threads_top_k_and_stop_sequences_into_request() {
+    // U-RED-1 (actor half): the row-resolved values reach the
+    // ConversationRequest the actor hands to the sampler.
+    let mut config = test_config();
+    config.top_k = Some(40);
+    config.stop_sequences = Some(vec!["MGW-STOPSEQ-END".to_owned()]);
+    let mut h = TestHarness::with_config(vec![], config);
+    h.handle.push_user_message(ConversationItem::user("hello"));
+    let request = h
+        .handle
+        .build_request(
+            vec![],
+            None,
+            false,
+            None,
+            "conv-1".to_owned(),
+            "req-1".to_owned(),
+        )
+        .await
+        .expect("actor alive");
+    assert_eq!(
+        request.top_k,
+        Some(40),
+        "SamplingConfig.top_k must thread into the ConversationRequest"
+    );
+    assert_eq!(
+        request.stop_sequences.as_deref(),
+        Some(std::slice::from_ref(&"MGW-STOPSEQ-END".to_owned())),
+        "SamplingConfig.stop_sequences must thread into the ConversationRequest"
+    );
+}
+
+#[tokio::test]
+async fn mgw_f2_actor_emits_os_user_hash_as_metadata_user_id() {
+    // U-RED-3 (actor half): the main-turn actor path always emits
+    // user_id = msgw_user_id_hash(); the projected wire body carries
+    // "metadata":{"user_id":"<that 64-hex value>"}.
+    let mut h = TestHarness::with_config(vec![ConversationItem::user("hello")], test_config());
+    let request = h
+        .handle
+        .build_request(
+            vec![],
+            None,
+            false,
+            None,
+            "conv-1".to_owned(),
+            "req-1".to_owned(),
+        )
+        .await
+        .expect("actor alive");
+    let expected = super::request_builder::tests::mgw_f2_expected_user_id_hash();
+    assert_eq!(
+        request.user_id.as_ref(),
+        expected.as_ref(),
+        "actor user_id must be the deterministic OS-user hash (helper is the \
+         ONLY producer; no session-id path)"
+    );
+    let msgs = xai_grok_sampling_types::conversation::build_messages_request(&request);
+    let json = serde_json::to_value(&msgs).unwrap();
+    match &expected {
+        Some(hash) => assert_eq!(
+            json.pointer("/metadata/user_id"),
+            Some(&serde_json::Value::String(hash.clone())),
+            "projected body must carry metadata.user_id: {json:#}"
+        ),
+        None => assert!(
+            json.get("metadata").is_none(),
+            "unresolvable identity ⇒ metadata omitted (pre-cut parity): {json:#}"
+        ),
+    }
 }

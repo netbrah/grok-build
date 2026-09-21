@@ -1093,6 +1093,8 @@ fn test_model_entry(
             stream_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
             cache_ttl: None,
+            top_k: None,
+            stop_sequences: None,
             variants: Vec::new(),
         },
         mtls_cert_dir: None,
@@ -2256,6 +2258,8 @@ fn model_info_from_config_propagates_use_concise() {
         stream_tool_calls: None,
         laziness_detector: LazinessDetectorPerModelConfig::default(),
         cache_ttl: None,
+        top_k: None,
+        stop_sequences: None,
         variants: Vec::new(),
     };
     let info = ModelInfo::from_config(&entry);
@@ -2425,6 +2429,8 @@ fn model_info_from_config_propagates_agent_type() {
         stream_tool_calls: None,
         laziness_detector: LazinessDetectorPerModelConfig::default(),
         cache_ttl: None,
+        top_k: None,
+        stop_sequences: None,
         variants: Vec::new(),
     };
     let info = ModelInfo::from_config(&entry);
@@ -2886,6 +2892,8 @@ fn inference_idle_timeout_propagates_to_model_info() {
         stream_tool_calls: None,
         laziness_detector: LazinessDetectorPerModelConfig::default(),
         cache_ttl: None,
+        top_k: None,
+        stop_sequences: None,
         variants: Vec::new(),
     };
     let info = ModelInfo::from_config(&entry);
@@ -7548,6 +7556,8 @@ fn prefetch_model_entry(slug: &str, context_window: u64, api_backend: ApiBackend
             stream_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
             cache_ttl: None,
+            top_k: None,
+            stop_sequences: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
             variants: Vec::new(),
@@ -9923,6 +9933,127 @@ mod catalog_hydrate_ceiling {
             !warns.iter().any(|f| f.contains("row_context_window")
                 || f.contains("row_max_completion_tokens")),
             "no feed ceiling = unjudgeable: no warning: {warns:?}"
+        );
+    }
+}
+
+// ============================================================================
+// MGW F2 (apex-ayl.113) — row keys `top_k` (u32 scalar) and
+// `stop_sequences` (comma-string, split at config resolution).
+// ============================================================================
+
+#[test]
+fn mgw_f2_top_k_row_key_resolves() {
+    // U-RED-1 (row half): a `[model.<id>]` row wins for its model and the
+    // `[models]` global fills the rest (the `cache_ttl` chain verbatim);
+    // the row-resolved value reaches the sampler-side SamplingConfig.
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [models]
+            top_k = 7
+
+            [model.claude-opus-4-6]
+            context_window = 200000
+            top_k = 40
+        "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    let mut prefetched = IndexMap::new();
+    prefetched.insert(
+        "claude-opus-4-7".to_owned(),
+        prefetch_model_entry("claude-opus-4-7", DEFAULT_CONTEXT_WINDOW, ApiBackend::Messages),
+    );
+    let resolved = resolve_model_list(&cfg, Some(prefetched));
+    let row = resolved
+        .get("claude-opus-4-6")
+        .expect("the [model.<id>] row must exist");
+    assert_eq!(
+        row.info.top_k,
+        Some(40),
+        "the per-model row beats the [models] global"
+    );
+    let filled = resolved
+        .get("claude-opus-4-7")
+        .expect("the prefetched row must exist");
+    assert_eq!(
+        filled.info.top_k,
+        Some(7),
+        "the [models] global fills rows without a value"
+    );
+    let sampler = sampling_config_for_model(
+        row,
+        resolve_credentials(row, None),
+        None,
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        sampler.top_k,
+        Some(40),
+        "the row-resolved top_k must reach the sampler SamplingConfig"
+    );
+}
+
+#[test]
+fn mgw_f2_stop_sequences_row_key_carries_the_raw_string() {
+    // The row surface is scalar-driven: the key is a comma-string; the
+    // split happens at config resolution, not in the row struct.
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [model.claude-opus-4-6]
+            context_window = 200000
+            stop_sequences = "MGW-STOPSEQ-END"
+        "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    let resolved = resolve_model_list(&cfg, None);
+    let row = resolved
+        .get("claude-opus-4-6")
+        .expect("the [model.<id>] row must exist");
+    assert_eq!(
+        row.info.stop_sequences.as_deref(),
+        Some("MGW-STOPSEQ-END"),
+        "row struct carries the raw comma-string"
+    );
+}
+
+#[test]
+fn mgw_f2_sampling_config_splits_stop_sequences() {
+    // U-RED-2 (row half): comma-split + trim + drop-empty → Vec<String>;
+    // empty/whitespace-only → None.
+    for (row, expected) in [
+        (
+            Some("MGW-STOPSEQ-END"),
+            Some(vec!["MGW-STOPSEQ-END".to_owned()]),
+        ),
+        (
+            Some("a, b ,c"),
+            Some(vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]),
+        ),
+        (
+            Some("a,,b"),
+            Some(vec!["a".to_owned(), "b".to_owned()]),
+        ),
+        (Some("   "), None),
+        (Some(""), None),
+        (None, None),
+    ] {
+        let mut model = test_model_entry("test-model", "https://test.api/v1", None, None, None);
+        model.info.stop_sequences = row.map(|s| s.to_owned());
+        let config = sampling_config_for_model(
+            &model,
+            resolve_credentials(&model, None),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            config.stop_sequences, expected,
+            "row {row:?} must split to {expected:?}"
         );
     }
 }

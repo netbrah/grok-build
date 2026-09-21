@@ -652,6 +652,8 @@ impl SessionActor {
                 ultra_wire_effort: None,
                 stream_tool_calls: None,
                 cache_ttl: None,
+                top_k: None,
+                stop_sequences: None,
             });
         let model_family = {
             let models = self.models_manager.models();
@@ -780,6 +782,8 @@ impl SessionActor {
             max_retries: cfg.max_retries.or(Some(self.max_retries)),
             rate_limit_retry_threshold: cfg.rate_limit_retry_threshold,
             cache_ttl: cfg.cache_ttl.clone(),
+            top_k: cfg.top_k,
+            stop_sequences: cfg.stop_sequences.clone(),
             stream_tool_calls: cfg.stream_tool_calls.unwrap_or(false),
             idle_timeout_secs: None,
             client_identifier: self.client_identifier.clone(),

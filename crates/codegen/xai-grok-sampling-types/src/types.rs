@@ -1077,6 +1077,14 @@ pub struct SamplingConfig {
     pub max_completion_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
+    /// Top-k sampling (docs GA L3060); row key `top_k` (u32 scalar). Mutually
+    /// exclusive with `thinking` locally (Gate 4/5) — see ConversationRequest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
+    /// Custom stop strings (docs GA L1246); row key `stop_sequences` is a
+    /// comma-separated string, split + trimmed here (empty → None).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_sequences: Option<Vec<String>>,
     /// Model-resolved general retry budget paired with the rate-limit ceiling below.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_retries: Option<u32>,

@@ -2516,6 +2516,8 @@ fn make_entry_config_with_id(
         stream_tool_calls: None,
         laziness_detector: config::LazinessDetectorPerModelConfig::default(),
         cache_ttl: None,
+        top_k: None,
+        stop_sequences: None,
         variants: Vec::new(),
     }
 }

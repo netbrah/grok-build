@@ -141,6 +141,16 @@ pub struct SamplerConfig {
     /// Per-request header injector (e.g. OTel traceparent). Called in `post()`.
     #[serde(skip)]
     pub header_injector: Option<SharedHeaderInjector>,
+
+    /// Top-k sampling (docs GA L3060); row key `top_k` (u32 scalar),
+    /// resolved by the shell (MGW F2, apex-ayl.113). `None` = absent on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
+    /// Custom stop strings (docs GA L1246); row key `stop_sequences` is a
+    /// comma-separated string, split + trimmed at config resolution
+    /// (empty/whitespace → `None`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_sequences: Option<Vec<String>>,
 }
 
 impl Default for SamplerConfig {
@@ -185,6 +195,8 @@ impl Default for SamplerConfig {
             strict_responses_input: false,
             normalize_content_types: false,
             ultra_wire_effort: None,
+            top_k: None,
+            stop_sequences: None,
         }
     }
 }

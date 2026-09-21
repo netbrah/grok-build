@@ -3308,6 +3308,8 @@ fn find_model_by_id_prefers_key_then_falls_back_to_slug() {
             stream_tool_calls: None,
             laziness_detector: crate::agent::config::LazinessDetectorPerModelConfig::default(),
             cache_ttl: None,
+            top_k: None,
+            stop_sequences: None,
         },
         mtls_cert_dir: None,
         api_key: None,

@@ -959,12 +959,15 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         tool_choice,
         temperature: req.temperature,
         top_p: req.top_p,
-        top_k: None,
+        top_k: req.top_k,
         stream: None, // The caller sets this
-        stop_sequences: None,
+        stop_sequences: req.stop_sequences.clone(),
         thinking,
         output_config,
-        metadata: None,
+        metadata: req
+            .user_id
+            .clone()
+            .map(|uid| crate::messages::Metadata { user_id: RequestPresence::value(uid) }),
     })
 }
 

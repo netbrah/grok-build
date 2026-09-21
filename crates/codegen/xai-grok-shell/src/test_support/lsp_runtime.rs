@@ -61,6 +61,8 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
             doom_loop_recovery: None,
             header_injector: None,
             cache_ttl: None,
+            top_k: None,
+            stop_sequences: None,
         },
         setup_failure: None,
         run_shell_child_harness: None,

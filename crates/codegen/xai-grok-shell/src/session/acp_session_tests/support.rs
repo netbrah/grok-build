@@ -310,6 +310,8 @@ async fn create_test_actor_inner(
             ultra_wire_effort: None,
             stream_tool_calls: None,
             cache_ttl: None,
+            top_k: None,
+            stop_sequences: None,
         },
         chat_persistence,
         chat_event_tx,

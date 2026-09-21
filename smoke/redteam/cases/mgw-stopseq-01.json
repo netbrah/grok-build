@@ -1,7 +1,7 @@
 {
  "schema_version": 1,
  "id": "MGW-STOPSEQ-01",
- "title": "apex-ayl.112 RED ratchet (msgw-sweep F2) — stop_sequences typed-unread on the /v1/messages wire: pins body.stop_sequences PRESENCE on the main /v1/messages request. No config declaration is possible pre-cut (config_patch is scalar-only; the future cut defines the config surface — array of strings per docs GA L1088-ish) and the producer hardcodes stop_sequences: None (ST/conversation/messages.rs:937). stop_sequences is the only stop control besides end-of-turn; ignoring it is dangerous (operators cannot cap a runaway model mid-sentence). RED today (field missing); GREEN when the cut plumbs config -> request -> wire.",
+ "title": "apex-ayl.112 RED ratchet (msgw-sweep F2) — stop_sequences typed-unread on the /v1/messages wire; RE-PINNED at the F2 cut (apex-ayl.113) to the VALUE shape now that the config surface exists: the case declares model/claude-sonnet-5/stop_sequences='MGW-STOPSEQ-END' via config_patch (row key is the comma-split STRING; resolved config is Option<Vec<String>>; producer maps to the wire array) and pins body.stop_sequences[0] eq 'MGW-STOPSEQ-END' on the main /v1/messages request (nth:0 = NEWEST = MAIN per runner _nth_select; the title frame from the same row also carries the value, so the value pin is frame-robust). stop_sequences is the only stop control besides end-of-turn; ignoring it is dangerous (operators cannot cap a runaway model mid-sentence). Pre-cut RED: the lenient row parser drops the unknown stop_sequences key and the producer hardcodes None (ST/conversation/messages.rs:937) so the path is missing. GREEN when the cut plumbs config -> request -> wire.",
  "bead": "apex-ayl.112",
  "suite": "wire-shape",
  "tier": "slim",
@@ -9,6 +9,9 @@
  "model": "claude-sonnet-5",
  "wirecap": true,
  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "config_patch": {
+  "model/claude-sonnet-5/stop_sequences": "MGW-STOPSEQ-END"
+ },
  "steps": [
   {
    "op": "turn",
@@ -33,9 +36,10 @@
     "id": "mgw_stopseq_red",
     "file": "req-*.json",
     "where": { "method": "POST", "path": "/v1/messages" },
-    "last": 0,
-    "path": "body.stop_sequences",
-    "label": "RED PIN (F2): body.stop_sequences present on the wire. Pre-cut FAILs: producer hardcodes None (messages.rs:937) so the path is missing."
+    "nth": 0,
+    "path": "body.stop_sequences[0]",
+    "eq": "MGW-STOPSEQ-END",
+    "label": "VALUE PIN (F2, re-pinned): body.stop_sequences[0] eq 'MGW-STOPSEQ-END' on the main /v1/messages request (nth:0 = NEWEST = MAIN). Pre-cut FAILs: the lenient row parser drops the unknown key and the producer hardcodes None (messages.rs:937) so the path is missing."
    }
   ]
  },

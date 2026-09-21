@@ -418,5 +418,7 @@ pub fn test_sampler_config(
         doom_loop_recovery: None,
         header_injector: None,
         cache_ttl: None,
+        top_k: None,
+        stop_sequences: None,
     }
 }

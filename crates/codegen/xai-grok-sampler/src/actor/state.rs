@@ -107,6 +107,8 @@ mod tests {
             compactions_remaining: None,
             compaction_at_tokens: None,
             cache_ttl: None,
+            top_k: None,
+            stop_sequences: None,
             doom_loop_recovery: None,
             header_injector: None,
             model_family: None,

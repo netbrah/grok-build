@@ -83,6 +83,8 @@ impl SessionActor {
                 ultra_wire_effort: sampling_config.ultra_wire_effort,
                 stream_tool_calls: Some(sampling_config.stream_tool_calls),
                 cache_ttl: sampling_config.cache_ttl.clone(),
+                top_k: sampling_config.top_k,
+                stop_sequences: sampling_config.stop_sequences.clone(),
             });
         let existing = self.chat_state_handle.get_credentials().await;
         let session_key = self

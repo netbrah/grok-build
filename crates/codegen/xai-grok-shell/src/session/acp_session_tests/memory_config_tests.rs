@@ -138,6 +138,8 @@ async fn create_test_actor_with_memory(
             ultra_wire_effort: None,
             stream_tool_calls: None,
             cache_ttl: None,
+            top_k: None,
+            stop_sequences: None,
         },
         Box::new(xai_chat_state::NullChatPersistence),
         chat_event_tx,

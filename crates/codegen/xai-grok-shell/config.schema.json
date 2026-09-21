@@ -635,6 +635,13 @@
             "null"
           ]
         },
+        "stop_sequences": {
+          "description": "Custom stop strings (docs GA L1246), comma-separated. Absent = inherit.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "stream_tool_calls": {
           "type": [
             "boolean",
@@ -682,6 +689,15 @@
           "format": "float",
           "type": [
             "number",
+            "null"
+          ]
+        },
+        "top_k": {
+          "description": "Top-k sampling (docs GA L3060). Absent = inherit.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
             "null"
           ]
         },
@@ -2489,6 +2505,13 @@
             "null"
           ]
         },
+        "stop_sequences": {
+          "description": "Global custom stop strings (docs GA L1246), comma-separated;\nper-model `[model.<id>]` values win. Split + trimmed at config\nresolution (empty → unset). `None` = unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "stream_tool_calls": {
           "type": [
             "boolean",
@@ -2508,6 +2531,15 @@
           "format": "float",
           "type": [
             "number",
+            "null"
+          ]
+        },
+        "top_k": {
+          "description": "Global top-k sampling (docs GA L3060); per-model `[model.<id>]`\nvalues win. `None` = unset (absent on the wire).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
             "null"
           ]
         },
@@ -3173,6 +3205,16 @@
             }
           ]
         },
+        "stop_sequences": {
+          "description": "Custom stop strings (docs GA L1246); row key `stop_sequences` is a\ncomma-separated string, split + trimmed at config resolution\n(empty/whitespace → `None`).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "stream_tool_calls": {
           "type": "boolean"
         },
@@ -3187,6 +3229,15 @@
           "format": "float",
           "type": [
             "number",
+            "null"
+          ]
+        },
+        "top_k": {
+          "description": "Top-k sampling (docs GA L3060); row key `top_k` (u32 scalar),\nresolved by the shell (MGW F2, apex-ayl.113). `None` = absent on the wire.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
             "null"
           ]
         },

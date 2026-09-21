@@ -3011,3 +3011,105 @@ p4_system_boundary_flush	{"model":"claude-sonnet-5","messages":[{"role":"user","
         "a non-CM projection drifted from its pre-cut bytes (I1 parity, apex-ayl.89)"
     );
 }
+
+// ============================================================================
+// MGW F2 (apex-ayl.113) — top_k / stop_sequences / metadata.user_id on the
+// Messages wire (typed-unread class): producer threading + gate parity.
+// ============================================================================
+
+#[test]
+fn mgw_f2_top_k_threads_to_the_wire() {
+    // U-RED-1 (producer half): ConversationRequest.top_k reaches the
+    // MessagesRequest and serializes.
+    let mut req = messages_test_request(None);
+    req.top_k = Some(40);
+    let msgs = build_messages_request(&req);
+    assert_eq!(msgs.top_k(), Some(40), "top_k must thread producer -> wire");
+    let json = serde_json::to_value(&msgs).unwrap();
+    assert_eq!(
+        json.pointer("/top_k").and_then(|v| v.as_u64()),
+        Some(40),
+        "top_k must serialize on the wire: {json:#}"
+    );
+}
+
+#[test]
+fn mgw_f2_stop_sequences_thread_to_the_wire() {
+    // U-RED-2 (producer half): the split Vec<String> (config layer owns the
+    // split) threads through unchanged.
+    let mut req = messages_test_request(None);
+    req.stop_sequences = Some(vec!["MGW-STOPSEQ-END".to_owned()]);
+    let msgs = build_messages_request(&req);
+    assert_eq!(
+        msgs.stop_sequences(),
+        Some(std::slice::from_ref(&"MGW-STOPSEQ-END".to_owned())),
+        "stop_sequences must thread producer -> wire"
+    );
+    let json = serde_json::to_value(&msgs).unwrap();
+    assert_eq!(
+        json.pointer("/stop_sequences/0").and_then(|v| v.as_str()),
+        Some("MGW-STOPSEQ-END"),
+        "stop_sequences must serialize on the wire: {json:#}"
+    );
+}
+
+#[test]
+fn mgw_f2_default_request_keeps_new_keys_absent() {
+    // U-PARITY-2 (default-off byte parity, green both sides): none of the
+    // three new params set ⇒ no top_k / stop_sequences / metadata keys in
+    // the projected body (standalone builder use stays pre-cut-identical).
+    let req = messages_test_request(None);
+    let msgs = build_messages_request(&req);
+    assert!(msgs.top_k().is_none());
+    assert!(msgs.stop_sequences().is_none());
+    assert!(msgs.metadata().is_none());
+    let json = serde_json::to_value(&msgs).unwrap();
+    assert!(json.get("top_k").is_none(), "no top_k key: {json:#}");
+    assert!(
+        json.get("stop_sequences").is_none(),
+        "no stop_sequences key: {json:#}"
+    );
+    assert!(json.get("metadata").is_none(), "no metadata key: {json:#}");
+}
+
+#[test]
+fn mgw_f2_thinking_top_k_gate_still_live() {
+    // U-PARITY-1 (gate regression pin, green both sides): Gate 4/5 already
+    // rejects thinking × top_k locally pre-HTTP (closed-set obligations).
+    use crate::messages::{MessageContent, MessageRole, ThinkingConfig};
+    use crate::request_builder::{
+        DraftMessagesRequest, MessagesRequestBuilder,
+    };
+    use crate::request_validation::RequestValidationError;
+    for thinking in [
+        ThinkingConfig::Enabled { budget_tokens: 500 },
+        ThinkingConfig::Adaptive { display: None },
+    ] {
+        let mut sequence = crate::request_builder::DraftMessageSequence::new();
+        sequence
+            .push_message(crate::messages::Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("hi".to_owned()),
+            })
+            .expect("user-first message is legal");
+        let request = MessagesRequestBuilder::new()
+            .model("test-model".to_owned())
+            .message_sequence(sequence)
+            .max_tokens(1000)
+            .thinking(thinking)
+            .top_k(Some(40))
+            .build()
+            .expect("builder is pre-validate");
+        let err = DraftMessagesRequest::new(request)
+            .validate()
+            .expect_err("Gate 4 must fire pre-HTTP");
+        assert_eq!(
+            err,
+            RequestValidationError::MutuallyExclusiveFields {
+                a: "thinking",
+                b: "top_k",
+            },
+            "Gate 4 must reject thinking x top_k pre-HTTP"
+        );
+    }
+}

@@ -1063,6 +1063,15 @@ pub struct ModelsConfig {
     /// "1h"); per-model `[model.<id>]` values win. `None` = unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_ttl: Option<String>,
+    /// Global top-k sampling (docs GA L3060); per-model `[model.<id>]`
+    /// values win. `None` = unset (absent on the wire).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
+    /// Global custom stop strings (docs GA L1246), comma-separated;
+    /// per-model `[model.<id>]` values win. Split + trimmed at config
+    /// resolution (empty → unset). `None` = unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_sequences: Option<String>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -3794,6 +3803,12 @@ fn apply_global_scalar_defaults(
         if let Some(v) = models.cache_ttl.clone() {
             info.cache_ttl.get_or_insert(v);
         }
+        if let Some(v) = models.top_k {
+            info.top_k.get_or_insert(v);
+        }
+        if let Some(v) = models.stop_sequences.clone() {
+            info.stop_sequences.get_or_insert(v);
+        }
     }
 }
 /// Built-in default models. Prefer `resolve_model_list()`.
@@ -3857,6 +3872,8 @@ pub(crate) struct ModelAuthorityView {
     pub max_completion_tokens: FieldAuthority<Option<u32>>,
     pub reasoning_efforts: FieldAuthority<Vec<ReasoningEffortOption>>,
     pub cache_ttl: FieldAuthority<Option<String>>,
+    pub top_k: FieldAuthority<Option<u32>>,
+    pub stop_sequences: FieldAuthority<Option<String>>,
     pub inference_branches: Vec<InferenceBranch>,
 }
 
@@ -4265,6 +4282,67 @@ fn model_authority_view(
         "cache_ttl replay diverged from the resolver for {key:?}"
     );
 
+    // ---- top_k / stop_sequences: MGW F2 (apex-ayl.113) — explicit row
+    // field -> [model.<key>] -> [models] global (config-file authority);
+    // no seam touches these fields (the `cache_ttl` chain verbatim).
+    let mut top_k = bundled_entry
+        .map(|b| b.info.top_k)
+        .unwrap_or_default();
+    let mut top_k_source = if !is_prefetched && bundled_entry.is_some_and(|b| b.info.top_k.is_some())
+    {
+        FieldSource::BundledRow
+    } else {
+        FieldSource::BuiltIn
+    };
+    if let Some(row) = row {
+        top_k = row.info.top_k;
+        if row.info.top_k.is_some() {
+            top_k_source = FieldSource::ProxyRow;
+        }
+    }
+    if let Some(v) = override_cfg.and_then(|ov| ov.top_k) {
+        top_k = Some(v);
+        top_k_source = FieldSource::Config;
+    } else if top_k.is_none() && let Some(v) = cfg.models.top_k {
+        top_k = Some(v);
+        top_k_source = FieldSource::Config;
+    }
+    debug_assert_eq!(
+        top_k,
+        info.top_k,
+        "top_k replay diverged from the resolver for {key:?}"
+    );
+
+    let mut stop_sequences = bundled_entry
+        .map(|b| b.info.stop_sequences.clone())
+        .unwrap_or_default();
+    let mut stop_sequences_source =
+        if !is_prefetched
+            && bundled_entry.is_some_and(|b| b.info.stop_sequences.is_some())
+        {
+            FieldSource::BundledRow
+        } else {
+            FieldSource::BuiltIn
+        };
+    if let Some(row) = row {
+        stop_sequences = row.info.stop_sequences.clone();
+        if row.info.stop_sequences.is_some() {
+            stop_sequences_source = FieldSource::ProxyRow;
+        }
+    }
+    if let Some(v) = override_cfg.and_then(|ov| ov.stop_sequences.as_ref()) {
+        stop_sequences = Some(v.clone());
+        stop_sequences_source = FieldSource::Config;
+    } else if stop_sequences.is_none() && let Some(v) = &cfg.models.stop_sequences {
+        stop_sequences = Some(v.clone());
+        stop_sequences_source = FieldSource::Config;
+    }
+    debug_assert_eq!(
+        stop_sequences,
+        info.stop_sequences,
+        "stop_sequences replay diverged from the resolver for {key:?}"
+    );
+
     // ---- m-2: enumerate every inference branch that can produce a
     // Messages backend, with honest reachability/fired flags.
     // AUTHORITY-47B-1: the row the resolver's inference seams actually
@@ -4334,6 +4412,14 @@ fn model_authority_view(
         cache_ttl: FieldAuthority {
             value: cache_ttl,
             source: cache_ttl_source,
+        },
+        top_k: FieldAuthority {
+            value: top_k,
+            source: top_k_source,
+        },
+        stop_sequences: FieldAuthority {
+            value: stop_sequences,
+            source: stop_sequences_source,
         },
         inference_branches,
     }
@@ -4474,6 +4560,11 @@ pub(crate) fn entry_config_from_default_row(
         stream_tool_calls: None,
         laziness_detector: LazinessDetectorPerModelConfig::default(),
         cache_ttl: row.cache_ttl.clone(),
+        // MGW F2 (apex-ayl.113): the bundled catalog rows carry no top_k /
+        // stop_sequences keys (xai-grok-models is off-scope; the operator
+        // surface is config.toml).
+        top_k: None,
+        stop_sequences: None,
     }
 }
 fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryConfig> {
@@ -4651,6 +4742,14 @@ pub struct ModelEntryConfig {
     /// in `sampling_config_for_model` and map to the 5m default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_ttl: Option<String>,
+    /// Top-k sampling (docs GA L3060); `None` = absent on the wire.
+    /// Mutually exclusive with `thinking` locally (Gate 4/5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
+    /// Custom stop strings (docs GA L1246), comma-separated; split +
+    /// trimmed in `sampling_config_for_model` (empty → `None`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_sequences: Option<String>,
 }
 /// Derives `PartialEq` on `f32`, which is fine for the current shape. Both `f32` fields default to `None`, so there's no parsed-vs-literal `0.7` float equality footgun.
 /// If a future default introduces `Some(0.7)`, this helper must be reworked (e.g. compare on tolerance, or switch to a bit-pattern compare).
@@ -4727,6 +4826,10 @@ pub struct ConfigModelOverride {
     /// Absent = inherit (donor/prefetched, else `[models]` global, else
     /// the wire default 5m).
     pub cache_ttl: Option<String>,
+    /// Top-k sampling (docs GA L3060). Absent = inherit.
+    pub top_k: Option<u32>,
+    /// Custom stop strings (docs GA L1246), comma-separated. Absent = inherit.
+    pub stop_sequences: Option<String>,
 }
 impl ConfigModelOverride {
     pub(crate) fn apply(
@@ -4878,6 +4981,12 @@ impl ConfigModelOverride {
         if self.cache_ttl.is_some() {
             entry.info.cache_ttl = self.cache_ttl.clone();
         }
+        if self.top_k.is_some() {
+            entry.info.top_k = self.top_k;
+        }
+        if self.stop_sequences.is_some() {
+            entry.info.stop_sequences = self.stop_sequences.clone();
+        }
         if self.api_key.is_some() {
             entry.api_key.clone_from(&self.api_key);
         }
@@ -5009,6 +5118,13 @@ pub struct ModelInfo {
     /// `None` = the wire default 5m.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_ttl: Option<String>,
+    /// Top-k sampling (docs GA L3060); `None` = absent on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
+    /// Custom stop strings (docs GA L1246), comma-separated; split +
+    /// trimmed in `sampling_config_for_model` (empty → `None`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_sequences: Option<String>,
 }
 impl ModelInfo {
     /// Minimal fallback descriptor for an unknown model slug.
@@ -5057,6 +5173,8 @@ impl ModelInfo {
             stream_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
             cache_ttl: None,
+            top_k: None,
+            stop_sequences: None,
         }
     }
     pub(crate) fn from_config(entry: &ModelEntryConfig) -> Self {
@@ -5103,6 +5221,8 @@ impl ModelInfo {
             stream_tool_calls: entry.stream_tool_calls,
             laziness_detector: entry.laziness_detector.clone(),
             cache_ttl: entry.cache_ttl.clone(),
+            top_k: entry.top_k,
+            stop_sequences: entry.stop_sequences.clone(),
         }
     }
     /// Whether `id` is one of the ids this model sends: its own, or the one it uses at some effort.
@@ -5869,6 +5989,8 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 stream_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
             cache_ttl: None,
+            top_k: None,
+            stop_sequences: None,
         },
         mtls_cert_dir: None,
         api_key: Some(bearer),
@@ -5998,6 +6120,25 @@ pub(crate) fn sampling_config_for_model(
         }
         None => None,
     };
+    // MGW F2 (apex-ayl.113): the `stop_sequences` row key is a
+    // comma-separated string (scalar-safe for config_patch); split + trim +
+    // drop-empty → Vec<String>; empty/whitespace-only → None (absent on the
+    // wire).
+    let stop_sequences = match info.stop_sequences.as_deref() {
+        Some(raw) => {
+            let split: Vec<String> = raw
+                .split(',')
+                .map(|part| part.trim().to_owned())
+                .filter(|part| !part.is_empty())
+                .collect();
+            if split.is_empty() {
+                None
+            } else {
+                Some(split)
+            }
+        }
+        None => None,
+    };
     let extra_response_includes = response_include_extensions(
         info.supports_backend_search,
         &api_backend,
@@ -6011,8 +6152,10 @@ pub(crate) fn sampling_config_for_model(
         max_completion_tokens,
         temperature,
         top_p,
+        top_k: info.top_k,
         api_backend,
         cache_ttl,
+        stop_sequences,
         auth_scheme: credentials.auth_scheme,
         extra_headers,
         extra_response_includes,
@@ -6117,6 +6260,8 @@ fn resolve_hidden_default_web_search_sampling_config(
             stream_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
             cache_ttl: None,
+            top_k: None,
+            stop_sequences: None,
         },
         mtls_cert_dir: None,
         api_key: None,

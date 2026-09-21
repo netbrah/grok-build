@@ -1,7 +1,7 @@
 {
  "schema_version": 1,
  "id": "MGW-TOPK-01",
- "title": "apex-ayl.112 RED ratchet (msgw-sweep F2) — top_k typed-unread on the /v1/messages wire: the case declares model/claude-sonnet-5/top_k=40 (config_patch intent; the lenient row parser ignores unknown keys pre-cut) and pins body.top_k eq 40 on the main /v1/messages request. The trusted producer hardcodes top_k: None (ST/conversation/messages.rs:933; the thinking x top_k x top_p exclusivity validation exists at ST/request_builder.rs:109,707-735 but is unreachable). RED today (field missing -> the field pin fails 'missing'); GREEN when the cut plumbs config -> ConversationRequest -> wire with the exclusivity validation live.",
+ "title": "apex-ayl.112 RED ratchet (msgw-sweep F2) — top_k typed-unread on the /v1/messages wire; RE-PINNED at the F2 cut (apex-ayl.113) to the VALIDATION-PROOF shape (WIDENED FALLBACK, FIX-PASS 2 R2): the haiku-4-5 primary is INFEASIBLE in the live config — the hermetic [models].default_reasoning_effort re-stamps the menu-default effort (high, 5-entry reasoning_efforts menu on the [model.claude-haiku-4-5] row) onto the session via the Spawn effort path AFTER the row patch, so the resolved request is thinking:adaptive + top_k 40 and dies at the LOCAL Gate 4/5 mutual-exclusion check before any HTTP. This case therefore proves config→request→gate LIVE (sonnet-5 row, top_k=40 declared via config_patch): the turn must FAIL (exit 1) with the rendered Gate 4 error, and NO /v1/messages frame may be emitted (main AND title calls share the row and are rejected pre-HTTP). Pre-cut RED: the lenient row parser ignores the unknown top_k key, the gate stays silent, the turn completes exit 0 with no error event.",
  "bead": "apex-ayl.112",
  "suite": "wire-shape",
  "tier": "slim",
@@ -22,26 +22,16 @@
  "watchdog_s": 300,
  "est_calls": 2,
  "assert": {
-  "exit": 0,
+  "exit": 1,
   "ndjson": [
    {
-    "op": "absent",
-    "event": "error",
-    "label": "NO TERMINAL ERROR: the turn completed (the red is the top_k seam, not the turn)."
+    "op": "text_contains",
+    "id": "mgw_topk_gate",
+    "value": "fields 'thinking' and 'top_k' are mutually exclusive",
+    "label": "VALIDATION-PROOF (F2): the row-declared top_k=40 reaches the request and is rejected by the LOCAL Gate 4/5 thinking x top_k mutual-exclusion check pre-HTTP (Display: request validation failed: fields 'thinking' and 'top_k' are mutually exclusive (non-retryable, local)). Post-cut the turn dies here; pre-cut the lenient parser drops the key and the turn completes clean (RED)."
    }
   ],
-  "wire": [
-   {
-    "kind": "field",
-    "id": "mgw_topk_red",
-    "file": "req-*.json",
-    "where": { "method": "POST", "path": "/v1/messages" },
-    "last": 0,
-    "path": "body.top_k",
-    "eq": 40,
-    "label": "RED PIN (F2): the operator-declared top_k=40 rides the wire. Pre-cut FAILs: producer hardcodes None (messages.rs:933) so the path is missing."
-   }
-  ]
+  "wire": []
  },
  "expected_red": { "id": "mgw-f2-topk" }
 }
