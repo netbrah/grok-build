@@ -70,6 +70,8 @@ mod tests {
             reasoning_tokens: 0,
             cached_prompt_tokens: 0,
             cache_creation_prompt_tokens: 0,
+            cache_creation_5m_input_tokens: 0,
+            cache_creation_1h_input_tokens: 0,
         }
     }
 

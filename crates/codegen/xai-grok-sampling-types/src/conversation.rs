@@ -1419,6 +1419,13 @@ pub struct TokenUsage {
     /// `input_tokens_details.cache_write_tokens` (responses); 0 only when the backend reports none.
     #[serde(default)]
     pub cache_creation_prompt_tokens: u32,
+    /// Messages `usage.cache_creation.ephemeral_5m_input_tokens` (the 5m-TTL creation subset of
+    /// `cache_creation_prompt_tokens`). 0 only when the backend reports no split (or non-Messages wire).
+    #[serde(default)]
+    pub cache_creation_5m_input_tokens: u32,
+    /// Messages `usage.cache_creation.ephemeral_1h_input_tokens` (billed at the 1h multiplier).
+    #[serde(default)]
+    pub cache_creation_1h_input_tokens: u32,
 }
 
 impl TokenUsage {
@@ -1450,6 +1457,9 @@ impl From<Usage> for TokenUsage {
                 .map_or(0, |d| d.reasoning_tokens),
             cached_prompt_tokens,
             cache_creation_prompt_tokens,
+            // The OpenAI `Usage` wire has no TTL split ⇒ the projection never invents one.
+            cache_creation_5m_input_tokens: 0,
+            cache_creation_1h_input_tokens: 0,
         }
     }
 }
@@ -6752,6 +6762,35 @@ mod enc_affinity_mf6_tests {
             keys,
             vec!["encrypted_content", "id", "summary", "type"],
             "mint-None key set must be the pre-mf6 key set: {keys:?}"
+        );
+    }
+
+    #[test]
+    fn responses_usage_projection_never_invents_ttl_split() {
+        // U-PARITY-2 (F12 §4): the OpenAI `Usage` wire has no TTL split ⇒ the
+        // `From<Usage>` projection reports 0 for both split fields — it "never
+        // invents tokens" (usage.rs module doc), it only copies what the wire says.
+        let usage = TokenUsage::from(crate::types::Usage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+            prompt_tokens_details: Some(crate::types::PromptTokensDetails {
+                cached_tokens: 3,
+                cache_write_tokens: 7,
+                audio_tokens: 0,
+            }),
+            completion_tokens_details: None,
+            cost_in_usd_ticks: None,
+        });
+        assert_eq!(usage.cached_prompt_tokens, 3);
+        assert_eq!(usage.cache_creation_prompt_tokens, 7);
+        assert_eq!(
+            usage.cache_creation_5m_input_tokens, 0,
+            "responses wire has no split ⇒ 5m must be 0"
+        );
+        assert_eq!(
+            usage.cache_creation_1h_input_tokens, 0,
+            "responses wire has no split ⇒ 1h must be 0"
         );
     }
 }

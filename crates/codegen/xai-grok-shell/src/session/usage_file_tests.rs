@@ -10,6 +10,8 @@ fn tu(prompt: u32, completion: u32) -> TokenUsage {
         reasoning_tokens: 0,
         cached_prompt_tokens: 0,
         cache_creation_prompt_tokens: 0,
+        cache_creation_5m_input_tokens: 0,
+        cache_creation_1h_input_tokens: 0,
     }
 }
 
@@ -251,6 +253,8 @@ fn turn_with_cache_creation_serdes_cache_creation_tokens() {
         reasoning_tokens: 1_552,
         cached_prompt_tokens: 0,
         cache_creation_prompt_tokens: 16_592,
+        cache_creation_5m_input_tokens: 0,
+        cache_creation_1h_input_tokens: 0,
     };
     ledger.record_main_loop_call("gpt-5.6-sol", &tu, Some(10), Some(1_217_720));
     let first = UsageSummary::from_ledger(&ledger);

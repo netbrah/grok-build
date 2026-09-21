@@ -5,7 +5,8 @@ use super::*;
 use futures_util::stream;
 use std::pin::pin;
 use xai_grok_sampling_types::messages::{
-    ContentBlock, MessageDeltaBody, MessageDeltaUsage, MessagesResponse, MessagesUsage,
+    CacheCreation, ContentBlock, MessageDeltaBody, MessageDeltaUsage, MessagesResponse,
+    MessagesUsage,
     OutputTokensDetails, StopDetails, StreamDelta, StreamError,
 };
 use xai_grok_sampling_types::presence::WirePresence;
@@ -2368,5 +2369,104 @@ async fn usage_delta_output_tokens_replaces_not_accumulates() {
     assert_eq!(
         usage.completion_tokens, 7,
         "L4254 Q14: every message_delta usage.output_tokens REPLACES the current value — 7, neither accumulate (8) nor retain (1)"
+    );
+}
+
+// ── MGW F12 (apex-ayl.116): the usage TTL split folds out of message_start ──
+
+/// F12 helper: message_start whose `usage.cache_creation` carries the wire TTL split
+/// (the G4 golden shape, `ST/presence.rs:765`), alongside the flat
+/// `cache_creation_input_tokens` sum.
+fn message_start_with_ttl_split(
+    input: u32,
+    cache_creation: u32,
+    ephemeral_5m: u32,
+    ephemeral_1h: u32,
+) -> MessageStreamEvent {
+    MessageStreamEvent::MessageStart {
+        message: MessagesResponse {
+            id: "msg_ttl".into(),
+            r#type: "message".into(),
+            role: "assistant".into(),
+            content: vec![],
+            model: "messages-compatible-model".into(),
+            stop_reason: None,
+            usage: MessagesUsage {
+                input_tokens: input,
+                output_tokens: 0,
+                cache_creation_input_tokens: WirePresence::value(cache_creation),
+                cache_read_input_tokens: WirePresence::missing(),
+                output_tokens_details: WirePresence::missing(),
+                cache_creation: WirePresence::value(CacheCreation {
+                    ephemeral_5m_input_tokens: ephemeral_5m,
+                    ephemeral_1h_input_tokens: ephemeral_1h,
+                }),
+            },
+            container: WirePresence::missing(),
+            stop_details: WirePresence::missing(),
+        },
+    }
+}
+
+#[tokio::test]
+async fn message_start_ttl_split_folds_into_token_usage() {
+    // U-RED-1 (F12 §4): the message_start TTL split (120/340) must reach the final
+    // TokenUsage alongside the flat 460 sum — the L1 stream fold is the first link
+    // of the L1–L4 chain that drops the split after parse.
+    let usage = usage_from_stream(vec![
+        message_start_with_ttl_split(1000, 460, 120, 340),
+        message_delta_with_cache(
+            7,
+            WirePresence::missing(),
+            WirePresence::missing(),
+            WirePresence::missing(),
+        ),
+        MessageStreamEvent::MessageStop,
+    ])
+    .await;
+
+    assert_eq!(
+        usage.cache_creation_prompt_tokens, 460,
+        "flat cache-creation sum must stay 460"
+    );
+    assert_eq!(
+        usage.cache_creation_5m_input_tokens, 120,
+        "5m split bucket must fold out of message_start"
+    );
+    assert_eq!(
+        usage.cache_creation_1h_input_tokens, 340,
+        "1h split bucket must fold out of message_start"
+    );
+}
+
+#[tokio::test]
+async fn absent_cache_creation_reports_zero_ttl_split_end_to_end() {
+    // U-PARITY-1, L1 half (F12 §4): message_start usage with `cache_creation` ABSENT
+    // (the non-caching-backend shape) ⇒ split fields 0 end-to-end; flat fields unchanged.
+    let usage = usage_from_stream(vec![
+        message_start_with_cache(100, 500, 200),
+        message_delta_with_cache(
+            7,
+            WirePresence::missing(),
+            WirePresence::missing(),
+            WirePresence::missing(),
+        ),
+        MessageStreamEvent::MessageStop,
+    ])
+    .await;
+
+    assert_eq!(usage.prompt_tokens, 100 + 500 + 200, "full prompt sum unchanged");
+    assert_eq!(usage.cached_prompt_tokens, 500, "cache-read sum unchanged");
+    assert_eq!(
+        usage.cache_creation_prompt_tokens, 200,
+        "flat cache-creation sum unchanged"
+    );
+    assert_eq!(
+        usage.cache_creation_5m_input_tokens, 0,
+        "no split reported ⇒ 5m is 0"
+    );
+    assert_eq!(
+        usage.cache_creation_1h_input_tokens, 0,
+        "no split reported ⇒ 1h is 0"
     );
 }

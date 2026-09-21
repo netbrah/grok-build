@@ -655,6 +655,8 @@ where
                 .cache_write_tokens
                 .map(|v| v.max(0) as u32)
                 .unwrap_or(0),
+            cache_creation_5m_input_tokens: 0,
+            cache_creation_1h_input_tokens: 0,
         });
 
         let cost_usd_ticks = response

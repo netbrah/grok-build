@@ -252,6 +252,10 @@ impl From<&xai_chat_state::UsageTotals> for PromptUsageModel {
             output_tokens,
             cached_read_tokens,
             cache_creation_tokens,
+            // F12 (apex-ayl.116) R2: the ACP result-usage projection stays FLAT-ONLY in this
+            // cut (ACP event surface out of scope) — bind the TTL split, do not project it.
+            cache_creation_5m_input_tokens: _,
+            cache_creation_1h_input_tokens: _,
             reasoning_tokens,
             model_calls,
             api_duration_ms,

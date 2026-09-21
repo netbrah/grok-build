@@ -34,6 +34,9 @@ pub struct UsageTotals {
     pub output_tokens: u64,
     pub cached_read_tokens: u64,
     pub cache_creation_tokens: u64,
+    /// F12 (apex-ayl.116): the Messages TTL split (u64-widened from `TokenUsage` u32s).
+    pub cache_creation_5m_input_tokens: u64,
+    pub cache_creation_1h_input_tokens: u64,
     pub reasoning_tokens: u64,
     pub model_calls: u64,
     pub api_duration_ms: u64,
@@ -54,6 +57,8 @@ impl UsageTotals {
             output_tokens: u64::from(usage.completion_tokens),
             cached_read_tokens: u64::from(usage.cached_prompt_tokens),
             cache_creation_tokens: u64::from(usage.cache_creation_prompt_tokens),
+            cache_creation_5m_input_tokens: u64::from(usage.cache_creation_5m_input_tokens),
+            cache_creation_1h_input_tokens: u64::from(usage.cache_creation_1h_input_tokens),
             reasoning_tokens: u64::from(usage.reasoning_tokens),
             model_calls: 1,
             api_duration_ms: api_duration_ms.unwrap_or(0),
@@ -76,6 +81,8 @@ impl UsageTotals {
             output_tokens,
             cached_read_tokens,
             cache_creation_tokens,
+            cache_creation_5m_input_tokens,
+            cache_creation_1h_input_tokens,
             reasoning_tokens,
             model_calls,
             api_duration_ms,
@@ -88,6 +95,10 @@ impl UsageTotals {
         self.cache_creation_tokens = self
             .cache_creation_tokens
             .saturating_add(*cache_creation_tokens);
+        self.cache_creation_5m_input_tokens =
+            self.cache_creation_5m_input_tokens.saturating_add(*cache_creation_5m_input_tokens);
+        self.cache_creation_1h_input_tokens =
+            self.cache_creation_1h_input_tokens.saturating_add(*cache_creation_1h_input_tokens);
         self.reasoning_tokens = self.reasoning_tokens.saturating_add(*reasoning_tokens);
         self.model_calls = self.model_calls.saturating_add(*model_calls);
         self.api_duration_ms = self.api_duration_ms.saturating_add(*api_duration_ms);
@@ -164,6 +175,8 @@ mod tests {
             reasoning_tokens: 0,
             cached_prompt_tokens: 0,
             cache_creation_prompt_tokens: 0,
+            cache_creation_5m_input_tokens: 0,
+            cache_creation_1h_input_tokens: 0,
         }
     }
 
@@ -198,5 +211,32 @@ mod tests {
 
         ledger.record_subagent(&[], true);
         assert!(ledger.incomplete);
+    }
+
+    #[test]
+    fn from_call_and_fold_totals_carry_ttl_split() {
+        // U-RED-2 (F12 §4): the L3 ledger fold carries the TTL split u64-widened;
+        // a second fold adds both buckets.
+        let split = TokenUsage {
+            prompt_tokens: 1000,
+            completion_tokens: 7,
+            total_tokens: 1007,
+            reasoning_tokens: 0,
+            cached_prompt_tokens: 0,
+            cache_creation_prompt_tokens: 460,
+            cache_creation_5m_input_tokens: 120,
+            cache_creation_1h_input_tokens: 340,
+        };
+        let call = UsageTotals::from_call(&split, None, None);
+        assert_eq!(call.cache_creation_tokens, 460);
+        assert_eq!(call.cache_creation_5m_input_tokens, 120u64);
+        assert_eq!(call.cache_creation_1h_input_tokens, 340u64);
+
+        let mut ledger = UsageLedger::default();
+        ledger.totals.fold_totals(&call);
+        ledger.totals.fold_totals(&call);
+        assert_eq!(ledger.totals.cache_creation_tokens, 920);
+        assert_eq!(ledger.totals.cache_creation_5m_input_tokens, 240);
+        assert_eq!(ledger.totals.cache_creation_1h_input_tokens, 680);
     }
 }

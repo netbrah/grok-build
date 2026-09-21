@@ -125,6 +125,10 @@ pub fn stream_messages<'a>(
         let mut final_input_tokens: u32 = 0;
         let mut final_cache_read_input_tokens: u32 = 0;
         let mut final_cache_creation_input_tokens: u32 = 0;
+        // F12 (apex-ayl.116): the TTL split off the message_start wire
+        // `usage.cache_creation` (start-only — `MessageDeltaUsage` has no split field).
+        let mut final_cache_creation_5m_input_tokens: u32 = 0;
+        let mut final_cache_creation_1h_input_tokens: u32 = 0;
         let mut final_output_tokens: u32 = 0;
         // R4: the messages route's thinking decomposition (thinking_tokens).
         // Mapped into TokenUsage.reasoning_tokens so the messages wire displays
@@ -242,6 +246,10 @@ pub fn stream_messages<'a>(
                             .as_ref()
                             .copied()
                             .unwrap_or(0);
+                    if let Some(cc) = message.usage.cache_creation.as_ref() {
+                        final_cache_creation_5m_input_tokens = cc.ephemeral_5m_input_tokens;
+                        final_cache_creation_1h_input_tokens = cc.ephemeral_1h_input_tokens;
+                    }
                     final_reasoning_tokens = message
                         .usage
                         .output_tokens_details
@@ -873,6 +881,8 @@ pub fn stream_messages<'a>(
                 reasoning_tokens: final_reasoning_tokens,
                 cached_prompt_tokens: final_cache_read_input_tokens,
                 cache_creation_prompt_tokens: final_cache_creation_input_tokens,
+                cache_creation_5m_input_tokens: final_cache_creation_5m_input_tokens,
+                cache_creation_1h_input_tokens: final_cache_creation_1h_input_tokens,
             })
         } else {
             None

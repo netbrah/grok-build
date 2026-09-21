@@ -4331,6 +4331,8 @@ mod last_sample_span_tests {
                 reasoning_tokens: 0,
                 cached_prompt_tokens: 0,
                 cache_creation_prompt_tokens: 0,
+                cache_creation_5m_input_tokens: 0,
+                cache_creation_1h_input_tokens: 0,
             }),
             cost_usd_ticks: None,
             message_chunks_emitted: 0,

@@ -33,6 +33,15 @@ pub struct UsageSummary {
     pub cached_read_tokens: u64,
     #[serde(default)]
     pub cache_creation_tokens: u64,
+    // F12 (apex-ayl.116) — INTENTIONAL camelCase deviation (binding, SDD §3.4):
+    // wire-echo fields. usage.json mirrors the ANTHROPIC wire naming so the
+    // artifact is grep-comparable with the captured wire (MGW-TTLUSAGE-01's
+    // landed artifact pin matches with ZERO re-pin). No skip_serializing_if:
+    // the "0" is the informative value, so the keys always render.
+    #[serde(default, rename = "ephemeral_5m_input_tokens")]
+    pub cache_creation_5m_input_tokens: u64,
+    #[serde(default, rename = "ephemeral_1h_input_tokens")]
+    pub cache_creation_1h_input_tokens: u64,
     #[serde(default)]
     pub reasoning_tokens: u64,
     #[serde(default)]
@@ -81,6 +90,8 @@ impl UsageSummary {
             output_tokens: totals.output_tokens,
             cached_read_tokens: totals.cached_read_tokens,
             cache_creation_tokens: totals.cache_creation_tokens,
+            cache_creation_5m_input_tokens: totals.cache_creation_5m_input_tokens,
+            cache_creation_1h_input_tokens: totals.cache_creation_1h_input_tokens,
             reasoning_tokens: totals.reasoning_tokens,
             total_tokens: totals.total_tokens(),
             model_calls: totals.model_calls,
@@ -123,6 +134,12 @@ impl UsageSummary {
             cache_creation_tokens: self
                 .cache_creation_tokens
                 .saturating_add(other.cache_creation_tokens),
+            cache_creation_5m_input_tokens: self
+                .cache_creation_5m_input_tokens
+                .saturating_add(other.cache_creation_5m_input_tokens),
+            cache_creation_1h_input_tokens: self
+                .cache_creation_1h_input_tokens
+                .saturating_add(other.cache_creation_1h_input_tokens),
             reasoning_tokens: self.reasoning_tokens.saturating_add(other.reasoning_tokens),
             total_tokens: self.total_tokens.saturating_add(other.total_tokens),
             model_calls: self.model_calls.saturating_add(other.model_calls),
@@ -160,6 +177,12 @@ impl UsageSummary {
             cache_creation_tokens: self
                 .cache_creation_tokens
                 .saturating_sub(other.cache_creation_tokens),
+            cache_creation_5m_input_tokens: self
+                .cache_creation_5m_input_tokens
+                .saturating_sub(other.cache_creation_5m_input_tokens),
+            cache_creation_1h_input_tokens: self
+                .cache_creation_1h_input_tokens
+                .saturating_sub(other.cache_creation_1h_input_tokens),
             reasoning_tokens: self.reasoning_tokens.saturating_sub(other.reasoning_tokens),
             total_tokens: self.total_tokens.saturating_sub(other.total_tokens),
             model_calls: self.model_calls.saturating_sub(other.model_calls),
@@ -370,3 +393,7 @@ fn sub_cost_ticks(live: Option<i64>, previous: Option<i64>) -> Option<i64> {
 #[cfg(test)]
 #[path = "usage_file_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "usage_file_ttl_tests.rs"]
+mod ttl_tests;
