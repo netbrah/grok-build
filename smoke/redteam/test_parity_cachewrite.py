@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """Offline fixture tests for apex-ayl.101 (CACHEWRITE-DTO) — stdlib only.
 
-Characterizes the recorded RED state of the cache_write_tokens drop: the
+Characterizes the POST-CUT GREEN state after XW-CACHEWRITE-DTO-1: the
 responses WIRE carries usage.input_tokens_details.cache_write_tokens on the
-response.completed frame, but the harness usage seam
-(xai-grok-shell/src/session/usage_file.rs, camelCase keys) never writes the
-matching cacheCreationTokens row into usage.json.
+response.completed frame, and the harness usage seam
+(xai-grok-shell/src/session/usage_file.rs, camelCase keys) now records the
+matching cacheCreationTokens row into usage.json — byte-exact to the wire.
 
 Fixtures (fixtures/parity/101/, see META.json for sources + sha256s):
   response_completed_frame.json            main-turn frame (input_tokens
-                                           16595, cached_tokens 0,
-                                           cache_write_tokens 16592)
+                                           16589, cached_tokens 0,
+                                           cache_write_tokens 16569)
   response_completed_frame_sidecall.json   224-token warm side-call frame
                                            (cache_write_tokens 0)
   usage_recorded.json                      same session's usage.json
                                            (session/turns[0]
-                                           cacheCreationTokens 0 = RED)
-Source capture: smoke/wstream/report/20260919T060151Z/sol-resp/
+                                           cacheCreationTokens 16569 = GREEN)
+Source capture: smoke/wstream/report/20260921T002635Z/sol-resp/ (post-cut
+binary sha256_12 611166b0393c; F5 verification re-mint, 2026-09-21).
 
 SDD:    grok/plans/xwire/101-cachewrite-dto-sdd-20260919.md
 Ratify: grok/plans/xwire/101-cachewrite-dto-sdd-ratify-root-20260919.md
@@ -25,28 +26,27 @@ Ratify: grok/plans/xwire/101-cachewrite-dto-sdd-ratify-root-20260919.md
 Run it (OFFLINE: no proxy key, no binary, no live calls, no cargo):
 
   python3 smoke/redteam/test_parity_cachewrite.py          # exit 0 (fixtures)
-  python3 smoke/redteam/test_parity_cachewrite.py --gate   # exit 1 today (RED)
+  python3 smoke/redteam/test_parity_cachewrite.py --gate   # exit 0 post-cut (GREEN)
   python3 smoke/redteam/test_parity_cachewrite.py --gate DIR
 
 --gate checks a live capture dir (default:
-smoke/wstream/report/20260919T060151Z/sol-resp, worktree-root-relative,
+smoke/wstream/report/20260921T002635Z/sol-resp, worktree-root-relative,
 CWD-relative fallback): every response.completed frame in capture/resp-*.jsonl
 with cache_write_tokens = N > 0 must have a usage.json row (session or
 turns[i]) with inputTokens == frame input_tokens AND cacheCreationTokens ==
 N (byte-exact). A capture with no N>0 frame is vacuous and fails. Exit 0 =
 GREEN (post-cut acceptance), 1 = RED (drop still present), 2 = usage error.
 
-Test map (characterization pins on the recorded capture — all GREEN today;
-the documented RED is the harness drop, not a test failure):
+Test map (characterization pins on the post-cut capture — all GREEN):
 
   CacheWriteDtoReplay.test_wire_frame_carries_field      GREEN (wire has the
-      field: cached_tokens 0 + cache_write_tokens 16592 on main, 0 on side)
-  CacheWriteDtoReplay.test_input_tokens_byte_match       GREEN (16595 byte-
+      field: cached_tokens 0 + cache_write_tokens 16569 on main, 0 on side)
+  CacheWriteDtoReplay.test_input_tokens_byte_match       GREEN (16589 byte-
       equal between the wire frame and usage.json session.inputTokens)
-  CacheWriteDtoReplay.test_harness_records_write_RED_state
-      GREEN today — DOCUMENTS the RED state (wire-present 16592 AND
-      harness-dropped 0); re-mint the fixture post-cut and this test's
-      expected values flip with it
+  CacheWriteDtoReplay.test_harness_records_write_GREEN_state
+      GREEN — post-cut the harness records the write row (wire 16569 AND
+      usage.json 16569 at session + turns[0]); the pre-cut fixture recorded
+      0 (the RED that motivated the cut); a regression to 0 fails this test
   CacheWriteDtoReplay.test_sidecall_zero_write_row       GREEN (224-token
       warm call, zero write row — the control case)
 """
@@ -61,7 +61,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE_DIR = os.path.join(HERE, "fixtures", "parity", "101")
 # Worktree root per task spec: 4 levels up from this file's dir (dirname x4).
 WORKTREE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(HERE))))
-DEFAULT_GATE_REL = "smoke/wstream/report/20260919T060151Z/sol-resp"
+DEFAULT_GATE_REL = "smoke/wstream/report/20260921T002635Z/sol-resp"
 
 
 def _load_json(path):
@@ -142,32 +142,33 @@ class CacheWriteDtoReplay(unittest.TestCase):
         return frame["response"]["usage"]
 
     def test_wire_frame_carries_field(self):
-        """The wire carries cache_write_tokens: main frame shows a 16592-token
+        """The wire carries cache_write_tokens: main frame shows a 16569-token
         cold write with zero cached reads; the side-call frame shows zero."""
         details = self._usage(self.main_frame)["input_tokens_details"]
         self.assertEqual(details["cached_tokens"], 0)
-        self.assertEqual(details["cache_write_tokens"], 16592)
+        self.assertEqual(details["cache_write_tokens"], 16569)
         self.assertGreater(details["cache_write_tokens"], 0)
         side_details = self._usage(self.side_frame)["input_tokens_details"]
         self.assertEqual(side_details["cache_write_tokens"], 0)
 
     def test_input_tokens_byte_match(self):
         """Wire frame input_tokens == usage.json session-level inputTokens
-        (16595) — the join key the gate matches rows on."""
+        (16589) — the join key the gate matches rows on."""
         wire = self._usage(self.main_frame)["input_tokens"]
         recorded = self.usage_recorded["session"]["inputTokens"]
         print("wire input_tokens=%s, usage.json session.inputTokens=%s" % (wire, recorded))
-        self.assertEqual(wire, 16595)
+        self.assertEqual(wire, 16589)
         self.assertEqual(wire, recorded)
 
-    def test_harness_records_write_RED_state(self):
-        """DOCUMENTS the RED state (wire-present AND harness-dropped): the
-        wire shows cache_write_tokens=16592 for this session, yet the harness
-        usage.json records cacheCreationTokens=0 at BOTH the session level
-        and in turns[0]. Turns green when the .101 cut lands and a re-minted
-        fixture shows the write row (expected values then flip with it)."""
-        self.assertEqual(self.usage_recorded["session"]["cacheCreationTokens"], 0)
-        self.assertEqual(self.usage_recorded["turns"][0]["cacheCreationTokens"], 0)
+    def test_harness_records_write_GREEN_state(self):
+        """POST-CUT GREEN state: the wire shows cache_write_tokens=16569 for
+        this session and the harness usage.json records the same value at
+        BOTH the session level and in turns[0] (the pre-cut fixture showed 0
+        — the recorded RED that CACHEWRITE-DTO-1 fixed). A regression to 0
+        fails this test."""
+        self.assertGreater(self.usage_recorded["session"]["cacheCreationTokens"], 0)
+        self.assertEqual(self.usage_recorded["session"]["cacheCreationTokens"], 16569)
+        self.assertEqual(self.usage_recorded["turns"][0]["cacheCreationTokens"], 16569)
 
     def test_sidecall_zero_write_row(self):
         """Control case: the 224-token warm side-call carries a zero write

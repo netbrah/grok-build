@@ -2,13 +2,15 @@
  "bead": "apex-ayl.101",
  "sdd": "grok/plans/xwire/101-cachewrite-dto-sdd-20260919.md",
  "ratify": "grok/plans/xwire/101-cachewrite-dto-sdd-ratify-root-20260919.md",
- "extracted": "2026-09-19",
- "source_capture": "smoke/wstream/report/20260919T060151Z/sol-resp/",
- "source_session": "01a0b842-948a-75b3-bfa4-1d7e2d3c0b19",
- "note": "response_completed_frame.json = main-turn response.completed frame (wire cache_write_tokens=16592). response_completed_frame_sidecall.json = side-call frame (cache_write_tokens=0 on a 224-token warm call). usage_recorded.json = same session's usage.json (cacheCreationTokens=0 = the recorded RED). All bodies redaction-swept by the harness capture pipeline; extractor re-scanned for key patterns (exit 3 on hit).",
+ "extracted": "2026-09-21",
+ "source_capture": "smoke/wstream/report/20260921T002635Z/sol-resp/",
+ "source_session": "01a0c15b-89ff-7552-b487-c57ab56efe6c",
+ "cell": "sol-resp (model gpt-5.6-sol, api_backend responses, wire responses, 1 turn, wstream runner)",
+ "binary_sha256_12": "611166b0393c",
+ "note": "POST-CUT GREEN re-mint (F5 verification, replaces the 2026-09-19 recorded-RED mint). response_completed_frame.json = main-turn response.completed frame (resp-005.jsonl frame_index 218; wire cache_write_tokens=16569, cached_tokens 0 \u2014 cold write). response_completed_frame_sidecall.json = side-call frame (resp-004.jsonl frame_index 21; cache_write_tokens=0 on a 224-token warm call \u2014 the control). usage_recorded.json = same session's usage.json \u2014 post-cut, session/turns[0]/modelUsage cacheCreationTokens=16569, byte-exact to the wire value (the 2026-09-19 RED was 0). All bodies redaction-swept by the harness capture pipeline (wiretap header masking); the F5 re-extraction re-scanned the full new capture tree via smoke/redteam/run.py redaction_sweep (ambient-key occurrences + key heuristics + MCP-env backstop) \u2014 0 hits.",
  "source_sha256": {
-  "resp-003.jsonl": "0915b3cdb141085a603fbeff5111213d80ce0d51070a739f11b319e3da662d8f",
-  "resp-004.jsonl": "d062b7301b1102c5fb82f04d14cda1bf2fc7f38d9d3c698b2f15e13385df8a37",
-  "usage.json": "9f8206ef4a575fdd427d40efd269ec3a6856098259eb0539efeebc32556abb90"
+  "resp-004.jsonl": "fbf8a866af98f37cc1ab137b11bd4c1f22d96e2493fb7315faf3cc160a64bfc3",
+  "resp-005.jsonl": "473f096c4ba2e697b829feec3d5741110a4a99e27a0b131971520fc56536f0ff",
+  "usage.json": "20afa8927bb334d8a976fe147789975e2b86c2ac7a105faca5f744560d42f7b2"
  }
 }
