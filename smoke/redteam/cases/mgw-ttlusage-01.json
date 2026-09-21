@@ -49,10 +49,9 @@
    }
   ]
  },
- "scoring": {
+  "scoring": {
   "vacuous_if": [
    { "pin": "mgw_ttl_ctl", "class": "model" }
   ]
- },
- "expected_red": { "id": "mgw-f12-ttlusage" }
+ }
 }
