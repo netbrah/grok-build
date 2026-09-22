@@ -8,6 +8,7 @@
  "bake": [
   "grok-4.5"
  ],
+ "skip": [],
  "models": {
   "Qwen3-Embedding-8B": {
    "api_backend": "chat_completions",
