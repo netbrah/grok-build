@@ -51,7 +51,25 @@ pub const DEFAULT_AGENT_TYPE: &str = "grok-build-plan";
 pub(crate) fn default_agent_type() -> String {
     DEFAULT_AGENT_TYPE.to_owned()
 }
+/// ZC-APEX-FEATURE-1 (apex-ayl.127): the APEX zero-config deploy build
+/// repoints the built-in cli-chat-proxy base at the Netapp LLM proxy, so
+/// the baked catalog rows (and every proxy-defaulted auxiliary endpoint)
+/// target the proxy with no config at all. Stock builds keep the public
+/// endpoint.
+#[cfg(feature = "apex-deploy")]
+pub const CLI_CHAT_PROXY_BASE_URL_DEFAULT: &str = "https://llm-proxy-api.ai.eng.netapp.com/v1";
+#[cfg(not(feature = "apex-deploy"))]
 pub const CLI_CHAT_PROXY_BASE_URL_DEFAULT: &str = "https://cli-chat-proxy.grok.com/v1";
+/// ZC-APEX-FEATURE-1 (apex-ayl.127, checkpoint 5 / DISAGREE-1): the
+/// first-party inference base is repointed the same way. Bundled rows
+/// (including the PRE_BAKE_SEED_KEYS rows exempt from the row-aware
+/// fills) carry `api_base_url = endpoints.xai_api_base_url`, and the
+/// no-config credential fall-through (`read_xai_api_key_env` arm 3)
+/// rides it — without this gate the APEX key would be sent to `api.x.ai`
+/// in the deploy build (S-a `creds.base_url` assertion pins it).
+#[cfg(feature = "apex-deploy")]
+pub const XAI_API_BASE_URL_DEFAULT: &str = "https://llm-proxy-api.ai.eng.netapp.com/v1";
+#[cfg(not(feature = "apex-deploy"))]
 pub const XAI_API_BASE_URL_DEFAULT: &str = "https://api.x.ai/v1";
 const NO_INLINE_CITATIONS_RESPONSE_INCLUDE: &str = "no_inline_citations";
 /// One or more environment variable names that may hold a model API key.
@@ -549,7 +567,19 @@ impl Default for EndpointsConfig {
             management_api_key: None,
             gcs_service_account_key: None,
             default_api_backend: None,
+            #[cfg(not(feature = "apex-deploy"))]
             default_env_key: None,
+            // ZC-APEX-FEATURE-1 (apex-ayl.127): the built-in default env
+            // key for the APEX zero-config deploy build — legacy priority
+            // (CODEX first, APEX second), so existing CODEX-named
+            // deployments keep working and zero-config users set only
+            // APEX_LLM_PROXY_KEY. Per-field layering: any config/managed
+            // `default_env_key` still wins (deep merge over this base).
+            #[cfg(feature = "apex-deploy")]
+            default_env_key: Some(EnvKeys::new([
+                "CODEX_LLM_PROXY_KEY",
+                "APEX_LLM_PROXY_KEY",
+            ])),
             default_context_window: None,
             default_model_family: None,
             default_agent_type: None,

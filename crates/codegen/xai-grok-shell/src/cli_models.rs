@@ -98,7 +98,7 @@ mod tests {
     use crate::agent::auth_method::{LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR};
     use crate::agent::config::Config;
     use serial_test::serial;
-    use xai_grok_login::{AuthMode, GrokAuth};
+    use xai_grok_login::{auth_method::APEX_LLM_PROXY_KEY_ENV_VAR, AuthMode, GrokAuth};
     use xai_grok_test_support::EnvGuard;
     const EXPECTED_LOGIN_HOST: &str = "grok.com";
     /// A session the compiled-in backend recognises as its own, which `AuthBackend::owns` requires.
@@ -111,12 +111,14 @@ mod tests {
     }
     /// Isolate process-global auth sources that `AuthStatus::resolve` consults.
     /// Uses `GROK_AUTH_PATH` (not `GROK_HOME`) so a OnceLock-cached real home with `auth.json` cannot leak into these tests.
-    fn isolate_auth_sources() -> (tempfile::TempDir, [EnvGuard; 7]) {
+    fn isolate_auth_sources() -> (tempfile::TempDir, [EnvGuard; 9]) {
         let dir = tempfile::tempdir().unwrap();
         let auth_path = dir.path().join("no-auth.json");
         let guards = [
             EnvGuard::unset(XAI_API_KEY_ENV_VAR),
             EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR),
+            EnvGuard::unset("CODEX_LLM_PROXY_KEY"),
+            EnvGuard::unset(APEX_LLM_PROXY_KEY_ENV_VAR),
             EnvGuard::unset("GROK_AUTH"),
             EnvGuard::set("GROK_AUTH_PATH", auth_path.to_str().unwrap()),
             EnvGuard::unset("GROK_DEPLOYMENT_KEY"),

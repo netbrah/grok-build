@@ -1360,10 +1360,15 @@ async fn apply_supported_effort_assigns_only_when_supported() {
     let agent = build_minimal_agent_for_tests();
     let mut supported = ModelEntry::fallback("effort-model", &EndpointsConfig::default());
     supported.info.supports_reasoning_effort = true;
+    // ZC-APEX-FEATURE-1 (apex-ayl.127): entries carry their own credential so the
+    // state-2 fail-closed guard (non-first-party default base) cannot reject them
+    // when a concurrent test clears the ambient keys.
+    supported.api_key = Some("effort-model-effort-test-key".into());
     agent
         .models_manager
         .insert_test_entry("effort-model", supported.clone());
-    let plain = ModelEntry::fallback("plain-model", &EndpointsConfig::default());
+    let mut plain = ModelEntry::fallback("plain-model", &EndpointsConfig::default());
+    plain.api_key = Some("plain-model-effort-test-key".into());
     agent
         .models_manager
         .insert_test_entry("plain-model", plain.clone());
@@ -1402,6 +1407,12 @@ async fn apply_supported_effort_assigns_only_when_supported() {
 #[tokio::test]
 async fn prepare_sampling_config_fails_closed_for_credentialless_custom_endpoint() {
     use crate::agent::config::{EndpointsConfig, ModelEntry};
+    // ZC-APEX-FEATURE-1 (apex-ayl.127): the guard must see a credential-less endpoint;
+    // ambient keys on a dev box would otherwise resolve via the env_key fill.
+    let _kxai = xai_grok_test_support::EnvGuard::unset("XAI_API_KEY");
+    let _klegacy = xai_grok_test_support::EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+    let _kcodex = xai_grok_test_support::EnvGuard::unset("CODEX_LLM_PROXY_KEY");
+    let _kapex = xai_grok_test_support::EnvGuard::unset("APEX_LLM_PROXY_KEY");
     let agent = build_minimal_agent_for_tests();
     let mut custom = ModelEntry::fallback("proxy-model", &EndpointsConfig::default());
     custom.info.base_url = "https://llm-proxy.example.com/v1".to_string();
@@ -1421,10 +1432,20 @@ async fn prepare_sampling_config_fails_closed_for_credentialless_custom_endpoint
         message.contains("[model.proxy-model]") && message.contains("default_env_key"),
         "error must name both fixes: {message}"
     );
-    let first_party = ModelEntry::fallback("xai-model", &EndpointsConfig::default());
-    agent
-        .prepare_sampling_config_for_model(&first_party, None)
-        .expect("first-party (cli-chat-proxy) route keeps the ambient-key last resort");
+    #[cfg(not(feature = "apex-deploy"))]
+    {
+        let first_party = ModelEntry::fallback("xai-model", &EndpointsConfig::default());
+        agent.prepare_sampling_config_for_model(&first_party, None)
+            .expect("first-party (cli-chat-proxy) route keeps the ambient-key last resort");
+    }
+    #[cfg(feature = "apex-deploy")]
+    {
+        // ZC-APEX-FEATURE-1 (apex-ayl.127): under `apex-deploy` the default route is the
+        // built-in (non-first-party) proxy, so a credential-less entry must fail closed.
+        let apex_default = ModelEntry::fallback("apex-model", &EndpointsConfig::default());
+        agent.prepare_sampling_config_for_model(&apex_default, None)
+            .expect_err("apex-deploy default route must fail closed with no ambient key");
+    }
 }
 /// Setting `reasoning_effort` without switching the id runs, and bills, whatever the entry opened on.
 /// The status line would still read `low`.
@@ -1455,6 +1476,9 @@ async fn an_effort_that_names_its_own_model_switches_the_id() {
         variant(ReasoningEffort::Low, "routed-low"),
         variant(ReasoningEffort::High, "routed-high"),
     ];
+    // ZC-APEX-FEATURE-1 (apex-ayl.127): own credentials; see the note in
+    // `apply_supported_effort_assigns_only_when_supported` for why.
+    routed.api_key = Some("routed-high-effort-test-key".into());
     agent
         .models_manager
         .insert_test_entry("routed-high", routed.clone());
@@ -1464,6 +1488,7 @@ async fn an_effort_that_names_its_own_model_switches_the_id() {
         option(ReasoningEffort::Low, false),
         option(ReasoningEffort::High, true),
     ];
+    plain.api_key = Some("plain-model-effort-test-key".into());
     agent
         .models_manager
         .insert_test_entry("plain-model", plain.clone());
@@ -1579,10 +1604,12 @@ async fn new_session_meta_effort_seeds_spawn_for_supported_model_and_drops_for_u
     let mut supported = ModelEntry::fallback("effort-model", &EndpointsConfig::default());
     supported.info.supports_reasoning_effort = true;
     supported.info.reasoning_effort = Some(ReasoningEffort::Low);
+    supported.api_key = Some("effort-model-effort-test-key".into());
     agent
         .models_manager
         .insert_test_entry("effort-model", supported.clone());
-    let plain = ModelEntry::fallback("plain-model", &EndpointsConfig::default());
+    let mut plain = ModelEntry::fallback("plain-model", &EndpointsConfig::default());
+    plain.api_key = Some("plain-model-effort-test-key".into());
     agent
         .models_manager
         .insert_test_entry("plain-model", plain.clone());
@@ -1630,6 +1657,7 @@ async fn new_session_without_meta_keeps_current_effort_over_catalog_default() {
     let mut supported = ModelEntry::fallback("effort-model", &EndpointsConfig::default());
     supported.info.supports_reasoning_effort = true;
     supported.info.reasoning_effort = Some(ReasoningEffort::High);
+    supported.api_key = Some("effort-model-effort-test-key".into());
     agent
         .models_manager
         .insert_test_entry("effort-model", supported.clone());
@@ -1667,6 +1695,7 @@ async fn restore_effort_via_load(
     let agent = build_minimal_agent_for_tests();
     let mut entry = ModelEntry::fallback("effort-model", &EndpointsConfig::default());
     entry.info.supports_reasoning_effort = true;
+    entry.api_key = Some("effort-model-effort-test-key".into());
     agent
         .models_manager
         .insert_test_entry("effort-model", entry);
@@ -3619,6 +3648,8 @@ async fn cached_token_fallthrough_falls_to_grok_com_without_credentials() {
     let _lockdown = EnvGuard::unset("GROK_DISABLE_API_KEY_AUTH");
     let _new = EnvGuard::unset(XAI_API_KEY_ENV_VAR);
     let _legacy = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
+    let _codex = EnvGuard::unset("CODEX_LLM_PROXY_KEY");
+    let _apex = EnvGuard::unset("APEX_LLM_PROXY_KEY");
     let agent = build_minimal_agent_for_tests();
     assert_eq!(
         agent
@@ -4034,6 +4065,7 @@ async fn search_index_honors_the_session_search_feature() {
 /// Reclaiming is the one irreversible half of the deferred work, and the six hour throttle then hides the run that could have honored a remote veto.
 #[tokio::test]
 #[serial_test::serial]
+#[cfg_attr(feature = "apex-deploy", ignore = "stock fetch-on default contract; apex-deploy flips the built-in remote_fetch to false (apex-ayl.127)")]
 async fn auto_gc_declines_until_the_remote_answer_settles() {
     let (_home, _env) = search_index_env();
     let agent = build_agent_with_auth(xai_grok_login::GrokAuth::test_default());
@@ -4093,6 +4125,7 @@ async fn search_before_the_decision_asks_the_caller_to_retry() {
 /// If the first reader resolved the feature, the registered default would latch before the server could answer.
 #[tokio::test]
 #[serial_test::serial]
+#[cfg_attr(feature = "apex-deploy", ignore = "stock fetch-on default contract; apex-deploy flips the built-in remote_fetch to false (apex-ayl.127)")]
 async fn read_before_the_remote_settings_land_does_not_decide() {
     let (_home, _env) = search_index_env();
     let agent = build_agent_with_auth(xai_grok_login::GrokAuth::test_default());
@@ -4120,6 +4153,7 @@ async fn read_before_the_remote_settings_land_does_not_decide() {
 /// A host with no identity to fetch with never receives remote settings, so waiting for them would cost it an index for the whole run.
 #[tokio::test]
 #[serial_test::serial]
+#[cfg_attr(feature = "apex-deploy", ignore = "stock fetch-on default contract; apex-deploy flips the built-in remote_fetch to false (apex-ayl.127)")]
 async fn exhausted_fetch_decides_on_the_local_layers() {
     use crate::agent::config::Config as AgentConfig;
     use xai_grok_login::{AuthManager, GrokComConfig};
@@ -6094,6 +6128,7 @@ impl Drop for RestoreOtelGate {
 /// Regression: `cfg.remote_settings` is not reset on an account switch, so the access gate must not read a previous identity's cached `allow_access`.
 /// A mismatched identity stays provisionally open (unknown), like the OTEL gate's `rearm_on_switch`.
 #[tokio::test]
+#[cfg_attr(feature = "apex-deploy", ignore = "stock fetch-on default contract; apex-deploy flips the built-in remote_fetch to false (apex-ayl.127)")]
 async fn access_gate_does_not_leak_verdict_across_identities() {
     use crate::agent::config::AgentMode;
     use xai_grok_login::{GrokAuth, XAI_OAUTH2_ISSUER};
@@ -6131,6 +6166,7 @@ async fn access_gate_does_not_leak_verdict_across_identities() {
 /// The settings arrival also emits `x.ai/settings/update` and opens the external-OTEL gate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
+#[cfg_attr(feature = "apex-deploy", ignore = "stock fetch-on default contract; apex-deploy flips the built-in remote_fetch to false (apex-ayl.127)")]
 async fn post_auth_settings_xai_upgrades_writeback_emits_and_opens_gate() {
     use crate::agent::config::AgentMode;
     use xai_grok_login::{GrokAuth, XAI_OAUTH2_ISSUER};
@@ -6175,6 +6211,7 @@ async fn post_auth_settings_xai_upgrades_writeback_emits_and_opens_gate() {
 /// BYOK auth must not be upgraded to `Writeback` even when the server advertises it; the push and gate still fire.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
+#[cfg_attr(feature = "apex-deploy", ignore = "stock fetch-on default contract; apex-deploy flips the built-in remote_fetch to false (apex-ayl.127)")]
 async fn post_auth_settings_non_xai_keeps_local_but_still_emits() {
     use crate::agent::config::AgentMode;
     use xai_grok_login::{AuthMode, GrokAuth};
@@ -6214,6 +6251,7 @@ async fn post_auth_settings_non_xai_keeps_local_but_still_emits() {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
+#[cfg_attr(feature = "apex-deploy", ignore = "stock fetch-on default contract; apex-deploy flips the built-in remote_fetch to false (apex-ayl.127)")]
 async fn post_auth_settings_failure_resolves_gate_onto_local_policy() {
     use crate::agent::config::AgentMode;
     use xai_grok_login::{GrokAuth, XAI_OAUTH2_ISSUER};
@@ -6269,6 +6307,7 @@ async fn same_credential_refresh_does_not_flap_resolved_gate() {
 /// Without the re-fetch the stale 401 fails OPEN (no remote policy).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
+#[cfg_attr(feature = "apex-deploy", ignore = "stock fetch-on default contract; apex-deploy flips the built-in remote_fetch to false (apex-ayl.127)")]
 async fn settings_self_heal_refetches_after_token_rotation() {
     use crate::agent::config::AgentMode;
     use xai_grok_login::refresh::{RefreshOutcome, TokenRefresher};

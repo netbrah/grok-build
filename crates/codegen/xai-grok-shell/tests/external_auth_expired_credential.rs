@@ -289,6 +289,8 @@ fn expired_external_credential_routes_to_the_provider_login_flow() {
         // An API key would be advertised first and mask the session-auth path.
         std::env::remove_var("XAI_API_KEY");
         std::env::remove_var("GROK_CODE_XAI_API_KEY");
+        std::env::remove_var("CODEX_LLM_PROXY_KEY");
+        std::env::remove_var("APEX_LLM_PROXY_KEY");
         // Last-resort 401 recovery can mint a credential from an endpoint named in the ambient environment
         // On a container-hosted runner that would rescue the session behind the test's back
         // Leave it nothing to mint from: the deployment under test is one where only the operator's binary can produce a credential

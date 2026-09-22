@@ -519,7 +519,10 @@ fn session_resolver_is_not_stamped_onto_third_party_samplers() {
         Some("root-group")
     );
     let mut first_party = SamplerConfig {
-        base_url: EndpointsConfig::default().resolve_inference_base_url(),
+        // A literal first-party URL: first-party under every build (the built-in
+        // default is the prod grok.com proxy in stock and the BYOK APEX proxy
+        // under `apex-deploy`, which this test must not depend on).
+        base_url: "https://cli-chat-proxy.grok.com/v1".to_string(),
         ..SamplerConfig::default()
     };
     stamp_session_local_sampler_fields(&mut first_party, &session_cfg, None, None);
@@ -903,6 +906,12 @@ async fn static_key_shadows_defined_provider_through_pipeline() {
 }
 #[test]
 fn undefined_auth_provider_fails_closed() {
+    // Hermetic: the apex-deploy build's built-in `default_env_key` would let
+    // an ambient APEX/CODEX proxy key resolve a credential here.
+    let _kxai = xai_grok_test_support::EnvGuard::unset("XAI_API_KEY");
+    let _klegacy = xai_grok_test_support::EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+    let _kcodex = xai_grok_test_support::EnvGuard::unset("CODEX_LLM_PROXY_KEY");
+    let _kapex = xai_grok_test_support::EnvGuard::unset("APEX_LLM_PROXY_KEY");
     let raw_config: toml::Value = toml::from_str(
         r#"
             [model.orphan]
@@ -1793,7 +1802,7 @@ fn user_override_adds_api_key_to_default_model() {
     assert_eq!(model.api_key, Some("user-custom-api-key".to_string()));
     assert_eq!(model.info.model, dm);
     assert_eq!(
-        model.info.base_url, "https://cli-chat-proxy.grok.com/v1",
+        model.info.base_url, CLI_CHAT_PROXY_BASE_URL_DEFAULT,
         "base_url should inherit from default, not be stale"
     );
 }
@@ -3372,7 +3381,7 @@ fn e2e_default_model_with_session_routes_to_proxy() {
     let sampling = resolve_sampling(model, Some("session-token-123"));
     assert_eq!(sampling.api_key.as_deref(), Some("session-token-123"));
     assert_eq!(
-        sampling.base_url, "https://cli-chat-proxy.grok.com/v1",
+        sampling.base_url, CLI_CHAT_PROXY_BASE_URL_DEFAULT,
         "session auth should route to cli-chat-proxy, not api.x.ai"
     );
 }
@@ -3387,8 +3396,9 @@ fn e2e_default_model_with_external_api_key_routes_to_api_xai() {
     let sampling = resolve_sampling(model, None);
     assert_eq!(sampling.api_key.as_deref(), Some("xai-external-key"));
     assert_eq!(
-        sampling.base_url, "https://api.x.ai/v1",
-        "external API key should route to api.x.ai via api_base_url"
+        sampling.base_url, XAI_API_BASE_URL_DEFAULT,
+        "external API key should route to the first-party inference base via \
+         api_base_url (api.x.ai in stock; the Netapp proxy under apex-deploy)"
     );
     unsafe { std::env::remove_var("XAI_API_KEY") };
 }
@@ -3435,7 +3445,14 @@ fn e2e_credential_priority_model_key_beats_session_beats_env() {
         None,
         None,
     );
-    unsafe { std::env::set_var("XAI_API_KEY", "env-key") };
+    let _prev_codex = std::env::var("CODEX_LLM_PROXY_KEY").ok();
+    let _prev_apex = std::env::var("APEX_LLM_PROXY_KEY").ok();
+    unsafe {
+        std::env::set_var("XAI_API_KEY", "env-key");
+        std::env::remove_var("GROK_CODE_XAI_API_KEY");
+        std::env::remove_var("CODEX_LLM_PROXY_KEY");
+        std::env::remove_var("APEX_LLM_PROXY_KEY");
+    }
     let sampling = resolve_sampling(&model_with_key, Some("session-key"));
     assert_eq!(
         sampling.api_key.as_deref(),
@@ -3479,6 +3496,12 @@ fn e2e_credential_priority_model_key_beats_session_beats_env() {
         sampling.api_key.is_none(),
         "no credentials available → api_key should be None"
     );
+    if let Some(v) = _prev_codex {
+        unsafe { std::env::set_var("CODEX_LLM_PROXY_KEY", v) };
+    }
+    if let Some(v) = _prev_apex {
+        unsafe { std::env::set_var("APEX_LLM_PROXY_KEY", v) };
+    }
 }
 #[test]
 fn e2e_duplicate_model_field_both_entries_survive() {
@@ -3512,7 +3535,7 @@ fn e2e_duplicate_model_field_both_entries_survive() {
     assert_eq!(sampling.base_url, "https://inference.example.com/v1");
     let sampling = resolve_sampling(default, Some("session-key"));
     assert_eq!(sampling.api_key.as_deref(), Some("session-key"));
-    assert_eq!(sampling.base_url, "https://cli-chat-proxy.grok.com/v1",);
+    assert_eq!(sampling.base_url, CLI_CHAT_PROXY_BASE_URL_DEFAULT,);
 }
 #[test]
 fn e2e_enterprise_custom_endpoint_skips_xai_defaults() {
@@ -8363,6 +8386,13 @@ fn mcp_recursive_config_watch_feature_flag_used_when_no_higher_layer() {
 #[test]
 #[serial_test::serial(remote_sig_disarm)]
 fn remote_settings_disarm_managed_config_signatures() {
+    // Pin the fleet origin explicitly: the built-in default proxy repoints to
+    // the non-fleet APEX proxy under `apex-deploy`, which would block the
+    // remote disarm this test exercises as a mechanism.
+    let _prod_proxy = xai_grok_test_support::EnvGuard::set(
+        "GROK_CLI_CHAT_PROXY_BASE_URL",
+        "https://cli-chat-proxy.grok.com/v1",
+    );
     xai_grok_config::signed_policy::apply_remote_managed_config_signature_verification(
         Some(true),
         true,
@@ -8437,9 +8467,15 @@ fn remote_settings_disarm_requires_prod_proxy_when_keys_embedded() {
         std::env::remove_var("GROK_CLI_CHAT_PROXY_BASE_URL");
     }
     apply_remote_settings_side_effects(Some(&settings));
+    #[cfg(not(feature = "apex-deploy"))]
     assert!(
         !xai_grok_config::signed_policy::verification_active(),
         "prod proxy origin must allow disarm when keys are embedded"
+    );
+    #[cfg(feature = "apex-deploy")]
+    assert!(
+        xai_grok_config::signed_policy::verification_active(),
+        "the apex-deploy built-in proxy is not the prod origin, so remote disarm stays blocked (fail-closed)"
     );
     xai_grok_config::signed_policy::apply_remote_managed_config_signature_verification(
         Some(true),
@@ -8511,6 +8547,8 @@ async fn process_key_from_model_env_key() {
     const TOKEN: &str = "model-env-token";
     let _xai = EnvGuard::unset("XAI_API_KEY");
     let _legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+    let _codex = EnvGuard::unset("CODEX_LLM_PROXY_KEY");
+    let _apex = EnvGuard::unset("APEX_LLM_PROXY_KEY");
     let _tok = EnvGuard::set(ENV, TOKEN);
     let dm = xai_grok_models::default_model();
     let cfg = Config::new_from_toml_cfg(
@@ -9009,7 +9047,19 @@ fn p1_route_matrix_endpoints_defaults_serde() {
     let cfg =
         Config::new_from_toml_cfg(&toml::from_str("").unwrap()).expect("empty config should parse");
     assert!(cfg.endpoints.default_api_backend.is_none());
-    assert!(cfg.endpoints.default_env_key.is_none());
+    // ZC-APEX-FEATURE-1 (apex-ayl.127): under `apex-deploy` the built-in
+    // default_env_key is CODEX (legacy) -> APEX; stock stays `None`.
+    #[cfg(not(feature = "apex-deploy"))]
+    {
+        assert!(cfg.endpoints.default_env_key.is_none());
+    }
+    #[cfg(feature = "apex-deploy")]
+    {
+        assert_eq!(
+            cfg.endpoints.default_env_key.as_ref().map(EnvKeys::names),
+            Some(vec!["CODEX_LLM_PROXY_KEY", "APEX_LLM_PROXY_KEY"])
+        );
+    }
     assert!(cfg.endpoints.default_context_window.is_none());
     assert!(cfg.endpoints.default_model_family.is_none());
     assert!(cfg.endpoints.default_agent_type.is_none());
@@ -9055,10 +9105,30 @@ fn p1_route_matrix_endpoints_defaults_serde() {
     // Empty defaults must not appear in the serialized `[endpoints]` base that
     // `from_config_value` layers user config over (stock output stays byte-identical).
     let serialized = toml::to_string(&EndpointsConfig::default()).expect("serialize");
-    assert!(
-        !serialized.contains("default_"),
-        "empty provider defaults must not serialize"
-    );
+    #[cfg(not(feature = "apex-deploy"))]
+    {
+        assert!(
+            !serialized.contains("default_"),
+            "empty provider defaults must not serialize"
+        );
+    }
+    // ZC-APEX-FEATURE-1 (apex-ayl.127): under `apex-deploy` exactly one
+    // default serializes — the built-in `default_env_key` base layer.
+    #[cfg(feature = "apex-deploy")]
+    {
+        assert!(
+            serialized.contains("default_env_key"),
+            "the built-in default_env_key must serialize as the base layer: {serialized}"
+        );
+        assert!(
+            !serialized.contains("default_api_backend")
+                && !serialized.contains("default_context_window")
+                && !serialized.contains("default_model_family")
+                && !serialized.contains("default_agent_type")
+                && !serialized.contains("default_extra_headers"),
+            "all other provider defaults must stay empty: {serialized}"
+        );
+    }
 }
 /// Route matrix #9: fail-closed — a custom-endpoint model with no resolvable
 /// credential is a hard configuration error naming the model and both fixes; a
@@ -10165,4 +10235,191 @@ fn mgw_f1_u_red_4_undeclared_mcp_toolset_server_is_hard_refused() {
         err.contains("ghost"),
         "the rejection must name the undeclared server value: {err}"
     );
+}
+
+/// ZC-APEX-FEATURE-1 (apex-ayl.127): the `apex-deploy` zero-config
+/// acceptance matrix (S-a/S-b/S-d/S4). These tests compile only under the
+/// `apex-deploy` cargo feature; the stock build keeps byte-identical
+/// behavior (the plain-build pins elsewhere in this file assert it).
+#[cfg(feature = "apex-deploy")]
+mod zc_apex_feature {
+    use super::*;
+
+    /// The Netapp LLM proxy base baked into the `apex-deploy` build.
+    const APEX_PROXY_BASE: &str = "https://llm-proxy-api.ai.eng.netapp.com/v1";
+
+    /// Hermetic zero-config env: no config-tier endpoint overrides and no
+    /// credential env of any kind (XAI-native, legacy, or APEX).
+    /// Callers MUST be `#[serial]`.
+    fn zero_config_env() -> Vec<EnvGuard> {
+        [
+            "GROK_CLI_CHAT_PROXY_BASE_URL",
+            "GROK_XAI_API_BASE_URL",
+            "GROK_MODELS_BASE_URL",
+            "GROK_MODELS_LIST_URL",
+            "XAI_API_KEY",
+            "GROK_CODE_XAI_API_KEY",
+            "CODEX_LLM_PROXY_KEY",
+            "APEX_LLM_PROXY_KEY",
+        ]
+        .iter()
+        .map(|key| EnvGuard::unset(key))
+        .collect()
+    }
+
+    /// S-a: NO config.toml at all — built-ins apply (base = Netapp LLM
+    /// proxy, env keys CODEX -> APEX), and with ONLY `APEX_LLM_PROXY_KEY`
+    /// set, `resolve_credentials` succeeds via the no-config fall-through
+    /// (`read_xai_api_key_env` arm 3).
+    #[test]
+    #[serial]
+    fn zc_apex_s_a_no_config_builtins_apply_and_key_fallthrough() {
+        let _guards = zero_config_env();
+        let cfg = Config::new_from_toml_cfg(&toml::Value::Table(Default::default()))
+            .expect("empty config should parse");
+        assert_eq!(
+            cfg.endpoints.proxy_url(),
+            APEX_PROXY_BASE,
+            "no-config built-in base must be the Netapp LLM proxy"
+        );
+        assert_eq!(
+            cfg.endpoints.default_env_key.as_ref().map(EnvKeys::names),
+            Some(vec!["CODEX_LLM_PROXY_KEY", "APEX_LLM_PROXY_KEY"]),
+            "no-config built-in env keys must be CODEX (legacy) first, APEX second"
+        );
+
+        let models = resolve_model_list(&cfg, None);
+        let model = models
+            .get(crate::models::default_model())
+            .expect("default model must exist");
+        assert_eq!(
+            model.info.base_url,
+            APEX_PROXY_BASE,
+            "baked row wire base_url must carry the built-in proxy base"
+        );
+        assert!(
+            !model.has_own_credentials(),
+            "the default model must have no own credential (no-config fall-through path)"
+        );
+
+        let apex_guard = EnvGuard::set("APEX_LLM_PROXY_KEY", "apex-zero-config-key");
+        let creds = resolve_credentials(model, None);
+        assert_eq!(
+            creds.api_key.as_deref(),
+            Some("apex-zero-config-key"),
+            "with ONLY APEX_LLM_PROXY_KEY set, resolve_credentials must succeed \
+             via the no-config fall-through"
+        );
+        assert_eq!(creds.auth_type, xai_chat_state::AuthType::ApiKey);
+        assert_eq!(
+            creds.base_url,
+            APEX_PROXY_BASE,
+            "the fall-through credential base must be the Netapp proxy, not the \
+             first-party inference const"
+        );
+        drop(apex_guard);
+    }
+
+    /// S-b: config with an unrelated partial `[endpoints]` table (the user
+    /// sets only `default_context_window`) — the built-ins still apply
+    /// per-field for every field the user did not set.
+    #[test]
+    #[serial]
+    fn zc_apex_s_b_partial_endpoints_table_keeps_builtins_per_field() {
+        let _guards = zero_config_env();
+        let raw: toml::Value = toml::from_str(
+            r#"
+                [endpoints]
+                default_context_window = 256000
+            "#,
+        )
+        .unwrap();
+        let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+        assert_eq!(
+            cfg.endpoints.default_context_window,
+            Some(256_000),
+            "the user-set field must be preserved"
+        );
+        assert_eq!(
+            cfg.endpoints.proxy_url(),
+            APEX_PROXY_BASE,
+            "an unrelated partial [endpoints] table must not displace the built-in base"
+        );
+        assert_eq!(
+            cfg.endpoints.default_env_key.as_ref().map(EnvKeys::names),
+            Some(vec!["CODEX_LLM_PROXY_KEY", "APEX_LLM_PROXY_KEY"]),
+            "an unrelated partial [endpoints] table must not displace the built-in env keys"
+        );
+    }
+
+    /// S-d: config sets `default_env_key` -> config wins over the built-in
+    /// (string form and array form).
+    #[test]
+    #[serial]
+    fn zc_apex_s_d_config_default_env_key_wins_over_builtin() {
+        let _guards = zero_config_env();
+        let scalar: toml::Value = toml::from_str(
+            r#"
+                [endpoints]
+                default_env_key = "MY_DEPLOY_KEY"
+            "#,
+        )
+        .unwrap();
+        let cfg = Config::new_from_toml_cfg(&scalar).expect("config should parse");
+        assert_eq!(
+            cfg.endpoints.default_env_key.as_ref().map(EnvKeys::names),
+            Some(vec!["MY_DEPLOY_KEY"]),
+            "config default_env_key (string) must win over the built-in"
+        );
+
+        let array: toml::Value = toml::from_str(
+            r#"
+                [endpoints]
+                default_env_key = ["MY_DEPLOY_KEY_A", "MY_DEPLOY_KEY_B"]
+            "#,
+        )
+        .unwrap();
+        let cfg = Config::new_from_toml_cfg(&array).expect("config should parse");
+        assert_eq!(
+            cfg.endpoints.default_env_key.as_ref().map(EnvKeys::names),
+            Some(vec!["MY_DEPLOY_KEY_A", "MY_DEPLOY_KEY_B"]),
+            "config default_env_key (array) must win over the built-in array"
+        );
+    }
+
+    /// S4 (savvy opt-in): the user sets `models_base_url` ->
+    /// `has_custom_endpoint()` = true -> the baked base + donor machinery is
+    /// skipped and runtime fetch is live; the built-in base must NOT hijack
+    /// this path.
+    #[test]
+    #[serial]
+    fn zc_apex_s4_custom_models_base_url_not_hijacked_by_builtin_base() {
+        let _guards = zero_config_env();
+        let raw: toml::Value = toml::from_str(
+            r#"
+                [endpoints]
+                models_base_url = "https://enterprise.acme.com/v1"
+            "#,
+        )
+        .unwrap();
+        let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+        assert!(
+            cfg.endpoints.has_custom_endpoint(),
+            "models_base_url must enable custom endpoint mode"
+        );
+        assert_eq!(
+            cfg.endpoints.resolve_inference_base_url(),
+            "https://enterprise.acme.com/v1",
+            "the built-in base must not hijack the user's models_base_url"
+        );
+        let resolved = resolve_model_list(&cfg, None);
+        assert!(
+            !resolved.contains_key(crate::models::default_model()),
+            "custom endpoint mode must skip the baked catalog rows"
+        );
+        assert!(
+            resolved.is_empty(),
+            "no built-in rows may leak into custom endpoint mode"
+        );
+    }
 }

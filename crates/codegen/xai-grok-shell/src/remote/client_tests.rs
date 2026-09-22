@@ -885,6 +885,7 @@ fn list_url_explicit_overrides_derivation() {
 #[serial_test::serial]
 fn deployment_config_url_uses_cli_chat_proxy_when_not_overridden() {
     use crate::agent::config::EndpointsConfig;
+    use crate::agent::config::CLI_CHAT_PROXY_BASE_URL_DEFAULT;
     for k in [
         "GROK_CLI_CHAT_PROXY_BASE_URL",
         "GROK_MANAGED_CONFIG_URL",
@@ -900,7 +901,10 @@ fn deployment_config_url_uses_cli_chat_proxy_when_not_overridden() {
     )
     .unwrap();
     let url = EndpointsConfig::from_config_value(&managed).resolve_managed_config_url();
-    assert_eq!(url, "https://cli-chat-proxy.grok.com/v1/deployment/config");
+    assert_eq!(
+        url,
+        format!("{CLI_CHAT_PROXY_BASE_URL_DEFAULT}/deployment/config")
+    );
     assert!(
         !url.contains("acme-corp"),
         "deployment key would be sent to the inference host: {url}"

@@ -229,8 +229,13 @@ impl ConfigModelOverride {
 #[cfg(test)]
 mod tests {
     use crate::agent::config::{Config, resolve_credentials, resolve_model_list};
+    use serial_test::serial;
+    use xai_grok_test_support::EnvGuard;
+    #[serial]
     #[test]
     fn model_inherits_provider_connection_defaults() {
+        let _no_codex_key = EnvGuard::unset("CODEX_LLM_PROXY_KEY");
+        let _no_apex_key = EnvGuard::unset("APEX_LLM_PROXY_KEY");
         let raw_config: toml::Value = toml::from_str(
             r#"
             [model_providers.gateway]
@@ -370,8 +375,11 @@ mod tests {
         assert_eq!(creds.api_key.as_deref(), Some("sk-model-own"));
     }
 
+    #[serial]
     #[test]
     fn undefined_model_provider_fails_closed() {
+        let _no_codex_key = EnvGuard::unset("CODEX_LLM_PROXY_KEY");
+        let _no_apex_key = EnvGuard::unset("APEX_LLM_PROXY_KEY");
         use super::super::config_model_override_parse::{ConfigWarningKind, WarningTarget};
 
         let raw_config: toml::Value = toml::from_str(
@@ -791,8 +799,11 @@ mod tests {
         );
     }
 
+    #[serial]
     #[test]
     fn fail_closed_ref_ignores_a_colliding_auth_provider_table() {
+        let _no_codex_key = EnvGuard::unset("CODEX_LLM_PROXY_KEY");
+        let _no_apex_key = EnvGuard::unset("APEX_LLM_PROXY_KEY");
         let raw_config: toml::Value = toml::from_str(
             r#"
             [auth_provider."model_provider:gateway (fail-closed)"]

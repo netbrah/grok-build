@@ -208,6 +208,8 @@ mod tests {
     #[serial_test::serial]
     fn models_fetch_endpoint_matches_auth_mode() {
         use crate::agent::config::EndpointsConfig;
+        use crate::agent::config::CLI_CHAT_PROXY_BASE_URL_DEFAULT;
+        use crate::agent::config::XAI_API_BASE_URL_DEFAULT;
         use crate::agent::remote_config::ModelFetchAuth;
         for k in [
             "GROK_CLI_CHAT_PROXY_BASE_URL",
@@ -224,10 +226,10 @@ mod tests {
             .unwrap(),
         );
         let session = ListModelsEndpoint::from_endpoints(&cfg, ModelFetchAuth::Session);
-        assert_eq!(session.url, "https://cli-chat-proxy.grok.com/v1/models");
+        assert_eq!(session.url, format!("{CLI_CHAT_PROXY_BASE_URL_DEFAULT}/models"));
         assert_eq!(session.auth, EndpointAuth::Session);
         let deployment = ListModelsEndpoint::from_endpoints(&cfg, ModelFetchAuth::Deployment);
-        assert_eq!(deployment.url, "https://cli-chat-proxy.grok.com/v1/models");
+        assert_eq!(deployment.url, format!("{CLI_CHAT_PROXY_BASE_URL_DEFAULT}/models"));
         assert_eq!(deployment.auth, EndpointAuth::Session);
         let api = ListModelsEndpoint::from_endpoints(&cfg, ModelFetchAuth::ApiKey);
         assert_eq!(api.url, "https://inference.acme-corp.example/xai/v1/models");
@@ -235,7 +237,7 @@ mod tests {
         let default = EndpointsConfig::from_config_value(&toml::Value::Table(Default::default()));
         assert_eq!(
             ListModelsEndpoint::from_endpoints(&default, ModelFetchAuth::ApiKey).url,
-            "https://api.x.ai/v1/models"
+            format!("{XAI_API_BASE_URL_DEFAULT}/models")
         );
         let custom = EndpointsConfig::from_config_value(
             &toml::from_str(

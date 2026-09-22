@@ -105,6 +105,7 @@ impl ModelsEndpoint for SlowEndpoint {
     }
 }
 
+#[cfg_attr(feature = "apex-deploy", ignore = "stock fetch-on default contract; apex-deploy flips the built-in remote_fetch to false (apex-ayl.127)")]
 #[tokio::test]
 async fn catalog_retry_recovers_after_endpoint_returns() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -221,6 +222,7 @@ async fn disk_cache_reload_applies_without_fetching() {
 }
 
 #[tokio::test]
+#[cfg_attr(feature = "apex-deploy", ignore = "stock fetch-on default contract; apex-deploy flips the built-in remote_fetch to false (apex-ayl.127)")]
 async fn auth_refresh_watcher_refetches_on_notify() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -463,6 +465,8 @@ async fn first_catalog_wait_is_bounded() {
 async fn first_catalog_wait_skips_doomed_signed_out_fetch() {
     let _no_key = EnvGuard::unset("XAI_API_KEY");
     let _no_legacy_key = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+    let _no_codex_key = EnvGuard::unset("CODEX_LLM_PROXY_KEY");
+    let _no_apex_key = EnvGuard::unset("APEX_LLM_PROXY_KEY");
     let mgr = cold_manager(config::Config::default(), Arc::new(HangingEndpoint));
     let start = tokio::time::Instant::now();
     mgr.spawn_fetch_inner(None, /*remote_fetch_enabled*/ true);
@@ -1164,6 +1168,7 @@ fn spawn_background_refresh_is_noop_when_real_catalog_present() {
     assert!(mgr.has_fetched_real_catalog());
 }
 
+#[cfg_attr(feature = "apex-deploy", ignore = "stock fetch-on default contract; apex-deploy flips the built-in remote_fetch to false (apex-ayl.127)")]
 #[tokio::test(flavor = "current_thread")]
 async fn spawn_background_refresh_never_blocks_on_a_hanging_endpoint() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1228,6 +1233,8 @@ async fn sign_out_clears_catalog_rebuilds_bundled_without_fetching() {
     // Unset keys so fetch_auth resolves to Session (the sign-out branch).
     let _no_key = EnvGuard::unset("XAI_API_KEY");
     let _no_legacy_key = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+    let _no_codex_key = EnvGuard::unset("CODEX_LLM_PROXY_KEY");
+    let _no_apex_key = EnvGuard::unset("APEX_LLM_PROXY_KEY");
     let calls = Arc::new(AtomicUsize::new(0));
     let tmp = tempfile::TempDir::new().unwrap();
     let auth_manager = Arc::new(AuthManager::new(tmp.path(), GrokComConfig::default()));
@@ -2026,6 +2033,8 @@ fn custom_endpoint_scope_identity_differs_per_key() {
 fn custom_endpoint_session_scope_keys_on_account_not_bearer() {
     let _no_key = EnvGuard::unset("XAI_API_KEY");
     let _no_legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+    let _no_codex = EnvGuard::unset("CODEX_LLM_PROXY_KEY");
+    let _no_apex = EnvGuard::unset("APEX_LLM_PROXY_KEY");
     let endpoints = config::EndpointsConfig::default();
     let identity_for = |user_id: &str, key: &str| {
         let auth = GrokAuth {
@@ -2048,6 +2057,7 @@ fn custom_endpoint_session_scope_keys_on_account_not_bearer() {
 }
 
 #[test]
+#[cfg_attr(feature = "apex-deploy", ignore = "stock fetch-on default contract; apex-deploy flips the built-in remote_fetch to false (apex-ayl.127)")]
 fn models_commit_gate_detects_account_switch() {
     let scope_for = |user_id: &str| ModelsCacheScope {
         auth_method: CacheAuthMethod::Session,
@@ -2087,6 +2097,7 @@ fn models_commit_gate_detects_account_switch() {
 
 #[test]
 #[serial]
+#[cfg_attr(feature = "apex-deploy", ignore = "stock fetch-on default contract; apex-deploy flips the built-in remote_fetch to false (apex-ayl.127)")]
 fn resolve_live_keeps_fetch_origin_when_disk_auth_absent() {
     let _no_legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
     // Session fetch, then disk auth is gone at commit while XAI_API_KEY is set
@@ -2322,6 +2333,8 @@ fn resolve_api_key_used_when_no_session() {
 fn resolve_falls_back_to_session_when_nothing_set() {
     let _unset = EnvGuard::unset("XAI_API_KEY");
     let _unset_legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+    let _unset_codex = EnvGuard::unset("CODEX_LLM_PROXY_KEY");
+    let _unset_apex = EnvGuard::unset("APEX_LLM_PROXY_KEY");
     let endpoints = config::EndpointsConfig::default();
     assert_eq!(
         ModelFetchAuth::resolve(&endpoints, false),
@@ -2394,6 +2407,8 @@ fn prefetch_env_none_when_remote_fetch_disabled_despite_credentials() {
 fn prefetch_env_resolves_when_remote_fetch_enabled() {
     let _unset = EnvGuard::unset("XAI_API_KEY");
     let _unset_legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+    let _unset_codex = EnvGuard::unset("CODEX_LLM_PROXY_KEY");
+    let _unset_apex = EnvGuard::unset("APEX_LLM_PROXY_KEY");
     let endpoints = config::EndpointsConfig {
         deployment_key: Some("deploy-key".to_owned()),
         ..config::EndpointsConfig::default()

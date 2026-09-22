@@ -393,6 +393,7 @@ mod tests {
     use crate::agent::config::{Config, resolve_model_list};
     use agent_client_protocol as acp;
     use serial_test::serial;
+    use xai_grok_login::auth_method::APEX_LLM_PROXY_KEY_ENV_VAR;
 
     /// When API-key credentials are advertiseable, fall through from a dead `cached_token` to non-interactive `xai.api_key` (not browser OAuth).
     /// Covers the both-advertised case: `has_cached_token` was true at initialize but the session later went missing/expired/legacy. Advertise order still puts `xai.api_key` first while `default_auth_method_id` prefers session.
@@ -660,6 +661,9 @@ mod tests {
         // Make sure no global key is masking the per-model path we're trying to exercise
         // Held until end-of-scope so we restore on panic too
         let _global = EnvGuard::unset(XAI_API_KEY_ENV_VAR);
+        let _legacy = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
+        let _codex = EnvGuard::unset("CODEX_LLM_PROXY_KEY");
+        let _apex = EnvGuard::unset(APEX_LLM_PROXY_KEY_ENV_VAR);
 
         let dm = xai_grok_models::default_model();
         let toml: toml::Value = toml::from_str(&format!(
@@ -782,6 +786,8 @@ mod tests {
     fn env_key_probe_unusable_suppresses_advertise_without_byok() {
         let _set = EnvGuard::set(XAI_API_KEY_ENV_VAR, "xai-dead-key");
         let _legacy = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
+        let _codex = EnvGuard::unset("CODEX_LLM_PROXY_KEY");
+        let _apex = EnvGuard::unset(APEX_LLM_PROXY_KEY_ENV_VAR);
         let cfg = Config::default();
         let models = resolve_model_list(&cfg, None);
         assert!(

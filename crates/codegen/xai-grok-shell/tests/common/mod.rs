@@ -327,10 +327,20 @@ pub async fn start_seeded_mock(
         }
     });
     std::fs::write(home.join("auth.json"), auth.to_string()).expect("write auth.json");
+    // ZC-APEX-FEATURE-1 (apex-ayl.127): the apex-deploy build flips the
+    // built-in remote_fetch default to false (zero-config contract); these
+    // startup harnesses exercise fetch mechanics, so the seed config opts in
+    // explicitly — config wins over the built-in (acceptance S-c). Stock
+    // builds write byte-identical config.
+    let remote_fetch_pin = if cfg!(feature = "apex-deploy") {
+        "[features]\nremote_fetch = true\n"
+    } else {
+        ""
+    };
     std::fs::write(
         home.join("config.toml"),
         format!(
-            "[endpoints]\ncli_chat_proxy_base_url = \"{}\"\n",
+            "{remote_fetch_pin}[endpoints]\ncli_chat_proxy_base_url = \"{}\"\n",
             server.url()
         ),
     )

@@ -7,6 +7,14 @@ edition.workspace = true
 [features]
 default = []
 dhat-heap = ["dep:dhat"]
+# ZC-APEX-FEATURE-1 (apex-ayl.127): APEX zero-config deploy defaults.
+# OFF by default; stock/dogfood builds stay byte-identical in behavior.
+# Under this feature the built-in defaults ship the Netapp LLM proxy
+# (cli-chat-proxy base repoint), `remote_fetch = false`, and the
+# `[endpoints] default_env_key` built-in
+# `["CODEX_LLM_PROXY_KEY", "APEX_LLM_PROXY_KEY"]`, so a bare binary with
+# only `APEX_LLM_PROXY_KEY` in env is fully operational. No new deps.
+apex-deploy = []
 # Session synthesis + in-process e2e harness (`session::testkit`) for soak,
 # load, and bench tests. Off by default; the tests/benches that use it declare
 # it via `required-features`. Forwards `xai-grok-login/test-support` for downstream test builds.

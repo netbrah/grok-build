@@ -782,10 +782,14 @@ mod tests {
     fn with_api_key_env<F: FnOnce()>(key: Option<&str>, f: F) {
         let prev = std::env::var("XAI_API_KEY").ok();
         let prev_legacy = std::env::var("GROK_CODE_XAI_API_KEY").ok();
+        let prev_codex = std::env::var("CODEX_LLM_PROXY_KEY").ok();
+        let prev_apex = std::env::var("APEX_LLM_PROXY_KEY").ok();
         // SAFETY: serial_test ensures no concurrent env mutation.
         unsafe {
             std::env::remove_var("XAI_API_KEY");
             std::env::remove_var("GROK_CODE_XAI_API_KEY");
+            std::env::remove_var("CODEX_LLM_PROXY_KEY");
+            std::env::remove_var("APEX_LLM_PROXY_KEY");
             if let Some(k) = key {
                 std::env::set_var("XAI_API_KEY", k);
             }
@@ -795,11 +799,19 @@ mod tests {
         unsafe {
             std::env::remove_var("XAI_API_KEY");
             std::env::remove_var("GROK_CODE_XAI_API_KEY");
+            std::env::remove_var("CODEX_LLM_PROXY_KEY");
+            std::env::remove_var("APEX_LLM_PROXY_KEY");
             if let Some(v) = prev {
                 std::env::set_var("XAI_API_KEY", v);
             }
             if let Some(v) = prev_legacy {
                 std::env::set_var("GROK_CODE_XAI_API_KEY", v);
+            }
+            if let Some(v) = prev_codex {
+                std::env::set_var("CODEX_LLM_PROXY_KEY", v);
+            }
+            if let Some(v) = prev_apex {
+                std::env::set_var("APEX_LLM_PROXY_KEY", v);
             }
         }
         if let Err(e) = result {

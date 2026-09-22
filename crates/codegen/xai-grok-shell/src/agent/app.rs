@@ -1390,6 +1390,7 @@ mod tests {
     /// The key must not bypass the session's remote policy.
     #[test]
     #[serial_test::serial]
+    #[cfg_attr(feature = "apex-deploy", ignore = "stock fleet-channel contract; apex-deploy opens the OTEL gate at startup by design (apex-ayl.127)")]
     fn embedded_otel_gate_keeps_a_session_user_fail_closed() {
         use crate::agent::auth_method::{LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR};
         use xai_grok_telemetry::external::{

@@ -98,6 +98,15 @@ pub fn resolve_remote_fetch_enabled() -> bool {
 }
 
 pub const REMOTE_FETCH_CONFIG_PATH: &str = "features.remote_fetch";
+/// Built-in `remote_fetch` default when no layer (requirements, managed,
+/// system managed, user) sets one. ZC-APEX-FEATURE-1 (apex-ayl.127): the
+/// APEX zero-config deploy build starts fetch-less — a bare binary must not
+/// egress to xAI for catalog/settings fetches; any layer pin still wins per
+/// the walk below. Stock builds stay `true`.
+#[cfg(feature = "apex-deploy")]
+pub(crate) const REMOTE_FETCH_ENABLED_DEFAULT: bool = false;
+#[cfg(not(feature = "apex-deploy"))]
+pub(crate) const REMOTE_FETCH_ENABLED_DEFAULT: bool = true;
 
 /// Keys whose dedicated resolver walks managed before user `config.toml`.
 /// The effective merge lets the user file win for every other key.
@@ -133,7 +142,7 @@ fn remote_fetch_enabled_from_layers(layers: &crate::config::ConfigLayers) -> boo
     .into_iter()
     .flatten()
     .find_map(remote_fetch_value)
-    .unwrap_or(true)
+    .unwrap_or(REMOTE_FETCH_ENABLED_DEFAULT)
 }
 
 /// Err-arm fallback for [`resolve_remote_fetch_enabled`]: walks the independently loadable policy tiers in Ok-arm walk order.
@@ -148,7 +157,7 @@ fn remote_fetch_enabled_from_policy_layers(
         .into_iter()
         .flatten()
         .find_map(remote_fetch_value)
-        .unwrap_or(true)
+        .unwrap_or(REMOTE_FETCH_ENABLED_DEFAULT)
 }
 
 #[cfg(test)]
@@ -174,7 +183,46 @@ mod tests {
 
     #[test]
     fn remote_fetch_defaults_to_true_when_absent() {
-        assert!(remote_fetch_enabled_from_layers(&empty_layers()));
+        // ZC-APEX-FEATURE-1 (apex-ayl.127): under `apex-deploy` the built-in
+        // default flips to `false` (fetch-less zero-config deploy); the stock
+        // build keeps `true`. Same code path, cfg-gated constant.
+        #[cfg(not(feature = "apex-deploy"))]
+        {
+            assert!(remote_fetch_enabled_from_layers(&empty_layers()));
+        }
+        #[cfg(feature = "apex-deploy")]
+        {
+            assert!(!remote_fetch_enabled_from_layers(&empty_layers()));
+        }
+    }
+
+    /// ZC-APEX-FEATURE-1 S-a (apex-ayl.127): NO config.toml at all — the
+    /// built-in `remote_fetch` default applies and under `apex-deploy` it is
+    /// `false`.
+    #[cfg(feature = "apex-deploy")]
+    #[test]
+    fn zc_apex_s_a_remote_fetch_built_in_false_without_config() {
+        assert!(!remote_fetch_enabled_from_layers(&empty_layers()));
+    }
+
+    /// ZC-APEX-FEATURE-1 S-c (apex-ayl.127): a config/managed
+    /// `remote_fetch = true` wins over the built-in `false` — fleet control
+    /// stays intact (managed-wins precedence unchanged).
+    #[cfg(feature = "apex-deploy")]
+    #[test]
+    fn zc_apex_s_c_config_remote_fetch_true_wins_over_builtin_false() {
+        let mut layers = empty_layers();
+        layers.user = features_remote_fetch(true);
+        assert!(
+            remote_fetch_enabled_from_layers(&layers),
+            "user remote_fetch=true must win over the built-in false"
+        );
+        let mut layers = empty_layers();
+        layers.managed = features_remote_fetch(true);
+        assert!(
+            remote_fetch_enabled_from_layers(&layers),
+            "managed remote_fetch=true must win over the built-in false"
+        );
     }
 
     #[test]
@@ -232,7 +280,14 @@ mod tests {
 
         let mut layers = empty_layers();
         layers.env_overlay = Some(features_remote_fetch(false));
-        assert!(remote_fetch_enabled_from_layers(&layers));
+        // ZC-APEX-FEATURE-1 (apex-ayl.127): the env overlay is ignored either
+        // way, so the result is exactly the built-in default (true in stock,
+        // false under `apex-deploy`).
+        assert_eq!(
+            remote_fetch_enabled_from_layers(&layers),
+            REMOTE_FETCH_ENABLED_DEFAULT,
+            "env overlay must be ignored; the builtin default applies"
+        );
     }
 
     #[test]
@@ -300,9 +355,13 @@ mod tests {
             Some(&off),
             Some(&on)
         ));
-        assert!(
+        // ZC-APEX-FEATURE-1 (apex-ayl.127): genuinely absent policy falls back
+        // to the built-in default (fail-open `true` in stock, fail-closed
+        // `false` under `apex-deploy`).
+        assert_eq!(
             remote_fetch_enabled_from_policy_layers(None, None, None),
-            "genuinely absent policy fails open"
+            REMOTE_FETCH_ENABLED_DEFAULT,
+            "genuinely absent policy falls back to the builtin default"
         );
     }
 }
