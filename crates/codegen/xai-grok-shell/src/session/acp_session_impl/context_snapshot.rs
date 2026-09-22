@@ -373,7 +373,9 @@ mod tests {
 
     #[test]
     fn tokenize_uses_baked_product_default_model() {
-        assert_eq!(crate::models::default_model(), "grok-4.6");
+        // Operator ruling 2026-09-22 (mid apex-ayl.129): the baked
+        // product default pin moved grok-4.6 -> gpt-5.6-terra.
+        assert_eq!(crate::models::default_model(), "gpt-5.6-terra");
     }
 
     #[test]

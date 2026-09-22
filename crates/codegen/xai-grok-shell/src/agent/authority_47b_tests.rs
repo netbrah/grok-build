@@ -41,7 +41,9 @@ fn live_row(model_id: &str) -> ModelEntry {
 }
 
 /// (1) Offline bundled row, explicit api_backend: a baked curated
-/// gpt-5.x row from default_models.json. No prefetched row, no config
+/// gpt-5.x row from default_models.json (gpt-5.6-terra at the
+/// apex-ayl.129 curation cut; gpt-5-codex left the menu). No prefetched
+/// row, no config
 /// row — the effective resolver's answer is the bundled row itself, and
 /// the 47b replay must attribute the explicit fields to BundledRow
 /// (values read straight off the real resolver output — STOP-4). At
@@ -53,15 +55,15 @@ fn offline_bundled_row_fields_are_bundled_row_authority() {
     let cfg = Config::default();
     let resolved = resolve_model_list(&cfg, None);
     let oracle = resolved
-        .get("gpt-5-codex")
-        .expect("gpt-5-codex rides the baked catalog");
-    let view = bind_messages_wire_model(&cfg, None, "gpt-5-codex")
+        .get("gpt-5.6-terra")
+        .expect("gpt-5.6-terra rides the baked catalog");
+    let view = bind_messages_wire_model(&cfg, None, "gpt-5.6-terra")
         .expect("offline bundled row binds (non-Messages backend passes the strict gate)");
 
-    assert_eq!(view.model, oracle.info.model, "gpt-5-codex model");
+    assert_eq!(view.model, oracle.info.model, "gpt-5.6-terra model");
     assert_eq!(
         view.api_backend.value, oracle.info.api_backend,
-        "gpt-5-codex api_backend value (STOP-4: read off the resolver output)"
+        "gpt-5.6-terra api_backend value (STOP-4: read off the resolver output)"
     );
     assert_eq!(view.api_backend.value, ApiBackend::Responses, "baked curated responses pin");
     assert!(
@@ -71,7 +73,7 @@ fn offline_bundled_row_fields_are_bundled_row_authority() {
     );
     assert_eq!(
         view.context_window.value, oracle.info.context_window,
-        "gpt-5-codex context_window value (STOP-4)"
+        "gpt-5.6-terra context_window value (STOP-4)"
     );
     assert!(
         matches!(view.context_window.source, FieldSource::BundledRow),
@@ -81,21 +83,22 @@ fn offline_bundled_row_fields_are_bundled_row_authority() {
     assert_eq!(
         view.model_family.value.as_deref(),
         oracle.info.model_family.as_deref(),
-        "gpt-5-codex model_family value (STOP-4)"
+        "gpt-5.6-terra model_family value (STOP-4)"
     );
     assert!(
         matches!(view.model_family.source, FieldSource::BundledRow),
         "offline explicit bundled model_family must be BundledRow, got: {:?}",
         view.model_family.source
     );
-    // kb6 (CATALOG-REQUIRED-CURATION-1): the fill now curates gpt-5-codex's
-    // menu in the overlay, so the bundled row arrives menu-FULL — the
+    // kb6 (CATALOG-REQUIRED-CURATION-1): the fill now curates
+    // gpt-5.6-terra's menu in the overlay, so the bundled row arrives
+    // menu-FULL — the
     // explicit field carries BundledRow authority (semantics unchanged:
     // explicit bundled fields are BundledRow; the attribution now simply
     // reflects a menu-full row).
     assert_eq!(
         view.reasoning_efforts.value, oracle.info.reasoning_efforts,
-        "gpt-5-codex reasoning_efforts value (STOP-4)"
+        "gpt-5.6-terra reasoning_efforts value (STOP-4)"
     );
     assert!(
         matches!(view.reasoning_efforts.source, FieldSource::BundledRow),
@@ -103,24 +106,12 @@ fn offline_bundled_row_fields_are_bundled_row_authority() {
         view.reasoning_efforts.source
     );
 
-    // CatalogInference menu-empty coverage PRESERVED (kb6): gpt-4.1 stays
-    // menu-[] (A1), so the empty-menu slug-inference attribution path is
-    // still exercised — on a row of the same (responses) wire.
-    let gpt41 = resolved
-        .get("gpt-4.1")
-        .expect("gpt-4.1 rides the baked catalog");
-    let view41 = bind_messages_wire_model(&cfg, None, "gpt-4.1")
-        .expect("gpt-4.1 offline bundled row binds (responses backend passes the strict gate)");
-    assert_eq!(view41.model, gpt41.info.model, "gpt-4.1 model");
-    assert_eq!(
-        view41.reasoning_efforts.value, gpt41.info.reasoning_efforts,
-        "gpt-4.1 reasoning_efforts value (STOP-4)"
-    );
-    assert!(
-        matches!(view41.reasoning_efforts.source, FieldSource::CatalogInference),
-        "menu-empty bundled row must stay CatalogInference, got: {:?}",
-        view41.reasoning_efforts.source
-    );
+    // CatalogInference menu-empty coverage (kb6): gpt-4.1 was the
+    // menu-[] representative — it left the baked catalog at the
+    // apex-ayl.129 curation cut. Every curated menu row is menu-full,
+    // so the empty-menu slug-inference attribution path no longer has
+    // a bundled-catalog representative (it still runs for
+    // live/fetched rows at resolution).
 }
 
 /// (a) The donor contract applies to PREFETCHED rows only — unchanged
@@ -156,10 +147,10 @@ fn pre_bake_donor_contract_unchanged_by_bundled_row_tier() {
         "offline pre-bake explicit backend is BundledRow (not Donor), got: {:?}",
         view.api_backend.source
     );
-    assert_eq!(view.context_window.value, NonZeroU64::new(500_000).unwrap());
+    assert_eq!(view.context_window.value, NonZeroU64::new(524_288).unwrap());
     assert!(
         matches!(view.context_window.source, FieldSource::BundledRow),
-        "offline pre-bake cw 500000 is BundledRow, got: {:?}",
+        "offline pre-bake cw 524288 is BundledRow, got: {:?}",
         view.context_window.source
     );
 }
@@ -170,14 +161,14 @@ fn pre_bake_donor_contract_unchanged_by_bundled_row_tier() {
 #[test]
 fn config_tier_still_wins_over_the_bundled_row() {
     let toml_src = r#"
-[model.gpt-5-codex]
+[model."gpt-5.6-terra"]
 api_backend = "responses"
 context_window = 250000
 model_family = "codex"
 "#;
     let cfg = Config::new_from_toml_cfg(&toml::from_str(toml_src).unwrap())
         .expect("config parses");
-    let view = bind_messages_wire_model(&cfg, None, "gpt-5-codex")
+    let view = bind_messages_wire_model(&cfg, None, "gpt-5.6-terra")
         .expect("offline config-row binding");
     assert!(
         matches!(view.api_backend.source, FieldSource::Config),

@@ -6,7 +6,7 @@
   "/v1/models",
   "/v1/model/info"
  ],
- "generated_at": "2026-09-19T05:23:58.928043+00:00",
+ "generated_at": "2026-09-22T19:21:54.296168+00:00",
  "groups_missing": [],
  "model_count": 76,
  "models": {
@@ -1027,8 +1027,8 @@
   "grok-4.6": {
    "id": "grok-4.6",
    "input_cost_per_token": 2e-06,
-   "max_input_tokens": 500000,
-   "max_output_tokens": 500000,
+   "max_input_tokens": 524288,
+   "max_output_tokens": 524288,
    "mode": "chat",
    "output_cost_per_token": 6e-06,
    "providers": [

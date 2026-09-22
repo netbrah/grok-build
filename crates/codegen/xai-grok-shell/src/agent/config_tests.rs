@@ -7927,7 +7927,11 @@ fn resolve_model_list_config_reasoning_efforts_beats_remote() {
 #[test]
 fn resolve_model_list_inherits_context_window_from_default_when_prefetched_has_fallback() {
     let cfg = Config::default();
-    let dm = crate::models::default_model();
+    // Operator ruling 2026-09-22 (mid apex-ayl.129): the default role
+    // pin moved to gpt-5.6-terra (a NON-pre-bake key — donor cw
+    // inheritance is pre-bake-only). Pin the pre-bake seed key so the
+    // donor-cw inheritance contract keeps its representative.
+    let dm = "grok-4.6";
     let default_cw = DEFAULT_CONTEXT_WINDOW;
     let entry = prefetch_model_entry(dm, default_cw, ApiBackend::default());
     let mut prefetched = IndexMap::new();
@@ -8597,10 +8601,15 @@ fn p1_route_matrix_baked_model_unchanged_without_endpoint_defaults() {
     let cfg = Config::default();
     assert!(!cfg.endpoints.has_custom_endpoint());
     let resolved = resolve_model_list(&cfg, None);
-    let dm = crate::models::default_model();
+    // Operator ruling 2026-09-22 (mid apex-ayl.129): the default role
+    // pin moved grok-4.6 -> gpt-5.6-terra. This matrix item is about
+    // the baked xAI row (family xai + ambient XAI key last resort), so
+    // it pins that row explicitly; the caps re-pin to the 2026-09-22
+    // recapture proxy truth (500000 -> 524288).
+    let dm = "grok-4.6";
     let entry = resolved.get(dm).expect("baked model must exist");
     assert_eq!(entry.info.api_backend, ApiBackend::Responses);
-    assert_eq!(entry.info.context_window.get(), 500_000);
+    assert_eq!(entry.info.context_window.get(), 524_288);
     assert_eq!(entry.info.model_family.as_deref(), Some("xai"));
     assert!(entry.env_key.is_none(), "baked model carries no env_key");
     let creds = resolve_credentials(entry, None);
@@ -8860,7 +8869,11 @@ fn p1_route_matrix_donor_wins_over_endpoint_defaults() {
     )
     .unwrap();
     let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
-    let dm = crate::models::default_model();
+    // Operator ruling 2026-09-22 (mid apex-ayl.129): the default role
+    // pin moved to gpt-5.6-terra (a NON-pre-bake key — no donor). The
+    // donor matrix item pins the pre-bake seed key explicitly so the
+    // donor-inheritance contract keeps its representative.
+    let dm = "grok-4.6";
     let mut prefetched = IndexMap::new();
     // Stock mode (no custom endpoint), so the baked donor for `dm` exists.
     prefetched.insert(
@@ -8871,7 +8884,7 @@ fn p1_route_matrix_donor_wins_over_endpoint_defaults() {
     let entry = resolved.get(dm).expect("model must exist");
     assert_eq!(
         entry.info.context_window.get(),
-        500_000,
+        524_288,
         "donor (baked) context_window wins over the endpoint default"
     );
     assert_eq!(

@@ -77,6 +77,24 @@ v2 — the operator-adjudicated 3-delta (2026-09-19) reshaped the contract:
           ALERT block moved to stderr — stdout is empty on every
           run. F7: unwritable --out / artifact write failure → clean
           exit 5 (documented alongside 0/2/3/4).
+  v6 — ZC-SUBSET-CURATION-1 (apex-ayl.129, operator-approved 8-row
+      zero-config menu, 2026-09-22): the committed overlay is the
+      curated 8-row menu (gpt-5.6-sol/terra/luna, claude-opus-5/
+      sonnet-5, grok-4.6, gemini-3.8-flash, gemini-3.1-pro-preview),
+      `bake` is empty (grok-4.5 cut), and `skip` lists all 68
+      on-proxy models outside the core with per-class reasons.
+      test_d re-pinned: 8 merged rows, the F1 byte-identity invariant
+      now cmps the temp re-bake against the freshly baked in-tree
+      default_models.json (the old invariant pinned the 77-row .128
+      pre-cut baseline against git HEAD — the intentional old→new
+      invariant move), and the curation spot-checks ride the 8-row
+      menu. The 2026-09-22 live recapture also moved grok-4.6's
+      proxy-truth caps 500000 -> 524288 (re-pinned where asserted).
+      Addendum (operator ruling 2026-09-22, mid-flight): all four
+      role pins move grok-4.6 -> gpt-5.6-terra (the Vertex
+      grok-4.6 deployment is broken; the grok-4.6 row stays in the
+      menu for explicit /model use) — the role-pin assertion in
+      test_d is re-pinned accordingly.
 
 Run:  python3 scripts/catalog_merge_tests.py   (exit 0 = all pass)
 """
@@ -383,21 +401,24 @@ def test_d_committed_artifacts():
           gen["model_count"] == 76 and len(gen["models"]) == 76)
     # D1 upstream shape: four role pins + a models array.
     check("merged carries the four role pins",
-          all(merged.get(p) == "grok-4.6" for p in
+          all(merged.get(p) == "gpt-5.6-terra" for p in
               ("default", "web_search", "image_description", "session_summary")))
     rows = merged.get("models")
     check("merged models is an array", isinstance(rows, list))
     by_id = {r["id"]: r for r in rows}
-    check("77 merged rows", len(rows) == 77, f"got {len(rows)}")
-    check("row set = curated ∪ bake list (= generated + bake at this cut — F1 no-op baseline)",
-          set(by_id) == set(gen["models"]) | set(ov.get("bake", []))
-          and set(by_id) == ((set(gen["models"]) & set(ov["models"]))
-                             | set(ov.get("bake", []))))
+    check("8 merged rows (the curated zero-config menu, apex-ayl.129)",
+          len(rows) == 8, f"got {len(rows)}")
+    check("row set = curated ∪ bake list (F1 product ruling: the 8-row "
+          "curated menu rides; unlisted/skipped on-proxy models do not)",
+          set(by_id) == ((set(gen["models"]) & set(ov["models"]))
+                         | set(ov.get("bake", []))))
     check("rows sorted by id", [r["id"] for r in rows] == sorted(by_id))
-    check("gemma-4-31b stays config-side (overlay-only)",
+    check("gemma-4-31b absent from the menu (its overlay row was cut "
+          "with the 8-row curation)",
           "gemma-4-31b" not in by_id)
     # v4: the committed overlay carries the top-level skip key (a list of
-    # {model, reason}; populated by apex-ayl.129, empty at this cut).
+    # {model, reason}; populated by apex-ayl.129 — every on-proxy model
+    # outside the 8-row curated menu, per-class reasons).
     check("overlay carries a top-level 'skip' list",
           isinstance(ov.get("skip"), list), str(list(ov)))
     for e in ov["skip"]:
@@ -417,19 +438,18 @@ def test_d_committed_artifacts():
     check("grok-4.6: seed name/label survive the migration",
           g46["name"] == "Grok 4.6" and g46["system_prompt_label"] == "Grok 4.6")
     check("grok-4.6: caps (generated cw + generated max_output — the "
-          "overlay no longer carries them, C-class)",
-          g46["context_window"] == 500000 and g46["max_completion_tokens"] == 500000)
+          "overlay no longer carries them, C-class; the 2026-09-22 "
+          "recapture moved the proxy truth 500000 -> 524288)",
+          g46["context_window"] == 524288 and g46["max_completion_tokens"] == 524288)
     # kb6 (A5' OPTION 1): the seed menu survives and gains ultra
     # immediately after the top tier (xhigh) — 5 items, high default.
     check("grok-4.6: seed menu survives (5 items incl. ultra, high default)",
           [m["value"] for m in g46["reasoning_efforts"]] == ["xhigh", "ultra", "high", "medium", "low"]
           and g46["reasoning_efforts"][2]["default"] is True)
-    g45 = by_id["grok-4.5"]
-    check("grok-4.5: overlay-only seed row — overlay cw 500000 is the "
-          "sole source (no generated truth; C-class carve-out)",
-          g45["context_window"] == 500000 and g45["api_backend"] == "responses"
-          and g45["model_family"] == "xai"
-          and [m["value"] for m in g45["reasoning_efforts"]] == ["high", "ultra", "medium", "low"])
+    check("grok-4.5: cut from the zero-config menu (apex-ayl.129 — the "
+          "overlay row and the bake-list entry are gone)",
+          "grok-4.5" not in by_id
+          and "grok-4.5" not in set(ov["models"]) | set(ov.get("bake", [])))
     sol = by_id["gpt-5.6-sol"]
     check("sol: cw 922000 from generated (C-class: the proxy's truth; the "
           "071 overlay 353000 leak is gone)",
@@ -448,18 +468,20 @@ def test_d_committed_artifacts():
           by_id["claude-sonnet-5"]["api_backend"] == "messages"
           and by_id["claude-sonnet-5"]["model_family"] == "anthropic"
           and by_id["claude-sonnet-5"]["cache_ttl"] == "1h")
-    check("frontier gpt-5.1-codex-max: responses + codex",
-          by_id["gpt-5.1-codex-max"]["api_backend"] == "responses"
-          and by_id["gpt-5.1-codex-max"]["model_family"] == "codex")
-    check("new gemini preview: responses + google",
-          by_id["gemini-3-flash-preview"]["api_backend"] == "responses"
-          and by_id["gemini-3-flash-preview"]["model_family"] == "google")
-    check("legacy gpt-4: chat_completions + codex",
-          by_id["gpt-4"]["api_backend"] == "chat_completions"
-          and by_id["gpt-4"]["model_family"] == "codex")
-    check("embedding row: capless (no mct) + chat_completions",
-          "max_completion_tokens" not in by_id["text-embedding-ada-002"]
-          and by_id["text-embedding-ada-002"]["api_backend"] == "chat_completions")
+    check("frontier gpt-5.6-terra: responses + codex",
+          by_id["gpt-5.6-terra"]["api_backend"] == "responses"
+          and by_id["gpt-5.6-terra"]["model_family"] == "codex")
+    check("gemini 3.8-flash: responses + google",
+          by_id["gemini-3.8-flash"]["api_backend"] == "responses"
+          and by_id["gemini-3.8-flash"]["model_family"] == "google")
+    check("xai frontier grok-4.6: responses + xai",
+          by_id["grok-4.6"]["api_backend"] == "responses"
+          and by_id["grok-4.6"]["model_family"] == "xai")
+    check("menu rows carry generated C-class caps (the overlay is "
+          "C-class-free; the embedding rows left the menu)",
+          all(r.get("context_window") for r in rows)
+          and all(r.get("max_completion_tokens") for r in rows)
+          and "text-embedding-ada-002" not in by_id)
     check("no raw C fields ride any merged row",
           all(not (set(r) & {"mode", "providers", "input_cost_per_token",
                              "output_cost_per_token", "supported_reasoning_efforts"})
@@ -472,11 +494,13 @@ def test_d_committed_artifacts():
           [by_id[r["id"]] for r in rows] == [m1[i] for i in sorted(m1)]
           and {k: v for k, v in merged.items() if k != "models"} == gate.extract_role_pins(ov))
     # F1 (CRITICAL INVARIANT — the product ruling): on the CURRENT
-    # overlay the merge output must stay BYTE-IDENTICAL to git HEAD
-    # (merged=77, drift=curated:76/skipped:0/unlisted:0/removed:1/
-    # skip_stale:0) — the current data has 0 unlisted and 0 skip, so the
-    # row-set semantics change is a no-op for the baseline. Re-bake to a
-    # temp out and cmp against `git show HEAD:...`.
+    # overlay the merge output must be deterministic and
+    # BYTE-IDENTICAL to the freshly baked in-tree artifact (merged=8,
+    # the curated zero-config menu; drift=curated:8/skipped:68/
+    # unlisted:0/removed:0/skip_stale:0 — apex-ayl.129 curation cut,
+    # 2026-09-22; the old invariant pinned the 77-row .128 pre-cut
+    # baseline against git HEAD). Re-bake to a temp out and cmp
+    # against the committed default_models.json.
     with tempfile.TemporaryDirectory() as td:
         base_out = os.path.join(td, "default_models.json")
         proc = run_gate(os.path.join(MODELS_DIR, "catalog_generated.json"),
@@ -487,23 +511,20 @@ def test_d_committed_artifacts():
         last = proc.stderr.splitlines()[-1] if proc.stderr else ""
         check("F1 baseline invariant: the exact baseline OK line",
               last.startswith(
-                  "OK merged=77 overlay_entries=78 schema_errors=0 warns=1 "
-                  "drift=curated:76/skipped:0/unlisted:0/removed:1/"
+                  "OK merged=8 overlay_entries=8 schema_errors=0 warns=0 "
+                  "drift=curated:8/skipped:68/unlisted:0/removed:0/"
                   "skip_stale:0 out="),
               last)
-        head = subprocess.run(
-            ["git", "show",
-             "HEAD:crates/codegen/xai-grok-models/default_models.json"],
-            cwd=ROOT, capture_output=True, text=True)
-        check("F1 baseline invariant: HEAD artifact fetched via git show",
-              head.returncode == 0 and bool(head.stdout), head.stderr)
+        with open(os.path.join(MODELS_DIR, "default_models.json"), "rb") as f:
+            committed = f.read()
         with open(base_out, "rb") as f:
             baked = f.read()
-        check("F1 baseline invariant: baked artifact BYTE-IDENTICAL to HEAD (cmp)",
-              baked == head.stdout.encode("utf-8"),
-              f"baked={len(baked)}B head={len(head.stdout)}B")
-        check("F1 baseline invariant: merged row count stays 77",
-              len(json.load(open(base_out))["models"]) == 77)
+        check("F1 baseline invariant: baked artifact BYTE-IDENTICAL to the "
+              "committed default_models.json (cmp)",
+              baked == committed,
+              f"baked={len(baked)}B committed={len(committed)}B")
+        check("F1 baseline invariant: merged row count is 8",
+              len(json.load(open(base_out))["models"]) == 8)
     # v4: the drift report bakes with every bake (committed alongside).
     drift_p = os.path.join(MODELS_DIR, "catalog_drift_report.json")
     check("drift report committed with the bake", os.path.isfile(drift_p))

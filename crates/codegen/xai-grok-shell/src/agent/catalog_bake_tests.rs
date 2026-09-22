@@ -39,11 +39,13 @@ use crate::agent::config::{
 use crate::models::DefaultModelEntry;
 use crate::sampling::ApiBackend;
 
-/// 2026-09-19 capture (3-call contract): 76 generated models + the
-/// `bake`-listed seed-migration row (grok-4.5). Drift is the gate's job,
-/// not a constant bump: a different model count fails the python suite's
-/// `generated: 76 models` check at exfil time.
-const BUNDLED_ROW_COUNT: usize = 77;
+/// 2026-09-22 curation cut (ZC-SUBSET-CURATION-1 / apex-ayl.129): the
+/// baked catalog is the operator-approved 8-row zero-config menu
+/// (curated overlay rows only; the `bake` list is empty — grok-4.5 was
+/// cut). Drift is the gate's job, not a constant bump: a different
+/// model count fails the python suite's `generated: 76 models` check at
+/// exfil time.
+const BUNDLED_ROW_COUNT: usize = 8;
 
 /// A synthetic prefetched (live) row: the proxy omitted `context_window`
 /// (the fetch hydration placeholder — seam-eligible for donor inheritance)
@@ -107,13 +109,13 @@ fn bundled_catalog_parses_rich_rows() {
     assert!(!grok.supports_backend_search, "grok-4.6: overlay backend_search=false");
     assert_eq!(
         grok.context_window,
-        NonZeroU64::new(500_000).unwrap(),
-        "grok-4.6: curated cw (seed value)"
+        NonZeroU64::new(524_288).unwrap(),
+        "grok-4.6: generated cw (proxy truth moved 500000 -> 524288 at the 2026-09-22 recapture)"
     );
     assert_eq!(
         grok.max_completion_tokens,
-        Some(500_000),
-        "grok-4.6: generated max_output survives"
+        Some(524_288),
+        "grok-4.6: generated max_output survives (2026-09-22 recapture)"
     );
     assert_eq!(
         grok.reasoning_efforts.iter().map(|o| o.value.as_str()).collect::<Vec<_>>(),
@@ -142,56 +144,51 @@ fn bundled_catalog_parses_rich_rows() {
         }
     }
 
-    // Curated legacy row: the explicit pin rides the row (the row-aware
+    // Curated menu row: the explicit pin rides the row (the row-aware
     // seams run at resolution, not parse time — see the fallback test).
-    let gpt4 = &entries["gpt-4"].info;
-    assert_eq!(gpt4.api_backend, ApiBackend::ChatCompletions);
-    assert_eq!(gpt4.model_family.as_deref(), Some("codex"));
-    assert_eq!(gpt4.context_window, NonZeroU64::new(1_047_576).unwrap());
-    assert_eq!(gpt4.max_completion_tokens, Some(32_768));
-
-    // Capless rows: no max_completion_tokens is invented (embedding
-    // families — the proxy serves no max_output for them).
-    let ada = &entries["text-embedding-ada-002"].info;
-    assert_eq!(ada.max_completion_tokens, None);
-    assert_eq!(ada.context_window, NonZeroU64::new(8_191).unwrap());
+    // The legacy gpt-4 row and the embedding rows left the menu at the
+    // apex-ayl.129 cut; gemini-3.8-flash is their stand-in for the
+    // "explicit pin + generated caps" shape.
+    let gem = &entries["gemini-3.8-flash"].info;
+    assert_eq!(gem.api_backend, ApiBackend::Responses);
+    assert_eq!(gem.model_family.as_deref(), Some("google"));
+    assert_eq!(gem.context_window, NonZeroU64::new(1_048_576).unwrap());
+    assert_eq!(gem.max_completion_tokens, Some(65_536));
 }
 
 #[test]
 fn pre_bake_seed_rows_keep_the_head_donor_contract() {
     let entries = default_model_entries(&EndpointsConfig::default());
+    // The surviving pre-bake keys ride the curated menu; grok-4.5 was
+    // cut from the menu at apex-ayl.129 — the PRE_BAKE_SEED_KEYS filter
+    // tolerates its absence (a donor that no longer ships simply donates
+    // nothing).
     for key in PRE_BAKE_SEED_KEYS {
-        assert!(entries.contains_key(key), "{key}: pre-bake key rides the catalog");
+        match key {
+            "grok-4.5" => assert!(
+                !entries.contains_key(key),
+                "{key}: cut from the zero-config menu (apex-ayl.129)"
+            ),
+            _ => assert!(entries.contains_key(key), "{key}: pre-bake key rides the catalog"),
+        }
     }
-    // The donor fields (context_window / api_backend): the grok rows are
-    // the pre-bake seed values; sol's cw is the generated (proxy-truth)
-    // 922000 post CATALOG-CCLASS-SEED-1. A future curation drift that
+    // The donor fields (context_window / api_backend): grok-4.6's cw is
+    // the generated (proxy-truth) 524288 post the 2026-09-22 recapture;
+    // sol's cw is the generated 922000. A future curation drift that
     // changes what a pre-bake row donates to a live row must fail here.
     let donor_fields = |key: &str| {
         let info = &entries[key].info;
         (info.api_backend.clone(), info.context_window.get())
     };
-    assert_eq!(donor_fields("grok-4.6"), (ApiBackend::Responses, 500_000));
-    assert_eq!(donor_fields("grok-4.5"), (ApiBackend::Responses, 500_000));
+    assert_eq!(donor_fields("grok-4.6"), (ApiBackend::Responses, 524_288));
     assert_eq!(donor_fields("gpt-5.6-sol"), (ApiBackend::Responses, 922_000));
-
-    // grok-4.5 is seed-only (not on the proxy) — it survives via the
-    // overlay `bake` list with its full seed-migrated curation.
-    let grok45 = &entries["grok-4.5"].info;
-    assert_eq!(grok45.context_window, NonZeroU64::new(500_000).unwrap());
-    assert_eq!(
-        grok45.reasoning_efforts.iter().map(|o| o.value.as_str()).collect::<Vec<_>>(),
-        ["high", "ultra", "medium", "low"],
-        "grok-4.5: seed menu survives + kb6 ultra after the top tier (high)"
-    );
-    assert_eq!(grok45.auto_compact_threshold_percent, Some(80));
 }
 
 #[test]
 fn donor_map_is_pre_bake_seed_keys_only() {
     let mut prefetched = IndexMap::new();
     prefetched.insert("gpt-5.6-sol".to_string(), live_row("gpt-5.6-sol"));
-    prefetched.insert("claude-opus-4-5".to_string(), live_row("claude-opus-4-5"));
+    prefetched.insert("claude-sonnet-5".to_string(), live_row("claude-sonnet-5"));
     let resolved = resolve_model_list(&Config::default(), Some(prefetched));
 
     // The pre-bake key donates the bundled row's values: the live sol row
@@ -209,15 +206,16 @@ fn donor_map_is_pre_bake_seed_keys_only() {
         "pre-bake donor inherits the api_backend"
     );
 
-    // A generated addition must NEVER donate: the live claude row at the
-    // same placeholder keeps its client values (no endpoint defaults in
+    // A bundled NON-pre-bake row (claude-sonnet-5 rides the curated
+    // menu) must NEVER donate: the live claude row at the same
+    // placeholder keeps its client values (no endpoint defaults in
     // Config::default, and the anthropic catalog inference is silent on
     // the backend).
-    let claude = &resolved["claude-opus-4-5"];
+    let claude = &resolved["claude-sonnet-5"];
     assert_eq!(
         claude.info.context_window,
         NonZeroU64::new(256_000).unwrap(),
-        "generated additions ride the fallback but never donate"
+        "bundled non-pre-bake rows never donate"
     );
     assert_eq!(
         claude.info.api_backend,
@@ -233,34 +231,35 @@ fn fallback_path_runs_seams_on_non_pre_bake_rows_only() {
 
     // Curated pins survive the row-aware seams (explicit non-default
     // values are seam-invisible).
-    let g5c = resolved.get("gpt-5-codex").expect("gpt-5-codex rides the fallback");
+    // Curated menu rows: the explicit pins survive the row-aware seams
+    // (the seams run on the non-pre-bake bundled rows at resolution).
+    let g5c = resolved.get("gpt-5.6-terra").expect("gpt-5.6-terra rides the fallback");
     assert_eq!(
         g5c.info.api_backend,
         ApiBackend::Responses,
         "curated responses pin survives the seams"
     );
     assert_eq!(g5c.info.model_family.as_deref(), Some("codex"));
-    let gpt4 = resolved.get("gpt-4").expect("gpt-4 rides the fallback");
+    let gpt4 = resolved.get("claude-sonnet-5").expect("claude-sonnet-5 rides the fallback");
     assert_eq!(
         gpt4.info.api_backend,
-        ApiBackend::ChatCompletions,
+        ApiBackend::Messages,
         "curated legacy pin: the slug inference is a no-op on it"
     );
 
-    // kb6 (CATALOG-REQUIRED-CURATION-1): gpt-5.1's digest-derived curated
-    // menu (low..xhigh + ultra) is now baked — an explicit menu beats the
-    // slug seam at resolution (the seam no longer infers for this row).
-    let g51 = resolved.get("gpt-5.1").expect("gpt-5.1 rides the fallback");
+    // The curated 5-item menu (low..ultra) is baked — an explicit menu
+    // beats the slug seam at resolution (the seam no longer infers for
+    // this row).
+    let g51 = resolved.get("gpt-5.6-terra").expect("gpt-5.6-terra rides the fallback");
     assert_eq!(
         g51.info.reasoning_efforts.len(),
         5,
-        "kb6 curated digest menu rides the fallback row"
+        "curated 5-item menu rides the fallback row"
     );
 
     // Pre-bake rows keep their seed menus (the seams never touch them);
-    // kb6 inserts ultra after the top tier in each.
-    let grok45 = resolved.get("grok-4.5").expect("seed-only grok-4.5 rides the fallback");
-    assert_eq!(grok45.info.reasoning_efforts.len(), 4);
+    // kb6 inserts ultra after the top tier in each. grok-4.5 left the
+    // menu at the apex-ayl.129 cut.
     let grok46 = resolved.get("grok-4.6").expect("grok-4.6 rides the fallback");
     assert_eq!(grok46.info.reasoning_efforts.len(), 5);
     assert!(!grok46.info.supports_backend_search, "overlay curation rides the fallback row");
@@ -306,16 +305,19 @@ fn apex_93d_fixture_rows_parse_through_the_enriched_crate_entry() {
 fn role_pins_come_from_the_baked_file() {
     // D1: the merged file keeps the upstream role pins (curated in the
     // overlay, written by the gate); the crate accessors read them.
-    assert_eq!(crate::models::default_model(), "grok-4.6");
-    assert_eq!(crate::models::default_web_search_model(), "grok-4.6");
-    assert_eq!(crate::models::default_image_description_model(), "grok-4.6");
-    assert_eq!(crate::models::default_session_summary_model(), "grok-4.6");
+    // Operator ruling 2026-09-22 (mid apex-ayl.129): all four pins
+    // moved grok-4.6 -> gpt-5.6-terra (Vertex grok-4.6 deployment
+    // broken; the grok-4.6 row stays in the menu for /model use).
+    assert_eq!(crate::models::default_model(), "gpt-5.6-terra");
+    assert_eq!(crate::models::default_web_search_model(), "gpt-5.6-terra");
+    assert_eq!(crate::models::default_image_description_model(), "gpt-5.6-terra");
+    assert_eq!(crate::models::default_session_summary_model(), "gpt-5.6-terra");
     let root: serde_json::Value =
         serde_json::from_str(crate::models::DEFAULT_MODELS_JSON).expect("baked catalog JSON");
     for pin in ["default", "web_search", "image_description", "session_summary"] {
         assert_eq!(
             root[pin].as_str(),
-            Some("grok-4.6"),
+            Some("gpt-5.6-terra"),
             "role pin {pin} rides the baked file"
         );
     }
