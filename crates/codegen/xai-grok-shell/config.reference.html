@@ -45,13 +45,13 @@ footer { max-width:1200px; margin:0 auto; padding:12px 32px 32px; color:var(--mu
 <header>
 <h1>config.toml reference</h1>
 <p class="sub">xai-grok-shell · agent <code>Config</code> surface + <code>[model.&lt;id&gt;]</code> override rows · JSON Schema draft-07, rendered from the live types</p>
-<p class="ver">content hash <code>fnv1a-64 dde40cd460f81004</code> · 49 root properties · 44 model-row fields · 12 enum definitions · 30 endpoint fields · 102 definitions</p>
+<p class="ver">content hash <code>fnv1a-64 628978039e598f62</code> · 49 root properties · 47 model-row fields · 12 enum definitions · 30 endpoint fields · 103 definitions</p>
 <p class="regen">regenerate: <code>cargo run -p xai-grok-shell --bin config-schema-write -- --html</code></p>
 <p class="prov">provenance: bead <code>apex-33z</code> CONFIG-REFERENCE-HTML-1 · donor pattern: codex config-schema golden via apex-hw0 (<code>config_schema.rs</code>)</p>
 </header>
 <nav class="toc">
 <a href="#root">root (49)</a>
-<a href="#model">model rows (44)</a>
+<a href="#model">model rows (47)</a>
 <a href="#enums">enums (12)</a>
 <a href="#endpoints">endpoints (30)</a>
 <a href="#defs">definitions</a>
@@ -110,7 +110,7 @@ footer { max-width:1200px; margin:0 auto; padding:12px 32px 32px; color:var(--mu
 <tr class="f" data-name="worktree"><th><code><a class="ref" href="#def-WorktreeConfigSection">worktree</a></code></th><td><span class="opt">optional</span></td><td class="type"><a class="ref" href="#def-WorktreeConfigSection">WorktreeConfigSection</a></td><td class="desc">`[worktree]` section (currently `[worktree.auto_gc]` only).</td></tr>
 <tr class="f" data-name="worktree_pool"><th><code><a class="ref" href="#def-WorktreePoolConfig">worktree_pool</a></code></th><td><span class="opt">optional</span></td><td class="type"><a class="ref" href="#def-WorktreePoolConfig">WorktreePoolConfig</a></td><td class="desc">Deprecated `[worktree_pool]` section. The pre-warmed worktree pool was deleted (never wired into production).<br>The section is still parsed so existing user configs don't trip unknown-key warnings.</td></tr>
 </tbody></table></section>
-<section id="model"><h2><code>[model.&lt;id&gt;]</code> override rows — <a class="ref" href="#def-ConfigModelOverride">ConfigModelOverride</a> (44 fields)</h2>
+<section id="model"><h2><code>[model.&lt;id&gt;]</code> override rows — <a class="ref" href="#def-ConfigModelOverride">ConfigModelOverride</a> (47 fields)</h2>
 <p class="lead">A `[model.foo]` entry from config.toml, parsed directly from raw TOML (bypassing deep merge).<br>Scalar fields are `Option` so absent means &quot;inherit from defaults/prefetched&quot;.<br>The collection fields (`extra_headers`, `reasoning_efforts`) merge only when non-empty and so cannot express &quot;override to empty.&quot;</p>
 <table><thead><tr><th>field</th><th>required</th><th>type</th><th>description (verbatim schema text)</th></tr></thead><tbody>
 <tr class="f" data-name="agent_type"><th><code>agent_type</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">string</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
@@ -133,6 +133,8 @@ footer { max-width:1200px; margin:0 auto; padding:12px 32px 32px; color:var(--mu
 <tr class="f" data-name="inference_idle_timeout_secs"><th><code>inference_idle_timeout_secs</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">integer</span> <code>uint64</code> <span class="t">min 0</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
 <tr class="f" data-name="max_completion_tokens"><th><code>max_completion_tokens</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">integer</span> <code>uint32</code> <span class="t">min 0</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
 <tr class="f" data-name="max_retries"><th><code>max_retries</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">integer</span> <code>uint32</code> <span class="t">min 0</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
+<tr class="f" data-name="mcp_servers"><th><code>mcp_servers</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">array of</span> <a class="ref" href="#def-McpServerDecl">McpServerDecl</a><span class="optmark" title="nullable (Option)">?</span></td><td class="desc">Remote MCP server declarations (F1, apex-ayl.115, BETA shape),<br>array-of-tables row value. Absent = inherit.</td></tr>
+<tr class="f" data-name="mcp_toolset_server"><th><code>mcp_toolset_server</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">string</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc">Names an `mcp_servers` entry; pairs with the &quot;mcp_toolset&quot; member<br>(F1, apex-ayl.115). Absent = inherit.</td></tr>
 <tr class="f" data-name="model"><th><code>model</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">string</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
 <tr class="f" data-name="model_family"><th><code>model_family</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">string</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
 <tr class="f" data-name="model_provider"><th><code>model_provider</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">string</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
@@ -143,6 +145,7 @@ footer { max-width:1200px; margin:0 auto; padding:12px 32px 32px; color:var(--mu
 <tr class="f" data-name="rate_limit_retry_threshold"><th><code>rate_limit_retry_threshold</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">integer</span> <code>uint32</code> <span class="t">min 0</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
 <tr class="f" data-name="reasoning_effort"><th><code>reasoning_effort</code></th><td><span class="opt">optional</span></td><td class="type"><a class="ref" href="#def-ReasoningEffort">ReasoningEffort</a><span class="chip">none</span><span class="chip">minimal</span><span class="chip">low</span><span class="chip">medium</span><span class="chip">high</span><span class="chip">xhigh</span><span class="chip">max</span><span class="chip">ultra</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
 <tr class="f" data-name="reasoning_efforts"><th><code>reasoning_efforts</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">array of</span> <a class="ref" href="#def-ReasoningEffortOption">ReasoningEffortOption</a></td><td class="desc"><span class="dash">—</span></td></tr>
+<tr class="f" data-name="server_tools"><th><code>server_tools</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">string</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc">Server-tool member selection (F1, apex-ayl.115), comma-separated<br>family names or dated slugs. Absent = inherit.</td></tr>
 <tr class="f" data-name="show_model_fingerprint"><th><code>show_model_fingerprint</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">boolean</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
 <tr class="f" data-name="stop_sequences"><th><code>stop_sequences</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">string</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc">Custom stop strings (docs GA L1246), comma-separated. Absent = inherit.</td></tr>
 <tr class="f" data-name="stream_tool_calls"><th><code>stream_tool_calls</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">boolean</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
@@ -218,7 +221,7 @@ footer { max-width:1200px; margin:0 auto; padding:12px 32px 32px; color:var(--mu
 <tr class="f" data-name="trace_upload_url"><th><code>trace_upload_url</code></th><td class="type"><span class="t">string</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc">Env: `GROK_TRACE_UPLOAD_URL`. Where trace uploads go.</td></tr>
 <tr class="f" data-name="xai_api_base_url"><th><code>xai_api_base_url</code></th><td class="type"><span class="t">string</span></td><td class="desc">Base URL for the public xAI API.</td></tr>
 </tbody></table></section>
-<section id="defs"><h2>definition index (90 — the 12 anchored vocabulary definitions live in the enum appendix)</h2>
+<section id="defs"><h2>definition index (91 — the 12 anchored vocabulary definitions live in the enum appendix)</h2>
 <table><thead><tr><th>definition</th><th>shape</th><th>description</th></tr></thead><tbody>
 <tr id="def-AgentSelectionConfig"><th><code>AgentSelectionConfig</code></th><td>object</td><td class="desc">Set in `config.toml` under `[agent]`: Priority (highest to lowest): ACP session-level `_meta.agentProfile`<br>CLI `--agent-profile` flag `[agent]` config.toml section (this config) `GROK_AGENT` env var<br>Default `grok-build` agent</td></tr>
 <tr id="def-AnnouncementCta"><th><code>AnnouncementCta</code></th><td>object</td><td class="desc">Optional call-to-action on an announcement (clients render it as a clickable link/button).<br>The server only emits it with both fields non-empty and the url https; parsing here stays tolerant like the parent struct.<br>`caption` is optional dim helper text after the button; absent means none.</td></tr>
@@ -255,6 +258,7 @@ footer { max-width:1200px; margin:0 auto; padding:12px 32px 32px; color:var(--mu
 <tr id="def-MarketplaceSourceEntry"><th><code>MarketplaceSourceEntry</code></th><td>object</td><td class="desc">A single `[[marketplace.sources]]` entry.</td></tr>
 <tr id="def-McpJsonOAuthBlock"><th><code>McpJsonOAuthBlock</code></th><td>object</td><td class="desc"><span class="dash">—</span></td></tr>
 <tr id="def-McpServerConfig"><th><code>McpServerConfig</code></th><td>object | object</td><td class="desc"><span class="dash">—</span></td></tr>
+<tr id="def-McpServerDecl"><th><code>McpServerDecl</code></th><td>object</td><td class="desc">A config-declared MCP server (pre-wire form; the producer maps it to<br>[`McpServerParam`] with `r#type: &quot;url&quot;`). `JsonSchema`: the shell row<br>surface (`ConfigModelOverride`, `ModelsConfig`) carries this type and<br>derives `JsonSchema` for the committed config schema artifact.<br>`PartialEq`: the shell 47b resolver replays the row value through<br>`debug_assert_eq!` (compile-forced, MSGW F1).</td></tr>
 <tr id="def-McpSetupConfig"><th><code>McpSetupConfig</code></th><td>object</td><td class="desc"><span class="dash">—</span></td></tr>
 <tr id="def-McpSetupDerivedValue"><th><code>McpSetupDerivedValue</code></th><td>object</td><td class="desc"><span class="dash">—</span></td></tr>
 <tr id="def-McpSetupField"><th><code>McpSetupField</code></th><td>object</td><td class="desc"><span class="dash">—</span></td></tr>
@@ -313,7 +317,7 @@ footer { max-width:1200px; margin:0 auto; padding:12px 32px 32px; color:var(--mu
 </tbody></table></section>
 
 </main>
-<footer>Rendered deterministically from the live schema: sorted traversal, no timestamps, std-only, self-contained (no external assets). Self-identifies via fnv1a-64 content hash <code>dde40cd460f81004</code> over the canonicalized, default-stripped schema JSON. Guarded by the golden <code>agent::config_schema_tests::config_reference_html_matches</code>.</footer>
+<footer>Rendered deterministically from the live schema: sorted traversal, no timestamps, std-only, self-contained (no external assets). Self-identifies via fnv1a-64 content hash <code>628978039e598f62</code> over the canonicalized, default-stripped schema JSON. Guarded by the golden <code>agent::config_schema_tests::config_reference_html_matches</code>.</footer>
 <script>
 (function () {
   var box = document.getElementById('q');

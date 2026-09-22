@@ -858,24 +858,80 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     // `FLAT_MCP_TOOL_NAME_DELIMITER = "__"` :54) — double-underscore flat
     // names, round-tripped by the decoder. RE-AUDIT TRIGGER: any MCP seam
     // change introducing a namespaced tool spec re-opens delta row 6.
-    let tools: Option<Vec<ToolParam>> = if req.tools.is_empty() {
-        None
-    } else {
+    // MGW F1 (apex-ayl.115): client tools first in original order (the
+    // untagged Custom variant is the pre-cut flat struct — byte-identical
+    // wire shape), then config-selected server-tool members in config
+    // order (binding emission order, cache-stability). A server-tools-only
+    // row (no client tools) still projects a non-empty tools array.
+    let tools: Option<Vec<ToolParam>> = {
         let mut mapped: Vec<ToolParam> = req
             .tools
             .iter()
-            .map(|t| ToolParam {
+            .map(|t| ToolParam::Custom(crate::messages::ToolCustom {
                 name: t.name.clone(),
                 description: t.description.clone(),
                 input_schema: t.parameters.clone(),
                 cache_control: None,
-            })
+            }))
             .collect();
+        // F5 per-tool breakpoint: the marker spends the free 4th marker
+        // slot on the LAST CLIENT tool. Union-forced re-wrap (MSGW F1):
+        // server members are appended AFTER this block, so "last" keeps
+        // its pre-cut semantics — the final client tool, never a server
+        // member (which carries no cc by config).
         if req.tool_cache_breakpoint == Some(ToolCacheBreakpoint::Last) && !mapped.is_empty() {
             let last = mapped.len() - 1;
-            mapped[last].cache_control = Some(crate::messages::CacheControl::ephemeral());
+            // The scrutinee is `&mut mapped[last]`: the field binds by
+            // implicit `&mut` (an explicit `ref mut` is illegal here).
+            if let ToolParam::Custom(crate::messages::ToolCustom { cache_control, .. }) =
+                &mut mapped[last]
+            {
+                *cache_control = Some(crate::messages::CacheControl::ephemeral());
+            }
         }
-        Some(mapped)
+        // Canonical dated type strings (the config layer resolved family
+        // names + soft-refused unknown slugs).
+        if let Some(ref members) = req.server_tools {
+            for t in members {
+                match crate::messages::server_tool_from_type(t) {
+                    Some(mut member) => {
+                        // mcp_toolset: the producer fills the required
+                        // mcp_server_name from the row's pairing key. The
+                        // config layer HARD-refuses pairing violations,
+                        // so the None arm is a defensive backstop, never
+                        // a panic (SDD §3.5, FIX-PASS R4/R5).
+                        if let crate::messages::ToolServer::McpToolset {
+                            ref mut mcp_server_name,
+                            ..
+                        } = member
+                        {
+                            match req.mcp_toolset_server.clone() {
+                                Some(name) => *mcp_server_name = name,
+                                None => {
+                                    tracing::warn!(
+                                        "mcp_toolset without mcp_toolset_server \
+                                         (config-layer hard-refusal backstop); \
+                                         skipping member"
+                                    );
+                                    continue;
+                                }
+                            }
+                        }
+                        mapped.push(ToolParam::Server(member));
+                    }
+                    None => tracing::warn!(
+                        type = %t,
+                        "unknown server-tool type string (config-layer \
+                         validated); skipping"
+                    ),
+                }
+            }
+        }
+        if mapped.is_empty() {
+            None
+        } else {
+            Some(mapped)
+        }
     };
 
     let dptu = req.disable_parallel_tool_use;
@@ -991,6 +1047,20 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             .user_id
             .clone()
             .map(|uid| crate::messages::Metadata { user_id: RequestPresence::value(uid) }),
+        // MGW F1 (apex-ayl.115): the config-declared servers ride the
+        // wire in BETA param form (r#type "url").
+        mcp_servers: req.mcp_servers.clone().map(|decls| {
+            decls
+                .into_iter()
+                .map(|d| crate::messages::McpServerParam {
+                    r#type: "url".to_string(),
+                    name: d.name,
+                    url: d.url,
+                    authorization_token: d.authorization_token,
+                    tool_configuration: d.tool_configuration,
+                })
+                .collect()
+        }),
     })
 }
 

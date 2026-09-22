@@ -17,6 +17,7 @@ use xai_grok_login::{AuthManager, GrokComConfig, OidcAuthConfig};
 use xai_grok_sampler::{AuthScheme, SamplerConfig};
 use xai_grok_sampling_types::{
     conversation::ToolCacheBreakpoint,
+    messages::McpServerDecl,
     CatalogFamily, CompactionAtTokens, CompactionsRemaining, REASONING_EFFORT_META_KEY,
     REASONING_EFFORTS_META_KEY, ReasoningEffort, ReasoningEffortOption,
     SamplingError,
@@ -1082,6 +1083,22 @@ pub struct ModelsConfig {
     /// per-model `[model.<id>]` values win. `None` = unset (Off).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools_cache_breakpoint: Option<String>,
+    /// Global server-tool member selection (F1, apex-ayl.115): a
+    /// comma-separated STRING of family names or dated slugs (scalar-safe
+    /// for config_patch); resolved to canonical dated type strings at
+    /// config resolution (unknown slugs soft-refused — warn + skip).
+    /// Per-model `[model.<id>]` values win. `None` = unset (no members).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_tools: Option<String>,
+    /// Global remote MCP server declarations (F1, apex-ayl.115, BETA
+    /// shape); per-model `[model.<id>]` values win. `None` = unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_servers: Option<Vec<McpServerDecl>>,
+    /// Global `mcp_toolset_server` pairing key (F1, apex-ayl.115); names
+    /// an `mcp_servers` entry. Per-model `[model.<id>]` values win.
+    /// `None` = unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp_toolset_server: Option<String>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -1949,6 +1966,13 @@ impl Config {
         let (mut auth_providers, auth_provider_warnings) = parse_auth_providers(raw_config);
         let (model_providers, mut model_provider_warnings) = parse_model_providers(raw_config);
         for (model_id, model) in &config_models {
+            // MGW F1 (apex-ayl.115): server-tool pairing violations are
+            // structurally invalid requests — a loud config-load
+            // rejection naming the value (FIX-PASS R4; the
+            // mtls_cert_dir check below is the precedent).
+            if let Err(e) = validate_server_tool_pairing(model_id, model) {
+                return Err(e);
+            }
             let Some(cert_dir) = model.mtls_cert_dir.as_deref() else {
                 continue;
             };
@@ -3825,6 +3849,18 @@ fn apply_global_scalar_defaults(
         if let Some(v) = models.tools_cache_breakpoint.clone() {
             info.tools_cache_breakpoint.get_or_insert(v);
         }
+        // MGW F1 (apex-ayl.115): the F2/F5 chain verbatim (the row layer
+        // carries the RAW comma-string / decl list; resolution happens in
+        // sampling_config_for_model).
+        if let Some(v) = models.server_tools.clone() {
+            info.server_tools.get_or_insert(v);
+        }
+        if let Some(v) = models.mcp_servers.clone() {
+            info.mcp_servers.get_or_insert(v);
+        }
+        if let Some(v) = models.mcp_toolset_server.clone() {
+            info.mcp_toolset_server.get_or_insert(v);
+        }
     }
 }
 /// Built-in default models. Prefer `resolve_model_list()`.
@@ -3892,6 +3928,12 @@ pub(crate) struct ModelAuthorityView {
     pub stop_sequences: FieldAuthority<Option<String>>,
     pub disable_parallel_tool_use: FieldAuthority<Option<bool>>,
     pub tools_cache_breakpoint: FieldAuthority<Option<String>>,
+    /// MGW F1 (apex-ayl.115): the raw shell-row forms (the resolver keeps
+    /// the comma-string / decl list — resolution to canonical slugs
+    /// happens in `sampling_config_for_model`).
+    pub server_tools: FieldAuthority<Option<String>>,
+    pub mcp_servers: FieldAuthority<Option<Vec<McpServerDecl>>>,
+    pub mcp_toolset_server: FieldAuthority<Option<String>>,
     pub inference_branches: Vec<InferenceBranch>,
 }
 
@@ -4427,6 +4469,97 @@ fn model_authority_view(
         "tools_cache_breakpoint replay diverged from the resolver for {key:?}"
     );
 
+    // ---- server_tools / mcp_servers / mcp_toolset_server: MGW F1
+    // (apex-ayl.115) — the `cache_ttl`/F2/F5 chain verbatim (the row
+    // layer keeps the RAW forms; canonical-slug resolution happens in
+    // sampling_config_for_model).
+    let mut server_tools = bundled_entry
+        .map(|b| b.info.server_tools.clone())
+        .unwrap_or_default();
+    let mut server_tools_source = if !is_prefetched
+        && bundled_entry.is_some_and(|b| b.info.server_tools.is_some())
+    {
+        FieldSource::BundledRow
+    } else {
+        FieldSource::BuiltIn
+    };
+    if let Some(row) = row {
+        server_tools = row.info.server_tools.clone();
+        if row.info.server_tools.is_some() {
+            server_tools_source = FieldSource::ProxyRow;
+        }
+    }
+    if let Some(v) = override_cfg.and_then(|ov| ov.server_tools.as_ref()) {
+        server_tools = Some(v.clone());
+        server_tools_source = FieldSource::Config;
+    } else if server_tools.is_none() && let Some(v) = &cfg.models.server_tools {
+        server_tools = Some(v.clone());
+        server_tools_source = FieldSource::Config;
+    }
+    debug_assert_eq!(
+        server_tools,
+        info.server_tools,
+        "server_tools replay diverged from the resolver for {key:?}"
+    );
+
+    let mut mcp_servers = bundled_entry
+        .map(|b| b.info.mcp_servers.clone())
+        .unwrap_or_default();
+    let mut mcp_servers_source = if !is_prefetched
+        && bundled_entry.is_some_and(|b| b.info.mcp_servers.is_some())
+    {
+        FieldSource::BundledRow
+    } else {
+        FieldSource::BuiltIn
+    };
+    if let Some(row) = row {
+        mcp_servers = row.info.mcp_servers.clone();
+        if row.info.mcp_servers.is_some() {
+            mcp_servers_source = FieldSource::ProxyRow;
+        }
+    }
+    if let Some(v) = override_cfg.and_then(|ov| ov.mcp_servers.as_ref()) {
+        mcp_servers = Some(v.clone());
+        mcp_servers_source = FieldSource::Config;
+    } else if mcp_servers.is_none() && let Some(v) = &cfg.models.mcp_servers {
+        mcp_servers = Some(v.clone());
+        mcp_servers_source = FieldSource::Config;
+    }
+    debug_assert_eq!(
+        mcp_servers,
+        info.mcp_servers,
+        "mcp_servers replay diverged from the resolver for {key:?}"
+    );
+
+    let mut mcp_toolset_server = bundled_entry
+        .map(|b| b.info.mcp_toolset_server.clone())
+        .unwrap_or_default();
+    let mut mcp_toolset_server_source = if !is_prefetched
+        && bundled_entry.is_some_and(|b| b.info.mcp_toolset_server.is_some())
+    {
+        FieldSource::BundledRow
+    } else {
+        FieldSource::BuiltIn
+    };
+    if let Some(row) = row {
+        mcp_toolset_server = row.info.mcp_toolset_server.clone();
+        if row.info.mcp_toolset_server.is_some() {
+            mcp_toolset_server_source = FieldSource::ProxyRow;
+        }
+    }
+    if let Some(v) = override_cfg.and_then(|ov| ov.mcp_toolset_server.as_ref()) {
+        mcp_toolset_server = Some(v.clone());
+        mcp_toolset_server_source = FieldSource::Config;
+    } else if mcp_toolset_server.is_none() && let Some(v) = &cfg.models.mcp_toolset_server {
+        mcp_toolset_server = Some(v.clone());
+        mcp_toolset_server_source = FieldSource::Config;
+    }
+    debug_assert_eq!(
+        mcp_toolset_server,
+        info.mcp_toolset_server,
+        "mcp_toolset_server replay diverged from the resolver for {key:?}"
+    );
+
     // ---- m-2: enumerate every inference branch that can produce a
     // Messages backend, with honest reachability/fired flags.
     // AUTHORITY-47B-1: the row the resolver's inference seams actually
@@ -4512,6 +4645,18 @@ fn model_authority_view(
         tools_cache_breakpoint: FieldAuthority {
             value: tools_cache_breakpoint,
             source: tools_cache_breakpoint_source,
+        },
+        server_tools: FieldAuthority {
+            value: server_tools,
+            source: server_tools_source,
+        },
+        mcp_servers: FieldAuthority {
+            value: mcp_servers,
+            source: mcp_servers_source,
+        },
+        mcp_toolset_server: FieldAuthority {
+            value: mcp_toolset_server,
+            source: mcp_toolset_server_source,
         },
         inference_branches,
     }
@@ -4657,10 +4802,15 @@ pub(crate) fn entry_config_from_default_row(
         // surface is config.toml).
         // MGW F5 (apex-ayl.114): same ruling for the two tool-control keys
         // (disable_parallel_tool_use / tools_cache_breakpoint).
+        // MGW F1 (apex-ayl.115): same ruling for the three server-tool keys
+        // (server_tools / mcp_servers / mcp_toolset_server).
         top_k: None,
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tools_cache_breakpoint: None,
+        server_tools: None,
+        mcp_servers: None,
+        mcp_toolset_server: None,
     }
 }
 fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryConfig> {
@@ -4857,6 +5007,24 @@ pub struct ModelEntryConfig {
     /// field — intentional, do not unify. `None` = unset (Off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools_cache_breakpoint: Option<String>,
+    /// Server-tool member selection (F1, apex-ayl.115); the row key
+    /// `server_tools` is a comma-separated STRING of family names or dated
+    /// slugs; resolved to canonical dated type strings in
+    /// `sampling_config_for_model` (unknown slugs soft-refused — warn +
+    /// skip). `None` = unset (no members).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_tools: Option<String>,
+    /// Remote MCP server declarations (F1, apex-ayl.115, BETA shape); the
+    /// row key `mcp_servers` is the cut's one structured (array-of-tables)
+    /// key — the `extra_headers` object-row precedent. The row layer
+    /// carries the raw ST decl form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_servers: Option<Vec<McpServerDecl>>,
+    /// Names an `mcp_servers` entry; pairs with the "mcp_toolset" member
+    /// (F1, apex-ayl.115). Pairing violations are HARD-refused at config
+    /// load. `None` = unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_toolset_server: Option<String>,
 }
 /// Derives `PartialEq` on `f32`, which is fine for the current shape. Both `f32` fields default to `None`, so there's no parsed-vs-literal `0.7` float equality footgun.
 /// If a future default introduces `Some(0.7)`, this helper must be reworked (e.g. compare on tolerance, or switch to a bit-pattern compare).
@@ -4942,6 +5110,15 @@ pub struct ConfigModelOverride {
     /// Per-tool cache breakpoint (F5, apex-ayl.114), `off` | `last`.
     /// Absent = inherit.
     pub tools_cache_breakpoint: Option<String>,
+    /// Server-tool member selection (F1, apex-ayl.115), comma-separated
+    /// family names or dated slugs. Absent = inherit.
+    pub server_tools: Option<String>,
+    /// Remote MCP server declarations (F1, apex-ayl.115, BETA shape),
+    /// array-of-tables row value. Absent = inherit.
+    pub mcp_servers: Option<Vec<McpServerDecl>>,
+    /// Names an `mcp_servers` entry; pairs with the "mcp_toolset" member
+    /// (F1, apex-ayl.115). Absent = inherit.
+    pub mcp_toolset_server: Option<String>,
 }
 impl ConfigModelOverride {
     pub(crate) fn apply(
@@ -5105,6 +5282,15 @@ impl ConfigModelOverride {
         if self.tools_cache_breakpoint.is_some() {
             entry.info.tools_cache_breakpoint = self.tools_cache_breakpoint.clone();
         }
+        if self.server_tools.is_some() {
+            entry.info.server_tools = self.server_tools.clone();
+        }
+        if self.mcp_servers.is_some() {
+            entry.info.mcp_servers = self.mcp_servers.clone();
+        }
+        if self.mcp_toolset_server.is_some() {
+            entry.info.mcp_toolset_server = self.mcp_toolset_server.clone();
+        }
         if self.api_key.is_some() {
             entry.api_key.clone_from(&self.api_key);
         }
@@ -5253,6 +5439,19 @@ pub struct ModelInfo {
     /// (`off`/absent ⇒ `None`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools_cache_breakpoint: Option<String>,
+    /// Server-tool member selection (F1, apex-ayl.115): the RAW
+    /// comma-separated family/dated-slug string (scalar form); resolved
+    /// to canonical dated type strings in `sampling_config_for_model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_tools: Option<String>,
+    /// Remote MCP server declarations (F1, apex-ayl.115, BETA shape): the
+    /// raw ST decl form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_servers: Option<Vec<McpServerDecl>>,
+    /// Names an `mcp_servers` entry; pairs with the "mcp_toolset" member
+    /// (F1, apex-ayl.115).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_toolset_server: Option<String>,
 }
 impl ModelInfo {
     /// Minimal fallback descriptor for an unknown model slug.
@@ -5305,6 +5504,9 @@ impl ModelInfo {
             stop_sequences: None,
             disable_parallel_tool_use: None,
             tools_cache_breakpoint: None,
+            server_tools: None,
+            mcp_servers: None,
+            mcp_toolset_server: None,
         }
     }
     pub(crate) fn from_config(entry: &ModelEntryConfig) -> Self {
@@ -5355,6 +5557,9 @@ impl ModelInfo {
             stop_sequences: entry.stop_sequences.clone(),
             disable_parallel_tool_use: entry.disable_parallel_tool_use,
             tools_cache_breakpoint: entry.tools_cache_breakpoint.clone(),
+            server_tools: entry.server_tools.clone(),
+            mcp_servers: entry.mcp_servers.clone(),
+            mcp_toolset_server: entry.mcp_toolset_server.clone(),
         }
     }
     /// Whether `id` is one of the ids this model sends: its own, or the one it uses at some effort.
@@ -6125,6 +6330,9 @@ pub(crate) fn resolve_aux_model_sampling_config(
             stop_sequences: None,
             disable_parallel_tool_use: None,
             tools_cache_breakpoint: None,
+            server_tools: None,
+            mcp_servers: None,
+            mcp_toolset_server: None,
         },
         mtls_cert_dir: None,
         api_key: Some(bearer),
@@ -6219,6 +6427,113 @@ pub(crate) fn response_include_extensions(
         Vec::new()
     }
 }
+/// MGW F1 (apex-ayl.115): the family→dated default map (binding, SDD §3.4).
+/// Family names resolve to their dated default; a token that is not a
+/// family name passes through as a dated slug only if it is a canonical
+/// `ToolServer` type string (the ST `server_tool_from_type` map is the
+/// single source of truth for the whitelist — the docs' undated
+/// `tool_search_tool_bm25`/`tool_search_tool_regex` aliases are
+/// intentionally NOT canonical and soft-skip, FIX-PASS 2 R7).
+const SERVER_TOOL_FAMILY_DEFAULTS: &[(&str, &str)] = &[
+    ("bash", "bash_20250124"),
+    ("code_execution", "code_execution_20250825"),
+    ("browser", "browser_toolset_20260801"),
+    ("computer", "computer_toolset_20260801"),
+    ("memory", "memory_20250818"),
+    ("text_editor", "text_editor_20250728"),
+    ("web_search", "web_search_20250305"),
+    ("web_fetch", "web_fetch_20250910"),
+    ("tool_search", "tool_search_tool_bm25_20251119"),
+    ("mcp_toolset", "mcp_toolset"),
+];
+
+/// Canonical-slug resolution for one `server_tools` token (no side
+/// effects — the warning-free form shared by the config-load pairing
+/// check and the resolver).
+fn canonical_server_tool_slug<'a>(token: &'a str) -> Option<&'a str> {
+    let canonical: &'a str = SERVER_TOOL_FAMILY_DEFAULTS
+        .iter()
+        .find(|(family, _)| *family == token)
+        .map(|(_, dated)| *dated)
+        .unwrap_or(token);
+    if xai_grok_sampling_types::messages::server_tool_from_type(canonical).is_some() {
+        Some(canonical)
+    } else {
+        None
+    }
+}
+
+/// MGW F1 (apex-ayl.115): resolve a `server_tools` row value
+/// (comma-separated family names or dated slugs) to canonical dated type
+/// strings (SDD §3.4). Unknown slugs are SOFT-refused: `tracing::warn!`
+/// names the value and the member is skipped (the `cache_ttl`/F5
+/// precedent — no wire-type guessing; the request proceeds without the
+/// member). Order preserved; empty/whitespace tokens dropped.
+fn resolve_server_tool_slugs(model_name: &str, raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|part| part.trim())
+        .filter(|part| !part.is_empty())
+        .filter_map(|token| match canonical_server_tool_slug(token) {
+            Some(canonical) => Some(canonical.to_owned()),
+            None => {
+                tracing::warn!(
+                    model = %model_name,
+                    server_tool = token,
+                    "unrecognized server_tools slug (expected a family name or a \
+                     canonical dated type string); skipping member"
+                );
+                None
+            }
+        })
+        .collect()
+}
+
+/// MGW F1 (apex-ayl.115): the row-level pairing validation behind the
+/// config-load HARD refusal (SDD §3.4, FIX-PASS R4 — a structurally
+/// invalid request must not degrade silently):
+/// (1) a selected "mcp_toolset" member (family or dated spelling) without
+/// `mcp_toolset_server` → Err naming the member;
+/// (2) `mcp_toolset_server` naming an undeclared `mcp_servers` entry →
+/// Err naming the value.
+/// Unknown slugs are NOT rejected here (the resolver soft-refuses them);
+/// an empty/whitespace `mcp_toolset_server` is unset (the F2
+/// stop_sequences precedent).
+fn validate_server_tool_pairing(
+    model_id: &str,
+    model: &ConfigModelOverride,
+) -> Result<(), String> {
+    let selects_mcp_toolset = model
+        .server_tools
+        .as_deref()
+        .is_some_and(|raw| {
+            raw.split(',')
+                .any(|part| canonical_server_tool_slug(part.trim()) == Some("mcp_toolset"))
+        });
+    if selects_mcp_toolset && model.mcp_toolset_server.is_none() {
+        return Err(format!(
+            "model.{model_id}.server_tools selects \"mcp_toolset\" but mcp_toolset_server \
+             is not set (the mcp_toolset member requires the pairing key)"
+        ));
+    }
+    if let Some(name) = model
+        .mcp_toolset_server
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        let declared = model
+            .mcp_servers
+            .as_deref()
+            .is_some_and(|decls| decls.iter().any(|d| d.name == name));
+        if !declared {
+            return Err(format!(
+                "model.{model_id}.mcp_toolset_server names \"{name}\" which is not a \
+                 declared mcp_servers entry"
+            ));
+        }
+    }
+    Ok(())
+}
 pub(crate) fn sampling_config_for_model(
     model: &ModelEntry,
     credentials: ResolvedCredentials,
@@ -6297,6 +6612,29 @@ pub(crate) fn sampling_config_for_model(
         &api_backend,
         &credentials.base_url,
     );
+    // MGW F1 (apex-ayl.115): the `server_tools` row key is a
+    // comma-separated STRING (scalar-safe for config_patch); split +
+    // family-map + whitelist here → canonical dated type strings
+    // (unknown slugs soft-refused above). Empty/all-unknown → None
+    // (the F2 stop_sequences empty→None precedent).
+    let server_tools = match info.server_tools.as_deref() {
+        Some(raw) => {
+            let slugs = resolve_server_tool_slugs(&model_name, raw);
+            if slugs.is_empty() {
+                None
+            } else {
+                Some(slugs)
+            }
+        }
+        None => None,
+    };
+    // `mcp_toolset_server`: trim; empty/whitespace → unset (None).
+    let mcp_toolset_server = info
+        .mcp_toolset_server
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned);
     SamplerConfig {
         api_key: credentials.api_key,
         model: model_name,
@@ -6311,6 +6649,9 @@ pub(crate) fn sampling_config_for_model(
         stop_sequences,
         disable_parallel_tool_use: info.disable_parallel_tool_use,
         tool_cache_breakpoint,
+        server_tools,
+        mcp_servers: info.mcp_servers.clone(),
+        mcp_toolset_server,
         auth_scheme: credentials.auth_scheme,
         extra_headers,
         extra_response_includes,
@@ -6419,6 +6760,9 @@ fn resolve_hidden_default_web_search_sampling_config(
             stop_sequences: None,
             disable_parallel_tool_use: None,
             tools_cache_breakpoint: None,
+            server_tools: None,
+            mcp_servers: None,
+            mcp_toolset_server: None,
         },
         mtls_cert_dir: None,
         api_key: None,

@@ -2658,6 +2658,9 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
             stop_sequences: None,
             disable_parallel_tool_use: None,
             tools_cache_breakpoint: None,
+            server_tools: None,
+            mcp_servers: None,
+            mcp_toolset_server: None,
             variants: Vec::new(),
         },
         mtls_cert_dir: None,
@@ -2894,6 +2897,9 @@ fn test_sampling_config(model_slug: &str) -> xai_grok_sampling_types::SamplingCo
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tool_cache_breakpoint: None,
+        server_tools: None,
+        mcp_servers: None,
+        mcp_toolset_server: None,
     }
 }
 fn spawn_test_parent_chat_state(model_slug: &str) -> xai_chat_state::ChatStateHandle {

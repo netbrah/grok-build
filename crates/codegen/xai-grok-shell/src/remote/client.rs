@@ -945,6 +945,9 @@ pub(crate) fn parse_remote_model_value(
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tools_cache_breakpoint: None,
+        server_tools: None,
+        mcp_servers: None,
+        mcp_toolset_server: None,
     })
 }
 fn get_string(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<String> {

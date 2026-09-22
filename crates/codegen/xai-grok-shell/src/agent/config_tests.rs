@@ -1097,6 +1097,9 @@ fn test_model_entry(
             stop_sequences: None,
             disable_parallel_tool_use: None,
             tools_cache_breakpoint: None,
+            server_tools: None,
+            mcp_servers: None,
+            mcp_toolset_server: None,
             variants: Vec::new(),
         },
         mtls_cert_dir: None,
@@ -2264,6 +2267,9 @@ fn model_info_from_config_propagates_use_concise() {
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tools_cache_breakpoint: None,
+        server_tools: None,
+        mcp_servers: None,
+        mcp_toolset_server: None,
         variants: Vec::new(),
     };
     let info = ModelInfo::from_config(&entry);
@@ -2437,6 +2443,9 @@ fn model_info_from_config_propagates_agent_type() {
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tools_cache_breakpoint: None,
+        server_tools: None,
+        mcp_servers: None,
+        mcp_toolset_server: None,
         variants: Vec::new(),
     };
     let info = ModelInfo::from_config(&entry);
@@ -2902,6 +2911,9 @@ fn inference_idle_timeout_propagates_to_model_info() {
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tools_cache_breakpoint: None,
+        server_tools: None,
+        mcp_servers: None,
+        mcp_toolset_server: None,
         variants: Vec::new(),
     };
     let info = ModelInfo::from_config(&entry);
@@ -7568,6 +7580,9 @@ fn prefetch_model_entry(slug: &str, context_window: u64, api_backend: ApiBackend
             stop_sequences: None,
             disable_parallel_tool_use: None,
             tools_cache_breakpoint: None,
+            server_tools: None,
+            mcp_servers: None,
+            mcp_toolset_server: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
             variants: Vec::new(),
@@ -10066,4 +10081,83 @@ fn mgw_f2_sampling_config_splits_stop_sequences() {
             "row {row:?} must split to {expected:?}"
         );
     }
+}
+
+// ============================================================================
+// MGW F1 (apex-ayl.115) — config-layer server-tools validation (U-RED-4,
+// FIX-PASS R4 semantics: unknown slugs SOFT-refused — warn + skip, the
+// cache_ttl precedent; pairing violations HARD-refused — loud config-layer
+// rejection naming the value; a structurally invalid request must not
+// degrade silently).
+// ============================================================================
+
+#[test]
+fn mgw_f1_u_red_4_unknown_slug_is_soft_refused() {
+    // U-RED-4 (soft arm; green BOTH sides — the no-hard-Err pin): a row
+    // declaring an unknown slug must never hard-fail config load
+    // (pre-cut the lenient parser drops the key; post-cut the resolver
+    // soft-skips the member, tracing::warn! names the value, and the
+    // request proceeds without it).
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [model.claude-opus-4-6]
+            context_window = 200000
+            server_tools = "bogus_tool"
+        "#,
+    )
+    .unwrap();
+    Config::new_from_toml_cfg(&raw).expect(
+        "unknown server_tools slug must be SOFT-refused (warn + skip), never a hard Err",
+    );
+}
+
+#[test]
+fn mgw_f1_u_red_4_bare_mcp_toolset_is_hard_refused() {
+    // U-RED-4 (hard arm 1; TRUE runtime RED pre-cut): `mcp_toolset`
+    // without `mcp_toolset_server` is a structurally invalid request —
+    // a loud config-layer rejection naming the value. Pre-cut the
+    // lenient parser drops the key ⇒ no Err ⇒ expect_err panics (RED).
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [model.claude-opus-4-6]
+            context_window = 200000
+            server_tools = "mcp_toolset"
+        "#,
+    )
+    .unwrap();
+    let err = Config::new_from_toml_cfg(&raw).expect_err(
+        "bare mcp_toolset without mcp_toolset_server must be HARD-refused at the config layer",
+    );
+    assert!(
+        err.contains("mcp_toolset"),
+        "the rejection must name the value: {err}"
+    );
+}
+
+#[test]
+fn mgw_f1_u_red_4_undeclared_mcp_toolset_server_is_hard_refused() {
+    // U-RED-4 (hard arm 2; TRUE runtime RED pre-cut): `mcp_toolset_server`
+    // MUST name a declared `mcp_servers` entry — an undeclared name is a
+    // loud config-layer rejection naming the value. Pre-cut the lenient
+    // parser drops the keys ⇒ no Err (RED).
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [model.claude-opus-4-6]
+            context_window = 200000
+            server_tools = "mcp_toolset"
+            mcp_toolset_server = "ghost"
+
+            [[model.claude-opus-4-6.mcp_servers]]
+            name = "search"
+            url = "https://mcp.example/sse"
+        "#,
+    )
+    .unwrap();
+    let err = Config::new_from_toml_cfg(&raw).expect_err(
+        "mcp_toolset_server naming an undeclared mcp_servers entry must be HARD-refused",
+    );
+    assert!(
+        err.contains("ghost"),
+        "the rejection must name the undeclared server value: {err}"
+    );
 }

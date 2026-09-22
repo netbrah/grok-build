@@ -324,12 +324,12 @@ impl MessagesRequestBuilder {
         input_schema: JsonSchema,
     ) -> Self {
         let mut this = self;
-        this.tools.push(ToolParam {
+        this.tools.push(ToolParam::Custom(crate::messages::ToolCustom {
             name,
             description,
             input_schema: input_schema.into_value(),
             cache_control: None,
-        });
+        }));
         this
     }
 
@@ -426,6 +426,9 @@ impl MessagesRequestBuilder {
             thinking: self.thinking,
             output_config: self.output_config,
             metadata: self.metadata,
+            // MGW F1 (apex-ayl.115): the client funnel has no server-tool
+            // surface — the trusted producer is the sole fill path.
+            mcp_servers: None,
         }))
     }
 }
@@ -1241,10 +1244,19 @@ pub fn f() {
         }
         if let Some(tools) = pipeline.tools() {
             for tool in tools {
+                // MGW F1 (apex-ayl.115): union-forced — the builder
+                // round-trip reconstructs client tools (the Custom
+                // variant); the client funnel never emits server members.
+                let custom = match tool {
+                    ToolParam::Custom(c) => c,
+                    ToolParam::Server(_) => {
+                        panic!("server members are not builder-reconstructible")
+                    }
+                };
                 builder = builder.tool(
-                    tool.name.clone(),
-                    tool.description.clone(),
-                    JsonSchema::new(tool.input_schema.clone()),
+                    custom.name.clone(),
+                    custom.description.clone(),
+                    JsonSchema::new(custom.input_schema.clone()),
                 );
             }
         }

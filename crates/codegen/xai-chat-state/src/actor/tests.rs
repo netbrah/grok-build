@@ -41,6 +41,9 @@ fn test_config_with_window(context_window: u64) -> SamplingConfig {
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tool_cache_breakpoint: None,
+        server_tools: None,
+        mcp_servers: None,
+        mcp_toolset_server: None,
     }
 }
 
@@ -1491,6 +1494,9 @@ async fn update_sampling_config_is_queryable() {
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tool_cache_breakpoint: None,
+        server_tools: None,
+        mcp_servers: None,
+        mcp_toolset_server: None,
     };
     h.handle.update_sampling_config(new_config.clone());
 
@@ -1918,6 +1924,9 @@ async fn build_request_uses_sampling_config() {
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tool_cache_breakpoint: None,
+        server_tools: None,
+        mcp_servers: None,
+        mcp_toolset_server: None,
     };
     let h = TestHarness::with_config(vec![ConversationItem::user("hi")], config);
 
@@ -4463,6 +4472,9 @@ async fn sampling_config_survives_compaction_replacement() {
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tool_cache_breakpoint: None,
+        server_tools: None,
+        mcp_servers: None,
+        mcp_toolset_server: None,
     };
 
     let h = TestHarness::with_config(
@@ -4559,6 +4571,9 @@ async fn model_metadata_lost_after_compaction_then_recovered_on_next_turn() {
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tool_cache_breakpoint: None,
+        server_tools: None,
+        mcp_servers: None,
+        mcp_toolset_server: None,
     };
 
     let h = TestHarness::with_config(
@@ -4648,6 +4663,9 @@ async fn context_window_downgrade_triggers_auto_compact() {
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tool_cache_breakpoint: None,
+        server_tools: None,
+        mcp_servers: None,
+        mcp_toolset_server: None,
     };
 
     let h = TestHarness::with_config(vec![], config);
@@ -5708,8 +5726,14 @@ async fn mgw_f5_actor_default_keeps_tool_control_keys_absent() {
     );
     if let Some(tools) = msgs.tools() {
         for (i, t) in tools.iter().enumerate() {
+            // MGW F1 (apex-ayl.115): union-forced — the marker field now
+            // lives on the Custom variant of the untagged ToolParam union.
+            let none_cc = match t {
+                xai_grok_sampling_types::messages::ToolParam::Custom(c) => c.cache_control.is_none(),
+                xai_grok_sampling_types::messages::ToolParam::Server(_) => false,
+            };
             assert!(
-                t.cache_control.is_none(),
+                none_cc,
                 "default config ⇒ tools[{i}].cache_control None: {json:#}"
             );
         }

@@ -84,6 +84,12 @@ impl ChatStateActor {
             // places the per-tool cache breakpoint.
             disable_parallel_tool_use: self.state.sampling_config.disable_parallel_tool_use,
             tool_cache_breakpoint: self.state.sampling_config.tool_cache_breakpoint,
+            // MGW F1 (apex-ayl.115): config-selected server-tool surface
+            // threads onto the request (the producer emits the members
+            // after the client tools).
+            server_tools: self.state.sampling_config.server_tools.clone(),
+            mcp_servers: self.state.sampling_config.mcp_servers.clone(),
+            mcp_toolset_server: self.state.sampling_config.mcp_toolset_server.clone(),
             model: Some(self.state.sampling_config.model.clone()),
             temperature: self.state.sampling_config.temperature,
             max_output_tokens: self.state.sampling_config.max_completion_tokens,

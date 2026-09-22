@@ -2520,6 +2520,9 @@ fn make_entry_config_with_id(
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tools_cache_breakpoint: None,
+        server_tools: None,
+        mcp_servers: None,
+        mcp_toolset_server: None,
         variants: Vec::new(),
     }
 }

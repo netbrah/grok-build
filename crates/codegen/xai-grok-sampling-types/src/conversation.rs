@@ -955,6 +955,15 @@ pub struct ConversationRequest {
     /// Backend-hosted tools (sent as native Responses API tool types).
     /// These are executed server-side by the agentic sampler during inference.
     pub hosted_tools: Vec<HostedTool>,
+    /// Config-selected server-tool union members (canonical dated type
+    /// strings, validated at the config layer; "mcp_toolset" requires
+    /// `mcp_toolset_server`) (MSGW F1, apex-ayl.115).
+    pub server_tools: Option<Vec<String>>,
+    /// Remote MCP server declarations (BETA shape, pre-wire form).
+    pub mcp_servers: Option<Vec<crate::messages::McpServerDecl>>,
+    /// Names an `mcp_servers` entry; pairs with the "mcp_toolset" member
+    /// selection (the config layer hard-refuses a pairing violation).
+    pub mcp_toolset_server: Option<String>,
     /// Tool choice behavior
     pub tool_choice: Option<ConversationToolChoice>,
     /// Row opt-in: disable parallel tool use (docs GA; nested into `tool_choice` on the wire).

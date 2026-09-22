@@ -3290,8 +3290,14 @@ fn mgw_f5_u_red_4_last_tool_carries_the_breakpoint() {
         Some(&serde_json::json!({"type": "ephemeral"})),
         "tools[2] (last) must carry the ttl-less ephemeral marker: {json:#}"
     );
-    assert!(tool_params[0].cache_control.is_none(), "tools[0] stays None");
-    assert!(tool_params[1].cache_control.is_none(), "tools[1] stays None");
+    // MGW F1 (apex-ayl.115): union-forced — the marker field now lives on
+    // the Custom variant of the untagged ToolParam union.
+    let cc = |tp: &ToolParam| match tp {
+        ToolParam::Custom(c) => c.cache_control.is_none(),
+        ToolParam::Server(_) => false,
+    };
+    assert!(cc(&tool_params[0]), "tools[0] stays None");
+    assert!(cc(&tool_params[1]), "tools[1] stays None");
     assert!(json.pointer("/tools/0/cache_control").is_none());
     assert!(json.pointer("/tools/1/cache_control").is_none());
     // WIRE marker total == 4 (head + tip + system head + the tool marker);
@@ -3314,7 +3320,11 @@ fn mgw_f5_u_red_4_last_tool_carries_the_breakpoint() {
         req_off.tool_cache_breakpoint = bp;
         let msgs_off = build_messages_request(&req_off);
         for (i, t) in msgs_off.tools().expect("tools projected").iter().enumerate() {
-            assert!(t.cache_control.is_none(), "bp={bp:?}: tools[{i}] must stay None");
+            let none_cc = match t {
+                ToolParam::Custom(c) => c.cache_control.is_none(),
+                ToolParam::Server(_) => false,
+            };
+            assert!(none_cc, "bp={bp:?}: tools[{i}] must stay None");
         }
         let wire_off = serde_json::to_string(&msgs_off).unwrap();
         assert_eq!(
@@ -3326,4 +3336,339 @@ fn mgw_f5_u_red_4_last_tool_carries_the_breakpoint() {
             .validate()
             .expect("gate passes without the tool marker");
     }
+}
+
+// ============================================================================
+// MGW F1 (apex-ayl.115) — server-tool surface: untagged ToolParam union
+// (21 dated GA + BETA mcp_toolset members) + mcp_servers decl surface.
+// ============================================================================
+
+use crate::messages::{
+    server_tool_from_type, McpServerDecl, ToolParam, ToolServer,
+};
+
+#[test]
+fn mgw_f1_u_red_1_family_default_member_projects() {
+    // U-RED-1 (SDD §4): the canonical dated slug at the producer level
+    // (config-layer family resolution `web_search → web_search_20250305`
+    // is covered at the shell layer, U-RED-4 sibling) projects
+    // Server(WebSearch20250305 { name: "web_search", …all-None }); the
+    // serialized body carries the landed live grep's needle.
+    // PRE-CUT: the union + member do not exist ⇒ compile RED.
+    let mut req = messages_test_request(None);
+    req.server_tools = Some(vec!["web_search_20250305".to_string()]);
+    let msgs = build_messages_request(&req);
+    let json = serde_json::to_value(&msgs).unwrap();
+    let tools = json
+        .pointer("/tools")
+        .expect("a server-tools-only row must project a tools array");
+    let arr = tools.as_array().expect("tools is an array");
+    assert_eq!(arr.len(), 1, "exactly the selected member: {json:#}");
+    assert_eq!(
+        arr[0].get("type").and_then(|t| t.as_str()),
+        Some("web_search_20250305"),
+        "the canonical dated slug is the wire contract: {json:#}"
+    );
+    assert_eq!(
+        arr[0].get("name").and_then(|n| n.as_str()),
+        Some("web_search"),
+        "the fixed docs name literal rides with the member: {json:#}"
+    );
+    // Typed half: the member is the right variant, all knob fields None.
+    let params = msgs.tools().expect("tools projected");
+    match &params[0] {
+        ToolParam::Server(ToolServer::WebSearch20250305 {
+            name,
+            allowed_callers,
+            allowed_domains,
+            blocked_domains,
+            cache_control,
+            defer_loading,
+            max_uses,
+            strict,
+            user_location,
+        }) => {
+            assert_eq!(name, "web_search");
+            assert!(
+                allowed_callers.is_none()
+                    && allowed_domains.is_none()
+                    && blocked_domains.is_none()
+                    && cache_control.is_none()
+                    && defer_loading.is_none()
+                    && max_uses.is_none()
+                    && strict.is_none()
+                    && user_location.is_none(),
+                "all non-required member knobs stay None: {json:#}"
+            );
+        }
+        other => panic!("expected Server(WebSearch20250305), got: {other:?}"),
+    }
+}
+
+#[test]
+fn mgw_f1_u_red_2_variant_table_goldens() {
+    // U-RED-2 (SDD §4, 21-variant table + byte-pinned default-form
+    // goldens): 20 dated GA slugs via the compile-checked
+    // server_tool_from_type map + mcp_toolset constructed directly
+    // (its required mcp_server_name is producer-filled; the config
+    // layer hard-refuses a bare selection upstream). 18 named members
+    // pin the docs name literal; the 3 nameless (browser/computer
+    // toolset, mcp_toolset) assert NO name key.
+    // PRE-CUT: the union + map do not exist ⇒ compile RED.
+    let cases: &[(&str, Option<&str>, serde_json::Value)] = &[
+        ("bash_20250124", Some("bash"), serde_json::json!({"type": "bash_20250124", "name": "bash"})),
+        ("code_execution_20250522", Some("code_execution"), serde_json::json!({"type": "code_execution_20250522", "name": "code_execution"})),
+        ("code_execution_20250825", Some("code_execution"), serde_json::json!({"type": "code_execution_20250825", "name": "code_execution"})),
+        ("code_execution_20260120", Some("code_execution"), serde_json::json!({"type": "code_execution_20260120", "name": "code_execution"})),
+        ("code_execution_20260521", Some("code_execution"), serde_json::json!({"type": "code_execution_20260521", "name": "code_execution"})),
+        ("browser_toolset_20260801", None, serde_json::json!({"type": "browser_toolset_20260801"})),
+        ("memory_20250818", Some("memory"), serde_json::json!({"type": "memory_20250818", "name": "memory"})),
+        ("computer_toolset_20260801", None, serde_json::json!({"type": "computer_toolset_20260801"})),
+        ("text_editor_20250124", Some("str_replace_editor"), serde_json::json!({"type": "text_editor_20250124", "name": "str_replace_editor"})),
+        ("text_editor_20250429", Some("str_replace_based_edit_tool"), serde_json::json!({"type": "text_editor_20250429", "name": "str_replace_based_edit_tool"})),
+        ("text_editor_20250728", Some("str_replace_based_edit_tool"), serde_json::json!({"type": "text_editor_20250728", "name": "str_replace_based_edit_tool"})),
+        ("web_search_20250305", Some("web_search"), serde_json::json!({"type": "web_search_20250305", "name": "web_search"})),
+        ("web_fetch_20250910", Some("web_fetch"), serde_json::json!({"type": "web_fetch_20250910", "name": "web_fetch"})),
+        ("web_search_20260209", Some("web_search"), serde_json::json!({"type": "web_search_20260209", "name": "web_search"})),
+        ("web_fetch_20260209", Some("web_fetch"), serde_json::json!({"type": "web_fetch_20260209", "name": "web_fetch"})),
+        ("web_fetch_20260309", Some("web_fetch"), serde_json::json!({"type": "web_fetch_20260309", "name": "web_fetch"})),
+        ("web_search_20260318", Some("web_search"), serde_json::json!({"type": "web_search_20260318", "name": "web_search"})),
+        ("web_fetch_20260318", Some("web_fetch"), serde_json::json!({"type": "web_fetch_20260318", "name": "web_fetch"})),
+        ("tool_search_tool_bm25_20251119", Some("tool_search_tool_bm25"), serde_json::json!({"type": "tool_search_tool_bm25_20251119", "name": "tool_search_tool_bm25"})),
+        ("tool_search_tool_regex_20251119", Some("tool_search_tool_regex"), serde_json::json!({"type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex"})),
+    ];
+    for (slug, name_literal, golden) in cases {
+        let name_literal: Option<&str> = *name_literal;
+        let member = server_tool_from_type(slug)
+            .unwrap_or_else(|| panic!("server_tool_from_type({slug:?}) must be known"));
+        let bytes = serde_json::to_string(&member).unwrap();
+        assert_eq!(
+            bytes,
+            golden.to_string(),
+            "byte-pinned default form for {slug:?}"
+        );
+        let value: serde_json::Value = serde_json::from_str(&bytes).unwrap();
+        match name_literal {
+            Some(lit) => assert_eq!(
+                value.get("name").and_then(|n| n.as_str()),
+                Some(lit),
+                "{slug:?} must carry the fixed docs name literal"
+            ),
+            None => assert!(
+                value.get("name").is_none(),
+                "{slug:?} is a nameless member — NO name key: {bytes}"
+            ),
+        }
+    }
+    assert_eq!(cases.len(), 20, "20 dated GA slugs (the 21st is mcp_toolset below)");
+
+    // mcp_toolset (BETA): required mcp_server_name (producer-filled), NO
+    // name key; default form = {type, mcp_server_name}.
+    let mcp = ToolServer::McpToolset {
+        mcp_server_name: "search".to_string(),
+        cache_control: None,
+        configs: None,
+        default_config: None,
+    };
+    let bytes = serde_json::to_string(&mcp).unwrap();
+    assert_eq!(
+        bytes,
+        r#"{"type":"mcp_toolset","mcp_server_name":"search"}"#,
+        "mcp_toolset default form byte pin"
+    );
+    let value: serde_json::Value = serde_json::from_str(&bytes).unwrap();
+    assert!(value.get("name").is_none(), "mcp_toolset is nameless: {bytes}");
+}
+
+#[test]
+fn mgw_f1_u_red_3_mcp_servers_and_toolset_pairing() {
+    // U-RED-3 (SDD §4): a declared mcp_servers entry + the mcp_toolset
+    // member + the pairing name ⇒ the body carries the BETA
+    // mcp_servers[0] ({type:"url",…}) AND the tools entry with the
+    // producer-filled mcp_server_name. PRE-CUT: compile RED.
+    let mut req = messages_test_request(None);
+    req.mcp_servers = Some(vec![McpServerDecl {
+        name: "search".to_string(),
+        url: "https://mcp.example/sse".to_string(),
+        authorization_token: None,
+        tool_configuration: None,
+    }]);
+    req.server_tools = Some(vec!["mcp_toolset".to_string()]);
+    req.mcp_toolset_server = Some("search".to_string());
+    let msgs = build_messages_request(&req);
+    let json = serde_json::to_value(&msgs).unwrap();
+    assert_eq!(
+        json.pointer("/mcp_servers/0"),
+        Some(&serde_json::json!({
+            "type": "url",
+            "name": "search",
+            "url": "https://mcp.example/sse"
+        })),
+        "mcp_servers decl maps to the wire param (r#type \"url\"): {json:#}"
+    );
+    let tools = json
+        .pointer("/tools")
+        .expect("the mcp_toolset member must project");
+    let arr = tools.as_array().expect("tools is an array");
+    assert_eq!(
+        arr,
+        &[serde_json::json!({"type": "mcp_toolset", "mcp_server_name": "search"})],
+        "the producer fills mcp_server_name from mcp_toolset_server: {json:#}"
+    );
+}
+
+#[test]
+fn mgw_f1_u_parity_1_default_row_byte_identical() {
+    // U-PARITY-1 (green BOTH sides — the byte-parity proof): a default
+    // row (no server keys) serializes byte-identically pre/post cut —
+    // the untagged Custom variant IS the pre-cut flat struct.
+    let tools = vec![
+        ToolSpec {
+            name: "t0".to_owned(),
+            description: None,
+            parameters: serde_json::json!({"type": "object"}),
+        },
+        ToolSpec {
+            name: "t1".to_owned(),
+            description: Some("d1".to_owned()),
+            parameters: serde_json::json!({"type": "object", "properties": {}}),
+        },
+    ];
+    let req = ConversationRequest::from_items(vec![ConversationItem::user("hi")])
+        .with_model("test-model")
+        .with_tools(tools);
+    let json = serde_json::to_value(&build_messages_request(&req)).unwrap();
+    assert_eq!(
+        json.pointer("/tools"),
+        Some(&serde_json::json!([
+            {"name": "t0", "input_schema": {"type": "object"}},
+            {"name": "t1", "description": "d1", "input_schema": {"type": "object", "properties": {}}}
+        ])),
+        "client tools stay byte-identical (untagged Custom parity): {json:#}"
+    );
+    assert!(
+        json.get("mcp_servers").is_none(),
+        "no mcp_servers key on a default row: {json:#}"
+    );
+}
+
+#[test]
+fn mgw_f1_u_parity_2_client_then_server_order() {
+    // U-PARITY-2 (ordering, binding cache-stability rule): 3 client
+    // tools + 2 server members ⇒ [c1, c2, c3, s1, s2] — client order
+    // preserved, server members appended in config order.
+    let tools = vec![
+        ToolSpec {
+            name: "c1".to_owned(),
+            description: None,
+            parameters: serde_json::json!({"type": "object"}),
+        },
+        ToolSpec {
+            name: "c2".to_owned(),
+            description: None,
+            parameters: serde_json::json!({"type": "object"}),
+        },
+        ToolSpec {
+            name: "c3".to_owned(),
+            description: None,
+            parameters: serde_json::json!({"type": "object"}),
+        },
+    ];
+    let mut req = ConversationRequest::from_items(vec![ConversationItem::user("hi")])
+        .with_model("test-model")
+        .with_tools(tools);
+    req.server_tools = Some(vec![
+        "web_fetch_20250910".to_string(),
+        "web_search_20250305".to_string(),
+    ]);
+    let json = serde_json::to_value(&build_messages_request(&req)).unwrap();
+    let arr = json
+        .pointer("/tools")
+        .and_then(|t| t.as_array())
+        .expect("5 members projected");
+    assert_eq!(arr.len(), 5, "{json:#}");
+    assert_eq!(
+        arr.iter().map(|t| t.get("name").and_then(|n| n.as_str())).collect::<Vec<_>>(),
+        vec![
+            Some("c1"),
+            Some("c2"),
+            Some("c3"),
+            Some("web_fetch"),
+            Some("web_search"),
+        ],
+        "client order preserved, server members appended in config order: {json:#}"
+    );
+    assert_eq!(
+        arr[3].get("type").and_then(|t| t.as_str()),
+        Some("web_fetch_20250910"),
+        "server member 1 keeps its config-order slot: {json:#}"
+    );
+    assert_eq!(
+        arr[4].get("type").and_then(|t| t.as_str()),
+        Some("web_search_20250305"),
+        "server member 2 keeps its config-order slot: {json:#}"
+    );
+}
+
+#[test]
+fn mgw_f1_u_parity_3_marker_budget_with_server_members() {
+    // U-PARITY-3 (marker budget): a Last-breakpoint row + server
+    // members ⇒ the F5 marker stays on the LAST CLIENT tool (server
+    // members carry no cc by config), request-wide wire marker total
+    // ≤ 4, and the gate (system+message count only) passes.
+    use crate::request_builder::DraftMessagesRequest;
+
+    let tools = vec![
+        ToolSpec {
+            name: "t0".to_owned(),
+            description: None,
+            parameters: serde_json::json!({"type": "object"}),
+        },
+        ToolSpec {
+            name: "t1".to_owned(),
+            description: None,
+            parameters: serde_json::json!({"type": "object"}),
+        },
+        ToolSpec {
+            name: "t2".to_owned(),
+            description: None,
+            parameters: serde_json::json!({"type": "object"}),
+        },
+    ];
+    let items = vec![
+        ConversationItem::user("q1"),
+        assistant_with_calls(&[("r1_1", "t0")]),
+        ConversationItem::tool_result("r1_1", "ok"),
+        ConversationItem::system("mid"),
+        ConversationItem::user("q2"),
+    ];
+    let mut req = ConversationRequest::from_items(items)
+        .with_model("test-model")
+        .with_tools(tools);
+    req.tool_cache_breakpoint = Some(ToolCacheBreakpoint::Last);
+    req.server_tools = Some(vec![
+        "web_search_20250305".to_string(),
+        "web_fetch_20250910".to_string(),
+    ]);
+    let msgs = build_messages_request(&req);
+    let json = serde_json::to_value(&msgs).unwrap();
+    assert_eq!(
+        json.pointer("/tools/2/cache_control"),
+        Some(&serde_json::json!({"type": "ephemeral"})),
+        "the F5 marker stays on the LAST CLIENT tool: {json:#}"
+    );
+    assert!(
+        json.pointer("/tools/3/cache_control").is_none()
+            && json.pointer("/tools/4/cache_control").is_none(),
+        "server members carry no marker: {json:#}"
+    );
+    let wire = serde_json::to_string(&msgs).unwrap();
+    assert_eq!(
+        wire.matches("\"cache_control\"").count(),
+        4,
+        "wire marker total stays 4 (3 system/message + 1 tool) ≤ the API cap: {wire}"
+    );
+    DraftMessagesRequest::new(msgs)
+        .validate()
+        .expect("gate must pass: tool + server-member markers invisible to the gate");
 }

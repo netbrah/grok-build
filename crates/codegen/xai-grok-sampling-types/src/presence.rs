@@ -1686,23 +1686,27 @@ mod presence_goldens {
             },
             // F5 (apex-ayl.114): per-tool cache breakpoint landed — row flips
             // Absent → PRESENT-Option (46-series same-commit truth discipline).
+            // MGW F1 (apex-ayl.115): the flat ToolParam struct became the
+            // untagged Custom/Server union — the 46c truth re-derives the
+            // Tool.* rows against `ToolCustom` (the renamed pre-cut flat
+            // struct; same-commit flip, totals unchanged).
             InventoryRow {
                 spec_field: "Tool.cache_control",
-                struct_name: "ToolParam",
+                struct_name: "ToolCustom",
                 field: "cache_control",
                 exact_decl: Some("pub cache_control: Option<CacheControl>,"),
                 expected: InventoryClass::PresentOption,
             },
             InventoryRow {
                 spec_field: "Tool.eager_input_streaming",
-                struct_name: "ToolParam",
+                struct_name: "ToolCustom",
                 field: "eager_input_streaming",
                 exact_decl: None,
                 expected: InventoryClass::Absent,
             },
             InventoryRow {
                 spec_field: "Tool.type",
-                struct_name: "ToolParam",
+                struct_name: "ToolCustom",
                 field: "type",
                 exact_decl: None,
                 expected: InventoryClass::Absent,

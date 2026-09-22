@@ -656,6 +656,9 @@ impl SessionActor {
                 stop_sequences: None,
                 disable_parallel_tool_use: None,
                 tool_cache_breakpoint: None,
+                server_tools: None,
+                mcp_servers: None,
+                mcp_toolset_server: None,
             });
         let model_family = {
             let models = self.models_manager.models();
@@ -788,6 +791,9 @@ impl SessionActor {
             stop_sequences: cfg.stop_sequences.clone(),
             disable_parallel_tool_use: cfg.disable_parallel_tool_use,
             tool_cache_breakpoint: cfg.tool_cache_breakpoint,
+            server_tools: None,
+            mcp_servers: None,
+            mcp_toolset_server: None,
             stream_tool_calls: cfg.stream_tool_calls.unwrap_or(false),
             idle_timeout_secs: None,
             client_identifier: self.client_identifier.clone(),

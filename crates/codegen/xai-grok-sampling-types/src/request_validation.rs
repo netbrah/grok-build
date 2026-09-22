@@ -699,7 +699,7 @@ mod tests {
                 },
             ])),
             tools: Some(vec![
-                ToolParam {
+                ToolParam::Custom(crate::messages::ToolCustom {
                     name: "lookup".to_string(),
                     description: Some("look things up".to_string()),
                     input_schema: serde_json::json!({
@@ -707,13 +707,13 @@ mod tests {
                         "properties": { "key": { "type": "integer" } }
                     }),
                     cache_control: None,
-                },
-                ToolParam {
+                }),
+                ToolParam::Custom(crate::messages::ToolCustom {
                     name: "plain".to_string(),
                     description: None,
                     input_schema: serde_json::json!({ "type": "object" }),
                     cache_control: None,
-                },
+                }),
             ]),
             tool_choice: Some(ToolChoiceParam::Tool {
                 name: "lookup".to_string(),
@@ -732,6 +732,7 @@ mod tests {
             metadata: Some(Metadata {
                 user_id: RequestPresence::value("user-1".to_string()),
             }),
+            mcp_servers: None,
         })
     }
 
@@ -1111,19 +1112,19 @@ mod tests {
     #[test]
     fn tool_definition_over_cap_reject() {
         let schema = serde_json::json!({ "type": "object", "properties": {} });
-        let base = ToolParam {
+        let base = ToolParam::Custom(crate::messages::ToolCustom {
             name: "t".to_string(),
             description: Some(String::new()),
             input_schema: schema.clone(),
             cache_control: None,
-        };
+        });
         let base_len = serde_json::to_vec(&base).unwrap().len() as u64;
-        let over = ToolParam {
+        let over = ToolParam::Custom(crate::messages::ToolCustom {
             name: "t".to_string(),
             description: Some("a".repeat(((MAX_MODEL_CONTEXT_ITEM_TOKENS + 1) * 4 - base_len) as usize)),
             input_schema: schema.clone(),
             cache_control: None,
-        };
+        });
         let estimated = est(&serde_json::to_vec(&over).unwrap());
         assert_eq!(estimated, MAX_MODEL_CONTEXT_ITEM_TOKENS + 1);
         let request =
@@ -1139,12 +1140,12 @@ mod tests {
         );
 
         // Under-cap ToolParam passes.
-        let under = ToolParam {
+        let under = ToolParam::Custom(crate::messages::ToolCustom {
             name: "t".to_string(),
             description: Some("a small tool".to_string()),
             input_schema: schema,
             cache_control: None,
-        };
+        });
         let request =
             request_with_tools(vec![text_message(MessageRole::User, "hi")], vec![under]);
         validate_and_encode_messages_request(&request)

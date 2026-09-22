@@ -568,6 +568,23 @@
             "null"
           ]
         },
+        "mcp_servers": {
+          "description": "Remote MCP server declarations (F1, apex-ayl.115, BETA shape),\narray-of-tables row value. Absent = inherit.",
+          "items": {
+            "$ref": "#/definitions/McpServerDecl"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "mcp_toolset_server": {
+          "description": "Names an `mcp_servers` entry; pairs with the \"mcp_toolset\" member\n(F1, apex-ayl.115). Absent = inherit.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "model": {
           "type": [
             "string",
@@ -635,6 +652,13 @@
             "$ref": "#/definitions/ReasoningEffortOption"
           },
           "type": "array"
+        },
+        "server_tools": {
+          "description": "Server-tool member selection (F1, apex-ayl.115), comma-separated\nfamily names or dated slugs. Absent = inherit.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "show_model_fingerprint": {
           "type": [
@@ -1896,6 +1920,29 @@
       },
       "type": "object"
     },
+    "McpServerDecl": {
+      "description": "A config-declared MCP server (pre-wire form; the producer maps it to\n[`McpServerParam`] with `r#type: \"url\"`). `JsonSchema`: the shell row\nsurface (`ConfigModelOverride`, `ModelsConfig`) carries this type and\nderives `JsonSchema` for the committed config schema artifact.\n`PartialEq`: the shell 47b resolver replays the row value through\n`debug_assert_eq!` (compile-forced, MSGW F1).",
+      "properties": {
+        "authorization_token": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "tool_configuration": true,
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "url"
+      ],
+      "type": "object"
+    },
     "McpSetupConfig": {
       "properties": {
         "fields": {
@@ -2505,6 +2552,23 @@
             "null"
           ]
         },
+        "mcp_servers": {
+          "description": "Global remote MCP server declarations (F1, apex-ayl.115, BETA\nshape); per-model `[model.<id>]` values win. `None` = unset.",
+          "items": {
+            "$ref": "#/definitions/McpServerDecl"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "mcp_toolset_server": {
+          "description": "Global `mcp_toolset_server` pairing key (F1, apex-ayl.115); names\nan `mcp_servers` entry. Per-model `[model.<id>]` values win.\n`None` = unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "prompt_suggestion": {
           "description": "Model pin for next-prompt suggestions (tab-autocomplete ghost text).\nWhen unset: the remote pin, then the client hint / built-in `grok-4.6` default with the catalog guard; see `ModelOverrideConfig::resolve`.",
           "type": [
@@ -2517,6 +2581,13 @@
           "minimum": 0,
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "server_tools": {
+          "description": "Global server-tool member selection (F1, apex-ayl.115): a\ncomma-separated STRING of family names or dated slugs (scalar-safe\nfor config_patch); resolved to canonical dated type strings at\nconfig resolution (unknown slugs soft-refused — warn + skip).\nPer-model `[model.<id>]` values win. `None` = unset (no members).",
+          "type": [
+            "string",
             "null"
           ]
         },
@@ -3183,6 +3254,23 @@
             "null"
           ]
         },
+        "mcp_servers": {
+          "description": "Remote MCP server declarations (BETA shape, pre-wire form; the ST\n`McpServerDecl` type rides the carrier — no mirror type).",
+          "items": {
+            "$ref": "#/definitions/McpServerDecl"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "mcp_toolset_server": {
+          "description": "Names an `mcp_servers` entry; pairs with the \"mcp_toolset\" member\n(the config layer hard-refuses a pairing violation).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "model": {
           "type": "string"
         },
@@ -3238,6 +3326,16 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "server_tools": {
+          "description": "Config-selected server-tool union members (canonical dated type\nstrings; the shell row key is the comma-separated STRING\n`server_tools`, resolved at config resolution) (MSGW F1, apex-ayl.115).\n`None` = no members (absent on the wire).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
           ]
         },
         "stop_sequences": {

@@ -162,6 +162,20 @@ pub struct SamplerConfig {
     /// (`off`/absent ⇒ `None`). SINGULAR field — do not unify.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_cache_breakpoint: Option<xai_grok_sampling_types::conversation::ToolCacheBreakpoint>,
+    /// Config-selected server-tool union members (canonical dated type
+    /// strings; the shell row key is the comma-separated STRING
+    /// `server_tools`, resolved at config resolution) (MSGW F1, apex-ayl.115).
+    /// `None` = no members (absent on the wire).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_tools: Option<Vec<String>>,
+    /// Remote MCP server declarations (BETA shape, pre-wire form; the ST
+    /// `McpServerDecl` type rides the carrier — no mirror type).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_servers: Option<Vec<xai_grok_sampling_types::messages::McpServerDecl>>,
+    /// Names an `mcp_servers` entry; pairs with the "mcp_toolset" member
+    /// (the config layer hard-refuses a pairing violation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_toolset_server: Option<String>,
 }
 
 impl Default for SamplerConfig {
@@ -210,6 +224,9 @@ impl Default for SamplerConfig {
             stop_sequences: None,
             disable_parallel_tool_use: None,
             tool_cache_breakpoint: None,
+            server_tools: None,
+            mcp_servers: None,
+            mcp_toolset_server: None,
         }
     }
 }

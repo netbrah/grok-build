@@ -1096,6 +1096,17 @@ pub struct SamplingConfig {
     /// Resolved here to `Option<ToolCacheBreakpoint>` (`off`/absent ⇒ None).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_cache_breakpoint: Option<crate::conversation::ToolCacheBreakpoint>,
+    /// Config-selected server-tool union members (canonical dated type
+    /// strings; the shell row key is the comma-separated STRING
+    /// `server_tools`, resolved at config resolution) (MSGW F1, apex-ayl.115).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_tools: Option<Vec<String>>,
+    /// Remote MCP server declarations (BETA shape, pre-wire form).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_servers: Option<Vec<crate::messages::McpServerDecl>>,
+    /// Names an `mcp_servers` entry; pairs with the "mcp_toolset" member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_toolset_server: Option<String>,
     /// Model-resolved general retry budget paired with the rate-limit ceiling below.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_retries: Option<u32>,

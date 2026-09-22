@@ -87,6 +87,11 @@ impl SessionActor {
                 stop_sequences: sampling_config.stop_sequences.clone(),
                 disable_parallel_tool_use: sampling_config.disable_parallel_tool_use,
                 tool_cache_breakpoint: sampling_config.tool_cache_breakpoint,
+                // MGW F1 (apex-ayl.115): the config-selected server-tool
+                // surface rides the sampler carrier (F2 carrier precedent).
+                server_tools: sampling_config.server_tools.clone(),
+                mcp_servers: sampling_config.mcp_servers.clone(),
+                mcp_toolset_server: sampling_config.mcp_toolset_server.clone(),
             });
         let existing = self.chat_state_handle.get_credentials().await;
         let session_key = self

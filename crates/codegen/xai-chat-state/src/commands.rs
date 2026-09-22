@@ -475,6 +475,9 @@ mod tests {
                 stop_sequences: None,
                 disable_parallel_tool_use: None,
                 tool_cache_breakpoint: None,
+                server_tools: None,
+                mcp_servers: None,
+                mcp_toolset_server: None,
             }),
         };
         let _ = ChatStateCommand::RecordAgentEditedPath {

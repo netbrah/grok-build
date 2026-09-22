@@ -1,5 +1,6 @@
 //! Anthropic Messages API (`/v1/messages`) wire types.
 
+use schemars::JsonSchema;
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +41,12 @@ pub struct MessagesRequest {
     output_config: Option<OutputConfig>,
     #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
     metadata: Option<Metadata>,
+    /// BETA `mcp_servers[]` (MSGW F1, apex-ayl.115): config-declared remote
+    /// MCP servers, mapped from the pre-wire `McpServerDecl` form by the
+    /// producer (`r#type: "url"`). Absent (None) on every row that does not
+    /// declare one — byte-identical pre-cut bodies.
+    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
+    mcp_servers: Option<Vec<McpServerParam>>,
 }
 
 impl MessagesRequest {
@@ -102,6 +109,10 @@ impl MessagesRequest {
 
     pub fn metadata(&self) -> Option<&Metadata> {
         self.metadata.as_ref()
+    }
+
+    pub fn mcp_servers(&self) -> Option<&[McpServerParam]> {
+        self.mcp_servers.as_deref()
     }
 
     /// Message-defaults fill: set `model` when empty (the
@@ -171,6 +182,7 @@ pub(crate) struct MessagesRequestParts {
     pub(crate) thinking: Option<ThinkingConfig>,
     pub(crate) output_config: Option<OutputConfig>,
     pub(crate) metadata: Option<Metadata>,
+    pub(crate) mcp_servers: Option<Vec<McpServerParam>>,
 }
 
 impl MessagesRequest {
@@ -193,6 +205,7 @@ impl MessagesRequest {
             thinking: parts.thinking,
             output_config: parts.output_config,
             metadata: parts.metadata,
+            mcp_servers: parts.mcp_servers,
         }
     }
 }
@@ -462,8 +475,21 @@ pub enum ToolResultContent {
 }
 
 /// Tool definition (Anthropic Messages API format)
+/// A `tools[]` entry: the flat custom tool (today's wire shape, byte-identical)
+/// or a dated server-tool member (GA union L1442–3044 + BETA mcp_toolset).
+/// Untagged: the Custom variant serializes exactly as the pre-cut flat struct;
+/// the Server variant carries its `type` tag (MSGW F1, apex-ayl.115).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolParam {
+#[serde(untagged)]
+pub enum ToolParam {
+    Custom(ToolCustom),
+    Server(ToolServer),
+}
+
+/// The pre-cut flat custom tool, renamed (fields unchanged, incl. F5's tail
+/// `cache_control`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCustom {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -473,6 +499,622 @@ pub struct ToolParam {
     /// opts in via `tools_cache_breakpoint = "last"` (§3.5) — spends the free 4th marker slot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<CacheControl>,
+}
+
+/// Dated server-tool members (docs GA create.md L1442–3044 + BETA
+/// mcp_toolset). Internally tagged on `type`; 18 of the 21 members carry the
+/// fixed docs `name` literal; the 3 nameless (browser/computer toolset,
+/// mcp_toolset) have NO `name` field (FIX-PASS 1 R1). Field transcription
+/// from the pinned `948d49c` docs snapshot (SDD §2.1/§3.1): every
+/// docs-listed non-required field is `Option<…>` + skip-when-None;
+/// Value-passthrough fields (`input_examples`/`citations`/`url_sources`/
+/// `configs`) stay `serde_json::Value` until the future-knob lane types them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ToolServer {
+    #[serde(rename = "bash_20250124")]
+    Bash20250124 {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_callers: Option<Vec<AllowedCaller>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        defer_loading: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_examples: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+    },
+    #[serde(rename = "code_execution_20250522")]
+    CodeExecution20250522 {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_callers: Option<Vec<AllowedCaller>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        defer_loading: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+    },
+    #[serde(rename = "code_execution_20250825")]
+    CodeExecution20250825 {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_callers: Option<Vec<AllowedCaller>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        defer_loading: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+    },
+    #[serde(rename = "code_execution_20260120")]
+    CodeExecution20260120 {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_callers: Option<Vec<AllowedCaller>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        defer_loading: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+    },
+    #[serde(rename = "code_execution_20260521")]
+    CodeExecution20260521 {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_callers: Option<Vec<AllowedCaller>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        defer_loading: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+    },
+    /// Nameless member (docs GA :1673): type/cache_control/configs only.
+    #[serde(rename = "browser_toolset_20260801")]
+    BrowserToolset20260801 {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        configs: Option<serde_json::Value>,
+    },
+    #[serde(rename = "memory_20250818")]
+    Memory20250818 {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_callers: Option<Vec<AllowedCaller>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        defer_loading: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_examples: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+    },
+    /// Nameless member (docs GA :2105): type/cache_control/configs only.
+    #[serde(rename = "computer_toolset_20260801")]
+    ComputerToolset20260801 {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        configs: Option<serde_json::Value>,
+    },
+    #[serde(rename = "text_editor_20250124")]
+    TextEditor20250124 {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_callers: Option<Vec<AllowedCaller>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        defer_loading: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_examples: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+    },
+    #[serde(rename = "text_editor_20250429")]
+    TextEditor20250429 {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_callers: Option<Vec<AllowedCaller>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        defer_loading: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_examples: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+    },
+    #[serde(rename = "text_editor_20250728")]
+    TextEditor20250728 {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_callers: Option<Vec<AllowedCaller>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        defer_loading: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_examples: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_characters: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+    },
+    #[serde(rename = "web_search_20250305")]
+    WebSearch20250305 {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_callers: Option<Vec<AllowedCaller>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_domains: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blocked_domains: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        defer_loading: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_uses: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_location: Option<UserLocation>,
+    },
+    #[serde(rename = "web_fetch_20250910")]
+    WebFetch20250910 {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_callers: Option<Vec<AllowedCaller>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_domains: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blocked_domains: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        citations: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        defer_loading: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_content_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_uses: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url_sources: Option<serde_json::Value>,
+    },
+    #[serde(rename = "web_search_20260209")]
+    WebSearch20260209 {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_callers: Option<Vec<AllowedCaller>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_domains: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blocked_domains: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        defer_loading: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_uses: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_location: Option<UserLocation>,
+    },
+    #[serde(rename = "web_fetch_20260209")]
+    WebFetch20260209 {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_callers: Option<Vec<AllowedCaller>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_domains: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blocked_domains: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        citations: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        defer_loading: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_content_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_uses: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url_sources: Option<serde_json::Value>,
+    },
+    #[serde(rename = "web_fetch_20260309")]
+    WebFetch20260309 {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_callers: Option<Vec<AllowedCaller>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_domains: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blocked_domains: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        citations: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        defer_loading: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_content_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_uses: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url_sources: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        use_cache: Option<bool>,
+    },
+    #[serde(rename = "web_search_20260318")]
+    WebSearch20260318 {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_callers: Option<Vec<AllowedCaller>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_domains: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blocked_domains: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        defer_loading: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_uses: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_inclusion: Option<SearchResponseInclusion>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_location: Option<UserLocation>,
+    },
+    #[serde(rename = "web_fetch_20260318")]
+    WebFetch20260318 {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_callers: Option<Vec<AllowedCaller>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_domains: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blocked_domains: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        citations: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        defer_loading: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_content_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_uses: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_inclusion: Option<SearchResponseInclusion>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url_sources: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        use_cache: Option<bool>,
+    },
+    #[serde(rename = "tool_search_tool_bm25_20251119")]
+    ToolSearchToolBm2520251119 {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_callers: Option<Vec<AllowedCaller>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        defer_loading: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+    },
+    #[serde(rename = "tool_search_tool_regex_20251119")]
+    ToolSearchToolRegex20251119 {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allowed_callers: Option<Vec<AllowedCaller>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        defer_loading: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+    },
+    /// BETA member (docs BETA :4014) — nameless: `mcp_server_name` (required,
+    /// producer-filled from the row's `mcp_toolset_server`; the config layer
+    /// hard-refuses a bare selection) instead of a `name` literal.
+    #[serde(rename = "mcp_toolset")]
+    McpToolset {
+        mcp_server_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        configs: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        default_config: Option<serde_json::Value>,
+    },
+}
+
+/// Caller of a server tool (docs shared shape): `direct` or a dated
+/// code-execution type string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AllowedCaller {
+    Direct,
+    #[serde(rename = "code_execution_20250825")]
+    CodeExecution20250825,
+    #[serde(rename = "code_execution_20260120")]
+    CodeExecution20260120,
+    #[serde(rename = "code_execution_20260521")]
+    CodeExecution20260521,
+}
+
+/// The user's approximate location (web_search `user_location`; docs: the
+/// `type` member is the fixed literal `"approximate"`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserLocation {
+    pub r#type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+}
+
+/// Whether the search results are included in the response
+/// (web_search_20260318+ `response_inclusion`; docs: `full` | `excluded`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchResponseInclusion {
+    Full,
+    Excluded,
+}
+
+/// BETA `mcp_servers[]` wire entry (BETA create.md L1901+; docs: maxItems 20).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerParam {
+    #[serde(rename = "type")]
+    pub r#type: String,
+    pub name: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_configuration: Option<serde_json::Value>,
+}
+
+/// A config-declared MCP server (pre-wire form; the producer maps it to
+/// [`McpServerParam`] with `r#type: "url"`). `JsonSchema`: the shell row
+/// surface (`ConfigModelOverride`, `ModelsConfig`) carries this type and
+/// derives `JsonSchema` for the committed config schema artifact.
+/// `PartialEq`: the shell 47b resolver replays the row value through
+/// `debug_assert_eq!` (compile-forced, MSGW F1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct McpServerDecl {
+    pub name: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_configuration: Option<serde_json::Value>,
+}
+
+/// Total string→variant map over the 21 known type strings (the config
+/// layer validates against the same whitelist). Default member forms:
+/// `{type, name}` for the 18 named members; `{type}` only for the 2
+/// nameless GA toolsets (mcp_toolset carries the empty producer-filled
+/// `mcp_server_name` placeholder — the config layer hard-refuses a bare
+/// selection upstream, so the placeholder never reaches the wire).
+pub fn server_tool_from_type(t: &str) -> Option<ToolServer> {
+    use ToolServer::*;
+    Some(match t {
+        "bash_20250124" => Bash20250124 {
+            name: "bash".to_owned(),
+            allowed_callers: None,
+            cache_control: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+        },
+        "code_execution_20250522" => CodeExecution20250522 {
+            name: "code_execution".to_owned(),
+            allowed_callers: None,
+            cache_control: None,
+            defer_loading: None,
+            strict: None,
+        },
+        "code_execution_20250825" => CodeExecution20250825 {
+            name: "code_execution".to_owned(),
+            allowed_callers: None,
+            cache_control: None,
+            defer_loading: None,
+            strict: None,
+        },
+        "code_execution_20260120" => CodeExecution20260120 {
+            name: "code_execution".to_owned(),
+            allowed_callers: None,
+            cache_control: None,
+            defer_loading: None,
+            strict: None,
+        },
+        "code_execution_20260521" => CodeExecution20260521 {
+            name: "code_execution".to_owned(),
+            allowed_callers: None,
+            cache_control: None,
+            defer_loading: None,
+            strict: None,
+        },
+        "browser_toolset_20260801" => BrowserToolset20260801 {
+            cache_control: None,
+            configs: None,
+        },
+        "memory_20250818" => Memory20250818 {
+            name: "memory".to_owned(),
+            allowed_callers: None,
+            cache_control: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+        },
+        "computer_toolset_20260801" => ComputerToolset20260801 {
+            cache_control: None,
+            configs: None,
+        },
+        "text_editor_20250124" => TextEditor20250124 {
+            name: "str_replace_editor".to_owned(),
+            allowed_callers: None,
+            cache_control: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+        },
+        "text_editor_20250429" => TextEditor20250429 {
+            name: "str_replace_based_edit_tool".to_owned(),
+            allowed_callers: None,
+            cache_control: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: None,
+        },
+        "text_editor_20250728" => TextEditor20250728 {
+            name: "str_replace_based_edit_tool".to_owned(),
+            allowed_callers: None,
+            cache_control: None,
+            defer_loading: None,
+            input_examples: None,
+            max_characters: None,
+            strict: None,
+        },
+        "web_search_20250305" => WebSearch20250305 {
+            name: "web_search".to_owned(),
+            allowed_callers: None,
+            allowed_domains: None,
+            blocked_domains: None,
+            cache_control: None,
+            defer_loading: None,
+            max_uses: None,
+            strict: None,
+            user_location: None,
+        },
+        "web_fetch_20250910" => WebFetch20250910 {
+            name: "web_fetch".to_owned(),
+            allowed_callers: None,
+            allowed_domains: None,
+            blocked_domains: None,
+            cache_control: None,
+            citations: None,
+            defer_loading: None,
+            max_content_tokens: None,
+            max_uses: None,
+            strict: None,
+            url_sources: None,
+        },
+        "web_search_20260209" => WebSearch20260209 {
+            name: "web_search".to_owned(),
+            allowed_callers: None,
+            allowed_domains: None,
+            blocked_domains: None,
+            cache_control: None,
+            defer_loading: None,
+            max_uses: None,
+            strict: None,
+            user_location: None,
+        },
+        "web_fetch_20260209" => WebFetch20260209 {
+            name: "web_fetch".to_owned(),
+            allowed_callers: None,
+            allowed_domains: None,
+            blocked_domains: None,
+            cache_control: None,
+            citations: None,
+            defer_loading: None,
+            max_content_tokens: None,
+            max_uses: None,
+            strict: None,
+            url_sources: None,
+        },
+        "web_fetch_20260309" => WebFetch20260309 {
+            name: "web_fetch".to_owned(),
+            allowed_callers: None,
+            allowed_domains: None,
+            blocked_domains: None,
+            cache_control: None,
+            citations: None,
+            defer_loading: None,
+            max_content_tokens: None,
+            max_uses: None,
+            strict: None,
+            url_sources: None,
+            use_cache: None,
+        },
+        "web_search_20260318" => WebSearch20260318 {
+            name: "web_search".to_owned(),
+            allowed_callers: None,
+            allowed_domains: None,
+            blocked_domains: None,
+            cache_control: None,
+            defer_loading: None,
+            max_uses: None,
+            response_inclusion: None,
+            strict: None,
+            user_location: None,
+        },
+        "web_fetch_20260318" => WebFetch20260318 {
+            name: "web_fetch".to_owned(),
+            allowed_callers: None,
+            allowed_domains: None,
+            blocked_domains: None,
+            cache_control: None,
+            citations: None,
+            defer_loading: None,
+            max_content_tokens: None,
+            max_uses: None,
+            response_inclusion: None,
+            strict: None,
+            url_sources: None,
+            use_cache: None,
+        },
+        "tool_search_tool_bm25_20251119" => ToolSearchToolBm2520251119 {
+            name: "tool_search_tool_bm25".to_owned(),
+            allowed_callers: None,
+            cache_control: None,
+            defer_loading: None,
+            strict: None,
+        },
+        "tool_search_tool_regex_20251119" => ToolSearchToolRegex20251119 {
+            name: "tool_search_tool_regex".to_owned(),
+            allowed_callers: None,
+            cache_control: None,
+            defer_loading: None,
+            strict: None,
+        },
+        "mcp_toolset" => McpToolset {
+            mcp_server_name: String::new(),
+            cache_control: None,
+            configs: None,
+            default_config: None,
+        },
+        _ => return None,
+    })
 }
 
 /// Tool choice (Anthropic Messages API format, GA create.md L1328–1376).
