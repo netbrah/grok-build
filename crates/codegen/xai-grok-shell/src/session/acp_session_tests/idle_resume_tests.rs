@@ -121,6 +121,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                     ultra_wire_effort: None,
                     stream_tool_calls: None,
                     cache_ttl: None,
+                    thinking_replay: None,
                     top_k: None,
                     stop_sequences: None,
                     disable_parallel_tool_use: None,

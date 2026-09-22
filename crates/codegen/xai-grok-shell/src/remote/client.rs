@@ -941,6 +941,9 @@ pub(crate) fn parse_remote_model_value(
         // Remote catalog rows carry no cache tier; operators set it in
         // config.toml ([model.<id>] / [models] cache_ttl).
         cache_ttl: None,
+        // Remote catalog rows carry no thinking-replay tier; operators set
+        // it in config.toml ([model.<id>] / [models] thinking_replay).
+        thinking_replay: None,
         top_k: None,
         stop_sequences: None,
         disable_parallel_tool_use: None,

@@ -202,6 +202,7 @@ fn test_config(base_url: &str) -> SamplerConfig {
         doom_loop_recovery: None,
         header_injector: None,
         cache_ttl: None,
+        thinking_replay: None,
         top_k: None,
         stop_sequences: None,
         disable_parallel_tool_use: None,

@@ -1149,6 +1149,11 @@ pub struct SamplingConfig {
     /// `None` = the wire default 5m (no ttl field).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_ttl: Option<String>,
+    /// Messages-wire older-assistant thinking replay policy
+    /// (apex-ayl.108.1); `None` = all-older cap-aware verbatim replay,
+    /// `"off"` = the legacy one-request strip (xli S-031 parity).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_replay: Option<String>,
 }
 
 // ============ Responses API wrapper ============

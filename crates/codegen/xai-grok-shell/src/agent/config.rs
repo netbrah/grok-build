@@ -1065,6 +1065,11 @@ pub struct ModelsConfig {
     /// "1h"); per-model `[model.<id>]` values win. `None` = unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_ttl: Option<String>,
+    /// Global older-assistant thinking replay policy
+    /// (MSGW-THINKREPLAY-1, apex-ayl.108.1); per-model `[model.<id>]`
+    /// values win. `None` = unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_replay: Option<String>,
     /// Global top-k sampling (docs GA L3060); per-model `[model.<id>]`
     /// values win. `None` = unset (absent on the wire).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3837,6 +3842,9 @@ fn apply_global_scalar_defaults(
         if let Some(v) = models.cache_ttl.clone() {
             info.cache_ttl.get_or_insert(v);
         }
+        if let Some(v) = models.thinking_replay.clone() {
+            info.thinking_replay.get_or_insert(v);
+        }
         if let Some(v) = models.top_k {
             info.top_k.get_or_insert(v);
         }
@@ -3924,6 +3932,7 @@ pub(crate) struct ModelAuthorityView {
     pub max_completion_tokens: FieldAuthority<Option<u32>>,
     pub reasoning_efforts: FieldAuthority<Vec<ReasoningEffortOption>>,
     pub cache_ttl: FieldAuthority<Option<String>>,
+    pub thinking_replay: FieldAuthority<Option<String>>,
     pub top_k: FieldAuthority<Option<u32>>,
     pub stop_sequences: FieldAuthority<Option<String>>,
     pub disable_parallel_tool_use: FieldAuthority<Option<bool>>,
@@ -4342,6 +4351,42 @@ fn model_authority_view(
         "cache_ttl replay diverged from the resolver for {key:?}"
     );
 
+    // ---- thinking_replay: MSGW-THINKREPLAY-1 (apex-ayl.108.1) — explicit
+    // row field -> [model.<key>] -> [models] global (config-file
+    // authority); no seam touches this field (the `cache_ttl` chain
+    // verbatim). The bundled leg reads the shell ModelInfo (the models
+    // crate is off-scope — the bundled constructor sets it to None).
+    let mut thinking_replay = bundled_entry
+        .map(|b| b.info.thinking_replay.clone())
+        .unwrap_or_default();
+    let mut thinking_replay_source = if !is_prefetched
+        && bundled_entry.is_some_and(|b| b.info.thinking_replay.is_some())
+    {
+        FieldSource::BundledRow
+    } else {
+        FieldSource::BuiltIn
+    };
+    if let Some(row) = row {
+        thinking_replay = row.info.thinking_replay.clone();
+        if row.info.thinking_replay.is_some() {
+            thinking_replay_source = FieldSource::ProxyRow;
+        }
+    }
+    if let Some(tr) = override_cfg.and_then(|ov| ov.thinking_replay.as_ref()) {
+        thinking_replay = Some(tr.clone());
+        thinking_replay_source = FieldSource::Config;
+    } else if thinking_replay.is_none()
+        && let Some(tr) = &cfg.models.thinking_replay
+    {
+        thinking_replay = Some(tr.clone());
+        thinking_replay_source = FieldSource::Config;
+    }
+    debug_assert_eq!(
+        thinking_replay,
+        info.thinking_replay,
+        "thinking_replay replay diverged from the resolver for {key:?}"
+    );
+
     // ---- top_k / stop_sequences: MGW F2 (apex-ayl.113) — explicit row
     // field -> [model.<key>] -> [models] global (config-file authority);
     // no seam touches these fields (the `cache_ttl` chain verbatim).
@@ -4630,6 +4675,10 @@ fn model_authority_view(
             value: cache_ttl,
             source: cache_ttl_source,
         },
+        thinking_replay: FieldAuthority {
+            value: thinking_replay,
+            source: thinking_replay_source,
+        },
         top_k: FieldAuthority {
             value: top_k,
             source: top_k_source,
@@ -4797,6 +4846,10 @@ pub(crate) fn entry_config_from_default_row(
         stream_tool_calls: None,
         laziness_detector: LazinessDetectorPerModelConfig::default(),
         cache_ttl: row.cache_ttl.clone(),
+        // MSGW-THINKREPLAY-1 (apex-ayl.108.1): same ruling for the
+        // thinking_replay row key (xai-grok-models is off-scope; the
+        // operator surface is config.toml).
+        thinking_replay: None,
         // MGW F2 (apex-ayl.113): the bundled catalog rows carry no top_k /
         // stop_sequences keys (xai-grok-models is off-scope; the operator
         // surface is config.toml).
@@ -4988,6 +5041,12 @@ pub struct ModelEntryConfig {
     /// in `sampling_config_for_model` and map to the 5m default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_ttl: Option<String>,
+    /// Older-assistant thinking replay policy (MSGW-THINKREPLAY-1,
+    /// apex-ayl.108.1); `None` = all-older cap-aware verbatim replay.
+    /// Unknown values are refused (warned) in `sampling_config_for_model`
+    /// and map to the default (replay ON).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_replay: Option<String>,
     /// Top-k sampling (docs GA L3060); `None` = absent on the wire.
     /// Mutually exclusive with `thinking` locally (Gate 4/5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5101,6 +5160,9 @@ pub struct ConfigModelOverride {
     /// Absent = inherit (donor/prefetched, else `[models]` global, else
     /// the wire default 5m).
     pub cache_ttl: Option<String>,
+    /// Older-assistant thinking replay policy (apex-ayl.108.1).
+    /// Absent = inherit.
+    pub thinking_replay: Option<String>,
     /// Top-k sampling (docs GA L3060). Absent = inherit.
     pub top_k: Option<u32>,
     /// Custom stop strings (docs GA L1246), comma-separated. Absent = inherit.
@@ -5270,6 +5332,9 @@ impl ConfigModelOverride {
         if self.cache_ttl.is_some() {
             entry.info.cache_ttl = self.cache_ttl.clone();
         }
+        if self.thinking_replay.is_some() {
+            entry.info.thinking_replay = self.thinking_replay.clone();
+        }
         if self.top_k.is_some() {
             entry.info.top_k = self.top_k;
         }
@@ -5422,6 +5487,11 @@ pub struct ModelInfo {
     /// `None` = the wire default 5m.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_ttl: Option<String>,
+    /// Older-assistant thinking replay policy (MSGW-THINKREPLAY-1,
+    /// apex-ayl.108.1); `None` = all-older cap-aware verbatim replay,
+    /// `"off"` = the legacy one-request strip (xli S-031 parity).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_replay: Option<String>,
     /// Top-k sampling (docs GA L3060); `None` = absent on the wire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_k: Option<u32>,
@@ -5500,6 +5570,7 @@ impl ModelInfo {
             stream_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
             cache_ttl: None,
+            thinking_replay: None,
             top_k: None,
             stop_sequences: None,
             disable_parallel_tool_use: None,
@@ -5553,6 +5624,7 @@ impl ModelInfo {
             stream_tool_calls: entry.stream_tool_calls,
             laziness_detector: entry.laziness_detector.clone(),
             cache_ttl: entry.cache_ttl.clone(),
+            thinking_replay: entry.thinking_replay.clone(),
             top_k: entry.top_k,
             stop_sequences: entry.stop_sequences.clone(),
             disable_parallel_tool_use: entry.disable_parallel_tool_use,
@@ -6326,6 +6398,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 stream_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
             cache_ttl: None,
+            thinking_replay: None,
             top_k: None,
             stop_sequences: None,
             disable_parallel_tool_use: None,
@@ -6569,6 +6642,22 @@ pub(crate) fn sampling_config_for_model(
         }
         None => None,
     };
+    // MSGW-THINKREPLAY-1 (apex-ayl.108.1): the closed value set
+    // {None, "off"}; any other value is a config typo — refuse it (warn)
+    // and fall back to the default (None = replay ON). NOT a parse error;
+    // precedent = the cache_ttl match above.
+    let thinking_replay = match info.thinking_replay.as_deref() {
+        Some("off") => info.thinking_replay.clone(),
+        Some(other) => {
+            tracing::warn!(
+                model = %model_name,
+                thinking_replay = other,
+                "unrecognized thinking_replay (expected \"off\"); using the default (replay ON)"
+            );
+            None
+        }
+        None => None,
+    };
     // MGW F2 (apex-ayl.113): the `stop_sequences` row key is a
     // comma-separated string (scalar-safe for config_patch); split + trim +
     // drop-empty → Vec<String>; empty/whitespace-only → None (absent on the
@@ -6646,6 +6735,7 @@ pub(crate) fn sampling_config_for_model(
         top_k: info.top_k,
         api_backend,
         cache_ttl,
+        thinking_replay,
         stop_sequences,
         disable_parallel_tool_use: info.disable_parallel_tool_use,
         tool_cache_breakpoint,
@@ -6756,6 +6846,7 @@ fn resolve_hidden_default_web_search_sampling_config(
             stream_tool_calls: None,
             laziness_detector: LazinessDetectorPerModelConfig::default(),
             cache_ttl: None,
+            thinking_replay: None,
             top_k: None,
             stop_sequences: None,
             disable_parallel_tool_use: None,

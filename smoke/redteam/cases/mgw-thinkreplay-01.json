@@ -1,0 +1,211 @@
+{
+ "schema_version": 1,
+ "id": "MGW-THINKREPLAY-01",
+ "title": "apex-ayl.108.1 GREEN ratchet (msgw-caching-receipts F2 \u2014 the dominant claude-side cache invalidator) \u2014 extend verbatim replay of older signed thinking: strip_thinking_blocks (ST/conversation/messages.rs:266; xli S-031 = codex-rs first-party parity, CONSCIOUS DEVIATION per the apex-ayl.108 decision, ledger:2814) retains an assistant turn's signed thinking exactly ONE request, then drops it, so every post-strip turn re-reads only up to the last pre-reasoning prefix (receipts: corpus claude turns serve only 43.2% of input as cache reads despite 73-98% per-turn steady state). Three headless claude-sonnet-5 turns, each thinking-forcing (modular exponentiation; models/default_reasoning_effort=max per the O7 M-1 lesson \u2014 adaptive on by default for sonnet-5). Fixed layout: t1 main = [u1]; t2 main = [u1, a1, u2]; t3 main = [u1, a1, u2, a2, u3] \u2014 a1 is assistant-at-messages[1] in BOTH the t2 and t3 main requests. The title side call (max_tokens=100, first-hand Run A) is excluded from the main-call pins by the max_tokens=128000 filter (every main call is 128000, first-hand). CONTROL pins (class model): in the t2 MAIN request (nth=1 of the role-filtered set, count-bounded 2), messages[1].content[0].type == 'thinking' AND signature ne '' \u2014 proves t1 reasoned AND the one-request retention replays it as latest (a miss = t1 did not reason = VACUOUS, never a false red; an absent path FAILs, run.py:2192-2195). RED PINS (the .108.1 verdict): in the t3 MAIN request (nth=0 of the role-filtered set), messages[1].content[0].type == 'thinking' AND signature ne '' \u2014 t1's thinking, now at an OLDER (non-latest) position, SURVIVES VERBATIM (text + signature byte-identical to the t2 capture \u2014 the mint, gate step M1). Pre-cut FAILs: a1's thinking is stripped by the t3 request (content[0] = 'text'). GREEN when the extended replay (thinking_replay row key, default on) lands. The API permits replaying earlier thinking verbatim (text+signature pairs are immutable) \u2014 the GREEN state is API-legal. SIDE EFFECT: this GREEN also clears the .112 RED ratchet mgw-cache-stripread (MGW-STRIPREAD-01's red pin is a strict subset of red1 \u2014 same where/nth/path/eq) \u2014 zero re-pin owed to .112. The resp200x3 pins (max_tokens=128000 filter, count-bounded 3) prove the API ACCEPTS the replayed shape (HTTP 200 on all three main calls) \u2014 the GREEN-case evidence for the SDD 3.1 state assumption. Recon pins are non-scoring: the mint signature source + the per-call cache_read_input_tokens witness feed (SDD 4.3 targets).",
+ "bead": "apex-ayl.108.1",
+ "suite": "wire-shape",
+ "tier": "slim",
+ "driver": "headless",
+ "model": "claude-sonnet-5",
+ "wirecap": true,
+ "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+ "config_patch": {
+  "models/default_reasoning_effort": "max",
+  "compat.claude/mcps": false
+ },
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Find the remainder when 7^8432 is divided by 5557. This is a self-contained exercise: do NOT use any tools, commands, file, or web access of any kind - answer entirely in text. Before answering, reason step by step about the mathematics (modular exponentiation), showing each reduction. End your reply with exactly: MGW-TR-1-OK",
+   "timeout_s": 600
+  },
+  {
+   "op": "turn",
+   "prompt": "Find the remainder when 11^12345 is divided by 9973. This is a self-contained exercise: do NOT use any tools, commands, file, or web access of any kind - answer entirely in text. Before answering, reason step by step about the mathematics (modular exponentiation), showing each reduction. End your reply with exactly: MGW-TR-2-OK",
+   "timeout_s": 600
+  },
+  {
+   "op": "turn",
+   "prompt": "Find the remainder when 13^67890 is divided by 4441. This is a self-contained exercise: do NOT use any tools, commands, file, or web access of any kind - answer entirely in text. Before answering, reason step by step about the mathematics (modular exponentiation), showing each reduction. End your reply with exactly: MGW-TR-3-OK",
+   "timeout_s": 600
+  }
+ ],
+ "watchdog_s": 900,
+ "est_calls": 6,
+ "assert": {
+  "exit": 0,
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "error",
+    "label": "NO TERMINAL ERROR: all three turns completed (the red is the retention policy, not the turns)."
+   }
+  ],
+  "wire": [
+   {
+    "kind": "count",
+    "id": "mgw_tr_main2",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages",
+     "body.messages[1].role": "assistant"
+    },
+    "min": 2,
+    "max": 2,
+    "label": "COUNT BOUND (B-i lesson): exactly two main requests carry an assistant at messages[1] (t2 main + t3 main; t1 main has no messages[1]; title/side calls excluded by the role filter \u2014 live-verified same shape in MGW-STRIPREAD-01, report-mgw-red-112-full). Bounds the nth selections below."
+   },
+   {
+    "kind": "field",
+    "id": "mgw_tr_ctl_type",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages",
+     "body.messages[1].role": "assistant"
+    },
+    "nth": 1,
+    "path": "body.messages[1].content[0].type",
+    "eq": "thinking",
+    "label": "CONTROL (class model): the t2 MAIN request (2nd-newest of the role-filtered set) replays t1's thinking as messages[1].content[0] \u2014 proves t1 reasoned. FAIL = t1 did not reason = VACUOUS, never a false red."
+   },
+   {
+    "kind": "field",
+    "id": "mgw_tr_ctl_sig",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages",
+     "body.messages[1].role": "assistant"
+    },
+    "nth": 1,
+    "path": "body.messages[1].content[0].signature",
+    "ne": "",
+    "label": "CONTROL (class model): the t1 thinking block replayed in the t2 main request is SIGNED (signature present and non-empty). An ABSENT path FAILs (run.py:2192-2195), so null is covered by the same pin."
+   },
+   {
+    "kind": "field",
+    "id": "mgw_tr_red1",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages",
+     "body.messages[1].role": "assistant"
+    },
+    "nth": 0,
+    "path": "body.messages[1].content[0].type",
+    "eq": "thinking",
+    "label": "RED PIN 1 (receipts F2, apex-ayl.108): t1's thinking \u2014 now at an OLDER (non-latest) position in the t3 MAIN request (newest of the role-filtered set) \u2014 SURVIVES VERBATIM. Pre-cut FAILs: strip_thinking_blocks drops all non-latest thinking by t3, so content[0] is 'text'. Also clears .112 mgw-cache-stripread (subset pin)."
+   },
+   {
+    "kind": "field",
+    "id": "mgw_tr_red2",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages",
+     "body.messages[1].role": "assistant"
+    },
+    "nth": 0,
+    "path": "body.messages[1].content[0].signature",
+    "ne": "",
+    "label": "RED PIN 2 (the verbatim PAIR, not just the text): the replayed older thinking block carries its signature non-empty (an ABSENT path FAILs \u2014 null covered). The byte-identity of the signature against the t2 capture is the GATE MINT check (SDD 5, step M1) \u2014 NOT hardcoded in this file (no model output in case files)."
+   },
+   {
+    "kind": "count",
+    "id": "mgw_tr_main3",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages",
+     "body.max_tokens": 128000
+    },
+    "min": 3,
+    "max": 3,
+    "label": "COUNT BOUND: exactly three MAIN calls (max_tokens=128000 \u2014 first-hand Run A: every main call 128000, the title call 100; re-pin if the row's max_output_tokens ever changes). Bounds the resp200 nth selections."
+   },
+   {
+    "kind": "resp_status",
+    "id": "mgw_tr_resp1",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages",
+     "body.max_tokens": 128000
+    },
+    "nth": 2,
+    "status_in": [
+     200
+    ],
+    "label": "API ACCEPTANCE (t1 main call, oldest main): HTTP 200."
+   },
+   {
+    "kind": "resp_status",
+    "id": "mgw_tr_resp2",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages",
+     "body.max_tokens": 128000
+    },
+    "nth": 1,
+    "status_in": [
+     200
+    ],
+    "label": "API ACCEPTANCE (t2 main call, oldest replayed pair already riding as LATEST \u2014 today's shape): HTTP 200."
+   },
+   {
+    "kind": "resp_status",
+    "id": "mgw_tr_resp3",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/messages",
+     "body.max_tokens": 128000
+    },
+    "nth": 0,
+    "status_in": [
+     200
+    ],
+    "label": "API ACCEPTANCE (t3 main call, OLDER replayed pair riding \u2014 the state assumption of SDD 3.1): HTTP 200. A non-200 here = the API rejects older verbatim replay = STOP-and-report (SDD 6) with the verbatim error JSON (resp_status records it)."
+   },
+   {
+    "kind": "recon",
+    "id": "mgw_tr_recon_sig",
+    "file": "req-*.json",
+    "grep": "\"signature\": ",
+    "label": "VERDICT RECORD (non-scoring; recon ignores the where filter \u2014 regex over ALL matched files, run.py:2123-2125/2742): every request carrying a thinking signature, with a match summary (<=400 chars) = the MINT source (the t2 capture's messages[1].content[0].signature is extracted from this record + the raw capture at gate step M1)."
+   },
+   {
+    "kind": "recon",
+    "id": "mgw_tr_recon_shape",
+    "file": "req-*.json",
+    "grep": "\"type\": \"thinking\"",
+    "label": "VERDICT RECORD (non-scoring): the thinking-block occurrences per captured request \u2014 the t3 capture must show BOTH the older (messages[1]) and the latest (messages[3]) thinking blocks post-cut; pre-cut it shows only the latest. Evidence for the 3.1 ordering claim (no reordering)."
+   },
+   {
+    "kind": "recon",
+    "id": "mgw_tr_recon_cached",
+    "file": "resp-*.jsonl",
+    "regex": true,
+    "grep": "\"cache_read_input_tokens\": [0-9]+",
+    "label": "VERDICT RECORD (non-scoring): the per-call cache_read_input_tokens values (the usage events in the resp captures carry them) = the SDD 4.3 witness feed (post-cut read extension at the t3-class call)."
+   }
+  ]
+ },
+ "scoring": {
+  "vacuous_if": [
+   {
+    "pin": "mgw_tr_ctl_type",
+    "class": "model"
+   },
+   {
+    "pin": "mgw_tr_ctl_sig",
+    "class": "model"
+   }
+  ]
+ },
+ "expected_red": {
+  "id": "mgw-f2-thinking-replay"
+ }
+}

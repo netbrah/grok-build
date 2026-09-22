@@ -94,6 +94,7 @@ impl ChatStateActor {
             temperature: self.state.sampling_config.temperature,
             max_output_tokens: self.state.sampling_config.max_completion_tokens,
             cache_ttl: self.state.sampling_config.cache_ttl.clone(),
+            thinking_replay: self.state.sampling_config.thinking_replay.clone(),
             top_p: self.state.sampling_config.top_p,
             // MGW F2 (apex-ayl.113): row-resolved sampling knobs thread onto
             // the wire; user_id is the process-global OS-user hash (FIX-PASS 4).

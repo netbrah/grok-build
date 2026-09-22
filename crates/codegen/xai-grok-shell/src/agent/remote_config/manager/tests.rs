@@ -2516,6 +2516,7 @@ fn make_entry_config_with_id(
         stream_tool_calls: None,
         laziness_detector: config::LazinessDetectorPerModelConfig::default(),
         cache_ttl: None,
+        thinking_replay: None,
         top_k: None,
         stop_sequences: None,
         disable_parallel_tool_use: None,

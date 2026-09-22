@@ -3805,6 +3805,7 @@ mod tests {
             compactions_remaining: None,
             compaction_at_tokens: None,
             cache_ttl: None,
+            thinking_replay: None,
             top_k: None,
             stop_sequences: None,
             disable_parallel_tool_use: None,

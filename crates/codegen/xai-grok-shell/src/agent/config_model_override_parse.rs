@@ -716,6 +716,7 @@ mod tests {
             show_model_fingerprint: Some(true),
             stream_tool_calls: Some(false),
             cache_ttl: Some("1h".into()),
+            thinking_replay: None,
             top_k: None,
             stop_sequences: None,
             disable_parallel_tool_use: None,

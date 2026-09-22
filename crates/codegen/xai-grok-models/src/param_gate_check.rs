@@ -49,6 +49,10 @@ pub const SCHEMA_ONLY_ALLOWED: &[&str] = &[
     "stop_sequences",
     "stream_tool_calls",
     "temperature",
+    // Messages-wire replay policy (MSGW-THINKREPLAY-1, apex-ayl.108.1) — per-user
+    // closed-set knob {None, "off"}; no baked per-model default (SDD D2: no
+    // model-specific behavior in the harness; the row key resolves in config).
+    "thinking_replay",
     "tools_cache_breakpoint",
     "top_k",
     "top_p",

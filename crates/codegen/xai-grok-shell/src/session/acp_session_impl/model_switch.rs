@@ -83,6 +83,7 @@ impl SessionActor {
                 ultra_wire_effort: sampling_config.ultra_wire_effort,
                 stream_tool_calls: Some(sampling_config.stream_tool_calls),
                 cache_ttl: sampling_config.cache_ttl.clone(),
+                thinking_replay: sampling_config.thinking_replay.clone(),
                 top_k: sampling_config.top_k,
                 stop_sequences: sampling_config.stop_sequences.clone(),
                 disable_parallel_tool_use: sampling_config.disable_parallel_tool_use,

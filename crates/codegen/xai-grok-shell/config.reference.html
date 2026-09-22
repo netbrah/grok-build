@@ -45,13 +45,13 @@ footer { max-width:1200px; margin:0 auto; padding:12px 32px 32px; color:var(--mu
 <header>
 <h1>config.toml reference</h1>
 <p class="sub">xai-grok-shell · agent <code>Config</code> surface + <code>[model.&lt;id&gt;]</code> override rows · JSON Schema draft-07, rendered from the live types</p>
-<p class="ver">content hash <code>fnv1a-64 628978039e598f62</code> · 49 root properties · 47 model-row fields · 12 enum definitions · 30 endpoint fields · 103 definitions</p>
+<p class="ver">content hash <code>fnv1a-64 136ed16616b3de35</code> · 49 root properties · 48 model-row fields · 12 enum definitions · 30 endpoint fields · 103 definitions</p>
 <p class="regen">regenerate: <code>cargo run -p xai-grok-shell --bin config-schema-write -- --html</code></p>
 <p class="prov">provenance: bead <code>apex-33z</code> CONFIG-REFERENCE-HTML-1 · donor pattern: codex config-schema golden via apex-hw0 (<code>config_schema.rs</code>)</p>
 </header>
 <nav class="toc">
 <a href="#root">root (49)</a>
-<a href="#model">model rows (47)</a>
+<a href="#model">model rows (48)</a>
 <a href="#enums">enums (12)</a>
 <a href="#endpoints">endpoints (30)</a>
 <a href="#defs">definitions</a>
@@ -110,7 +110,7 @@ footer { max-width:1200px; margin:0 auto; padding:12px 32px 32px; color:var(--mu
 <tr class="f" data-name="worktree"><th><code><a class="ref" href="#def-WorktreeConfigSection">worktree</a></code></th><td><span class="opt">optional</span></td><td class="type"><a class="ref" href="#def-WorktreeConfigSection">WorktreeConfigSection</a></td><td class="desc">`[worktree]` section (currently `[worktree.auto_gc]` only).</td></tr>
 <tr class="f" data-name="worktree_pool"><th><code><a class="ref" href="#def-WorktreePoolConfig">worktree_pool</a></code></th><td><span class="opt">optional</span></td><td class="type"><a class="ref" href="#def-WorktreePoolConfig">WorktreePoolConfig</a></td><td class="desc">Deprecated `[worktree_pool]` section. The pre-warmed worktree pool was deleted (never wired into production).<br>The section is still parsed so existing user configs don't trip unknown-key warnings.</td></tr>
 </tbody></table></section>
-<section id="model"><h2><code>[model.&lt;id&gt;]</code> override rows — <a class="ref" href="#def-ConfigModelOverride">ConfigModelOverride</a> (47 fields)</h2>
+<section id="model"><h2><code>[model.&lt;id&gt;]</code> override rows — <a class="ref" href="#def-ConfigModelOverride">ConfigModelOverride</a> (48 fields)</h2>
 <p class="lead">A `[model.foo]` entry from config.toml, parsed directly from raw TOML (bypassing deep merge).<br>Scalar fields are `Option` so absent means &quot;inherit from defaults/prefetched&quot;.<br>The collection fields (`extra_headers`, `reasoning_efforts`) merge only when non-empty and so cannot express &quot;override to empty.&quot;</p>
 <table><thead><tr><th>field</th><th>required</th><th>type</th><th>description (verbatim schema text)</th></tr></thead><tbody>
 <tr class="f" data-name="agent_type"><th><code>agent_type</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">string</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
@@ -156,6 +156,7 @@ footer { max-width:1200px; margin:0 auto; padding:12px 32px 32px; color:var(--mu
 <tr class="f" data-name="supports_reasoning_effort"><th><code>supports_reasoning_effort</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">boolean</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
 <tr class="f" data-name="system_prompt_label"><th><code>system_prompt_label</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">string</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc">Per-model system-prompt identity; not merged into `ModelInfo` (tiered resolve).</td></tr>
 <tr class="f" data-name="temperature"><th><code>temperature</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">number</span> <code>float</code><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
+<tr class="f" data-name="thinking_replay"><th><code>thinking_replay</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">string</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc">Older-assistant thinking replay policy (apex-ayl.108.1).<br>Absent = inherit.</td></tr>
 <tr class="f" data-name="tools_cache_breakpoint"><th><code>tools_cache_breakpoint</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">string</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc">Per-tool cache breakpoint (F5, apex-ayl.114), `off` | `last`.<br>Absent = inherit.</td></tr>
 <tr class="f" data-name="top_k"><th><code>top_k</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">integer</span> <code>uint32</code> <span class="t">min 0</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc">Top-k sampling (docs GA L3060). Absent = inherit.</td></tr>
 <tr class="f" data-name="top_p"><th><code>top_p</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">number</span> <code>float</code><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
@@ -317,7 +318,7 @@ footer { max-width:1200px; margin:0 auto; padding:12px 32px 32px; color:var(--mu
 </tbody></table></section>
 
 </main>
-<footer>Rendered deterministically from the live schema: sorted traversal, no timestamps, std-only, self-contained (no external assets). Self-identifies via fnv1a-64 content hash <code>628978039e598f62</code> over the canonicalized, default-stripped schema JSON. Guarded by the golden <code>agent::config_schema_tests::config_reference_html_matches</code>.</footer>
+<footer>Rendered deterministically from the live schema: sorted traversal, no timestamps, std-only, self-contained (no external assets). Self-identifies via fnv1a-64 content hash <code>136ed16616b3de35</code> over the canonicalized, default-stripped schema JSON. Guarded by the golden <code>agent::config_schema_tests::config_reference_html_matches</code>.</footer>
 <script>
 (function () {
   var box = document.getElementById('q');

@@ -3,7 +3,7 @@ use super::*;
 
 use super::messages::{
     clean_orphaned_blocks_by_adjacency, clean_orphaned_items, hoist_tool_results_to_front,
-    repair_trailing_assistant,
+    repair_trailing_assistant, strip_thinking_blocks,
 };
 
 fn messages_test_request(reasoning_effort: Option<crate::ReasoningEffort>) -> ConversationRequest {
@@ -1239,7 +1239,7 @@ fn mk_reasoning(text: &str, signature: Option<&str>) -> ConversationItem {
 fn test_thinking_stripped_from_earlier_assistant_messages() {
     // Turn 1: user -> thinking + tool_use -> tool_result
     // Turn 2: user -> thinking + text (latest)
-    let req = ConversationRequest::from_items(vec![
+    let mut req = ConversationRequest::from_items(vec![
         ConversationItem::user("First question"),
         mk_reasoning("Old thinking", Some("old_sig")),
         ConversationItem::assistant_tool_calls(vec![mk_call("toolu_01")]),
@@ -1248,6 +1248,7 @@ fn test_thinking_stripped_from_earlier_assistant_messages() {
         mk_reasoning("Latest thinking", Some("latest_sig")),
         ConversationItem::assistant("Final answer"),
     ]);
+    req.thinking_replay = Some("off".to_string());
     let msgs = build_messages_request(&req);
 
     // First assistant message: thinking stripped, only tool_use remains
@@ -1485,6 +1486,439 @@ fn test_verbatim_pair_survives_but_unsigned_dropped_in_latest() {
     };
     assert_eq!(thinking, "RAW verbatim thinking");
     assert_eq!(signature, "RawSignature==");
+}
+
+// ============================================================================
+// (b-2) .108.1 (apex-ayl.108.1) — thinking REPLAY (all-older verbatim,
+//       msgw-108.1-sdd.md §4.1) + R8 look-ahead (ADJ-2). Unit RED lane:
+//       A6 tests 1-4, 6, 11. Staged (compile-RED on the 2-arg
+//       strip_thinking_blocks + `thinking_replay` field): 5, 8-10. Test 7
+//       (re-pin) keeps its current body pre-cut per §5 step 1.
+// ============================================================================
+
+fn replay_json_messages(req: &ConversationRequest) -> Vec<serde_json::Value> {
+    let json = serde_json::to_value(build_messages_request(req)).unwrap();
+    json["messages"].as_array().cloned().unwrap_or_default()
+}
+
+fn replay_assistant_blocks(messages: &[serde_json::Value]) -> Vec<Vec<serde_json::Value>> {
+    messages
+        .iter()
+        .filter(|m| m["role"] == "assistant")
+        .map(|m| m["content"].as_array().cloned().unwrap_or_default())
+        .collect()
+}
+
+// Direct-strip test helpers (A6 tests 8-10): build `Message`/`ContentBlock`
+// values to exercise `strip_thinking_blocks` in isolation (no
+// ConversationRequest).
+fn replay_msg(
+    role: crate::messages::MessageRole,
+    blocks: Vec<crate::messages::ContentBlock>,
+) -> crate::messages::Message {
+    crate::messages::Message {
+        role,
+        content: crate::messages::MessageContent::Blocks(blocks),
+    }
+}
+fn rtext(s: &str) -> crate::messages::ContentBlock {
+    crate::messages::ContentBlock::Text {
+        text: s.to_string(),
+        cache_control: None,
+    }
+}
+fn rthink(thinking: &str, signature: &str) -> crate::messages::ContentBlock {
+    crate::messages::ContentBlock::Thinking {
+        thinking: thinking.to_string(),
+        signature: signature.to_string(),
+    }
+}
+fn rredact(data: &str) -> crate::messages::ContentBlock {
+    crate::messages::ContentBlock::RedactedThinking {
+        data: data.to_string(),
+    }
+}
+
+/// .108.1 A6 test 1 (RED pre-cut — the signed older pair is stripped today):
+/// default (`thinking_replay` unset = None) replays the OLDER assistant's
+/// signed (thinking, signature) pair VERBATIM — content[0] = the stored pair
+/// byte-identical, content[1] = the text, order preserved; the latest arm is
+/// unchanged.
+#[test]
+fn test_older_signed_thinking_replayed_verbatim() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::user("q1"),
+        mk_reasoning("old-think-A", Some("sig-A")),
+        ConversationItem::assistant("a1"),
+        ConversationItem::user("q2"),
+        mk_reasoning("latest-think-B", Some("sig-B")),
+        ConversationItem::assistant("a2"),
+    ]);
+    let msgs = replay_assistant_blocks(&replay_json_messages(&req));
+    assert_eq!(msgs.len(), 2, "two assistant messages expected");
+    let (older, latest) = (&msgs[0], &msgs[1]);
+    assert_eq!(
+        older.len(),
+        2,
+        "older assistant keeps the verbatim thinking pair + text: {older:?}"
+    );
+    assert_eq!(
+        older[0]["type"], "thinking",
+        "older content[0] must be the verbatim pair: {older:?}"
+    );
+    assert_eq!(older[0]["thinking"], "old-think-A");
+    assert_eq!(older[0]["signature"], "sig-A");
+    assert_eq!(older[1]["type"], "text");
+    assert_eq!(older[1]["text"], "a1");
+    let thinking = latest
+        .iter()
+        .find(|b| b["type"] == "thinking")
+        .expect("latest arm keeps its thinking: {latest:?}");
+    assert_eq!(thinking["thinking"], "latest-think-B");
+    assert_eq!(thinking["signature"], "sig-B");
+}
+
+/// .108.1 A6 test 2 (GUARD — the cap branch output identity): an older signed
+/// pair whose item estimate exceeds the 100k cap (450,000-char signature ≈
+/// 112.5k, C9) is DROPPED at the older position while the message itself is
+/// retained (it has a non-thinking block); the latest arm is unchanged.
+#[test]
+fn test_older_thinking_over_cap_dropped() {
+    let over_cap_sig = "x".repeat(450_000);
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::user("q1"),
+        mk_reasoning("old-think-A", Some(over_cap_sig.as_str())),
+        ConversationItem::assistant("a1"),
+        ConversationItem::user("q2"),
+        mk_reasoning("latest-think-B", Some("sig-B")),
+        ConversationItem::assistant("a2"),
+    ]);
+    let msgs = replay_assistant_blocks(&replay_json_messages(&req));
+    assert_eq!(msgs.len(), 2, "two assistant messages expected");
+    let (older, latest) = (&msgs[0], &msgs[1]);
+    assert!(
+        older.iter().all(|b| b["type"] != "thinking"),
+        "over-cap older pair must be dropped: {older:?}"
+    );
+    assert!(
+        older.iter().any(|b| b["type"] == "text" && b["text"] == "a1"),
+        "the older message is retained (non-thinking block): {older:?}"
+    );
+    let thinking = latest
+        .iter()
+        .find(|b| b["type"] == "thinking")
+        .expect("latest arm keeps its thinking: {latest:?}");
+    assert_eq!(thinking["signature"], "sig-B");
+}
+
+/// .108.1 A6 test 3 (GUARD — regression pin): an UNSIGNED older thinking
+/// block is dropped at the older position (replay requires the signed
+/// verbatim pair); the text survives; the latest arm is unchanged.
+#[test]
+fn test_older_thinking_unsigned_dropped() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::user("q1"),
+        mk_reasoning("old-think-A", None),
+        ConversationItem::assistant("a1"),
+        ConversationItem::user("q2"),
+        mk_reasoning("latest-think-B", Some("sig-B")),
+        ConversationItem::assistant("a2"),
+    ]);
+    let msgs = replay_assistant_blocks(&replay_json_messages(&req));
+    assert_eq!(msgs.len(), 2, "two assistant messages expected");
+    let (older, latest) = (&msgs[0], &msgs[1]);
+    assert!(
+        older.iter().all(|b| b["type"] != "thinking"),
+        "unsigned older thinking must be dropped: {older:?}"
+    );
+    assert!(
+        older.iter().any(|b| b["type"] == "text" && b["text"] == "a1"),
+        "the older message is retained: {older:?}"
+    );
+    assert!(
+        latest.iter().any(|b| b["type"] == "thinking" && b["signature"] == "sig-B"),
+        "latest arm unchanged: {latest:?}"
+    );
+}
+
+/// .108.1 A6 test 4 (GUARD — regression pin, the opus47 shape at the older
+/// position): a signature-only block (empty thinking text, signature present)
+/// is dropped — there is nothing to replay; the text survives; the latest arm
+/// is unchanged.
+#[test]
+fn test_older_thinking_signature_only_dropped() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::user("q1"),
+        mk_reasoning("", Some("sig-A")),
+        ConversationItem::assistant("a1"),
+        ConversationItem::user("q2"),
+        mk_reasoning("latest-think-B", Some("sig-B")),
+        ConversationItem::assistant("a2"),
+    ]);
+    let msgs = replay_assistant_blocks(&replay_json_messages(&req));
+    assert_eq!(msgs.len(), 2, "two assistant messages expected");
+    let (older, latest) = (&msgs[0], &msgs[1]);
+    assert!(
+        older.iter().all(|b| b["type"] != "thinking"),
+        "signature-only older block must be dropped: {older:?}"
+    );
+    assert!(
+        older.iter().any(|b| b["type"] == "text" && b["text"] == "a1"),
+        "the older message is retained: {older:?}"
+    );
+    assert!(
+        latest.iter().any(|b| b["type"] == "thinking" && b["signature"] == "sig-B"),
+        "latest arm unchanged: {latest:?}"
+    );
+}
+
+/// .108.1 A6 test 6 (GUARD — ADJ-2): an older Reasoning whose OWNING (forward)
+/// assistant carries a mismatched model_id is suppressed at translation and
+/// replay must never resurrect it. The shape is suppressed under BOTH the
+/// carried-flag (preceding-assistant) and the forward-owner semantics: the
+/// preceding assistant is mismatched too.
+#[test]
+fn test_r8_suppressed_thinking_not_replayed() {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::user("q1"),
+        ConversationItem::assistant_with_model("a0", "old-model"),
+        ConversationItem::user("q2"),
+        mk_reasoning("old-think-R", Some("sig-R")),
+        ConversationItem::assistant_with_model("a1", "old-model"),
+        ConversationItem::user("q3"),
+        mk_reasoning("latest-think-L", Some("sig-L")),
+        ConversationItem::assistant("a2"),
+    ])
+    .with_model("new-model");
+    let msgs = replay_assistant_blocks(&replay_json_messages(&req));
+    let a1 = msgs
+        .iter()
+        .find(|blocks| blocks.iter().any(|b| b["type"] == "text" && b["text"] == "a1"))
+        .expect("the owning (a1) assistant message");
+    assert!(
+        a1.iter().all(|b| b["type"] != "thinking"),
+        "mismatched-owner reasoning must stay suppressed (replay never resurrects it): {a1:?}"
+    );
+    assert!(
+        a1.iter().any(|b| b["type"] == "text" && b["text"] == "a1"),
+        "the portable text stands: {a1:?}"
+    );
+}
+
+/// .108.1 A6 test 11 (RED pre-cut on BOTH faces — ADJ-2): (i) the
+/// era-leading foreign Reasoning (NO preceding assistant; forward owner = an
+/// old-model assistant) escapes the carried flag's init today ⇒ present on
+/// the latest verbatim arm — post-cut the forward-owner rule suppresses it;
+/// (ii) the new-era-first Reasoning (preceding assistant = old model, forward
+/// owner = the request model) is over-suppressed by the stale carried flag
+/// today ⇒ absent — post-cut it rides.
+#[test]
+fn test_r8_lookahead_era_boundaries() {
+    // Face (i) — era-leading foreign (no preceding assistant).
+    let req_i = ConversationRequest::from_items(vec![
+        ConversationItem::user("q1"),
+        mk_reasoning("era-foreign", Some("sig-F")),
+        ConversationItem::assistant_with_model("a-old", "old-model"),
+    ])
+    .with_model("new-model");
+    let msgs_i = replay_assistant_blocks(&replay_json_messages(&req_i));
+    assert_eq!(msgs_i.len(), 1, "one assistant message expected");
+
+    // Face (ii) — new-era-first (preceding = old model, forward owner = request model).
+    let req_ii = ConversationRequest::from_items(vec![
+        ConversationItem::user("q1"),
+        mk_reasoning("era-foreign-2", Some("sig-F2")),
+        ConversationItem::assistant_with_model("a-old-2", "old-model"),
+        ConversationItem::user("q2"),
+        mk_reasoning("new-era-first", Some("sig-N")),
+        ConversationItem::assistant_with_model("a-new-2", "new-model"),
+    ])
+    .with_model("new-model");
+    let msgs_ii = replay_assistant_blocks(&replay_json_messages(&req_ii));
+    assert_eq!(msgs_ii.len(), 2, "two assistant messages expected");
+    let latest_ii = msgs_ii.last().expect("latest assistant message");
+
+    let mut failures = Vec::new();
+    if msgs_i[0].iter().any(|b| b["type"] == "thinking") {
+        failures.push(format!(
+            "face (i): era-leading foreign reasoning (forward owner = old model) must be suppressed: {:?}",
+            msgs_i[0]
+        ));
+    }
+    match latest_ii.iter().find(|b| b["type"] == "thinking") {
+        None => failures.push(format!(
+            "face (ii): new-era-first reasoning (forward owner = request model) must ride: {latest_ii:?}"
+        )),
+        Some(thinking) => {
+            assert_eq!(thinking["thinking"], "new-era-first");
+            assert_eq!(thinking["signature"], "sig-N");
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "R8 look-ahead era boundaries violated:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// .108.1 A6 test 5 (the `thinking_replay = "off"` operator switch): the
+/// explicit knob re-arms the LEGACY one-request strip — the OLDER signed pair
+/// is DROPPED (not replayed); the message is retained (non-thinking block);
+/// the latest arm keeps its verbatim pair.
+#[test]
+fn test_thinking_replay_off_switch() {
+    let mut req = ConversationRequest::from_items(vec![
+        ConversationItem::user("q1"),
+        mk_reasoning("old-think-A", Some("sig-A")),
+        ConversationItem::assistant("a1"),
+        ConversationItem::user("q2"),
+        mk_reasoning("latest-think-B", Some("sig-B")),
+        ConversationItem::assistant("a2"),
+    ]);
+    req.thinking_replay = Some("off".to_string());
+    let msgs = replay_assistant_blocks(&replay_json_messages(&req));
+    assert_eq!(msgs.len(), 2, "two assistant messages expected");
+    let (older, latest) = (&msgs[0], &msgs[1]);
+    assert!(
+        older.iter().all(|b| b["type"] != "thinking"),
+        "off switch drops the older signed pair (legacy strip): {older:?}"
+    );
+    assert!(
+        older.iter().any(|b| b["type"] == "text" && b["text"] == "a1"),
+        "the older message text survives the strip: {older:?}"
+    );
+    let thinking = latest
+        .iter()
+        .find(|b| b["type"] == "thinking")
+        .expect("latest arm keeps its thinking: {latest:?}");
+    assert_eq!(thinking["signature"], "sig-B");
+}
+
+/// .108.1 A6 test 8 (direct strip, replay arm): an OLDER assistant carrying a
+/// signed pair + a non-empty `RedactedThinking` rides BOTH verbatim — the
+/// redacted `data` is byte-identical (ADJ-1: the docs mandate the echo; never
+/// dropped). The latest arm is unchanged.
+#[test]
+fn test_older_redacted_thinking_replayed_verbatim() {
+    let mut msgs = vec![
+        replay_msg(crate::messages::MessageRole::User, vec![rtext("q1")]),
+        replay_msg(
+            crate::messages::MessageRole::Assistant,
+            vec![rthink("old-think-A", "sig-A"), rredact("redacted-X"), rtext("a1")],
+        ),
+        replay_msg(crate::messages::MessageRole::User, vec![rtext("q2")]),
+        replay_msg(
+            crate::messages::MessageRole::Assistant,
+            vec![rthink("latest-think-B", "sig-B"), rtext("a2")],
+        ),
+    ];
+    strip_thinking_blocks(&mut msgs, true);
+    let older = msgs
+        .iter()
+        .find(|m| {
+            matches!(
+                &m.content,
+                crate::messages::MessageContent::Blocks(b)
+                    if b.iter().any(|x| matches!(x, crate::messages::ContentBlock::Text { text, .. } if text.as_str() == "a1"))
+            )
+        })
+        .expect("older assistant retained");
+    let crate::messages::MessageContent::Blocks(blocks) = &older.content else {
+        panic!();
+    };
+    let crate::messages::ContentBlock::RedactedThinking { data } = blocks
+        .iter()
+        .find(|b| matches!(b, crate::messages::ContentBlock::RedactedThinking { .. }))
+        .expect("older redacted block must ride (ADJ-1): {blocks:?}")
+    else {
+        panic!();
+    };
+    assert_eq!(data, "redacted-X", "redacted data rides byte-identical");
+    assert!(
+        blocks.iter().any(|b| matches!(b, crate::messages::ContentBlock::Thinking { signature, .. } if signature.as_str() == "sig-A")),
+        "older signed pair rides via the replay arm: {blocks:?}"
+    );
+}
+
+/// .108.1 A6 test 9 (direct strip, latest arm — the ADJ-1 `:298` flip): the
+/// LATEST assistant's non-empty `RedactedThinking` rides verbatim (pre-108.1
+/// it was dropped at every position); an empty-`data` V1 dead shape is still
+/// dropped at the latest arm.
+#[test]
+fn test_latest_redacted_thinking_replayed_verbatim() {
+    let mut msgs = vec![
+        replay_msg(crate::messages::MessageRole::User, vec![rtext("q1")]),
+        replay_msg(
+            crate::messages::MessageRole::Assistant,
+            vec![rredact("redacted-L"), rredact(""), rtext("a1")],
+        ),
+    ];
+    strip_thinking_blocks(&mut msgs, true);
+    let latest = msgs
+        .iter()
+        .rfind(|m| matches!(m.role, crate::messages::MessageRole::Assistant))
+        .expect("latest assistant retained");
+    let crate::messages::MessageContent::Blocks(blocks) = &latest.content else {
+        panic!();
+    };
+    let redacted: Vec<&str> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            crate::messages::ContentBlock::RedactedThinking { data } => Some(data.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        redacted,
+        vec!["redacted-L"],
+        "non-empty latest redacted rides; the empty-`data` V1 dead shape is dropped: {blocks:?}"
+    );
+}
+
+/// .108.1 A6 test 10 (direct strip, cap-gate else-branch): an OLDER assistant
+/// whose signed pair pushes the item estimate over the 100k cap (450,000-char
+/// signature ≈ 112.5k, C9) has the PAIR dropped by the cap branch, but its
+/// non-empty `RedactedThinking` STILL rides (no cap branch for redacted — ADJ-1).
+#[test]
+fn test_older_redacted_thinking_over_cap_retained() {
+    let over_cap_sig = "x".repeat(450_000);
+    let mut msgs = vec![
+        replay_msg(crate::messages::MessageRole::User, vec![rtext("q1")]),
+        replay_msg(
+            crate::messages::MessageRole::Assistant,
+            vec![rthink("old-think-A", &over_cap_sig), rredact("redacted-X"), rtext("a1")],
+        ),
+        replay_msg(
+            crate::messages::MessageRole::Assistant,
+            vec![rtext("a2")],
+        ),
+    ];
+    strip_thinking_blocks(&mut msgs, true);
+    let older = msgs
+        .iter()
+        .find(|m| {
+            matches!(
+                &m.content,
+                crate::messages::MessageContent::Blocks(b)
+                    if b.iter().any(|x| matches!(x, crate::messages::ContentBlock::Text { text, .. } if text.as_str() == "a1"))
+            )
+        })
+        .expect("older assistant retained");
+    let crate::messages::MessageContent::Blocks(blocks) = &older.content else {
+        panic!();
+    };
+    assert!(
+        blocks.iter().all(|b| !matches!(b, crate::messages::ContentBlock::Thinking { .. })),
+        "over-cap older pair must be dropped by the cap branch: {blocks:?}"
+    );
+    let crate::messages::ContentBlock::RedactedThinking { data } = blocks
+        .iter()
+        .find(|b| matches!(b, crate::messages::ContentBlock::RedactedThinking { .. }))
+        .expect("over-cap older redacted must STILL ride (no cap branch for redacted): {blocks:?}")
+    else {
+        panic!();
+    };
+    assert_eq!(data, "redacted-X");
 }
 
 // ============================================================================

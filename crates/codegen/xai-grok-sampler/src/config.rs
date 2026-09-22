@@ -133,6 +133,14 @@ pub struct SamplerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_ttl: Option<String>,
 
+    /// Messages-wire older-assistant thinking replay policy
+    /// (apex-ayl.108.1); `None` (default) = all-older cap-aware verbatim
+    /// replay, `"off"` = the legacy one-request strip (xli S-031 parity).
+    /// Validated at the config layer (the closed value set {None, "off"} —
+    /// unknown values are refused and mapped to None there).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_replay: Option<String>,
+
     /// Server-side doom-loop check policy; `None` disables it.
     /// It also absorbs the reported trigger events (unlike environment headers in [`Self::extra_headers`], this gates the client's decode behavior).
     #[serde(default)]
@@ -214,6 +222,7 @@ impl Default for SamplerConfig {
             compactions_remaining: None,
             compaction_at_tokens: None,
             cache_ttl: None,
+            thinking_replay: None,
             doom_loop_recovery: None,
             header_injector: None,
             model_family: None,

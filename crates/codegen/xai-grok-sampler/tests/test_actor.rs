@@ -109,6 +109,7 @@ fn test_config(base_url: String, model: &str) -> SamplerConfig {
         normalize_content_types: false,
         ultra_wire_effort: None,
         cache_ttl: None,
+        thinking_replay: None,
         top_k: None,
         stop_sequences: None,
         disable_parallel_tool_use: None,

@@ -827,6 +827,7 @@ async fn read_parent_sampling_config(
                 max_retries: cfg.max_retries.or(ctx.sampling_config.max_retries),
                 rate_limit_retry_threshold: cfg.rate_limit_retry_threshold,
                 cache_ttl: cfg.cache_ttl.clone(),
+                thinking_replay: cfg.thinking_replay.clone(),
                 top_k: cfg.top_k,
                 stop_sequences: cfg.stop_sequences.clone(),
                 disable_parallel_tool_use: cfg.disable_parallel_tool_use,

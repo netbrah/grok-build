@@ -723,6 +723,13 @@
             "null"
           ]
         },
+        "thinking_replay": {
+          "description": "Older-assistant thinking replay policy (apex-ayl.108.1).\nAbsent = inherit.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "tools_cache_breakpoint": {
           "description": "Per-tool cache breakpoint (F5, apex-ayl.114), `off` | `last`.\nAbsent = inherit.",
           "type": [
@@ -2626,6 +2633,13 @@
             "null"
           ]
         },
+        "thinking_replay": {
+          "description": "Global older-assistant thinking replay policy\n(MSGW-THINKREPLAY-1, apex-ayl.108.1); per-model `[model.<id>]`\nvalues win. `None` = unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "tools_cache_breakpoint": {
           "description": "Global per-tool cache breakpoint (F5, apex-ayl.114), `off` | `last`\n(case-insensitive; unknown values soft-refused at resolution);\nper-model `[model.<id>]` values win. `None` = unset (Off).",
           "type": [
@@ -3362,6 +3376,13 @@
           "format": "float",
           "type": [
             "number",
+            "null"
+          ]
+        },
+        "thinking_replay": {
+          "description": "Messages-wire older-assistant thinking replay policy\n(apex-ayl.108.1); `None` (default) = all-older cap-aware verbatim\nreplay, `\"off\"` = the legacy one-request strip (xli S-031 parity).\nValidated at the config layer (the closed value set {None, \"off\"} —\nunknown values are refused and mapped to None there).",
+          "type": [
+            "string",
             "null"
           ]
         },

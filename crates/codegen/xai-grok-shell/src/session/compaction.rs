@@ -1371,6 +1371,7 @@ impl SessionActor {
             items: history.to_vec(),
             model: cfg.as_ref().map(|c| c.model.clone()),
             cache_ttl: cfg.and_then(|c| c.cache_ttl),
+            thinking_replay: None,
             ..Default::default() // conversation.rs:778 derives Default (fix-pass 1 m3)
         };
         let projected = build_messages_request(&request);

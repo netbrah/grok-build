@@ -30,12 +30,18 @@
 //!    `tool_result` blocks are stable-partitioned to the front (Vertex
 //!    backed endpoints reject the other ordering); live since R1 produces
 //!    merged messages mixing tool_result and text blocks;
-//! 6. **three-part thinking strip** (MW-1 D5 stage 5,
-//!    [`strip_thinking_blocks`]) — non-latest assistant messages lose all
-//!    thinking blocks; the latest keeps a block only as a verbatim (text,
-//!    signature) pair; signature-only blocks are dropped; emptied assistant
-//!    messages are removed. R8's suppression runs BEFORE this strip (the
-//!    strip is a superset gate over what R8 leaves behind);
+//! 6. **thinking replay** (MW-1 D5 stage 5,
+//!    [`strip_thinking_blocks`]) — `replay_older` (the row key
+//!    `thinking_replay`: `None`/default = ON, `"off"` = legacy) selects the
+//!    policy: all-older CAP-AWARE verbatim replay (an older assistant's
+//!    signed (text, signature) pairs + non-empty-`data` `RedactedThinking`
+//!    ride, gated all-or-nothing per message by the N3 per-item cap; a
+//!    thinking-only older message never rides) or the LEGACY one-request
+//!    strip (non-latest messages lose all thinking blocks; the latest keeps
+//!    a block only as a verbatim pair; signature-only blocks dropped;
+//!    `RedactedThinking` dropped). Emptied assistant messages are removed in
+//!    both. R8's suppression runs BEFORE this strip (the strip is a superset
+//!    gate over what R8 leaves behind);
 //! 7. **trailing-assistant repair** (MW-1 D5 stage 6,
 //!    [`repair_trailing_assistant`]) — a history ending on an assistant
 //!    message gets a synthetic user sentinel (`[Awaiting tool result]` /
@@ -246,24 +252,52 @@ pub(crate) fn clean_orphaned_blocks_by_adjacency(messages: &mut Vec<crate::messa
     messages.retain(|m| !matches!(&m.content, MessageContent::Blocks(blocks) if blocks.is_empty()));
 }
 
-/// D5 stage 5 — the three-part thinking replay rule (xli S-031, spec rule 2).
+/// §3.3.2 (apex-ayl.108.1) — the N3 per-item estimator for assistant
+/// messages, bit-identical to `check_message_tokens` (request_validation.rs)
+/// for image-less items — and assistant items are image-less by construction
+/// (the builder's assistant blocks are Thinking/Text/ToolUse only): the
+/// compact-JSON byte count / BYTES_PER_TOKEN.
+fn item_token_estimate(msg: &crate::messages::Message) -> u64 {
+    let item_json =
+        serde_json::to_vec(msg).expect("Message serializes (N3's own prelude)");
+    xai_token_estimation::estimate_tokens(&String::from_utf8_lossy(&item_json))
+}
+
+/// D5 stage 5 — the thinking replay rule (xli S-031, spec rule 2; the
+/// apex-ayl.108.1 all-older cap-aware replay extension).
 ///
-/// (a) every assistant message before the latest loses ALL thinking blocks —
-/// the API only requires the latest assistant's thinking to replay
-/// verbatim, and earlier turns are safe to strip;
-/// (b) the latest assistant message keeps a `Thinking` block only if it
-/// carries both thinking text and a non-empty signature — the verbatim pair
-/// as stored by the stream consumer, which is exactly what Anthropic's
-/// "thinking blocks in the latest assistant message cannot be modified"
-/// check verifies;
+/// `replay_older = false` (the operator's `thinking_replay = "off"` switch)
+/// is the LEGACY one-request strip, byte-identical to the pre-108.1
+/// behavior: (a) every assistant message before the latest loses ALL
+/// thinking blocks — the API only requires the latest assistant's thinking
+/// to replay verbatim, and earlier turns are safe to strip; (b) the latest
+/// assistant message keeps a `Thinking` block only if it carries both
+/// thinking text and a non-empty signature — the verbatim pair as stored by
+/// the stream consumer, which is exactly what Anthropic's "thinking blocks
+/// in the latest assistant message cannot be modified" check verifies;
 /// (c) a signature-only block (empty thinking text, the opus47 shape) is
-/// dropped entirely — there is nothing to replay.
+/// dropped entirely — there is nothing to replay. `RedactedThinking` blocks
+/// are dropped at every position (the pre-108.1 predicate — the true
+/// rollback). Assistant messages left empty by the strip are removed.
 ///
-/// `RedactedThinking` blocks are dropped at every position: grok V1 has no
-/// storage path that produces one with verifiable provenance (the stream
-/// consumer drops redacted blocks), so none is ever trustworthy here.
-/// Assistant messages left empty by the strip are removed.
-pub(crate) fn strip_thinking_blocks(messages: &mut Vec<crate::messages::Message>) {
+/// `replay_older = true` (default) is the ALL-OLDER cap-aware verbatim
+/// replay (D1/D2): an OLDER assistant's safe set rides verbatim — the
+/// signed (thinking, signature) pairs (both fields non-empty) and the
+/// non-empty-`data` `RedactedThinking` blocks (ADJ-1: the docs mandate the
+/// echo; never dropped, even over cap) — gated ALL-OR-NOTHING per message
+/// by the N3 per-item cap (`item_token_estimate` ≤
+/// `MAX_MODEL_CONTEXT_ITEM_TOKENS`, inclusive); unsigned and signature-only
+/// blocks are dropped at every position. The orphan-shape rule: an older
+/// message carrying NO non-thinking block (a thinking-only message) never
+/// rides. The LATEST arm is predicate-only (NOT cap-gated) and gains the
+/// ADJ-1 `RedactedThinking` flip: a non-empty-`data` redacted block rides
+/// verbatim; the empty-`data` V1 dead shape is dropped. R8's suppression
+/// runs BEFORE this strip, so a suppressed block never reaches the replay
+/// decision.
+pub(crate) fn strip_thinking_blocks(
+    messages: &mut Vec<crate::messages::Message>,
+    replay_older: bool,
+) {
     use crate::messages::{ContentBlock, MessageContent, MessageRole};
 
     let Some(last_idx) = messages
@@ -276,26 +310,76 @@ pub(crate) fn strip_thinking_blocks(messages: &mut Vec<crate::messages::Message>
         if !matches!(msg.role, MessageRole::Assistant) {
             continue;
         }
+        // The N3 cap estimate needs &msg, so it is computed BEFORE the
+        // mutable content borrow below (borrow-checker). Only the all-older
+        // replay arm consumes it; every other arm leaves it false (unused).
+        let within_cap = if i < last_idx && replay_older {
+            item_token_estimate(msg)
+                <= crate::request_validation::MAX_MODEL_CONTEXT_ITEM_TOKENS
+        } else {
+            false
+        };
         let MessageContent::Blocks(blocks) = &mut msg.content else {
             continue;
         };
         if i < last_idx {
-            // Non-latest assistant: drop all thinking blocks.
-            blocks.retain(|b| {
-                !matches!(
-                    b,
-                    ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }
-                )
-            });
+            if !replay_older {
+                // Legacy strip: non-latest assistant loses ALL thinking
+                // blocks (byte-identical to the pre-108.1 behavior).
+                blocks.retain(|b| {
+                    !matches!(
+                        b,
+                        ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }
+                    )
+                });
+            } else {
+                // Cap-aware all-older verbatim replay (§3.3.1): the safe
+                // set (signed pairs + non-empty redacted) rides only when
+                // the message has a verbatim pair AND at least one
+                // non-thinking block (redacted counts) AND the pre-decision
+                // item estimate is within the N3 cap (inclusive).
+                let verbatim_pairs = blocks.iter().any(|b| {
+                    matches!(
+                        b,
+                        ContentBlock::Thinking { thinking, signature }
+                            if !thinking.is_empty() && !signature.is_empty()
+                    )
+                });
+                let has_non_thinking = blocks
+                    .iter()
+                    .any(|b| !matches!(b, ContentBlock::Thinking { .. }));
+                let replay = verbatim_pairs && has_non_thinking && within_cap;
+                if replay {
+                    blocks.retain(|b| match b {
+                        ContentBlock::Thinking {
+                            thinking,
+                            signature,
+                        } => !thinking.is_empty() && !signature.is_empty(),
+                        ContentBlock::RedactedThinking { data } => !data.is_empty(),
+                        _ => true,
+                    });
+                } else {
+                    // Cap-gate drop (ALL pairs of this message), the orphan
+                    // shape, or nothing to replay: unsigned/signature-only
+                    // thinking is dropped; redacted blocks ride (no cap
+                    // branch for redacted — ADJ-1).
+                    blocks.retain(|b| !matches!(b, ContentBlock::Thinking { .. }));
+                }
+            }
         } else {
-            // Latest assistant: only the verbatim (text, signature) pair
-            // survives; unsigned and signature-only blocks are dropped.
+            // Latest assistant: predicate-only (NOT cap-gated). Only the
+            // verbatim (text, signature) pair survives; unsigned and
+            // signature-only blocks are dropped. The ADJ-1 flip: a
+            // non-empty-`data` redacted block rides verbatim (the docs
+            // mandate the echo — the V1 arm is dead at ingestion, so this
+            // holds structurally at zero current cost); the empty-`data`
+            // V1 dead shape is dropped.
             blocks.retain(|b| match b {
                 ContentBlock::Thinking {
                     thinking,
                     signature,
                 } => !thinking.is_empty() && !signature.is_empty(),
-                ContentBlock::RedactedThinking { .. } => false,
+                ContentBlock::RedactedThinking { data } => !data.is_empty(),
                 _ => true,
             });
         }
@@ -590,15 +674,36 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     let mut pending_user_cm = false;
     let mut pending_user_class: Option<SyntheticReason> = None;
 
-    // R8: model-identity thinking suppression. Set when an Assistant item
-    // with model_id Some(m) and m != model_slug is translated; Reasoning
-    // items translated while set emit no Thinking block; cleared on the next
-    // Assistant or System flush. A None/empty request model makes the rule a
-    // no-op (a None-model request is invalid anyway; the guard must not
-    // silently strip signed thinking).
+    // R8: model-identity thinking suppression (apex-ayl.108.1) — a Reasoning
+    // item's Thinking block is suppressed iff its OWNING assistant's model_id
+    // is Some(m) with m != the request slug. The owner is the assistant the
+    // reasoning joins: the assistant already in the current pending buffer
+    // (a Reasoning that FOLLOWS its assistant) when present, else the nearest
+    // FORWARD assistant (a Reasoning that OPENS a fresh assistant turn).
+    // owner-None / no owner ⇒ NO suppression (NOT fail-closed). A
+    // None/empty request model makes the rule a no-op (a None-model request
+    // is invalid anyway; the guard must not silently strip signed thinking).
     let model_slug = req.model.as_deref().unwrap_or_default();
     let r8_active = !model_slug.is_empty();
-    let mut r8_suppress_thinking = false;
+    // Forward-owner model (look-ahead): per item index, the nearest FORWARD
+    // Assistant's model_id — None = no forward assistant, or a forward
+    // assistant with model_id None. Consumed only when the buffer holds no
+    // assistant yet (a Reasoning that opens a fresh turn).
+    let forward_model: Vec<Option<&str>> = {
+        let mut lookup = vec![None; items.len()];
+        let mut next: Option<&str> = None;
+        for i in (0..items.len()).rev() {
+            lookup[i] = next;
+            if let ConversationItem::Assistant(a) = &items[i] {
+                next = a.model_id.as_deref();
+            }
+        }
+        lookup
+    };
+    // Buffer-owner: the model_id of the most recent Assistant added to the
+    // current pending_assistant buffer since the last flush (System/User/
+    // ToolResult). None = the buffer holds no assistant yet.
+    let mut buffer_assistant_model: Option<Option<&str>> = None;
 
     let sanitize_tool_call_id = |id: &str| -> String {
         id.chars()
@@ -656,16 +761,16 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         }
     };
 
-    for item in &items {
+    for (item_idx, item) in items.iter().enumerate() {
         match item {
             ConversationItem::System(s) => {
                 flush_assistant(&mut pending_assistant, &mut messages);
-                // R1 edge: System flushes the pending user run (no message is
-                // produced) and clears the R8 flag.
+                buffer_assistant_model = None;
+                // R1 edge: System flushes the pending user run (no message
+                // is produced).
                 flush_user(&mut pending_user, &mut messages);
                 pending_user_cm = false;
                 pending_user_class = None;
-                r8_suppress_thinking = false;
                 system_blocks.push(TextBlock {
                     r#type: "text".to_string(),
                     text: s.content.as_ref().to_owned(),
@@ -674,6 +779,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             }
             ConversationItem::User(u) => {
                 flush_assistant(&mut pending_assistant, &mut messages);
+                buffer_assistant_model = None;
                 // R1: accumulate instead of pushing a fresh user message per
                 // item (xli append_to_role merge, wire.rs:1071) — consecutive
                 // user-role content becomes ONE user message.
@@ -698,11 +804,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 flush_user(&mut pending_user, &mut messages);
                 pending_user_cm = false;
                 pending_user_class = None;
-                // R8: every Assistant item sets or clears the suppression
-                // flag (mismatched model_id sets it; matched/None clears it).
-                r8_suppress_thinking =
-                    r8_active && a.model_id.as_deref().is_some_and(|m| m != model_slug);
-
+                buffer_assistant_model = Some(a.model_id.as_deref());
                 if !a.content.is_empty() {
                     pending_assistant.push(ContentBlock::Text {
                         text: a.content.as_ref().to_owned(),
@@ -722,6 +824,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             }
             ConversationItem::ToolResult(t) => {
                 flush_assistant(&mut pending_assistant, &mut messages);
+                buffer_assistant_model = None;
                 let content = if t.images.is_empty() {
                     ToolResultContent::Text(t.content.as_ref().to_owned())
                 } else {
@@ -783,10 +886,19 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                     .as_deref()
                     .map(str::to_owned)
                     .unwrap_or_default();
-                // R8: while the suppression flag is set (mismatched model_id
-                // on the owning assistant), the sibling reasoning emits no
-                // Thinking block — the assistant's text + tool_use stand.
-                if !r8_suppress_thinking && (!thinking.is_empty() || !signature.is_empty()) {
+                // R8: the reasoning's owner is the assistant in the current
+                // buffer (it FOLLOWS that assistant) when one is present,
+                // else the nearest FORWARD assistant (it OPENS a fresh turn).
+                // Suppress iff the owner's model_id is Some(m) with m != the
+                // request slug; owner-None / no owner ⇒ NO suppression (NOT
+                // fail-closed). The assistant's text + tool_use always stand.
+                let owner_model: Option<&str> = match buffer_assistant_model {
+                    Some(m) => m,
+                    None => forward_model[item_idx],
+                };
+                let r8_suppressed = r8_active
+                    && matches!(owner_model, Some(m) if m != model_slug);
+                if !r8_suppressed && (!thinking.is_empty() || !signature.is_empty()) {
                     pending_assistant.push(ContentBlock::Thinking {
                         thinking,
                         signature,
@@ -828,10 +940,12 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         );
     }
 
-    // MW-1 D5 stages 4-6: tool_result hoist, the three-part thinking strip,
-    // then the trailing-assistant repair.
+    // MW-1 D5 stages 4-6: tool_result hoist, the thinking replay / legacy
+    // strip (`replay_older` = `thinking_replay != Some("off")` — the row
+    // key `thinking_replay`: `None`/default = replay ON), then the
+    // trailing-assistant repair.
     hoist_tool_results_to_front(&mut messages);
-    strip_thinking_blocks(&mut messages);
+    strip_thinking_blocks(&mut messages, req.thinking_replay.as_deref() != Some("off"));
     repair_trailing_assistant(&mut messages);
 
     // ANTHROPIC-WIRE-1 (cut 3): only "1h" reaches the wire; "5m"/absent and

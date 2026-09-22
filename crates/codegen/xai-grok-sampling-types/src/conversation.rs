@@ -982,6 +982,11 @@ pub struct ConversationRequest {
     /// `None` (default) = the wire default 5m (no ttl field). Only "1h"
     /// touches the wire; unknown values are refused at the config layer.
     pub cache_ttl: Option<String>,
+    /// Messages-wire older-assistant thinking replay policy (apex-ayl.108.1).
+    /// `None` (default) = all-older cap-aware verbatim replay; `"off"` = the
+    /// legacy one-request strip (xli S-031 parity — the true rollback).
+    /// Closed value set; unknown values are refused at the config layer.
+    pub thinking_replay: Option<String>,
     /// Top-p sampling
     pub top_p: Option<f32>,
     /// Top-k sampling (docs GA L3060). DEPRECATED on models released after Opus 4.6
