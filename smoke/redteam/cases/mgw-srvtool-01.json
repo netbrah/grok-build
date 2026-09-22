@@ -1,18 +1,19 @@
 {
  "schema_version": 1,
  "id": "MGW-SRVTOOL-01",
- "title": "apex-ayl.112 RED ratchet (msgw-sweep F1) — server-tool surface absent end-to-end: the case declares model/claude-sonnet-5/server_tools=web_search (config_patch intent — the docs-named server tool, dated union member web_search_20250305; the lenient row parser ignores the key pre-cut) and pins the wire for the dated union member on the /v1/messages requests. All 20 server-tool types + mcp_servers/mcp_toolset have no type, no field, no seam (sweep §2.4); consequences pinned in the title: supports_backend_search:false is unflippable on every claude catalog row, stop_reason pause_turn + the 7 stop_details variants parse but can never fire, and the web_search cost levers (max_uses, user_location, domain allow/block lists) are unreachable. RED today (no request carries the member); GREEN when the cut adds the server-tool union member + config surface. The pin selects web_search_20250305 as the F1 representative (the supports_backend_search flip path); the other 19 members + mcp_toolset are covered by the same cut and re-pinned per SDD.",
+ "title": "apex-ayl.112 RED ratchet (msgw-sweep F1) — server-tool surface absent end-to-end: the case declares model/claude-sonnet-5/server_tools=web_search (config_patch intent — the docs-named server tool, dated union member web_search_20250305; the lenient row parser ignores the key pre-cut) and pins the wire for the dated union member on the /v1/messages requests. All 20 server-tool types + mcp_servers/mcp_toolset have no type, no field, no seam (sweep §2.4); consequences pinned in the title: supports_backend_search:false is unflippable on every claude catalog row, stop_reason pause_turn + the 7 stop_details variants parse but can never fire, and the web_search cost levers (max_uses, user_location, domain allow/block lists) are unreachable. RED today (no request carries the member); GREEN when the cut adds the server-tool union member + config surface. The pin selects web_search_20250305 as the F1 representative (the supports_backend_search flip path); the other 19 members + mcp_toolset are covered by the same cut and re-pinned per SDD. PROXY-GATED @ca31564 (build d5b4d0d427b2, run 20260922T004521Z): the wire pin PASSED (req-005.json POST /v1/messages carries web_search_20250305) but the NetApp llm-proxy answers 403 auth_error \"Tool type is blocked for model 'claude-sonnet-5'\" (param web_search_20250305), so exit/ndjson cannot pass in this environment — SDD §6 risk (i) realized: code stands (docs-faithful), case stays RED-EXPECTED; ratchet flip deferred to apex-ayl.125.",
  "bead": "apex-ayl.112",
  "suite": "wire-shape",
  "tier": "slim",
  "driver": "headless",
  "model": "claude-sonnet-5",
  "wirecap": true,
- "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
- "config_patch": {
-  "model/claude-sonnet-5/server_tools": "web_search"
- },
- "steps": [
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "config_patch": {
+   "model/claude-sonnet-5/server_tools": "web_search"
+  },
+  "reason": "PROXY-GATED (SDD §6 risk i, coordinator-adjudicated 2026-09-22): on the F1 cut (ca31564, binary d5b4d0d427b2) the wire pin passes — req-005.json POST /v1/messages carries web_search_20250305 (run 20260922T004521Z, campaign msgw-f1-livegate-20260921) — but the NetApp llm-proxy returns 403 auth_error {message: \"Tool type is blocked for model 'claude-sonnet-5'\", param: web_search_20250305}, so the exit-0 / ndjson-absent-error asserts cannot pass in this environment. The harness handled the 403 correctly (terminal error propagated, exit 1, no crash). Per SDD msgw-f1-sdd.md §6 the code stands (docs-faithful) and the case stays RED-EXPECTED; the ratchet flip is deferred to the proxy-lane bead apex-ayl.125 (settle the (model, server-tool-type) allow policy, then re-run and expect RED-CLEARED).",
+  "steps": [
   {
    "op": "turn",
    "prompt": "Reply with exactly: MGW-SRVTOOL-OK",
