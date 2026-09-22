@@ -19,6 +19,21 @@ use xai_grok_sampling_types::{
 /// It is `pub` because `xai_grok_shell::models` re-exports it and `agent::config` reads it.
 pub const DEFAULT_MODELS_JSON: &str = include_str!("../default_models.json");
 
+/// Build-time derived param-gate constants (apex-ayl.130
+/// ZC-PARAMSCHEMA-GATE-1, P1): `SCHEMA_PROPERTIES`, `REQUIRED_FIELDS`,
+/// `EFFORT_VALUES`. Derived at build time from
+/// `crates/codegen/xai-grok-shell/config.schema.json` (the single source of
+/// truth; the sibling Python gate reads the same schema). Param drift
+/// between [`DefaultModelEntry`] and the schema fails the build (see
+/// `build.rs`).
+///
+/// `STRUCT_FIELDS` carries the row surface itself (declaration order) so
+/// downstream consumers never re-list the struct fields by hand.
+pub mod param_gate;
+
+#[cfg(test)]
+mod param_gate_tests;
+
 #[derive(serde::Deserialize)]
 struct DefaultModels {
     default: String,
