@@ -3306,7 +3306,22 @@ fn e2e_user_overrides_default_model_with_api_key() {
     let model = models.get(dm).expect("model should exist");
     assert_eq!(model.info.base_url, "https://my-proxy.example.com/v1");
     assert_eq!(model.api_key.as_deref(), Some("my-custom-api-key"));
-    assert!(model.env_key.is_none());
+    // ZC-APEX-FEATURE-1 (apex-ayl.127): under `apex-deploy` the built-in
+    // default_env_key (legacy CODEX -> APEX priority) fills the hydrated
+    // default row via the endpoint-defaults seam; stock stays env_key-less.
+    // The user's own api_key still wins at resolve time in both builds
+    // (asserted below).
+    #[cfg(not(feature = "apex-deploy"))]
+    {
+        assert!(model.env_key.is_none());
+    }
+    #[cfg(feature = "apex-deploy")]
+    {
+        assert_eq!(
+            model.env_key.as_ref().map(EnvKeys::names),
+            Some(vec!["CODEX_LLM_PROXY_KEY", "APEX_LLM_PROXY_KEY"])
+        );
+    }
     let sampling = resolve_sampling(model, Some("session-token"));
     assert_eq!(
         sampling.api_key.as_deref(),
