@@ -5,7 +5,7 @@
  "note": "redteam \u2014 L2 wire-level redteam suite: hermetic-home dogfood runs of the built grok-responses binary behind wiretap, scored declaratively by case files against wire captures (check_wire kinds: field, grep, size_lt, count, resp_status, recon, golden). ONE compare engine: golden_compare \u2014 check_wire kind=golden and the switch_model op's wire hook both call it (R1C: the retired cell_diff kind has no second comparator; run.py:1627-1631 comment, @d404fe1). Case files are the corpus; this manifest is the machine record of suite state (cells, pins, expected refs, run history) per JIG 4.",
  "mechanism": "smoke/redteam/run.py (canonical runner; ACP session/load cell seeding for switch_model cases per R1A + concordance V1a)",
  "schema": "smoke/redteam/case.schema.json (draft07 gate + validate_case_file; golden kind schema-pinned at ratchet 1, kind enum L780-786 @d404fe1)",
- "binary_of_record": "target/release/grok-responses sha256_12 24a941bac02b (2026-09-18 L2 window; worktree tree = 7c82fe7 + .74+.81 green pre-union-commit \u2014 superseded-by-record only; the 5f4411a/d404fe1 tree's binary is a sibling-lane step, not recorded here)",
+ "binary_of_record": "target/release/grok-responses sha256_12 1628c5456f8c (2026-09-23 FMTL-HARDEN-1/T9 rebuild @ 6102488499f79b4eae60d00e22b6c6395b9289f4, apex-deploy feature, ad-hoc signed; includes .126.8.2 T5-T7 A2 validator + .126.8.6 OQ-g re-scope + .127.1 e2e re-pin; supersedes the on-disk pre-cut 40c995903b5f @d5f045b1 and the record-only 24a941bac02b r3-era value; T9 close, bead apex-ayl.126.8.4)",
  "cells": [
   {
    "case": "xw-az-az",
