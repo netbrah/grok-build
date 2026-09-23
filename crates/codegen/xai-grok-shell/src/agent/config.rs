@@ -4748,8 +4748,13 @@ fn model_authority_view(
 /// here (the alias bridge survives only inside the R5 max_output table as
 /// a documented exception; the sibling pass stays in the effective
 /// resolver, out of the 6-tier authority chain). Zero exact matches is a
-/// typed absence rejection; more than one is a typed duplicate
-/// rejection. On a bound entry, a Messages `api_backend` additionally
+/// typed absence rejection; more than one (duplicate twin rows — 1M
+/// context-window variants sharing a wire slug — are operator-sanctioned,
+/// apex-ayl.136) binds instead of rejecting: 6-tier priority (an explicit
+/// [model.<key>] config row beats a prefetched row, which beats a
+/// bundled row) with same-tier ties broken by resolved-map order
+/// (deterministic; mirrors `find_model_by_id`'s slug scan within a
+/// tier). On a bound entry, a Messages `api_backend` additionally
 /// requires an EXPLICIT authority (an explicit row field or a
 /// `[model.<id>]` config entry) — a Messages backend that arrived by
 /// inference (donor, catalog, or endpoint defaults — including the
@@ -4776,9 +4781,43 @@ pub(crate) fn bind_messages_wire_model(
             ))
         }
         _ => {
-            return Err(SamplingError::InvalidConfiguration(
-                "messages-wire binding failed: more than one catalog model shares the exact same info.model slug (duplicate rows are rejected at the binding gate)",
-            ))
+            // Duplicate twin rows are operator-sanctioned (1M context-window
+            // variants sharing a wire slug, apex-ayl.136). Selection
+            // follows the 6-tier authority chain (the same sources
+            // model_authority_view tiers by): an explicit [model.<key>]
+            // config row beats a prefetched row, which beats a bundled
+            // row; same-tier ties break by resolved-map order
+            // (deterministic — mirrors find_model_by_id's slug scan
+            // within a tier). A bundled twin row can therefore never
+            // shadow the user's explicit config row for the slug.
+            let chosen = matches
+                .iter()
+                .enumerate()
+                .min_by_key(|(pos, (key, _))| {
+                    let tier = if cfg.config_models.contains_key(key) {
+                        0u8
+                    } else if prefetched
+                        .as_ref()
+                        .map_or(false, |rows| rows.contains_key(key))
+                    {
+                        1
+                    } else {
+                        2
+                    };
+                    (tier, *pos)
+                })
+                .expect("matches is non-empty in the _ arm");
+            let (key, entry) = (&chosen.1 .0, chosen.1 .1);
+            tracing::debug!(
+                requested_slug,
+                candidate_keys = ?matches
+                    .iter()
+                    .map(|(k, _)| k.as_str())
+                    .collect::<Vec<_>>(),
+                bound_key = key.as_str(),
+                "47b gate: duplicate info.model slug — bound by tier priority (config > prefetched > bundled), map-order tie-break"
+            );
+            (key, entry)
         }
     };
     let view = model_authority_view(cfg, key, &prefetched, entry);

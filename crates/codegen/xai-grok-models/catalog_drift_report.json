@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "generated_at": "2026-09-23T07:35:26Z",
+ "generated_at": "2026-09-23T21:14:46Z",
  "gate": "scripts/catalog_gate.py (apex-ayl.128 ZC-SUBSET-DRIFT-1)",
  "inputs": {
   "generated": {
@@ -16,7 +16,7 @@
  },
  "counts": {
   "on_proxy": 76,
-  "overlay_rows": 8,
+  "overlay_rows": 12,
   "curated": 8,
   "skipped": 68,
   "new_unlisted": 0,

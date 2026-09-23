@@ -19,7 +19,15 @@ inverted to SUBSET DRIFT by apex-ayl.128 — coordinator adjudication
                            migration), and the `skip` list: entries
                            {model, reason} = known + intentionally
                            excluded on-proxy models; a skip entry
-                           silences the drift alert for its model)
+                           silences the drift alert for its model;
+                           TWIN rows (apex-ayl.136 CTXWIN-1M-1M): a
+                           curated row whose `model` field names a
+                           DIFFERENT on-proxy wire slug than its row
+                           key — e.g. a 1M context-window variant of a
+                           proxy model — bakes as id=<row key>,
+                           model=<wire slug> and rides the base slug's
+                           generated caps; overlay C-class caps are
+                           forbidden on twins exactly as on base rows)
         -> merge (overlay wins on collision) + validate against the
            apex-hw0 schema (config.schema.json#/definitions/
            ConfigModelOverride — the model-row definition)
@@ -371,6 +379,39 @@ def parse_skip_entries(overlay):
     return entries
 
 
+def effective_model(ov_models, mid):
+    """apex-ayl.136 (CTXWIN-1M-1M): the WIRE SLUG a curated row serves —
+    the row's `model` field when it is a non-empty string, else the row
+    key (legacy rows carry id == model, so this is identity for them).
+    A twin row (row key != `model`, e.g. a 1M context-window variant of
+    a proxy model) names the base slug it rides."""
+    entry = ov_models.get(mid)
+    if isinstance(entry, dict):
+        model = entry.get("model")
+        if isinstance(model, str) and model:
+            return model
+    return mid
+
+
+def bake_row_ids(gen_models, ov_models, bake_list):
+    """apex-ayl.136 (CTXWIN-1M-1M): the merged catalog's row set — the v5
+    F1 set (curated on-proxy rows ∪ the explicit bake list) PLUS the
+    twin rows: curated rows whose `model` field names a DIFFERENT
+    on-proxy wire slug (the base slug must be in the generated catalog;
+    an off-proxy twin is a between-build addition, handled by the
+    existing merge warn). Legacy inputs (no `model` fields) return the
+    byte-identical v5 F1 set."""
+    rows = (set(gen_models) & set(ov_models)) | set(bake_list)
+    for mid, entry in ov_models.items():
+        if not isinstance(entry, dict):
+            continue  # non-table entries are rejected upstream (exit 3)
+        slug = entry.get("model")
+        if (isinstance(slug, str) and slug and slug != mid
+                and slug in gen_models):
+            rows.add(mid)
+    return rows
+
+
 def classify_drift(gen_models, ov_models, skip_entries, bake_list):
     """v4 subset drift contract: every on-proxy model is in {curated,
     skipped, alerted(new_unlisted)} — unlisted is NO hard fail. Off-proxy
@@ -383,36 +424,41 @@ def classify_drift(gen_models, ov_models, skip_entries, bake_list):
     a skip never removes a curated row; F5/N1: the classes are DISJOINT —
     such a model appears ONLY in its curated-side class, on- or
     off-proxy, so the counts never double-count it). Returns
-    (classification, warns)."""
+    (classification, warns). apex-ayl.136: classification is per WIRE
+    SLUG — a twin row (row key != `model`) counts its base slug; the
+    row key is not a slug, so it can never false-positive as
+    removed_but_curated (legacy inputs classify identically)."""
     on_proxy = set(gen_models)
-    ov_ids = set(ov_models)
+    # apex-ayl.136: per-slug membership (see effective_model) — a twin
+    # row counts its base slug, not its row key.
+    ov_slugs = {effective_model(ov_models, mid) for mid in ov_models}
     bake_ids = set(bake_list)
     skip_model_set = {e["model"] for e in skip_entries}
     classification = {
-        "curated": sorted(on_proxy & ov_ids),
+        "curated": sorted(on_proxy & ov_slugs),
         # F5/N1: a skip entry for a curated model is redundant (WARNed
         # below) — the row wins, the model counts ONCE, in curated[];
         # the classes stay disjoint so the counts never double-count.
         "skipped": sorted((e for e in skip_entries
                            if e["model"] in on_proxy
-                           and e["model"] not in ov_ids),
+                           and e["model"] not in ov_slugs),
                           key=lambda e: e["model"]),
         "new_unlisted": sorted(m for m in on_proxy
-                               if m not in ov_ids and m not in skip_model_set),
-        "removed_but_curated": sorted(m for m in ov_ids
+                               if m not in ov_slugs and m not in skip_model_set),
+        "removed_but_curated": sorted(m for m in ov_slugs
                                       if m not in on_proxy and m not in bake_ids),
         # N-R2-3: off-proxy skip for a CURATED model is subsumed by
         # removed_but_curated (the row wins) — disjoint with F5/N1.
         "skip_stale": sorted((e for e in skip_entries
                               if e["model"] not in on_proxy
-                              and e["model"] not in ov_ids),
+                              and e["model"] not in ov_slugs),
                              key=lambda e: e["model"]),
         "bake_listed_off_proxy": sorted(bake_ids - on_proxy),
     }
     warns = []
     for e in sorted(skip_entries, key=lambda e: e["model"]):
         mid = e["model"]
-        if mid in ov_ids:
+        if mid in ov_slugs:
             warns.append(
                 f"skip entry for '{mid}' is redundant: the model is also "
                 f"curated (the row wins) — remove the skip entry")
@@ -586,7 +632,9 @@ def collect_missing(ov_models, bake_list, effort_values):
     def problems_for(mid, entry):
         problems = [f for f in REQUIRED_FIELDS if f not in entry]
         problems += validate_entry_fields(mid, entry, effort_values)
-        problems += _wire_problems(mid, entry)
+        # apex-ayl.136: wire-check by the row's WIRE SLUG (a twin row
+        # rides its base slug's wire).
+        problems += _wire_problems(effective_model(ov_models, mid), entry)
         return problems
 
     for mid, entry in sorted(ov_models.items()):
@@ -607,7 +655,9 @@ def find_forbidden_caps(gen_models, ov_models):
     membership — an overlay entry whose model IS in the generated catalog
     (on the proxy) may not carry a C-class cap (the generated capture is
     the truth); overlay-only models are permitted (the overlay is their
-    sole cap source). Returns [(model_id, fields)] in sorted order."""
+    sole cap source). apex-ayl.136: membership is by the row's WIRE
+    SLUG (the `model` field) — a twin rides its base slug's on-proxy
+    status. Returns [(model_id, fields)] in sorted order."""
     gen_ids = set(gen_models)
     hits = []
     for mid in sorted(ov_models):
@@ -615,7 +665,7 @@ def find_forbidden_caps(gen_models, ov_models):
         if not isinstance(entry, dict):
             continue  # non-table entries are rejected upstream (exit 3)
         fields = [f for f in FORBIDDEN_OVERLAY_FIELDS if f in entry]
-        if fields and mid in gen_ids:
+        if fields and effective_model(ov_models, mid) in gen_ids:
             hits.append((mid, fields))
     return hits
 
@@ -635,12 +685,20 @@ def merge_rows(generated, overlay_models, bake_list=()):
     is drift, tracked by the drift report, never a crash. Returns
     (models, warns);
     coverage and pin integrity are enforced by the caller (fail-closed,
-    exit 2)."""
+    exit 2). apex-ayl.136 (CTXWIN-1M-1M) twin rows: a curated row whose
+    `model` field names a DIFFERENT on-proxy wire slug bakes as
+    id=<row key>, model=<wire slug> and inherits the base slug's
+    generated caps; the row set is the v5 F1 set ∪ the twin rows;
+    legacy (key == slug) inputs merge byte-identically."""
     warns = []
-    row_ids = (set(generated) & set(overlay_models)) | set(bake_list)
+    row_ids = bake_row_ids(generated, overlay_models, bake_list)
     models = {}
     for mid in sorted(row_ids):
-        src = generated.get(mid) or {}
+        # apex-ayl.136: a row serves its WIRE SLUG — the overlay `model`
+        # field (twin rows) or the row key (legacy id == model). A twin
+        # inherits the base slug's generated caps.
+        slug = effective_model(overlay_models, mid)
+        src = generated.get(slug) or {}
         fields = {}
         # Runtime mapping (ModelEntryConfig names; the crate parse struct
         # reads these).
@@ -668,7 +726,7 @@ def merge_rows(generated, overlay_models, bake_list=()):
                 fields[k] = normalize_efforts(entry[k])
             else:
                 fields[k] = entry[k]  # overlay wins on collision
-        models[mid] = {"id": mid, "model": mid, **fields}
+        models[mid] = {"id": mid, "model": slug, **fields}
     for mid in sorted(overlay_models):
         if mid not in row_ids:
             warns.append(
@@ -1227,9 +1285,9 @@ def main():
     # D3: role pins ride the overlay; every pin must reference a row.
     pins = extract_role_pins(overlay)
     # F1: a pin must reference a model that is ACTUALLY baked (curated
-    # ∪ bake list) — an unlisted / skipped / removed target would
-    # dangle at boot the same way.
-    row_ids = (set(gen_models) & set(ov_models)) | set(bake_list)
+    # ∪ bake list ∪ twin rows, apex-ayl.136) — an unlisted / skipped /
+    # removed target would dangle at boot the same way.
+    row_ids = bake_row_ids(gen_models, ov_models, bake_list)
     ok, problems = check_role_pins(pins, row_ids)
     if not ok:
         print("FAIL-CLOSED: role pins incomplete or dangling:", file=sys.stderr)

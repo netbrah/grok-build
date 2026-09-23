@@ -57,6 +57,58 @@
    "system_prompt_label": "Claude Opus 5"
   },
   {
+   "id": "claude-opus-5-1m",
+   "model": "claude-opus-5",
+   "context_window": 1000000,
+   "max_completion_tokens": 128000,
+   "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": "1h",
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "anthropic",
+   "multi_agent_v2": false,
+   "name": "Claude Opus 5 (1M)",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Claude Opus 5"
+  },
+  {
    "id": "claude-sonnet-5",
    "model": "claude-sonnet-5",
    "context_window": 1000000,
@@ -70,6 +122,58 @@
    "model_family": "anthropic",
    "multi_agent_v2": true,
    "name": "Claude Sonnet 5",
+   "reasoning_effort": "medium",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": true
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "xhigh",
+     "value": "xhigh",
+     "label": "Xhigh Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": false,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "Claude Sonnet 5"
+  },
+  {
+   "id": "claude-sonnet-5-1m",
+   "model": "claude-sonnet-5",
+   "context_window": 1000000,
+   "max_completion_tokens": 128000,
+   "api_backend": "messages",
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": "1h",
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "anthropic",
+   "multi_agent_v2": true,
+   "name": "Claude Sonnet 5 (1M)",
    "reasoning_effort": "medium",
    "reasoning_efforts": [
     {
@@ -306,6 +410,59 @@
    "system_prompt_label": "GPT-5.6 Sol"
   },
   {
+   "id": "gpt-5.6-sol-1m",
+   "model": "gpt-5.6-sol",
+   "context_window": 922000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "description": "Latest frontier agentic coding model",
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": true,
+   "name": "GPT-5.6 Sol (1M)",
+   "reasoning_effort": "low",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": true
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": false
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": false
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": true,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5.6 Sol"
+  },
+  {
    "id": "gpt-5.6-terra",
    "model": "gpt-5.6-terra",
    "context_window": 922000,
@@ -319,6 +476,58 @@
    "model_family": "codex",
    "multi_agent_v2": true,
    "name": "GPT-5.6 Terra",
+   "reasoning_effort": "high",
+   "reasoning_efforts": [
+    {
+     "id": "low",
+     "value": "low",
+     "label": "Low Effort",
+     "default": false
+    },
+    {
+     "id": "medium",
+     "value": "medium",
+     "label": "Medium Effort",
+     "default": false
+    },
+    {
+     "id": "high",
+     "value": "high",
+     "label": "High Effort",
+     "default": true
+    },
+    {
+     "id": "max",
+     "value": "max",
+     "label": "Max Effort",
+     "default": false
+    },
+    {
+     "id": "ultra",
+     "value": "ultra",
+     "label": "Ultra Effort",
+     "default": false
+    }
+   ],
+   "strict_responses_input": true,
+   "supports_backend_search": false,
+   "supports_reasoning_effort": true,
+   "system_prompt_label": "GPT-5.6 Terra"
+  },
+  {
+   "id": "gpt-5.6-terra-1m",
+   "model": "gpt-5.6-terra",
+   "context_window": 922000,
+   "max_completion_tokens": 128000,
+   "api_backend": "responses",
+   "auto_compact_threshold_percent": 80,
+   "cache_ttl": null,
+   "compaction_at_tokens": true,
+   "compactions_remaining": 1,
+   "extra_headers": {},
+   "model_family": "codex",
+   "multi_agent_v2": true,
+   "name": "GPT-5.6 Terra (1M)",
    "reasoning_effort": "high",
    "reasoning_efforts": [
     {

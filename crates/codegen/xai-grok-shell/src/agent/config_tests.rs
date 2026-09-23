@@ -9501,9 +9501,11 @@ fn empty_cfg() -> Config {
 }
 
 /// T27 (47b): exact `info.model` binding. The dotted<->hyphen alias,
-/// prefix/suffix, and duplicate-sibling cases must NOT bind (RED-2 red:
-/// the stub's tolerance binds them); an absent slug is a typed rejection
-/// (green both phases).
+/// prefix/suffix cases must NOT bind (RED-2 red: the stub's tolerance
+/// binds them); an absent slug is a typed rejection (green both phases);
+/// duplicate-sibling (twin) rows bind the FIRST row in resolved-map
+/// order (apex-ayl.136: operator-sanctioned 1M context-window twins —
+/// the earlier duplicate-rejection expectation is retired).
 #[test]
 fn exact_slug_binding_match() {
     let cfg = empty_cfg();
@@ -9550,13 +9552,25 @@ fn exact_slug_binding_match() {
     );
 
     // duplicate siblings (two keys sharing one info.model) => duplicate
-    // rejection (RED-2 red: the stub binds the first match)
+    // twin rows bind the FIRST row in resolved-map order (apex-ayl.136:
+    // operator-sanctioned 1M context-window variants; deterministic
+    // first-match, same semantics as find_model_by_id's slug scan).
+    // Pinned via context_window: the two rows are otherwise identical
+    // fallback placeholders.
     let mut dup_prefetched = IndexMap::new();
-    dup_prefetched.insert("a".to_string(), prefetched_row("m-dup"));
-    dup_prefetched.insert("b".to_string(), prefetched_row("m-dup"));
-    assert!(
-        bind_messages_wire_model(&cfg, Some(dup_prefetched), "m-dup").is_err(),
-        "duplicate info.model must be rejected at the binding gate"
+    let mut dup_first = prefetched_row("m-dup");
+    dup_first.info.context_window = NonZeroU64::new(300_000).unwrap();
+    let mut dup_second = prefetched_row("m-dup");
+    dup_second.info.context_window = NonZeroU64::new(400_000).unwrap();
+    dup_prefetched.insert("a".to_string(), dup_first);
+    dup_prefetched.insert("b".to_string(), dup_second);
+    let dup_view = bind_messages_wire_model(&cfg, Some(dup_prefetched), "m-dup")
+        .expect("duplicate slug must bind (twin rows are operator-sanctioned, apex-ayl.136)");
+    assert_eq!(dup_view.model, "m-dup");
+    assert_eq!(
+        dup_view.context_window.value,
+        NonZeroU64::new(300_000).unwrap(),
+        "duplicate slug must bind the FIRST row in map order (first-match, find_model_by_id semantics)"
     );
 }
 
@@ -9831,20 +9845,31 @@ models_base_url = "http://{addr}"
     );
 }
 
-/// T32 (47b): two prefetched rows with an identical `info.model` must be
-/// rejected at the binding gate as a typed duplicate error (RED-2 red:
-/// the stub binds the first match).
+/// T32 (47b, re-pinned for apex-ayl.136 CTXWIN-1M-1M): two prefetched
+/// rows with an identical `info.model` are NO LONGER rejected at the
+/// binding gate — duplicate twin rows (1M context-window variants
+/// sharing a wire slug) are operator-sanctioned. Same-tier candidates
+/// bind deterministically by resolved-map order (the first inserted row
+/// wins). The original RED-2 expectation (typed duplicate rejection) is
+/// superseded by the twin-row sanction; pinned via context_window (the
+/// two rows are otherwise identical fallback placeholders).
 #[test]
-fn duplicate_slug_rejected() {
+fn duplicate_slug_binds_first_same_tier_match() {
     let cfg = empty_cfg();
     let mut prefetched = IndexMap::new();
-    prefetched.insert("dup-1".to_string(), prefetched_row("m-dup"));
-    prefetched.insert("dup-2".to_string(), prefetched_row("m-dup"));
-    let err = bind_messages_wire_model(&cfg, Some(prefetched), "m-dup")
-        .expect_err("duplicate info.model must be rejected at the binding gate");
-    assert!(
-        matches!(err, SamplingError::InvalidConfiguration(_)),
-        "got: {err:?}"
+    let mut dup_first = prefetched_row("m-dup");
+    dup_first.info.context_window = NonZeroU64::new(300_000).unwrap();
+    let mut dup_second = prefetched_row("m-dup");
+    dup_second.info.context_window = NonZeroU64::new(400_000).unwrap();
+    prefetched.insert("dup-1".to_string(), dup_first);
+    prefetched.insert("dup-2".to_string(), dup_second);
+    let view = bind_messages_wire_model(&cfg, Some(prefetched), "m-dup")
+        .expect("sanctioned duplicate info.model binds (twin rows, apex-ayl.136)");
+    assert_eq!(view.model, "m-dup");
+    assert_eq!(
+        view.context_window.value,
+        NonZeroU64::new(300_000).unwrap(),
+        "same-tier duplicates bind the first row in resolved-map order"
     );
 }
 

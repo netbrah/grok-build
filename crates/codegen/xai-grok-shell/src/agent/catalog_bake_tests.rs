@@ -42,10 +42,13 @@ use crate::sampling::ApiBackend;
 /// 2026-09-22 curation cut (ZC-SUBSET-CURATION-1 / apex-ayl.129): the
 /// baked catalog is the operator-approved 8-row zero-config menu
 /// (curated overlay rows only; the `bake` list is empty — grok-4.5 was
-/// cut). Drift is the gate's job, not a constant bump: a different
-/// model count fails the python suite's `generated: 76 models` check at
+/// cut); CTXWIN-1M-1M (apex-ayl.136, 2026-09-23) adds four 1M
+/// context-window twin rows (id = twin key, model = base wire slug,
+/// riding the base slug's generated caps): 8 base + 4 twin = 12.
+/// Drift is the gate's job, not a constant bump: a different model
+/// count fails the python suite's `generated: 76 models` check at
 /// exfil time.
-const BUNDLED_ROW_COUNT: usize = 8;
+const BUNDLED_ROW_COUNT: usize = 12;
 
 /// A synthetic prefetched (live) row: the proxy omitted `context_window`
 /// (the fetch hydration placeholder — seam-eligible for donor inheritance)

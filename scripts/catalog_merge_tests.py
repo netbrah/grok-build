@@ -95,6 +95,16 @@ v2 — the operator-adjudicated 3-delta (2026-09-19) reshaped the contract:
       grok-4.6 deployment is broken; the grok-4.6 row stays in the
       menu for explicit /model use) — the role-pin assertion in
       test_d is re-pinned accordingly.
+  v7 — CTXWIN-1M-1M twin rows (apex-ayl.136, 2026-09-23): a curated
+      overlay row whose `model` field names a DIFFERENT on-proxy wire
+      slug is a TWIN row (the 1M context-window variants): it bakes as
+      id=<row key>, model=<wire slug> and inherits the base slug's
+      generated caps; overlay C-class caps are forbidden on twins via
+      the effective slug (exit 2); drift classification is per WIRE
+      SLUG (a twin row key can never false-positive as
+      removed_but_curated, and the base slug counts ONCE in curated);
+      legacy (key == slug) inputs merge byte-identically. test_r pins
+      the contract.
 
 Run:  python3 scripts/catalog_merge_tests.py   (exit 0 = all pass)
 """
@@ -406,12 +416,30 @@ def test_d_committed_artifacts():
     rows = merged.get("models")
     check("merged models is an array", isinstance(rows, list))
     by_id = {r["id"]: r for r in rows}
-    check("8 merged rows (the curated zero-config menu, apex-ayl.129)",
-          len(rows) == 8, f"got {len(rows)}")
-    check("row set = curated ∪ bake list (F1 product ruling: the 8-row "
+    # apex-ayl.136 (CTXWIN-1M-1M): the menu is now 8 base rows + 4
+    # 1M-twin rows (claude-opus-5-1m / claude-sonnet-5-1m /
+    # gpt-5.6-sol-1m / gpt-5.6-terra-1m) — 12 merged rows.
+    check("12 merged rows (the 8-row curated menu, apex-ayl.129, + the "
+          "four 1M twin rows, apex-ayl.136)",
+          len(rows) == 12, f"got {len(rows)}")
+    check("row set = bake_row_ids (F1 product ruling ∪ twin rows: the "
           "curated menu rides; unlisted/skipped on-proxy models do not)",
-          set(by_id) == ((set(gen["models"]) & set(ov["models"]))
-                         | set(ov.get("bake", []))))
+          set(by_id) == gate.bake_row_ids(gen["models"], ov["models"],
+                                          ov.get("bake", [])))
+    check("twin rows ride: id = row key, model = base wire slug",
+          by_id["claude-opus-5-1m"]["model"] == "claude-opus-5"
+          and by_id["claude-sonnet-5-1m"]["model"] == "claude-sonnet-5"
+          and by_id["gpt-5.6-sol-1m"]["model"] == "gpt-5.6-sol"
+          and by_id["gpt-5.6-terra-1m"]["model"] == "gpt-5.6-terra")
+    check("twin rows carry the base slug's generated caps (C-class: the "
+          "proxy's truth — claude 1000000, gpt-5.6 922000)",
+          by_id["claude-opus-5-1m"]["context_window"] == 1000000
+          and by_id["claude-sonnet-5-1m"]["context_window"] == 1000000
+          and by_id["gpt-5.6-sol-1m"]["context_window"] == 922000
+          and by_id["gpt-5.6-terra-1m"]["context_window"] == 922000
+          and all(by_id[t]["max_completion_tokens"] == 128000
+                  for t in ("claude-opus-5-1m", "claude-sonnet-5-1m",
+                            "gpt-5.6-sol-1m", "gpt-5.6-terra-1m")))
     check("rows sorted by id", [r["id"] for r in rows] == sorted(by_id))
     check("gemma-4-31b absent from the menu (its overlay row was cut "
           "with the 8-row curation)",
@@ -496,8 +524,9 @@ def test_d_committed_artifacts():
           and {k: v for k, v in merged.items() if k != "models"} == gate.extract_role_pins(ov))
     # F1 (CRITICAL INVARIANT — the product ruling): on the CURRENT
     # overlay the merge output must be deterministic and
-    # BYTE-IDENTICAL to the freshly baked in-tree artifact (merged=8,
-    # the curated zero-config menu; drift=curated:8/skipped:68/
+    # BYTE-IDENTICAL to the freshly baked in-tree artifact (merged=12,
+    # the 8-row curated zero-config menu + the four 1M twin rows,
+    # apex-ayl.136; drift=curated:8/skipped:68/
     # unlisted:0/removed:0/skip_stale:0 — apex-ayl.129 curation cut,
     # 2026-09-22; the old invariant pinned the 77-row .128 pre-cut
     # baseline against git HEAD). Re-bake to a temp out and cmp
@@ -512,7 +541,7 @@ def test_d_committed_artifacts():
         last = proc.stderr.splitlines()[-1] if proc.stderr else ""
         check("F1 baseline invariant: the exact baseline OK line",
               last.startswith(
-                  "OK merged=8 overlay_entries=8 schema_errors=0 warns=0 "
+                  "OK merged=12 overlay_entries=12 schema_errors=0 warns=0 "
                   "drift=curated:8/skipped:68/unlisted:0/removed:0/"
                   "skip_stale:0 out="),
               last)
@@ -524,8 +553,9 @@ def test_d_committed_artifacts():
               "committed default_models.json (cmp)",
               baked == committed,
               f"baked={len(baked)}B committed={len(committed)}B")
-        check("F1 baseline invariant: merged row count is 8",
-              len(json.load(open(base_out))["models"]) == 8)
+        check("F1 baseline invariant: merged row count is 12 (8 base + 4 "
+              "twin rows, apex-ayl.136)",
+              len(json.load(open(base_out))["models"]) == 12)
     # v4: the drift report bakes with every bake (committed alongside).
     drift_p = os.path.join(MODELS_DIR, "catalog_drift_report.json")
     check("drift report committed with the bake", os.path.isfile(drift_p))
@@ -535,9 +565,15 @@ def test_d_committed_artifacts():
           and "counts" in report, json.dumps(report)[:300])
     cls = report["classification"]
     check("drift report: classification recomputes from the committed inputs",
-          cls["curated"] == sorted(set(gen["models"]) & set(ov["models"]))
+          # apex-ayl.136: per WIRE SLUG — a twin row counts its base
+          # slug (effective_model), so the twin row keys never leak into
+          # curated / removed_but_curated.
+          cls["curated"] == sorted(
+              set(gen["models"])
+              & {gate.effective_model(ov["models"], m) for m in ov["models"]})
           and cls["removed_but_curated"] == sorted(
-              set(ov["models"]) - set(gen["models"]) - set(ov.get("bake", [])))
+              {gate.effective_model(ov["models"], m) for m in ov["models"]}
+              - set(gen["models"]) - set(ov.get("bake", [])))
           and cls["bake_listed_off_proxy"] == sorted(
               set(ov.get("bake", [])) - set(gen["models"])),
           json.dumps(cls)[:400])
@@ -1466,6 +1502,127 @@ def test_q_round2_microfixes():
           repr(cls2["skip_stale"]))
 
 
+def test_r_twin_rows():
+    """(r) v7 CTXWIN-1M-1M twin rows (apex-ayl.136): a curated row whose
+    `model` field names a different on-proxy wire slug bakes as
+    id=<row key>, model=<wire slug> riding the base slug's generated
+    caps; overlay C-class caps on a twin fail closed via the effective
+    slug; drift classification is per-slug (no false
+    removed_but_curated); legacy rows merge byte-identically."""
+    print("r) CTXWIN-1M-1M twin rows (apex-ayl.136)")
+    gen = {
+        "claude-opus-5": {"id": "claude-opus-5", "max_input_tokens": 1000000,
+                          "max_output_tokens": 128000},
+        "gpt-5.6-sol": {"id": "gpt-5.6-sol", "max_input_tokens": 922000,
+                        "max_output_tokens": 128000},
+    }
+    ov = {
+        "claude-opus-5": full_entry("claude-opus-5", "messages", "anthropic",
+                                    menu_objs("low", "medium", "high",
+                                              default="medium"),
+                                    name="Claude Opus 5"),
+        "claude-opus-5-1m": full_entry("claude-opus-5-1m", "messages",
+                                       "anthropic",
+                                       menu_objs("low", "medium", "high",
+                                                 default="medium"),
+                                       name="Claude Opus 5 (1M)",
+                                       system_prompt_label="Claude Opus 5",
+                                       model="claude-opus-5"),
+        "gpt-5.6-sol": full_entry("gpt-5.6-sol", "responses", "codex",
+                                  menu_objs("low", "medium", "high",
+                                            default="medium"),
+                                  name="GPT-5.6 Sol"),
+        "gpt-5.6-sol-1m": full_entry("gpt-5.6-sol-1m", "responses", "codex",
+                                     menu_objs("low", "medium", "high",
+                                               default="medium"),
+                                     name="GPT-5.6 Sol (1M)",
+                                     system_prompt_label="GPT-5.6 Sol",
+                                     model="gpt-5.6-sol"),
+    }
+    # (a) the twin bakes: id = row key, model = base wire slug, caps from
+    # the BASE slug's generated row.
+    models, warns = gate.merge_rows(gen, ov, [])
+    check("twin bakes: id = row key, model = base wire slug",
+          models["claude-opus-5-1m"]["id"] == "claude-opus-5-1m"
+          and models["claude-opus-5-1m"]["model"] == "claude-opus-5",
+          json.dumps(models["claude-opus-5-1m"]))
+    check("claude twin inherits the base slug's generated caps",
+          models["claude-opus-5-1m"]["context_window"] == 1000000
+          and models["claude-opus-5-1m"]["max_completion_tokens"] == 128000)
+    check("sol twin inherits the base slug's generated caps",
+          models["gpt-5.6-sol-1m"]["model"] == "gpt-5.6-sol"
+          and models["gpt-5.6-sol-1m"]["context_window"] == 922000
+          and models["gpt-5.6-sol-1m"]["max_completion_tokens"] == 128000)
+    # (d) legacy rows are byte-identical (id == model, no twin in sight).
+    check("legacy rows merge byte-identical (id == model)",
+          models["claude-opus-5"]["id"] == "claude-opus-5"
+          and models["claude-opus-5"]["model"] == "claude-opus-5"
+          and models["gpt-5.6-sol"]["model"] == "gpt-5.6-sol")
+    check("row set = base rows ∪ twins",
+          sorted(models) == ["claude-opus-5", "claude-opus-5-1m",
+                             "gpt-5.6-sol", "gpt-5.6-sol-1m"],
+          json.dumps(sorted(models)))
+    # (b) drift classification is per WIRE SLUG: the twin row key never
+    # false-positives as removed_but_curated, and the base slug counts
+    # ONCE in curated — the twin leaves every drift class unchanged vs
+    # the base-only state.
+    cls_tw, _ = gate.classify_drift(gen_models=gen, ov_models=ov,
+                                    skip_entries=[], bake_list=[])
+    check("no removed_but_curated false positive for twin row keys",
+          cls_tw["removed_but_curated"] == [], repr(cls_tw))
+    check("curated counts each base slug ONCE (twins ride the slug)",
+          cls_tw["curated"] == ["claude-opus-5", "gpt-5.6-sol"], repr(cls_tw))
+    cls_base, _ = gate.classify_drift(
+        gen_models=gen,
+        ov_models={"claude-opus-5": ov["claude-opus-5"],
+                   "gpt-5.6-sol": ov["gpt-5.6-sol"]},
+        skip_entries=[], bake_list=[])
+    check("twin rows leave every drift class unchanged vs base-only state",
+          cls_tw == cls_base, repr((cls_tw, cls_base)))
+    # wire cross-check rides the base slug: the clean twins pass; a twin
+    # moved onto the wrong wire for its base slug is flagged.
+    check("clean twins pass the wire cross-check via the base slug",
+          gate.collect_missing(ov, [], EFFORTS) == [],
+          repr(gate.collect_missing(ov, [], EFFORTS)))
+    bad = dict(ov["gpt-5.6-sol-1m"])
+    bad["api_backend"] = "messages"  # wrong wire for a gpt-5.6 slug
+    ov_wire = dict(ov)
+    ov_wire["gpt-5.6-sol-1m"] = bad
+    missing = gate.collect_missing(ov_wire, [], EFFORTS)
+    check("twin on the wrong wire is flagged via the base slug",
+          len(missing) == 1 and missing[0][0] == "gpt-5.6-sol-1m"
+          and any("api_backend" in p for p in missing[0][1]),
+          repr(missing))
+    # (c) end-to-end: the twin overlay bakes clean (exit 0, artifact
+    # carries the twin row); a twin carrying overlay C-class caps fails
+    # closed via the effective slug (exit 2, artifact NOT written).
+    with tempfile.TemporaryDirectory() as td:
+        genp, ovp, outp = (os.path.join(td, n) for n in ("g.json", "o.json", "out.json"))
+        json.dump({"models": gen}, open(genp, "w"))
+        json.dump({"default": "gpt-5.6-sol", "models": ov}, open(ovp, "w"))
+        proc = run_gate(genp, ovp, outp)
+        check("twin overlay bakes clean (exit 0)", proc.returncode == 0,
+              f"rc={proc.returncode} err={proc.stderr}")
+        art = {m["id"]: m for m in json.load(open(outp))["models"]}
+        check("artifact twin row: id = key, model = base slug, base caps",
+              art["claude-opus-5-1m"]["model"] == "claude-opus-5"
+              and art["claude-opus-5-1m"]["context_window"] == 1000000
+              and art["gpt-5.6-sol-1m"]["model"] == "gpt-5.6-sol"
+              and art["gpt-5.6-sol-1m"]["context_window"] == 922000,
+              json.dumps(art.get("claude-opus-5-1m")))
+        cap = dict(ov["claude-opus-5-1m"])
+        cap["context_window"] = 1048576  # forbidden: the base is on-proxy
+        ov_bad = dict(ov)
+        ov_bad["claude-opus-5-1m"] = cap
+        json.dump({"default": "gpt-5.6-sol", "models": ov_bad}, open(ovp, "w"))
+        proc = run_gate(genp, ovp, outp)
+        check("twin carrying overlay caps fails closed (exit 2)",
+              proc.returncode == 2, f"rc={proc.returncode} err={proc.stderr}")
+        check("fail names the twin row + the forbidden field",
+              "claude-opus-5-1m" in proc.stderr
+              and "context_window" in proc.stderr, proc.stderr)
+
+
 if __name__ == "__main__":
     test_a_merge_precedence_and_row_shape()
     test_b_subset_drift_coverage()
@@ -1484,4 +1641,5 @@ if __name__ == "__main__":
     test_o_closed_keyset()
     test_p_exit_code_contract()
     test_q_round2_microfixes()
+    test_r_twin_rows()
     print(f"ALL PASS ({PASS} checks)")
