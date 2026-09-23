@@ -131,7 +131,17 @@ impl PlatformInfo {
 
 impl UserAgent {
     fn render(&self) -> String {
-        if std::env::var("APEX_UA").as_deref() == Ok("true") {
+        let apex_env = std::env::var("APEX_UA");
+        // UA-DEFAULT-1 (apex-ayl.126.3): the corporate LLM proxy gates APEX
+        // keys on the `apex` wire-User-Agent prefix, so under apex-deploy
+        // the Apex form is the zero-config default (operator ruling
+        // 2026-09-22). Explicit `APEX_UA=true`/`false` select the form in
+        // both builds; stock builds are byte-identical to pre-cut.
+        #[cfg(feature = "apex-deploy")]
+        let apex = apex_env.as_deref() != Ok("false");
+        #[cfg(not(feature = "apex-deploy"))]
+        let apex = apex_env.as_deref() == Ok("true");
+        if apex {
             return format!(
                 "Apex/apexai-{} ({}; {})",
                 self.agent_version, self.platform.os, self.platform.arch,
@@ -494,6 +504,8 @@ pub fn shared_startup_blocking_client() -> reqwest::blocking::Client {
 #[allow(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
+
     use super::*;
 
     #[test]
@@ -763,7 +775,11 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn session_user_agent_string_renders_expected_variants() {
+        // UA-DEFAULT-1: pin the stock form explicitly — hermetic in both
+        // builds (apex-deploy defaults the Apex form).
+        let _apex_ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "false");
         let with_version = session_user_agent_string(&OriginClientInfo {
             product: "grok-desktop".to_string(),
             version: Some("1.2.3".to_string()),
@@ -780,7 +796,11 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn user_agent_render_collapses_duplicate_origin_and_agent_identity() {
+        // UA-DEFAULT-1: pin the stock form explicitly — hermetic in both
+        // builds (apex-deploy defaults the Apex form).
+        let _apex_ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "false");
         let ua = UserAgent {
             origin: OriginClientInfo {
                 product: "grok-shell".to_string(),
@@ -795,6 +815,102 @@ mod tests {
         };
 
         assert_eq!(ua.render(), "grok-shell/0.1.171 (macos; aarch64)");
+    }
+
+    // UA-DEFAULT-1 (apex-ayl.126.3): `APEX_UA` semantics across the
+    // `apex-deploy` build. The corporate LLM proxy gates APEX keys on the
+    // `apex` wire-User-Agent prefix (llm-proxy `application.py`
+    // `APPLICATION_USER_AGENT_RULES`), so under apex-deploy the Apex form is
+    // the zero-config default (operator ruling 2026-09-22). Explicit
+    // `APEX_UA=true`/`false` select Apex/stock in both builds. `#[serial]` +
+    // EnvGuard: the tests mutate the process env and must serialize against
+    // any other env-touching test in the binary.
+    fn apex_ua_fixture() -> UserAgent {
+        UserAgent {
+            origin: OriginClientInfo {
+                product: "grok-desktop".to_string(),
+                version: Some("1.2.3".to_string()),
+            },
+            agent_product: "grok-shell",
+            agent_version: "9.9.9".to_string(),
+            platform: PlatformInfo {
+                os: "macos".to_string(),
+                arch: "aarch64".to_string(),
+            },
+        }
+    }
+
+    const UA_APEX_RENDERED: &str = "Apex/apexai-9.9.9 (macos; aarch64)";
+    const UA_STOCK_RENDERED: &str = "grok-desktop/1.2.3 grok-shell/9.9.9 (macos; aarch64)";
+
+    /// Unset `APEX_UA`: stock build stays stock (byte-identical pre-cut),
+    /// apex-deploy build flips to the Apex form (the zero-config cut).
+    #[test]
+    #[serial]
+    fn ua_env_unset_uses_build_default() {
+        let _apex_ua = xai_grok_test_support::EnvGuard::unset("APEX_UA");
+        let rendered = apex_ua_fixture().render();
+        #[cfg(feature = "apex-deploy")]
+        assert_eq!(
+            rendered,
+            UA_APEX_RENDERED,
+            "apex-deploy with APEX_UA unset must default to the Apex form"
+        );
+        #[cfg(not(feature = "apex-deploy"))]
+        assert_eq!(
+            rendered,
+            UA_STOCK_RENDERED,
+            "stock build with APEX_UA unset must stay stock"
+        );
+    }
+
+    /// Any other `APEX_UA` value (e.g. `"1"`): the build default applies,
+    /// not the stock fallback. Pin for the ratified truth table's
+    /// other-values row: without it, a future "tidy" rewriting the deploy
+    /// arm as `== Ok("true") || env.is_err()` flips other-values Apex→stock
+    /// in deploy builds and passes every other UA test.
+    #[test]
+    #[serial]
+    fn ua_env_other_value_uses_build_default() {
+        let _apex_ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "1");
+        let rendered = apex_ua_fixture().render();
+        #[cfg(feature = "apex-deploy")]
+        assert_eq!(
+            rendered,
+            UA_APEX_RENDERED,
+            "apex-deploy with APEX_UA=1 must take the build default (Apex), not the stock fallback"
+        );
+        #[cfg(not(feature = "apex-deploy"))]
+        assert_eq!(
+            rendered,
+            UA_STOCK_RENDERED,
+            "stock build with APEX_UA=1 must stay stock (only the literal true selects Apex)"
+        );
+    }
+
+    /// Explicit `APEX_UA=true`: Apex form in both builds (unchanged).
+    #[test]
+    #[serial]
+    fn ua_env_true_forces_apex_form_in_both_builds() {
+        let _apex_ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "true");
+        assert_eq!(
+            apex_ua_fixture().render(),
+            UA_APEX_RENDERED,
+            "explicit true selects the Apex form in both builds"
+        );
+    }
+
+    /// Explicit `APEX_UA=false`: stock form in both builds (the new
+    /// explicit escape).
+    #[test]
+    #[serial]
+    fn ua_env_false_forces_stock_form_in_both_builds() {
+        let _apex_ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "false");
+        assert_eq!(
+            apex_ua_fixture().render(),
+            UA_STOCK_RENDERED,
+            "explicit false selects the stock form in both builds"
+        );
     }
 
     #[tokio::test]

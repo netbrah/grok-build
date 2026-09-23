@@ -14,7 +14,11 @@ dhat-heap = ["dep:dhat"]
 # `[endpoints] default_env_key` built-in
 # `["CODEX_LLM_PROXY_KEY", "APEX_LLM_PROXY_KEY"]`, so a bare binary with
 # only `APEX_LLM_PROXY_KEY` in env is fully operational. No new deps.
-apex-deploy = []
+# UA-DEFAULT-1 (apex-ayl.126.3): forwards to `xai-grok-http/apex-deploy` so
+# the wire User-Agent defaults to the Apex form (proxy application gate);
+# `xai-grok-sampler/apex-deploy` gates the per-request sampling wire UA
+# mirror (the sole UA source for LLM requests).
+apex-deploy = ["xai-grok-http/apex-deploy", "xai-grok-sampler/apex-deploy"]
 # Session synthesis + in-process e2e harness (`session::testkit`) for soak,
 # load, and bench tests. Off by default; the tests/benches that use it declare
 # it via `required-features`. Forwards `xai-grok-login/test-support` for downstream test builds.

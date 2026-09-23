@@ -5,6 +5,12 @@ version = "0.1.0"
 edition.workspace = true
 description = "Shared reqwest HTTP clients and User-Agent construction for the grok CLI."
 
+[features]
+# UA-DEFAULT-1 (apex-ayl.126.3): forwarded from `xai-grok-shell/apex-deploy`;
+# under it the wire User-Agent defaults to the Apex form (the corporate LLM
+# proxy gates APEX keys on the `apex` UA prefix). Operator ruling 2026-09-22.
+apex-deploy = []
+
 [dependencies]
 reqwest = { workspace = true, features = ["blocking", "rustls-tls-native-roots"] }
 reqwest-middleware = { workspace = true }
@@ -21,7 +27,9 @@ xai-grok-workspace = { workspace = true }
 
 [dev-dependencies]
 rcgen = { workspace = true }
+serial_test = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+xai-grok-test-support = { workspace = true }
 
 [lints]
 workspace = true

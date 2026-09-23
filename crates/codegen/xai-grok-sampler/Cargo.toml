@@ -5,6 +5,13 @@ version = "0.1.0"
 edition.workspace = true
 description = "Actor-based sampling/inference layer for xAI grok (HTTP streaming + retry, no shell coupling)"
 
+[features]
+# UA-DEFAULT-1 (apex-ayl.126.3, extension): forwarded from
+# `xai-grok-shell/apex-deploy`; under it the per-request sampling wire UA
+# (this crate's `user_agent_string_for` mirror) defaults to the Apex form,
+# same gate as `xai-grok-http/apex-deploy`. Operator ruling 2026-09-22.
+apex-deploy = []
+
 [dependencies]
 # Internal
 xai-grok-auth = { workspace = true }
@@ -42,6 +49,7 @@ axum-server = { workspace = true, features = ["tls-rustls"] }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["registry"] }
+serial_test = { workspace = true }
 # Shared SSE generators for the happy-path mock payloads.
 xai-grok-test-support = { workspace = true }
 # `start_paused = true` for deterministic timeout testing; `net` for

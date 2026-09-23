@@ -1184,7 +1184,16 @@ pub fn user_agent_string_for(origin: &OriginClientInfo) -> String {
     let agent_version = agent_version();
     let platform = PlatformInfo::current();
 
-    if std::env::var("APEX_UA").as_deref() == Ok("true") {
+    let apex_env = std::env::var("APEX_UA");
+    // UA-DEFAULT-1 (apex-ayl.126.3, extension): the same proxy application
+    // gate applies to the sampling wire, whose per-request UA is sourced
+    // only from this mirror — same cfg-split default as
+    // `xai_grok_http::UserAgent::render` (operator ruling 2026-09-22).
+    #[cfg(feature = "apex-deploy")]
+    let apex = apex_env.as_deref() != Ok("false");
+    #[cfg(not(feature = "apex-deploy"))]
+    let apex = apex_env.as_deref() == Ok("true");
+    if apex {
         return format!(
             "Apex/apexai-{} ({}; {})",
             agent_version, platform.os, platform.arch
@@ -3651,6 +3660,8 @@ fn stream_collect_error(info: SamplingErrorInfo) -> SamplingError {
 
 #[cfg(test)]
 mod tests {
+    use serial_test::serial;
+
     use super::*;
     use axum::{Router, body::Bytes, routing::post};
     use indexmap::IndexMap;
@@ -4344,7 +4355,11 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn user_agent_includes_origin_and_agent_product() {
+        // UA-DEFAULT-1: pin the stock form explicitly — hermetic in both
+        // builds (apex-deploy defaults the wire UA to the Apex form).
+        let _apex_ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "false");
         let origin = OriginClientInfo {
             product: "my-client".to_string(),
             version: Some("1.2.3".to_string()),
@@ -4355,7 +4370,11 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn user_agent_omits_origin_version_when_absent() {
+        // UA-DEFAULT-1: pin the stock form explicitly — hermetic in both
+        // builds (apex-deploy defaults the wire UA to the Apex form).
+        let _apex_ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "false");
         let origin = OriginClientInfo {
             product: "my-client".to_string(),
             version: None,
@@ -4366,7 +4385,11 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn user_agent_collapses_when_origin_matches_agent() {
+        // UA-DEFAULT-1: pin the stock form explicitly — hermetic in both
+        // builds (apex-deploy defaults the wire UA to the Apex form).
+        let _apex_ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "false");
         let agent_version = xai_grok_version::VERSION.to_string();
         let origin = OriginClientInfo {
             product: AGENT_PRODUCT.to_string(),
@@ -4375,6 +4398,133 @@ mod tests {
         let ua = user_agent_string_for(&origin);
         // Single product/version slot when the origin and agent match.
         assert!(ua.starts_with(&format!("{}/{}", AGENT_PRODUCT, agent_version)));
+    }
+
+    // UA-DEFAULT-1 (apex-ayl.126.3, extension): `APEX_UA` semantics for the
+    // sampler's wire UA. The per-request insert in `build_request` sources
+    // the UA only from this crate's `user_agent_string_for` mirror (no
+    // client-level UA on the sampler's shared clients), so the mirror
+    // carries the same build-default flip as
+    // `xai_grok_http::UserAgent::render`. `#[serial]` + EnvGuard: the tests
+    // mutate the process env and must serialize against any other
+    // env-touching test in the binary.
+    fn ua_env_apex_expected() -> String {
+        let platform = PlatformInfo::current();
+        format!(
+            "Apex/apexai-{} ({}; {})",
+            agent_version(),
+            platform.os,
+            platform.arch
+        )
+    }
+
+    /// Unset `APEX_UA`: stock build stays stock (byte-identical pre-cut),
+    /// apex-deploy build flips the wire UA to the Apex form (the
+    /// zero-config cut).
+    #[test]
+    #[serial]
+    fn user_agent_env_unset_uses_build_default() {
+        let _apex_ua = xai_grok_test_support::EnvGuard::unset("APEX_UA");
+        let origin = OriginClientInfo {
+            product: "my-client".to_string(),
+            version: Some("1.2.3".to_string()),
+        };
+        let ua = user_agent_string_for(&origin);
+        #[cfg(feature = "apex-deploy")]
+        assert_eq!(
+            ua,
+            ua_env_apex_expected(),
+            "apex-deploy with APEX_UA unset must default the wire UA to the Apex form"
+        );
+        #[cfg(not(feature = "apex-deploy"))]
+        {
+            let platform = PlatformInfo::current();
+            assert_eq!(
+                ua,
+                format!(
+                    "my-client/1.2.3 {AGENT_PRODUCT}/{} ({}; {})",
+                    agent_version(),
+                    platform.os,
+                    platform.arch
+                ),
+                "stock build with APEX_UA unset must stay stock"
+            );
+        }
+    }
+
+    /// Any other `APEX_UA` value (e.g. `"1"`): the build default applies,
+    /// not the stock fallback. Pin for the ratified truth table's
+    /// other-values row: without it, a future "tidy" rewriting the deploy
+    /// arm as `== Ok("true") || env.is_err()` flips other-values Apex→stock
+    /// in deploy builds and passes every other UA test.
+    #[test]
+    #[serial]
+    fn user_agent_env_other_value_uses_build_default() {
+        let _apex_ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "1");
+        let origin = OriginClientInfo {
+            product: "my-client".to_string(),
+            version: Some("1.2.3".to_string()),
+        };
+        let ua = user_agent_string_for(&origin);
+        #[cfg(feature = "apex-deploy")]
+        assert_eq!(
+            ua,
+            ua_env_apex_expected(),
+            "apex-deploy with APEX_UA=1 must take the build default (Apex), not the stock fallback"
+        );
+        #[cfg(not(feature = "apex-deploy"))]
+        {
+            let platform = PlatformInfo::current();
+            assert_eq!(
+                ua,
+                format!(
+                    "my-client/1.2.3 {AGENT_PRODUCT}/{} ({}; {})",
+                    agent_version(),
+                    platform.os,
+                    platform.arch
+                ),
+                "stock build with APEX_UA=1 must stay stock (only the literal true selects Apex)"
+            );
+        }
+    }
+
+    /// Explicit `APEX_UA=true`: Apex form in both builds (unchanged).
+    #[test]
+    #[serial]
+    fn user_agent_env_true_forces_apex_form_in_both_builds() {
+        let _apex_ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "true");
+        let origin = OriginClientInfo {
+            product: "my-client".to_string(),
+            version: Some("1.2.3".to_string()),
+        };
+        assert_eq!(
+            user_agent_string_for(&origin),
+            ua_env_apex_expected(),
+            "explicit true selects the Apex form in both builds"
+        );
+    }
+
+    /// Explicit `APEX_UA=false`: stock form in both builds (the new
+    /// explicit escape).
+    #[test]
+    #[serial]
+    fn user_agent_env_false_forces_stock_form_in_both_builds() {
+        let _apex_ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "false");
+        let origin = OriginClientInfo {
+            product: "my-client".to_string(),
+            version: Some("1.2.3".to_string()),
+        };
+        let platform = PlatformInfo::current();
+        assert_eq!(
+            user_agent_string_for(&origin),
+            format!(
+                "my-client/1.2.3 {AGENT_PRODUCT}/{} ({}; {})",
+                agent_version(),
+                platform.os,
+                platform.arch
+            ),
+            "explicit false is the stock-form escape in both builds"
+        );
     }
 
     /// Counts callbacks for assertions in the tests below.
