@@ -79,9 +79,9 @@ fn bundled_catalog_parses_rich_rows() {
     assert_eq!(sol.multi_agent_v2, Some(true), "sol: v2 multi-agent gate");
     assert_eq!(sol.model_family.as_deref(), Some("codex"));
     assert_eq!(
-        sol.extra_headers.get("x-litellm-tags").map(String::as_str),
-        Some("East US 2"),
-        "sol: curated deployment tag"
+        sol.extra_headers.get("x-litellm-tags"),
+        None,
+        "sol: untagged (ZC-EAST2-UNPIN-1 / apex-ayl.126.6 — the East US 2 pin was removed)"
     );
     assert!(!sol.supports_backend_search, "sol: overlay pins backend search off");
     assert_eq!(

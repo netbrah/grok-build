@@ -1,371 +1,385 @@
 {
-  "version": 1,
-  "suite": "wstream",
-  "bead": "TBD (streaming-matrix; see ledger — raised with the taskable-now batch)",
-  "note": "wstream — wire-streaming matrix. Captures STREAMING behavior (the harness's real path) across the model x api_backend x wire cross-product via the dogfood hermetic-home mechanism (live config copy + per-cell api_backend patch + wiretap2 -> real proxy + headless streaming turn). Invariants pin known W10 behavior (status/route/model-calls); observations capture the W10 open questions the harness can reach. FROZEN per-run config is the derived-config.toml written to each cell's report dir (we do not store full 293-line config copies — the derivation is live-config + a declared api_backend patch, captured per-run).",
-  "cross_product": "model x api_backend x wire (SELECTIVE — 6 frontier models x native + targeted overrides; not full enumeration)",
-  "wire_legend": {
-    "responses": "/v1/responses",
-    "messages": "/v1/messages",
-    "chat_completions": "/v1/chat/completions"
-  },
-  "mechanism": "smoke/wstream/run.py (self-contained; pattern source smoke/redteam/run.py + smoke/wiretap/wiretap.py + smoke/redteam/grok-dogfood.v2; NOT imported to stay decoupled from the actively-edited redteam lane)",
-  "binary_of_record": "target/release/grok-responses sha256_12 39f836e8633d (2026-09-17 09:18)",
-  "resolved_oqs": [
-    "OQ-1",
-    "OQ-2",
-    "OQ-3",
-    "OQ-5",
+ "version": 1,
+ "suite": "wstream",
+ "bead": "TBD (streaming-matrix; see ledger \u2014 raised with the taskable-now batch)",
+ "note": "wstream \u2014 wire-streaming matrix. Captures STREAMING behavior (the harness's real path) across the model x api_backend x wire cross-product via the dogfood hermetic-home mechanism (live config copy + per-cell api_backend patch + wiretap2 -> real proxy + headless streaming turn). Invariants pin known W10 behavior (status/route/model-calls); observations capture the W10 open questions the harness can reach. FROZEN per-run config is the derived-config.toml written to each cell's report dir (we do not store full 293-line config copies \u2014 the derivation is live-config + a declared api_backend patch, captured per-run).",
+ "cross_product": "model x api_backend x wire (SELECTIVE \u2014 6 frontier models x native + targeted overrides; not full enumeration)",
+ "wire_legend": {
+  "responses": "/v1/responses",
+  "messages": "/v1/messages",
+  "chat_completions": "/v1/chat/completions"
+ },
+ "mechanism": "smoke/wstream/run.py (self-contained; pattern source smoke/redteam/run.py + smoke/wiretap/wiretap.py + smoke/redteam/grok-dogfood.v2; NOT imported to stay decoupled from the actively-edited redteam lane)",
+ "binary_of_record": "target/release/grok-responses sha256_12 39f836e8633d (2026-09-17 09:18)",
+ "resolved_oqs": [
+  "OQ-1",
+  "OQ-2",
+  "OQ-3",
+  "OQ-5",
+  "OQ-7"
+ ],
+ "out_of_scope_oqs": [
+  "OQ-4 thoughtSignature multi-turn (google-dialect /generateContent \u2014 not reachable via the harness's 3 api_backends)",
+  "OQ-10 gemini naming (3.8-flash vs 3.1-pro \u2014 proxy-level catalog question)"
+ ],
+ "probe_policy": "store=false MUST; small bounded prompt (modular exponentiation); per-turn kill budget 180s; raw-key sweep = 0; one retry per cell on transport error",
+ "cells": [
+  {
+   "cell": "grok-resp",
+   "model": "grok-4.6",
+   "api_backend": "responses",
+   "wire": "responses",
+   "backend_class": "native",
+   "status": "QUEUED",
+   "priority": 1,
+   "dir": "cells/grok-resp",
+   "open_questions": [
     "OQ-7"
-  ],
-  "out_of_scope_oqs": [
-    "OQ-4 thoughtSignature multi-turn (google-dialect /generateContent — not reachable via the harness's 3 api_backends)",
-    "OQ-10 gemini naming (3.8-flash vs 3.1-pro — proxy-level catalog question)"
-  ],
-  "probe_policy": "store=false MUST; small bounded prompt (modular exponentiation); per-turn kill budget 180s; raw-key sweep = 0; one retry per cell on transport error",
-  "cells": [
-    {
-      "cell": "grok-resp",
-      "model": "grok-4.6",
-      "api_backend": "responses",
-      "wire": "responses",
-      "backend_class": "native",
-      "status": "QUEUED",
-      "priority": 1,
-      "dir": "cells/grok-resp",
-      "open_questions": [
-        "OQ-7"
-      ],
-      "owner": "coordinator (wstream suite, 2026-09-17)"
-    },
-    {
-      "cell": "sol-resp",
-      "model": "gpt-5.6-sol",
-      "api_backend": "responses",
-      "wire": "responses",
-      "backend_class": "native",
-      "status": "QUEUED",
-      "priority": 1,
-      "dir": "cells/sol-resp",
-      "open_questions": [
-        "OQ-1"
-      ],
-      "owner": "coordinator (wstream suite, 2026-09-17)"
-    },
-    {
-      "cell": "opus-msg",
-      "model": "claude-opus-5",
-      "api_backend": "messages",
-      "wire": "messages",
-      "backend_class": "native",
-      "status": "QUEUED",
-      "priority": 1,
-      "dir": "cells/opus-msg",
-      "open_questions": [
-        "OQ-2"
-      ],
-      "owner": "coordinator (wstream suite, 2026-09-17)"
-    },
-    {
-      "cell": "gemini-resp",
-      "model": "gemini-3.1-pro-preview",
-      "api_backend": "responses",
-      "wire": "responses",
-      "backend_class": "native",
-      "status": "QUEUED",
-      "priority": 1,
-      "dir": "cells/gemini-resp",
-      "open_questions": [
-        "OQ-2"
-      ],
-      "owner": "coordinator (wstream suite, 2026-09-17)"
-    },
-    {
-      "cell": "qwen-resp",
-      "model": "qwen3.8-27b",
-      "api_backend": "responses",
-      "wire": "responses",
-      "backend_class": "native",
-      "status": "QUEUED",
-      "priority": 1,
-      "dir": "cells/qwen-resp",
-      "open_questions": [
-        "OQ-3"
-      ],
-      "owner": "coordinator (wstream suite, 2026-09-17)"
-    },
-    {
-      "cell": "glm-resp",
-      "model": "glm-5.2",
-      "api_backend": "responses",
-      "wire": "responses",
-      "backend_class": "native",
-      "status": "QUEUED",
-      "priority": 2,
-      "dir": "cells/glm-resp",
-      "open_questions": [],
-      "owner": "coordinator (wstream suite, 2026-09-17)"
-    },
-    {
-      "cell": "sol-msg",
-      "model": "gpt-5.6-sol",
-      "api_backend": "messages",
-      "wire": "messages",
-      "backend_class": "override",
-      "status": "QUEUED",
-      "priority": 2,
-      "dir": "cells/sol-msg",
-      "open_questions": [
-        "OQ-5"
-      ],
-      "owner": "coordinator (wstream suite, 2026-09-17)"
-    },
-    {
-      "cell": "qwen-msg",
-      "model": "qwen3.8-27b",
-      "api_backend": "messages",
-      "wire": "messages",
-      "backend_class": "override",
-      "status": "QUEUED",
-      "priority": 3,
-      "dir": "cells/qwen-msg",
-      "open_questions": [
-        "OQ-5"
-      ],
-      "owner": "coordinator (wstream suite, 2026-09-17)"
-    },
-    {
-      "cell": "gemini-msg",
-      "model": "gemini-3.1-pro-preview",
-      "api_backend": "messages",
-      "wire": "messages",
-      "backend_class": "override",
-      "status": "QUEUED",
-      "priority": 3,
-      "dir": "cells/gemini-msg",
-      "open_questions": [
-        "OQ-5"
-      ],
-      "owner": "coordinator (wstream suite, 2026-09-17)"
-    },
-    {
-      "cell": "grok-chat",
-      "model": "grok-4.6",
-      "api_backend": "chat_completions",
-      "wire": "chat/completions",
-      "backend_class": "override",
-      "status": "QUEUED",
-      "priority": 3,
-      "dir": "cells/grok-chat",
-      "open_questions": [
-        "OQ-7"
-      ],
-      "owner": "coordinator (wstream suite, 2026-09-17)"
-    },
-    {
-      "cell": "ws9-s01-toolloop-sol",
-      "model": "gpt-5.6-sol",
-      "api_backend": "responses",
-      "wire": "responses",
-      "backend_class": "native",
-      "status": "QUEUED",
-      "priority": 3,
-      "dir": "cells/ws9-s01-toolloop-sol",
-      "open_questions": [
-        "WS9-S01 streaming arm"
-      ],
-      "owner": "sdd78_schema_qwen (WS9 streaming arm, 2026-09-18)",
-      "enabled": false,
-      "note": "WS9 (bead apex-ayl.78) streaming arm of row S01: tool-loop SSE frames on the strict sol seat (existing sol-resp cell is no-tool). Additive; disabled by default — run explicitly via --cells ws9-s01-toolloop-sol. Schema: grok/plans/ws9-12row-schema.md."
-    },
-    {
-      "cell": "ws9-s12-alias-claude-msg",
-      "model": "claude-sonnet-5",
-      "api_backend": "messages",
-      "wire": "messages",
-      "backend_class": "native",
-      "status": "QUEUED",
-      "priority": 3,
-      "dir": "cells/ws9-s12-alias-claude-msg",
-      "open_questions": [
-        "WS9-S12 control baseline"
-      ],
-      "owner": "sdd78_schema_qwen (WS9 streaming arm, 2026-09-18)",
-      "enabled": false,
-      "note": "WS9 (bead apex-ayl.78) anthropic-family control baseline (claude-sonnet-5 not covered by the original 10 cells; opus-msg covers claude-opus-5). Feeds the S06/S12 rows' stream-fidelity + boundary-marker reference. Additive; disabled by default — run explicitly via --cells ws9-s12-alias-claude-msg. Schema: grok/plans/ws9-12row-schema.md."
-    },
-    {
-      "cell": "terra-resp",
-      "model": "gpt-5.6-terra",
-      "api_backend": "responses",
-      "wire": "responses",
-      "backend_class": "native",
-      "status": "QUEUED",
-      "priority": 2,
-      "dir": "cells/terra-resp",
-      "open_questions": [
-        "PARITY-ARMS terra /responses arm vs recorded sol arm"
-      ],
-      "owner": "coordinator parity-arms 2026-09-19",
-      "enabled": false,
-      "note": "PARITY-ARMS (coordinator parity-arms, 2026-09-19): model-arm cell of the grok-build parity campaign — apples-to-apples vs the recorded sol-resp arm (report/20260919T060151Z/sol-resp, same binary-of-record f9e7a15d6b6b); prompt = the v2 A/B hard question (grok/plans/codex-parity-smoke/parity-prompt.txt (v1/v2 A/B hard question, byte-identical)). Additive manifest entry — UNAVOIDABLE: run.py select_cells() gates every --cell lookup on manifest membership ('cell  not in manifest — skipped'), so a new cell cannot be discovered without a list append (precedent: ws9-* cells, same pattern). enabled:false in THIS entry keeps the arm out of default/--native matrix runs; the launch driver runs them explicitly via --cell <id>, which bypasses the enabled check. Manifest entry enabled=false is a run-selection guard only; the cell.json field enabled=true per the launch directive. All pre-existing manifest bytes are byte-unchanged."
-    },
-    {
-      "cell": "sonnet-msg",
-      "model": "claude-sonnet-5",
-      "api_backend": "messages",
-      "wire": "messages",
-      "backend_class": "native",
-      "status": "QUEUED",
-      "priority": 2,
-      "dir": "cells/sonnet-msg",
-      "open_questions": [
-        "PARITY-ARMS claude /messages arm vs recorded sol arm"
-      ],
-      "owner": "coordinator parity-arms 2026-09-19",
-      "enabled": false,
-      "note": "PARITY-ARMS (coordinator parity-arms, 2026-09-19): model-arm cell of the grok-build parity campaign — apples-to-apples vs the recorded sol-resp arm (report/20260919T060151Z/sol-resp, same binary-of-record f9e7a15d6b6b); prompt = the v2 A/B hard question (grok/plans/codex-parity-smoke/parity-prompt.txt (v1/v2 A/B hard question, byte-identical)). Additive manifest entry — UNAVOIDABLE: run.py select_cells() gates every --cell lookup on manifest membership ('cell  not in manifest — skipped'), so a new cell cannot be discovered without a list append (precedent: ws9-* cells, same pattern). enabled:false in THIS entry keeps the arm out of default/--native matrix runs; the launch driver runs them explicitly via --cell <id>, which bypasses the enabled check. Manifest entry enabled=false is a run-selection guard only; the cell.json field enabled=true per the launch directive. All pre-existing manifest bytes are byte-unchanged."
-    },
-    {
-      "cell": "opus-msg-hard",
-      "model": "claude-opus-5",
-      "api_backend": "messages",
-      "wire": "messages",
-      "backend_class": "native",
-      "status": "QUEUED",
-      "priority": 2,
-      "dir": "cells/opus-msg-hard",
-      "open_questions": [
-        "PARITY-ARMS opus /messages hardest-question arm (single-opus budget)"
-      ],
-      "owner": "coordinator parity-arms 2026-09-19",
-      "enabled": false,
-      "note": "PARITY-ARMS (coordinator parity-arms, 2026-09-19): model-arm cell of the grok-build parity campaign — apples-to-apples vs the recorded sol-resp arm (report/20260919T060151Z/sol-resp, same binary-of-record f9e7a15d6b6b); prompt = the v2 A/B hard question (grok/plans/codex-parity-smoke/parity-prompt.txt (v1/v2 A/B hard question, byte-identical)). Additive manifest entry — UNAVOIDABLE: run.py select_cells() gates every --cell lookup on manifest membership ('cell  not in manifest — skipped'), so a new cell cannot be discovered without a list append (precedent: ws9-* cells, same pattern). enabled:false in THIS entry keeps the arm out of default/--native matrix runs; the launch driver runs them explicitly via --cell <id>, which bypasses the enabled check. Manifest entry enabled=false is a run-selection guard only; the cell.json field enabled=true per the launch directive. All pre-existing manifest bytes are byte-unchanged."
-    },
-    {
-      "cell": "qwen-resp-hard-1",
-      "model": "qwen3.8-27b",
-      "api_backend": "responses",
-      "wire": "responses",
-      "backend_class": "native",
-      "status": "QUEUED",
-      "priority": 2,
-      "dir": "cells/qwen-resp-hard-1",
-      "open_questions": [
-        "PARITY-ARMS qwen /responses hard-question arm (on-prem, cost 0)"
-      ],
-      "owner": "coordinator parity-arms 2026-09-19",
-      "enabled": false,
-      "note": "PARITY-ARMS (coordinator parity-arms, 2026-09-19): model-arm cell of the grok-build parity campaign — apples-to-apples vs the recorded sol-resp arm (report/20260919T060151Z/sol-resp, same binary-of-record f9e7a15d6b6b); prompt = the v2 A/B hard question (grok/plans/codex-parity-smoke/parity-prompt.txt (v1/v2 A/B hard question, byte-identical)). Additive manifest entry — UNAVOIDABLE: run.py select_cells() gates every --cell lookup on manifest membership ('cell  not in manifest — skipped'), so a new cell cannot be discovered without a list append (precedent: ws9-* cells, same pattern). enabled:false in THIS entry keeps the arm out of default/--native matrix runs; the launch driver runs them explicitly via --cell <id>, which bypasses the enabled check. Manifest entry enabled=false is a run-selection guard only; the cell.json field enabled=true per the launch directive. All pre-existing manifest bytes are byte-unchanged."
-    },
-    {
-      "cell": "qwen-resp-hard-2",
-      "model": "qwen3.8-27b",
-      "api_backend": "responses",
-      "wire": "responses",
-      "backend_class": "native",
-      "status": "QUEUED",
-      "priority": 2,
-      "dir": "cells/qwen-resp-hard-2",
-      "open_questions": [
-        "PARITY-ARMS qwen /responses second cell — repeat of hard question (no 2nd question in v2 set)"
-      ],
-      "owner": "coordinator parity-arms 2026-09-19",
-      "enabled": false,
-      "note": "PARITY-ARMS (coordinator parity-arms, 2026-09-19): model-arm cell of the grok-build parity campaign — apples-to-apples vs the recorded sol-resp arm (report/20260919T060151Z/sol-resp, same binary-of-record f9e7a15d6b6b); prompt = the v2 A/B hard question (grok/plans/codex-parity-smoke/parity-prompt.txt (v1/v2 A/B hard question, byte-identical)). Additive manifest entry — UNAVOIDABLE: run.py select_cells() gates every --cell lookup on manifest membership ('cell  not in manifest — skipped'), so a new cell cannot be discovered without a list append (precedent: ws9-* cells, same pattern). enabled:false in THIS entry keeps the arm out of default/--native matrix runs; the launch driver runs them explicitly via --cell <id>, which bypasses the enabled check. Manifest entry enabled=false is a run-selection guard only; the cell.json field enabled=true per the launch directive. All pre-existing manifest bytes are byte-unchanged."
-    },
-    {
-      "cell": "terra-churn-resp",
-      "model": "gpt-5.6-terra",
-      "api_backend": "responses",
-      "wire": "responses",
-      "backend_class": "native",
-      "status": "QUEUED",
-      "priority": 2,
-      "dir": "cells/terra-churn-resp",
-      "open_questions": [
-        "REAL-TASK terra /responses churn-redesign arm"
-      ],
-      "owner": "coordinator parity-arms real-task 2026-09-19",
-      "enabled": false,
-      "note": "REAL-TASK ARMS (2026-09-19 late, coordinator parity-arms real-task): operator — the toy minidiff question was 'entirely too cheap'; these arms run the campaign's own churn-redesign problem (E1-E6 evidence base + grok/plans/merge-xai/00-merge-readiness.md inlined verbatim, 13,640 B prompt, byte-identical across the 4 arms). Same mechanism/binary-of-record (f9e7a15d6b6b); per-cell kill budget 7200 s; driver /tmp/parity-arms/run-arms2.sh (sequential: terra -> sonnet -> qwen -> opus; STATUS2.log). Additive manifest entry — UNAVOIDABLE (select_cells gates --cell on manifest membership); enabled:false here is a run-selection guard only (explicit --cell bypasses it; cell.json enabled=true per directive). All pre-existing manifest bytes byte-unchanged. Manifest: grok/plans/codex-parity-smoke/reports/arms-launch-manifest-20260919.md (REAL-TASK ARMS section). KNOWN EXPECTATION: sonnet-churn-msg will likely re-hit the .89-class per-item 10k cap — capture + let it fail; the partial wire + failure point is the data."
-    },
-    {
-      "cell": "sonnet-churn-msg",
-      "model": "claude-sonnet-5",
-      "api_backend": "messages",
-      "wire": "messages",
-      "backend_class": "native",
-      "status": "QUEUED",
-      "priority": 2,
-      "dir": "cells/sonnet-churn-msg",
-      "open_questions": [
-        "REAL-TASK claude /messages churn-redesign arm"
-      ],
-      "owner": "coordinator parity-arms real-task 2026-09-19",
-      "enabled": false,
-      "note": "REAL-TASK ARMS (2026-09-19 late, coordinator parity-arms real-task): operator — the toy minidiff question was 'entirely too cheap'; these arms run the campaign's own churn-redesign problem (E1-E6 evidence base + grok/plans/merge-xai/00-merge-readiness.md inlined verbatim, 13,640 B prompt, byte-identical across the 4 arms). Same mechanism/binary-of-record (f9e7a15d6b6b); per-cell kill budget 7200 s; driver /tmp/parity-arms/run-arms2.sh (sequential: terra -> sonnet -> qwen -> opus; STATUS2.log). Additive manifest entry — UNAVOIDABLE (select_cells gates --cell on manifest membership); enabled:false here is a run-selection guard only (explicit --cell bypasses it; cell.json enabled=true per directive). All pre-existing manifest bytes byte-unchanged. Manifest: grok/plans/codex-parity-smoke/reports/arms-launch-manifest-20260919.md (REAL-TASK ARMS section). KNOWN EXPECTATION: sonnet-churn-msg will likely re-hit the .89-class per-item 10k cap — capture + let it fail; the partial wire + failure point is the data."
-    },
-    {
-      "cell": "qwen-churn-resp",
-      "model": "qwen3.8-27b",
-      "api_backend": "responses",
-      "wire": "responses",
-      "backend_class": "native",
-      "status": "QUEUED",
-      "priority": 2,
-      "dir": "cells/qwen-churn-resp",
-      "open_questions": [
-        "REAL-TASK qwen /responses churn-redesign arm (on-prem, cost 0)"
-      ],
-      "owner": "coordinator parity-arms real-task 2026-09-19",
-      "enabled": false,
-      "note": "REAL-TASK ARMS (2026-09-19 late, coordinator parity-arms real-task): operator — the toy minidiff question was 'entirely too cheap'; these arms run the campaign's own churn-redesign problem (E1-E6 evidence base + grok/plans/merge-xai/00-merge-readiness.md inlined verbatim, 13,640 B prompt, byte-identical across the 4 arms). Same mechanism/binary-of-record (f9e7a15d6b6b); per-cell kill budget 7200 s; driver /tmp/parity-arms/run-arms2.sh (sequential: terra -> sonnet -> qwen -> opus; STATUS2.log). Additive manifest entry — UNAVOIDABLE (select_cells gates --cell on manifest membership); enabled:false here is a run-selection guard only (explicit --cell bypasses it; cell.json enabled=true per directive). All pre-existing manifest bytes byte-unchanged. Manifest: grok/plans/codex-parity-smoke/reports/arms-launch-manifest-20260919.md (REAL-TASK ARMS section). KNOWN EXPECTATION: sonnet-churn-msg will likely re-hit the .89-class per-item 10k cap — capture + let it fail; the partial wire + failure point is the data."
-    },
-    {
-      "cell": "opus-churn-msg",
-      "model": "claude-opus-5",
-      "api_backend": "messages",
-      "wire": "messages",
-      "backend_class": "native",
-      "status": "QUEUED",
-      "priority": 2,
-      "dir": "cells/opus-churn-msg",
-      "open_questions": [
-        "REAL-TASK opus /messages churn-redesign arm (last, most expensive)"
-      ],
-      "owner": "coordinator parity-arms real-task 2026-09-19",
-      "enabled": false,
-      "note": "REAL-TASK ARMS (2026-09-19 late, coordinator parity-arms real-task): operator — the toy minidiff question was 'entirely too cheap'; these arms run the campaign's own churn-redesign problem (E1-E6 evidence base + grok/plans/merge-xai/00-merge-readiness.md inlined verbatim, 13,640 B prompt, byte-identical across the 4 arms). Same mechanism/binary-of-record (f9e7a15d6b6b); per-cell kill budget 7200 s; driver /tmp/parity-arms/run-arms2.sh (sequential: terra -> sonnet -> qwen -> opus; STATUS2.log). Additive manifest entry — UNAVOIDABLE (select_cells gates --cell on manifest membership); enabled:false here is a run-selection guard only (explicit --cell bypasses it; cell.json enabled=true per directive). All pre-existing manifest bytes byte-unchanged. Manifest: grok/plans/codex-parity-smoke/reports/arms-launch-manifest-20260919.md (REAL-TASK ARMS section). KNOWN EXPECTATION: sonnet-churn-msg will likely re-hit the .89-class per-item 10k cap — capture + let it fail; the partial wire + failure point is the data."
-    }
-  ],
-  "ws9": {
-    "bead": "apex-ayl.78 (WS9-SCENARIOS-1, P2 RANK 10, ship gate LAST)",
-    "note": "Additive ws9-* cells (Phase A schema authoring, sdd78_schema_qwen, 2026-09-18): 2 streaming-arm cells for the 12-scenario ship-gate wave (S01 tool-loop sol arm; S12 anthropic-family control baseline). All ws9-* cells are enabled:false — they never join a default wstream run; launch them explicitly (--cells ws9-...) during Phase B. Original 10 cells and all pre-existing manifest fields are byte-unchanged (verified by the additive-update script). No wstream runner changes: cells use only the runner's existing cell.json surface (cell/model/api_backend/turns/prompt/invariants/observe). Schema + budget: grok/plans/ws9-12row-schema.md.",
-    "cells_added": [
-      "ws9-s01-toolloop-sol",
-      "ws9-s12-alias-claude-msg"
-    ]
+   ],
+   "owner": "coordinator (wstream suite, 2026-09-17)"
   },
-  "parity_arms": {
-    "bead": "n/a (campaign-level model arms; see reports/arms-launch-manifest-20260919.md in grok/plans/codex-parity-smoke/)",
-    "note": "FLAG (2026-09-19, coordinator parity-arms 2026-09-19): additive manifest edit — 5 new cell entries appended to the 'cells' list ONLY (original 12 entries + all pre-existing top-level fields byte-unchanged, verified by round-trip). This edit was UNAVOIDABLE: run.py select_cells() skips any --cell id absent from this list (see smoke/wstream/run.py, 'cell  not in manifest — skipped'). Launch: driver /tmp/parity-arms/run-arms.sh, sequential, binary /tmp/binary-of-record-f9e7a15d6b6b, --timeout 3600. Manifest: grok/plans/codex-parity-smoke/reports/arms-launch-manifest-20260919.md.",
-    "cells_added": [
-      "terra-resp",
-      "sonnet-msg",
-      "opus-msg-hard",
-      "qwen-resp-hard-1",
-      "qwen-resp-hard-2"
-    ]
+  {
+   "cell": "sol-resp",
+   "model": "gpt-5.6-sol",
+   "api_backend": "responses",
+   "wire": "responses",
+   "backend_class": "native",
+   "status": "QUEUED",
+   "priority": 1,
+   "dir": "cells/sol-resp",
+   "open_questions": [
+    "OQ-1"
+   ],
+   "owner": "coordinator (wstream suite, 2026-09-17)"
   },
-  "parity_arms_real_task": {
-    "bead": "n/a (campaign-level real-task model arms; see reports/arms-launch-manifest-20260919.md, REAL-TASK ARMS section)",
-    "note": "FLAG (2026-09-19 late): second additive manifest edit — 4 real-task cell entries appended to 'cells' ONLY (17 -> 21; all pre-existing bytes byte-unchanged, verified by round-trip). Same unavoidability as parity_arms (select_cells membership gate). Budget: exactly these 4 cells, once each (operator). Real-task cost 10-50x the toy; opus last/expected 30-90 min.",
-    "cells_added": [
-      "terra-churn-resp",
-      "sonnet-churn-msg",
-      "qwen-churn-resp",
-      "opus-churn-msg"
-    ]
+  {
+   "cell": "opus-msg",
+   "model": "claude-opus-5",
+   "api_backend": "messages",
+   "wire": "messages",
+   "backend_class": "native",
+   "status": "QUEUED",
+   "priority": 1,
+   "dir": "cells/opus-msg",
+   "open_questions": [
+    "OQ-2"
+   ],
+   "owner": "coordinator (wstream suite, 2026-09-17)"
+  },
+  {
+   "cell": "gemini-resp",
+   "model": "gemini-3.1-pro-preview",
+   "api_backend": "responses",
+   "wire": "responses",
+   "backend_class": "native",
+   "status": "QUEUED",
+   "priority": 1,
+   "dir": "cells/gemini-resp",
+   "open_questions": [
+    "OQ-2"
+   ],
+   "owner": "coordinator (wstream suite, 2026-09-17)"
+  },
+  {
+   "cell": "qwen-resp",
+   "model": "qwen3.8-27b",
+   "api_backend": "responses",
+   "wire": "responses",
+   "backend_class": "native",
+   "status": "QUEUED",
+   "priority": 1,
+   "dir": "cells/qwen-resp",
+   "open_questions": [
+    "OQ-3"
+   ],
+   "owner": "coordinator (wstream suite, 2026-09-17)"
+  },
+  {
+   "cell": "glm-resp",
+   "model": "glm-5.2",
+   "api_backend": "responses",
+   "wire": "responses",
+   "backend_class": "native",
+   "status": "QUEUED",
+   "priority": 2,
+   "dir": "cells/glm-resp",
+   "open_questions": [],
+   "owner": "coordinator (wstream suite, 2026-09-17)"
+  },
+  {
+   "cell": "sol-msg",
+   "model": "gpt-5.6-sol",
+   "api_backend": "messages",
+   "wire": "messages",
+   "backend_class": "override",
+   "status": "QUEUED",
+   "priority": 2,
+   "dir": "cells/sol-msg",
+   "open_questions": [
+    "OQ-5"
+   ],
+   "owner": "coordinator (wstream suite, 2026-09-17)"
+  },
+  {
+   "cell": "qwen-msg",
+   "model": "qwen3.8-27b",
+   "api_backend": "messages",
+   "wire": "messages",
+   "backend_class": "override",
+   "status": "QUEUED",
+   "priority": 3,
+   "dir": "cells/qwen-msg",
+   "open_questions": [
+    "OQ-5"
+   ],
+   "owner": "coordinator (wstream suite, 2026-09-17)"
+  },
+  {
+   "cell": "gemini-msg",
+   "model": "gemini-3.1-pro-preview",
+   "api_backend": "messages",
+   "wire": "messages",
+   "backend_class": "override",
+   "status": "QUEUED",
+   "priority": 3,
+   "dir": "cells/gemini-msg",
+   "open_questions": [
+    "OQ-5"
+   ],
+   "owner": "coordinator (wstream suite, 2026-09-17)"
+  },
+  {
+   "cell": "grok-chat",
+   "model": "grok-4.6",
+   "api_backend": "chat_completions",
+   "wire": "chat/completions",
+   "backend_class": "override",
+   "status": "QUEUED",
+   "priority": 3,
+   "dir": "cells/grok-chat",
+   "open_questions": [
+    "OQ-7"
+   ],
+   "owner": "coordinator (wstream suite, 2026-09-17)"
+  },
+  {
+   "cell": "ws9-s01-toolloop-sol",
+   "model": "gpt-5.6-sol",
+   "api_backend": "responses",
+   "wire": "responses",
+   "backend_class": "native",
+   "status": "QUEUED",
+   "priority": 3,
+   "dir": "cells/ws9-s01-toolloop-sol",
+   "open_questions": [
+    "WS9-S01 streaming arm"
+   ],
+   "owner": "sdd78_schema_qwen (WS9 streaming arm, 2026-09-18)",
+   "enabled": false,
+   "note": "WS9 (bead apex-ayl.78) streaming arm of row S01: tool-loop SSE frames on the strict sol seat (existing sol-resp cell is no-tool). Additive; disabled by default \u2014 run explicitly via --cells ws9-s01-toolloop-sol. Schema: grok/plans/ws9-12row-schema.md."
+  },
+  {
+   "cell": "ws9-s12-alias-claude-msg",
+   "model": "claude-sonnet-5",
+   "api_backend": "messages",
+   "wire": "messages",
+   "backend_class": "native",
+   "status": "QUEUED",
+   "priority": 3,
+   "dir": "cells/ws9-s12-alias-claude-msg",
+   "open_questions": [
+    "WS9-S12 control baseline"
+   ],
+   "owner": "sdd78_schema_qwen (WS9 streaming arm, 2026-09-18)",
+   "enabled": false,
+   "note": "WS9 (bead apex-ayl.78) anthropic-family control baseline (claude-sonnet-5 not covered by the original 10 cells; opus-msg covers claude-opus-5). Feeds the S06/S12 rows' stream-fidelity + boundary-marker reference. Additive; disabled by default \u2014 run explicitly via --cells ws9-s12-alias-claude-msg. Schema: grok/plans/ws9-12row-schema.md."
+  },
+  {
+   "cell": "terra-resp",
+   "model": "gpt-5.6-terra",
+   "api_backend": "responses",
+   "wire": "responses",
+   "backend_class": "native",
+   "status": "QUEUED",
+   "priority": 2,
+   "dir": "cells/terra-resp",
+   "open_questions": [
+    "PARITY-ARMS terra /responses arm vs recorded sol arm"
+   ],
+   "owner": "coordinator parity-arms 2026-09-19",
+   "enabled": false,
+   "note": "PARITY-ARMS (coordinator parity-arms, 2026-09-19): model-arm cell of the grok-build parity campaign \u2014 apples-to-apples vs the recorded sol-resp arm (report/20260919T060151Z/sol-resp, same binary-of-record f9e7a15d6b6b); prompt = the v2 A/B hard question (grok/plans/codex-parity-smoke/parity-prompt.txt (v1/v2 A/B hard question, byte-identical)). Additive manifest entry \u2014 UNAVOIDABLE: run.py select_cells() gates every --cell lookup on manifest membership ('cell  not in manifest \u2014 skipped'), so a new cell cannot be discovered without a list append (precedent: ws9-* cells, same pattern). enabled:false in THIS entry keeps the arm out of default/--native matrix runs; the launch driver runs them explicitly via --cell <id>, which bypasses the enabled check. Manifest entry enabled=false is a run-selection guard only; the cell.json field enabled=true per the launch directive. All pre-existing manifest bytes are byte-unchanged."
+  },
+  {
+   "cell": "sonnet-msg",
+   "model": "claude-sonnet-5",
+   "api_backend": "messages",
+   "wire": "messages",
+   "backend_class": "native",
+   "status": "QUEUED",
+   "priority": 2,
+   "dir": "cells/sonnet-msg",
+   "open_questions": [
+    "PARITY-ARMS claude /messages arm vs recorded sol arm"
+   ],
+   "owner": "coordinator parity-arms 2026-09-19",
+   "enabled": false,
+   "note": "PARITY-ARMS (coordinator parity-arms, 2026-09-19): model-arm cell of the grok-build parity campaign \u2014 apples-to-apples vs the recorded sol-resp arm (report/20260919T060151Z/sol-resp, same binary-of-record f9e7a15d6b6b); prompt = the v2 A/B hard question (grok/plans/codex-parity-smoke/parity-prompt.txt (v1/v2 A/B hard question, byte-identical)). Additive manifest entry \u2014 UNAVOIDABLE: run.py select_cells() gates every --cell lookup on manifest membership ('cell  not in manifest \u2014 skipped'), so a new cell cannot be discovered without a list append (precedent: ws9-* cells, same pattern). enabled:false in THIS entry keeps the arm out of default/--native matrix runs; the launch driver runs them explicitly via --cell <id>, which bypasses the enabled check. Manifest entry enabled=false is a run-selection guard only; the cell.json field enabled=true per the launch directive. All pre-existing manifest bytes are byte-unchanged."
+  },
+  {
+   "cell": "opus-msg-hard",
+   "model": "claude-opus-5",
+   "api_backend": "messages",
+   "wire": "messages",
+   "backend_class": "native",
+   "status": "QUEUED",
+   "priority": 2,
+   "dir": "cells/opus-msg-hard",
+   "open_questions": [
+    "PARITY-ARMS opus /messages hardest-question arm (single-opus budget)"
+   ],
+   "owner": "coordinator parity-arms 2026-09-19",
+   "enabled": false,
+   "note": "PARITY-ARMS (coordinator parity-arms, 2026-09-19): model-arm cell of the grok-build parity campaign \u2014 apples-to-apples vs the recorded sol-resp arm (report/20260919T060151Z/sol-resp, same binary-of-record f9e7a15d6b6b); prompt = the v2 A/B hard question (grok/plans/codex-parity-smoke/parity-prompt.txt (v1/v2 A/B hard question, byte-identical)). Additive manifest entry \u2014 UNAVOIDABLE: run.py select_cells() gates every --cell lookup on manifest membership ('cell  not in manifest \u2014 skipped'), so a new cell cannot be discovered without a list append (precedent: ws9-* cells, same pattern). enabled:false in THIS entry keeps the arm out of default/--native matrix runs; the launch driver runs them explicitly via --cell <id>, which bypasses the enabled check. Manifest entry enabled=false is a run-selection guard only; the cell.json field enabled=true per the launch directive. All pre-existing manifest bytes are byte-unchanged."
+  },
+  {
+   "cell": "qwen-resp-hard-1",
+   "model": "qwen3.8-27b",
+   "api_backend": "responses",
+   "wire": "responses",
+   "backend_class": "native",
+   "status": "QUEUED",
+   "priority": 2,
+   "dir": "cells/qwen-resp-hard-1",
+   "open_questions": [
+    "PARITY-ARMS qwen /responses hard-question arm (on-prem, cost 0)"
+   ],
+   "owner": "coordinator parity-arms 2026-09-19",
+   "enabled": false,
+   "note": "PARITY-ARMS (coordinator parity-arms, 2026-09-19): model-arm cell of the grok-build parity campaign \u2014 apples-to-apples vs the recorded sol-resp arm (report/20260919T060151Z/sol-resp, same binary-of-record f9e7a15d6b6b); prompt = the v2 A/B hard question (grok/plans/codex-parity-smoke/parity-prompt.txt (v1/v2 A/B hard question, byte-identical)). Additive manifest entry \u2014 UNAVOIDABLE: run.py select_cells() gates every --cell lookup on manifest membership ('cell  not in manifest \u2014 skipped'), so a new cell cannot be discovered without a list append (precedent: ws9-* cells, same pattern). enabled:false in THIS entry keeps the arm out of default/--native matrix runs; the launch driver runs them explicitly via --cell <id>, which bypasses the enabled check. Manifest entry enabled=false is a run-selection guard only; the cell.json field enabled=true per the launch directive. All pre-existing manifest bytes are byte-unchanged."
+  },
+  {
+   "cell": "qwen-resp-hard-2",
+   "model": "qwen3.8-27b",
+   "api_backend": "responses",
+   "wire": "responses",
+   "backend_class": "native",
+   "status": "QUEUED",
+   "priority": 2,
+   "dir": "cells/qwen-resp-hard-2",
+   "open_questions": [
+    "PARITY-ARMS qwen /responses second cell \u2014 repeat of hard question (no 2nd question in v2 set)"
+   ],
+   "owner": "coordinator parity-arms 2026-09-19",
+   "enabled": false,
+   "note": "PARITY-ARMS (coordinator parity-arms, 2026-09-19): model-arm cell of the grok-build parity campaign \u2014 apples-to-apples vs the recorded sol-resp arm (report/20260919T060151Z/sol-resp, same binary-of-record f9e7a15d6b6b); prompt = the v2 A/B hard question (grok/plans/codex-parity-smoke/parity-prompt.txt (v1/v2 A/B hard question, byte-identical)). Additive manifest entry \u2014 UNAVOIDABLE: run.py select_cells() gates every --cell lookup on manifest membership ('cell  not in manifest \u2014 skipped'), so a new cell cannot be discovered without a list append (precedent: ws9-* cells, same pattern). enabled:false in THIS entry keeps the arm out of default/--native matrix runs; the launch driver runs them explicitly via --cell <id>, which bypasses the enabled check. Manifest entry enabled=false is a run-selection guard only; the cell.json field enabled=true per the launch directive. All pre-existing manifest bytes are byte-unchanged."
+  },
+  {
+   "cell": "terra-churn-resp",
+   "model": "gpt-5.6-terra",
+   "api_backend": "responses",
+   "wire": "responses",
+   "backend_class": "native",
+   "status": "QUEUED",
+   "priority": 2,
+   "dir": "cells/terra-churn-resp",
+   "open_questions": [
+    "REAL-TASK terra /responses churn-redesign arm"
+   ],
+   "owner": "coordinator parity-arms real-task 2026-09-19",
+   "enabled": false,
+   "note": "REAL-TASK ARMS (2026-09-19 late, coordinator parity-arms real-task): operator \u2014 the toy minidiff question was 'entirely too cheap'; these arms run the campaign's own churn-redesign problem (E1-E6 evidence base + grok/plans/merge-xai/00-merge-readiness.md inlined verbatim, 13,640 B prompt, byte-identical across the 4 arms). Same mechanism/binary-of-record (f9e7a15d6b6b); per-cell kill budget 7200 s; driver /tmp/parity-arms/run-arms2.sh (sequential: terra -> sonnet -> qwen -> opus; STATUS2.log). Additive manifest entry \u2014 UNAVOIDABLE (select_cells gates --cell on manifest membership); enabled:false here is a run-selection guard only (explicit --cell bypasses it; cell.json enabled=true per directive). All pre-existing manifest bytes byte-unchanged. Manifest: grok/plans/codex-parity-smoke/reports/arms-launch-manifest-20260919.md (REAL-TASK ARMS section). KNOWN EXPECTATION: sonnet-churn-msg will likely re-hit the .89-class per-item 10k cap \u2014 capture + let it fail; the partial wire + failure point is the data."
+  },
+  {
+   "cell": "sonnet-churn-msg",
+   "model": "claude-sonnet-5",
+   "api_backend": "messages",
+   "wire": "messages",
+   "backend_class": "native",
+   "status": "QUEUED",
+   "priority": 2,
+   "dir": "cells/sonnet-churn-msg",
+   "open_questions": [
+    "REAL-TASK claude /messages churn-redesign arm"
+   ],
+   "owner": "coordinator parity-arms real-task 2026-09-19",
+   "enabled": false,
+   "note": "REAL-TASK ARMS (2026-09-19 late, coordinator parity-arms real-task): operator \u2014 the toy minidiff question was 'entirely too cheap'; these arms run the campaign's own churn-redesign problem (E1-E6 evidence base + grok/plans/merge-xai/00-merge-readiness.md inlined verbatim, 13,640 B prompt, byte-identical across the 4 arms). Same mechanism/binary-of-record (f9e7a15d6b6b); per-cell kill budget 7200 s; driver /tmp/parity-arms/run-arms2.sh (sequential: terra -> sonnet -> qwen -> opus; STATUS2.log). Additive manifest entry \u2014 UNAVOIDABLE (select_cells gates --cell on manifest membership); enabled:false here is a run-selection guard only (explicit --cell bypasses it; cell.json enabled=true per directive). All pre-existing manifest bytes byte-unchanged. Manifest: grok/plans/codex-parity-smoke/reports/arms-launch-manifest-20260919.md (REAL-TASK ARMS section). KNOWN EXPECTATION: sonnet-churn-msg will likely re-hit the .89-class per-item 10k cap \u2014 capture + let it fail; the partial wire + failure point is the data."
+  },
+  {
+   "cell": "qwen-churn-resp",
+   "model": "qwen3.8-27b",
+   "api_backend": "responses",
+   "wire": "responses",
+   "backend_class": "native",
+   "status": "QUEUED",
+   "priority": 2,
+   "dir": "cells/qwen-churn-resp",
+   "open_questions": [
+    "REAL-TASK qwen /responses churn-redesign arm (on-prem, cost 0)"
+   ],
+   "owner": "coordinator parity-arms real-task 2026-09-19",
+   "enabled": false,
+   "note": "REAL-TASK ARMS (2026-09-19 late, coordinator parity-arms real-task): operator \u2014 the toy minidiff question was 'entirely too cheap'; these arms run the campaign's own churn-redesign problem (E1-E6 evidence base + grok/plans/merge-xai/00-merge-readiness.md inlined verbatim, 13,640 B prompt, byte-identical across the 4 arms). Same mechanism/binary-of-record (f9e7a15d6b6b); per-cell kill budget 7200 s; driver /tmp/parity-arms/run-arms2.sh (sequential: terra -> sonnet -> qwen -> opus; STATUS2.log). Additive manifest entry \u2014 UNAVOIDABLE (select_cells gates --cell on manifest membership); enabled:false here is a run-selection guard only (explicit --cell bypasses it; cell.json enabled=true per directive). All pre-existing manifest bytes byte-unchanged. Manifest: grok/plans/codex-parity-smoke/reports/arms-launch-manifest-20260919.md (REAL-TASK ARMS section). KNOWN EXPECTATION: sonnet-churn-msg will likely re-hit the .89-class per-item 10k cap \u2014 capture + let it fail; the partial wire + failure point is the data."
+  },
+  {
+   "cell": "opus-churn-msg",
+   "model": "claude-opus-5",
+   "api_backend": "messages",
+   "wire": "messages",
+   "backend_class": "native",
+   "status": "QUEUED",
+   "priority": 2,
+   "dir": "cells/opus-churn-msg",
+   "open_questions": [
+    "REAL-TASK opus /messages churn-redesign arm (last, most expensive)"
+   ],
+   "owner": "coordinator parity-arms real-task 2026-09-19",
+   "enabled": false,
+   "note": "REAL-TASK ARMS (2026-09-19 late, coordinator parity-arms real-task): operator \u2014 the toy minidiff question was 'entirely too cheap'; these arms run the campaign's own churn-redesign problem (E1-E6 evidence base + grok/plans/merge-xai/00-merge-readiness.md inlined verbatim, 13,640 B prompt, byte-identical across the 4 arms). Same mechanism/binary-of-record (f9e7a15d6b6b); per-cell kill budget 7200 s; driver /tmp/parity-arms/run-arms2.sh (sequential: terra -> sonnet -> qwen -> opus; STATUS2.log). Additive manifest entry \u2014 UNAVOIDABLE (select_cells gates --cell on manifest membership); enabled:false here is a run-selection guard only (explicit --cell bypasses it; cell.json enabled=true per directive). All pre-existing manifest bytes byte-unchanged. Manifest: grok/plans/codex-parity-smoke/reports/arms-launch-manifest-20260919.md (REAL-TASK ARMS section). KNOWN EXPECTATION: sonnet-churn-msg will likely re-hit the .89-class per-item 10k cap \u2014 capture + let it fail; the partial wire + failure point is the data."
+  },
+  {
+   "cell": "grok-resp-cache2",
+   "model": "grok-4.6",
+   "api_backend": "responses",
+   "wire": "responses",
+   "backend_class": "native",
+   "status": "QUEUED",
+   "priority": 9,
+   "dir": "cells/grok-resp-cache2",
+   "open_questions": [
+    "PROXY-EVIDENCE-20260922 (cross-call prefix caching; enabled=false, explicit --cell only)"
+   ],
+   "owner": "coordinator proxy-evidence 2026-09-22"
   }
+ ],
+ "ws9": {
+  "bead": "apex-ayl.78 (WS9-SCENARIOS-1, P2 RANK 10, ship gate LAST)",
+  "note": "Additive ws9-* cells (Phase A schema authoring, sdd78_schema_qwen, 2026-09-18): 2 streaming-arm cells for the 12-scenario ship-gate wave (S01 tool-loop sol arm; S12 anthropic-family control baseline). All ws9-* cells are enabled:false \u2014 they never join a default wstream run; launch them explicitly (--cells ws9-...) during Phase B. Original 10 cells and all pre-existing manifest fields are byte-unchanged (verified by the additive-update script). No wstream runner changes: cells use only the runner's existing cell.json surface (cell/model/api_backend/turns/prompt/invariants/observe). Schema + budget: grok/plans/ws9-12row-schema.md.",
+  "cells_added": [
+   "ws9-s01-toolloop-sol",
+   "ws9-s12-alias-claude-msg"
+  ]
+ },
+ "parity_arms": {
+  "bead": "n/a (campaign-level model arms; see reports/arms-launch-manifest-20260919.md in grok/plans/codex-parity-smoke/)",
+  "note": "FLAG (2026-09-19, coordinator parity-arms 2026-09-19): additive manifest edit \u2014 5 new cell entries appended to the 'cells' list ONLY (original 12 entries + all pre-existing top-level fields byte-unchanged, verified by round-trip). This edit was UNAVOIDABLE: run.py select_cells() skips any --cell id absent from this list (see smoke/wstream/run.py, 'cell  not in manifest \u2014 skipped'). Launch: driver /tmp/parity-arms/run-arms.sh, sequential, binary /tmp/binary-of-record-f9e7a15d6b6b, --timeout 3600. Manifest: grok/plans/codex-parity-smoke/reports/arms-launch-manifest-20260919.md.",
+  "cells_added": [
+   "terra-resp",
+   "sonnet-msg",
+   "opus-msg-hard",
+   "qwen-resp-hard-1",
+   "qwen-resp-hard-2"
+  ]
+ },
+ "parity_arms_real_task": {
+  "bead": "n/a (campaign-level real-task model arms; see reports/arms-launch-manifest-20260919.md, REAL-TASK ARMS section)",
+  "note": "FLAG (2026-09-19 late): second additive manifest edit \u2014 4 real-task cell entries appended to 'cells' ONLY (17 -> 21; all pre-existing bytes byte-unchanged, verified by round-trip). Same unavoidability as parity_arms (select_cells membership gate). Budget: exactly these 4 cells, once each (operator). Real-task cost 10-50x the toy; opus last/expected 30-90 min.",
+  "cells_added": [
+   "terra-churn-resp",
+   "sonnet-churn-msg",
+   "qwen-churn-resp",
+   "opus-churn-msg"
+  ]
+ }
 }

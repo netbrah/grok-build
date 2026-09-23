@@ -458,10 +458,11 @@ def test_d_committed_artifacts():
           sol["max_completion_tokens"] == 128000)
     check("sol: overlay menu wins (5 items, no xhigh)",
           [m["value"] for m in sol["reasoning_efforts"]] == ["low", "medium", "high", "max", "ultra"])
-    check("sol: curated wire pins",
+    check("sol: curated wire pins (ZC-EAST2-UNPIN-1 / apex-ayl.126.6: the "
+          "x-litellm-tags 'East US 2' pin is gone — the row rides untagged)",
           sol["strict_responses_input"] is True and sol["multi_agent_v2"] is True
           and sol["supports_backend_search"] is False
-          and sol["extra_headers"].get("x-litellm-tags") == "East US 2")
+          and sol["extra_headers"].get("x-litellm-tags") is None)
     check("sol: seed single-effort survives (low)", sol["reasoning_effort"] == "low")
     # Curation spot-checks (the D3 ruling table).
     check("claude pinned messages + anthropic + 1h cache",

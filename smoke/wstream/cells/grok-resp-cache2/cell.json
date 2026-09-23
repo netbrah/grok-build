@@ -1,0 +1,34 @@
+{
+  "cell": "grok-resp-cache2",
+  "model": "grok-4.6",
+  "api_backend": "responses",
+  "backend_class": "native",
+  "wire": "responses",
+  "turns": 2,
+  "prompt": "Compute 7^8432 mod 5557 using modular exponentiation. Show each squaring step briefly, then state the final remainder on its own line. Do not use any tools.\n",
+  "invariants": {
+    "status": 200,
+    "route": "responses",
+    "n_model_calls_min": 2
+  },
+  "observe": [
+    "route",
+    "status",
+    "n_model_calls",
+    "all_stream",
+    "any_stream",
+    "reasoning_present",
+    "reasoning_frames",
+    "reasoning_encrypted_content",
+    "final_text_nonempty",
+    "final_text_len",
+    "usage"
+  ],
+  "open_questions": [
+    "llm-proxy evidence 2026-09-22: cross-call prefix caching for grok-4.6 (call 2 re-sends call-1 prefix; expect cached_tokens>0 if proxy caches)"
+  ],
+  "notes": "Evidence cell for llm-proxy team: 2-turn grok-4.6 responses-wire run. Call 2 re-sends the full turn-1 conversation, so input_tokens_details.cached_tokens > 0 on call 2 is the caching signal. enabled=false: run explicitly via --cell only (sibling-owned manifest untouched).",
+  "priority": 9,
+  "enabled": false,
+  "owner": "coordinator proxy-evidence 2026-09-22"
+}

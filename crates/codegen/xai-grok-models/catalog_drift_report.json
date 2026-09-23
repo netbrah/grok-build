@@ -1,6 +1,6 @@
 {
  "schema_version": 1,
- "generated_at": "2026-09-22T22:18:06Z",
+ "generated_at": "2026-09-23T07:35:26Z",
  "gate": "scripts/catalog_gate.py (apex-ayl.128 ZC-SUBSET-DRIFT-1)",
  "inputs": {
   "generated": {

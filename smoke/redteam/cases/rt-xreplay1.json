@@ -1,150 +1,180 @@
 {
-  "id": "RT-XREPLAY1",
-  "title": "CROSSWIRE-1 FAMILY-SWITCH CONTRACT (amended 2026-09-17 per .62 RCA adjudication R-1): qwen3.8-27b -> gpt-5.6-sol mid-session switch. The families differ, so the harness runs the switch-time LOSSY COMPACT instead of a verbatim transcript ride: the OLDEST post-switch sol request (last:0) is the compact turn \u2014 it carries the summarization instruction (faithful, concise summary) + the continuation framing (This session is being continued) and NO reasoning item (foreign qwen reasoning does not ride the family switch); the NEWEST sol request (last:1) is the continued S1 turn, also reasoning-free, and is ACCEPTED (200). Exactly TWO post-switch sol requests (sol_count 2..2 = the sibling bound that makes the last:0/last:1 selections unambiguous). The turn COMPLETES (no acp_error). Any deviation \u2014 reasoning in either sol request, a missing compact marker, != 2 sol requests, a non-200 final, or an acp_error \u2014 FAILs as a fix defect. (Pre-amendment expectation \u2014 verbatim reasoning ride + 400 + reactive strip+retry \u2014 is SUPERSEDED: on a cross-family switch the compact runs before any ride, so the 400-recovery contract never engages on this wire. Observed sw1e data point: exactly 2 sol requests, both 200, zero reasoning items, compact markers on the oldest.)",
-  "driver": "acp",
-  "model": "qwen3.8-27b",
-  "config_patch": {
-    "model/qwen3.8-27b/strict_responses_input": false,
-    "model/qwen3.8-27b/reasoning_effort": "medium",
-    "model/gpt-5.6-sol/strict_responses_input": false
+ "id": "RT-XREPLAY1",
+ "title": "RE-PIN 2026-09-22 (overwatch-adversarial, runs full-sweep-20260922T004829Z + at-strict-xwire-01-invest-20260922T2358Z; operator ratification: 'we aimed for that behavior on responses family switch, we opted for projection'): the .62 R-1 amended contract (preemptive lossy compact before any cross-family responses ride) is SUPERSEDED by apex-ayl.123 XW-XREPLAY-1 — for Responses targets the preemptive compact is SKIPPED (family_switch_compact_required(Responses)=false, model_switch.rs:446-463) and the .71 switch-time projection (xw_ store rekey) + send-time projectors + 78a236f reactive 400 net own the seam. This case keeps the strict_responses_input=false sol row (LENIENT shape) and now pins the ADJUDICATED RECOVERY CONTRACT: (1) NO compact markers on the sol wire (proactive compact must NOT run — the compact_summary/compact_noreasoning/s2_continued/s2_noreasoning pins are flipped to absence); (2) the FIRST sol request (last:0) carries the foreign reasoning with xw_-rekeyed ids (the lenient row rides verbatim; the .71 rekeyed store ids ride); (3) that request 400s on the Azure id-shape validation ('Expected an ID that begins with rs') — the deterministic lenient-row outcome; (4) the reactive model-bound strip fires: the LAST sol request carries NO reasoning items and is 200; (5) sol_count 2..3 (1 = the ride became legal without a 400 = design improvement -> investigate; 3 = one tolerated storm); (6) terminal health: end_turn, S1 token, no acp_error. Observed wire 20260922T004829Z (bin d5b4d0d427b2 @ ca31564): req-008 (17 items, 3 xw_ reasoning) -> 400 'Invalid input[8].id xw_4293fae7…'; req-009 (14 items, 0 reasoning) -> 200; end_turn, no acp_error. Pre-amendment and .62-amendment expectation text retained below for provenance only — SUPERSEDED.",
+ "driver": "acp",
+ "model": "qwen3.8-27b",
+ "config_patch": {
+  "model/qwen3.8-27b/strict_responses_input": false,
+  "model/qwen3.8-27b/reasoning_effort": "medium",
+  "model/gpt-5.6-sol/strict_responses_input": false
+ },
+ "steps": [
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: RT-XREPLAY1-Q1"
   },
-  "steps": [
-    {
-      "op": "turn",
-      "prompt": "Reply with exactly: RT-XREPLAY1-Q1"
-    },
-    {
-      "op": "turn",
-      "prompt": "Reply with exactly: RT-XREPLAY1-Q2"
-    },
-    {
-      "op": "turn",
-      "prompt": "Reply with exactly: RT-XREPLAY1-Q3"
-    },
-    {
-      "op": "switch",
-      "model": "gpt-5.6-sol",
-      "via": "acp"
-    },
-    {
-      "op": "turn",
-      "prompt": "Reply with exactly: RT-XREPLAY1-S1"
-    }
-  ],
-  "watchdog_s": 300,
-  "est_calls": 10,
-  "assert": {
-    "ndjson": [
-      {
-        "op": "absent",
-        "event": "acp_error",
-        "label": "TURN COMPLETES: the family switch + switch-time compact + S1 turn did not surface an ACP error (the compact is local; nothing is rejected on this wire)."
-      }
-    ],
-    "wire": [
-      {
-        "id": "control",
-        "kind": "grep",
-        "file": "req-*.json",
-        "where": {
-          "method": "POST",
-          "path": "/v1/responses",
-          "body.model": "qwen3.8-27b"
-        },
-        "any": true,
-        "grep": "\"type\": \"reasoning\"",
-        "label": "CONTROL (anti-vacuous pin): at least one pre-switch qwen request carried a reasoning INPUT item \u2014 real foreign reasoning existed to be (non-)replayed across the family switch. Without this the probe is meaningless."
-      },
-      {
-        "id": "sol_count",
-        "kind": "count",
-        "file": "req-*.json",
-        "where": {
-          "method": "POST",
-          "path": "/v1/responses",
-          "body.model": "gpt-5.6-sol"
-        },
-        "min": 2,
-        "max": 2,
-        "label": "COMPACT+TURN SHAPED: exactly two post-switch sol requests \u2014 last:0 = the compact turn, last:1 = the continued S1 turn. Sibling count bound that makes the last:N selections unambiguous (house rule: never a static selection without a sibling count)."
-      },
-      {
-        "id": "compact_summary",
-        "kind": "grep",
-        "file": "req-*.json",
-        "where": {
-          "method": "POST",
-          "path": "/v1/responses",
-          "body.model": "gpt-5.6-sol"
-        },
-        "last": 0,
-        "grep": "faithful, concise summary",
-        "label": "COMPACT TURN (last:0 = oldest sol request): carries the summarization instruction \u2014 the switch-time lossy compact ran before the first sol turn."
-      },
-      {
-        "id": "compact_noreasoning",
-        "kind": "grep",
-        "file": "req-*.json",
-        "where": {
-          "method": "POST",
-          "path": "/v1/responses",
-          "body.model": "gpt-5.6-sol"
-        },
-        "last": 0,
-        "grep": "\"type\": \"reasoning\"",
-        "absent": true,
-        "label": "COMPACT TURN CARRIES NO FOREIGN REASONING: the family switch dropped the qwen reasoning items (the lossy compact produces a portable transcript)."
-      },
-      {
-        "id": "s2_noreasoning",
-        "kind": "grep",
-        "file": "req-*.json",
-        "where": {
-          "method": "POST",
-          "path": "/v1/responses",
-          "body.model": "gpt-5.6-sol"
-        },
-        "last": 1,
-        "grep": "\"type\": \"reasoning\"",
-        "absent": true,
-        "label": "S1 TURN (last:1 = newest sol request) ALSO CARRIES NO REASONING: nothing re-introduced the foreign items after the compact."
-      },
-      {
-        "id": "s2_continued",
-        "kind": "grep",
-        "file": "req-*.json",
-        "where": {
-          "method": "POST",
-          "path": "/v1/responses",
-          "body.model": "gpt-5.6-sol"
-        },
-        "last": 1,
-        "grep": "This session is being continued",
-        "label": "S1 TURN RIDES THE COMPACTED CONTINUATION: the newest sol request replays the continuation framing seeded by the compact turn."
-      },
-      {
-        "id": "s2_200",
-        "kind": "resp_status",
-        "file": "req-*.json",
-        "where": {
-          "method": "POST",
-          "path": "/v1/responses",
-          "body.model": "gpt-5.6-sol"
-        },
-        "which": "last",
-        "status_in": [
-          200
-        ],
-        "label": "ACCEPTED: the final post-switch sol request reached 200 \u2014 the family-switch contract holds (the turn completed on the portable transcript)."
-      },
-      {
-        "op": "recon",
-        "label": "FAMILY-SWITCH VERDICT RECORD: last-captured wire response status line, verbatim (machine-readable; the accepted 200 is the newest capture). recon op \u2014 always records, never fails.",
-        "base": "wire",
-        "file": "resp-*.jsonl",
-        "nth": 0,
-        "grep": "\"status\":"
-      }
-    ]
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: RT-XREPLAY1-Q2"
+  },
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: RT-XREPLAY1-Q3"
+  },
+  {
+   "op": "switch",
+   "model": "gpt-5.6-sol",
+   "via": "acp"
+  },
+  {
+   "op": "turn",
+   "prompt": "Reply with exactly: RT-XREPLAY1-S1"
   }
+ ],
+ "watchdog_s": 300,
+ "est_calls": 10,
+ "assert": {
+  "ndjson": [
+   {
+    "op": "absent",
+    "event": "acp_error",
+    "label": "TURN COMPLETES: the family switch + switch-time compact + S1 turn did not surface an ACP error (the compact is local; nothing is rejected on this wire)."
+   }
+  ],
+  "wire": [
+   {
+    "id": "control",
+    "kind": "grep",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/responses",
+     "body.model": "qwen3.8-27b"
+    },
+    "any": true,
+    "grep": "\"type\": \"reasoning\"",
+    "label": "CONTROL (anti-vacuous pin): at least one pre-switch qwen request carried a reasoning INPUT item — real foreign reasoning existed to be (non-)replayed across the family switch. Without this the probe is meaningless."
+   },
+   {
+    "id": "sol_count",
+    "kind": "count",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/responses",
+     "body.model": "gpt-5.6-sol"
+    },
+    "min": 2,
+    "max": 3,
+    "label": "RECOVERY CONTRACT (re-pinned .123): exactly two post-switch sol requests expected (first=400 xw_-id ride, last=stripped retry 200); 3 = one tolerated storm; 1 = no 400 occurred (design improvement) -> investigate."
+   },
+   {
+    "id": "compact_summary",
+    "kind": "grep",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/responses",
+     "body.model": "gpt-5.6-sol"
+    },
+    "last": 0,
+    "grep": "faithful, concise summary",
+    "label": "SUPREDED-CONTRACT PIN (re-pinned .123): the 'faithful, concise summary' compact marker must NOT appear on the sol wire — the preemptive compact is skipped for Responses targets (apex-ayl.123); a presence = compact re-introduced -> investigate.",
+    "absent": true
+   },
+   {
+    "id": "compact_noreasoning",
+    "kind": "grep",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/responses",
+     "body.model": "gpt-5.6-sol"
+    },
+    "last": 0,
+    "grep": "\"type\": \"reasoning\"",
+    "absent": false,
+    "label": "RECOVERY CONTRACT (re-pinned .123): the FIRST sol request (last:0) DOES carry foreign reasoning items — the lenient row rides verbatim and the preemptive compact did NOT strip them (the ride is the seam the projection + reactive net own)."
+   },
+   {
+    "id": "s2_noreasoning",
+    "kind": "grep",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/responses",
+     "body.model": "gpt-5.6-sol"
+    },
+    "last": 1,
+    "grep": "\"type\": \"reasoning\"",
+    "absent": true,
+    "label": "RECOVERY PIN (re-pinned .123, unchanged direction): the LAST sol request (last:1) carries NO reasoning — after the 400 the reactive model-bound strip removed all reasoning items; the retried request is the clean one."
+   },
+   {
+    "id": "s2_continued",
+    "kind": "grep",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/responses",
+     "body.model": "gpt-5.6-sol"
+    },
+    "last": 1,
+    "grep": "This session is being continued",
+    "label": "SUPERSEDED-CONTRACT PIN (re-pinned .123): the 'This session is being continued' compact-continuation marker must NOT appear on the sol wire (no proactive compact on Responses targets); a presence = compact re-introduced -> investigate.",
+    "absent": true
+   },
+   {
+    "id": "s2_200",
+    "kind": "resp_status",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/responses",
+     "body.model": "gpt-5.6-sol"
+    },
+    "which": "last",
+    "status_in": [
+     200
+    ],
+    "label": "ACCEPTED: the final post-switch sol request reached 200 — the family-switch contract holds (the turn completed on the portable transcript)."
+   },
+   {
+    "op": "recon",
+    "label": "FAMILY-SWITCH VERDICT RECORD: last-captured wire response status line, verbatim (machine-readable; the accepted 200 is the newest capture). recon op — always records, never fails.",
+    "base": "wire",
+    "file": "resp-*.jsonl",
+    "nth": 0,
+    "grep": "\"status\":"
+   },
+   {
+    "id": "first_req_xw_id_rides",
+    "kind": "grep",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/responses",
+     "body.model": "gpt-5.6-sol"
+    },
+    "last": 0,
+    "grep": "\"id\": \"xw_",
+    "label": "RECOVERY CONTRACT (re-pinned .123): the FIRST sol request carries the .71 store-side xw_-rekeyed reasoning ids — the lenient row (strict_responses_input=false) does not strip them; this is the documented ride that the strict Azure upstream then rejects."
+   },
+   {
+    "id": "first_req_400_idshape",
+    "kind": "resp_status",
+    "file": "req-*.json",
+    "where": {
+     "method": "POST",
+     "path": "/v1/responses",
+     "body.model": "gpt-5.6-sol"
+    },
+    "which": "first",
+    "status_in": [
+     400
+    ],
+    "label": "RECOVERY CONTRACT (re-pinned .123): the FIRST sol request is the deterministic lenient-row 400 (Azure id-shape validation on the xw_ id: 'Expected an ID that begins with rs'). A 200 here = the ride became legal without the reactive net (design improvement) -> investigate before re-pinning."
+   }
+  ]
+ }
 }

@@ -210,9 +210,7 @@
    "cache_ttl": null,
    "compaction_at_tokens": true,
    "compactions_remaining": 1,
-   "extra_headers": {
-    "x-litellm-tags": "East US 2"
-   },
+   "extra_headers": {},
    "model_family": "codex",
    "multi_agent_v2": true,
    "name": "GPT-5.6 Luna",
@@ -265,9 +263,7 @@
    "compaction_at_tokens": true,
    "compactions_remaining": 1,
    "description": "Latest frontier agentic coding model",
-   "extra_headers": {
-    "x-litellm-tags": "East US 2"
-   },
+   "extra_headers": {},
    "model_family": "codex",
    "multi_agent_v2": true,
    "name": "GPT-5.6 Sol",
@@ -319,9 +315,7 @@
    "cache_ttl": null,
    "compaction_at_tokens": true,
    "compactions_remaining": 1,
-   "extra_headers": {
-    "x-litellm-tags": "East US 2"
-   },
+   "extra_headers": {},
    "model_family": "codex",
    "multi_agent_v2": true,
    "name": "GPT-5.6 Terra",

@@ -6651,6 +6651,21 @@ pub(crate) fn sampling_config_for_model(
     let temperature = info.temperature;
     let top_p = info.top_p;
     let mut extra_headers = info.extra_headers.clone();
+    // UNPIN-TOGGLE-WIRE-1 (apex-ayl.126.5): the operator's unpin toggle is an
+    // EMPTY-valued pin header on the merged row. The sampler client
+    // normalizes it to `None` for its `enc_affinity_pin` gate field at
+    // construction, but its verbatim wire loop still sends the empty value,
+    // and the deployed proxy rejects it (401: `tags=['']`, TAGPROBE-2). This
+    // is the single site where the merged row's extra_headers feed
+    // `SamplerConfig`, so drop the empty pin entry here and let the wire and
+    // the gate field agree. Conservative: only the pin header, and only when
+    // empty — every other extra header rides verbatim as before.
+    if extra_headers
+        .get(xai_grok_sampling_types::ENC_AFFINITY_PIN_HEADER)
+        .is_some_and(|value| value.is_empty())
+    {
+        extra_headers.shift_remove(xai_grok_sampling_types::ENC_AFFINITY_PIN_HEADER);
+    }
     inject_url_derived_headers(
         &mut extra_headers,
         alpha_test_key.as_deref(),
@@ -7064,3 +7079,11 @@ mod tests;
 #[cfg(test)]
 #[path = "authority_47b_tests.rs"]
 mod authority_47b_tests;
+
+// UNPIN-TOGGLE-WIRE-1 (apex-ayl.126.5): wire tests for the operator unpin
+// toggle live in a dedicated file declared via `#[path]` here (the
+// authority_47b_tests precedent) so the test file stays inside this file's
+// pathspec.
+#[cfg(test)]
+#[path = "unpin_toggle_tests.rs"]
+mod unpin_toggle_tests;
