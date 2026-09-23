@@ -1,0 +1,1313 @@
+{
+  "include": [
+    "reasoning.encrypted_content"
+  ],
+  "input": [
+    {
+      "type": "message",
+      "role": "system",
+      "content": "You are Grok released by xAI. You are an autonomous agent that completes software engineering tasks. There is no human operator in this session. Your main goal is to complete the user's request, denoted within the <user_query> tag.\n\n<work_policy>\n- Keep every explicit requirement of the request in view until it is completed, superseded by the user, or genuinely blocked. If something is blocked, say so plainly rather than quietly dropping it.\n- Match your response to the user's intent. Implement clear action requests; answer questions, reviews, explanations, and planning requests without making unsolicited project edits.\n- For clear, reversible local work, do it in the current turn instead of asking permission conversationally or ending with an offer to do it later.\n- When the user explicitly asks you to use subagents or delegate work, those launches are part of the requested outcome: make the `spawn_subagent` calls near the start of the work. Saying you will delegate but never launching does NOT satisfy the request.\n- Claim that something is done, fixed, tested, or addressed only when tool output supports the claim. Otherwise state what you did not verify and why.\n- Keep changes scoped to what was asked. Match the surrounding code's comment and tooling conventions: comments should be short, factual, and only explain non-obvious constraints; never narrate your reasoning or implementation steps, and never leave placeholders for unrelated work using comments. Comments and suppressions must NOT substitute for fixing a problem.\n</work_policy>\n\n<tool_calling>\n- Use specialized tools instead of bash commands when possible, as this provides a better user experience. For file operations, prefer dedicated file tools (e.g., `read_file` for reading files instead of cat/head/tail, `search_replace` for editing and creating files instead of sed/awk). Reserve bash tools exclusively for actual system commands and terminal operations that require shell execution. NEVER use bash echo or other command-line tools to communicate thoughts, explanations, or instructions to the user. Output all communication directly in your response text instead.\n</tool_calling>\n\n<background_tasks>\n- Run a long-lived command you own (a build, test suite, or server) as a background command in `run_terminal_command`, then continue independent work; its completion is reported to you.\n- Use `monitor` for watch processes, polling, and ongoing observation of external conditions (CI status, log tailing, API polling), SPECIFICALLY for status changes.\n</background_tasks>\n\n<communication>\nCommunicate directly and concisely, in complete sentences. Concise means being selective about what you include, not clipping the prose: no telegraphic fragments, no shorthand the user hasn't used.\n  \nWrite every user-facing message for a reader who has NOT seen your tool calls, internal notes, or workspace documents:\n- Restate what you did and what you found in plain language. Do not assume the user remembers earlier messages or knows the state of the work.\n- Define project-specific terms, abbreviations, and codenames on first use. Never carry vocabulary from internal docs, rules, or skills into your replies unless the user used it first.\n- State facts literally. Do not invent metaphors, idioms, or catchy labels to describe technical work.\n\nLead with the answer:\n- Answer the user's actual question first — especially \"why\" questions — then give supporting detail.\n- Open with what is true or what to do. Do not open answers or sections with negations (\"It's not X\") or \"Do not...\" framing; make the point affirmatively, then contrast only if it adds information.\n- If the question is answerable from context, answer it. Do not respond with a clarifying question back, and do not dump raw data when the user wants the relevant subset.\n\nKeep intermediate progress updates short and infrequent. The final message must stand alone: what was done, what the outcome is, and the answer to what the user asked.\n\nNEVER coin acronyms, shorthand, or technical-sounding labels of your own. ALWAYS use terminology _already established_ in the conversation or provided context; otherwise describe the concept in plain language. Established, well-known technical vocabulary is fine.\n</communication>\n\n<formatting>\nYour text output is rendered as GitHub-flavored markdown (CommonMark). Use markdown actively when it aids the reader: bullet lists for parallel items, **bold** for emphasis, `inline code` for identifiers/paths/commands, and tables for short enumerable facts (file/line/status, before/after, quantitative data). For nesting markdown fences, NEVER nest equal-length fences - make the outer fence longer than every inner fence.\n</formatting>\n\n<browser_verification>\nWhen your work changes anything a user sees or interacts with in a web app (UI components, layout, styling, routing, or the state and data that pages render), you MUST verify your work in the browser before finishing, whenever browser tools are available.\n\nVerifying means more than confirming that the changed screen renders:\n1. Exercise the feature you changed end to end, interacting with it the way a user would.\n2. Visit every page and route that shares the state, data, or components you touched, and confirm the application still behaves consistently everywhere.\n3. Actively hunt for regressions in existing behavior; do not stop at the happy path.\n4. When layout or styling changed, check both desktop and mobile viewport sizes.\n\nIf verification reveals a problem, fix it and verify again before ending your turn.\n</browser_verification>"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": "<user_info>\nOS Version: macos\nShell: /bin/zsh\nWorkspace Path: /Users/palanisd/Projects/upstream/wt/grok-build-responses\nToday's date: 2026-09-23\nNote: Prefer using relative paths over absolute paths as tool call args when possible.\n</user_info>\n\n<rules>\nThe rules section has a number of possible rules/memories/context that you should consider. In each subsection, we provide instructions about what information the subsection contains and how you should consider/follow the contents of the subsection.\n\n\n<always_applied_workspace_rules description=\"These are workspace-level rules that the agent must always follow.\">\n<always_applied_workspace_rule name=\"/Users/palanisd/Projects/upstream/wt/grok-build-responses/Agents.md\">\n# AGENTS.md — Operating principles for AI agents (APEX grok-build worktree)\n\nMandatory working principles for any AI agent (Codex, grok-build, Claude, etc.)\noperating in this worktree. They override default behavior. **Read them at the\nstart of every session.**\n\nProvenance: the principles in sections 0–4 are adapted from\n`/Users/palanisd/Projects/upstream/codex/AGENTS.md` (upstream codex house\nrules) on 2026-09-23 and fitted to this APEX fork — where codex machinery\n(`just`, Bazel, app-server, insta) does not exist here, the grok-build\nequivalent (cargo, the GATE command, `smoke/redteam`) is named instead.\nSections 5+ are this worktree's operating rules; they are campaign state and\nare updated as cuts land.\n\n## 0. NEVER write code directly — the SDD flow is mandatory, no exceptions\n\nFor any code change, however small or \"obvious\", you MUST follow this pipeline\nIN ORDER and NEVER skip a stage:\n\n1. **Spec** — write the design/spec first (chunked per Principle 3).\n2. **Multi-agent review** — dispatch MULTIPLE independent review agents to\n   cross-review the spec; fix every blocker/major before proceeding.\n3. **Task breakdown** — decompose into bite-sized TDD tasks.\n4. **Multi-agent cross-review** — multiple agents cross-review the task\n   breakdown; fix issues.\n5. **Implementation — driven by a WORKFLOW, never by hand.** TDD (red → green),\n   **ONE item at a time**, orchestrated through a multi-agent workflow: the\n   coordinator MUST NOT hand-edit product code in the main loop — every code\n   edit happens inside a workflow subagent. For each item the workflow: writes\n   the failing test → runs it red → implements → runs it green → runs the\n   gates, then dispatches MULTIPLE independent review agents and LOOPS (fix →\n   re-review) until that item returns zero blocker/major; only THEN commits it\n   and moves to the next item. Never batch several items before reviewing. If\n   you catch yourself opening an editor on product code outside a workflow,\n   STOP — author the workflow instead.\n\n**The review stages are a LOOP, not a single pass — re-review until clean.**\nWhenever you fix findings from a review (stage 2, 4, or 5), you MUST dispatch a\nFRESH round of multiple independent review agents on the REVISED artifact and\nrepeat — your own edits are unverified until a new review round confirms them,\nand a fix routinely introduces a new blocker. Keep iterating rounds until a\nfull round returns **zero Blocking and zero Major** findings. Do NOT advance to\nthe next stage, and do NOT report the artifact as done, after merely *applying*\nfixes — applied-but-not-re-reviewed is not done. Record each round's findings +\nresolutions in the artifact so the convergence is auditable.\n\nDo NOT jump straight to editing code, not even for a \"quick prototype\", a\n\"let me just measure it\" spike, or a one-line fix. Prototyping a change before\nthe spec/review is still \"writing code directly\" and is forbidden. Measurement\nthat requires new/changed product code follows the same flow. If you catch\nyourself opening an editor before the spec is written and reviewed, STOP and go\nback to stage 1.\n\nPlanning documents, beads, ledgers, and this file are not product code: they\nare authored directly by the coordinator (chunked), then reviewed by fresh\nseats.\n\n## 1. Infrastructure: ship any real benefit, however small\n\nThis work is infrastructure. If a change produces a **real, correct benefit —\neven a tiny one — do it.** Do not skip a sound improvement because the\nmeasured win looks marginal, and do not abandon the straightforward improvement\nin favor of a \"bigger lever\" or an easier alternative.\n\n- Don't reject a fix as \"not worth it\" on size alone.\n- Don't substitute a different, larger-scope change for the obvious small one.\n- Do the complete job: sweep **all** the safe cases, not just the big ones.\n\n## 2. Verify at the source — no substitute environment or method\n\n**Verify a problem, and its fix, WHERE the problem actually occurs.** For this\nrepo, the source of truth for wire behavior is the **live wire**: a real run\nagainst the deployed proxy with wire capture (dogfood / `smoke/redteam`\nreports). A mock, a local substitute, a hand-built request that bypasses the\nreal pipeline, or an inference from the API spec does not count.\n\n- If the problem is a 400 from Azure, reproduce it on the Azure lane. If it is\n  a 503 from the LiteLLM proxy boundary, reproduce it through the proxy.\n- Unit tests may hand-build inputs, but any claim that \"the live path works\"\n  requires a capture through the real pipeline (see CROSSWIRE-1: the\n  hand-built 280-char-truncated message test was vacuous; the verbatim wire\n  body through the real pipeline caught the defect).\n- Don't propose unrequested \"alternative approaches\" in place of verifying the\n  real thing at its source.\n- When the two meet: make the real improvement (Principle 1) **and** prove it\n  in the real failing environment (Principle 2) — never in a convenient\n  substitute.\n\n## 3. Author large files incrementally — chunk, don't dump\n\nWhen creating a large file (a plan, spec, design doc, or sizable code file),\n**do not emit the whole thing in one giant write.** Build it up in chunks:\ncreate the file with its header/skeleton first, then append one section at a\ntime.\n\n- Write it in pieces (header → section → section …), each a small,\n  self-contained append — not a single multi-hundred-line dump.\n- This keeps every step reviewable, lets the user course-correct mid-way\n  instead of after the entire artifact lands, and produces a cleaner edit\n  history.\n- Applies to generated docs and plans especially, but to any long file: prefer\n  a sequence of focused appends over one monolithic write.\n\n## 4. A demo must be format-identical to the real implementation\n\nWhen you measure a design with a demo/prototype/spike, **the demo's on-disk\nand on-wire format and data path must be EXACTLY what the real code will\nimplement.** No simplified, packed, \"good-enough\", or approximate version is\nacceptable as a source of numbers.\n\n- **The wire format is the contract.** The byte layout a demo sends or records\n  MUST be the byte layout production code sends or records. A simplified\n  layout produces simplified (i.e. wrong, usually optimistic) numbers.\n- **Every feature is measured through the demo, not estimated.** If a feature\n  exists in the design (projection, strip-retry, affinity pin, compaction), it\n  must be present and exercised before any number that involves it is reported.\n- The CODE may be rough (demo-quality) — that is fine. The FORMAT and the set\n  of features exercised may **not** be rough or partial.\n- If a measurement was taken on a simplified path, it does not count.\n\n## 5. Repository orientation — APEX grok-build fork\n\nThis worktree is the APEX fork of the xai `grok-build` harness, driving the\nzero-config APEX deploy campaign (epic bead `apex-ayl.126`). It is a Rust\ncargo workspace; the crates that ship to clients live in `crates/codegen/`\n(`xai-*` names: `xai-grok-shell` = ACP session + config + TUI shell,\n`xai-grok-sampler` = wire client, `xai-grok-sampling-types` = conversation IR\n+ projection, `xai-grok-models` = catalog, `xai-grok-http` = transport).\n\nState pins (verify with `git log --oneline -1` before relying on them):\n\n- Worktree: `/Users/palanisd/Projects/upstream/wt/grok-build-responses`\n- Branch: `feat/first-class-responses-catalog`\n- HEAD as of 2026-09-23: `d5f045b` (UA-DEFAULT-1); prior: `3856030`\n  (ZC-SUBSET-CURATION-1, 8-row zero-config catalog)\n- Binary of record as of 2026-09-23: `target/release/grok-responses`,\n  sha256:12 `40c995903b5f4a` (`grok 1.0.24`)\n- Remotes: `fork` (github netbrah/grok-build — push target), `mirror`\n  (bitbucket APEX/grok-build — push target), `origin` (xai-org — fetch-only,\n  for upstream-churn tracking). Never push to `origin`.\n\n### The GATE (exact)\n\n```\nCARGO_BUILD_JOBS=4 CARGO_INCREMENTAL=0 RUST_MIN_STACK=67108864 \\\n  cargo test --release -p xai-grok-sampler -p xai-grok-shell \\\n  -p xai-grok-sampling-types -p xai-chat-state -p xai-grok-config-types \\\n  -p xai-grok-agent --features xai-grok-shell/test-support \\\n  --no-fail-fast \\\n  -- --skip image_strip_tests \\\n  --skip cancellation_uses_run_owned_cancel_event_without_parent_detach\n```\n\n- The pass-set is the A6 baseline **plus** the adjudicated sampler sibling-owed\n  exception `stream::responses::tests::response_completed_cache_write_tokens_lands_in_token_usage`\n  **plus** the two isolation-proven load flakes (`session_end_cancels_in_flight_start_hook`,\n  `cancel_running_turn_shutdown_drains_after_stale_rewind_cancel`).\n  **ANY other new failing test name = STOP** and report.\n- Python gate tests need homebrew python3.14.\n- Before ANY build: `pgrep -fl 'cargo|rustc'` — a sibling lane may hold the\n  target lock. Wait; never kill a sibling build.\n\n## 6. Wire invariants (model-visible context discipline)\n\nThe context (history) sent to the model in inference requests is model-visible\nstate. Rules:\n\n1. **No history rewrite** outside the sanctioned projection seams (switch-time\n   `project_switch_history` in `xai-grok-sampling-types/src/conversation/projection.rs`\n   and the per-request send-time projectors). The context is built up\n   incrementally; projection is item-level and per-request-cloned.\n2. **`store=false` is mandatory** on every response-wire request (deployment\n   contract; the proxy does not persist).\n3. **Never emit an empty-string header** (e.g. `x-litellm-tags: \"\"` 401s the\n   whole session — TAGPROBE-2, bead `apex-ayl.126.5`). Empty must be omitted,\n   not sent.\n4. **User-Agent discipline** (`APEX_UA`, bead `apex-ayl.126.3`): the http\n   `UserAgent::render` and the sampler's mirrored renderer are the two\n   render sites; `true` → Apex form in both builds, `false` → stock in both,\n   unset → stock:stock / deploy:Apex. The per-request LLM wire sources UA\n   only from the sampler mirror — when touching either, re-gate both builds.\n5. **Projection invariants** (XW-PROJECT-1 / XW-XREPLAY-1): pairing survival\n   (tool call ↔ result pair atomically kept or dropped), carrier survival,\n   idempotence, no empty item ids, no foreign `encrypted_content` on a row\n   whose mint domain it does not belong to.\n6. **Opaque artifacts are handles, not content** (parity-formalism\n   `EXEMPLARS.md` §4): `rs_*` (vendor-minted), `xw_*` (harness R8\n   identity-suppression rekey, store-side), `encitem_*` (store carrier id),\n   `litellm_enc:` blobs (Azure deployment Fernet domain). Crossing a mint\n   domain has **no byte path** — only strip-to-stub or re-pin (affinity).\n   Never \"translate\" a handle by rewriting its bytes.\n7. **Bounded, stable model-visible items.** Everything injected into the\n   request (system tail, env blocks, developer-policy items) must have a\n   bounded size and a hard cap; avoid frequent prefix churn (cache-break =\n   $). Flag any new model-visible fragment >1k tokens in the review.\n8. **Replay policy is a first-class wire decision** (C4): what rides on\n   reasoning replay (verbatim / summary-only / zero-info stub / stripped)\n   differs per target row class (AzStrict / VLLenient / Vertex) and is the\n   seam where most cross-wire 400s live. Any change here needs wire evidence\n   per row class, not one model.\n\n## 7. Rust house style\n\nThis repo carries its own enforced policy in `clippy.toml` (crates/codegen):\nbanned methods with sanctioned replacements — reqwest client construction\ngoes through `xai-grok-extra-ca` (TLS policy), `std::fs::canonicalize` →\n`dunce::canonicalize`, raw `std/tokio::process::Command::spawn` →\n`xai-tty-utils::ProcessScope::enroll`, `home_dir` → `xai-dirs`. **Read\n`clippy.toml` before adding any of these; the ban list is the policy.**\n\nGeneral Rust rules (adapted from the codex house rules):\n\n- Always collapse if statements (`collapsible_if`) and inline `format!` args\n  where possible (`uninlined_format_args`).\n- Use method references over closures where they read better.\n- Avoid bool or ambiguous `Option` parameters that force unreadable callsites\n  (`foo(false)`); prefer enums, named methods, or newtypes.\n- Make `match` statements exhaustive where practical; avoid wildcard arms\n  that swallow new variants silently.\n- Prefer private modules with an explicitly exported public API; keep crate\n  API surfaces small — do not proliferate test-only helpers in public API.\n- Prefer adding a new module over growing a large one. High-touch files\n  (`xai-grok-shell/src/session/acp_session_impl/*`, `xai-grok-sampler/src/actor/*`)\n  attract unrelated changes: when extracting code, move the related tests\n  toward the new implementation so invariants stay close to their owners.\n- `use_field_init_shorthand = true` (rustfmt.toml).\n- Do not run a full-workspace clippy for a scoped change; scope to the crates\n  you touched. The GATE (section 5) is the test authority.\n\n## 8. Testing\n\n- **TDD is per-item, red → green, inside the workflow** (Principle 0 stage 5).\n  A \"hand-built\" test that bypasses the real pipeline (truncation layers,\n  error-message shaping, serialization) is allowed for units but is **vacuous\n  for any claim about the live path** (Principle 2).\n- Re-gate proportionately: changed packages at minimum, the full 6-package\n  GATE for any production-code change; tests-only deltas may skip the GATE\n  with the reason stated in the report.\n- Prefer comparing whole objects over field-by-field asserts.\n- Do not add tests for statically defined values. Do not add negative tests\n  for logic that was removed.\n- Where behavior is pinned to a specific build, stamp the binary (sha256:12)\n  in the test or report so stale-build vacuity is detectable.\n- Hermeticity: tests must not depend on network, the proxy, or ambient env\n  beyond declared guards (e.g. `EnvGuard` + `#[serial]` for env-var tests).\n- Load flakes adjudicated by isolation (run the test alone; if green in\n  isolation, record it as an isolation-proven flake — the two named in the\n  GATE section are the standing set).\n\n## 9. The redteam / smoke suite (`smoke/redteam/`)\n\n- `manifest.json` (suite + `binary_of_record`), `case.schema.json` (case\n  contract), `run.py` (ACP driver), `cases/*.json` (ndjson/acp cases incl.\n  `rt-crosswire1/1b`, `rt-xreplay1/2`, `enc-*`, `at-*`, `mgw-*`), reports land\n  in `smoke/redteam/report/<UTC-ts>/` with wire capture.\n- If `manifest.binary_of_record` does not match the binary under test, the run\n  classifies **drift vs regression** — never silently green.\n- Case pins must express the case's own verdict spec (tolerant verdicts cover\n  the full accepted-branch set; `nth` pins that assume N must be derived from\n  the run, not hard-coded where N varies).\n- Sibling dirt rule: untracked probe files and modified cases in this tree\n  are campaign state owned by their lane; do not touch another lane's files,\n  and never delete captures.\n- **Redaction discipline**: before quoting any log, report, or wire excerpt\n  in a message, run the raw-key sweep\n  `grep -rEil 'sk-[A0-9a-z]{16,}' <paths>` and expect 0 hits. Never quote key\n  material.\n\n## 10. Beads + ledger (campaign state)\n\n- Shared campaign tasks live in the central Beads graph:\n  `cd /Users/palanisd/Projects/bitbucket/apex_tracking && command bd …`\n  **Never `bd init` in this repo, never set a global `BEADS_DIR`.**\n  Bead naming: epic `apex-ayl.126`, items `.126.N`. `.136` is RESERVED\n  (supports_ultra, operator word owed).\n- A parallel session must be able to orient from beads alone (progressive\n  loading: bead title → description → linked artifacts). Beads do not copy\n  SDD/ledger content — they reference it.\n- The ledger is append-only:\n  `/Users/palanisd/Projects/upstream/grok/plans/ledger.md` (UTC timestamps).\n  Every cut gets an entry when it lands (ratchet step).\n- Plans/SDDs/reports: `/Users/palanisd/Projects/upstream/grok/plans/`\n  (outside this worktree, deliberately — campaign docs are not product code).\n  The wire-parity formalism corpus:\n  `grok/plans/parity-formalism/` (FORMALISM, EXEMPLARS, OBSERVATIONS, Q-A,\n  intel/02). Provenance of upstream-derived code: `THIRD-PARTY-NOTICES` +\n  the per-cut provenance sections in commit bodies.\n\n## 11. The house cycle (how work ships)\n\ndriver (workflow TDD) → **dual review** (two fresh seats, read-only: one\nqwen workhorse + one glm concordance; glm may reject xhigh loads — fall back\nto a second qwen) → **coordinator adjudicates FIRST-HAND** (verify every\nclaim against code/logs before ruling) → fix pass → **exfil** → **ratchet**.\n\nExfil (exact): pathspec-limited commit (never `git add -A`) with a provenance\ncommit body (donor/upstream refs, bead id, wire evidence, gates) → tag\n`backup/<stage>-complete-YYYYMMDD` → push fork **and** mirror → `git ls-remote`\non both to verify → post-commit pathspec check (nothing else moved).\n\nRatchet: ledger entry + `bd close --reason` + update state pins in this file\n(section 5) in the same pass.\n\n## 12. Standing prohibitions + hygiene\n\n- **Never touch**: sibling-lane files in `smoke/redteam/` not owned by your\n  cut, `stash@{0}`, `~/.grok/config.toml` (read-only reference), the deployed\n  proxy config.\n- **No `rm -rf`.** The sanctioned pattern is stash-aside + `cargo clean`\n  (scoped) when disk pressure forces it; the harness blocks raw `rm`.\n- **Builds**: run long builds as the main command of a long-lived exec\n  session (yield + poll), never in a background subshell that dies when the\n  exec shell exits. Check `pgrep -fl 'cargo|rustc'` first (target lock).\n- **Env hygiene**: zsh mangles `echo ===X===` (strip leading `=`); use\n  `echo \"----X----\"`. `apply_patch`-created scripts land without `+x` — run\n  them via `zsh script.sh`.\n- **Secrets**: `APEX_LLM_PROXY_KEY` may be present in the exec env. Treat it\n  as hot: never `env | grep`, never quote it, never echo it into logs or\n  reports. The raw-key sweep (section 9) is mandatory before quoting.\n- **Seat discipline**: never pass `model` or explicit `reasoning_effort` to\n  `spawn_agent` (explicit effort validates against the parent and silently\n  drops the role model). qwen = workhorse seat; glm = free read-only\n  concordance seat (intel/verification, additive — never a replacement for\n  the qwen gate).\n- **Store discipline**: `store=false` everywhere (section 6.2).\n\n## 13. Quick orientation for a new session\n\n1. `git log --oneline -5` + section 5 state pins.\n2. `bd list` in apex_tracking (section 10) — what is OPEN, what is yours.\n3. Tail the ledger (`grok/plans/ledger.md`) for the last three entries.\n4. This file, section 0 — the pipeline is non-negotiable.\n</always_applied_workspace_rule>\n</always_applied_workspace_rules>\n\n<user_rules description=\"These are rules set by the user that you should follow if appropriate.\">\n<user_rule>\nWhen implementing or fixing anything in a web application (UI, layout, styling, routing, client state, or rendered data), verify your work in the browser before declaring the task complete.\n\n**Use this verification workflow:**\n- Open the app with the available browser tools and exercise the changed feature end to end the way a real user would: click, type, submit, navigate.\n- A single render screenshot of the changed screen is NOT verification. Confirm behavior, not just appearance.\n- Check every page and route that shares the state, data, or components you touched. Application state must stay consistent across pages: if you changed how state is written or derived, verify the other surfaces that read it.\n- Hunt for regressions. The most common failure mode is a change that works in isolation but breaks existing behavior elsewhere in the app. Navigate the surrounding flows and look for what broke.\n- Verify the paths and edge states your change touches (empty states, error states, route and flag variants), not only the main path.\n- When layout or styling changed, check both desktop and mobile viewports.\n- If verification finds a problem, fix it and re-verify. Do not finish with unverified UI work.\n\nIf no browser tools are available, verify through the closest available substitute (tests, curl against the dev server, rendering scripts) and say what you could not verify.\n</user_rule>\n\n<user_rule>\n<!-- CODEGRAPH_START -->\n## CodeGraph\n\nIn repositories indexed by CodeGraph (a `.codegraph/` directory exists at the repo root), reach for it BEFORE grep/find or reading files when you need to understand or locate code:\n\n- **MCP tool** (when available): `codegraph_explore` answers most code questions in one call — the relevant symbols' verbatim source plus the call paths between them, including dynamic-dispatch hops grep can't follow. Name a file or symbol in the query to read its current line-numbered source. If it's listed but deferred, load it by name via tool search.\n- **Shell** (always works): `codegraph explore \"<symbol names or question>\"` prints the same output.\n\nIf there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is the user's decision.\n<!-- CODEGRAPH_END -->\n# graphify\n- **graphify** (`~/.claude/skills/graphify/SKILL.md`) - any input to knowledge graph. Trigger: `/graphify`\nWhen the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.\n</user_rule>\n</user_rules>\n</rules>"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": "<system-reminder>\nThe following skills are available for use:\n\n- apex-auth-and-keys: Use when diagnosing APEX authentication failures (401, 403, model_not_supported), changing provider-key handling, adding a wire, debugging the Copilot activation gate, or onboarding a user who lacks provider tokens.\n  Absolute path: /Users/palanisd/.agents/skills/apex-auth-and-keys/SKILL.md\n- apex-copilot-testing: Use when testing or debugging the APEX GitHub Copilot CAPI wire, its device-flow bootstrap, ghu/gho exchange, proxy routing, provider-key unset gate, or personal failover from the LLM proxy.\n  Absolute path: /Users/palanisd/.agents/skills/apex-copilot-testing/SKILL.md\n- apex-deck-figures: Use when building, reviewing, or gating any chart, table, scatter plot, or data figure for an APEX deck (Dithy, KPI, portfolio) — anything where a rendered number must trace to the seam contract. Covers the projection grammar (what shape a claim becomes), the binding rules (may_present/slot outrank disposition), the SVG-only mandate, and the gate that reads chart geometry. Also use before cho…\n  Absolute path: /Users/palanisd/.agents/skills/apex-deck-figures/SKILL.md\n- apex-fleet-deployment: Use when changing any SCS APEX fleet launcher, binary release, settings or defaults JSON, MCP wiring, model parameter, OPSEC material, installer, or rollback state.\n  Absolute path: /Users/palanisd/.agents/skills/apex-fleet-deployment/SKILL.md\n- apex-harness-development: Use when changing the APEX harness source, building or dogfooding a Linux SEA, promoting the harness binary to SCS, or modifying the bundled-skills pipeline.\n  Absolute path: /Users/palanisd/.agents/skills/apex-harness-development/SKILL.md\n- apex-headless-smoke-testing: Use when validating an APEX release or a launcher, binary, settings, MCP, model, or wire-protocol change before or after fleet promotion.\n  Absolute path: /Users/palanisd/.agents/skills/apex-headless-smoke-testing/SKILL.md\n- apex-ontap-source-topology: Use when resolving where ONTAP source lives for any APEX source-plane work (Lore temporal-provenance, code-intel SOMAP, Haystack, Mastra, clangd-rs) — GitHub Enterprise repo identity, dev vs devN, cluster NFS/PVC mounts, SCS checkouts, GHE token location, and build placement.\n  Absolute path: /Users/palanisd/.agents/skills/apex-ontap-source-topology/SKILL.md\n- apex-search-platform-ops: Use when publishing, pinning, deploying, rolling back, or diagnosing CI and Kubernetes delivery for APEX Mastra Search, Haystack, Zoekt, pipeline-config, or their stack repositories.\n  Absolute path: /Users/palanisd/.agents/skills/apex-search-platform-ops/SKILL.md\n- apex-settings-model-changes: Use when adding, updating, or removing APEX fleet models, model parameters, default selections, provider rows, or wireModelId mappings in SCS system settings.\n  Absolute path: /Users/palanisd/.agents/skills/apex-settings-model-changes/SKILL.md\n- apex-wire-capture: Use when investigating APEX wire fidelity, cross-provider model switching, cache_control placement, reasoning replay, tool history, or context-management failures involving long sessions, ACP resume, node distillation, snapshot sawtooths, or /compress.\n  Absolute path: /Users/palanisd/.agents/skills/apex-wire-capture/SKILL.md\n- argocd-readonly: Use when inspecting, deploying, syncing, or changing Argo CD applications, clusters, GitOps state, live manifests, repositories, or projects.\n  Absolute path: /Users/palanisd/.agents/skills/argocd-readonly/SKILL.md\n- beads: Use when working in a repository that uses bd or Beads for durable project task tracking, issue dependencies, blocker management, multi-session handoff, or shared work memory. Trigger when the user asks to find ready work, claim or close tasks, create follow-up work, inspect blockers, recover project context, or choose between local planning and persistent project tracking.\n  Absolute path: /Users/palanisd/.agents/skills/beads/SKILL.md\n- brainstorming: You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation.\n  Absolute path: /Users/palanisd/.agents/skills/brainstorming/SKILL.md\n- claude-api: Build, debug, and optimize Claude API / Anthropic SDK apps. Apps built with this skill should include prompt caching. Also handles migrating existing Claude API code between Claude model versions (4.5 → 4.6, 4.6 → 4.7, retired-model replacements). TRIGGER when: code imports `anthropic`/`@anthropic-ai/sdk`; user asks for the Claude API, Anthropic SDK, or Managed Agents; user adds/modifies/tu…\n  Absolute path: /Users/palanisd/.agents/skills/claude-api/SKILL.md\n- codebase-memory: Use the codebase knowledge graph for structural code queries via the code…\n  Use when: explore the codebase, understand the architecture, what functions exist, show me the structure, who calls this function, what does X call, trace the call chain, find callers of, show dependencies, impact analysis, dead code, unused functions, high fan-out, refactor candidates, code quality audit, graph query syntax, Cyp…\n  Absolute path: /Users/palanisd/.agents/skills/codebase-memory/SKILL.md\n- cognee-memory: Ingest files, folders, and artifacts into the Cognee knowledge graph and recall past context.\n  Absolute path: /Users/palanisd/.agents/skills/cognee-memory/SKILL.md\n- dispatching-parallel-agents: Use when facing 2+ independent tasks that can be worked on without shared state or sequential dependencies\n  Absolute path: /Users/palanisd/.agents/skills/dispatching-parallel-agents/SKILL.md\n- docs-audit-and-refresh: Audit the repository's docs/ content against the current codebase, find missing, incorrect, or stale documentation, and refresh the affected pages\n  Use when: the user asks to review docs coverage, find outdated docs, compare docs with the current repo, or fix documentation drift across features, settings, tools, or integrations.\n  Absolute path: /Users/palanisd/.agents/skills/docs-audit-and-refresh/SKILL.md\n- docs-update-from-diff: Review local code changes with git diff and update the official docs under docs/ to match\n  Use when: the user asks to document current uncommitted work, sync docs with local changes, update docs after a feature or refactor, or when phrases like \"git diff\", \"local changes\", \"update docs\", or \"official docs\" appear.\n  Absolute path: /Users/palanisd/.agents/skills/docs-update-from-diff/SKILL.md\n- executing-plans: Use when you have a written implementation plan to execute in a separate session with review checkpoints\n  Absolute path: /Users/palanisd/.agents/skills/executing-plans/SKILL.md\n- find-skills: Helps users discover and install agent skills when they ask questions like \"how do I do X\", \"find a skill for X\", \"is there a skill that can...\", or express interest in extending capabilities. This skill should be used when the user is looking for functionality that might exist as an installable skill.\n  Absolute path: /Users/palanisd/.agents/skills/find-skills/SKILL.md\n- finishing-a-development-branch: Use when implementation is complete, all tests pass, and you need to decide how to integrate the work\n  Absolute path: /Users/palanisd/.agents/skills/finishing-a-development-branch/SKILL.md\n- frontend-design: Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Helps with aesthetic direction, typography, and making choices that don't read as templated defaults.\n  Absolute path: /Users/palanisd/.agents/skills/frontend-design/SKILL.md\n- gh-address-comments: Help address review/issue comments on the open GitHub PR for the current branch using gh CLI; verify gh auth first and prompt the user to authenticate if not logged in.\n  Absolute path: /Users/palanisd/.agents/skills/gh-address-comments/SKILL.md\n- gh-fix-ci: Use when a user asks to debug or fix failing GitHub PR checks that run in GitHub Actions; use `gh` to inspect checks and logs, summarize failure context, draft a fix plan, and implement only after explicit approval. Treat external providers (for example Buildkite) as out of scope and report only the details URL.\n  Absolute path: /Users/palanisd/.agents/skills/gh-fix-ci/SKILL.md\n- git: Git workflow and GitHub Enterprise PR operations for large ONTAP monorepo. All local git commands MUST be path-scoped to component directories. Server-side operations (PRs, comments, reviews) use gh CLI via GH_HOST.\n  Absolute path: /Users/palanisd/.agents/skills/git/SKILL.md\n- grok-session-triage: Diagnose grok-harness session errors while the run is hot or a…\n  Use when: the operator says \"diagnose this session\", \"why did run X fail\", \"MCP call failed\", \"triage errors across sessions\", \"repro this wire error\", \"something errored in my last run\", \"why is codegraph failing\", \"triage all sessions since yesterday\", or names a failure class (codegraph, wirecap, pty, subagent, MCP). Read-only: never mod…\n  Absolute path: /Users/palanisd/.agents/skills/grok-session-triage/SKILL.md\n- local-code-intelligence: Use when locating, understanding, or tracing code; assessing architecture, dependencies, callers, or impact; working across canonical, linked, or dirty Git worktrees; or setting up a first-time CodeGraph or Codebase Memory index for a repository.\n  Absolute path: /Users/palanisd/.agents/skills/local-code-intelligence/SKILL.md\n- mcp-builder: Guide for creating high-quality MCP (Model Context Protocol) servers that enable LLMs to interact with external services through well-designed tools\n  Use when: building MCP servers to integrate external APIs or services, whether in Python (FastMCP) or Node/TypeScript (MCP SDK).\n  Absolute path: /Users/palanisd/.agents/skills/mcp-builder/SKILL.md\n- netapp-dev-connectivity: Map of corporate-network secrets + proxy config on NetApp dev boxes (SCS, cyclrtp, any box with NFS /u…\n  Use when: any tool needs JIRA/Confluence/ReviewBoard/LLM-proxy credentials, or when a Mac session needs to delegate API calls to a remote Linux box because the Mac lacks ~/.shell_common.sh. Agents MUST source ~/.bashrc (remote) or ~/.shell_common.sh (if present) before any curl; never echo or paste to…\n  Absolute path: /Users/palanisd/.agents/skills/netapp-dev-connectivity/SKILL.md\n- netapp-llm-proxy: Use when validating NetApp LLM proxy connectivity, OpenAI-compatible or Anthropic wire behavior, prompt caching, assistant prefill, LiteLLM versions, or parameter-forwarding defects.\n  Absolute path: /Users/palanisd/.agents/skills/netapp-llm-proxy/SKILL.md\n- openai-docs: Use when the user asks how to build with OpenAI products or APIs and needs up-to-date official documentation with citations, help choosing the latest model for a use case, or explicit GPT-5.4 upgrade and prompt-upgrade guidance; prioritize OpenAI docs MCP tools, use bundled references only as helper context, and restrict any fallback browsing to official OpenAI domains.\n  Absolute path: /Users/palanisd/.agents/skills/openai-docs/SKILL.md\n- playwright: Use when the task requires automating a real browser from the terminal (navigation, form filling, snapshots, screenshots, data extraction, UI-flow debugging) via `playwright-cli` or the bundled wrapper script.\n  Absolute path: /Users/palanisd/.agents/skills/playwright/SKILL.md\n- pr-review: Reviews pull requests with code analysis and terminal smoke testing. Applies when examining code changes, running CLI tests, or when 'PR review', 'code review', 'terminal screenshot', 'visual test' is mentioned.\n  Absolute path: /Users/palanisd/.agents/skills/pr-review/SKILL.md\n- receiving-code-review: Use when receiving code review feedback, before implementing suggestions, especially if feedback seems unclear or technically questionable - requires technical rigor and verification, not performative agreement or blind implementation\n  Absolute path: /Users/palanisd/.agents/skills/receiving-code-review/SKILL.md\n- requesting-code-review: Use when completing tasks, implementing major features, or before merging to verify work meets requirements\n  Absolute path: /Users/palanisd/.agents/skills/requesting-code-review/SKILL.md\n- scs-ops: Use when running commands, transferring files, or deploying skills on SCS, especially when its csh login shell, remote build environment, or NFS paths affect command behavior.\n  Absolute path: /Users/palanisd/.agents/skills/scs-ops/SKILL.md\n- security-best-practices: Perform language and framework specific security best-practice reviews and suggest improvements\n  Use when: Trigger only when the user explicitly requests security best practices guidance, a security review/report, or secure-by-default coding help. Trigger only for supported languages (python, javascript/typescript, go). Do not trigger for general code review, debugging, or non-security tasks.\n  Absolute path: /Users/palanisd/.agents/skills/security-best-practices/SKILL.md\n- security-threat-model: Repository-grounded threat modeling that enumerates trust boundaries, assets, attacker capabilities, abuse paths, and mitigations, and writes a concise Markdown thre…\n  Use when: Trigger only when the user explicitly asks to threat model a codebase or path, enumerate threats/abuse paths, or perform AppSec threat modeling. Do not trigger for general architecture summaries, code review, or non-security desi…\n  Absolute path: /Users/palanisd/.agents/skills/security-threat-model/SKILL.md\n- sem: Use when inspecting code changes, reviewing commits or branches, tracing callers and dependencies, assessing blast radius, finding entity ownership, or gathering focused code context from a Git repository.\n  Absolute path: /Users/palanisd/.agents/skills/sem/SKILL.md\n- skill-creator: Guide for creating effective skills. This skill should be used when users want to create a new skill (or update an existing skill) that extends Codex's capabilities with specialized knowledge, workflows, or tool integrations.\n  Absolute path: /Users/palanisd/.agents/skills/skill-creator-openai/SKILL.md\n- skill-installer: Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo path\n  Use when: a user asks to list installable skills, install a curated skill, or install a skill from another repo (including private repos).\n  Absolute path: /Users/palanisd/.agents/skills/skill-installer/SKILL.md\n- subagent-driven-development: Use when executing implementation plans with independent tasks in the current session\n  Absolute path: /Users/palanisd/.agents/skills/subagent-driven-development/SKILL.md\n- systematic-debugging: Use when encountering any bug, test failure, or unexpected behavior, before proposing fixes\n  Absolute path: /Users/palanisd/.agents/skills/systematic-debugging/SKILL.md\n- terminal-capture: Automates terminal UI screenshot testing for CLI commands. Applies when reviewing PRs that affect CLI output, testing slash commands (/about, /context, /auth, /export), generating visual documentation, or when 'terminal screenshot', 'CLI test', 'visual test', or 'terminal-capture' is mentioned.\n  Absolute path: /Users/palanisd/.agents/skills/terminal-capture/SKILL.md\n- test-driven-development: Use when implementing any feature or bugfix, before writing implementation code\n  Absolute path: /Users/palanisd/.agents/skills/test-driven-development/SKILL.md\n- using-git-worktrees: Use when starting feature work that needs isolation from current workspace or before executing implementation plans - ensures an isolated workspace exists via native tools or git worktree fallback\n  Absolute path: /Users/palanisd/.agents/skills/using-git-worktrees/SKILL.md\n- using-superpowers: Use when starting any conversation - establishes how to find and use skills, requiring skill invocation before ANY response including clarifying questions\n  Absolute path: /Users/palanisd/.agents/skills/using-superpowers/SKILL.md\n- verification-before-completion: Use when about to claim work is complete, fixed, or passing, before committing or creating PRs - requires running verification commands and confirming output before making any success claims; evidence before assertions always\n  Absolute path: /Users/palanisd/.agents/skills/verification-before-completion/SKILL.md\n- weave: Use when previewing, performing, diagnosing, or validating Git merges, rebases, and cherry-picks where entity-level conflict handling may reduce false conflicts or explain real ones.\n  Absolute path: /Users/palanisd/.agents/skills/weave/SKILL.md\n- webapp-testing: Toolkit for interacting with and testing local web applications using Playwright. Supports verifying frontend functionality, debugging UI behavior, capturing browser screenshots, and viewing browser logs.\n  Absolute path: /Users/palanisd/.agents/skills/webapp-testing/SKILL.md\n- writing-plans: Use when you have a spec or requirements for a multi-step task, before touching code\n  Absolute path: /Users/palanisd/.agents/skills/writing-plans/SKILL.md\n- writing-skills: Use when creating new skills, editing existing skills, or verifying skills work before deployment\n  Absolute path: /Users/palanisd/.agents/skills/writing-skills/SKILL.md\n\nThe following workflows are available:\n\n- deep-research: Research a query with bounded parallelism, cross-check the evidence, and write a cited report\n  Use when: Compare, investigate, or research a question that needs sourced claims. /deep-research, research this, write a cited report.\n  Absolute path: /Users/palanisd/Projects/upstream/wt/grok-build-responses/crates/codegen/xai-grok-shell/src/session/workflows/deep_research.rhai\n</system-reminder>"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": "<system-reminder>\nMCP server connected:\n- pty (18 tools): Manage PTY sessions through tools. Use pty_spawn, pty_write, pty_read, pty_list, pty_kill, and pty_wait for the main PTY workflow. PTY reads are agent-first: default to compact page.text, request line_number_mode=embedded only when precise line references matter, and set capture_limit only when you need initial_output. output_view=raw cannot be combined with line_number_mode=embedded. Use ssh_connect, ssh_session_spawn, ssh_exec, ssh_run, ssh_read_file, ssh_write_file, ssh_list_dir, ssh_mkdir, ssh_tunnel_open, ssh_tunnel_close, ssh_list, and ssh_disconnect to manage SSH connections, remote sessions, remote files, tunnel summaries, and mount summaries. ssh_connect requires explicit auth_kind. SSH tunnels default to bind_host=127.0.0.1 and remote_host=127.0.0.1; non-loopback bind_host values must be explicitly allowed by policy. Resources expose read-only snapshots, including pty://sessions plus ssh://connections and ssh://tunnels. When SSH mount support is unavailable or a mount fails because local prerequisites are missing, read ssh://docs/mount-setup and the matching ssh://docs/mount-setup/{platform} guide before suggesting installation steps. Tasks are available as an optional enhancement.\n\nTo use MCP tools, you MUST call `search_tool` first to retrieve the tool's input schema before calling `use_tool`. NEVER guess parameter names — always use the exact schema returned by `search_tool`.\n</system-reminder>"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": "<system-reminder>\nMCP servers currently connecting (tools will become available shortly):\n- codebase-memory-mcp\n- codegraph\n- github\n\nDo not attempt to use tools from these servers yet. If the user's request likely requires one of these servers, mention that the server is still connecting and proceed with what you can do in the meantime.\n</system-reminder>"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": "<user_query>\nCompute 7^8432 mod 5557 using modular exponentiation. Show each squaring step briefly, then state the final remainder on its own line. Do not use any tools.\n</user_query>"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": "<system-reminder>\nMCP servers connected:\n- codebase-memory-mcp (17 tools): Graph first: search_graph for symbols, trace_path for relationships, get_code_snippet for source, query_graph for multi-hop, and get_architecture for overview. Use search_code/grep for literals or coverage gaps. Indexes auto-refresh. Check cited-path coverage; paginate.\n- codegraph (7 tools): # Codegraph — code intelligence over an indexed knowledge graph Codegraph is a SQLite knowledge graph of every symbol, edge, and file in the workspace — pre-computed structure you would otherwise re-derive by reading files (cached intelligence: thousands of parse/trace decisions you don't pay to re-reason each run). It indexes 30+ languages (TypeScript/JavaScript, Python, Go, Rust, Java, C#, C/C++, PHP, Ruby, Swift, Kotlin, and more) — don't assume a language here isn't covered. Reads are sub-millisecond; the index lags writes by ~1s through the file watcher. Reach for it BEFORE *and* while writing or editing code — not just for questions: one call returns the verbatim source PLUS who calls it and what it affects, so you edit with the blast radius in view. More accurate context, in far fewer tokens and round-trips than reading files yourself. ## One tool: codegraph_explore — use it instead of reading files There is a single tool, `codegraph_explore`, and it is Read-equivalent. It takes either a natural-language question or a bag of symbol/file names and returns the **verbatim, line-numbered source** of the relevant symbols grouped by file — the same `<n>\\t<line>` shape `Read` gives you, safe to `Edit` from — PLUS the call path among them (including dynamic-dispatch hops like callbacks, React re-render, and JSX children that grep can't follow) and a blast-radius summary of what depends on them. Whether you're answering \"how does X work\" or implementing a change (fixing a bug, adding a feature), call `codegraph_explore` before you Read. ONE call usually answers the whole question. Codegraph IS the pre-built search index — so running your own grep + read loop, or delegating the lookup to a separate file-reading sub-task/agent, repeats work codegraph already did and costs more for the same answer. A direct codegraph answer is typically one to a few calls; a grep/read exploration is dozens. ## How to query - **Almost any question — \"how does X work\", architecture, a bug, \"what/where is X\", or surveying … [truncated]\n- github (49 tools): The GitHub MCP Server provides tools to interact with GitHub platform. Tool selection guidance: 1. Use 'list_*' tools for broad, simple retrieval and pagination of all items of a type (e.g., all issues, all PRs, all branches) with basic filtering. 2. Use 'search_*' tools for targeted queries with specific criteria, keywords, or complex filters (e.g., issues with certain text, PRs by author, code containing functions). Context management: 1. Use pagination whenever possible with batches of 5-10 items. 2. Use minimal_output parameter set to true if the full information is not needed to accomplish a task. Tool usage guidance: 1. For 'search_*' tools: Use separate 'sort' and 'order' parameters if available for sorting results - do not include 'sort:' syntax in query strings. Query strings should contain only search criteria (e.g., 'org:google language:python'), not sorting instructions. Always call 'get_me' first to understand current user permissions and context. ## Issues Check 'list_issue_types' first for organizations to use proper issue types. Use 'search_issues' before creating new issues to avoid duplicates. Always set 'state_reason' when closing issues. ## Pull Requests PR review workflow: Always use 'pull_request_review_write' with method 'create' to create a pending review, then 'add_comment_to_pending_review' to add comments, and finally 'pull_request_review_write' with method 'submit_pending' to submit the review for complex reviews with line-specific comments. Before creating a pull request, search for pull request templates in the repository. Template files are called pull_request_template.md or they're located in '.github/PULL_REQUEST_TEMPLATE' directory. Use the template content to structure the PR description and then call create_pull_request tool.\n\nMCP servers that failed to connect:\n- code-graph (connection failed)\n- jenkins-jarvis (connection failed)\n\nTo use MCP tools, you MUST call `search_tool` first to retrieve the tool's input schema before calling `use_tool`. NEVER guess parameter names — always use the exact schema returned by `search_tool`.\n</system-reminder>"
+    },
+    {
+      "type": "message",
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "<multi_agent_mode>proactive</multi_agent_mode>"
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "encrypted_content": "litellm_enc:bW9kZWxfaWQ6MzkxNTk4NDU5YWZjOTMwMDllODMxZTU3MjljYzc1NDMwZmUwNzUyYmZjOTVlNjFmYTg3MjQ2YWQ0MTg4OGQ1Yw==;gAAAAABqs2ntlW4hUuILKiQSkLs9k-C9Lefr8ncO-kXGpHwLQXfbGVs3ELd7-bQcS1u5VogDLmNOMcIQwhckW6VzQE5uMWboDIbJOrFF5fW4bducOZgVxUsn6rol7QsE0LPm97nfuyhzgRhNGby6WBBzly7TrvXTAonksw_moXoTykHBPexUVpM6McJbfySdf_TwjmFeLsO_3cco95ueD_-3oBFWoRENhjIhvKi9oESZ8xbRR2TaiduKABRlyUaKIrplxAATJOb8oHGdyiEW8UjYyAVLZk9tNUTfFpEscecATmlaapbOAQ19Ajdzjoi1Ke0ozW_UUost4-2T82UOg2apu0wX1lfiZQnAHOIPMreQh3Bdfk8AInka9J_LWE3ry8hAVQzwSFH6FO_BdMafqseXhxJJ4Kee1njOwdgcCcIJ9AClJ5Fi3aFMHUvjKChJqHRaamJhBuZpyDVjD8SmGOG2xrXkWFnAQLs-HGiOILMNvLyDqjgcA3yYSMc2SEBkusj5vmqf95twtD-kqoJ5CiAEVdLjQCpHm_jqkVtOff8umVuBwN5GoE5e6a2twju2ie7gyjgDg-RDNgPlDbEs7n4oGh7ZLLivUp8EBNrovEmlU0vma330IGRC2OaRKyWIs77ri8roMbqAR6bH4PxjUSubuDcRx6BW0a94Fc4pmHT9sJrAiTXK19GAlGBbBp0wauvwpkSns2bJRCdlqz0JvlcszW3aUgu2Ar5JA_pd_LycwvnEbbg6GvBIHhAG2fdSgkH2ka9E6DVoyZQXig1igvepCuWWOXJzIoAy5RMMKtN0-miHWik_jnhr7QXSRM1Rcv6o_OnQOKmd51vpaWnW1zvHhYlpMBxBQW4TzpUC22PwE7b01kEzkHBJX5Kuj32oT0w2mYE2ay8B8yRUkuTi85M0OYMf7z8uUcdWvw_CCF2qmEnd8p6WCQV9XsaIeayEPnsyFBYHxDTsgiu9JM0X482VKxOY_3lVG_G9_uOpfvtKxhGfGZmYDnnOPD2J5PyY9AK36J9Xl5q356oQNlLDxeMJEkW3lYnZvkd_WmxK1maV5JxVQgYCa8M6vHrKvNigaTNzRnxxdTfNRS29uuXjs9olSaL9AUhdXzs1UR181-jLnw__WuKKtxeeEvs_6MVBYFODpTfXbv5My-pN7WHgvkvWsvw5YmJ85eyGMae7msbsHKhxphgRMvRqnZzmPeISKPajIp2cJIsQ5d-KYiYWJTG8ZI_4ZtwaEhyf095MStX0DNjkEvchrLcv3hE0U9XDR45Srmu0J1eWGce8YejXGa2_6X2PY1cVyMG3CH3sRHREC00DniMX40I2CNBwzGT8DhiHYtkhIzQFV09uQNrneZHorRNuMS7LNPErFlt8fk6U-kmRZgUYGa1oiJQXNfsu2IY1g6ih0eOtw1bdnXttVG89B-j8qfBdsIUy0jcjQPMPiyepCbtvNd3Tltu0EuhYSyg_kAAbZ2ZwjsZlapOayU3nUd5xUvclptA9fgJ4W7h6LMu5_yZ_61cAt4fiEd-R-N5QI08fVW5HdjODK2EsMzVfCg__fiK5QWoBpvl8Afvluc-exzOZzOW7P62A4aFfbW-j4V5J5V8y3L16FGtv_Ucv4qaVtbO4MBbSaslZniJH5AI3-mNrklOURz51HMGIi3lGHTGAbbKBEzX7_9ON2fGiuufbkEO8NYug_vJfutz22gisJ0G8MWo1vnHTRytLxDuQB7p9rdYAA-L5oRIBFCuYu0WGBBITsrQM4Ka6dGwH90eUoyaicGb7L3vGfNjjE_kQtJk-2lFQ4X-JYXNanpzFMqtL9BHGxiCbDc48vZzGi-lE1HWbn0gn6W5Jq_FOcUnOCZtxtsWs-2JrS3Uj0OsJ8Ipz7mecjh2_o8zt9aran8EI_APZqFxIbe7MhWlxIuxjB8TBpDhupLNxnjV7nYztQNAYmXPpeAqKPHRJnKmwEMG7Vk7cdtf0UiM1Bn9MJk_CfH7MVa7uFUJBPJTeXQObazHwRo-cUtg6Pd2smheO4ycSTkKvXlCvp9GR7phpu-_GBTK2cuwK4WX7WPGdHfND_JC2VQ45ZbcfSHqEJ6ObfolaaTKCcjUB5svDX1iFBxB3B978THq7DIX7BQDMdgeTzUFanfMZI6N5_eqfTFTIdA-Y2q1uIQ_ojDXzTectva7ZOSwk0c31hSbe42CPNHn1Qr18zBTqCvwR6YuZ1R-T1KgINVJboSaxVIpNVglOHAP6lE_fNI3Ig8H2MZ90p-u9BLO5XPZeTg7k7xWUG9krnQFXL3pIMZEEUgytWAeRXjWhqMDXTvQ8OK5M9Zbju0JpKVceLHTrXeP7gQhte2xh_7mUnWezfTKRMrdjmPQCnvxVtB2EK6fKR96OCYhRR-KQdAiC6-WLweZVJw52pXVWRVTTm8uJB7soUJUi_WfvgBO--d2AQ6xugSjK6k_5EHkF6DvHOSigOuUaN_o7BlKlaZ7BILkoMSR7TUwlhzDaj1tAnjs7tSpYLsqc0fzW5-cni9-zlw1hFgXuCb349aVotVJOHJmNmC9WT7lIqdo5_emjksljWjhVSU8fDd9yuqJUP35U-HxgmTwRKeWZZaLgJ7Dvyt8QRDKvzwy0Z7aEnyMu5mU1yDzp-nrCuqSNimR5Sune2O2tC2LQ4tpYlh1WDgrcVT8Ih8pMEFUL1doDGY3bn7arNUgGbveH-k4Ft0MPy8sQp0UvN9Dc-VuOzoc6g4LUJDAWaZgF7m0TdyR2CZbYxSlEflVMPFdceSLESqVT0rJix6ubNl5TyMAg7qhLKpnlfPpI035fpY30_3tQJT5iFEj3X1eykAeZzNw288sbW_Fj0AUiuIKX5XkZwiD__mlbpliBwcYvayU4zbASg-q_j3vJ_68_HZeUMcAHH3V2Rp6HmW47_TG9rnthUNbirpGBRGVfAyVFzTeWKjLceT6yuS-Ys76v",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "**Calculating modular exponentiation**\n\nI need to compute \\(7^{8432} \\mod 5557\\) without using any tools, so I’ll calculate each squaring step and utilize modular exponentiation through repeated squaring. I’ll break down the power into binary: \\(8432\\) is \\(8192 + 240\\), and I've identified the necessary bits.\n\nNow, I’ll compute the residues of \\(7^{(1, 2, 4, \\ldots, 8192)} \\mod 5557\\). The calculations for the first few powers give me:\n\n- \\(r_0 = 7\\)\n- \\(r_1 = 49\\)\n- \\(r_2 = 2401\\)\n- \\(r_3\\) requires squaring \\(2401\\) and reducing modulo \\(5557\\). \n\nI’ll proceed meticulously to ensure accuracy and explore the prime nature of \\(5557\\) too."
+        },
+        {
+          "type": "summary_text",
+          "text": "**Continuing the modular calculation**\n\nI’m working on \\(7^{8432} \\mod 5557\\) by calculating successive powers. For \\(r_4\\), I computed \\(3616^2\\) using the binomial expansion, which results in \\(13,075,456\\). \n\nDividing this by \\(5557\\), I perform a series of multiplications to find the remainder: \n\n- \\(2000\\) gives me \\(11,114,000\\) with a remainder of \\(1,961,456\\).\n- Using \\(300\\) leads to \\(1,667,100\\) which gives a remainder of \\(294,356\\), and so forth.\n\nUltimately, I found that the residue is \\(5392\\) (equivalent to \\(-165\\))."
+        }
+      ]
+    },
+    {
+      "type": "reasoning",
+      "encrypted_content": "litellm_enc:bW9kZWxfaWQ6MzkxNTk4NDU5YWZjOTMwMDllODMxZTU3MjljYzc1NDMwZmUwNzUyYmZjOTVlNjFmYTg3MjQ2YWQ0MTg4OGQ1Yw==;gAAAAABqs2ntVT7AW8ju7qvIPj--9ITsZcRFL7lmgNTlK4krure_fM-NfLmDxUBavqPrCytK4ErfEH26PHBNYZYUUIkwh6lcZIWZI_mynC7Pbn0tPacZwapkCPpWABmOnT3YUJOz4b7FDCETLt4NO03JW0EE5qeSCOC-yLFpqDUWYlaVLaVJywmVu7Io46IR5LAFYbKlZpUMCc1kVRhMJR9_-JDEn7KULcWRGT9-Ds-Bd52GuchVCAnAAtEupOC8GNznh81oM0GxQaUkhITDDGdJNaeKXcKRHt_JC56-NXRUvH-p6LH57iWmtYl87ZQpk4qvp9Ur5mLyw9YEG_TEA9t0uj_QSMIjSXHVCplosLqJx6per4hTCo9nV00FLZycR8c05OLvLpFiUA_CE4ZEWWuWrKirC7mo2S_ZQ1_MnT9_YcCOL4vrLGlV9tYlTcV7WQQ0qMSGWT1RXSP_pqyB8KCpHNFUPplBtcByS6wPbS4peeJ3f3WK-Zouw2GvP3qyHn2yswdj9teZONB0cmdIE3JmM20gfkRDadu4HZLi543WdLbzYmwnOnPJrpRuIu8Gq8MZd9uUvUs2OWabsvJ2elRUV8mzDFTb-VIxqNJBBQ4UEq2b0hff0w8yNr3bN9y9KnRwnyuFioX5K_jqYlvvyD-eu4m3vEx_fMJSp5-n-u0FYEYdFgIgzHI5Iqqdy6-CLe5Kq-fvHvlTrVPueXKjLAuO3E8jDI9v4CucN-4k1db2FXgrvvspeZ3YdsJLYNpG1HIeSEwWEcJ_E5M-0ofQslGq_4PWKnmt8DGE5b8aJke__Ps6R2L4GhouqERHerTU25jl1pkAF2zZLC1lzobrY9Sww5OBOPtlEL1vpdodvN2mYWh8l6CeuQ-KwHqgVQ2QJVBux5fsQsvi4ta2YGNOfpanTfKKGipRLh-Y0acG5r9MZAv-LFEdxlwmN1soJESo_rVm96m-Trp3jtu7tEhthySfY3HoFk7RZd5fbdi__PPW9J4stKKbB4pU9jrzOgZZ3Owlz4_myfi3L5VaEZn1fsp4cNtdjMMxQUhPoMI7HCbNnWLuSzerpYJvmmaHMl5eTGSH98LSqmzdykt0pevUZbEYQP3kRRk8XW8J-Czbx1iV93nxGh01VDGAmi5yzM0zWMhB54pHdPWYvbs0P11ZYU4U-tUsb67gTENy0lDTMvTjS6dv8u3iEafDeh0Cu_cvYowbFaXB5yYYvsfkwJOHo1TzecMcIW4pBUv74qMKlSSw_7_F5v9-SWlkVHwRPtqttBq7nbmdCwe4QcSlOEASsU_NTiOv2vFXtpVkJqEB9NByr0QlFZ4wcsEshWCXJqMAx4i8LKUMLHEp8DGaX-zfMh2VI6CUkcGW0ijj8_OZC3lEE6YODztDLmGjaHZrcyudaQNHBOzd-6yPq8CNAR5xOqIvmVgBeOWtnBQJVyimc18tWXI3oDyAXOqnExZ71CCc2X1GCAln8VZkFJNlJxBAYEHxhLJPVBG_wzXXR0x46yc1xq-w_jFZJj8jF1Nn45FHlEmmdeTL4eILEP_kERRxk7nkNx7cqqeGIAitDB4NmO-IlDqbnV4OyNy-O-Jt4pDPdm8C_sXWexbhegjO-54Y2XmXtFC5GL0FyiGn2JwBkRSP8YwruNQ4TKoH5OklzcQ7ZnQfUCbPAiiTUXeFovqaM9g5xgrUcxSyRV1AdrKMd4nVs5EEEJSSSlLII_P5-cyQNbNK2NZ-QFiBy2DPZjkNrPUbkEncPhI6hHkHCs5Kopc6qy3newOHNBpt7FE9_wJzpRLstYIup9a5NWdy1KJ6DaWilePCXO4l8P72vLM0YLKy5DhkTbGdzlSqFip4dgRuHbU_4m8FgRjxpInyZtmkAySndOUTJ8NC6vW0b6GdTw7aibe1-k6AZrFXOpRABPi-cwH4DKZlH05m-T_LwT3jU7bxEyb9IkXbMhJqTOIVwEYrldiufiO9jk07ng97STxKzMx1hHWkMVOOZkF6s9GQQDCq4AIV8E4B0VIj-TrPrBSKcpEQIg9eKNFNuj9qN3mHYlsaEI_4Pm2J6rJiORyK9lP4S4B_zpqLW9V0MTCXiOLldMCUgiv8l_t8xynMPfvTyF1cbxhk8sodo6mNkN2LyFHCr0c6Mvy6yqXUxjusUHwMkCzT0ZXy8JFR5zvIIkOlT8zhb3izxXehXfjByxMj6ZojMBioW_96-BynM3Ua13OvzFYt7zm2d-jACyJRblyJStdS7ZtHORHOVIUSdxWVe-lciA1bXKxZ21cQoyw51INryvPGxo7GNPyuR8b4i0lYwizicKopkkEFm5adEQjIHO5ndbmccpOG4hAlTKULGEUcQ4lodBTsNJdSn_NkKxAy7MPNRazVG4rue3MokYe95VzKjD98NT2_q-eXfCmcF3UbSoEwzy4NbqrP43eOX_2UI1m-AkBCo4de5jNZE5eAhI8AmMzPU-8L2Q==",
+      "summary": []
+    },
+    {
+      "type": "reasoning",
+      "encrypted_content": "litellm_enc:bW9kZWxfaWQ6MzkxNTk4NDU5YWZjOTMwMDllODMxZTU3MjljYzc1NDMwZmUwNzUyYmZjOTVlNjFmYTg3MjQ2YWQ0MTg4OGQ1Yw==;gAAAAABqs2ntvcoj4dqt2YRVHEtFzP7NCFKuVD0V8wDAuA-K-Jod2p1MKC9aFl6NCOJ35ZRt44Evp79U3lNPqRcB_HJbM8xdY0qDz7sBljxJ06xAWqDC3JclHfFCgI9STFD9T_fK51s0xL8mdW88JKS2pRPa3vmoegprrCaNYFz3SV9X2X0kkaGULUMRfkB82_AlhdGn9JF6UzeI23fqVe7XUvMWmteRZEXZcdgxjwRXEeSewLJvTjEtL_UNEOkLUW1V26RjE-wHGuGyGMb30XwhcnxcUSXI2y3CYy_vzJXVCJ0kPeNigyCGaz0RX5HIVibukMI8pWrxRI0XqikAgBFeZlgQyEqTnmjTrwe2lzcpMvoQeQr2CSg915hVKBy3bOgvOzfzQJuvdG21bSm8Pm-jtknMbiWdr2t-1rQH0i8Df4L0oCiDabu43pwqbewZmCM6QWeJvgdJGei6PkDJ63S4-UCaV6Kb1fs26pMouuMyin9XbiqZKGhm6ZrUUsEbrx_8iAHej8bJmk-OGkArNzCkpnzFw5Ow3AhLKkTc29xHTh3zWbXYtytfi_IocfqyadJHJjbtPzq5xryV27QeywxzLpZSGNpJjn2A5V0gmIgznP9pvzcJdhbO4guzwcpbpb0Hre08A5pzNknxx49EipKrxeZDFffSRg7tIz_zbgyhN2Wot1UzCX8tHtPf7npaV8n4X3NLHm37ydwsYS32_T9D-OlwENQ0Nx1S9oUck79ksJ71ZLjL_B4ArJAioK2xm_1mDOu0iDG1jucSxr6acztB1s6m77NYHr-NmaE4VKGKf7_Dn4STPlvIEJ5cvlyBVXVkEJoK8RgzbM3QExXFcHZ6-TFmeuWj7zhgpkwI-b-xuLuBH8DyCth-PUhUSrmkDHiEApMW9p05amqD90MrbLTBqODBRHdFcD7Da8c7yR4Nv20AqgtawhBXCRBwKSSEfSwPoBeoArDf5pZzbEyot-n70NQo--KJzkAuWnlCZ2gZadgzKTftRNXHZrPkITbP2Q1mEfvpUxdokOeXbkpVnywZG7s-FRReCxqv0l2rubcfrt4CjXM29N-trrojRBC1pQgoDoS0dQKUeMEQiKj2LeTn_JFpwNrtdWAlOoT5wsUQP9_AMpyUVu7KKRoprn2T3rhbrCpLUrBy1muYkboae5NPIBXan-H_JBj3XPgTjZ9xhrPZYHRjxwnPQWSetl07Qtlg3CKItzXVe5FqN-sxFdwpxG8uDutbAALLpNHHyT4G7f7fzJ0rwjMi-Z4LMOgJST7NCoz6jh1GMDQJp0v6vYlS-SE_-hv1R098dyHk8BPe4eK-3J0JbwzkxriLIwWhQRaMtsc2ZBhp_nliDC7bN0FwefxbJQfQHayB4Z5pggAQI7-yFwk2WcTJ6-n9gQIZfK6ANbn3d_qZcZHol0KyCa-3WdrGAZetRkG3PpOznIUsd5ZaqzYkazq6LMTFrtEkxF4WhAAJ2m_PtY_AGqy789QxZz4808g6jz7IueIlF62Bf0nni5N_Vid79ZRjb3BVuWLnCZiXfcNairG_lvJ8dcZ2jdtrc__eC9NHPaqr8Q2xmuxDsbJyGCjSJ8p0C_JW24C5YvpXdhNQMPpIDvUhPmIF49db3y9P1djaKXTABYdI8s-8VlS_1TZTMkMUjuvjuR3kh00dIs0qo8d3v3y4r3ZavLyoM_QVTIVFfNySFUWMz_dPlvbWozvEpuhdHV2vS6EWWYE05N6BrpJS-UV0feYH0Lc_S9sAsHYssFB91eTJNf-qgL91ektKRBFQmQDtQSqLBxwPFeqhv5uzSWhMui5zl7GkOxnFVJ0dueFJ2dsos8-O1XNAp39BFifXDatpwQGfjlj47RG6a255SMjYhRGso-4pBpm7zfGzzxhUv3n8wXHI5lMPCNO2xasy63ApsFQ3GM897Idrl53mFWwWakeXcl9D6en8cCROyD_6Nrv7rDT9yDYWQ28STclTmkcjVcYR-vb8g0WdPV8SDvdAGy8afap1xwVdMxXOgMnJvuvIybKPCGwqkgLKR1f_RpJtm0ojKmq3_H0Y8LpX65pV5nvTd8rwIR-3hrloqCfSeloeZx88_WoPAABlkgyMhwwJ-nrS053Wl2gM81bq3JaQv2yaoqclhn03fZzB9VhkcA6vRAgNTl2_bi6oI_fylvxsh1JyAbo1MTiBwSuM2GCsoKuPSTX0lKZVBs0tWCynhvA9hBCqKDZ5ikTI81ah0HJ_p_BVX75K3vU6cezI5B9pyB1ctaZ6GrpAnvVyBX5PkhQtosj-JIbXWZ_0I3kFMQdBj9miyO2yKJfV_VBHFWMdwAFT-MS6xNr5wrpGrb23lyuXkPylXdQIQ4XV8zSdf4X2B02b_FDDFBNFNi4vFoRzggG49PZSBK0eeBkzJQ5j9BK4SHfNzsaxMa1jt_mUNNjNOLTXgDJ9d_azv8liHcZWElFCqlvt9UMwcQGzw5oqW4O8dVPyklJmV_nZzU5M4PRWP3YeZcTBGN2ktHgewftOVX0Kp8R7eRYhrPOagd8SvbPg4p0RUN310yeqc6oBHV_4avDaYj5KGo4Uw7h03Gz356tWY9Qqt6lYIaJPhJ9_IYosUmmYAPPm60wsbwKtqrd8g2_djRQr_P22OHeLLm7nYE07CYgACUFhwD8l4iifwydN1Exc383u6QmEUcKzW6FpkdLjcmW3UoEmxnN0oIucVu0oYwWz7wCWjLjywUdU9W0-imREsfI415YR1DUbXWfjAXgN3yvwDfMx",
+      "summary": []
+    },
+    {
+      "type": "reasoning",
+      "encrypted_content": "litellm_enc:bW9kZWxfaWQ6MzkxNTk4NDU5YWZjOTMwMDllODMxZTU3MjljYzc1NDMwZmUwNzUyYmZjOTVlNjFmYTg3MjQ2YWQ0MTg4OGQ1Yw==;gAAAAABqs2ntHdhva1KOY1b_7O27UfvBilcI5c_l-KPXpyGzax5_PnPS0jZ-ul-9OZDH2v_iomeBI5KzSQm6ErV0h1zp17zmsRdCzJAy6payno7BTIoQLWxLzKmLQKNoGymPrWSqGvUYF5LxEdUK_lFuc6C_YVXt65pv8BBUlJiUZf_4pTuFPDDkXxAHKV6FEvllwB4oGHd2T_tHu-Ud4v2dfu6Hgy_qEXBtN8Z1XbV4c5NXIUDb3zM2HZmOB63OPOeyjgm-Qr0mGQ-7xVrdgdjC3Ie9iOr98WdzQLjKFMXNE2xoN3LNRdVgDW25kIrhkb0wwBmqmgRmeiVWbbTy_WG3UjrPtwBQ-6EATaRoS-scxU-8fzVqz0NgleHx1EGYC7BeeZNmBYPm927nhTALKe03GHQMNOH93VuhJni729EAwlsvJvoboQhDqG9iGQDjKKCKm6pawbIVNH9Wc1HnVq7FpcHCzso8s9eE_Dl7hjeLMrvZ3NiLDjfVVFChy77L2rHwn5RMz5RW7rzv1tBPgU2heN4KQh8uHA8eQPkn3kMUgvC3p-UvnbvzWJtehWDWS-JfilUd6CCzmUDFaVqBf_i14ttkGlv4uSzDbChrn4JnwX80LLKKysk9eyaBql6g0PJCfaGd-D2zxp02YBoGM33u0yLXRvxyR8DSq0XYLntuE4mKVsyA0gngXL57HKuIZXQUuJZtQhHmkBuA2FajnWyRKEncfPM2FaO8nX604m_zRJyZwyIUBc9uGoBQ1WK4lSN6Kc3D_uv5mWFXKBqo50Ph-r7LBBwjZDC3vqfEjczBDR6akUXpFNXOj7vZqWMiP9gcynbApsnfPQs7s9eu6Vvj6tuCWlDcp64TXIZ-IClhGf--v7BqCK1OQFQZtOKEVEWWBKxfn-A-fekDpHWKSjWiQww8DF2fUaH8nxgldRvx8IlLH0P8YeiSkE07685Vwg5YSId24lHhfs7UhC8GuJ2z0Be2semWARnCJlnidIEEIBz255f3kUmOrk6b-me9EFekFCT4jUOCly_-xd6dYiRfjJHxxivGw3Au-2Uid0gYMxV7dJhbGOE5pDjBYfzLz-yPZPdSVobHRGdfBMLrd_rorsJ0_ukyktIBBn-LQuj8X65qNYAXTMo8g8Qv_ZuL8rK_WAQ3pYZXFdu-f_Q3iuFWytwoFtF0Zxc2UFeF6aauA0oMjcljra-843End4Yv4ms512___K0YoVSP1Ur_HzDuTZLJkivtVtS01IeDpf4YZ_vZbJTY93sVbjsUZJaJgFnch9XBmRT7vS200uHSGaEKf3WkHrgTmA4p717dPaSBhUqYWqOCeX-Mby8qxRVmFZ7un6FDhlptbPAp8IN9yPww6SAIiMRIYmuB0fZD7oD8tlVwZfhHz7wMKNu_JTnVPl612byeeUbLfCU0paz4fhHHo-xR-gQXFrxzaNfj119IQF8KMCoPcrYWeFOTla1LFceq1gwn0Y5HMMaXNjAhg8pr8TF7S3uElKn8J9_kFopWzZuzuocgkAvAiYw3jMWTfrIPdVsT0CJOy1uhnpjTjgbgR1zgZwC5NEZ2UGsWQmX2snLqfHkR0EuExhUh3bBHrZbM-j5lgYuz3WpHwBFfbHAO8LY7I7b4KJiB1TzeYSPD-MHbCZE9QWr66VsJjNrW9JlP5rEY_G2pQJK0_TZavwWAGa7cJGtZQ1yVRmOwPkBUrj8et4uQEbzGmvZ4Zwo6-Wpngj8KtSgy7nvgBFeXisQEBtO5lM6EcnQ9-9FeXdBn2C1p6OFmI6kcDKO9vJYdqRc-BOcDgYQdYTTvcGg_I9hY7k0P6DjPqJkghsc4Ua3y7WxhX2lM4htl28cgJcrU8UoL7cuLvHJxRytozWRSP74-33Zjkq6zVumjXz5gpYGVsnbugjLQhH0JNNSViU8cEwQ_qLANKAHVroSsV46UIoqY4U9dHuDeBn81bHjLcA6ezNoeERkOC5KyOFPM-mGkkFvuPLXHiSs_YIq-9e2wMtj3e6Ei9URperyd9kOAA1AIMOlOAR4m6BWXgKsV5y2s3zJWm4MfbkFaypM_IZEnz1a1utT_7FqqLePI5V4S8fL8Sh6djxRUdCzCqWl5TPiLBO7Xn-nGrxMQ-QNLKyZkYfOE1WcjKya4dG8Bz-fs-RENQV30SHsfuSfhm-yN95IiNcNXXIsPWbd7TuCv1dtwsBE9ZB3L6HXYVuH1ymvyv-cmwJIkvTLnZjG9komIk8a9rExCAwsCxyiGX4MPD05rLlOU7tY3L0aZjtgvg-fcgZzc8SFfd6bsuEhglJr_NJVScOtRbaaanlvrCQ0TYu8dujYhemhMAOSeon0x4IZmv0n5Hi3OYp4tfAyiMV5wDrEJ-TAbStaDpNwpXRh64qGNmYiQBmGykwy2tD_hKeiY2rqpbPScETCbH9yystFzX4Cx0XCfnM43rhDTu3Lbh83OVjBSi0ApgdMLXYS4KiQyMbUR3ZQlLf7rXpl6PcdK9M-S3WubG3xqJ-Keg924EF8TAgRxsCmlmrqt8Lc4Q52AArEKwSaUk4kbSuuaZ37_kX3cMIsmDzXr1eSxYUBzKAqbFdZc8xDtyTZZyiwDTD6tQAGIdMxhEK2rzTWToGvvgbORAzvIP_dx83Gq_wibttMHnqPqFbvSR4ADDmVlXC-CwuCE3RmLvqY0Btd8fCyY4RAx6ip5CyUrtoIf6O7xVvNBrPCPFLG273n_UivNDEXsHkXX4EFv8H0BBYOtQUOFqkdoShWlWOy2BRIKWOZvz0JW1HoM_U_P1fd-r_ih6gAYGkza6ScZXevBeHtw1cW9EgeQ9NM-M6BX4oUfKRFx5lCRmDycRnD0VhcRD1kjeLdj3w4UlFUkPwEUcGLVIwMTrbIHmaJD0-HweOxa",
+      "summary": []
+    },
+    {
+      "type": "reasoning",
+      "encrypted_content": "litellm_enc:bW9kZWxfaWQ6MzkxNTk4NDU5YWZjOTMwMDllODMxZTU3MjljYzc1NDMwZmUwNzUyYmZjOTVlNjFmYTg3MjQ2YWQ0MTg4OGQ1Yw==;gAAAAABqs2ntepMyoomp4-Q5zAMQmrxa80dn2A921TiQnxTGalADndjRFl5Mjtu3r06UQb1OgtzUmo7g8u9whdyLGPEeqdhrFKnAhJTw5va3WF2-SirhnbgYe-1-cdn5pDfRhiBAcqZSM0vdZd3bowiVpE81UgG1PbBeEaAl8owIeJ7J2dIA27TgTefHvQaqKg7_v938ufWBOKpjlJe8kg-vml04lPDgc3RvnGewM0Gpy9Rqr-a3YBoj3oCm-B2kPLw9Qw_hhqKlZ9ntSW06Z-JfUPLbR_LzO1op97m6BQF4MoqkEY43Ce4cjDs8x0oGGjuhBme9Ot0yfyZhSy5Ad3SeOOIybw-GfzYG27enhDjlld88BV14z86iIFSLYejobs1OZYVc6FjZIOk7_OGeB-bbAsHOWMg-agvFq6UzOisAacUYfUCDMH-TfEQR7yItIaSW0H3siSya4gxq9zns3vfu2QTW3r4JuFQEOg7BO6hOsB22NDNInbKL-65USREzg2x8SWnBfdSJesS7xBPzGewt_cf41IJ_eNb6QfE_8LA_6fr6_hACF06_3T730GaKiEfvOClAyZVYy83VzEorTfdz-KhL8z3c5ylpdMhZWHNS7Ub4NC020pYjEVjCvuh57aqiDGTMc-ejnVXka4g33JR_ocwVgkyCmVED2oHQpooSrbZHDykoiNt72eSNIrMchpmUFCJLyn1GaK0J3fJFgdkcm0vZbilxi7RHFykEKdsGG5qK9rIeQ1IzUy56_TNGbsTjQdmSnmzWTSt_VpdwGqxHsRLDmn-vOXbILLpOZXZNmuog44Do4rO0qZHPJtbenST-iJ0_2olDOcDQXmck-DH64v-LGcs0TemN9FhJ8hPzcrTSrBZSaDr8cgbzKz0IHLY35ZOrbJiPlGIoqa2KBme3X0dpN4CtYqcqktaUSMpYeNT3svSqe8Bb3XKSoFbYBDFzZBKqMZlLKabcOty2O_SQHcr6OYasJ7jjKeyUJx8-Sql6Upl1F8wcBzv_VSZGjmJb9bkfajbWROEbMTwxJGgiohnq97M7E45gvReXHq7vteQ3bz9mEOUULqcqhjqwOCLmVfM20VZykn0LffbMZQAwXXERZJGuSZER5N0ht5g_GCrMXSqrQEBTAqKkGUi0RnBwYt5gOqDseaalrZ3QFDHB1LDO-qgSQGCMQWDL-C2gkxvqgxZwlWviGg3p4JgX--6pmdL10pWoQu83G_AcY0MQWQaUT1Yjhm5KJASUaXdfGSKRLVsSSDqCo-9HyZyKR89wePEwen8W1atlg3Q67G96fmYlXSNhMTZmmfJhdtjFLK4q-W8iT4QRvUauSCCRXJEIzazyQWMajUN9f4WhzzHnNVV-ScTbJ_QJpiDUJh2X9UO_ogWs92qYIcpwi_DyFq3zTpc4LD-0-wIuKzhFGxrhV4H1ddiOfK5S2zvWhVn2JF8sUJwTpoOxqI5V2wQAabHkJoc9ZN2TbBQh0gQHyqGI7_dtsr98L39Y5LhyfWJrBpL_tIZHgUP6ZU3tnXU23bFzxvrh0G4OeViOIplSzUjth-IpTFUxwVkm4xjJAb-pb9D5ga7hx_uMB7P-Kf-StZ25GRyFcq3pvuhh6Ye_AJipmP1R_4iL1Rai4iSwUVijzEquMyVSKRYhVo8gCELTdAdlImdgkPdeQ-UKpAUhc0CL9SKGFqALWrLIlQW_WMd9HBWV5FNIX2rY7T6ojMmfrXqIV4QwjXxDNSeNwLvAh96F2Fx8MME9XS74nIMl6Oo6VGiK5l36L1O05A7fLbdDYlFiX52gi0WEiNmJoyMXOCiNB7MEMRUNYyt2Tc_QftUQxxo2ixOATjPyzN4u1uSjJwMVwzJ1_7i9twd8e-MZ40sY6L5BcrWcijctRhdZP6bpCMkdH2dT8wLPCdpt3iq0T2_RdObiVMCgJ6tYUgz3lJSd1r7wmyqu_lqaqGDR1qwWBDkcHWAORsNvV98bLdUPYYrfL5rQ8YU-Kf9X5kjjUg0wSbb82sqpkbxH50pv4NTck4gpfZCkXeXRdo3tmMbvRQU82QQkQSp1t5XZPROp9u8jhOMaYwG3NZlnm_p0LT90JsRjpsb5hXEuXwwqZR8ccBzhCdWZ60DmzsUnBF7zXdUgoohkJuoNRJ6LFEaMffTtT_tLdhw710Tgl0nAAbSJvDIFxchKo6JQYovVtd3RH6DMCVnsocVB2Q4DA7o1y3cxqySTlde0d3Jn-8I6TkQNqiGYImR4ELBRGua-1MPg2bGufoI8qjlqsbrVkEgCipwsvnCOdxvZ_03IDYOn-5pE5dtudGhfTBlfr_6nCJC3BAMkAk5s6gYh9I-tmk8o64MgNDlr9vo0xwQd3O90-KulsC6h_eRkVUIFlJhORDsI1xBAhaiWgXjbuR4kwz0hQz8_3Cqu5b1eK8lFzpbuRo1EyeQ3QvSN3gudtq7gQVPidQFgybyI29h_QkajzzJDHzpixzI-MhFANSAWA-NzNFLR891A1pkQkc7PQMtaT2rdq3vtFe7uj0_YTZuhK8SNZwkwvNTHYwDP7NA=",
+      "summary": []
+    },
+    {
+      "type": "reasoning",
+      "encrypted_content": "litellm_enc:bW9kZWxfaWQ6MzkxNTk4NDU5YWZjOTMwMDllODMxZTU3MjljYzc1NDMwZmUwNzUyYmZjOTVlNjFmYTg3MjQ2YWQ0MTg4OGQ1Yw==;gAAAAABqs2ntoM5cYgudJKWyx3g-_lnQs78fQQeVjBWghrkfrLT6NMDEW2K0c2pbpi4mCnda20cLmMh2e8t_Xg-r03u-YBt7g_kczZvfn4tMYoj4l5EqfPvveYf1wobQ4T9oQR7E8uuhSCKv91cIhzq9PIcumGQNVodSO6OtAjgfiMJHeFhtfClAY7dpw2ZkJqhVPUZgrCZqLiELSlBJPzRaRCs9w15RgSIJfElT-5g4vk2xH2Q3-ESsZoG-ZrUt2YgNMzjP8r_icKJICSRAaVp5jlQ_G26jIuCiRV6cYEN4Td08ciUjhLAq3Nu1E2_ZXjqb06tzB0J4HiAnY9n4G68mg3PeDmzvDZ_H-ICd8x7k--isJfbhAlHLsUtVR--ffdeOzfi0finyoxmKHSeyXlDqgAA7LQ805K-idqc5Fx8NQGvVUaBGW24ihFKCSVuDW26a5i1lo2CrEckx2jceROF5LpFziwL20zVHSscVZAnsUTzCvyMgKyzNYZGaXzIna5SX1vODiGlIlBMDugF02XkuUHFJ0rKxCn1S-US0vM7zgOvBCFiIpYilC9ijVb42BrbHmKqyEPGTs0u8EpaZcnAKillTu_ssFN9V46TtYqVuTL00OQZRqg_zDSMhv3SsfcKheczo0h5kZcQc1GeXFiOHmM7pP1XOt_RZ7P01JHBid-sopNFfIFI9W6Ak0qi1HaMuTJ3I1EYMM2OJ_QkOh3NqiiEgXcTqGTI8QaBBpSQQOv6L_J94ZqeJwLJvJswsZHiJeVOcGDPE-gMxCGYsKiJfYlFaEDHVyWthDTFbyff9K-D-QQuFdluXNe74SoxKjQt5U-vbh1578RZzPbo75lfsGsJ01KSYjINSs5Jt9P1i5cIaZOFyQdclKOS-5hTfAk2ufrQT-UdpqWZnuzR533MLlKoCZMJ6lfRYGFDqPMj33Anm6lr8cPIgnjVX5zuomwELjTwilCSyt87Ygnbl3NPBKKXNMHSjI3FiOHFohY1tTD0Ca8wcgl2hhl8W_5j2lyo3dUSGTZcwU7TLvFFAAkkvhLDgFhB3jc6D8zWzpswvpjfW4imy9OncNhdASYNPjqcPCZneDgvv9eaHj_N_hc_CsYeS0o5uGuunHHMojl0RKBeirBsmH1n0lx0ryhDI-DFMoB8F_VSaVz5vgPjQy_kCbcuowL-ptYmMHygS0sACvr_DUskChH3zks32Nr5dETHzRySnnI3bJUCAWWaAlkue-D0p3henmC-nqU-G01Xx2R50g-fzGNtNKK_wW4fkFZxoR9bUZwrN-dcajqGXyg6OMA6prtpm80L1dHes9E0ZLUjFI_zV81yTKwIYcV4pKVCOmVIHMujzUD3jKIiSV5VVx11Qlx-Dp2QuIJxfo-OZvMzvKzF4GYZqDufzMIAEHK1dBeH0f7RU8M1ldMIRNs3sauJOnHvMU7oj3hq-ziBIgLE1izT4E7hFNaywrn2kQvPLXwC-ySxK9yXzmGW4Na0DPwRSHKvW-mdTQgydoDZ3ny-Gft_X8rNsJzq-XK36oG4d4VYF3yUknIrEZWldr6KPcAZ9XEotCrh1-qjYj4EhWc61b2re-AmljMmEAc59uT0atKfI8u0zdwKxcja5btlR_sTZJ612hTA9aKV-0UZFnHox6m14RIzryN-kao-dlnOqrLJEOBY0OJ6md2t6Jl_tu9oyHO1ylilFI8QFtqu0XeeUwM0izouKYBhjYrmzy2cmzZ68zL0hcm2vLoUD7Ykj3ae2Yuqy_6zK3HhsQAj873SlTjVxuJHnT2zYj2rwnH5vN58-HeUOTPrUUAjHMEvkHwt_OzxKNNBXlaPHEkTQa_nCk_keX87ehwMXDemg4Za4RgsFX8kAZZdDj-7YwXK-5BMeu3KNaxO7Z_l5IuL5FPAu5d36hcni0Z6LXJYQ_vntE54zEW9MW991dnW4Qvf-SpMqQO1REgTjAWh2M1r8OOc74lVqhj0VLXPPUNk9QQEkfZnspaM7ya5Cl5rHVTaoVJq4Fsp7bOrY_Uy061fLzD4RBy3RLFKmqbxsczemQfd8JLcHWQv53-IOedQWfNJASwgBaADekrxBf61QytZH7v4P_3t_Cz_tJieJmgM9Q4AOZUWzrXlJciTx_l4rqtFFzEBR0RlSh0txKiV-wg6H0mvBjjNsMriGDyHvrIzDxv7el0czs3J-noWYajG6NMItjfmFjTfEO_TuxTeh_Bo9K0qKWl1ZX1fpID9VsSz5UplOiKQltY_Xdz6vg_dRg36wec2TiejDpqO9bqb5vNNfq9qtCKqaDNPykzB3-fHpTjnmSDrUlnNnElP1QnL1lXnB7AOCXBgE9rIMOAJ2gynVJxZcVKrxA9mH2IJAf2OzsrXKOP0EeqLulU3DPnKqrB9-2M6OPOK1RCF1WxCkRBKwSSHqsP3PwFWwWkY3oXi-aF4pZF6_IGrJBZ6x7gzHNo-bZTP8-O5t71zpahzqWiGi4Bnyb8GJ27d1gSkrUaGf6sUOqdSXSdFB_eb5_QwBiOT2B3jhee8MTxfckHjjbqd4Zhj4xsEFQXWPDoKmwBy4lPEz8RkQDTVk2Za_Vh37lg6UsxIHklNNbIPAgaHS6u7FiVOLNNJDDuH8G6sVODkkZUBTaWqNcQMOzI2AUf6UI3_I73RKQ_vkdISMmk1lT1d9VJ-tZV5EbQs0gwonhyvWYFbqHm2wcoae3VP4J68eFveBgU0rIvaHRJgDsrc6cAy_PNS348dhFtlW_FNzUAa2Lo01aIQoLSPXIsy5Vtju9HD8Sj9qpt1R7_3BhPF2Czh9cDHuhZOGuG8wFC2P4HOcARb6fPdo2d-H_CAXf_u2BIV-aUYOCioN1_09r6R0XqF3DmJGeFVEzx9Z-TpxvCEuTv7k3SexuAJAmMZzwBM60HNMPdV-_ygMnCBqBaVbeDYIJLuYdf8Ti5D4OQYdJBwhj3uJsTQhkaZQye3m2xX0UuGQ6asn_5C_ROQ8nfcnHYmRly79wPfr6iTcJ4nGN9eoMnYFkSQ0nNSYKZrsnT5qicev6WrnCUmUNmCYLuQhByVF_Pj1e9SzBcmT2NCXamgW8fKLzC5uazTEAMH1Z--AbRIHHmm5UcuY5w==",
+      "summary": []
+    },
+    {
+      "type": "reasoning",
+      "encrypted_content": "litellm_enc:bW9kZWxfaWQ6MzkxNTk4NDU5YWZjOTMwMDllODMxZTU3MjljYzc1NDMwZmUwNzUyYmZjOTVlNjFmYTg3MjQ2YWQ0MTg4OGQ1Yw==;gAAAAABqs2ntYYbpPzn2XHDWpestzboy4iEax5mNci7xKLxmMX9LDksYjAq5Ia9kjxjR1NMAqsQ6GJLWx7qSSGkoe5qCuj5cPM8JT1VkHDIcVFcOhLWGLTXds8-Aj2uVCuZir8v5H7ylvBAhNKyl8GMJqpY6dP0H8rqUUiEMvsetaiLraCoAzo_AYgF_hVqNnptY8riuhcfgbGwjqynnmnXQqnAshQvLJXLdsHoamgxSt3HyYDp7Ncv5lN01aRXP5GB5IPp1--n540YAb7PsWUQZAJPAmRume8YW9v10v5ErMPb14K5Fr7iOKnaQNUjYRIg1AhqqnLWDbcnbKeXI1BLO_NqPR00P8gmoWdVKoo4oB5lLn3ZDtIOpF3yQ6be3bHrtMWAh5wxdJLRHG-aOO8ZdXO2_YTXc3ARi1kxr4t_Fs7yZJGN86fch3AicQU-kZj1AKNrlFeMGK3URIpJPg3Od0SAibQ39w81cBdwvtnRKpZMkab3vhx1svsFg44yTlYjBALOz-R2A4inU0AS6NiK5KEksCdcsjhHHItLmTNP11pb3n7RViWeDSN8HUSfimnYm4B6hOhItjCSz4oRTOS46ZIv2Qp4xfg1TuEyoT8jEE-tJVTVXTHEgwhoy_neBbbeNLLM8q1DXHV91h3AgtmVquybYC1_arLGv9Nr_cxbuK4-ZUUXSw_q0Lyd25LUwz5K5eYZM2K6htYA7VZ5cmcYcT1-U-2Eqm9e_hY2oqCgQ0nE6qvd2wq3tMzn6sHwGkLXyW8hJ35GSZHtWbGBTPKJuxQ9N03NOYC97DTGlEDw6CTLP3meN9k8BudNkbp5E6ivgVHggkp-EqGOOTNZ2vhlK2ycuf98-WJl3XW979hoSI-fycGoavFVruZU1lkrvJxgXPy02xYRxfpvaIsVU-NGEuxqQanG15Lo8SRNA7B-0w46iayQXZVaHnEXU-FRnQiABW2nnFo6eePpgmmY2_dF2-4qoRujdquWfdWY9zPesjqjXO5DFm_X-Z6VlGLwAhvcTcD4zmlBs20aHvfZkQOdMP6uM-yGFF5Ja0FJOKmFfe8sxrzo69Hzj1ZbRNXjeB1Epnery8dWhaMU45RDtj51nzedEIwoU7ddliSNHbEl2GmglCAjhVs27SMWbyBh3H4GyHU029YavD57EKLFHQsKJPVzBVLrKyHNRJ_0tRR60ei44mtncl8qwcfdMlNSKjMqwGXtO0UnPvjFVxaKK85eiGRqVqzfiS9f9s0rPRlPuQ6J6NaNZQ6Xlegb739JQg9m5VA-QBzu8gn4Dgme8SpvjmsmV-uMTpYSF1hpPv6c0EV4P6SvYqIgSEpins77cKzgOt-OyApflfqATskrfPL90p_iRBXF1I-8Y4JuNCdGlTqRdeAUFghZ6TjQxYBz2jZkOWXDtwv_9BeX5ZzFppaWcMX74-Qlrlnc5M3qRAtCFbu-stvDS88RjEuun--7TiugrObjwBL1GmyKF_4eOEs4jcTabIRgGcogltqURFF7-73ohfzwWn576oMQU1b2QNR_WCjlwdqNRJz7KRiJKvnqwq-RWv3E6l8tKKKVmSlM7Cly4NkLrRUdUZdFOQ_4v81I8R-WTND0nxYkSHZNUT95v-P3Q5IItA0FGJsDtZFKvU960VarpjyLD3PpFnxeBIJ8z49Ismjy9pFaEQctmhlCBVw7LzDN8WRSeo1IDSqKrGqHfARTkXhE=",
+      "summary": []
+    },
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": "\\[\n8432=8192+128+64+32+16.\n\\]\n\nRepeated squaring modulo \\(5557\\):\n\n\\[\n\\begin{aligned}\n7^1 &\\equiv 7\\\\\n7^2 &\\equiv 7^2 \\equiv 49\\\\\n7^4 &\\equiv 49^2 \\equiv 2401\\\\\n7^8 &\\equiv 2401^2 \\equiv 2192\\\\\n7^{16} &\\equiv 2192^2 \\equiv 3616\\\\\n7^{32} &\\equiv 3616^2 \\equiv 5392\\\\\n7^{64} &\\equiv 5392^2 \\equiv 4997\\\\\n7^{128} &\\equiv 4997^2 \\equiv 2408\\\\\n7^{256} &\\equiv 2408^2 \\equiv 2513\\\\\n7^{512} &\\equiv 2513^2 \\equiv 2417\\\\\n7^{1024} &\\equiv 2417^2 \\equiv 1482\\\\\n7^{2048} &\\equiv 1482^2 \\equiv 1309\\\\\n7^{4096} &\\equiv 1309^2 \\equiv 1925\\\\\n7^{8192} &\\equiv 1925^2 \\equiv 4663\n\\end{aligned}\n\\]\n\nCombining the required powers:\n\n\\[\n4663\\cdot2408\\cdot4997\\cdot5392\\cdot3616\n\\equiv 1355 \\pmod{5557}.\n\\]\n\n1355"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": "<user_query>\nReply with exactly: MXAI-C04-S1\n</user_query>"
+    }
+  ],
+  "max_output_tokens": 128000,
+  "model": "gpt-5.6-sol",
+  "prompt_cache_key": "01a0ccd5-0f1d-7f01-946a-e8b1bdb3ae07",
+  "reasoning": {
+    "effort": "max",
+    "summary": "concise"
+  },
+  "store": false,
+  "stream": true,
+  "tools": [
+    {
+      "type": "function",
+      "name": "run_terminal_command",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "command",
+          "description"
+        ],
+        "properties": {
+          "command": {
+            "description": "The bash command to run.",
+            "type": "string"
+          },
+          "timeout": {
+            "description": "Optional timeout in milliseconds (max 36000000). Default: 120000. Kill deadline for a command that is still in the foreground. This does not extend how long the tool waits: a foreground command still running after about 15s is moved to the background and you receive a task id. Once backgrounded, the command is no longer bound by this value; it runs until it exits (background cap 10h). If you do not receive a task id, the command was killed at timeout instead.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0,
+            "default": 120000,
+            "maximum": 36000000
+          },
+          "description": {
+            "description": "One sentence explanation as to why this command needs to be run and how it contributes to the goal.",
+            "type": "string"
+          },
+          "background": {
+            "description": "Set to true for long-running commands that should run in the background (e.g., dev servers, long builds). Returns a task id immediately while the command keeps running in the background; you are notified on completion, so do not poll or sleep-wait for it.",
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "type": "object"
+      },
+      "description": "Run a bash command and return its output.\n\nUsage notes:\n  - You can specify an optional timeout in milliseconds (up to 36000000ms). Foreground commands block this tool for at most about 15s. A command still running at that point is moved to the background — it is not killed and has not timed out — and you receive a task id; wait for it with get_command_or_subagent_output. If you do not receive a task id, the command was killed at timeout instead. timeout is a separate kill deadline that only applies while the command is still in the foreground; once backgrounded the command runs until it exits (background cap 10h). Setting timeout never makes this tool wait longer than about 15s. Commands launched with background: true are not bounded by the default: with timeout omitted or 0 they run until they exit or are killed; a positive timeout still applies.\n  - Timeout enforcement:when the timeout fires on an explicit `background: true` command, the wrapper kills the child process group (SIGTERM, escalated to SIGKILL after a ~1s grace period). Descendants that did not detach via `setsid` / `nohup` will also be killed. `timeout: 0` in `background: true` mode disables the wrapper timeout entirely; the child's lifetime is owned by the model via kill_command_or_subagent.\n  - If the output exceeds 40000 characters, the middle is truncated (you keep the beginning and end) and the result includes the path to a log file with the full output, which you can read or search.\n  - You can use the background parameter to run the command in the background (e.g., dev servers, long builds): it returns a task id immediately and keeps running in the background. You are notified on completion, so do not poll or sleep-wait for it. You do not need to use '&' at the end of the command when using this parameter."
+    },
+    {
+      "type": "function",
+      "name": "read_file",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "target_file"
+        ],
+        "type": "object",
+        "properties": {
+          "target_file": {
+            "description": "The path of the file to read. You can use either a relative path in the workspace or an absolute path. If an absolute path is provided, it will be preserved as is.",
+            "type": "string"
+          },
+          "offset": {
+            "description": "The line number to start reading from. Only provide if the file is too large to read at once.",
+            "type": "integer",
+            "default": 1
+          },
+          "limit": {
+            "description": "The number of lines to read. Only provide if the file is too large to read at once.",
+            "type": "integer"
+          },
+          "pages": {
+            "description": "Page range for PDF files (e.g. '1-5', '3', '10-'). Required for PDFs with more than 10 pages. Max 20 pages per call. Ignored for non-PDF files.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "format": {
+            "description": "Output format for PDF files. 'image' (default) renders pages as images. 'text' extracts text content. Ignored for non-PDF files.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "description": "Read a file.\n\nUsage:\n- The target_file parameter can be a relative path in the workspace or an absolute path\n- By default, it reads up to 1000 lines starting from the beginning of the file\n- Line numbers (1-based) appear as anchors in the format LINE_NUMBER→LINE_CONTENT on the first returned line and on every 10th line of the file; the lines in between show content only. Count from the nearest anchor when referring to a specific line\n- This tool can read PDF files (.pdf), PowerPoint files (.pptx), Jupyter notebooks (.ipynb files), and image files (e.g. PNG, JPG, etc).\n- When reading an image file the contents are presented visually as this tool uses multimodal LLMs."
+    },
+    {
+      "type": "function",
+      "name": "search_replace",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "file_path",
+          "old_string",
+          "new_string"
+        ],
+        "properties": {
+          "file_path": {
+            "description": "The path to the file to modify. You can use either a relative path in the workspace or an absolute path.",
+            "type": "string"
+          },
+          "old_string": {
+            "description": "The text to replace",
+            "type": "string"
+          },
+          "new_string": {
+            "description": "The text to replace it with (must be different from old_string)",
+            "type": "string"
+          },
+          "replace_all": {
+            "description": "Replace all occurrences of old_string (default false)",
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "type": "object"
+      },
+      "description": "Replace an exact string in a file.\n\n- `read_file` prefixes each line with \"LINE_NUMBER→\". That prefix is not part of the file: match only what comes after the →, with its exact indentation.\n- `old_string` must match exactly one place in the file. If it appears more than once, add surrounding lines to make it unique, or set `replace_all` to change every occurrence (handy for renaming an identifier).\n- To create a new file, set `old_string` to an empty string."
+    },
+    {
+      "type": "function",
+      "name": "list_dir",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "target_directory"
+        ],
+        "type": "object",
+        "properties": {
+          "target_directory": {
+            "description": "Path to directory to list contents of, relative to the workspace root or absolute.",
+            "type": "string"
+          }
+        }
+      },
+      "description": "Lists files and directories in a given path.\nThe 'target_directory' parameter can be relative to the workspace root or absolute.\n\nOther details:\n    - The result does not display dot-files and dot-directories.\n    - Respects .gitignore patterns (files/directories ignored by git are not shown).\n    - Large directories are summarized with file counts and extension breakdowns instead of listing all files."
+    },
+    {
+      "type": "function",
+      "name": "grep",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "pattern"
+        ],
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "description": "The regular expression pattern to search for in file contents (rg --regexp)",
+            "type": "string"
+          },
+          "path": {
+            "description": "File or directory to search in (rg pattern -- PATH). Defaults to workspace path.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "glob": {
+            "description": "Glob pattern (rg --glob GLOB -- PATH) to filter files (e.g. \"*.js\", \"*.{ts,tsx}\").",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "-B": {
+            "description": "Number of lines to show before each match (rg -B).",
+            "type": "integer"
+          },
+          "-A": {
+            "description": "Number of lines to show after each match (rg -A).",
+            "type": "integer"
+          },
+          "-C": {
+            "description": "Number of lines to show before and after each match (rg -C).",
+            "type": "integer"
+          },
+          "-i": {
+            "description": "Case insensitive search (rg -i).",
+            "type": "boolean",
+            "default": false
+          },
+          "type": {
+            "description": "File type to search (rg --type). Common types: js, py, rust, go, java, etc. More efficient than glob for standard file types.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "head_limit": {
+            "description": "Limit output to first N lines/entries, equivalent to \"| head -N\". Defaults to 200 lines or 500 entries.",
+            "type": "integer"
+          },
+          "multiline": {
+            "description": "Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall).",
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "description": "Search file contents with regular expressions (ripgrep).\n\n- Full regex syntax, so escape literal special characters: `functionCall\\(`, or `interface\\{\\}` to find interface{} in Go.\n- Pass pattern as a raw regex string — no surrounding quotes.\n- Respects .gitignore unless you pass a broad glob like '--glob *'.\n- Only filter by 'type' or 'glob' when you are sure of the file type; import paths may not match source file types (.js vs .ts).\n- Output is ripgrep-style: ':' marks match lines, '-' marks context lines, grouped by file. Large results are capped and report \"at least\" counts."
+    },
+    {
+      "type": "function",
+      "name": "kill_command_or_subagent",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "task_id"
+        ],
+        "properties": {
+          "task_id": {
+            "description": "The task ID to terminate",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "description": "Terminate a running background task, monitor, or subagent.\n\nUsage notes:\n- Pass its task_id (a monitor's task_id is returned by monitor).\n- Sends SIGTERM/SIGKILL to a bash task or monitor; sends Cancel+Shutdown to a subagent.\n- Returns success if the task was killed or had already exited."
+    },
+    {
+      "type": "function",
+      "name": "todo_write",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "todos"
+        ],
+        "type": "object",
+        "properties": {
+          "merge": {
+            "description": "Optional. When true (default), merges the provided todos into the existing list by id — send only the items you are changing, and to flip status without changing content send just id + status. When false, the provided todos replace the existing list.",
+            "type": "boolean",
+            "default": true
+          },
+          "todos": {
+            "description": "Array of todo items to write to the workspace",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "description": "Unique identifier for the todo item",
+                  "type": "string"
+                },
+                "content": {
+                  "description": "The description/content of the todo item",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "description": "The status of the todo item: pending, in_progress, completed, or cancelled",
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "pending",
+                    "in_progress",
+                    "completed",
+                    "cancelled",
+                    null
+                  ]
+                }
+              },
+              "required": [
+                "id"
+              ]
+            }
+          }
+        }
+      },
+      "description": "Create and manage a structured task list. The user sees this list live — it is your primary way to show progress.\n\nUse for any task with 3+ steps. Skip for trivial single-step work."
+    },
+    {
+      "type": "function",
+      "name": "get_command_or_subagent_output",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "task_ids": {
+            "description": "Task IDs to get output from. Pass one or more; for a single task use a one-element array. With a positive timeout_ms, multiple ids wait until all complete. Omit timeout_ms or pass 0 for a non-blocking snapshot.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          },
+          "timeout_ms": {
+            "description": "Max wait time in milliseconds, up to 3600000 (~1 h). A positive value waits for completion; omit or pass 0 for a non-blocking status poll.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0,
+            "default": null,
+            "maximum": 3600000
+          }
+        },
+        "type": "object",
+        "required": []
+      },
+      "description": "Get output and status from a background task, monitor, or subagent.\n\nUsage notes:\n- Pass task_ids with one or more ids from background=true commands or subagents (a monitor's task_id is returned by monitor); for a single task use a one-element array. Multiple ids with a positive timeout_ms wait until all complete\n- Omit timeout_ms or pass 0 for a non-blocking status snapshot; set a positive timeout_ms to wait up to that many milliseconds, capped at 3600000 (~1 h)\n- Returns current output, status, and exit code if completed\n- If output is large, use read_file on the output_file path"
+    },
+    {
+      "type": "function",
+      "name": "spawn_subagent",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "prompt",
+          "description"
+        ],
+        "properties": {
+          "prompt": {
+            "description": "The full task prompt for the subagent to execute.",
+            "type": "string"
+          },
+          "description": {
+            "description": "Short description of the task (3-5 words).",
+            "type": "string"
+          },
+          "subagent_type": {
+            "description": "Name of the subagent type to launch. Built-in types: \"general-purpose\", \"explore\", \"plan\". Additional user-defined types may also be available.",
+            "type": "string",
+            "default": "general-purpose"
+          },
+          "background": {
+            "description": "Returns immediately with a subagent_id. Use the task output tool to retrieve results. This is set to true by default.",
+            "type": "boolean",
+            "default": true
+          },
+          "isolation": {
+            "description": "Isolation mode: \"none\" (default, shared workspace) or \"worktree\" (isolated git worktree). Worktree mode prevents the child's edits from affecting the parent workspace until explicitly merged.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "none",
+              "worktree",
+              null
+            ]
+          },
+          "resume_from": {
+            "description": "Resume from a previously completed subagent's conversation. Pass the subagent_id returned by a prior task call. The new subagent continues the previous one's raw transcript with the new task prompt appended. The source must be completed (not running), belong to the current session, and use the same subagent_type.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cwd": {
+            "description": "Explicit working directory for the subagent. The path must exist and be a directory. Mutually exclusive with isolation=\"worktree\". Ignored when resume_from is set (the resumed child inherits its source's cwd/worktree).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "description": "Optional model slug for this agent. If provided, it must resolve to one of the available model slugs. If omitted, the subagent uses the same model as the parent agent. Do not pass if resume_from is set (prior model will be used). Only choose an explicit model when the user directly requests it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effort": {
+            "description": "Optional reasoning effort for this agent (e.g. \"low\", \"medium\", \"high\"). Must be a value the agent's model supports; it is rejected for models without a reasoning-effort menu (e.g. claude). If omitted, the agent inherits the parent session's reasoning effort.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "description": "Start a subagent that works on a task independently and reports back.\n\nAgent types:\n\n- **general-purpose**: General purpose agent for multi-step tasks. Has access to: run_terminal_command, read_file, search_replace, list_dir, grep, , and todo_write.\n- **explore**: Fast, read-only agent specialized for codebase exploration. Read-only — has access to: read_file, list_dir, grep.\n- **plan**: Software architect for planning implementation strategies. Read-only — has access to: read_file, list_dir, grep, , and todo_write. File editing and command execution are not available.\n- **codebase-memory-auditor**: Bounded-scope graph audit with check_index_coverage and source read/grep fallback.\n- **codebase-memory**: Default task-directed graph verification with check_index_coverage and source read/grep fallback.\n- **codebase-memory-scout**: Fast positive, provisional graph lookup with check_index_coverage and source read/grep fallback.\n- **codex-sol**: GPT-5.6 Sol on the /responses wire (Codex dialect, encrypted reasoning via East US 2).\n- **grok**: Grok-4.6 on the /responses wire (xAI native dialect).\n\n## Usage notes\n- When the agent is done, it returns a single message with its agent ID. Use that ID to resume the agent later for follow-up work.\n- background: Returns immediately with a subagent_id. Use get_command_or_subagent_output to retrieve results. This is set to true by default.\n- Subagents receive a compacted version of project instructions (AGENTS.md). If the task requires detailed conventions (e.g., build rules, testing patterns), include the relevant rules directly in the prompt.\n- When using the spawn_subagent tool, you must specify a subagent_type parameter to select which agent type to use.\n- When launching independent subagents, you MUST incorporate the results into the task based on requirements BEFORE concluding.\n\nResuming a previous agent (resume_from):\n- Use resume_from to continue a previously completed subagent's conversation. Pass the subagent_id returned by a prior spawn_subagent call. A resumed agent keeps its full transcript and tool state, so you only need to describe what changed since the last run — don't re-explain the original task.\n- The resumed agent must use the same subagent_type as the source.\n\nIsolation mode:\n- Use isolation to control the child's execution environment. With \"worktree\", the child runs in an isolated git worktree whose edits don't affect the parent workspace; the worktree is preserved after completion and its path is returned in the output.\n\nIf the user explicitly asks for the model of a subagent/task, you may ONLY use model slugs from this list:\n- claude-haiku-4-5\n- claude-haiku-4-5-20251001\n- claude-haiku-4.5\n- claude-opus-5\n- claude-sonnet-5\n- gemini-3-pro-preview\n- gemini-3.1-flash-lite-preview\n- gemini-3.1-pro-preview\n- gemini-3.5-flash\n- gemini-3.7-flash\n- gemma-4-31b\n- glm-5.2\n- gpt-5.6-luna\n- gpt-5.6-sol\n- gpt-5.6-terra\n- grok-4.6\n- qwen3.8-27b\n\nIf the user does not explicitly request a model, omit `model` to inherit the parent model."
+    },
+    {
+      "type": "function",
+      "name": "scheduler_create",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "task_id": {
+            "description": "Id of an existing task to update in place: provided fields replace old values, omitted ones are unchanged, the schedule keeps its phase, and an unknown id errors. Omit to create a task.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "interval": {
+            "description": "Interval between executions, e.g. \"5m\", \"2h\", \"1d\". Required to create; optional with task_id",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "prompt": {
+            "description": "The prompt text to execute on each scheduled fire. Required to create; optional with task_id",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "durable": {
+            "description": "Whether the task persists across sessions. Default: false. Create-only: ignored with task_id",
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": null
+          },
+          "fire_immediately": {
+            "description": "Whether to fire immediately on creation (true) or wait for the first interval (false). Default: false. Create-only: ignored with task_id",
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": []
+      },
+      "description": "Create a scheduled task that runs a prompt on a recurring interval, or update an existing one in place.\n\nUse this tool when a user asks you to loop, repeat, or schedule a prompt or a task.\n\nSet fire_immediately: true to also fire once on creation; by default the first run waits for the interval.\n\nTo change an existing task, pass its task_id: provided fields replace old values, omitted ones are unchanged, and the schedule keeps its phase. An unknown id errors.\n\nUsage notes:\n- Interval format: \"5m\" (minutes), \"2h\" (hours), \"1d\" (days), \"60s\" (seconds, min 60)\n- Maximum 50 scheduled tasks at once\n- Tasks auto-expire after 7 days\n- For one-time delayed work, run a background terminal command (e.g. `sleep 1800 && <command>`) instead; its completion notifies you"
+    },
+    {
+      "type": "function",
+      "name": "scheduler_delete",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "id"
+        ],
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "The task ID to cancel (from scheduler_create output)",
+            "type": "string"
+          }
+        }
+      },
+      "description": "Cancel a scheduled task by ID.\n\nReturns success: true if the task was found and removed, false if no task with that ID exists."
+    },
+    {
+      "type": "function",
+      "name": "scheduler_list",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "description": "List all active scheduled tasks with their IDs, prompts, intervals, and next fire times."
+    },
+    {
+      "type": "function",
+      "name": "monitor",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "command",
+          "description"
+        ],
+        "type": "object",
+        "properties": {
+          "command": {
+            "description": "Shell command or script. Each stdout line is an event; exit ends the watch.",
+            "type": "string"
+          },
+          "description": {
+            "description": "Short human-readable description of what you are monitoring (shown in every notification).",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "description": "Kill the monitor after this deadline (ms). Default: 36000000 (10 hr). Max: 36000000 (10 hr).",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0,
+            "default": 36000000
+          },
+          "persistent": {
+            "description": "Run for the lifetime of the session (no timeout). Stop with kill_command_or_subagent.",
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "description": "Start a background monitor that streams events from a long-running script. Each stdout line is an event - you can keep working and notifications arrive in the chat. Exit ends the watch.\n\n**Output volume**: Every stdout line is a main-agent wake. Print only `DONE`/`FAILED`/`CANCELLED`. No progress or CHANGE lines. Use `grep --line-buffered` in pipes (plain `grep` buffers and delays events by minutes).\n\n**Responsiveness**: Emit `FAILED` to notify immediately when any required item fails; never wait for unrelated work to finish. Include every tracked failure signal in this immediate failure condition.\n\nSet `persistent: true` for session-length watches (PR monitoring, log tails) -- the monitor runs until you call kill_command_or_subagent or until the session ends. Otherwise it stops at `timeout_ms` (default 10h)."
+    },
+    {
+      "type": "function",
+      "name": "search_tool",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "query": {
+            "description": "Keywords to match against tool names, server names, and descriptions.\nInclude the server name and action for best results\n(e.g. \"linear create issue\", \"slack read thread history\").",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum number of results to return (default 5).",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint8",
+            "minimum": 0,
+            "maximum": 255,
+            "default": 5
+          }
+        },
+        "type": "object"
+      },
+      "description": "Search for MCP tools by keyword and retrieve their input schemas.\n\nIf status is \"partial\", some servers may still be connecting."
+    },
+    {
+      "type": "function",
+      "name": "use_tool",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "tool_name",
+          "tool_input"
+        ],
+        "properties": {
+          "tool_name": {
+            "description": "The qualified name of the integration tool to call (e.g., \"linear__save_issue\").\nMust be a tool previously discovered via `search_tool`.",
+            "type": "string"
+          },
+          "tool_input": {
+            "description": "The arguments to pass to the tool, as a JSON object.\nUse the parameter schema returned by `search_tool` to construct this.",
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "type": "object"
+      },
+      "description": "Call an MCP integration tool.\n\nThe `tool_name` must be the qualified `server__tool` name (e.g., `linear__save_issue`). The `tool_input` must conform exactly to the tool's input schema as returned by `search_tool`."
+    },
+    {
+      "type": "function",
+      "name": "workflow",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "source"
+        ],
+        "type": "object",
+        "properties": {
+          "source": {
+            "description": "Exactly one workflow source. The `type` tag selects a registered name, inline script, script path, same-process resume, or a pause/stop of a run this session launched.",
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "description": "Name of a registered workflow (built-in, or discovered from the project `.grok/workflows/` or user `~/.grok/workflows/`).",
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "const": "name"
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "name"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "script": {
+                    "description": "Inline Rhai workflow script. It must start with a pure-literal `let meta = #{ name: ..., description: ... };` map. Before authoring, read the `create-workflow` skill's SKILL.md. Run the path-specific `validate_only` smoke check with representative args.",
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "const": "script"
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "script"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "script_path": {
+                    "description": "Path to a .rhai workflow script on disk.",
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "const": "script_path"
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "script_path"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "resume_from_run_id": {
+                    "description": "Resume a same-process paused run, continuing its original immutable source and args. A budget-limited run resumes only when `agent_budget` is passed with a higher cap. Process-restart interruptions are terminal.",
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "const": "resume"
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "resume_from_run_id"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "run_id": {
+                    "description": "Pause an active run this session launched, by its `run_id` or display name. Its child agents are cancelled and the run is marked paused; continue it with the `resume` source.",
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "const": "pause"
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "run_id"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "run_id": {
+                    "description": "Stop a run this session launched, by its `run_id` or display name. Its child agents are cancelled and the run is marked cancelled (finished). It keeps its journal, so `resume` can still continue it later.",
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "const": "stop"
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "type",
+                  "run_id"
+                ]
+              }
+            ]
+          },
+          "agent_budget": {
+            "description": "Absolute cumulative cap on logical child-agent calls for this run. Every agent() and every parallel() item consumes one slot; schema retries do not. Defaults to 128 and may be set from 1 through 1,024. A panel that would exceed the remaining budget is rejected before any of its children launch.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 1,
+            "maximum": 1024,
+            "default": null
+          },
+          "args": {
+            "description": "JSON value bound to the script's `args` global. Use an object for named arguments.",
+            "default": null
+          },
+          "validate_only": {
+            "description": "Run a path-specific smoke check without launching: validate metadata, compile the full script, and execute the single path selected by the supplied args and canned host results. It does not exercise every branch or prove live tools and agent outputs work.",
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "description": "Launch or control a workflow: a Rhai script that orchestrates subagents as one background run. Provide exactly one `source`: a registered workflow `name`, an inline `script`, a `script_path`, a same-process `resume`, or a `pause` / `stop` of a run this session launched (by `run_id` or display name). Optionally pass `args` (bound to the script's `args`) and `agent_budget`, an absolute cap on cumulative child-agent calls: every agent() and parallel() item consumes one slot (schema retries do not); default 128. The host also caps live children per run (32 by default, host-configured) — larger parallel() panels are queued and still act as a barrier. The call returns immediately; progress appears in `/workflow runs` and completion is reported automatically — do not poll or sleep-wait.\n\nPrefer a registered workflow when one fits; author a script for bounded fan-out over a known work list, staged research and verification, or several independent perspectives. Before writing or editing a script, read the `create-workflow` skill's SKILL.md. `validate_only: true` runs a path-specific smoke check (metadata, compile, one canned-host path) — not proof that every branch or live tool works.\n\nA started run gets a session-unique display name (e.g. `review-changes`, `review-changes-2`) — the handle to show the user, who manages runs with `/workflow pause|resume|stop <name>`; keep run IDs internal. To stop or pause a run yourself, call this tool with `source: { type: \"stop\", run_id }` or `{ type: \"pause\", run_id }` (run id or display name); both cancel the run's child agents and keep its journal, so either can be continued later with `resume`. Pause only applies to an active run; stop applies to any run that has not finished or hit its agent budget (a budget-limited run is already stopped and needs `resume` with a higher `agent_budget`). Each launch persists an editable `script_path`; edit it and launch as a new run to iterate. Use the `resume` source only for a same-process paused run (process restarts are terminal); it reuses the run's original immutable source and args, and a budget-limited run resumes only with a higher `agent_budget`. Save reusable scripts to `.grok/workflows/<name>.rhai`."
+    },
+    {
+      "type": "function",
+      "name": "enter_plan_mode",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "description": "Use this tool when a task has ambiguity about the right approach or when the user asks you to write a plan. This tool enables a read-only plan mode where you explore the codebase and create an implementation plan for the user."
+    },
+    {
+      "type": "function",
+      "name": "exit_plan_mode",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "description": "Exit plan mode and present your plan to the user.\n\nUse this after you have finished writing your plan to the plan file in plan mode."
+    },
+    {
+      "type": "function",
+      "name": "ask_user_question",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "questions"
+        ],
+        "properties": {
+          "questions": {
+            "description": "The questions to ask, each with its own options.",
+            "type": "array",
+            "items": {
+              "description": "A single question with its options.",
+              "type": "object",
+              "properties": {
+                "question": {
+                  "description": "The question to ask, phrased as a full question.",
+                  "type": "string"
+                },
+                "options": {
+                  "description": "The choices for this question.",
+                  "type": "array",
+                  "items": {
+                    "description": "A single option within a question.",
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "description": "Option text shown to the user. A few words at most.",
+                        "type": "string"
+                      },
+                      "description": {
+                        "description": "What picking this option means or implies.",
+                        "type": "string"
+                      },
+                      "preview": {
+                        "description": "Optional content shown while the option is focused — mockups, code snippets, anything the user should compare. Single-select questions only.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "description"
+                    ]
+                  }
+                },
+                "multi_select": {
+                  "description": "Let the user pick more than one option (default false).",
+                  "type": [
+                    "boolean",
+                    "null"
+                  ],
+                  "default": null
+                }
+              },
+              "required": [
+                "question",
+                "options"
+              ]
+            }
+          }
+        },
+        "type": "object"
+      },
+      "description": "Ask the user one or more multiple-choice questions.\n\n- Every question automatically gets an \"Other\" choice where the user can type their own answer.\n- Put your recommended option first and append \"(Recommended)\" to its label."
+    },
+    {
+      "type": "function",
+      "name": "send_feedback",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "title",
+          "details",
+          "type"
+        ],
+        "type": "object",
+        "properties": {
+          "title": {
+            "description": "Short summary for the draft.",
+            "type": "string"
+          },
+          "details": {
+            "description": "Short labeled bullets in this order: What happened, What the user said, Repro, optional Evidence, then optional verified Cause. Keep each to 1–3 lines; do not use narrative paragraphs.",
+            "type": "string"
+          },
+          "area": {
+            "description": "Optional product area; omit when unclear.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "description": "Feedback classification.",
+            "type": "string",
+            "enum": [
+              "bug",
+              "idea",
+              "missing_capability"
+            ]
+          },
+          "task_category": {
+            "description": "Optional task category; omit when unclear.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "code_edit",
+              "debug",
+              "explain",
+              "plan",
+              "shell",
+              "search",
+              "review",
+              "other",
+              null
+            ]
+          },
+          "failure_mode": {
+            "description": "Optional model-behavior failure mode; omit for a pure product or tool bug.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "overeager",
+              "stopped_early",
+              "unwanted_scope",
+              "didnt_ask_for_help",
+              "excessive_questions",
+              "subagent_overspawn",
+              "over_correction",
+              "ignored_instructions",
+              "hallucinated",
+              "sloppy_code",
+              "destructive",
+              "lost_context",
+              "stuck_in_a_loop",
+              "model_regression",
+              "disputed",
+              "wrong_tone",
+              "unclear_output",
+              "other",
+              null
+            ]
+          },
+          "draft_id": {
+            "description": "Existing local draft to update. When set, this call does not append a second draft.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "description": "# Overview\n\nSave or update user feedback for later review. Feedback is stored as local drafts and is never sent without explicit approval through the `/feedback` modal. This tool opens no UI and does not stop the current turn.\n\n# Invocation\n\nWhen the user types `/feedback` bare into the prompt bar, the modal opens with the Write and Drafts tabs. The Write tab is only for the user to hand-write feedback.\nIf the user types `/feedback` with text inline, the system inserts it like a skill. Only when feedback is requested that way, or the user explicitly wants you to update an existing feedback draft, may you use the draft_id field.\nWhen draft_id is set, update that existing draft. Do not duplicate drafts. draft_id is only a tool argument. Never write it into title, details, or area.\n\nWhen the user wants to share feedback implicitly, draft it with this tool, whether it is a product or model-behavior issue.\n\n# Usage\n\nWrite details as short labeled bullets in this order: What happened, What the user said, Repro, optional Evidence, then optional verified Cause.\nSet failure_mode only for model-behavior feedback; omit it for a pure product or tool bug.\nIf mapping feedback is incredibly unclear, only then may you use ask_user_question to confirm ambiguity with the user. Use this sparingly.\n\n# Confirmation\n\nAfter drafting feedback and ending your turn, tell the user they can verify and send it to the team by typing `/feedback` to open the modal and going to the Drafts section.\n\n# Misc\nThis session's drafts file is /Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/report/ms-sight-fullsuite-20260923T052545Z/mxai-c04/home/sessions/%2FUsers%2Fpalanisd%2FProjects%2Fupstream%2Fwt%2Fgrok-build-responses/01a0ccd5-0f1d-7f01-946a-e8b1bdb3ae07/feedback_drafts.json.\nIf the user's feedback can be answered from the docs (for example UI element locations or setup), read the Grok Build docs locally or online and answer alongside the created draft.\n\nDoing the wrong amount of work\n- Overeager: Did more than asked, acted before being told, jumped in without enough info\n- Stopping early: Quit early, handed back work that could have been finished\n- Unwanted scope: Not stopping\n- Didn't ask for help: Didn't ask the user for help when stuck\n- Excessive questions: Asked clarifying questions when there was enough to proceed\n- Subagent overspawn: Launched more subagents than the task warranted\n- Over correction: Fixed feedback by swinging too far the other way\n\nWrong outputs\n- Instruction following: Ignored or missed explicit instructions or constraints\n- Overconfidence and hallucination: Stated something confidently that was wrong or fabricated\n- Code quality: Buggy, sloppy, or poorly structured code\n- Destructive actions: Did or risked something hard to reverse\n- Context and memory: Lost earlier context, forgot established facts, contradicted itself\n- Repetition and looping: Repeated output or retried the same failing action\n- Model regression: Behavior noticeably worse than a previous model version\n\nStyle\n- Dispute or decline: Refused or argued against a reasonable request\n- Tone or preachiness: Wrong tone — moralizing, condescending, sycophantic, verbose\n- Unclear output: Output was hard to read or interpret\n- Other: Model-behavior issue fitting none of the above"
+    },
+    {
+      "type": "function",
+      "name": "image_gen",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "prompt"
+        ],
+        "type": "object",
+        "properties": {
+          "prompt": {
+            "description": "Text description of the image to generate.",
+            "type": "string"
+          },
+          "aspect_ratio": {
+            "description": "Aspect ratio of the generated image, decide it based on the user's request. Defaults to 'auto'. 1:1 for square (icons, profiles), 16:9 for wide (landscapes, cinematic), 9:16 for tall (phone wallpapers, stories), 3:2 for horizontal photos, 2:3 for vertical (portraits, posters).",
+            "type": "string",
+            "default": "auto"
+          }
+        }
+      },
+      "description": "Generate a new image from a text description using Imagine; returns the saved image's absolute path. When telling the user where it was saved, refer to it by its short session-relative path (e.g. `images/1.jpg`) rather than the absolute path, so it renders as a clickable link that opens the image. To produce multiple images, emit multiple tool calls with distinct prompts."
+    },
+    {
+      "type": "function",
+      "name": "image_edit",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "prompt",
+          "image"
+        ],
+        "type": "object",
+        "properties": {
+          "prompt": {
+            "description": "A text description of the desired edit or transformation. Describe what the output image should look like, referencing the input image(s).",
+            "type": "string"
+          },
+          "image": {
+            "description": "Reference image(s) to condition the edit on. Each is one reference, in priority order: (1) a user attachment — its placeholder token, e.g. \"[Image #1]\" (attachments have no path you can see, so never invent one); (2) an absolute filesystem path the user gave you; (3) a `data:image/...;base64,...` URL.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "aspect_ratio": {
+            "description": "The aspect ratio of the output image. For single-image edits this is ignored — the output matches the input image's aspect ratio. For multi-image edits, defaults to 'auto'. Supported values: 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 2:1, 1:2, 19.5:9, 9:19.5, 20:9, 9:20, auto.",
+            "type": "string",
+            "default": "auto"
+          }
+        }
+      },
+      "description": "Edit or transform existing image(s) via the xAI Imagine API; use instead of image_gen for image-to-image work (preserve likeness, transfer style, remix). Returns the saved image's absolute path. When telling the user where it was saved, refer to it by its short session-relative path (e.g. `images/1.jpg`) rather than the absolute path, so it renders as a clickable link that opens the image. Each required `image` is one reference — a user-attachment token (e.g. \"[Image #1]\"), an absolute filesystem path, or a `data:image/...;base64,...` URL (see the `image` parameter for the resolution order and details)."
+    },
+    {
+      "type": "function",
+      "name": "image_to_video",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "image"
+        ],
+        "type": "object",
+        "properties": {
+          "prompt": {
+            "description": "Optional prompt to guide the video generation model. If omitted, a natural animation applies automatically.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "image": {
+            "description": "Source image to animate. Provide an absolute filesystem path, HTTPS URL, or `data:image/...;base64,...` URL.",
+            "type": "string"
+          },
+          "duration": {
+            "description": "Duration of the video generation, either 6 or 10 seconds. Default to 6 unless the user requests longer.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0
+          },
+          "resolution_name": {
+            "description": "Resolution name of the video generation, only specify it when user asks for a specific resolution, either 480p or 720p. Defaults to 480p unless the user specifically requests for higher quality.",
+            "type": "string",
+            "default": "480p"
+          }
+        }
+      },
+      "description": "Generate a video from a single source image; returns the saved video's absolute path. When telling the user where it was saved, refer to it by its short session-relative path (e.g. `videos/1.mp4`) rather than the absolute path, so it renders as a clickable link that opens the video. Provide `image` for the image to animate and optionally a `prompt` to guide the animation. Use this tool when the user provides an image and wants it animated, turned into a video, or used as the first frame. Example: image_to_video(image=\"/Users/me/photo.jpg\", prompt=\"gentle camera push-in with wind moving the hair\", duration=6, resolution_name=\"480p\")"
+    },
+    {
+      "type": "function",
+      "name": "reference_to_video",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "prompt",
+          "aspect_ratio"
+        ],
+        "type": "object",
+        "properties": {
+          "prompt": {
+            "description": "Prompt to guide the video generation model. Describe the desired video.",
+            "type": "string"
+          },
+          "images": {
+            "description": "Reference images, up to 7 entries; the images are used as style/content references for the generated video (people, objects, clothing, settings). Each entry may be an absolute filesystem path, HTTPS URL, or `data:image/...;base64,...` URL. Reference them in the prompt as `<IMAGE_0>`, `<IMAGE_1>`, ... May be empty when `voices` is provided.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "voices": {
+            "description": "Optional preset voices the subject(s) speak in, up to 3 entries, each a voice identifier from the built-in roster (e.g. \"ara\", \"eve\", \"leo\", \"rex\"; same voices as the xAI text-to-speech API; an unknown identifier fails with the list of available voices). Reference them in the prompt as `<AUDIO_0>`, `<AUDIO_1>`, `<AUDIO_2>`. Usable alongside `images` or on their own.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "aspect_ratio": {
+            "description": "Aspect ratio of the generated video, decide it based on the user's request. 1:1 for square (icons, profiles), 16:9 for wide (landscapes, cinematic), 9:16 for tall (phone wallpapers, stories), 4:3 or 3:2 for horizontal photos, 3:4 or 2:3 for vertical (portraits, posters).",
+            "type": "string"
+          },
+          "duration": {
+            "description": "Duration of the video in seconds, between 1 and 15. Defaults to 6.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint32",
+            "minimum": 0
+          },
+          "resolution_name": {
+            "description": "Resolution name of the video generation, only specify it when user asks for a specific resolution, either 480p or 720p. Defaults to 480p.",
+            "type": "string",
+            "default": "480p"
+          }
+        }
+      },
+      "description": "Generate a video from reference images and/or preset voices, guided by a required text prompt; returns the saved video's absolute path. When telling the user where it was saved, refer to it by its short session-relative path (e.g. `videos/1.mp4`) rather than the absolute path, so it renders as a clickable link that opens the video. Provide up to 7 `images` (style/content references: people, objects, clothing, settings) and/or up to 3 `voices` (preset voice identifiers the subjects speak in); at least one of either is required. Tag references in the prompt as `<IMAGE_0>`, `<IMAGE_1>`, ... and `<AUDIO_0>`, `<AUDIO_1>`, ... Use this tool when the user wants a video referencing existing images without locking the first frame, or wants a speaking subject with a specific voice. Example: reference_to_video(prompt=\"The person from <IMAGE_0> presents the product from <IMAGE_1>, speaking with the voice from <AUDIO_0>\", images=[\"/Users/me/host.jpg\", \"/Users/me/product.jpg\"], voices=[\"eve\"], aspect_ratio=\"16:9\", duration=10, resolution_name=\"480p\")"
+    },
+    {
+      "type": "function",
+      "name": "write",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "file_path",
+          "content"
+        ],
+        "properties": {
+          "file_path": {
+            "description": "The absolute path to the file to write.",
+            "type": "string"
+          },
+          "content": {
+            "description": "The full file content to write.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "description": "Create or overwrite a file.\n\n- Writing to an existing path replaces the file — read it first with the read_file tool.\n- Parent directories are created for you."
+    },
+    {
+      "type": "function",
+      "name": "spawn_agent",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "task_name",
+          "message"
+        ],
+        "additionalProperties": false,
+        "type": "object",
+        "properties": {
+          "task_name": {
+            "description": "Stable lowercase name for the named agent: letters, digits, `_`.",
+            "type": "string"
+          },
+          "message": {
+            "description": "The work item delivered to the child as its first agent message.",
+            "type": "string"
+          },
+          "agent_type": {
+            "description": "Subagent type to run (defaults to `general-purpose`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "description": "Optional explicit model slug for the child.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fork_turns": {
+            "description": "Initial context: `none` (fresh), `all` (inherit the parent\nconversation; default), or a positive integer string for the most\nrecent N turns.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "description": "Start a named background agent. task_name uses lowercase letters, digits, and underscores. fork_turns defaults to all; use none for fresh context or a positive integer string for recent turns. Same-model forks retain compatible history; cross-model forks use a plaintext digest. The host's depth and permission limits still apply. Reuse an existing task with followup_task."
+    },
+    {
+      "type": "function",
+      "name": "send_message",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "target",
+          "message"
+        ],
+        "type": "object",
+        "properties": {
+          "target": {
+            "description": "Canonical task path, relative task name, or agent ID.",
+            "type": "string"
+          },
+          "message": {
+            "description": "The message body (nonempty, at most 32768 bytes).",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "description": "Deliver a message promptly to an agent by canonical task path, relative task name, or ID. Does not start a turn when the recipient is idle. Use followup_task to assign work."
+    },
+    {
+      "type": "function",
+      "name": "followup_task",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "target",
+          "message"
+        ],
+        "type": "object",
+        "properties": {
+          "target": {
+            "description": "Canonical task path, relative task name, or agent ID.",
+            "type": "string"
+          },
+          "message": {
+            "description": "The message body (nonempty, at most 32768 bytes).",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "description": "Send work to a non-root agent. Starts a turn when idle and delivers promptly when running. Reuses a completed named agent with its own model, role, working directory, and history."
+    },
+    {
+      "type": "function",
+      "name": "list_agents",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "type": "object",
+        "properties": {
+          "path_prefix": {
+            "description": "Optional canonical task-path prefix filter (no trailing slash).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": []
+      },
+      "description": "List this team's named agents and lifecycle status without exposing transcripts. Optionally filter by a canonical task-path prefix without a trailing slash."
+    },
+    {
+      "type": "function",
+      "name": "wait_agent",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "type": "object",
+        "properties": {
+          "timeout_ms": {
+            "description": "Deadline in milliseconds. Defaults to 30000; maximum 600000; 0 polls.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0
+          }
+        },
+        "required": []
+      },
+      "description": "Wait for agent messages or final-status activity. Returns an activity summary, not message contents. Ends early for steered user input. timeout_ms defaults to 30000, maximum 600000; 0 polls."
+    },
+    {
+      "type": "function",
+      "name": "interrupt_agent",
+      "parameters": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "required": [
+          "target"
+        ],
+        "type": "object",
+        "properties": {
+          "target": {
+            "description": "The agent whose current turn should be interrupted.",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "description": "Interrupt an agent's current turn without deleting its history or task identity. The agent remains reusable with followup_task. Cannot target the root or yourself."
+    }
+  ]
+}

@@ -17,7 +17,7 @@
 /// allowed so the non-test lib build stays warning-free.
 #[allow(dead_code)]
 pub const HARD_RULES_CHECKSUM: &str =
-    "e9c1d89bda4cbaa9736a7dfb4882fdfbb1fdc0040d9889d67927cfbabbefe6bb";
+    "f93e94493e0b222ad47c198ca1d8c01154348bb300155571ce5dee943aaddc94";
 
 /// One hard-rule row — a verbatim mirror of an `invariant_rules.json` row
 /// with `severity == "hard"` (campaign order).
@@ -48,9 +48,9 @@ pub const HARD_RULES: &[HardRule] = &[
         id: "H-2",
         class: "AzStrict",
         severity: "hard",
-        ev: &["EV-13"],
+        ev: &["EV-13", "EV-9"],
         check: "reasoning_no_encrypted_content",
-        description: "reasoning item carries no encrypted_content (drift guard - D-ENC strips pre-send; the EV-13 lattice proves strict rows never carry it)",
+        description: "OWN-origin enc only on strict rows (re-scoped per T8 OQ-T8-1 - 2.2a): a reasoning item carrying encrypted_content VIOLATES iff (a) the item carries id or mint_tag (KEY PRESENCE incl. null/empty), or (b) the carried value is not in the arm's response-side mint corpus (string values; a non-string carried value violates clause (b) by definition). Own (T0 KEEP) = no id, no mint_tag, blob in corpus - clean (EV-9 accept, on-disk mxai-c04 req-004). A2 scope = clause (a) only (3.2a)",
     },
     HardRule {
         id: "H-3",
@@ -72,9 +72,9 @@ pub const HARD_RULES: &[HardRule] = &[
         id: "H-5",
         class: "cross-boundary",
         severity: "hard",
-        ev: &["EV-4", "EV-9", "EV-14"],
+        ev: &["EV-4", "EV-14"],
         check: "encitem_only_to_matching_azure_row",
-        description: "encitem_* ids and litellm_enc: blobs ride ONLY to the Azure row whose mint domain matches (x-litellm-tags pin == item mint_tag); never to a VLLenient or foreign-domain row. The 503 is state-conditional (EV-4); a VLLenient ride has a SILENT-200 precedent (EV-14; EV-12 mxai) and stays a hard violation here - T8 adjudicates the drift",
+        description: "ROW-CLASS CLAUSE ONLY (re-scoped per T8 OQ-T8-2 - 2.2a): encitem_* ids and litellm_enc: blobs must NOT ride a non-Azure (VLLenient/Vertex) row - field-scoped (item id / encrypted_content values only; request substrings out of scope: prompt doc-text legitimately carries litellm_enc:). On AzStrict rows H-5 is SILENT (the mint-domain match is undecidable from strict-row request bytes - no mint_tag on the wire form; blob decode is O_P, out of scope). The EV-4 503 is state-conditional; the VLLenient SILENT-200 ride precedent (EV-14; the EV-12 mxai capture: prose mentions only, no carrier ids - T8 census) stays a hard violation here",
     },
     HardRule {
         id: "H-6",

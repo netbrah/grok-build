@@ -10,13 +10,23 @@
 //!   is A1-only (store state — the linter derives the mint set from the
 //!   capture's own responses); unknown ids are deliberately NOT flagged
 //!   in-product (pinned by `h3_unknown_id_clean_in_product_d5`).
-//! - **H-5 (in-product delta)**: `encitem_*` ids / `litellm_enc:` blobs on a
-//!   NON-Azure boundary (VLLenient/Vertex) = violation; on AzStrict = clean.
-//!   A1's AzStrict arm additionally requires the mint-domain match
-//!   (`mint_tag == x-litellm-tags` pin, EV-9) — the row pin is state this
-//!   value linter does not receive, so that clause is unreachable in-product.
-//!   The enc-affinity gate (`apply_enc_affinity_gate`, applied upstream at
+//! - **H-5 (= H-5' in full; re-scoped 2026-09-23, apex-ayl.126.8.6,
+//!   HARDENING-SPEC 3.2a + 2.2a)**: `encitem_*` ids / `litellm_enc:`
+//!   blobs on a NON-Azure boundary (VLLenient/Vertex) = violation,
+//!   FIELD-SCOPED (item `id` / `encrypted_content` values only — request
+//!   substrings out of scope: prompt doc-text legitimately carries
+//!   `litellm_enc:`); on AzStrict = SILENT (the mint-domain match is
+//!   undecidable from strict-row request bytes; blob decode is O_P, out
+//!   of scope). A1/A2 H-5' scopes are IDENTICAL (no domain clause — A1
+//!   `_check_h5_encitem_azure_only` early-returns on AzStrict rows). The
+//!   enc-affinity gate (`apply_enc_affinity_gate`, applied upstream at
 //!   the same send seam) remains the runtime retain/strip authority.
+//!   SUPERSEDED 2026-09-23 (apex-ayl.126.8.6, 3.2a); v1 delta note
+//!   preserved: "A1's AzStrict arm additionally requires the mint-domain
+//!   match (`mint_tag == x-litellm-tags` pin, EV-9) — the row pin is
+//!   state this value linter does not receive, so that clause is
+//!   unreachable in-product." — false against the frozen A1 (the .126.8.5
+//!   H-5' cut removed the domain clause; AzStrict is SILENT in A1 too).
 //! - **H-6** is header-level: [`lint_outbound_headers`], not the body fn.
 //! - **H-7** is OUT of scope (history shape, not a flat request body;
 //!   asserted at the existing projection seam —
@@ -162,22 +172,58 @@ fn check_h1(body: &Value) -> Vec<LintViolation> {
     out
 }
 
-/// H-2 (AzStrict, EV-13; drift guard): a reasoning item carries NO
+/// H-2 (AzStrict, EV-13/EV-9): CLAUSE (a) ONLY (re-scoped 2026-09-23,
+/// apex-ayl.126.8.6; HARDENING-SPEC 3.2a + 2.2a): a strict-row reasoning
+/// item carrying `encrypted_content` (KEY PRESENCE incl. null/empty,
+/// LA-03) VIOLATES iff the item ALSO carries `id` or `mint_tag` (KEY
+/// PRESENCE incl. null/empty — non-strict form / fabricated pin). The
+/// strict post-projection form {type, summary, encrypted_content}
+/// carries neither (`provider.rs:422` strips content+id; enc untouched),
+/// so own-origin enc — T0 KEEP / EV-9, on-disk mxai-c04 req-004 — is
+/// SILENT in A2. Parity source: A1 H-2' clause (a) —
+/// `_check_h2_no_encrypted_content` (stable check name
+/// `reasoning_no_encrypted_content`), 2.2a; A1 additionally enforces
+/// clause (b) (string value in the arm's resp mint corpus; a non-string
+/// value = violation — the LA-03 non-string sub-form), which is
+/// deliberately NOT mirrored pre-send (D-H2B, 3.2a — A1-only residue).
+///
+/// SUPERSEDED 2026-09-23 (apex-ayl.126.8.6, 3.2a); v1 doc preserved:
+/// "H-2 (AzStrict, EV-13; drift guard): a reasoning item carries NO
 /// `encrypted_content`. KEY PRESENCE fires, any value including null
-/// (A1 `_check_h2_no_encrypted_content`, LA-03).
+/// (A1 `_check_h2_no_encrypted_content`, LA-03)." — the v1 pointer cited
+/// the over-warn key-presence parity; post-rescope the parity source is
+/// A1 H-2' clause (a) (2.2a).
 fn check_h2(body: &Value) -> Vec<LintViolation> {
     let mut out = Vec::new();
     for (i, item) in input_items(body) {
         if !matches!(item.get("type"), Some(Value::String(t)) if t == "reasoning") {
             continue;
         }
-        if item.contains_key("encrypted_content") {
-            out.push(LintViolation {
-                rule: "H-2",
-                path: format!("input[{i}].encrypted_content"),
-                observed: "encrypted_content present".into(),
-            });
+        // KEY PRESENCE incl. null/empty (LA-03) — the v1 gate, unchanged.
+        if !item.contains_key("encrypted_content") {
+            continue;
         }
+        // CLAUSE (a) gate (3.2a post-rescope): the item ALSO carries
+        // `id` or `mint_tag` (KEY PRESENCE incl. null/empty). Clause (b)
+        // (corpus membership; the non-string short-circuit) is A1-only —
+        // D-H2B (3.2a): deliberately not mirrored pre-send.
+        let pinned = if item.contains_key("id") && item.contains_key("mint_tag") {
+            "id/mint_tag"
+        } else if item.contains_key("id") {
+            "id"
+        } else if item.contains_key("mint_tag") {
+            "mint_tag"
+        } else {
+            ""
+        };
+        if pinned.is_empty() {
+            continue; // own-origin shape (no id/mint_tag) → SILENT
+        }
+        out.push(LintViolation {
+            rule: "H-2",
+            path: format!("input[{i}].encrypted_content"),
+            observed: format!("encrypted_content present (clause (a): {pinned} present)"),
+        });
     }
     out
 }
@@ -224,11 +270,19 @@ fn check_h4(body: &Value) -> Vec<LintViolation> {
     Vec::new()
 }
 
-/// H-5 (cross-boundary, EV-4/EV-9/EV-14): `encitem_*` ids and
+/// H-5 (cross-boundary, EV-4/EV-14): `encitem_*` ids and `litellm_enc:`
+/// blobs must NOT ride a non-Azure (VLLenient/Vertex) row — FIELD-SCOPED
+/// (item `id` / `encrypted_content` values only; request substrings out
+/// of scope). AzStrict = SILENT (the mint-domain match is undecidable
+/// from strict-row request bytes — A1 is SILENT on AzStrict too; A1/A2
+/// H-5' scopes identical, 3.2a).
+///
+/// SUPERSEDED 2026-09-23 (apex-ayl.126.8.6, 3.2a); v1 doc preserved:
+/// "H-5 (cross-boundary, EV-4/EV-9/EV-14): `encitem_*` ids and
 /// `litellm_enc:` blobs ride ONLY to the Azure row. In-product (A2):
 /// non-Azure boundary = violation; AzStrict = clean (the mint-domain-match
 /// clause needs the row's `x-litellm-tags` pin — state this value linter
-/// does not receive; see the module docs for the delta note).
+/// does not receive; see the module docs for the delta note)."
 fn check_h5(boundary: Boundary, body: &Value) -> Vec<LintViolation> {
     let mut out = Vec::new();
     for (i, item) in input_items(body) {
@@ -296,6 +350,8 @@ mod tests {
         include_str!("../../fixtures/outbound_lint/bodies/h1-accept-cw1-req007-EV-1.json");
     const H2_REJECT_SYNTHETIC: &str =
         include_str!("../../fixtures/outbound_lint/bodies/h2-reject-synthetic-EV-13.json");
+    const H2_ACCEPT_MXAI_C04_REQ004: &str =
+        include_str!("../../fixtures/outbound_lint/bodies/h2-accept-mxai-c04-req004-EV-9.json");
     const H3_REJECT_EV3: &str =
         include_str!("../../fixtures/outbound_lint/bodies/h3-reject-ev3-empty-id-EV-3.json");
     const H3_ACCEPT_UNKNOWN_ID: &str =
@@ -409,6 +465,15 @@ mod tests {
     /// pre-send; the EV-13 lattice proves strict rows never carry it):
     /// campaign arm `h2-synthetic-strict-enc` (gpt-5.6-sol, reasoning item
     /// with `encrypted_content`) → H-2 once, exactly.
+    ///
+    /// SUPERSEDED 2026-09-23 (apex-ayl.126.8.6, HARDENING-SPEC 3.2a):
+    /// the v1 rationale "no verbatim exists: D-ENC strips" is REFUTED for
+    /// the OWN-origin form by the on-disk EV-9 accept capture (mxai-c04
+    /// req-004 — own enc rides strict rows by design, 200). The v1
+    /// key-presence assertion survives only as CLAUSE (a) semantics: this
+    /// fixture ALREADY carries the pin (`mint_tag: "East US 2"`, verified
+    /// 2026-09-23 — not re-done), so the re-scoped `check_h2` fires via
+    /// clause (a) and the clause attribution is pinned below.
     #[test]
     fn h2_reject_synthetic_fires_key_presence() {
         let body = fixture_body(H2_REJECT_SYNTHETIC);
@@ -416,15 +481,52 @@ mod tests {
         assert_eq!(
             rules_of(&v),
             vec!["H-2"],
-            "the H-2 arm must fire H-2 alone (H-5 domain match passes by construction), got {v:?}"
+            "the H-2 arm must fire H-2 alone (H-5 is AzStrict-silent), got {v:?}"
         );
         assert_eq!(v[0].path, "input[1].encrypted_content");
+        assert!(
+            v[0].observed.contains("clause (a)") && v[0].observed.contains("mint_tag"),
+            "clause (a) attribution must be named in observed, got {:?}",
+            v[0].observed
+        );
     }
 
-    /// H-2 null-value pin (LA-03): KEY PRESENCE fires even when the value
-    /// is `null`.
+    /// H-2 ACCEPT (wire-verified, the load-bearing pin) — VERBATIM EV-9:
+    /// T8 arm `sight-1-mxai-c04` wire/req-004.json body (gpt-5.6-sol
+    /// AzStrict, live 200): 7 reasoning items at input[8..14] with keys
+    /// exactly {encrypted_content, summary, type} — no id, no mint_tag;
+    /// all 7 blobs own-minted (the arm's resp-003.jsonl corpus). Driven
+    /// through the real serialize→lint pipeline (fixture = the verbatim
+    /// wire body; EV-8 pipeline-integrity pattern): the EXACT expected
+    /// violation multiset for the whole body is the EMPTY set — H-2 does
+    /// NOT fire (clause (a) false on all 7 items; H-5 AzStrict-silent;
+    /// H-1/H-3/H-4 clean by shape).
     #[test]
-    fn h2_null_value_still_fires() {
+    fn h2_accept_mxai_c04_req004_exact_multiset() {
+        let body = fixture_body(H2_ACCEPT_MXAI_C04_REQ004);
+        let v = lint_outbound_request(Boundary::AzStrict, &body);
+        assert_eq!(
+            v,
+            Vec::<LintViolation>::new(),
+            "mxai-c04 req-004 (EV-9 accept, 200) must lint to the EMPTY violation \
+             multiset on AzStrict (H-2 clause (a) false; H-5 silent; H-1/H-3/H-4 \
+             clean), got {v:?}"
+        );
+    }
+
+    /// H-2 LA-03 split (i) — re-scoped 2026-09-23 (apex-ayl.126.8.6,
+    /// HARDENING-SPEC 3.2a D-H2B): a null-valued `encrypted_content` with
+    /// NO id/mint_tag is SILENT in A2 (clause (a) false). A1 still fires
+    /// clause (b) on the non-string value (its pin
+    /// `test_h2_null_valued_encrypted_content_fires` is untouched) — this
+    /// is the named accepted divergence class D-H2B sub-form (i).
+    ///
+    /// SUPERSEDES the WIP pin `h2_null_value_still_fires` (2026-09-23):
+    /// v1 asserted KEY PRESENCE fires for the null/no-pin shape — the
+    /// over-warn interim form the re-scope removes (the on-disk EV-9
+    /// accept capture adjudicates the no-pin shape by-design clean).
+    #[test]
+    fn h2_null_value_no_pin_silent_dh2b() {
         let body = json!({
             "store": false,
             "input": [
@@ -432,8 +534,40 @@ mod tests {
             ],
         });
         let v = lint_outbound_request(Boundary::AzStrict, &body);
-        assert_eq!(rules_of(&v), vec!["H-2"]);
+        assert!(
+            v.is_empty(),
+            "D-H2B sub-form (i): null enc with NO id/mint_tag is SILENT in A2 \
+             (clause (a) false; A1 clause (b) is A1-only), got {v:?}"
+        );
+    }
+
+    /// H-2 LA-03 split (ii) — the null-value pin survives the re-scope
+    /// WITH a pin: null-valued `encrypted_content` carrying `mint_tag`
+    /// fires H-2 via CLAUSE (a) (KEY PRESENCE incl. null/empty on the pin
+    /// field), clause attribution named in the observed string.
+    ///
+    /// SUPERSEDES (together with split (i)) the WIP pin
+    /// `h2_null_value_still_fires` (2026-09-23, apex-ayl.126.8.6, 3.2a).
+    #[test]
+    fn h2_null_value_with_mint_tag_fires_clause_a() {
+        let body = json!({
+            "store": false,
+            "input": [
+                {"type": "reasoning", "summary": [], "mint_tag": "East US 2", "encrypted_content": null},
+            ],
+        });
+        let v = lint_outbound_request(Boundary::AzStrict, &body);
+        assert_eq!(
+            rules_of(&v),
+            vec!["H-2"],
+            "null enc + mint_tag must fire H-2 via clause (a), got {v:?}"
+        );
         assert_eq!(v[0].path, "input[0].encrypted_content");
+        assert!(
+            v[0].observed.contains("clause (a)") && v[0].observed.contains("mint_tag"),
+            "clause (a) attribution must be named in observed, got {:?}",
+            v[0].observed
+        );
     }
 
     /// H-2 scope pins: the same strict fixture on VLLenient is out of
@@ -585,11 +719,18 @@ mod tests {
         );
     }
 
-    /// H-5 A2 delta pin: `encitem_` on the AzStrict boundary is CLEAN
+    /// H-5 AzStrict-SILENT pin (= H-5' row-class clause; re-scoped
+    /// 2026-09-23, apex-ayl.126.8.6, 3.2a): `encitem_` on the AzStrict
+    /// boundary is SILENT (the mint-domain match is undecidable from
+    /// strict-row request bytes — A1 is SILENT on AzStrict too, scopes
+    /// identical; the enc-affinity gate upstream is the runtime
+    /// authority). Plus the strict-side known-good (CROSSWIRE-1 req-007,
+    /// no enc ids) stays clean.
+    ///
+    /// SUPERSEDED 2026-09-23 (apex-ayl.126.8.6, 3.2a); v1 doc preserved:
+    /// "H-5 A2 delta pin: `encitem_` on the AzStrict boundary is CLEAN
     /// in-product (the mint-domain-match clause needs the row pin; the
-    /// enc-affinity gate upstream is the runtime authority). Plus the
-    /// strict-side known-good (CROSSWIRE-1 req-007, no enc ids) stays
-    /// clean.
+    /// enc-affinity gate upstream is the runtime authority)."
     #[test]
     fn h5_azstrict_clean_in_product() {
         let body = json!({

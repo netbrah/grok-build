@@ -5,9 +5,9 @@
 
 mod chat_completions;
 mod messages;
+pub mod outbound_lint;
 pub mod projection;
 mod responses;
-pub mod outbound_lint;
 mod rules_generated;
 
 pub use chat_completions::{conversation_item_to_chat_message, conversation_to_chat_messages};
