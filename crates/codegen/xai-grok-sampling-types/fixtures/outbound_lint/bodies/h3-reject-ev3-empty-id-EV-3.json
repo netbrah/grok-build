@@ -1,0 +1,48 @@
+{
+  "model": "gpt-5.6-terra",
+  "store": false,
+  "stream": true,
+  "max_output_tokens": 64000,
+  "input": [
+    {
+      "type": "message",
+      "role": "system",
+      "content": "You are Grok released by xAI. (reconstructed; see meta.json)"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": "first prompt (reconstructed)"
+    },
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": "first reply (reconstructed)"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": "second prompt (reconstructed)"
+    },
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": "second reply (reconstructed)"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": "third prompt (reconstructed)"
+    },
+    {
+      "type": "reasoning",
+      "id": "",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "(reconstructed empty-id reasoning item; incident stripped 5 such items, 36 to 33)"
+        }
+      ]
+    }
+  ]
+}

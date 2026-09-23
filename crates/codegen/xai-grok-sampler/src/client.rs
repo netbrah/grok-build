@@ -1748,6 +1748,54 @@ impl SamplingClient {
         }
     }
 
+    /// A2 (FMTL-HARDEN-1, apex-ayl.126.8.2, D-1): observe-only
+    /// pre-send hard-invariant gate (HARDENING-SPEC §3.2/§3.3). Runs
+    /// AFTER the final projection, on the exact serialized body value
+    /// + the final built headers, pre-send. Debug builds panic at the
+    /// send seam (fail fast); release builds emit ONE
+    /// `sampling_log`-targeted event and NEVER block or mutate the
+    /// request. The event name IS the
+    /// format string, so the sampling.jsonl `name` field is exact
+    /// (`shell.request.outbound_lint_violations`), matching the
+    /// sibling `shell.request.*` events; `xai-grok-sampler` cannot
+    /// depend on `xai-grok-telemetry` (cycle via span_timing), so the
+    /// event rides the crate-local `sampling_log` target.
+    fn outbound_lint_gate(model_id: &str, body: &serde_json::Value, headers: &HeaderMap) {
+        use xai_grok_sampling_types::conversation::outbound_lint;
+        use xai_grok_sampling_types::conversation::projection::model_boundary_class;
+
+        let boundary = model_boundary_class(model_id);
+        let mut violations = outbound_lint::lint_outbound_request(boundary, body);
+        let header_pairs: Vec<(&str, &str)> = headers
+            .iter()
+            .filter_map(|(name, value)| value.to_str().ok().map(|v| (name.as_str(), v)))
+            .collect();
+        violations.extend(outbound_lint::lint_outbound_headers(&header_pairs));
+        if violations.is_empty() {
+            return;
+        }
+        let rules: Vec<&str> = violations.iter().map(|v| v.rule).collect();
+        let table = violations
+            .iter()
+            .map(|v| format!("{} @ {} observed={}", v.rule, v.path, v.observed))
+            .collect::<Vec<_>>()
+            .join("; ");
+        if cfg!(debug_assertions) {
+            panic!(
+                "outbound lint violation(s) on model {model_id} ({} violations): {table}",
+                violations.len()
+            );
+        }
+        tracing::warn!(
+            target: crate::sampling_log::TARGET,
+            rules = %rules.join(","),
+            n = rules.len(),
+            model_id = model_id,
+            violations = %table,
+            "shell.request.outbound_lint_violations"
+        );
+    }
+
     fn endpoint(&self, path: &str) -> String {
         self.endpoint.url_for_path(path)
     }
@@ -2216,8 +2264,15 @@ impl SamplingClient {
             sent_bearer,
         } = self.post(self.endpoint("responses"));
         let http_request = grok_headers.apply(builder).json(&request_body);
+        let built_request = http_request.build().map_err(|e| {
+            tracing::error!("Failed to build HTTP request: {}", e);
+            SamplingError::Http(e)
+        })?;
+        // A2 (FMTL-HARDEN-1, T6, D-1): observe-only pre-send hard-invariant
+        // gate — after the final projection, never blocks or mutates.
+        Self::outbound_lint_gate(&model_id, &request_body, built_request.headers());
 
-        let response = http_request.send().await.map_err(|e| {
+        let response = self.http.execute(built_request).await.map_err(|e| {
             tracing::debug!("HTTP request failed: {}", e);
             e
         })?;
@@ -2409,6 +2464,9 @@ impl SamplingClient {
             tracing::error!("Failed to build HTTP request: {}", e);
             SamplingError::Http(e)
         })?;
+        // A2 (FMTL-HARDEN-1, T6, D-1): observe-only pre-send hard-invariant
+        // gate — after the final projection, never blocks or mutates.
+        Self::outbound_lint_gate(&model_id, &request_body, built_request.headers());
 
         tracing::debug!(
             url = %built_request.url(),
@@ -2757,20 +2815,27 @@ impl SamplingClient {
             deployment_id: request.x_grok_deployment_id.as_deref(),
             user_id: request.x_grok_user_id.as_deref(),
         };
+        let model_id = request.model.as_deref().unwrap_or_default();
         self.prepare_bearer().await;
         let SentRequest {
             builder,
             sent_bearer,
         } = self.post(&endpoint);
-        let response = grok_headers
+        let http_request = grok_headers
             .apply(builder)
             .headers(beta_headers)
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"))
             .timeout(std::time::Duration::from_secs(
                 CODEX_REMOTE_COMPACTION_V2_TIMEOUT_SECS,
             ))
-            .json(&request_body)
-            .send()
+            .json(&request_body);
+        let built_request = http_request.build().map_err(SamplingError::Http)?;
+        // A2 (FMTL-HARDEN-1, T6, D-1): observe-only pre-send hard-invariant
+        // gate — after the final projection, never blocks or mutates.
+        Self::outbound_lint_gate(model_id, &request_body, built_request.headers());
+        let response = self
+            .http
+            .execute(built_request)
             .await
             .map_err(SamplingError::Http)?;
 
@@ -3960,6 +4025,232 @@ mod tests {
         let body = body_rx.await.unwrap();
         server.abort();
         serde_json::from_slice(&body).unwrap()
+    }
+
+    /// A2 (FMTL-HARDEN-1, T6): a responses-wire request that violates
+    /// exactly ONE hard invariant — an AzStrict model carrying a
+    /// reasoning input item with a POPULATED content list (H-1).
+    /// `store` defaults to false (H-4 clean), the reasoning id is a
+    /// non-empty string (H-3 clean, D-5), no `encrypted_content`
+    /// (H-2 clean), no `encitem_*`/`litellm_enc:` rides (H-5 clean),
+    /// no `x-litellm-tags` header (H-6 clean) => n=1, rules="H-1".
+    /// `InputParam::Items` is the fork's list variant (NOT `Array`).
+    fn t6_violating_request() -> rs::CreateResponse {
+        rs::CreateResponse {
+            model: Some("gpt-5.6-sol".to_string()),
+            input: rs::InputParam::Items(vec![
+                rs::InputItem::Item(rs::Item::Message(rs::MessageItem::Input(
+                    rs::InputMessage {
+                        content: vec![rs::InputContent::InputText(rs::InputTextContent {
+                            text: "hi".to_string(),
+                        })],
+                        role: rs::InputRole::User,
+                        status: None,
+                    },
+                ))),
+                rs::InputItem::Item(rs::Item::Reasoning(rs::ReasoningItem {
+                    id: "rs_0123456789abcdef0123456789abcdef".to_string(),
+                    summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
+                        text: "s".to_string(),
+                    })],
+                    content: Some(vec![rs::ReasoningTextContent {
+                        text: "chain of thought".to_string(),
+                    }]),
+                    encrypted_content: None,
+                    status: None,
+                })),
+            ]),
+            ..Default::default()
+        }
+    }
+
+    /// A2 (FMTL-HARDEN-1, T6): debug builds must PANIC at the send
+    /// seam on a violating body — fail fast before the bytes move.
+    #[cfg(debug_assertions)]
+    #[serial]
+    #[tokio::test]
+    async fn t6_debug_gate_panics_on_violating_response_body() {
+        let app = Router::new().route(
+            "/v1/responses",
+            post(|_body: Bytes| async {
+                axum::response::Response::builder()
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(r#"{"id":"resp","object":"response","created_at":0,"model":"test-model","status":"completed","output":[],"usage":{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":0}}"#))
+                    .unwrap()
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let client = SamplingClient::new(SamplerConfig {
+            base_url: format!("http://{addr}/v1"),
+            api_backend: ApiBackend::Responses,
+            ..minimal_config()
+        })
+        .unwrap();
+
+        // Guarded global panic hook: capture ONLY the lint panic
+        // (marker match), forward every other panic to the previous
+        // hook. `#[serial]` keeps this the only hook-touching test.
+        let (hook_tx, hook_rx) = oneshot::channel::<String>();
+        let prev_hook = std::sync::Arc::new(std::panic::take_hook());
+        let prev_for_hook = prev_hook.clone();
+        let hook_tx = std::sync::Mutex::new(Some(hook_tx));
+        std::panic::set_hook(Box::new(move |info| {
+            let msg = info
+                .payload()
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| info.payload().downcast_ref::<&str>().map(|s| s.to_string()));
+            let is_lint = msg
+                .as_deref()
+                .is_some_and(|m| m.contains("outbound lint violation"));
+            if is_lint {
+                if let Some(tx) = hook_tx.lock().unwrap().take() {
+                    let _ = tx.send(msg.unwrap());
+                }
+            } else {
+                prev_for_hook(info);
+            }
+        }));
+
+        let request = t6_violating_request();
+        let handle = tokio::spawn(async move {
+            client
+                .create_response(
+                    CreateResponseWrapper::new(request),
+                    &mut DAnchorState::default(),
+                )
+                .await
+        });
+        let join = handle.await;
+        // Detach the guarded hook, then restore the previous one.
+        std::panic::set_hook(Box::new(|_info| {}));
+        let prev_hook = std::sync::Arc::try_unwrap(prev_hook)
+            .map_err(|_| ())
+            .expect("guarded hook must be detached");
+        std::panic::set_hook(prev_hook);
+        server.abort();
+        let err = join.err().unwrap_or_else(|| {
+            panic!("send must panic on the lint violation (task completed cleanly)");
+        });
+        assert!(err.is_panic(), "send must panic on the lint violation");
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(60), hook_rx)
+            .await
+            .expect("hook must have fired")
+            .expect("hook channel closed");
+        assert!(msg.contains("outbound lint violation"), "msg: {msg}");
+        assert!(msg.contains("H-1"), "msg: {msg}");
+    }
+
+    /// A2 (FMTL-HARDEN-1, T6): release builds must emit exactly ONE
+    /// `sampling_log`-targeted event and NEVER block the send (D-1
+    /// observe-only).
+    #[cfg(not(debug_assertions))]
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn t6_release_gate_emits_sampling_log_event_and_does_not_block() {
+        struct Capture {
+            events: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+        }
+
+        #[derive(Default)]
+        struct FieldVisitor {
+            out: String,
+        }
+
+        impl tracing::field::Visit for FieldVisitor {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.out.push_str(&format!("{}={:?} ", field.name(), value));
+            }
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                self.out.push_str(&format!("{}={} ", field.name(), value));
+            }
+        }
+
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Capture {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                let mut visitor = FieldVisitor::default();
+                event.record(&mut visitor);
+                self.events
+                    .lock()
+                    .unwrap()
+                    .push((event.metadata().target().to_string(), visitor.out));
+            }
+        }
+
+        use tracing_subscriber::layer::SubscriberExt;
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let app = Router::new().route(
+            "/v1/responses",
+            post(|_body: Bytes| async {
+                axum::response::Response::builder()
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(r#"{"id":"resp","object":"response","created_at":0,"model":"test-model","status":"completed","output":[],"usage":{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":0}}"#))
+                    .unwrap()
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let client = SamplingClient::new(SamplerConfig {
+            base_url: format!("http://{addr}/v1"),
+            api_backend: ApiBackend::Responses,
+            ..minimal_config()
+        })
+        .unwrap();
+
+        let request = t6_violating_request();
+        let registry = tracing_subscriber::registry().with(Capture {
+            events: captured.clone(),
+        });
+        // Drive the future INSIDE the with_default scope: the default
+        // subscriber is thread-local and only set while the closure runs,
+        // so the send must be polled before the scope ends (block_in_place
+        // lets the current-thread runtime keep the server task alive).
+        let result = tracing::subscriber::with_default(registry, || {
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    client
+                        .create_response(
+                            CreateResponseWrapper::new(request),
+                            &mut DAnchorState::default(),
+                        )
+                        .await
+                })
+            })
+        });
+        server.abort();
+
+        assert!(
+            result.is_ok(),
+            "D-1: the release gate must never block the send"
+        );
+        let events = captured.lock().unwrap();
+        let lint_events: Vec<&(String, String)> = events
+            .iter()
+            .filter(|(target, fields)| {
+                target == "sampling_log" && fields.contains("outbound_lint_violations")
+            })
+            .collect();
+        if lint_events.len() != 1 {
+            let snapshot: Vec<(String, String)> = events.iter().cloned().collect();
+            panic!(
+                "expected exactly one lint event, got {} events: {snapshot:?}",
+                lint_events.len()
+            );
+        }
+        let fields = &lint_events[0].1;
+        assert!(fields.contains("H-1"), "fields: {fields}");
+        assert!(fields.contains("n=1"), "fields: {fields}");
     }
 
     #[tokio::test]

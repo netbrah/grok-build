@@ -1,0 +1,20 @@
+{
+  "content-type": "application/json",
+  "x-litellm-tags": "",
+  "x-xai-token-auth": "xai-grok-cli",
+  "x-authenticateresponse": "authenticate-response",
+  "x-grok-client-mode": "headless",
+  "x-grok-client-version": "1.0.24",
+  "x-grok-conv-group-id": "097d96eb-6f78-5f39-8a8d-2a680f0dc310",
+  "x-grok-client-identifier": "grok-shell",
+  "user-agent": "Apex/apexai-1.0.24 (macos; aarch64)",
+  "x-grok-conv-id": "",
+  "x-grok-req-id": "",
+  "x-grok-model-override": "gpt-5.6-terra",
+  "x-grok-session-id": "",
+  "x-grok-agent-id": "",
+  "accept": "text/event-stream",
+  "accept-encoding": "gzip, br, deflate",
+  "host": "127.0.0.1:58901",
+  "content-length": "1357"
+}

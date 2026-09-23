@@ -1,0 +1,19 @@
+{
+  "model": "gpt-5.6-sol",
+  "store": false,
+  "stream": true,
+  "max_output_tokens": 64000,
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": "(synthesized pin fixture; see meta.json)"
+    },
+    {
+      "type": "reasoning",
+      "summary": [],
+      "mint_tag": "East US 2",
+      "encrypted_content": "litellm_enc:SYNTHETIC-PIN-NOT-REAL-CIPHERTEXT"
+    }
+  ]
+}

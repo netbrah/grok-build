@@ -1,0 +1,29 @@
+{
+  "model": "qwen3.8-27b",
+  "store": false,
+  "stream": false,
+  "max_output_tokens": 1024,
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": "known-good lenient body (synthesized)"
+    },
+    {
+      "type": "reasoning",
+      "id": "rs_0123456789abcdef0123456789abcdef",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "known-good summary lane"
+        }
+      ],
+      "content": [
+        {
+          "type": "reasoning_text",
+          "text": "known-good content lane"
+        }
+      ]
+    }
+  ]
+}

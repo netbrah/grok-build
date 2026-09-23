@@ -1,0 +1,73 @@
+{
+  "schema": "outbound-lint-rules/v1",
+  "source": {
+    "file": "tools/invariant_rules.json",
+    "schema_version": 1
+  },
+  "hard_rules": [
+    {
+      "id": "H-1",
+      "class": "AzStrict",
+      "severity": "hard",
+      "ev": [
+        "EV-1"
+      ],
+      "check": "reasoning_content_absent_or_empty",
+      "description": "reasoning item in input: content ABSENT or [] - never a populated list (responses wire, strict rows)"
+    },
+    {
+      "id": "H-2",
+      "class": "AzStrict",
+      "severity": "hard",
+      "ev": [
+        "EV-13"
+      ],
+      "check": "reasoning_no_encrypted_content",
+      "description": "reasoning item carries no encrypted_content (drift guard - D-ENC strips pre-send; the EV-13 lattice proves strict rows never carry it)"
+    },
+    {
+      "id": "H-3",
+      "class": "all-responses",
+      "severity": "hard",
+      "ev": [
+        "EV-2",
+        "EV-3",
+        "EV-14"
+      ],
+      "check": "item_id_nonempty_and_minted",
+      "description": "item id: when present, non-empty (all responses-wire requests); when the row is store:false Azure (AzStrict), only ids minted in this session - mint set derived from the capture's own responses"
+    },
+    {
+      "id": "H-4",
+      "class": "all-responses",
+      "severity": "hard",
+      "ev": [
+        "EV-5"
+      ],
+      "check": "store_false",
+      "description": "store: false on every request body (deployment-contract standing rule)"
+    },
+    {
+      "id": "H-5",
+      "class": "cross-boundary",
+      "severity": "hard",
+      "ev": [
+        "EV-4",
+        "EV-9",
+        "EV-14"
+      ],
+      "check": "encitem_only_to_matching_azure_row",
+      "description": "encitem_* ids and litellm_enc: blobs ride ONLY to the Azure row whose mint domain matches (x-litellm-tags pin == item mint_tag); never to a VLLenient or foreign-domain row. The 503 is state-conditional (EV-4); a VLLenient ride has a SILENT-200 precedent (EV-14; EV-12 mxai) and stays a hard violation here - T8 adjudicates the drift"
+    },
+    {
+      "id": "H-6",
+      "class": "all-envelope",
+      "severity": "hard",
+      "ev": [
+        "EV-6"
+      ],
+      "check": "no_empty_x_litellm_tags",
+      "description": "no empty-string x-litellm-tags header. SCOPED: other empty-string headers are OUT of scope - ~240/400 sampled known-good requests carry empty x-grok-* headers and return 200 (mgw-toolctl-01 req-004; OQ-f)"
+    }
+  ]
+}

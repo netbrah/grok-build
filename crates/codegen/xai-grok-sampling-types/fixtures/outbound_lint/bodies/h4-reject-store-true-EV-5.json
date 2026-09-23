@@ -1,0 +1,13 @@
+{
+  "model": "qwen3.8-27b",
+  "store": true,
+  "stream": true,
+  "max_output_tokens": 64000,
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": "(synthesized pin fixture; see meta.json)"
+    }
+  ]
+}

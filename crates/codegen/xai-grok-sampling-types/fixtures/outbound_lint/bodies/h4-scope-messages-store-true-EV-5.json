@@ -1,0 +1,12 @@
+{
+  "model": "claude-sonnet-5",
+  "messages": [
+    {
+      "role": "user",
+      "content": "scope pin (synthesized)"
+    }
+  ],
+  "max_tokens": 1024,
+  "stream": false,
+  "store": true
+}

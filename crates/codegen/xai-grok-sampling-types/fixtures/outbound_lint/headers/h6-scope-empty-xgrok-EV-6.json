@@ -1,0 +1,19 @@
+{
+  "content-type": "application/json",
+  "x-xai-token-auth": "xai-grok-cli",
+  "x-authenticateresponse": "authenticate-response",
+  "x-grok-client-mode": "headless",
+  "x-grok-client-version": "1.0.24",
+  "x-grok-conv-group-id": "6f2f1add-d5e9-5c68-a25e-e739750f82d4",
+  "x-grok-client-identifier": "grok-shell",
+  "user-agent": "grok-shell/1.0.24 (macos; aarch64)",
+  "x-grok-conv-id": "",
+  "x-grok-req-id": "",
+  "x-grok-model-override": "claude-sonnet-5",
+  "x-grok-session-id": "",
+  "x-grok-agent-id": "",
+  "accept": "text/event-stream",
+  "accept-encoding": "gzip, br, deflate",
+  "host": "127.0.0.1:65113",
+  "content-length": "1168"
+}

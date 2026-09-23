@@ -1,0 +1,25 @@
+{
+  "model": "qwen3.8-27b",
+  "store": false,
+  "stream": true,
+  "max_output_tokens": 64000,
+  "input": [
+    {
+      "type": "message",
+      "role": "system",
+      "content": "(record-sourced stub; see meta.json)"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": "probe D replay prompt (stub)"
+    },
+    {
+      "type": "reasoning",
+      "id": "encitem_00000000000000000000000000000000000000000000000000000000stub",
+      "mint_tag": "East US 2",
+      "summary": [],
+      "content": []
+    }
+  ]
+}

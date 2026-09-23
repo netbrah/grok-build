@@ -1,0 +1,52 @@
+{
+  "model": "claude-sonnet-5",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "<user_query>\nReply with exactly: MGW-TOOLCTL-OK\n</user_query>",
+          "cache_control": {
+            "type": "ephemeral"
+          }
+        }
+      ]
+    }
+  ],
+  "max_tokens": 100,
+  "system": [
+    {
+      "type": "text",
+      "text": "You are tasked with generating the session title. The user is asking almost always software engineering related questions on their codebase.\nWe describe the session title below\n# Session Title\nA short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler.\n\nYou will be given the user query below encapsulated in <user_query></user_query>.\n\nJust generate the session_title and nothing else",
+      "cache_control": {
+        "type": "ephemeral"
+      }
+    }
+  ],
+  "tools": [
+    {
+      "name": "session_title",
+      "description": "Generate the session_title which we use for the user_message",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "session_title"
+        ],
+        "properties": {
+          "session_title": {
+            "type": "string",
+            "description": "Final session title, just 5-10 word descriptive title for the session. Super info dense, no filler."
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  ],
+  "tool_choice": {
+    "type": "tool",
+    "name": "session_title"
+  },
+  "temperature": 1.0,
+  "stream": true
+}
