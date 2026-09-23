@@ -44,7 +44,7 @@ fn selftest_happy_path_passes() {
     assert!(report.required_fields.contains(&"reasoning_efforts".to_string()));
     assert!(!report.required_fields.contains(&"model".to_string()));
     assert!(!report.required_fields.contains(&"context_window".to_string()));
-    assert_eq!(report.schema_properties.len(), 47);
+    assert_eq!(report.schema_properties.len(), 48);
     assert!(report.schema_properties.contains(&"api_backend".to_string()));
     assert!(report.schema_properties.contains(&"temperature".to_string()));
     assert_eq!(report.struct_fields.len(), 22);
