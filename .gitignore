@@ -13,3 +13,4 @@ smoke/redteam/__pycache__/
 smoke/**/derived-config.toml
 *.pyc
 smoke/runs.jsonl
+smoke/eval_harness/report/

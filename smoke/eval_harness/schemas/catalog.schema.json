@@ -1,0 +1,590 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "components": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "adapter": {
+            "enum": [
+              "dogfood",
+              "formalism",
+              "lifecycle",
+              "parity_repro",
+              "plan_corpus",
+              "redteam",
+              "triage",
+              "wiretap",
+              "wstream",
+              "xwfix"
+            ]
+          },
+          "content_policy": {
+            "enum": [
+              "curated-text",
+              "metadata-only",
+              "semantic-json"
+            ]
+          },
+          "entrypoints": {
+            "items": {
+              "additionalProperties": false,
+              "if": {
+                "properties": {
+                  "role": {
+                    "const": "selftest"
+                  }
+                },
+                "required": [
+                  "role"
+                ]
+              },
+              "properties": {
+                "argv": {
+                  "items": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "availability": {
+                  "enum": [
+                    "health-only",
+                    "optional",
+                    "required"
+                  ]
+                },
+                "path": {
+                  "minLength": 1,
+                  "not": {
+                    "anyOf": [
+                      {
+                        "pattern": "\\.\\."
+                      },
+                      {
+                        "pattern": "^\\.(?=/|$)"
+                      },
+                      {
+                        "pattern": "/\\.(?=/|$)"
+                      }
+                    ]
+                  },
+                  "pattern": "^[A-Za-z0-9._*%-]+(?:/[A-Za-z0-9._*%-]+)*$",
+                  "type": "string"
+                },
+                "role": {
+                  "enum": [
+                    "installed",
+                    "selftest",
+                    "source"
+                  ]
+                },
+                "root": {
+                  "enum": [
+                    "agents-home",
+                    "codex-home",
+                    "grok-home",
+                    "logscale",
+                    "plans",
+                    "worktree"
+                  ]
+                }
+              },
+              "required": [
+                "availability",
+                "path",
+                "root",
+                "role"
+              ],
+              "then": {
+                "required": [
+                  "argv"
+                ]
+              },
+              "type": "object"
+            },
+            "type": "array",
+            "uniqueItems": true
+          },
+          "id": {
+            "enum": [
+              "dogfood",
+              "formalism-linter",
+              "lifecycle",
+              "parity-formalism",
+              "parity-repro",
+              "provenance",
+              "redteam",
+              "session-triage",
+              "wiretap",
+              "wstream",
+              "xwfix",
+              "xwire"
+            ]
+          },
+          "inputs": {
+            "items": {
+              "anyOf": [
+                {
+                  "minLength": 1,
+                  "not": {
+                    "anyOf": [
+                      {
+                        "pattern": "\\.\\."
+                      },
+                      {
+                        "pattern": "^\\.(?=/|$)"
+                      },
+                      {
+                        "pattern": "/\\.(?=/|$)"
+                      }
+                    ]
+                  },
+                  "pattern": "^[A-Za-z0-9._*%-]+(?:/[A-Za-z0-9._*%-]+)*$",
+                  "type": "string"
+                },
+                {
+                  "not": {
+                    "anyOf": [
+                      {
+                        "pattern": "\\.\\."
+                      },
+                      {
+                        "pattern": ":\\.(?=/|$)"
+                      },
+                      {
+                        "pattern": "/\\.(?=/|$)"
+                      }
+                    ]
+                  },
+                  "pattern": "^(worktree|plans|grok-home|codex-home|agents-home|logscale):[A-Za-z0-9._*%-]+(?:/[A-Za-z0-9._*%-]+)*$",
+                  "type": "string"
+                }
+              ]
+            },
+            "type": "array",
+            "uniqueItems": true
+          },
+          "install": {
+            "type": "null"
+          },
+          "kind": {
+            "pattern": "^[a-z][a-z0-9-]*$",
+            "type": "string"
+          },
+          "lifecycle": {
+            "additionalProperties": false,
+            "else": {
+              "not": {
+                "required": [
+                  "suite"
+                ]
+              },
+              "required": [
+                "reason"
+              ]
+            },
+            "if": {
+              "properties": {
+                "registry": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "registry"
+              ]
+            },
+            "properties": {
+              "reason": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "registry": {
+                "anyOf": [
+                  {
+                    "minLength": 1,
+                    "not": {
+                      "anyOf": [
+                        {
+                          "pattern": "\\.\\."
+                        },
+                        {
+                          "pattern": "^\\.(?=/|$)"
+                        },
+                        {
+                          "pattern": "/\\.(?=/|$)"
+                        }
+                      ]
+                    },
+                    "pattern": "^[A-Za-z0-9._*%-]+(?:/[A-Za-z0-9._*%-]+)*$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "suite": {
+                "pattern": "^[a-z][a-z0-9-]*$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "registry"
+            ],
+            "then": {
+              "not": {
+                "required": [
+                  "reason"
+                ]
+              },
+              "required": [
+                "suite"
+              ]
+            },
+            "type": "object"
+          },
+          "outputs": {
+            "items": {
+              "minLength": 1,
+              "not": {
+                "anyOf": [
+                  {
+                    "pattern": "\\.\\."
+                  },
+                  {
+                    "pattern": "^\\.(?=/|$)"
+                  },
+                  {
+                    "pattern": "/\\.(?=/|$)"
+                  }
+                ]
+              },
+              "pattern": "^[A-Za-z0-9._*%-]+(?:/[A-Za-z0-9._*%-]+)*$",
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": true
+          },
+          "owner_docs": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "heading": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "path": {
+                  "minLength": 1,
+                  "not": {
+                    "anyOf": [
+                      {
+                        "pattern": "\\.\\."
+                      },
+                      {
+                        "pattern": "^\\.(?=/|$)"
+                      },
+                      {
+                        "pattern": "/\\.(?=/|$)"
+                      }
+                    ]
+                  },
+                  "pattern": "^[A-Za-z0-9._*%-]+(?:/[A-Za-z0-9._*%-]+)*$",
+                  "type": "string"
+                },
+                "root": {
+                  "enum": [
+                    "agents-home",
+                    "codex-home",
+                    "grok-home",
+                    "logscale",
+                    "plans",
+                    "worktree"
+                  ]
+                }
+              },
+              "required": [
+                "heading",
+                "path",
+                "root"
+              ],
+              "type": "object"
+            },
+            "type": "array",
+            "uniqueItems": true
+          },
+          "root": {
+            "enum": [
+              "agents-home",
+              "codex-home",
+              "grok-home",
+              "logscale",
+              "plans",
+              "worktree"
+            ]
+          }
+        },
+        "required": [
+          "adapter",
+          "content_policy",
+          "entrypoints",
+          "id",
+          "inputs",
+          "install",
+          "kind",
+          "lifecycle",
+          "outputs",
+          "owner_docs",
+          "root"
+        ],
+        "type": "object"
+      },
+      "maxItems": 12,
+      "minItems": 12,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "curated_sources": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "minLength": 1,
+            "not": {
+              "anyOf": [
+                {
+                  "pattern": "\\.\\."
+                },
+                {
+                  "pattern": "^\\.(?=/|$)"
+                },
+                {
+                  "pattern": "/\\.(?=/|$)"
+                }
+              ]
+            },
+            "pattern": "^[A-Za-z0-9._*%-]+(?:/[A-Za-z0-9._*%-]+)*$",
+            "type": "string"
+          },
+          "root": {
+            "enum": [
+              "agents-home",
+              "codex-home",
+              "grok-home",
+              "logscale",
+              "plans",
+              "worktree"
+            ]
+          },
+          "selectors": {
+            "items": {
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "heading"
+                    },
+                    "text": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "text"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "question"
+                    },
+                    "marker": {
+                      "minLength": 1,
+                      "pattern": "^Q: ",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "marker"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "citations"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "path",
+          "root",
+          "selectors"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "inventory_scopes": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "excludes": {
+            "items": {
+              "minLength": 1,
+              "not": {
+                "anyOf": [
+                  {
+                    "pattern": "\\.\\."
+                  },
+                  {
+                    "pattern": "^\\.(?=/|$)"
+                  },
+                  {
+                    "pattern": "/\\.(?=/|$)"
+                  }
+                ]
+              },
+              "pattern": "^[A-Za-z0-9._*%-]+(?:/[A-Za-z0-9._*%-]+)*$",
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": true
+          },
+          "id": {
+            "enum": [
+              "plans-corpus",
+              "plans-declared-inputs",
+              "worktree-declared-inputs"
+            ]
+          },
+          "includes": {
+            "items": {
+              "anyOf": [
+                {
+                  "const": "catalog-declared"
+                },
+                {
+                  "minLength": 1,
+                  "not": {
+                    "anyOf": [
+                      {
+                        "pattern": "\\.\\."
+                      },
+                      {
+                        "pattern": "^\\.(?=/|$)"
+                      },
+                      {
+                        "pattern": "/\\.(?=/|$)"
+                      }
+                    ]
+                  },
+                  "pattern": "^[A-Za-z0-9._*%-]+(?:/[A-Za-z0-9._*%-]+)*$",
+                  "type": "string"
+                }
+              ]
+            },
+            "type": "array",
+            "uniqueItems": true
+          },
+          "root": {
+            "enum": [
+              "agents-home",
+              "codex-home",
+              "grok-home",
+              "logscale",
+              "plans",
+              "worktree"
+            ]
+          },
+          "selection": {
+            "enum": [
+              "catalog-static-sources-outside-plans-corpus",
+              "catalog-static-sources-plus-indexer-source",
+              "recursive-all-regular-and-symlink"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "root",
+          "selection"
+        ],
+        "type": "object"
+      },
+      "maxItems": 3,
+      "minItems": 3,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "roots": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "enum": [
+              "agents-home",
+              "codex-home",
+              "grok-home",
+              "logscale",
+              "plans",
+              "worktree"
+            ]
+          },
+          "required_for": {
+            "items": {
+              "enum": [
+                "build",
+                "health"
+              ]
+            },
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "id",
+          "required_for"
+        ],
+        "type": "object"
+      },
+      "maxItems": 6,
+      "minItems": 6,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "schema_version": {
+      "const": 1
+    }
+  },
+  "required": [
+    "components",
+    "curated_sources",
+    "inventory_scopes",
+    "roots",
+    "schema_version"
+  ],
+  "title": "eval-harness registry catalog (schema_version 1)",
+  "type": "object"
+}

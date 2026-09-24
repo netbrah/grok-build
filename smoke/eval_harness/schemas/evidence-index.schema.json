@@ -1,0 +1,581 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "components": {
+      "items": {
+        "properties": {
+          "id": {
+            "enum": [
+              "dogfood",
+              "formalism-linter",
+              "lifecycle",
+              "parity-formalism",
+              "parity-repro",
+              "provenance",
+              "redteam",
+              "session-triage",
+              "wiretap",
+              "wstream",
+              "xwfix",
+              "xwire"
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "entities": {
+      "items": {
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "adjudication",
+              "artifact",
+              "boundary-class",
+              "category",
+              "component",
+              "document-section",
+              "evidence-record",
+              "fixture-arm",
+              "request-expectation",
+              "rule",
+              "run",
+              "xwfix-cell"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "findings": {
+      "items": {
+        "properties": {
+          "code": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "component": {
+            "enum": [
+              "dogfood",
+              "formalism-linter",
+              "lifecycle",
+              "parity-formalism",
+              "parity-repro",
+              "provenance",
+              "redteam",
+              "session-triage",
+              "wiretap",
+              "wstream",
+              "xwfix",
+              "xwire"
+            ]
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "impact": {
+            "enum": [
+              "hard",
+              "soft"
+            ]
+          },
+          "level": {
+            "enum": [
+              "error",
+              "info",
+              "warning"
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "component",
+          "id",
+          "impact",
+          "level"
+        ],
+        "type": "object"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "inventory": {
+      "items": {
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "scope": {
+                  "const": "plans-corpus"
+                }
+              },
+              "required": [
+                "scope"
+              ]
+            },
+            "then": {
+              "properties": {
+                "root": {
+                  "const": "plans"
+                }
+              },
+              "required": [
+                "root"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "scope": {
+                  "const": "plans-declared-inputs"
+                }
+              },
+              "required": [
+                "scope"
+              ]
+            },
+            "then": {
+              "properties": {
+                "root": {
+                  "const": "plans"
+                }
+              },
+              "required": [
+                "root"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "scope": {
+                  "const": "worktree-declared-inputs"
+                }
+              },
+              "required": [
+                "scope"
+              ]
+            },
+            "then": {
+              "properties": {
+                "root": {
+                  "const": "worktree"
+                }
+              },
+              "required": [
+                "root"
+              ]
+            }
+          }
+        ],
+        "else": {
+          "not": {
+            "required": [
+              "symlink_target"
+            ]
+          },
+          "properties": {
+            "media_type": {
+              "not": {
+                "const": "inode/symlink"
+              }
+            }
+          }
+        },
+        "if": {
+          "properties": {
+            "file_type": {
+              "const": "symlink"
+            }
+          },
+          "required": [
+            "file_type"
+          ]
+        },
+        "properties": {
+          "bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "content_policy": {
+            "enum": [
+              "curated-text",
+              "metadata-only",
+              "semantic-json"
+            ]
+          },
+          "file_type": {
+            "enum": [
+              "regular",
+              "symlink"
+            ]
+          },
+          "generation_state": {
+            "enum": [
+              "declared-generated",
+              "source-authored",
+              "unknown"
+            ]
+          },
+          "git_state": {
+            "enum": [
+              "ignored",
+              "outside-repository",
+              "tracked-clean",
+              "tracked-modified",
+              "untracked"
+            ]
+          },
+          "media_type": {
+            "enum": [
+              "application/json",
+              "application/octet-stream",
+              "application/pdf",
+              "application/x-ndjson",
+              "image/png",
+              "image/svg+xml",
+              "inode/symlink",
+              "text/css",
+              "text/html",
+              "text/javascript",
+              "text/markdown",
+              "text/plain",
+              "text/x-python",
+              "text/x-rust",
+              "text/x-shellscript",
+              "text/x-toml",
+              "text/yaml"
+            ]
+          },
+          "path": {
+            "minLength": 1,
+            "not": {
+              "anyOf": [
+                {
+                  "pattern": "\\.\\."
+                },
+                {
+                  "pattern": "^\\.(?=/|$)"
+                },
+                {
+                  "pattern": "/\\.(?=/|$)"
+                }
+              ]
+            },
+            "pattern": "^[A-Za-z0-9._*%-]+(?:/[A-Za-z0-9._*%-]+)*$",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "capture",
+              "configuration",
+              "curated-document",
+              "fixture-metadata",
+              "fixture-payload",
+              "generated-source",
+              "launcher",
+              "manifest",
+              "other",
+              "report",
+              "schema",
+              "source-code"
+            ]
+          },
+          "root": {
+            "enum": [
+              "agents-home",
+              "codex-home",
+              "grok-home",
+              "logscale",
+              "plans",
+              "worktree"
+            ]
+          },
+          "scope": {
+            "enum": [
+              "plans-corpus",
+              "plans-declared-inputs",
+              "worktree-declared-inputs"
+            ]
+          },
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "symlink_target": {
+            "minLength": 1,
+            "not": {
+              "pattern": "^/"
+            },
+            "type": "string"
+          }
+        },
+        "required": [
+          "bytes",
+          "content_policy",
+          "file_type",
+          "generation_state",
+          "git_state",
+          "media_type",
+          "path",
+          "root",
+          "role",
+          "scope",
+          "sha256"
+        ],
+        "then": {
+          "properties": {
+            "media_type": {
+              "const": "inode/symlink"
+            }
+          },
+          "required": [
+            "symlink_target"
+          ]
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "relationships": {
+      "items": {
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "belongs-to",
+              "captured-by",
+              "checks",
+              "cites",
+              "defines",
+              "enforced-by",
+              "exercises",
+              "generated-from",
+              "produced-by",
+              "references",
+              "reported-by",
+              "supersedes"
+            ]
+          },
+          "source": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "target": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "source",
+          "target"
+        ],
+        "type": "object"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "runs": {
+      "items": {
+        "properties": {
+          "component": {
+            "enum": [
+              "dogfood",
+              "formalism-linter",
+              "lifecycle",
+              "parity-formalism",
+              "parity-repro",
+              "provenance",
+              "redteam",
+              "session-triage",
+              "wiretap",
+              "wstream",
+              "xwfix",
+              "xwire"
+            ]
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "component",
+          "id"
+        ],
+        "type": "object"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "snapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "catalog_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "content_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "scopes": {
+          "items": {
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "id": {
+                      "const": "plans-corpus"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "root": {
+                      "const": "plans"
+                    }
+                  },
+                  "required": [
+                    "root"
+                  ]
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "id": {
+                      "const": "plans-declared-inputs"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "root": {
+                      "const": "plans"
+                    }
+                  },
+                  "required": [
+                    "root"
+                  ]
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "id": {
+                      "const": "worktree-declared-inputs"
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "root": {
+                      "const": "worktree"
+                    }
+                  },
+                  "required": [
+                    "root"
+                  ]
+                }
+              }
+            ],
+            "properties": {
+              "entries": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "id": {
+                "enum": [
+                  "plans-corpus",
+                  "plans-declared-inputs",
+                  "worktree-declared-inputs"
+                ]
+              },
+              "inventory_sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "root": {
+                "enum": [
+                  "agents-home",
+                  "codex-home",
+                  "grok-home",
+                  "logscale",
+                  "plans",
+                  "worktree"
+                ]
+              }
+            },
+            "required": [
+              "entries",
+              "id",
+              "inventory_sha256",
+              "root"
+            ],
+            "type": "object"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "catalog_sha256",
+        "content_sha256",
+        "scopes"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "components",
+    "entities",
+    "findings",
+    "inventory",
+    "relationships",
+    "runs",
+    "schema_version",
+    "snapshot"
+  ],
+  "title": "eval-harness evidence index (schema_version 1)",
+  "type": "object"
+}

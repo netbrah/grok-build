@@ -1,0 +1,657 @@
+{
+  "components": [
+    {
+      "adapter": "formalism",
+      "content_policy": "curated-text",
+      "entrypoints": [],
+      "id": "parity-formalism",
+      "inputs": [
+        "parity-formalism/EXEMPLARS.md",
+        "parity-formalism/FORMALISM.md",
+        "parity-formalism/HARDENING-SPEC.md",
+        "parity-formalism/OBSERVATIONS.md",
+        "parity-formalism/Q-A.md",
+        "parity-formalism/intel/02-qwen-codexfam-reasoning-parity.md",
+        "parity-formalism/parity-hardening-report.md",
+        "parity-formalism/tools/expected_verdicts_ev12.json",
+        "parity-formalism/tools/fixtures"
+      ],
+      "install": null,
+      "kind": "corpus",
+      "lifecycle": {
+        "reason": "plans-corpus row: files are inventoried, not registered in smoke/runs.jsonl",
+        "registry": null
+      },
+      "outputs": [],
+      "owner_docs": [
+        {
+          "heading": "Wire-parity formalism — same-page doc (v0, 2026-09-21)",
+          "path": "parity-formalism/FORMALISM.md",
+          "root": "plans"
+        }
+      ],
+      "root": "plans"
+    },
+    {
+      "adapter": "formalism",
+      "content_policy": "semantic-json",
+      "entrypoints": [
+        {
+          "availability": "required",
+          "path": "parity-formalism/tools/generate_outbound_lint_rules.py",
+          "role": "source",
+          "root": "plans"
+        },
+        {
+          "availability": "required",
+          "path": "parity-formalism/tools/invariant_lint.py",
+          "role": "source",
+          "root": "plans"
+        },
+        {
+          "availability": "required",
+          "path": "parity-formalism/tools/invariant_rules.json",
+          "role": "source",
+          "root": "plans"
+        },
+        {
+          "argv": [
+            "python3.14",
+            "<plans-root>/parity-formalism/tools/generate_outbound_lint_rules.py",
+            "--check",
+            "--worktree",
+            "."
+          ],
+          "availability": "health-only",
+          "path": "parity-formalism/tools/generate_outbound_lint_rules.py",
+          "role": "selftest",
+          "root": "plans"
+        },
+        {
+          "argv": [
+            "python3.14",
+            "<plans-root>/parity-formalism/tools/invariant_lint.py",
+            "<plans-root>/parity-formalism/tools/fixtures/at-strict-xwire-01",
+            "--soft",
+            "--worktree",
+            "."
+          ],
+          "availability": "health-only",
+          "path": "parity-formalism/tools/invariant_lint.py",
+          "role": "selftest",
+          "root": "plans"
+        }
+      ],
+      "id": "formalism-linter",
+      "inputs": [
+        "parity-formalism/tools/generate_outbound_lint_rules.py",
+        "parity-formalism/tools/invariant_lint.py",
+        "parity-formalism/tools/invariant_rules.json",
+        "xwavec71/wavec71-green-report-qwen-20260918.md",
+        "worktree:crates/codegen/xai-grok-sampling-types/src/conversation/rules_generated.rs",
+        "worktree:crates/codegen/xai-grok-sampling-types/src/conversation/projection_tests.rs",
+        "worktree:crates/codegen/xai-grok-sampling-types/fixtures/outbound_lint/**"
+      ],
+      "install": null,
+      "kind": "tool",
+      "lifecycle": {
+        "reason": "offline toolchain: invoked directly, not registered in smoke/runs.jsonl",
+        "registry": null
+      },
+      "outputs": [],
+      "owner_docs": [
+        {
+          "heading": "3.1 A1 — linter: `grok/plans/parity-formalism/tools/invariant_lint.py`",
+          "path": "parity-formalism/HARDENING-SPEC.md",
+          "root": "plans"
+        }
+      ],
+      "root": "plans"
+    },
+    {
+      "adapter": "plan_corpus",
+      "content_policy": "metadata-only",
+      "entrypoints": [],
+      "id": "provenance",
+      "inputs": [],
+      "install": null,
+      "kind": "corpus",
+      "lifecycle": {
+        "reason": "plans-corpus row: files are inventoried, not registered in smoke/runs.jsonl",
+        "registry": null
+      },
+      "outputs": [],
+      "owner_docs": [
+        {
+          "heading": "Donor registry (apex-v2-grok-build campaign)",
+          "path": "provenance/donors.md",
+          "root": "plans"
+        }
+      ],
+      "root": "plans"
+    },
+    {
+      "adapter": "plan_corpus",
+      "content_policy": "metadata-only",
+      "entrypoints": [],
+      "id": "xwire",
+      "inputs": [],
+      "install": null,
+      "kind": "corpus",
+      "lifecycle": {
+        "reason": "plans-corpus row: files are inventoried, not registered in smoke/runs.jsonl",
+        "registry": null
+      },
+      "outputs": [],
+      "owner_docs": [
+        {
+          "heading": "6. Wire invariants (model-visible context discipline)",
+          "path": "AGENTS.md",
+          "root": "worktree"
+        }
+      ],
+      "root": "plans"
+    },
+    {
+      "adapter": "redteam",
+      "content_policy": "metadata-only",
+      "entrypoints": [
+        {
+          "availability": "required",
+          "path": "smoke/redteam/run.py",
+          "role": "source",
+          "root": "worktree"
+        },
+        {
+          "argv": [
+            "python3.14",
+            "smoke/redteam/run.py",
+            "--selftest"
+          ],
+          "availability": "health-only",
+          "path": "smoke/redteam/run.py",
+          "role": "selftest",
+          "root": "worktree"
+        }
+      ],
+      "id": "redteam",
+      "inputs": [
+        "smoke/redteam/case.schema.json",
+        "smoke/redteam/cases"
+      ],
+      "install": null,
+      "kind": "runner",
+      "lifecycle": {
+        "registry": "smoke/runs.jsonl",
+        "suite": "redteam"
+      },
+      "outputs": [
+        "campaign.json",
+        "report.json",
+        "*/verdict.json",
+        "*/wire"
+      ],
+      "owner_docs": [
+        {
+          "heading": "9. The redteam / smoke suite (`smoke/redteam/`)",
+          "path": "AGENTS.md",
+          "root": "worktree"
+        }
+      ],
+      "root": "worktree"
+    },
+    {
+      "adapter": "wstream",
+      "content_policy": "metadata-only",
+      "entrypoints": [
+        {
+          "availability": "required",
+          "path": "smoke/wstream/run.py",
+          "role": "source",
+          "root": "worktree"
+        }
+      ],
+      "id": "wstream",
+      "inputs": [
+        "smoke/wstream/README.md",
+        "smoke/wstream/cells",
+        "smoke/wstream/configs",
+        "smoke/wstream/manifest.json",
+        "smoke/wstream/run.py"
+      ],
+      "install": null,
+      "kind": "runner",
+      "lifecycle": {
+        "registry": "smoke/runs.jsonl",
+        "suite": "wstream"
+      },
+      "outputs": [
+        "matrix.json",
+        "*/capture.wiretap-stdout.log",
+        "*/capture/req-*.json",
+        "*/capture/resp-*.jsonl",
+        "*/derived-config.toml",
+        "*/report.md",
+        "*/result.json",
+        "*/turn_*.ndjson",
+        "*/turn_*.stderr"
+      ],
+      "owner_docs": [
+        {
+          "heading": "WSTREAM — wire-streaming matrix (model × api_backend × wire)",
+          "path": "smoke/wstream/README.md",
+          "root": "worktree"
+        }
+      ],
+      "root": "worktree"
+    },
+    {
+      "adapter": "xwfix",
+      "content_policy": "metadata-only",
+      "entrypoints": [],
+      "id": "xwfix",
+      "inputs": [
+        "smoke/xwfix/README.md",
+        "smoke/xwfix/cases",
+        "smoke/xwfix/cells",
+        "smoke/xwfix/manifest.json",
+        "smoke/xwfix/switch_model_op.patch"
+      ],
+      "install": null,
+      "kind": "campaign",
+      "lifecycle": {
+        "reason": "fixture corpus: cells are inventoried, not registered in smoke/runs.jsonl",
+        "registry": null
+      },
+      "outputs": [],
+      "owner_docs": [
+        {
+          "heading": "XW-FIXTURES — cross-wire golden corpus (apex-ayl.70)",
+          "path": "smoke/xwfix/README.md",
+          "root": "worktree"
+        }
+      ],
+      "root": "worktree"
+    },
+    {
+      "adapter": "wiretap",
+      "content_policy": "metadata-only",
+      "entrypoints": [
+        {
+          "availability": "required",
+          "path": "smoke/wiretap/wiretap.py",
+          "role": "source",
+          "root": "worktree"
+        }
+      ],
+      "id": "wiretap",
+      "inputs": [
+        "smoke/wiretap/wiretap.py"
+      ],
+      "install": null,
+      "kind": "tool",
+      "lifecycle": {
+        "reason": "per-run capture tool: invoked inside other suites, not registered in smoke/runs.jsonl",
+        "registry": null
+      },
+      "outputs": [
+        "*/capture/req-*.json",
+        "*/capture/resp-*.jsonl"
+      ],
+      "owner_docs": [
+        {
+          "heading": "2. A1 — wiretap2 (wire capture, definitive evidence)",
+          "path": "HT-1-redteam-harness-spec.md",
+          "root": "plans"
+        }
+      ],
+      "root": "worktree"
+    },
+    {
+      "adapter": "lifecycle",
+      "content_policy": "metadata-only",
+      "entrypoints": [
+        {
+          "availability": "required",
+          "path": "smoke/lib/launch.py",
+          "role": "source",
+          "root": "worktree"
+        },
+        {
+          "availability": "required",
+          "path": "smoke/sweepctl.py",
+          "role": "source",
+          "root": "worktree"
+        }
+      ],
+      "id": "lifecycle",
+      "inputs": [
+        "smoke/lib/launch.py",
+        "smoke/sweepctl.py"
+      ],
+      "install": null,
+      "kind": "tool",
+      "lifecycle": {
+        "reason": "this component is the registry writer itself: smoke/lib/launch.py appends and smoke/sweepctl.py reads smoke/runs.jsonl",
+        "registry": null
+      },
+      "outputs": [],
+      "owner_docs": [
+        {
+          "heading": "6.2 New instrumentation (not in this doc's inventory)",
+          "path": "smoke-gate-unification-design-20260919.md",
+          "root": "plans"
+        }
+      ],
+      "root": "worktree"
+    },
+    {
+      "adapter": "dogfood",
+      "content_policy": "metadata-only",
+      "entrypoints": [
+        {
+          "availability": "required",
+          "path": "smoke/redteam/grok-dogfood.v2",
+          "role": "source",
+          "root": "worktree"
+        },
+        {
+          "availability": "health-only",
+          "path": "bin/grok-dogfood",
+          "role": "installed",
+          "root": "grok-home"
+        }
+      ],
+      "id": "dogfood",
+      "inputs": [
+        "smoke/redteam/grok-dogfood.v2"
+      ],
+      "install": null,
+      "kind": "launcher",
+      "lifecycle": {
+        "reason": "dogfood runs are launched with zsh smoke/redteam/grok-dogfood.v2 and are not registered in smoke/runs.jsonl",
+        "registry": null
+      },
+      "outputs": [
+        "wire/req-*.json",
+        "wire/resp-*.jsonl",
+        "wiretap-stdout.log"
+      ],
+      "owner_docs": [
+        {
+          "heading": "3. A5 — grok-dogfood v2 (dogfood = instrumented by default)",
+          "path": "HT-1-redteam-harness-spec.md",
+          "root": "plans"
+        }
+      ],
+      "root": "worktree"
+    },
+    {
+      "adapter": "parity_repro",
+      "content_policy": "metadata-only",
+      "entrypoints": [
+        {
+          "availability": "required",
+          "path": "codex-parity-smoke/bin/parity-repro",
+          "role": "source",
+          "root": "plans"
+        },
+        {
+          "availability": "health-only",
+          "path": "bin/codex-wire-analyze",
+          "role": "installed",
+          "root": "codex-home"
+        },
+        {
+          "availability": "health-only",
+          "path": "bin/grok-wire-analyze",
+          "role": "installed",
+          "root": "grok-home"
+        },
+        {
+          "availability": "health-only",
+          "path": "bin/session-cost-attr.py",
+          "role": "installed",
+          "root": "logscale"
+        }
+      ],
+      "id": "parity-repro",
+      "inputs": [
+        "codex-parity-smoke/PLAN.md",
+        "codex-parity-smoke/bin/parity-repro",
+        "codex-parity-smoke/parity-prompt.txt",
+        "codex-parity-smoke/reports/jig"
+      ],
+      "install": null,
+      "kind": "runner",
+      "lifecycle": {
+        "reason": "single-shot jig: reports land under codex-parity-smoke/reports/jig, not in smoke/runs.jsonl",
+        "registry": null
+      },
+      "outputs": [
+        "*-*.md"
+      ],
+      "owner_docs": [
+        {
+          "heading": "codex-parity-smoke — PLAN (mission: why is sol expensive on grok-build, and how do we make sol/terra/luna on the custom harness as cheap+efficient as first-party codex?)",
+          "path": "codex-parity-smoke/PLAN.md",
+          "root": "plans"
+        }
+      ],
+      "root": "plans"
+    },
+    {
+      "adapter": "triage",
+      "content_policy": "metadata-only",
+      "entrypoints": [
+        {
+          "availability": "required",
+          "path": "smoke/triage/grok-triage",
+          "role": "source",
+          "root": "worktree"
+        },
+        {
+          "availability": "health-only",
+          "path": "bin/grok-triage",
+          "role": "installed",
+          "root": "grok-home"
+        },
+        {
+          "availability": "health-only",
+          "path": "bin/signatures.json",
+          "role": "installed",
+          "root": "grok-home"
+        },
+        {
+          "availability": "health-only",
+          "path": "skills/grok-session-triage",
+          "role": "installed",
+          "root": "agents-home"
+        }
+      ],
+      "id": "session-triage",
+      "inputs": [
+        "smoke/triage/grok-triage",
+        "smoke/triage/install.sh",
+        "smoke/triage/signatures.json",
+        "smoke/triage/test_grok_triage.py"
+      ],
+      "install": null,
+      "kind": "tool",
+      "lifecycle": {
+        "reason": "diagnostic tool: not registered in smoke/runs.jsonl",
+        "registry": null
+      },
+      "outputs": [],
+      "owner_docs": [
+        {
+          "heading": "Session-Triage Script + Skill Implementation Plan (v2)",
+          "path": "session-triage-skill-plan-20260915.md",
+          "root": "plans"
+        }
+      ],
+      "root": "worktree"
+    }
+  ],
+  "curated_sources": [
+    {
+      "path": "parity-formalism/FORMALISM.md",
+      "root": "plans",
+      "selectors": [
+        {
+          "kind": "heading",
+          "text": "2. Category decomposition (the \"math\" of a parity diff)"
+        }
+      ]
+    },
+    {
+      "path": "parity-formalism/HARDENING-SPEC.md",
+      "root": "plans",
+      "selectors": [
+        {
+          "kind": "heading",
+          "text": "1. Evidence base (wire-verified as of 2026-09-23)"
+        },
+        {
+          "kind": "heading",
+          "text": "2.1 Hard invariants (I^h; default artifact set A1 + A2 + A3 — a row may override, see H-7)"
+        },
+        {
+          "kind": "heading",
+          "text": "2.2 Soft invariants (I^s — violation = cache/continuity/$ loss, not 4xx; A1 only, flag-level)"
+        },
+        {
+          "kind": "heading",
+          "text": "2.2a Strict-row enc re-scope — exact clauses (T8 OQ-T8-1/2 adjudication, 2026-09-23; bead apex-ayl.126.8.5)"
+        },
+        {
+          "kind": "heading",
+          "text": "2.3 Open questions — NOT enforced (wire evidence owed first)"
+        }
+      ]
+    },
+    {
+      "path": "parity-formalism/Q-A.md",
+      "root": "plans",
+      "selectors": [
+        {
+          "kind": "question",
+          "marker": "Q: \"Back to nuts and bolts — what about the beta headers for context management, like clear_thinking or tool-level TTL, there's a bunch of advanced concepts?\""
+        },
+        {
+          "kind": "question",
+          "marker": "Q: \"And across codex and claude we can start systematically — how are encrypted_content and thinking signatures etc?\""
+        },
+        {
+          "kind": "question",
+          "marker": "Q: \"For qwen, 'thinking' comes back only in the summary field, right? And how's qwen parity, codex vs grok-build?\""
+        },
+        {
+          "kind": "question",
+          "marker": "Q: \"I want a formalism. We have APIs per provider, invariants that 400 (solved with 'projectors'), content differences, and nondeterminism that grows with turn count. This should be math. What are we even describing? Get on the same page first.\""
+        },
+        {
+          "kind": "question",
+          "marker": "Q: \"Document what we observe, and give us a Q-A.md of this back-and-forth (legible, not verbatim) so other sessions can brainstorm with us.\""
+        }
+      ]
+    },
+    {
+      "path": "parity-formalism/EXEMPLARS.md",
+      "root": "plans",
+      "selectors": [
+        {
+          "kind": "citations"
+        }
+      ]
+    },
+    {
+      "path": "parity-formalism/OBSERVATIONS.md",
+      "root": "plans",
+      "selectors": [
+        {
+          "kind": "citations"
+        }
+      ]
+    },
+    {
+      "path": "parity-formalism/intel/02-qwen-codexfam-reasoning-parity.md",
+      "root": "plans",
+      "selectors": [
+        {
+          "kind": "citations"
+        }
+      ]
+    }
+  ],
+  "inventory_scopes": [
+    {
+      "id": "plans-corpus",
+      "includes": [
+        "parity-formalism",
+        "provenance",
+        "xwire"
+      ],
+      "root": "plans",
+      "selection": "recursive-all-regular-and-symlink"
+    },
+    {
+      "id": "plans-declared-inputs",
+      "root": "plans",
+      "selection": "catalog-static-sources-outside-plans-corpus"
+    },
+    {
+      "excludes": [
+        "smoke/eval_harness/site/**",
+        "smoke/eval_harness/report/**",
+        "**/__pycache__/**",
+        "**/*.pyc"
+      ],
+      "id": "worktree-declared-inputs",
+      "includes": [
+        "catalog-declared",
+        "smoke/eval_harness/catalog.json",
+        "smoke/eval_harness/README.md",
+        "smoke/eval_harness/*.py",
+        "smoke/eval_harness/adapters/*.py",
+        "smoke/eval_harness/schemas/*.json",
+        "smoke/eval_harness/tests/**"
+      ],
+      "root": "worktree",
+      "selection": "catalog-static-sources-plus-indexer-source"
+    }
+  ],
+  "roots": [
+    {
+      "id": "worktree",
+      "required_for": [
+        "build",
+        "health"
+      ]
+    },
+    {
+      "id": "plans",
+      "required_for": [
+        "build",
+        "health"
+      ]
+    },
+    {
+      "id": "grok-home",
+      "required_for": []
+    },
+    {
+      "id": "codex-home",
+      "required_for": []
+    },
+    {
+      "id": "agents-home",
+      "required_for": []
+    },
+    {
+      "id": "logscale",
+      "required_for": []
+    }
+  ],
+  "schema_version": 1
+}
