@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "id": "MGW-COMPACTV2-01",
+  "title": "REMOTE-COMPACTION-1 (apex-ayl.139): remote_compaction_v2 instrumented run — the codex-family remote arm rides the wire end-to-end. The hermetic home flips features/remote_compaction_v2=true (live config has it false; the flag is a global feature, NOT a per-model catalog field — the baked catalog carries no such row field), on the gpt-5.6-terra row (model_family codex, ApiBackend::Responses — the two conditions of the compact_codex_conversation_v2 gate, client.rs; qwen/glm vLLM families fail the dialect gate and stay local by construction). Steps: turn 1 mints a reasoning history on /v1/responses; the /compact step fires the harness compaction deterministically; the v2 arm must issue the remote contract — a normal streaming POST /v1/responses (NOT a /responses/compact route) advertising x-codex-beta-features: remote_compaction_v2 with a trailing {type: compaction_trigger} input item; the response must end with exactly one compaction output item (cmp_* id; encitem_ lineage in the terminal output array) plus response.completed. SELECTOR NOTE (run 1, 20260924T035705Z): the v2 compact request carries NO x-grok-req-id header (the xai-compact- tag is the LOCAL self-summarize arm's marker, comp3 lineage) — the beta-features header is the unique v2-arm discriminator in this deployment, and it is the where-filter. PREDICTED: PASS = exactly one /v1/responses request advertising the beta feature, carrying both protocol markers (header + trigger item + parallel_tool_calls=true body contract), HTTP 200, a compaction output item in its stream, and the post-compact turn completes (no acp_error). Live-proxy probe 2026-09-24 (terra, minimal body): 200 + single compaction item, no 403 — the route is enabled. RED classes: 0 beta-advertising requests (flag/row/fusion failed — the case's own premise), 2+ (the .82 strip-retry storm class), a 400 'Unsupported Responses API input item type: compaction_trigger' (Family 9 — proxy stopped modeling the trigger), or an acp_error (the 01a09be2 collapse class).",
+  "bead": "apex-ayl.139",
+  "suite": "compaction",
+  "tier": "slim",
+  "driver": "acp",
+  "model": "gpt-5.6-terra",
+  "wire": "responses",
+  "wirecap": true,
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "env": {
+    "store": false
+  },
+  "config_patch": {
+    "features/remote_compaction_v2": true
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Think step by step: why does a hash table degrade toward a linked list as the load factor climbs past 1? Show the collision math, then the answer.",
+      "timeout_s": 300
+    },
+    {
+      "op": "compact",
+      "timeout_s": 300
+    },
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: MGW-COMPACTV2-OK",
+      "timeout_s": 300
+    }
+  ],
+  "watchdog_s": 600,
+  "est_calls": 6,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "id": "liveness",
+        "label": "LIVENESS: the /compact step and the post-compact turn both completed — the collector consumed the compaction item, history was replaced, and the session continued. An acp_error here = the collapse class (01a09be2 lineage) -> report-and-stop."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "count",
+        "id": "compact_count",
+        "file": "req-*.json",
+        "where": {
+          "path": "/v1/responses",
+          "headers.x-codex-beta-features": "remote_compaction_v2"
+        },
+        "min": 1,
+        "max": 1,
+        "label": "ONE COMPACT ATTEMPT: exactly one /v1/responses request advertising x-codex-beta-features: remote_compaction_v2 rode the wire. 0 = the remote v2 arm did not fire (flag/row/fusion premise failure); 2+ = the .82 strip-retry storm class (the live probe showed the proxy accepts the trigger, so a clean 1 is expected)."
+      },
+      {
+        "kind": "field",
+        "id": "compact_beta_header",
+        "file": "req-*.json",
+        "where": {
+          "path": "/v1/responses",
+          "headers.x-codex-beta-features": "remote_compaction_v2"
+        },
+        "path": "headers.x-codex-beta-features",
+        "eq": "remote_compaction_v2",
+        "label": "REMOTE ARM (header): the compact request advertises exactly x-codex-beta-features: remote_compaction_v2 (codex_remote_compaction_v2_beta_header, client.rs — idempotent merge over the row's default header; no other request in this deployment carries the marker)."
+      },
+      {
+        "kind": "grep",
+        "id": "compact_trigger",
+        "file": "req-*.json",
+        "where": {
+          "path": "/v1/responses",
+          "headers.x-codex-beta-features": "remote_compaction_v2"
+        },
+        "any": true,
+        "grep": "compaction_trigger",
+        "label": "REMOTE ARM (body marker): the compact request carries the trailing {\"type\": \"compaction_trigger\"} input item (COMPACT-BOUNDARM-1, apex-ayl.82). The live probe proved the proxy models it."
+      },
+      {
+        "kind": "field",
+        "id": "compact_ptc",
+        "file": "req-*.json",
+        "where": {
+          "path": "/v1/responses",
+          "headers.x-codex-beta-features": "remote_compaction_v2"
+        },
+        "path": "body.parallel_tool_calls",
+        "eq": true,
+        "label": "V2 BODY CONTRACT: parallel_tool_calls=true — set unconditionally by codex_compaction_request_body (ordinary turn requests carry it as null/absent: run-1 req-005 vs req-007 delta)."
+      },
+      {
+        "kind": "resp_status",
+        "id": "compact_status",
+        "file": "req-*.json",
+        "where": {
+          "path": "/v1/responses",
+          "headers.x-codex-beta-features": "remote_compaction_v2"
+        },
+        "status_in": [
+          200
+        ],
+        "label": "PROXY ACCEPTED: the remote compaction request returned HTTP 200 — no 403 (routing/authorization) and no Family-9 400 'Unsupported Responses API input item type: compaction_trigger'."
+      },
+      {
+        "kind": "grep",
+        "id": "compact_item",
+        "file": "resp-*.jsonl",
+        "any": true,
+        "grep": "compaction",
+        "label": "COMPACTION ITEM: a response stream carried a compaction output item (item.type=compaction) — the v2 contract's terminal payload (response.output_item.done + response.completed consumed by CodexRemoteCompactionV2Collector). Turn streams never carry it, so a hit identifies the compact response."
+      },
+      {
+        "kind": "recon",
+        "id": "compact_marker_reqs",
+        "file": "req-*.json",
+        "grep": "x-codex-beta-features",
+        "label": "MARKER RIDE RECORD (recon, non-scoring): which request(s) advertised the v2 beta feature (expected: exactly the compact request)."
+      },
+      {
+        "kind": "recon",
+        "id": "compact_cmp_id",
+        "file": "resp-*.jsonl",
+        "grep": "cmp_",
+        "label": "COMPACTION ITEM ID (recon, non-scoring): the cmp_* item id the proxy minted (encitem_ affinity-class lineage, kiloecho matrix row AZ)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

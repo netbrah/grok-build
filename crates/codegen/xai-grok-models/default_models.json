@@ -14,7 +14,9 @@
    "cache_ttl": "1h",
    "compaction_at_tokens": true,
    "compactions_remaining": 1,
-   "extra_headers": {},
+   "extra_headers": {
+    "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,fallback-credit-2026-06-01"
+   },
    "model_family": "anthropic",
    "multi_agent_v2": false,
    "name": "Claude Opus 5",
@@ -66,7 +68,9 @@
    "cache_ttl": "1h",
    "compaction_at_tokens": true,
    "compactions_remaining": 1,
-   "extra_headers": {},
+   "extra_headers": {
+    "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,fallback-credit-2026-06-01"
+   },
    "model_family": "anthropic",
    "multi_agent_v2": false,
    "name": "Claude Opus 5 (1M)",
@@ -118,7 +122,9 @@
    "cache_ttl": "1h",
    "compaction_at_tokens": true,
    "compactions_remaining": 1,
-   "extra_headers": {},
+   "extra_headers": {
+    "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,fallback-credit-2026-06-01"
+   },
    "model_family": "anthropic",
    "multi_agent_v2": true,
    "name": "Claude Sonnet 5",
@@ -170,7 +176,9 @@
    "cache_ttl": "1h",
    "compaction_at_tokens": true,
    "compactions_remaining": 1,
-   "extra_headers": {},
+   "extra_headers": {
+    "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,fallback-credit-2026-06-01"
+   },
    "model_family": "anthropic",
    "multi_agent_v2": true,
    "name": "Claude Sonnet 5 (1M)",

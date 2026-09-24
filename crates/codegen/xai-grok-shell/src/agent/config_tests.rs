@@ -7746,6 +7746,115 @@ fn global_extra_headers_apply_to_prefetched_model() {
         "global [models].extra_headers must cover models from /v1/models"
     );
 }
+/// ANTHRO-BETA-HEADERS-1 (apex-ayl.138): the bundled catalog bakes the
+/// anthropic-beta parity set into the claude rows, but the runtime tier
+/// (config > prefetched > bundled, with whole-map replacement when a
+/// prefetched catalog is present) shadowed the bake for proxy-served
+/// slugs: the proxy row's present-but-empty `extra_headers` `{}` won and
+/// the 3-key x 3-field `PRE_BAKE_SEED_KEYS` donor never covered claude
+/// slugs. Fix: per-key donation from the bundled row into the prefetched
+/// row in `resolve_model_list`. These tests pin that contract.
+#[test]
+fn bundled_extra_headers_donate_to_prefetched_row_with_empty_map() {
+    // The proxy-served shape: extra_headers PRESENT but empty.
+    let entry = prefetch_model_entry("claude-sonnet-5", 200_000, ApiBackend::Messages);
+    assert!(
+        entry.info.extra_headers.is_empty(),
+        "fixture must model the proxy's present-but-empty extra_headers"
+    );
+    let mut prefetched = IndexMap::new();
+    prefetched.insert("claude-sonnet-5".to_owned(), entry);
+    let (cfg, resolved) = resolve_models_from_toml("", Some(prefetched));
+    let seed_entries = default_model_entries(&cfg.endpoints);
+    let seed = seed_entries
+        .get("claude-sonnet-5")
+        .expect("bundled catalog must carry the claude-sonnet-5 row");
+    let expected = seed
+        .info
+        .extra_headers
+        .get("anthropic-beta")
+        .expect("bundled catalog row must bake the anthropic-beta header (catalog overlay)");
+    let resolved_row = resolved
+        .get("claude-sonnet-5")
+        .expect("prefetched row must survive resolution");
+    assert_eq!(
+        resolved_row.info.extra_headers.get("anthropic-beta").map(String::as_str),
+        Some(expected.as_str()),
+        "per-key bundled donation: the baked anthropic-beta must ride the prefetched row"
+    );
+}
+#[test]
+fn prefetched_extra_header_key_wins_over_bundled_donation() {
+    // The live row's own key wins per-key: donation fills only keys the
+    // prefetched row does not already carry (case-insensitive), never
+    // wholesale-replaces.
+    let mut entry = prefetch_model_entry("claude-sonnet-5", 200_000, ApiBackend::Messages);
+    entry
+        .info
+        .extra_headers
+        .insert("anthropic-beta".to_owned(), "live-wins".to_owned());
+    let mut prefetched = IndexMap::new();
+    prefetched.insert("claude-sonnet-5".to_owned(), entry);
+    let (_, resolved) = resolve_models_from_toml("", Some(prefetched));
+    let resolved_row = resolved
+        .get("claude-sonnet-5")
+        .expect("prefetched row must survive resolution");
+    assert_eq!(
+        resolved_row.info.extra_headers.get("anthropic-beta").map(String::as_str),
+        Some("live-wins"),
+        "a prefetched row's own anthropic-beta must beat the bundled bake (per-key, not wholesale)"
+    );
+}
+#[test]
+fn config_extra_headers_subtable_still_wins_wholesale_over_donation() {
+    // The config tier keeps last word: a non-empty [model.<key>]
+    // extra_headers replaces the subtable wholesale — donation and
+    // prefetched values both lose (regression pin on `apply`).
+    let entry = prefetch_model_entry("claude-sonnet-5", 200_000, ApiBackend::Messages);
+    let mut prefetched = IndexMap::new();
+    prefetched.insert("claude-sonnet-5".to_owned(), entry);
+    let (_, resolved) = resolve_models_from_toml(
+        r#"
+            [model."claude-sonnet-5"]
+            extra_headers = { "X-Team" = "platform" }
+            "#,
+        Some(prefetched),
+    );
+    let resolved_row = resolved
+        .get("claude-sonnet-5")
+        .expect("config row must resolve");
+    assert_eq!(
+        resolved_row.info.extra_headers.get("X-Team").map(String::as_str),
+        Some("platform"),
+        "config subtable must ride intact"
+    );
+    assert!(
+        resolved_row.info.extra_headers.get("anthropic-beta").is_none(),
+        "a wholesale config replace must drop the donated/baked keys, not merge them"
+    );
+}
+#[test]
+fn offline_resolution_keeps_bundled_extra_headers_intact() {
+    // No prefetched catalog: bundled rows — including the -1m twins the
+    // proxy never serves — must ride with their baked extra_headers
+    // untouched (the fix must not perturb the offline path).
+    let (cfg, resolved) = resolve_models_from_toml("", None);
+    let seed = default_model_entries(&cfg.endpoints);
+    for key in [
+        "claude-sonnet-5",
+        "claude-sonnet-5-1m",
+        "claude-opus-5",
+        "claude-opus-5-1m",
+    ] {
+        let seed_row = seed.get(key).expect("bundled row must exist: {key}");
+        let resolved_row =
+            resolved.get(key).expect("bundled row must survive offline resolution: {key}");
+        assert_eq!(
+            resolved_row.info.extra_headers, seed_row.info.extra_headers,
+            "bundled extra_headers must ride untouched for {key}"
+        );
+    }
+}
 #[test]
 fn global_model_defaults_apply_to_model_without_override() {
     let mut cfg = Config::default();

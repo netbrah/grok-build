@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "id": "MGW-BETA-HEADERS-01",
+  "title": "ANTHRO-BETA-HEADERS-1 (apex-ayl.138): the 8-member anthropic-beta parity set (claude-code 2.1.267, from the plans/claude-code-parity wire captures; no web-search beta - known-unfair area, excluded) rides the /v1/messages wire on the claude-sonnet-5 row. RESCOPED 2026-09-24 (operator ruling): the hermetic home sets [endpoints] models_base_url (wiretap) => has_custom_endpoint() => resolve_model_list skips the bundled catalog, so the BAKE cannot ride a hermetic run; the parity header therefore rides from the CONFIG tier - [model.claude-sonnet-5.extra_headers] in the live ~/.grok/config.toml (inherited by the hermetic home copy; added 2026-09-24 for this test, apex-ayl.138). This case pins the full header pipeline: config.toml subtable -> resolve -> SamplerConfig -> verbatim on the messages request. The bake + per-key donation ride is pinned at unit level (agent::config::tests bundled_extra_headers_donate_to_prefetched_row_with_empty_map et al.) and gets its live proof on the Linux apex-release build (bundled catalog active, no models_base_url). PREDICTED: PASS = the /v1/messages request on model claude-sonnet-5 carries headers['anthropic-beta'] byte-equal to the 8-set, resp 200, no acp_error. RED = header missing (config subtable absent from the hermetic home copy) or value drift.",
+  "bead": "apex-ayl.138",
+  "suite": "wire-shape",
+  "tier": "slim",
+  "driver": "acp",
+  "model": "claude-sonnet-5",
+  "wire": "messages",
+  "wirecap": true,
+  "cwd": "/Users/palanisd/Projects/upstream/wt/grok-build-responses",
+  "env": {
+    "store": false
+  },
+  "steps": [
+    {
+      "op": "turn",
+      "prompt": "Reply with exactly: MGW-BETA-HEADERS-OK",
+      "timeout_s": 300
+    }
+  ],
+  "watchdog_s": 300,
+  "est_calls": 3,
+  "assert": {
+    "ndjson": [
+      {
+        "op": "absent",
+        "event": "acp_error",
+        "id": "liveness",
+        "label": "LIVENESS: the turn completed; the beta-header request did not die with an ACP error."
+      }
+    ],
+    "wire": [
+      {
+        "kind": "field",
+        "id": "beta_header",
+        "file": "req-*.json",
+        "where": {
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "path": "headers.anthropic-beta",
+        "eq": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24,fallback-credit-2026-06-01",
+        "label": "HEADER RODE: the /v1/messages request carries the 8-member anthropic-beta parity set byte-equal, sourced from the [model.claude-sonnet-5.extra_headers] config-tier subtable (inherited from the live config by the hermetic home). Missing = the subtable did not ride the config tier; different value = drift against the baked catalog set."
+      },
+      {
+        "kind": "resp_status",
+        "id": "beta_status",
+        "file": "req-*.json",
+        "where": {
+          "path": "/v1/messages",
+          "body.model": "claude-sonnet-5"
+        },
+        "status_in": [
+          200
+        ],
+        "label": "ACCEPTED: the proxy+upstream accepted the full beta set on a real turn (HTTP 200). A 400 naming any member = that beta is not enabled upstream for this deployment -> report-and-stop, drop the member, re-cut."
+      },
+      {
+        "kind": "recon",
+        "id": "thinking_shape",
+        "file": "req-*.json",
+        "regex": true,
+        "grep": "\"type\"\\s*:\\s*\"adaptive\"",
+        "label": "THINKING SHAPE RECORD (recon, non-scoring): records whether the request carried the adaptive thinking shape (expected present for the medium effort: messages_thinking_config -> Adaptive{display: summarized}, no budget_tokens; the Enabled+budget path is the unpinned per-model table, messages_model.rs)."
+      }
+    ]
+  },
+  "scoring": {
+    "require_wire_evidence": true
+  }
+}

@@ -3628,6 +3628,13 @@ pub(crate) fn resolve_model_list(
     // Layer-1 base; only the pre-bake seed keys may donate to
     // prefetched (live) rows.
     let mut bundled_donor: IndexMap<String, ModelEntry> = IndexMap::new();
+    // ANTHRO-BETA-HEADERS-1 (apex-ayl.138): per-key extra_headers to
+    // donate to prefetched rows for the slugs the proxy serves — the
+    // `resolved = prefetched` whole-map replacement below otherwise
+    // shadows the catalog bake with the proxy row's present-but-empty
+    // map. Populated from the bundled seed; see the donation site in
+    // the prefetched loop.
+    let mut bundled_extra: IndexMap<String, IndexMap<String, String>> = IndexMap::new();
     if cfg.endpoints.has_custom_endpoint() {
         tracing::info!(
             models_base_url = ?cfg.endpoints.models_base_url,
@@ -3637,6 +3644,15 @@ pub(crate) fn resolve_model_list(
     } else {
         let seed = default_model_entries(&cfg.endpoints);
         tracing::debug!(count = seed.len(), "loaded default models (bundled catalog)");
+        // ANTHRO-BETA-HEADERS-1 (apex-ayl.138): collect the bundled
+        // rows' extra_headers for per-key donation (custom-endpoint
+        // runs have no bundled catalog and therefore nothing to
+        // donate).
+        for (key, entry) in seed.iter() {
+            if !entry.info.extra_headers.is_empty() {
+                bundled_extra.insert(key.clone(), entry.info.extra_headers.clone());
+            }
+        }
         bundled_donor = seed
             .iter()
             .filter(|(key, _)| PRE_BAKE_SEED_KEYS.contains(&key.as_str()))
@@ -3679,6 +3695,26 @@ pub(crate) fn resolve_model_list(
                 }
                 if entry.info.api_backend == ApiBackend::default() {
                     entry.info.api_backend.clone_from(&donor.info.api_backend);
+                }
+            }
+            // ANTHRO-BETA-HEADERS-1 (apex-ayl.138): per-key bundled
+            // donation of extra_headers. Fills only keys the live row
+            // does not already carry (case-insensitive), so a live
+            // value still wins per key, and the config tier below
+            // keeps last word via wholesale subtable replacement.
+            if let Some(bundled) = bundled_extra.get(key) {
+                for (header_key, header_value) in bundled {
+                    if !entry
+                        .info
+                        .extra_headers
+                        .iter()
+                        .any(|(k, _)| k.eq_ignore_ascii_case(header_key))
+                    {
+                        entry
+                            .info
+                            .extra_headers
+                            .insert(header_key.clone(), header_value.clone());
+                    }
                 }
             }
             if resolved.contains_key(key) {
