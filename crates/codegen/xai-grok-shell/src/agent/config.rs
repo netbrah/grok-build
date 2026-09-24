@@ -3609,11 +3609,16 @@ fn fill_from_endpoint_defaults(entry: &mut ModelEntry, endpoints: &EndpointsConf
 }
 /// CATALOG-BAKE-1 (apex-071): the model keys the bundled seed carried
 /// before the catalog bake (the rich rows of `default_models.json` at
-/// fc7d64a). They keep exact pre-bake resolution behavior: the ONLY
-/// donors for prefetched rows, and exempt from the row-aware resolution
-/// fills. Every other bundled row is a generated+overlay addition —
-/// fallback + drift baseline only, never a donor (baked rows never
-/// donate to live rows; live fetch wins when present).
+/// fc7d64a). Their pre-bake role survives as the DONOR contract only:
+/// they are the ONLY donors for prefetched rows. ZC-PREBAKE-SEAM-1
+/// (apex-b0f, operator ruling 2026-09-24): the resolution-seam
+/// exemption is RETIRED — the row-aware seams run on every bundled row,
+/// so the apex-deploy built-in `default_env_key` (CODEX -> APEX pair)
+/// reaches `gpt-5.6-sol` and no no-endpoint model switch fails closed
+/// while its non-pre-bake sibling (`gpt-5.6-sol-1m`) works. Every other
+/// bundled row is a generated+overlay addition — fallback + drift
+/// baseline only, never a donor (baked rows never donate to live rows;
+/// live fetch wins when present).
 pub(crate) const PRE_BAKE_SEED_KEYS: [&str; 3] = ["grok-4.6", "grok-4.5", "gpt-5.6-sol"];
 
 /// Assemble the final model map. Priority (highest wins):
@@ -3659,16 +3664,17 @@ pub(crate) fn resolve_model_list(
             .map(|(key, entry)| (key.clone(), entry.clone()))
             .collect();
         resolved.extend(seed);
-        // The row-aware seams run at resolution on the NON-pre-bake merged
-        // rows only: those rows were absent from the bundled seed before
-        // the bake, so the pre-bake keys keep exact pre-bake behavior (no
-        // fills). Both seams only touch fields still at built-in
-        // defaults, so the config tier below keeps last word.
-        for (key, entry) in resolved.iter_mut() {
-            if !PRE_BAKE_SEED_KEYS.contains(&key.as_str()) {
-                fill_from_catalog_inference(entry);
-                fill_from_endpoint_defaults(entry, &cfg.endpoints);
-            }
+        // ZC-PREBAKE-SEAM-1 (apex-b0f): the row-aware seams run at
+        // resolution on EVERY bundled row — the pre-bake exemption is
+        // retired (operator ruling: the mechanism is taken wholesale
+        // upon the feature gate; the built-in endpoint defaults must
+        // reach the pre-bake seed rows too). The overlay carries
+        // complete curation for those rows, so every explicit field is
+        // seam-invisible; both seams only touch fields still at
+        // built-in defaults, so the config tier below keeps last word.
+        for entry in resolved.values_mut() {
+            fill_from_catalog_inference(entry);
+            fill_from_endpoint_defaults(entry, &cfg.endpoints);
         }
     }
     if let Some(mut prefetched) = prefetched {
@@ -4055,6 +4061,9 @@ fn model_authority_view(
     // CATALOG-BAKE-1 (apex-071): the donor contract is the pre-bake seed
     // keys only — the generated additions ride the fallback but never
     // donate (mirrors `resolve_model_list`'s `bundled_donor`).
+    // ZC-PREBAKE-SEAM-1 (apex-b0f): donation is the ONLY surviving
+    // pre-bake-specific seam — the resolution-seam exemption below was
+    // retired, so `PRE_BAKE_SEED_KEYS` gates donation alone here.
     let donor = bundled
         .as_ref()
         .and_then(|entries| entries.get(key))
@@ -4063,11 +4072,10 @@ fn model_authority_view(
     // (pre-bake seed or generated addition), mirroring the resolver's
     // Layer-1 base (`resolved.extend(seed)`). For non-prefetched keys
     // the replay starts from this row, and the row-aware seams run on it
-    // for the non-pre-bake keys only (mirrors the resolver's bundled
-    // path); pre-bake keys are seam-exempt and never donate offline.
+    // for EVERY key (ZC-PREBAKE-SEAM-1 / apex-b0f: the pre-bake seam
+    // exemption is retired — mirrors the resolver's bundled path).
     let bundled_entry = bundled.as_ref().and_then(|entries| entries.get(key));
     let is_prefetched = row.is_some();
-    let is_pre_bake = PRE_BAKE_SEED_KEYS.contains(&key);
     let info = &resolved.info;
 
     // ---- api_backend: donor seam -> catalog inference -> endpoint
@@ -4127,10 +4135,10 @@ fn model_authority_view(
             }
         }
     }
-    // AUTHORITY-47B-1: non-prefetched, non-pre-bake — the resolver runs
-    // the row-aware seams on the bundled row; mirror them 1:1 so the
-    // replay labels seam fills identically.
-    if !is_prefetched && !is_pre_bake && let Some(b) = bundled_entry {
+    // AUTHORITY-47B-1: non-prefetched — the resolver runs the row-aware
+    // seams on the bundled row for EVERY key (apex-b0f); mirror them
+    // 1:1 so the replay labels seam fills identically.
+    if !is_prefetched && let Some(b) = bundled_entry {
         if api_backend == ApiBackend::default()
             && matches!(
                 resolve_family(b.info.model_family.as_deref(), &b.info.model),
@@ -4204,9 +4212,9 @@ fn model_authority_view(
         }
     }
     // AUTHORITY-47B-1: the resolver's P1 endpoint cw fill also runs on
-    // the non-prefetched, non-pre-bake bundled rows (256k placeholder
-    // only, value-based — mirror 1:1).
-    if !is_prefetched && !is_pre_bake {
+    // the non-prefetched bundled rows for EVERY key (apex-b0f; 256k
+    // placeholder only, value-based — mirror 1:1).
+    if !is_prefetched {
         if context_window.get() == DEFAULT_CONTEXT_WINDOW
             && let Some(cw) = endpoints.default_context_window.and_then(NonZeroU64::new)
         {
@@ -4269,10 +4277,10 @@ fn model_authority_view(
             }
         }
     }
-    // AUTHORITY-47B-1: non-prefetched, non-pre-bake — the resolver's
-    // family inference + endpoint family fill run on the bundled row;
-    // mirror 1:1.
-    if !is_prefetched && !is_pre_bake && let Some(b) = bundled_entry {
+    // AUTHORITY-47B-1: non-prefetched — the resolver's family inference
+    // + endpoint family fill run on the bundled row for EVERY key
+    // (apex-b0f); mirror 1:1.
+    if !is_prefetched && let Some(b) = bundled_entry {
         if model_family.is_none() {
             match resolve_family(b.info.model_family.as_deref(), &b.info.model) {
                 CatalogFamily::Xai => {
@@ -4364,8 +4372,8 @@ fn model_authority_view(
         }
     }
     // AUTHORITY-47B-1: the resolver's menu inference also runs on the
-    // non-prefetched, non-pre-bake bundled rows; mirror 1:1.
-    if !is_prefetched && !is_pre_bake && let Some(b) = bundled_entry {
+    // non-prefetched bundled rows for EVERY key (apex-b0f); mirror 1:1.
+    if !is_prefetched && let Some(b) = bundled_entry {
         if reasoning_efforts.is_empty() {
             let inferred = resolve_reasoning_efforts(None, &b.info.model);
             if !inferred.is_empty() {
@@ -4675,10 +4683,9 @@ fn model_authority_view(
     // Messages backend, with honest reachability/fired flags.
     // AUTHORITY-47B-1: the row the resolver's inference seams actually
     // ran on — the prefetched row when present, else the bundled row for
-    // non-prefetched non-pre-bake keys (the seams run on it there too);
-    // pre-bake keys never run the seams offline.
-    let inference_input = row
-        .or_else(|| if is_pre_bake { None } else { bundled_entry });
+    // EVERY non-prefetched key (the seams run on it there too for all
+    // keys, apex-b0f).
+    let inference_input = row.or(bundled_entry);
     let inference_branches = vec![
         InferenceBranch {
             name: "catalog-inference-to-messages",

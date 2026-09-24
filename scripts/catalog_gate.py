@@ -25,9 +25,13 @@ inverted to SUBSET DRIFT by apex-ayl.128 — coordinator adjudication
                            DIFFERENT on-proxy wire slug than its row
                            key — e.g. a 1M context-window variant of a
                            proxy model — bakes as id=<row key>,
-                           model=<wire slug> and rides the base slug's
-                           generated caps; overlay C-class caps are
-                           forbidden on twins exactly as on base rows)
+                           model=<wire slug>. v6 (CTXWIN-BAKED-ONLY-1 /
+                           apex-1k7): curated rows may carry an
+                           operator-adjudicated context_window (the fleet
+                           runtime window — it beats the generated cap in
+                           the merge; the four -1m twins ride 1048576);
+                           max_completion_tokens stays forbidden on twins
+                           exactly as on base rows)
         -> merge (overlay wins on collision) + validate against the
            apex-hw0 schema (config.schema.json#/definitions/
            ConfigModelOverride — the model-row definition)
@@ -181,16 +185,23 @@ DRIFT_REPORT_NAME = "catalog_drift_report.json"
 # gate enforces it here.
 CREDENTIAL_FIELDS = ("api_key", "env_key", "auth_provider", "mtls_cert_dir")
 
-# CATALOG-CCLASS-SEED-1 (apex-byc, operator ruling 2026-09-19): C-class
-# caps — the generated catalog is the proxy's truth for the baked
-# context_window / max_completion_tokens, and config.toml rows remain the
-# top runtime override. Overlay entries for models that ARE in the
-# generated catalog (on the proxy) must not carry these fields (a curated
-# cap would silently beat the generated truth — the 071 sol 353000 leak).
+# CATALOG-CCLASS-SEED-1 (apex-byc, operator ruling 2026-09-19) as AMENDED
+# by CTXWIN-BAKED-ONLY-1 (apex-1k7, operator ruling 2026-09-24):
+# max_completion_tokens stays C-class — the generated catalog (proxy
+# truth) is the baked mct cap, and overlay entries for on-proxy models
+# must not carry it (a curated mct would silently beat the proxy truth).
+# context_window is NO LONGER forbidden: in the no-endpoint
+# (Linux apex-release) tier the baked catalog IS the config tier — there
+# is no [model.*] row above it — so the curated rows carry the fleet
+# runtime windows (paired bases = the live config-tier standard: sol/opus
+# 262144, terra/sonnet 500000; the four -1m twins = 1048576) and the
+# overlay value BEATS the generated cap in the merge. The guard for the
+# 071 sol 353000 leak class is now operator value review (the overlay is
+# hand-curated; every carried value is operator-adjudicated).
 # Overlay-only models (not in the generated catalog — e.g. grok-4.5,
-# bake-listed; gemma-4-31b, between-build) are permitted: the overlay is
-# the sole source of caps for those rows.
-FORBIDDEN_OVERLAY_FIELDS = ["context_window", "max_completion_tokens"]
+# bake-listed; gemma-4-31b, between-build) were always permitted: the
+# overlay is the sole source of caps for those rows.
+FORBIDDEN_OVERLAY_FIELDS = ["max_completion_tokens"]
 
 
 def humanize_effort_id(value):
@@ -653,8 +664,11 @@ def collect_missing(ov_models, bake_list, effort_values):
 def find_forbidden_caps(gen_models, ov_models):
     """CATALOG-CCLASS-SEED-1: rejection is scoped by generated-catalog
     membership — an overlay entry whose model IS in the generated catalog
-    (on the proxy) may not carry a C-class cap (the generated capture is
-    the truth); overlay-only models are permitted (the overlay is their
+    (on the proxy) may not carry a forbidden cap: max_completion_tokens
+    (the generated capture is the truth). v6 / apex-1k7: context_window
+    is permitted on curated rows (operator-adjudicated fleet runtime
+    window — it beats the generated cap in the merge); overlay-only
+    models were always permitted (the overlay is their
     sole cap source). apex-ayl.136: membership is by the row's WIRE
     SLUG (the `model` field) — a twin rides its base slug's on-proxy
     status. Returns [(model_id, fields)] in sorted order."""
@@ -672,9 +686,10 @@ def find_forbidden_caps(gen_models, ov_models):
 
 def merge_rows(generated, overlay_models, bake_list=()):
     """D1: merged rows = id/model + the runtime cap mapping + the curated
-    overlay fields (overlay wins on collision; a generated C-class cap
-    always beats an overlay cap; raw C-class fields stay in
-    catalog_generated.json only). v4: the row set is UNCHANGED
+    overlay fields (overlay wins on collision — v6 / apex-1k7: a curated
+    overlay context_window beats the generated cap; the generated
+    max_completion_tokens always beats an overlay mct; raw C-class fields
+    stay in catalog_generated.json only). v4: the row set is UNCHANGED
     (generated + bake list); v5 F1 (the product ruling, post dual
     review): the bake row set is CURATED rows (overlay rows on the
     proxy) ∪ the explicit bake list — an unlisted (new_unlisted) model
@@ -714,12 +729,13 @@ def merge_rows(generated, overlay_models, bake_list=()):
         for k in sorted(entry):
             if k in ("id", "model"):
                 continue  # the generated id is authoritative
-            # CATALOG-CCLASS-SEED-1: a generated cap is the proxy's truth
-            # — an overlay cap never beats it. Overlay caps ride only when
-            # the generated side has none (overlay-only / off-proxy seed
-            # carriers).
-            if k == "context_window" and gen_has_cw:
-                continue
+            # CATALOG-CCLASS-SEED-1 as amended (CTXWIN-BAKED-ONLY-1 /
+            # apex-1k7): the generated max_completion_tokens stays the
+            # proxy's truth — an overlay mct never beats it (overlay mct
+            # rides only when the generated side has none). v6: a curated
+            # overlay context_window is operator-adjudicated and BEATS
+            # the generated cap — the baked no-endpoint tier is the
+            # fleet's only config surface there.
             if k == "max_completion_tokens" and gen_has_mct:
                 continue
             if k == "reasoning_efforts":

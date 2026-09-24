@@ -21,8 +21,10 @@
 //! - donor contract: the PRE_BAKE_SEED_KEYS rows are the ONLY donors for
 //!   prefetched (live) rows — the generated additions ride the fallback
 //!   but never donate (live fetch still wins when present);
-//! - the row-aware seams run at resolution on the non-pre-bake rows only
-//!   (pre-bake rows keep exact pre-bake behavior: no fills);
+//! - the row-aware seams run at resolution on ALL bundled rows
+//!   (ZC-PREBAKE-SEAM-1 / apex-b0f: the pre-bake seam exemption is
+//!   retired — the mechanism is taken wholesale upon the feature gate;
+//!   the PRE_BAKE_SEED_KEYS DONOR contract stays pre-bake-only);
 //! - role pins ride the baked file (crate accessors read them);
 //! - the 11-row apex-93d frontier fixture (generated naming:
 //!   `max_input_tokens`/`max_output_tokens`) parses through the same
@@ -33,7 +35,7 @@ use std::num::NonZeroU64;
 use indexmap::IndexMap;
 
 use crate::agent::config::{
-    default_model_entries, entry_config_from_default_row, resolve_model_list, Config,
+    default_model_entries, entry_config_from_default_row, resolve_model_list, Config, EnvKeys,
     EndpointsConfig, ModelEntry, ModelInfo, PRE_BAKE_SEED_KEYS,
 };
 use crate::models::DefaultModelEntry;
@@ -93,12 +95,14 @@ fn bundled_catalog_parses_rich_rows() {
         "sol: curated menu wins over the old seed's xhigh-including menu"
     );
 
-    // C-class (CATALOG-CCLASS-SEED-1): the baked cw is the generated
-    // (proxy-truth) 922000 — the 071 overlay 353000 leak is gone ...
+    // v6 (CTXWIN-BAKED-ONLY-1 / apex-1k7): the baked cw is the curated
+    // fleet runtime window 262144 — the overlay beats the generated
+    // 922000 (the baked no-endpoint tier is the fleet's only config
+    // surface) ...
     assert_eq!(
         sol.context_window,
-        NonZeroU64::new(922_000).unwrap(),
-        "sol: cw from the generated catalog (C-class: the proxy's truth)"
+        NonZeroU64::new(262_144).unwrap(),
+        "sol: curated fleet window beats the generated proxy truth (v6)"
     );
     // ... while the generated output cap survives (the overlay is
     // C-class-free by design).
@@ -176,15 +180,17 @@ fn pre_bake_seed_rows_keep_the_head_donor_contract() {
         }
     }
     // The donor fields (context_window / api_backend): grok-4.6's cw is
-    // the generated (proxy-truth) 524288 post the 2026-09-22 recapture;
-    // sol's cw is the generated 922000. A future curation drift that
-    // changes what a pre-bake row donates to a live row must fail here.
+    // the generated (proxy-truth) 524288 post the 2026-09-22 recapture
+    // (no curated overlay cw); sol's cw is the curated fleet window
+    // 262144 (v6 / apex-1k7: the overlay beats the generated 922000). A
+    // future curation drift that changes what a pre-bake row donates to
+    // a live row must fail here.
     let donor_fields = |key: &str| {
         let info = &entries[key].info;
         (info.api_backend.clone(), info.context_window.get())
     };
     assert_eq!(donor_fields("grok-4.6"), (ApiBackend::Responses, 524_288));
-    assert_eq!(donor_fields("gpt-5.6-sol"), (ApiBackend::Responses, 922_000));
+    assert_eq!(donor_fields("gpt-5.6-sol"), (ApiBackend::Responses, 262_144));
 }
 
 #[test]
@@ -195,12 +201,12 @@ fn donor_map_is_pre_bake_seed_keys_only() {
     let resolved = resolve_model_list(&Config::default(), Some(prefetched));
 
     // The pre-bake key donates the bundled row's values: the live sol row
-    // at the hydration placeholder inherits the generated (proxy-truth)
-    // cw 922000 + the responses wire.
+    // at the hydration placeholder inherits the curated fleet window
+    // cw 262144 (v6 / apex-1k7) + the responses wire.
     let sol = &resolved["gpt-5.6-sol"];
     assert_eq!(
         sol.info.context_window,
-        NonZeroU64::new(922_000).unwrap(),
+        NonZeroU64::new(262_144).unwrap(),
         "pre-bake donor inherits the generated context_window"
     );
     assert_eq!(
@@ -228,14 +234,14 @@ fn donor_map_is_pre_bake_seed_keys_only() {
 }
 
 #[test]
-fn fallback_path_runs_seams_on_non_pre_bake_rows_only() {
+fn fallback_path_seams_run_on_all_bundled_rows() {
     let resolved = resolve_model_list(&Config::default(), None); // fetch dead
     assert_eq!(resolved.len(), BUNDLED_ROW_COUNT);
 
     // Curated pins survive the row-aware seams (explicit non-default
     // values are seam-invisible).
     // Curated menu rows: the explicit pins survive the row-aware seams
-    // (the seams run on the non-pre-bake bundled rows at resolution).
+    // (the seams run on every bundled row at resolution, apex-b0f).
     let g5c = resolved.get("gpt-5.6-terra").expect("gpt-5.6-terra rides the fallback");
     assert_eq!(
         g5c.info.api_backend,
@@ -260,12 +266,39 @@ fn fallback_path_runs_seams_on_non_pre_bake_rows_only() {
         "curated 5-item menu rides the fallback row"
     );
 
-    // Pre-bake rows keep their seed menus (the seams never touch them);
+    // Pre-bake rows keep their curated menus (explicit values are
+    // seam-invisible — the seams run on them too, apex-b0f);
     // kb6 inserts ultra after the top tier in each. grok-4.5 left the
     // menu at the apex-ayl.129 cut.
     let grok46 = resolved.get("grok-4.6").expect("grok-4.6 rides the fallback");
     assert_eq!(grok46.info.reasoning_efforts.len(), 5);
     assert!(!grok46.info.supports_backend_search, "overlay curation rides the fallback row");
+}
+
+/// ZC-PREBAKE-SEAM-1 (apex-b0f): the row-aware seams run on ALL bundled
+/// rows — the `PRE_BAKE_SEED_KEYS` seam exemption is retired (operator
+/// ruling 2026-09-24: the mechanism is taken wholesale upon the feature
+/// gate). Under the retired exemption a no-endpoint env's
+/// `endpoints.default_env_key` (apex-deploy: the built-in CODEX -> APEX
+/// pair) silently skipped the pre-bake seed rows, so `gpt-5.6-sol`
+/// failed closed on model switch in the no-endpoint baked-catalog
+/// situation while `gpt-5.6-sol-1m` (non-pre-bake, fill-receiving)
+/// worked. The donor contract stays pre-bake-only (separate pin).
+#[test]
+fn fallback_path_seams_run_on_pre_bake_rows_too() {
+    let mut cfg = Config::default();
+    cfg.endpoints.default_env_key = Some(EnvKeys::single("PROXY_TEST_KEY"));
+    let resolved = resolve_model_list(&cfg, None);
+    for key in ["gpt-5.6-sol", "grok-4.6"] {
+        let entry = resolved
+            .get(key)
+            .unwrap_or_else(|| panic!("{key} must ride the bundled fallback"));
+        assert_eq!(
+            entry.env_key.as_ref().map(|k| k.names()),
+            Some(vec!["PROXY_TEST_KEY"]),
+            "{key}: pre-bake bundled rows must receive the endpoint default_env_key fill"
+        );
+    }
 }
 
 #[test]

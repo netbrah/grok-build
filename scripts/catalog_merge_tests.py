@@ -45,8 +45,10 @@ v2 — the operator-adjudicated 3-delta (2026-09-19) reshaped the contract:
       excludes unlisted/skipped models from the bake — see below.)
       STILL HARD FAIL: the
       15-key completeness of every curated (overlay) row + every
-      bake-listed model, credential fields, C-class caps on on-proxy
-      curated rows, dangling role pins, schema + wire cross-checks.
+      bake-listed model, credential fields, forbidden caps on on-proxy
+      curated rows (v8: max_completion_tokens only — the curated
+      context_window is operator-adjudicated), dangling role pins,
+      schema + wire cross-checks.
       EFFORT_VALUES derives at run time from the schema's
       ReasoningEffort enum (the hardcoded copy is dead); REQUIRED_FIELDS
       stays the documented curation contract but is cross-checked
@@ -105,6 +107,17 @@ v2 — the operator-adjudicated 3-delta (2026-09-19) reshaped the contract:
       removed_but_curated, and the base slug counts ONCE in curated);
       legacy (key == slug) inputs merge byte-identically. test_r pins
       the contract.
+  v8 — CTXWIN-BAKED-ONLY-1 curated fleet windows (apex-1k7,
+      2026-09-24, operator ruling): in the no-endpoint (Linux
+      apex-release) tier the baked catalog IS the config tier, so the
+      paired curated rows carry the fleet runtime context_window
+      (bases = the live config-tier standard: sol/opus 262144,
+      terra/sonnet 500000; the four -1m twins = 1048576 — the 1M pair
+      is only meaningful if the windows differ). The gate is amended:
+      a curated overlay context_window BEATS the generated cap in the
+      merge; max_completion_tokens stays generated-truth (forbidden in
+      the overlay on twins via the effective slug exactly as on base
+      rows). test_d / test_r pins the new bake values.
 
 Run:  python3 scripts/catalog_merge_tests.py   (exit 0 = all pass)
 """
@@ -250,18 +263,19 @@ def test_a_merge_precedence_and_row_shape():
               "output_cost_per_token", "supported_reasoning_efforts",
               "max_input_tokens", "max_output_tokens"):
         check(f"merged row drops raw C field {f}", f not in row)
-    # C-class (CATALOG-CCLASS-SEED-1, operator ruling + 2026-09-19
-    # correction): for a model that IS in the generated catalog (on the
-    # proxy) the generated caps are the truth — an overlay
-    # context_window / max_completion_tokens never beats them (the 071
-    # sol 353000 leak is gone). Overlay caps ride only for overlay-only
-    # models (no generated truth): the overlay is the row's sole source.
+    # C-class as amended (CATALOG-CCLASS-SEED-1 -> CTXWIN-BAKED-ONLY-1 /
+    # apex-1k7, operator ruling 2026-09-24): for a model that IS in the
+    # generated catalog (on the proxy) the generated max_completion_tokens
+    # stays the truth (an overlay mct never beats it); v6: a curated
+    # overlay context_window is operator-adjudicated and BEATS the
+    # generated cap (the baked no-endpoint tier is the fleet's only
+    # config surface there).
     models, _ = gate.merge_rows(
         {"m": {"id": "m", "max_input_tokens": 900000, "max_output_tokens": 4096}},
         {"m": {"api_backend": "responses", "model_family": "codex",
                "context_window": 353000, "max_completion_tokens": 99999}}, [])
-    check("generated context_window beats overlay (C-class: proxy truth)",
-          models["m"]["context_window"] == 900000)
+    check("v6: curated overlay context_window beats generated (apex-1k7)",
+          models["m"]["context_window"] == 353000)
     check("generated max_completion_tokens beats overlay (C-class)",
           models["m"]["max_completion_tokens"] == 4096)
     # Overlay-only model (not in the generated catalog): the overlay caps
@@ -431,12 +445,13 @@ def test_d_committed_artifacts():
           and by_id["claude-sonnet-5-1m"]["model"] == "claude-sonnet-5"
           and by_id["gpt-5.6-sol-1m"]["model"] == "gpt-5.6-sol"
           and by_id["gpt-5.6-terra-1m"]["model"] == "gpt-5.6-terra")
-    check("twin rows carry the base slug's generated caps (C-class: the "
-          "proxy's truth — claude 1000000, gpt-5.6 922000)",
-          by_id["claude-opus-5-1m"]["context_window"] == 1000000
-          and by_id["claude-sonnet-5-1m"]["context_window"] == 1000000
-          and by_id["gpt-5.6-sol-1m"]["context_window"] == 922000
-          and by_id["gpt-5.6-terra-1m"]["context_window"] == 922000
+    check("twin rows carry the curated fleet window (v6 / apex-1k7: "
+          "1048576; the 1M pair is only meaningful if the windows "
+          "differ; mct stays the generated proxy truth 128000)",
+          by_id["claude-opus-5-1m"]["context_window"] == 1048576
+          and by_id["claude-sonnet-5-1m"]["context_window"] == 1048576
+          and by_id["gpt-5.6-sol-1m"]["context_window"] == 1048576
+          and by_id["gpt-5.6-terra-1m"]["context_window"] == 1048576
           and all(by_id[t]["max_completion_tokens"] == 128000
                   for t in ("claude-opus-5-1m", "claude-sonnet-5-1m",
                             "gpt-5.6-sol-1m", "gpt-5.6-terra-1m")))
@@ -457,7 +472,8 @@ def test_d_committed_artifacts():
     check("v4: committed overlay passes the subset completeness contract",
           gate.collect_missing(ov["models"], ov.get("bake", []), EFFORTS) == [])
     check("no overlay entry for a generated (on-proxy) model carries a "
-          "C-class cap (CATALOG-CCLASS-SEED-1)",
+          "forbidden cap (C-class as amended / apex-1k7: "
+          "max_completion_tokens only)",
           gate.find_forbidden_caps(gen["models"], ov["models"]) == [])
     # Seed migration invariants (the pre-bake rows, byte-for-value).
     g46 = by_id["grok-4.6"]
@@ -479,9 +495,15 @@ def test_d_committed_artifacts():
           "grok-4.5" not in by_id
           and "grok-4.5" not in set(ov["models"]) | set(ov.get("bake", [])))
     sol = by_id["gpt-5.6-sol"]
-    check("sol: cw 922000 from generated (C-class: the proxy's truth; the "
-          "071 overlay 353000 leak is gone)",
-          sol["context_window"] == 922000)
+    check("sol: cw 262144 from the curated overlay (v6 / apex-1k7: the "
+          "fleet runtime window beats the generated 922000 — the baked "
+          "no-endpoint tier is the fleet's only config surface)",
+          sol["context_window"] == 262144)
+    check("v6: paired base rows carry the config-tier fleet windows "
+          "(apex-1k7: sol/opus 262144, terra/sonnet 500000)",
+          by_id["gpt-5.6-terra"]["context_window"] == 500000
+          and by_id["claude-sonnet-5"]["context_window"] == 500000
+          and by_id["claude-opus-5"]["context_window"] == 262144)
     check("sol: generated mct 128000 survives",
           sol["max_completion_tokens"] == 128000)
     check("sol: overlay menu wins (5 items, no xhigh)",
@@ -506,8 +528,9 @@ def test_d_committed_artifacts():
     check("xai frontier grok-4.6: responses + xai",
           by_id["grok-4.6"]["api_backend"] == "responses"
           and by_id["grok-4.6"]["model_family"] == "xai")
-    check("menu rows carry generated C-class caps (the overlay is "
-          "C-class-free; the embedding rows left the menu)",
+    check("menu rows carry a context_window + max_completion_tokens "
+          "(v6 / apex-1k7: the curated overlay cw rides where present, "
+          "generated truth otherwise; the embedding rows left the menu)",
           all(r.get("context_window") for r in rows)
           and all(r.get("max_completion_tokens") for r in rows)
           and "text-embedding-ada-002" not in by_id)
@@ -685,10 +708,14 @@ def test_g_forbidden_overlay_caps():
     FAILS with an explicit per-entry list and writes no artifact.
     Overlay-only models (not in the generated catalog) are PERMITTED —
     the overlay is the sole source of caps for those rows."""
-    print("g) forbidden overlay caps (C-class, scoped by proxy membership)")
+    print("g) forbidden overlay caps (C-class as amended / apex-1k7, "
+          "scoped by proxy membership)")
     with tempfile.TemporaryDirectory() as td:
         genp, ovp, outp = (os.path.join(td, n) for n in ("g.json", "o.json", "out.json"))
-        # (a) proxy-model overlay entry with context_window -> FAIL.
+        # (a) v6 (apex-1k7): proxy-model overlay entry WITH
+        # context_window -> PASS: the curated fleet runtime window is
+        # operator-adjudicated and rides the merged row (beats the
+        # generated 922000).
         json.dump({"models": {"m-gen": {"id": "m-gen", "max_input_tokens": 922000}}},
                   open(genp, "w"))
         json.dump({"default": "m-gen",
@@ -697,10 +724,30 @@ def test_g_forbidden_overlay_caps():
                                         "context_window": 353000}}},
                   open(ovp, "w"))
         proc = run_gate(genp, ovp, outp)
-        check("gate exits 2 on proxy-model overlay context_window",
+        check("v6: proxy-model overlay context_window passes the gate",
+              proc.returncode == 0, f"rc={proc.returncode} err={proc.stderr}")
+        art = json.load(open(outp))
+        merged = {r["id"]: r for r in art["models"]}["m-gen"]
+        check("v6: merged row carries the curated overlay cw (beats "
+              "generated)",
+              merged["context_window"] == 353000)
+        # (a2) proxy-model overlay entry WITH max_completion_tokens
+        # -> still FAIL: the generated mct stays the proxy's truth.
+        if os.path.exists(outp):
+            os.remove(outp)  # (a) wrote it — the fail case must leave none
+        json.dump({"models": {"m-gen": {"id": "m-gen", "max_input_tokens": 922000,
+                                        "max_output_tokens": 4096}}},
+                  open(genp, "w"))
+        json.dump({"default": "m-gen",
+                   "models": {"m-gen": {**full_entry("m-gen", "responses",
+                                                     "codex", []),
+                                        "max_completion_tokens": 99999}}},
+                  open(ovp, "w"))
+        proc = run_gate(genp, ovp, outp)
+        check("gate exits 2 on proxy-model overlay max_completion_tokens",
               proc.returncode == 2, f"rc={proc.returncode} err={proc.stderr}")
         check("rejection names the model + field",
-              "m-gen" in proc.stderr and "context_window" in proc.stderr,
+              "m-gen" in proc.stderr and "max_completion_tokens" in proc.stderr,
               proc.stderr)
         check("gate writes no artifact on forbidden cap", not os.path.exists(outp))
         # (b) overlay-only model entry with context_window -> PASS.
@@ -1594,8 +1641,11 @@ def test_r_twin_rows():
           and any("api_backend" in p for p in missing[0][1]),
           repr(missing))
     # (c) end-to-end: the twin overlay bakes clean (exit 0, artifact
-    # carries the twin row); a twin carrying overlay C-class caps fails
-    # closed via the effective slug (exit 2, artifact NOT written).
+    # carries the twin row with the base slug's generated caps); v6
+    # (apex-1k7): a twin carrying a curated context_window is LEGAL (it
+    # rides, beating the generated cap); a twin carrying a curated
+    # max_completion_tokens still fails closed via the effective slug
+    # (exit 2, artifact NOT written).
     with tempfile.TemporaryDirectory() as td:
         genp, ovp, outp = (os.path.join(td, n) for n in ("g.json", "o.json", "out.json"))
         json.dump({"models": gen}, open(genp, "w"))
@@ -1611,16 +1661,31 @@ def test_r_twin_rows():
               and art["gpt-5.6-sol-1m"]["context_window"] == 922000,
               json.dumps(art.get("claude-opus-5-1m")))
         cap = dict(ov["claude-opus-5-1m"])
-        cap["context_window"] = 1048576  # forbidden: the base is on-proxy
-        ov_bad = dict(ov)
-        ov_bad["claude-opus-5-1m"] = cap
-        json.dump({"default": "gpt-5.6-sol", "models": ov_bad}, open(ovp, "w"))
+        cap["context_window"] = 1048576  # v6: the curated fleet window rides
+        ov_cw = dict(ov)
+        ov_cw["claude-opus-5-1m"] = cap
+        json.dump({"default": "gpt-5.6-sol", "models": ov_cw}, open(ovp, "w"))
         proc = run_gate(genp, ovp, outp)
-        check("twin carrying overlay caps fails closed (exit 2)",
+        check("v6: twin with a curated context_window bakes (exit 0)",
+              proc.returncode == 0, f"rc={proc.returncode} err={proc.stderr}")
+        art2 = {m["id"]: m for m in json.load(open(outp))["models"]}
+        check("v6: twin row carries the curated overlay cw (beats "
+              "the generated base cap)",
+              art2["claude-opus-5-1m"]["context_window"] == 1048576)
+        mct = dict(ov["claude-opus-5-1m"])
+        mct["max_completion_tokens"] = 99999  # still forbidden
+        ov_mct = dict(ov)
+        ov_mct["claude-opus-5-1m"] = mct
+        json.dump({"default": "gpt-5.6-sol", "models": ov_mct}, open(ovp, "w"))
+        if os.path.exists(outp):
+            os.remove(outp)  # the cw case wrote it — the fail case leaves none
+        proc = run_gate(genp, ovp, outp)
+        check("twin carrying overlay max_completion_tokens fails closed "
+              "(exit 2)",
               proc.returncode == 2, f"rc={proc.returncode} err={proc.stderr}")
         check("fail names the twin row + the forbidden field",
               "claude-opus-5-1m" in proc.stderr
-              and "context_window" in proc.stderr, proc.stderr)
+              and "max_completion_tokens" in proc.stderr, proc.stderr)
 
 
 if __name__ == "__main__":
