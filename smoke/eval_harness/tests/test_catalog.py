@@ -538,6 +538,41 @@ class SchemaStrictnessTest(unittest.TestCase):
         self.assertTrue(placed)
         self.assert_rejected(mutated, "mid-element placeholder in selftest argv")
 
+    def test_selftest_argv_malformed_placeholder_message_names_shape(self):
+        # A <...-root>-starting element that is not a well-formed placeholder
+        # must be reported as a shape defect, not an undeclared root
+        # (review R3 fold, Qwen-3).
+        mutated = copy.deepcopy(self.catalog)
+        placed = False
+        for row in mutated["components"]:
+            for ep in row["entrypoints"]:
+                if ep.get("role") == "selftest":
+                    ep["argv"][0] = "<plans-root>x"
+                    placed = True
+                    break
+            if placed:
+                break
+        self.assertTrue(placed)
+        with self.assertRaises(contract.ContractError) as caught:
+            contract.validate_catalog(mutated)
+        self.assertIn("well-formed", str(caught.exception))
+
+    def test_selftest_argv_undeclared_root_message_names_root(self):
+        mutated = copy.deepcopy(self.catalog)
+        placed = False
+        for row in mutated["components"]:
+            for ep in row["entrypoints"]:
+                if ep.get("role") == "selftest":
+                    ep["argv"][0] = "<nosuch-root>"
+                    placed = True
+                    break
+            if placed:
+                break
+        self.assertTrue(placed)
+        with self.assertRaises(contract.ContractError) as caught:
+            contract.validate_catalog(mutated)
+        self.assertIn("does not name a declared root", str(caught.exception))
+
 
 class ContractHelperTest(unittest.TestCase):
     """canonical_json_bytes, locator keys, sensitive_matches, the frozen
@@ -567,6 +602,16 @@ class ContractHelperTest(unittest.TestCase):
         for bad in ({"x": float("nan")}, [float("inf")], {"y": float("-inf")}):
             with self.assertRaises(contract.ContractError, msg=repr(bad)):
                 contract.canonical_json_bytes(bad)
+
+    def test_canonical_json_bytes_rejects_non_serializable_values(self):
+        # A value json.dumps cannot serialize (e.g. a set) must surface as
+        # ContractError, never a leaked TypeError (review R3 fold, GLM-2).
+        for bad in ({"bad": {1, 2}}, [object()]):
+            with self.assertRaises(contract.ContractError, msg=repr(bad)):
+                contract.canonical_json_bytes(bad)
+        with self.assertRaises(contract.ContractError) as caught:
+            contract.canonical_json_bytes({"bad": {1, 2}})
+        self.assertEqual(caught.exception.code, "non-serializable-json")
 
     def test_absent_locator_canonicalizes_as_empty_object(self):
         self.assertEqual(contract.canonical_locator_key(None), b"{}")
@@ -856,6 +901,31 @@ class DualValidatorTest(unittest.TestCase):
             self.assertEqual(stdlib, expected, f"stdlib decision on {label!r}")
             self.assertEqual(_jsonschema_decision(value, schema), stdlib, label)
 
+    @unittest.skipIf(jsonschema is None, "jsonschema not installed")
+    def test_jsonschema_accepts_cross_item_uniqueness_gaps(self):
+        # Pins the documented expressibility gap from the ACCEPT side
+        # (review R3 fold, Qwen-4): JSON Schema 2020-12 uniqueItems cannot
+        # express cross-item key uniqueness, so jsonschema accepts what the
+        # stdlib validator rejects — a duplicate component id with a distinct
+        # body, and a duplicate (scope, root, path) inventory triple.
+        schema = _catalog_schema()
+        catalog = load_catalog()
+        shadow = copy.deepcopy(catalog["components"][0])
+        shadow["id"] = "parity-formalism"
+        shadow["kind"] = "tool"  # distinct object: beats whole-object uniqueItems
+        catalog["components"][-1] = shadow
+        self.assertEqual(_jsonschema_decision(catalog, schema), True)
+        self.assertRaises(
+            contract.ContractError, contract.validate_catalog, catalog)
+        index = _evidence_index_fixture()
+        dup = copy.deepcopy(index["inventory"][0])
+        dup["sha256"] = "1" + "0" * 63  # distinct object: not a whole dup
+        index["inventory"].append(dup)
+        self.assertEqual(
+            _jsonschema_decision(index, _index_schema()), True)
+        self.assertRaises(
+            contract.ContractError, contract.validate_evidence_index, index)
+
     def _index_fixtures(self):
         good = _evidence_index_fixture()
         fixtures = [("complete index", good, True)]
@@ -872,6 +942,8 @@ class DualValidatorTest(unittest.TestCase):
                "bad sha256 charset")
         mutate(lambda d: d["snapshot"]["scopes"][0].update(entries=-1),
                "negative entries")
+        mutate(lambda d: d["snapshot"]["scopes"][0].update(entries=5.0),
+               "float-valued integer entries (5.0)", True)
         mutate(lambda d: d["inventory"][0].update(role="bogus"),
                "bad inventory role")
         mutate(lambda d: d["inventory"][0].update(media_type="text/x-unknown"),

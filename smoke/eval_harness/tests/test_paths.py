@@ -48,18 +48,30 @@ class RootedPathParseTest(unittest.TestCase):
             with self.assertRaises(contract.ContractError, msg=repr(bad)):
                 paths.RootedPath.parse(bad)
 
+    def test_dotdot_substring_segment_rejected(self):
+        # The normative schemas reject any '..' substring; the runtime parser
+        # must decide identically (review R3 fold, workhorse Minor 1 / GLM-3).
+        for bad in ("plans:a..b/c.md", "plans:a/..%2Fb", "plans:x..y"):
+            with self.assertRaises(contract.ContractError, msg=repr(bad)):
+                paths.RootedPath.parse(bad)
+        with self.assertRaises(contract.ContractError) as caught:
+            paths.RootedPath.parse("plans:a..b")
+        self.assertEqual(caught.exception.code, "path-dot-segment")
+
     def test_percent_escaped_segments_accepted(self):
-        # The plans corpus contains %2F URL-escaped session segments
-        # (e.g. provenance/fixtures/xreplay76/.../sessions/%2FUsers%2F...):
-        # % is part of the path segment charset (review M1).
+        # The plans corpus contains %2F URL-escaped session segments: a
+        # session directory whose name is the fully escaped absolute cwd,
+        # e.g. provenance/fixtures/xreplay76/.../home/sessions/
+        # %2FUsers%2F...%2Fcwd/ (live corpus shape; see also the agent-smoke
+        # campaign captures). % is part of the path segment charset (M1).
         rp = paths.RootedPath.parse(
             "plans:provenance/fixtures/xreplay76/mint/report/20260918T005237Z/"
-            "home/sessions/%2FUsers%2Fpalanisd/summary.json"
+            "home/sessions/%2FUsers%2Fpalanisd%2Fcwd/summary.json"
         )
         self.assertEqual(
             rp.path,
             "provenance/fixtures/xreplay76/mint/report/20260918T005237Z/"
-            "home/sessions/%2FUsers%2Fpalanisd/summary.json",
+            "home/sessions/%2FUsers%2Fpalanisd%2Fcwd/summary.json",
         )
         # % joins the charset; it does not loosen the rest of it.
         with self.assertRaises(contract.ContractError):

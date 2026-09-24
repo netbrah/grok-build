@@ -89,6 +89,11 @@ def canonical_json_bytes(value: Any) -> bytes:
         raise ContractError(
             f"non-finite value in canonical JSON: {exc}", code="non-finite-json"
         ) from None
+    except TypeError as exc:
+        raise ContractError(
+            f"non-serializable value in canonical JSON: {exc}",
+            code="non-serializable-json",
+        ) from None
     return (text + "\n").encode("utf-8")
 
 
@@ -207,7 +212,12 @@ def _type_ok(instance: Any, type_name: str) -> bool:
     if type_name == "boolean":
         return isinstance(instance, bool)
     if type_name == "integer":
-        return isinstance(instance, int) and not isinstance(instance, bool)
+        if isinstance(instance, bool):
+            return False
+        if isinstance(instance, int):
+            return True
+        # JSON Schema 2020-12: a float with zero fractional part is an integer.
+        return isinstance(instance, float) and instance.is_integer()
     if type_name == "number":
         return isinstance(instance, (int, float)) and not isinstance(instance, bool)
     if type_name == "null":
@@ -384,7 +394,14 @@ def _semantic_catalog_checks(value: dict) -> None:
                 if not element.startswith("<"):
                     continue
                 match = _PLACEHOLDER_RE.match(element)
-                if match is None or match.group(1) not in declared:
+                if match is None:
+                    raise ContractError(
+                        f"component {comp_id!r} selftest argv element "
+                        f"{element!r} is not a well-formed "
+                        f"<root-id-root> placeholder",
+                        code="selftest-placeholder",
+                    )
+                if match.group(1) not in declared:
                     raise ContractError(
                         f"component {comp_id!r} selftest argv placeholder "
                         f"{element!r} does not name a declared root",

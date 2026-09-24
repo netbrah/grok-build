@@ -1,0 +1,142 @@
+{
+  "components": [
+    {
+      "adapter": "plan_corpus",
+      "content_policy": "metadata-only",
+      "entrypoints": [],
+      "id": "alpha-corpus",
+      "inputs": [],
+      "install": null,
+      "kind": "corpus",
+      "lifecycle": {
+        "reason": "fixture corpus row",
+        "registry": null
+      },
+      "outputs": [],
+      "owner_docs": [],
+      "root": "plans"
+    },
+    {
+      "adapter": "plan_corpus",
+      "content_policy": "semantic-json",
+      "entrypoints": [
+        {
+          "availability": "required",
+          "path": "tool/entry.sh",
+          "role": "source",
+          "root": "plans"
+        }
+      ],
+      "id": "harness-tool",
+      "inputs": [
+        "alpha/in-corpus.md",
+        "extra/doc.md"
+      ],
+      "install": null,
+      "kind": "tool",
+      "lifecycle": {
+        "reason": "offline tool: not registered in smoke/runs.jsonl",
+        "registry": null
+      },
+      "outputs": [],
+      "owner_docs": [
+        {
+          "heading": "Owner",
+          "path": "extra/owner.md",
+          "root": "plans"
+        }
+      ],
+      "root": "plans"
+    },
+    {
+      "adapter": "redteam",
+      "content_policy": "metadata-only",
+      "entrypoints": [
+        {
+          "availability": "required",
+          "path": "smoke/harness/top.py",
+          "role": "source",
+          "root": "worktree"
+        }
+      ],
+      "id": "worktree-runner",
+      "inputs": [
+        "declared-input.txt"
+      ],
+      "install": null,
+      "kind": "runner",
+      "lifecycle": {
+        "registry": "smoke/runs.jsonl",
+        "suite": "harness"
+      },
+      "outputs": [],
+      "owner_docs": [
+        {
+          "heading": "README",
+          "path": "smoke/harness/README.md",
+          "root": "worktree"
+        }
+      ],
+      "root": "worktree"
+    }
+  ],
+  "curated_sources": [
+    {
+      "path": "alpha/CURATED.md",
+      "root": "plans",
+      "selectors": [
+        {
+          "kind": "heading",
+          "text": "1. Fixture"
+        }
+      ]
+    }
+  ],
+  "inventory_scopes": [
+    {
+      "id": "plans-corpus",
+      "includes": [
+        "alpha"
+      ],
+      "root": "plans",
+      "selection": "recursive-all-regular-and-symlink"
+    },
+    {
+      "id": "plans-declared-inputs",
+      "root": "plans",
+      "selection": "catalog-static-sources-outside-plans-corpus"
+    },
+    {
+      "excludes": [
+        "smoke/harness/site/**",
+        "**/__pycache__/**",
+        "**/*.pyc"
+      ],
+      "id": "worktree-declared-inputs",
+      "includes": [
+        "catalog-declared",
+        "smoke/harness/*.py",
+        "smoke/harness/tests/**"
+      ],
+      "root": "worktree",
+      "selection": "catalog-static-sources-plus-indexer-source"
+    }
+  ],
+  "roots": [
+    {
+      "id": "plans",
+      "required_for": [
+        "build",
+        "health"
+      ]
+    },
+    {
+      "id": "worktree",
+      "required_for": [
+        "build",
+        "health"
+      ]
+    }
+  ],
+  "schema_version": 1
+}

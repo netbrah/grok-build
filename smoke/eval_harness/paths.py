@@ -42,9 +42,16 @@ def _validate_posix_relative(path: str) -> None:
             raise ContractError(
                 f"path {path!r} has invalid segment {segment!r}", code="path-shape"
             )
-        if segment in (".", ".."):
+        if segment == ".":
             raise ContractError(
-                f"path {path!r} has a {segment!r} segment", code="path-dot-segment"
+                f"path {path!r} has a '.' segment", code="path-dot-segment"
+            )
+        if ".." in segment:
+            # Aligned with the normative schemas, which reject any '..'
+            # substring; a whole '..' segment is the common case.
+            raise ContractError(
+                f"path {path!r} contains '..' in segment {segment!r}",
+                code="path-dot-segment",
             )
 
 
