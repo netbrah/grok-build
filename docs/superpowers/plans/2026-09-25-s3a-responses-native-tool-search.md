@@ -1888,3 +1888,37 @@ the vLLM/SGLang class. Code mode is an explicit non-goal. The docs finding STREN
 programmatic tool calling are ORTHOGONAL and COMPOSE -- a program cannot invoke tool search, so deferred tools must
 be loaded by tool search BEFORE a program runs. Implementing wire `tool_search` is therefore not a divergence from
 the sol path; it is the PREREQUISITE layer that path depends on.
+
+### A-26 (VERIFIED: the PROVIDER materialises discovered tools into its own view — no-reinjection is a CLIENT obligation)
+
+`opus-spec-2` reported provider-side materialisation; controller re-verified it from the raw bytes, and the effect
+is LARGER than reported.
+
+`captures/2026-09-25-ratchet-live/wire2-live3`, 4 windows:
+
+| | turn 1 | turn 2 | turn 3 | turn 4 |
+|---|---|---|---|---|
+| REQUEST `tools[]` | 12 | 12 | 12 | 12 |
+| `response.created` ECHO `tools[]` | 12 | 12 | 12 | **14** |
+
+Every request carries the same 12 (`function` x10, `custom` x1, `tool_search` x1). The turn-4 ECHO adds **TWO
+namespace entries the client never sent**: `mcp__ratchet_fixture` AND `mcp__codebase_memory_mcp`.
+
+**Consequences.**
+1. **No-reinjection is a CLIENT obligation, not a wire law.** The provider RECOMPUTES the loaded set from the
+   `tool_search_output` items in history and adds the namespaces to its own view. The client must not re-declare;
+   the provider does the equivalent internally.
+2. **Direct byte proof for A-14's "do not strip".** The pair is the mechanism by which the loaded set is
+   reconstructed. Removing it does not merely lose bookkeeping -- it destroys discovery at the provider.
+3. **Extends the earlier echo rule.** We already knew responses ECHO `prompt_cache_key`/`store`/`tools` even when
+   absent from the request, so identity must be read from the REQUEST. Now stronger: the echoed `tools[]` is the
+   provider's COMPUTED view, not a reflection of the request. Any assertion that reads tool cardinality from a
+   response is measuring the provider's state, not ours. Our gate reads `req["tools"]` and is correct.
+4. **Cross-family consequence.** The loaded set is provider-side state derived from history items that exist only
+   on the Responses wire. At a cross-family boundary those items do not exist, so the state cannot be inherited --
+   it must be MATERIALISED into `tools[]` on the target wire. This is exactly the D2 tier of the projector ladder
+   `opus-spec-2` proposes, now byte-justified rather than argued.
+
+**HANDOFF -> `gate-coverage` (apex-waj.8), who owns the gate file:** add an assertion that tool cardinality is read
+from the REQUEST only, and a positive case that an ECHO may legitimately exceed it. Controller did NOT edit the
+gate; worker 8 owns that path under the wave deconfliction rules.
