@@ -1576,3 +1576,34 @@ the same logical loaded set. This is a new invariant class for the xwire campaig
 
 **Correction to A-14's scope:** A-14's "loaded set survives a model switch" is INTRA-FAMILY only
 (gpt-5.5 / gpt-5.6-sol / gpt-5.4). It does NOT extend across families; A-15 is the cross-family answer.
+
+### A-16 (S3 LIVE — Anthropic search->INVOKE loop, and a SECOND cross-family invariant: invocation naming)
+
+Cell `ts-invoke` with the apex-ayl.152 jig fix (`enable_tool_search`), claude-opus-5, 3 turns, $0.163233.
+Fixture `claude-code/CC2-toolsearch-invoke-LIVE` (both sides genuine).
+
+| turn | tools[] | `defer_loading:true` entries | tool_use |
+|---|---|---|---|
+| req-001 | 13 | `DeferredToolPlaceholder` | — |
+| req-002 | 14 | `DeferredToolPlaceholder`, **`mcp__codegraph__codegraph_status`** | `ToolSearch` |
+| req-003 | 14 | same two | `ToolSearch`, **`mcp__codegraph__codegraph_status`** |
+
+Discovery result: `tool_result` = `[{"type":"tool_reference","tool_name":"mcp__codegraph__codegraph_status"}]`.
+Then a REAL invocation returning real MCP output ("...isn't indexed with codegraph (no .codegraph/ directory...)").
+
+**A-15 confirmed from the positive side:** the discovered tool is ADDED to `tools[]` with `defer_loading:true` and
+STAYS there. On Responses the same event adds NOTHING to `tools[]` (S5: constant 12).
+
+**NEW INVARIANT — invocation naming differs across families:**
+| | name used to invoke a discovered tool | evidence |
+|---|---|---|
+| Responses / codex | **CHILD SHORT NAME** from the namespace (`crm_fixture_tool_03`) | S5 |
+| Messages / Claude Code | **FULL FLAT NAME** (`mcp__codegraph__codegraph_status`) | S3 |
+
+Our dispatcher must therefore resolve BOTH forms to the same MCP tool, and the xwire boundary must REWRITE the name
+when discovery state is transformed between families. A pass-through of either name to the other wire fails: the
+Responses child name is not unique across servers, and the Messages flat name is not what a Responses namespace
+child is called.
+
+**Both donors now have a full search->invoke episode on disk** (codex CX3+S5, Claude CC2), so the A/B acceptance
+harness has real invocation ground truth on both wires.
