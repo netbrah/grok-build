@@ -1208,14 +1208,15 @@ and (b) REMOVE THE INDIRECTION — today the model emits `use_tool{tool_name, to
 mode emits a real `function_call` for `lookup_shipping_eta` itself. Secondary win: server-executed mode removes the
 extra round trip (search turn -> dispatch turn collapses into one response).
 
-**Collisions this exposes — CHECK BEFORE IMPLEMENTING T5 AND T9.**
-1. T9 "SearchToolOutput redefinition" edits a LIVE shipping type. Consumers today:
-   `xai-grok-tools/src/types/output.rs:594,616,1306`, `xai-grok-pager/src/acp/tracker.rs:30,2090`,
-   `xai-grok-shell/src/session/acp_session_impl/tool_layer_images.rs:66,187`,
-   `xai-grok-tools/src/util/mcp_truncate.rs:463`. A redefinition is a breaking change to the legacy path, not a
-   greenfield addition. The "old mechanism stays byte-identical" premise must be RE-PROVEN against these call sites.
-2. T5 introduces `DiscoveredTool`, but `xai-grok-pager/src/acp/tracker.rs:2755` already parses SearchToolOutput
-   "into DiscoveredTool entries". Name/shape collision to resolve before writing T5.
+**Collision re-scoping after controller re-read of T9/T4 at plan text (same day as A-6) — DOWNGRADED.**
+1. T9 was RE-READ: the plan ALREADY names every live consumer (`output.rs:594/:616/:1306`,
+   `mcp_truncate.rs:463`, `search_tool/mod.rs:344`, `tool_layer_images.rs:187`) and ALREADY mandates the
+   compatibility contract — old `{result_count, content}` MUST still deserialize (`legacy_content` field + compat
+   test `search_tool_output_old_json_still_parses_new_shape_round_trips`). A-6's "breaking change" alarm was
+   OVERSTATED; the plan already handles it. Residual risk to watch in review: serialization emits the NEW form
+   only, so anything round-tripping through old formatters needs a check — verify at T9 review, not a redesign.
+2. T4/T5 use `DiscoveredToolDef`; the pager's `DiscoveredTool` (tracker.rs:2755) is pager-local and distinct. No
+   name collision. WITHDRAWN.
 
 **Three-tier strategy this implies** (one BM25 `ToolIndex` behind all tiers):
 server-native where verified (Responses sol/terra/luna; Anthropic BM25 tool type) -> client-native
