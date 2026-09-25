@@ -1694,8 +1694,9 @@ only to (b).
 
 ### A-20 (adversarial audit CASHED: three real gate defects found and fixed; A-15 wording CORRECTED)
 
-The Sol adversarial seat delivered `ratchet-capture/adversarial-invariant-audit.md` (104,869 B, 1,694 lines;
-13 CONTRADICTED / 72 UNPROVEN / 135 PROVEN across 64+ scoped invariants). It found defects the green gate hid.
+The Sol adversarial seat delivered `ratchet-capture/adversarial-invariant-audit.md`. Size, row counts, and
+PROVEN/UNPROVEN/CONTRADICTED tallies are VOLATILE while the seat revises; read them from the file, not from here.
+It found defects the green gate hid.
 
 **Defect 1 — the Messages SSE envelope was never parsed.** The rig wraps each frame as
 `{"frame_index":N,"frame":"event: ...\ndata: {...}"}`. The adapter read the OUTER object as the event, so every
@@ -1768,7 +1769,11 @@ SHAPE our read side must unwrap: empty group -> FAIL, child without a name -> FA
 (`crm_fixture_tool_03`, `billing_fixture_tool_10`, `get_file_outline`, ...). Mutants F and G confirm both fire.
 **`design.md:151` is now formally contradicted by the gate and must be corrected.**
 
-**5. Stale labels removed** -- `H-3` no longer mislabels the no-reinjection obligation in the extractor comments.
+**5. Stale labels -- FIXED IN TWO PASSES, and the first claim here was WRONG.** The initial pass changed only
+extractor COMMENTS; the `@case` decorator strings still read `execution="sync"` (hts-009) and `H-3:` (hts-006).
+The seat caught the plan asserting a removal the bytes contradicted. Both decorators are now corrected, and the
+only surviving `H-3` mention is the one that correctly says no-reinjection is NOT H-3. Lesson recorded: a
+documentation claim about file contents must be verified against the file, not against the intent of the edit.
 
 **COVERAGE GAP (accepted, recorded):** only 11 of `fingerprint-schema.md` §5's 40 `hts` cases are implemented.
 The gate is a floor, not the full schema. The unimplemented 29 must be listed as owed work rather than treated as
