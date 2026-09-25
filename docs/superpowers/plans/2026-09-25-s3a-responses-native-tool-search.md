@@ -1185,3 +1185,39 @@ R1/R2 close the SERVER-executed top-level shapes. Still uncaptured: the CLIENT-e
 (call → output → next turn with NO re-injection, the H-3 obligation). The 146 baseline must capture that path with
 k≥3 and confounders pinned (`reasoning.effort` and the token cap materially changed R2-luna's outcome; the 64-token
 cap truncated the Anthropic server-search result).
+
+### A-6 (CORRECTION — the existing mechanism was mis-stated) — `search_tool` + `use_tool` already ship
+
+**The error.** Earlier framing said the harness has "no search mechanism; every tool declared every turn". That is
+WRONG and the operator corrected it. A generic lazy tool-load mechanism ships TODAY:
+
+- `search_tool` (`xai-grok-tools/src/implementations/search_tool/mod.rs`, 757 lines) — "discover MCP tools via BM25
+  keyword search" over `ToolIndex`. Input `{query: String, limit: Option<u8> = 5}`; returns tool schemas.
+- `use_tool` (`.../implementations/use_tool/mod.rs`, 1629 lines, `USE_TOOL_NAME`) — meta-dispatch. Input
+  `{tool_name: "linear__save_issue", tool_input: {...}}`; the target must have been discovered via `search_tool`.
+- Contract is enforced by injected prompt text (see fixture
+  `xai-grok-sampling-types/fixtures/outbound_lint/bodies/h2-accept-mxai-c04-req004-EV-9.json`): "To use MCP tools,
+  you MUST call `search_tool` first to retrieve the tool's input schema before calling `use_tool`. NEVER guess
+  parameter names." MCP servers are announced by blurb + tool count, NOT by per-tool schema.
+- Enable/precedence plumbing exists (`xai-grok-shell/src/util/config/resolve/toolset.rs`), as does telemetry
+  (`tool_search_count`) and UI special-casing (`UseToolCallBlock`).
+
+**Corrected S3a value proposition.** S3a is NOT "add discovery". Discovery exists and is already provider-agnostic
+(two ordinary function tools work on every wire). S3a is: (a) express the SAME BM25 discovery natively on the wire,
+and (b) REMOVE THE INDIRECTION — today the model emits `use_tool{tool_name, tool_input}`; probe R1 proves native
+mode emits a real `function_call` for `lookup_shipping_eta` itself. Secondary win: server-executed mode removes the
+extra round trip (search turn -> dispatch turn collapses into one response).
+
+**Collisions this exposes — CHECK BEFORE IMPLEMENTING T5 AND T9.**
+1. T9 "SearchToolOutput redefinition" edits a LIVE shipping type. Consumers today:
+   `xai-grok-tools/src/types/output.rs:594,616,1306`, `xai-grok-pager/src/acp/tracker.rs:30,2090`,
+   `xai-grok-shell/src/session/acp_session_impl/tool_layer_images.rs:66,187`,
+   `xai-grok-tools/src/util/mcp_truncate.rs:463`. A redefinition is a breaking change to the legacy path, not a
+   greenfield addition. The "old mechanism stays byte-identical" premise must be RE-PROVEN against these call sites.
+2. T5 introduces `DiscoveredTool`, but `xai-grok-pager/src/acp/tracker.rs:2755` already parses SearchToolOutput
+   "into DiscoveredTool entries". Name/shape collision to resolve before writing T5.
+
+**Three-tier strategy this implies** (one BM25 `ToolIndex` behind all tiers):
+server-native where verified (Responses sol/terra/luna; Anthropic BM25 tool type) -> client-native
+(`execution:"client"` Responses, UNPROVEN; Anthropic `tool_reference`, PROVEN) -> legacy `search_tool`/`use_tool`
+everywhere else. A fallback ladder, not a fork.
