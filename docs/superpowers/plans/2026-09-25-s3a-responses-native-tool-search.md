@@ -1691,3 +1691,38 @@ case) -> FAIL; re-declared non-deferred -> FAIL with the distinct message; NAMES
 **Implementation consequence:** our harness must implement sub-pattern (b) for MCP tools. Sub-pattern (a) is a
 legitimate second mode and the two must not be merged in `ToolSpec`, because the no-reinjection obligation applies
 only to (b).
+
+### A-20 (adversarial audit CASHED: three real gate defects found and fixed; A-15 wording CORRECTED)
+
+The Sol adversarial seat delivered `ratchet-capture/adversarial-invariant-audit.md` (104,869 B, 1,694 lines;
+13 CONTRADICTED / 72 UNPROVEN / 135 PROVEN across 64+ scoped invariants). It found defects the green gate hid.
+
+**Defect 1 — the Messages SSE envelope was never parsed.** The rig wraps each frame as
+`{"frame_index":N,"frame":"event: ...\ndata: {...}"}`. The adapter read the OUTER object as the event, so every
+content block was lost and a genuine `ToolSearch` call scored as absent while the gate reported PASS. Fixed by
+unwrapping `frame`.
+
+**Defect 2 — CC2 paired the wrong turns.** `request.json` was turn 2 while the `ToolSearch` call was emitted in
+response 1. Rebuilt CC2 as the CALL turn (req-001 + resp-001, next-turn req-002) and added
+`CC3-discovered-invocation-LIVE` (req-002 + resp-002, next-turn req-003) for the invocation. Both metas now record
+the exact turn pairing, closing the audit's "CX2 is not a continuation fixture" class of complaint for the Claude
+donor.
+
+**Defect 3 — no call/result correlation.** Deleting the call frame from a capture still passed. Added id
+correlation: if the next turn answers a search with `tool_reference` blocks, THIS response must carry the
+`ToolSearch` tool_use with the matching `tool_use_id`. Because Messages history ACCUMULATES, the predicate
+subtracts reference results already present in the current request -- otherwise the invocation turn is wrongly
+required to contain a call it never made.
+
+**Gate: 7 donor episodes / 77 assertions / 0 failed**, with mutants D (call frame deleted) and E (reference
+stripped) both failing as they must.
+
+**A-15 WORDING CORRECTED (audit attack (d) sustained).** The captured pair proves only that Anthropic requires the
+tool to be DECLARED: absent -> 400, present-with-`defer_loading:true` -> 200. The PLAIN arm (declared WITHOUT
+`defer_loading`) was never run, so "requires `defer_loading:true`" is an OVERCLAIM. Corrected invariant:
+*a `tool_reference` to a tool absent from `tools[]` is rejected; whether the declaration must additionally be
+DEFERRED is UNPROVEN and is probe P2.* The inversion versus Responses stands either way, because Responses forbids
+the definition in `tools[]` in both forms.
+
+**Also sustained:** A-14's model-switch bodies were never banked to disk (run in-kernel only), so that claim is
+asserted rather than independently verifiable; re-running it must write fixtures.
