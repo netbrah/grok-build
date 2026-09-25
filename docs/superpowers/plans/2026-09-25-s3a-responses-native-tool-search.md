@@ -1855,3 +1855,36 @@ pi-recon found in Pi, reached by a different route.
 
 **UNKNOWN flagged by the recon and inherited here:** `cache_control` behaviour on switch (0 hits in
 `conversation/messages.rs`) and image projection. Both matter for a discovery payload that rides the cached prefix.
+
+### A-25 (DECISIONS CLOSED: D3-A, T2-A, D4 — all three now carry deciding evidence)
+
+**D3 -> D3-A (placement precedence). CLOSED.**
+When a route is ADMITTED for search, the `tool_search` declaration rides TOP-LEVEL even on lite rows;
+`use_responses_lite` governs where the FUNCTION CATALOGUE rides, not the search surface.
+Deciding evidence, none of which existed when A-1 posed the question:
+1. OpenAI docs state the architecture directly: *"Tool search runs as a top-level Responses API tool, not from
+   inside generated JavaScript"*, and deferred tools must be loaded BEFORE a program starts
+   (`openai-docs/.../tools-programmatic-tool-calling.md`, "Combine with tool search"). Top-level is the
+   DOCUMENTED home of the declaration, not merely the one that happened to work.
+2. Live R1 vs R4 on the same rows: top-level performs discovery; lite placement DROPS the `tool_search`
+   declaration and strips `defer_loading` to `null`.
+3. Donor CX3: codex declares `tool_search` in top-level `tools[]`, constant at 12 across all turns. Code mode
+   (CX2) is a DIFFERENT container with top-level `tools` absent -- the two are orthogonal modes, not a spectrum.
+D3-B is rejected: it delivers nothing on the three flagship rows. D3-C is rejected: it adds config surface to
+express a distinction the provider contract already makes. **T6 is UNBLOCKED** under D3-A, and must carry a live
+arm asserting the search pair on a lite row.
+
+**T2 -> A (re-pin the drift counters). CLOSED.**
+The held choice was to update the param-gate pins or hold them. The pins are DRIFT DETECTORS, not policy, and the
+two additive fields already exist in the structs and are read by `config.rs` and the capability gate. Holding the
+pins means not landing T2 at all. Working tree already carries the correct form, each with a reason comment:
+`required_fields 15 -> 17`, `schema_properties 48 -> 50`, `struct_fields 22 -> 24`
+(`crates/codegen/xai-grok-models/src/param_gate_tests.rs`). A pinned count that moves for a NAMED additive reason
+is the gate working; a pinned count that moves silently is the failure it exists to catch.
+
+**D4 -> APPROVED AS RECOMMENDED. CLOSED.**
+Wire `tool_search`, client-executed, on ALL Responses routes INCLUDING sol. `search_tool`/`use_tool` retained for
+the vLLM/SGLang class. Code mode is an explicit non-goal. The docs finding STRENGTHENS this: tool search and
+programmatic tool calling are ORTHOGONAL and COMPOSE -- a program cannot invoke tool search, so deferred tools must
+be loaded by tool search BEFORE a program runs. Implementing wire `tool_search` is therefore not a divergence from
+the sol path; it is the PREREQUISITE layer that path depends on.
