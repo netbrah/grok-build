@@ -1744,3 +1744,36 @@ episodes, and reporting them as such inflates the apparent evidence base.
 **Fixed in the gate.** Every fixture meta now carries a `session` key, and the verdict line reports both numbers:
 `7 scored windows over 6 independent episodes, 77 assertions, 0 failed`. An audit can no longer read the case count
 as a donor count, and adding more windows over the same capture cannot manufacture apparent coverage.
+
+### A-22 (five more audit defects fixed; every streamed-item extractor was reading the SKELETON)
+
+The seat's residual-limitations pass found five more. Four were real defects, one is a coverage gap.
+
+**1. Responses loader fingerprinted the IN-PROGRESS item.** A streamed item appears twice --
+`output_item.added` (status `in_progress`, `arguments {}`) and `output_item.done` (status `completed`, real
+arguments). `next(...)` selected the FIRST, so CX3 reported `arg_keys=[]`. `hts-004` ("arguments are an OBJECT")
+was passing on an empty dict -- vacuously true, exactly like the hts-006 blind spot. Now prefers the COMPLETED
+item. CX3 reports `['limit','query']`.
+
+**2. Messages never assembled `input_json_delta`.** The adapter read only `content_block_start`, whose `input` is
+`{}`; the real arguments arrive as delta fragments. Same skeleton defect on the other wire. Now accumulated per
+block index. CC2 reports `['max_results','query']`.
+
+**3. `hts-005` was vacuous on the client quadrant** for the same reason as hts-006: namespaces arrive in the
+next-turn `tool_search_output`, not the response. Now harvested from both.
+
+**4. `hts-005` also encoded a PRE-DECISION design.** It FAILED on the mere presence of namespace groups, citing
+`design.md:151` "flat tools only" -- a position D1 already overturned with live bytes. Rewritten to police the
+SHAPE our read side must unwrap: empty group -> FAIL, child without a name -> FAIL. CX3 exposes 8 children
+(`crm_fixture_tool_03`, `billing_fixture_tool_10`, `get_file_outline`, ...). Mutants F and G confirm both fire.
+**`design.md:151` is now formally contradicted by the gate and must be corrected.**
+
+**5. Stale labels removed** -- `H-3` no longer mislabels the no-reinjection obligation in the extractor comments.
+
+**COVERAGE GAP (accepted, recorded):** only 11 of `fingerprint-schema.md` §5's 40 `hts` cases are implemented.
+The gate is a floor, not the full schema. The unimplemented 29 must be listed as owed work rather than treated as
+silent passes.
+
+**Pattern worth naming:** four separate assertions were vacuous because the extractor read the wrong copy of a
+streamed item or the wrong side of a client-executed exchange. Any new predicate must be proven by a MUTANT before
+it is trusted. Seven mutants now stand behind the suite.
