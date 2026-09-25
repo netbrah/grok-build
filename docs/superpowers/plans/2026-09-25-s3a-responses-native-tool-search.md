@@ -1376,3 +1376,53 @@ evidence instead of inference.
 **Gate work owed:** the fixture is Messages-wire; the extractor is Responses-shaped. Fingerprint-schema S2.9
 (Responses<->Messages mapping) must land before `claude-code/CC1-toolsearch-mcp` can be scored.
 Fixture on disk: `ratchet-capture/fixtures/claude-code/CC1-toolsearch-mcp/`.
+
+### A-11 (FIRST-PARTY CODEX DONOR CAPTURED AT $0 — and the two donors DISAGREE)
+
+`codex-cli 0.156.1` (npm `@openai/codex`, the real ratchet source — NOT our fork), model gpt-5.5, driven through the
+`ratchet-capture/codex-arm` rig (make_home + mcp_fixture_server + mock_upstream + wiretap2) with 12 fixture MCP tools.
+Dry run printed `DRYRUN_DONE: tool_search_output observed`. **Zero spend.** Request bytes are genuine first-party
+codex; only the provider RESPONSE is mocked.
+
+**Declaration, verbatim (settles A-8 with donor bytes):**
+```json
+{"type":"tool_search","execution":"client",
+ "description":"# Tool discovery\n\nSearches over deferred tool metadata with BM25 ...",
+ "parameters":{"type":"object","properties":{"limit":{"type":"number"},"query":{"type":"string"}},
+               "required":["query"],"additionalProperties":false}}
+```
+`execution` is **`"client"` in the DECLARATION**. The fork's `"sync"` golden (`tool_spec_tests.rs:399`) does NOT
+describe first-party wire behaviour. A-8 is fully retracted; `design.md:49` was correct.
+The description is BUILT AT RUNTIME and enumerates the live MCP sources by name.
+
+**Items (codex-minted, genuine):**
+```json
+{"type":"tool_search_call","id":"tsc_...","call_id":"dryrun-search-1","status":"completed",
+ "execution":"client","arguments":{"query":"crm order management","limit":3}}
+{"type":"tool_search_output","id":"tso_<uuid>","call_id":"dryrun-search-1","status":"completed",
+ "execution":"client","tools":[<full defs>]}
+```
+`arguments` is an OBJECT (never a JSON string). Output `id` is session-minted `tso_<uuid>` (invariant H-3, the real
+H-3 — id minting, per the fingerprint seat's correction).
+
+**THE DONORS DISAGREE — two incompatible rules, one ladder:**
+| | codex-cli 0.156.1 (Responses) | Claude Code 2.1.267 (Messages) |
+|---|---|---|
+| deferral expressed by | **OMISSION** from `tools[]`; no flag at all | **`defer_loading:true`** flag + `DeferredToolPlaceholder` |
+| discovery result carrier | `tool_search_output.tools` item | `tool_result` of `tool_reference` blocks |
+| discovered tool next turn | **NEVER re-enters `tools[]`** (verified: 13 tools both turns, 0 re-declared) | **re-declared every turn** with `defer_loading:true` |
+| search surface | typed `{"type":"tool_search"}` | plain client tool named `ToolSearch` |
+
+Codex's strict no-reinjection matches the OpenAI docs (`tools-tool-search.md:860`): `tool_search_output.tools` IS the
+persistent loaded set; reloading breaks the cache. Anthropic's donor does the opposite. **`hts-006` must therefore be
+PER-DONOR**, not universal.
+
+**NEW REPLAY HAZARD:** both codex items carry `internal_chat_message_metadata_passthrough` (`turn_id`, `create_time`).
+Same class as the `created_by` defect in A-9. The replay/repair path (T15) needs a strip-list, not a one-off fix.
+
+**Gate state:** `codex/CX1-toolsearch-mcp-dryrun` + `grok-probe/R6-client-loop` score **18 assertions, 0 failed,
+EXIT=0**, with an explicit CAVEAT that CX1's response bytes are mocked. The Messages-wire fixture is SKIPPED until
+the S2.9 adapter lands. `hts-001` was corrected by these bytes: deferral is accepted as flag OR omission.
+
+**Codex has NO base-URL gate** (binary strings: `ENABLE_TOOL_SEARCH` 0 hits, `not a first-party` 0 hits; the three
+`first-party` hits are unrelated prose). The A-10 interception trap is Claude-specific; tee captures of codex are valid.
