@@ -348,6 +348,148 @@ impl xai_tool_runtime::Tool for SearchTool {
     }
 }
 
+use crate::types::tool_index::{SearchSnapshot, ServerSummary, ToolSearchIndex, ToolSearchResult};
+use std::collections::HashSet;
+use std::sync::Arc;
+
+/// Leaf name after the last `__` separator (`grafana__search_dashboards` ->
+/// `search_dashboards`); a bare name is returned unchanged.
+fn short_name(name: &str) -> &str {
+    name.rsplit_once("__").map_or(name, |(_, leaf)| leaf)
+}
+
+/// Whether `query` names `tool_name` exactly, honouring the qualified name, the
+/// leaf (child) short name (Responses invokes the child short name), and the
+/// underscore/space normalisation forms of each.
+fn name_matches_query(query: &str, tool_name: &str) -> bool {
+    if tool_name == query {
+        return true;
+    }
+    let leaf = short_name(tool_name);
+    if leaf == query {
+        return true;
+    }
+    let q_underscore = query.replace(' ', "_");
+    let q_space = query.replace('_', " ");
+    tool_name == q_underscore || tool_name == q_space || leaf == q_underscore || leaf == q_space
+}
+
+/// The frozen set of tool names a native `tool_search` is permitted to return —
+/// the admitted/deferred catalog. The dispatcher builds one from the frozen
+/// `DiscoveryManifest` (plan T4); keeping it local to this crate means
+/// `xai-grok-tools` never depends on the IR crate. Admission identity is the
+/// canonical (qualified) tool name; the server set is derived from the `__`
+/// prefix for [`ToolSearchIndex::list_server_summaries`] filtering.
+#[derive(Debug, Clone, Default)]
+pub struct AdmittedManifest {
+    names: HashSet<String>,
+    servers: HashSet<String>,
+}
+
+impl AdmittedManifest {
+    pub fn new(names: impl IntoIterator<Item = String>) -> Self {
+        let names: HashSet<String> = names.into_iter().collect();
+        let servers = names
+            .iter()
+            .map(|name| match name.split_once("__") {
+                Some((server, _)) => server.to_owned(),
+                None => name.clone(),
+            })
+            .collect();
+        Self { names, servers }
+    }
+
+    /// Whether a canonical tool name is admitted.
+    pub fn contains(&self, name: &str) -> bool {
+        self.names.contains(name)
+    }
+
+    /// Whether any admitted tool belongs to `server`.
+    pub fn has_server(&self, server: &str) -> bool {
+        self.servers.contains(server)
+    }
+
+    pub fn len(&self) -> usize {
+        self.names.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+}
+
+/// A thin [`ToolSearchIndex`] wrapper that restricts an underlying index to an
+/// [`AdmittedManifest`], for the native (admitted-route) `tool_search` path
+/// (plan T10). The legacy `search_tool` function path runs against the
+/// underlying index untouched; the dispatcher constructs this wrapper only when
+/// the admission gate is open.
+///
+/// Behaviours:
+/// - Results are filtered to manifest members (canonical name).
+/// - **Exact-name bypass**: a query that names an admitted tool exactly (qualified
+///   or leaf short name, incl. underscore/space forms) returns that single entry,
+///   ignoring `limit`. On a cross-server bare-name collision the first snapshot
+///   hit wins — first-snapshot-hit-wins is the plan's tie-break but is UNPROVEN
+///   and arguably contradicted by adversarial-audit rows C8 / X6 (both UNPROVEN,
+///   "reject ambiguous same-leaf-name collisions" / map names "without guessing").
+/// - Zero matches yields an empty, still-successful snapshot (`status` is
+///   `Completed` downstream).
+pub struct AdmittedManifestIndex {
+    inner: Arc<dyn ToolSearchIndex>,
+    manifest: Arc<AdmittedManifest>,
+}
+
+impl AdmittedManifestIndex {
+    pub fn new(inner: Arc<dyn ToolSearchIndex>, manifest: Arc<AdmittedManifest>) -> Self {
+        Self { inner, manifest }
+    }
+}
+
+impl ToolSearchIndex for AdmittedManifestIndex {
+    fn search_snapshot(&self, query: &str, limit: usize) -> SearchSnapshot {
+        // Fetch a window no smaller than the admitted set so the exact-name
+        // bypass can see the named entry even when `limit` is small. The bypass
+        // assumes BM25 surfaces an exact-name match within this window — see the
+        // UNDECIDED note (a `get_by_name` on the trait would make it exact).
+        let window = limit.max(self.manifest.len()).max(1);
+        let snapshot = self.inner.search_snapshot(query, window);
+        let total_hidden_tools = snapshot.total_hidden_tools;
+        let is_ready = snapshot.is_ready;
+        let admitted: Vec<ToolSearchResult> = snapshot
+            .results
+            .into_iter()
+            .filter(|result| self.manifest.contains(&result.tool_name))
+            .collect();
+
+        if let Some(hit) = admitted
+            .iter()
+            .find(|result| name_matches_query(query, &result.tool_name))
+        {
+            return SearchSnapshot {
+                results: vec![hit.clone()],
+                total_hidden_tools,
+                is_ready,
+            };
+        }
+
+        let mut results = admitted;
+        results.truncate(limit);
+        SearchSnapshot {
+            results,
+            total_hidden_tools,
+            is_ready,
+        }
+    }
+
+    fn list_server_summaries(&self) -> Vec<ServerSummary> {
+        self.inner
+            .list_server_summaries()
+            .into_iter()
+            .filter(|summary| self.manifest.has_server(&summary.name))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -753,5 +895,235 @@ mod tests {
         // The value must not change across runs (FNV-1a is deterministic).
         // If this assertion fails, the hasher implementation was modified.
         assert_ne!(h, 0, "hash should be non-zero for non-empty input");
+    }
+}
+
+#[cfg(test)]
+mod admitted_tests {
+    use super::{AdmittedManifest, AdmittedManifestIndex, short_name};
+    use crate::types::output::{SearchStatus, SearchToolOutput};
+    use crate::types::tool_index::{
+        SearchSnapshot, ServerSummary, ToolSearchIndex, ToolSearchResult,
+    };
+    use std::sync::Arc;
+
+    fn result(name: &str, server: &str, description: &str, score: f32) -> ToolSearchResult {
+        ToolSearchResult {
+            tool_name: name.into(),
+            server_name: server.into(),
+            description: description.into(),
+            score,
+            parameters: vec![],
+            input_schema: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    /// Three tools: two share the leaf name `deploy` across servers (collision
+    /// candidate) and the descriptions share the token `now` (shared-token query).
+    fn sample_results() -> Vec<ToolSearchResult> {
+        vec![
+            result("server__deploy", "server", "Deploy now app", 1.0),
+            result("server__internal", "server", "Hidden helper", 0.9),
+            result("other__deploy", "other", "Another deploy now", 0.8),
+        ]
+    }
+
+    /// Fake index. By default it recalls by case-insensitive substring of name or
+    /// description (emulating BM25 recall); `recall_all` returns the whole set
+    /// regardless of query, used to prove the exact-name bypass outranks both
+    /// `limit` and BM25 ordering.
+    struct FakeIndex {
+        results: Vec<ToolSearchResult>,
+        recall_all: bool,
+    }
+
+    impl FakeIndex {
+        fn new(results: Vec<ToolSearchResult>, recall_all: bool) -> Arc<dyn ToolSearchIndex> {
+            Arc::new(Self {
+                results,
+                recall_all,
+            })
+        }
+    }
+
+    impl ToolSearchIndex for FakeIndex {
+        fn search_snapshot(&self, query: &str, limit: usize) -> SearchSnapshot {
+            let q = query.to_lowercase();
+            let mut hits: Vec<ToolSearchResult> = self
+                .results
+                .iter()
+                .filter(|r| {
+                    self.recall_all
+                        || r.tool_name.to_lowercase().contains(&q)
+                        || r.description.to_lowercase().contains(&q)
+                })
+                .cloned()
+                .collect();
+            hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+            hits.truncate(limit);
+            SearchSnapshot {
+                results: hits,
+                total_hidden_tools: self.results.len(),
+                is_ready: true,
+            }
+        }
+
+        fn list_server_summaries(&self) -> Vec<ServerSummary> {
+            ["server", "other", "third"]
+                .into_iter()
+                .map(|name| ServerSummary {
+                    name: name.into(),
+                    description: None,
+                    tool_count: 1,
+                    tool_names: vec![],
+                })
+                .collect()
+        }
+    }
+
+    fn manifest(names: &[&str]) -> Arc<AdmittedManifest> {
+        Arc::new(AdmittedManifest::new(
+            names.iter().map(|s| (*s).to_string()),
+        ))
+    }
+
+    #[test]
+    fn restricts_results_to_manifest_members() {
+        // `server__internal` is NOT admitted.
+        let idx = AdmittedManifestIndex::new(
+            FakeIndex::new(sample_results(), false),
+            manifest(&["server__deploy", "other__deploy"]),
+        );
+        let snap = idx.search_snapshot("internal", 8);
+        assert!(
+            snap.results.iter().all(|r| r.tool_name != "server__internal"),
+            "non-admitted tool leaked: {snap:?}"
+        );
+        assert!(snap.results.is_empty(), "only the non-admitted matched");
+    }
+
+    #[test]
+    fn exact_name_bypass_ignores_limit_and_bm25_rank() {
+        // All three admitted; recall_all forces the inner index to return the whole
+        // score-desc set, so a plain truncate(limit=1) would keep the top scorer.
+        let idx = AdmittedManifestIndex::new(
+            FakeIndex::new(sample_results(), true),
+            manifest(&["server__deploy", "server__internal", "other__deploy"]),
+        );
+        let snap = idx.search_snapshot("other__deploy", 1);
+        assert_eq!(snap.results.len(), 1, "bypass returns a single entry");
+        assert_eq!(
+            snap.results[0].tool_name, "other__deploy",
+            "bypass must outrank limit and BM25 order"
+        );
+    }
+
+    #[test]
+    fn bare_leaf_collision_first_snapshot_hit_wins() {
+        // Leaf `deploy` is ambiguous across two admitted servers; the first
+        // score-desc hit wins (tie-break UNPROVEN per adversarial C8 / X6).
+        let idx = AdmittedManifestIndex::new(
+            FakeIndex::new(sample_results(), true),
+            manifest(&["server__deploy", "other__deploy"]),
+        );
+        let snap = idx.search_snapshot("deploy", 8);
+        assert_eq!(snap.results.len(), 1);
+        assert_eq!(snap.results[0].tool_name, "server__deploy");
+    }
+
+    #[test]
+    fn shared_token_query_respects_limit_after_restriction() {
+        // `now` matches both admitted deploy tools' descriptions but is not an exact
+        // name, so the normal path runs and `limit` trims to 1 (top scorer first).
+        let idx = AdmittedManifestIndex::new(
+            FakeIndex::new(sample_results(), false),
+            manifest(&["server__deploy", "other__deploy"]),
+        );
+        let snap = idx.search_snapshot("now", 1);
+        assert_eq!(snap.results.len(), 1);
+        assert_eq!(snap.results[0].tool_name, "server__deploy");
+    }
+
+    #[test]
+    fn zero_match_is_an_empty_success_snapshot() {
+        let idx = AdmittedManifestIndex::new(
+            FakeIndex::new(sample_results(), false),
+            manifest(&["server__deploy"]),
+        );
+        let snap = idx.search_snapshot("zzz-no-such", 8);
+        assert!(snap.results.is_empty());
+        assert!(snap.is_ready, "empty result is success, not an error");
+    }
+
+    #[test]
+    fn server_summaries_filtered_to_manifest_servers() {
+        let idx = AdmittedManifestIndex::new(
+            FakeIndex::new(sample_results(), false),
+            manifest(&["server__deploy"]),
+        );
+        let names: Vec<String> = idx
+            .list_server_summaries()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(names, vec!["server".to_string()]);
+    }
+
+    #[test]
+    fn short_name_and_manifest_membership() {
+        assert_eq!(short_name("server__deploy"), "deploy");
+        assert_eq!(short_name("bare"), "bare");
+        let m = AdmittedManifest::new(["a__x".to_string(), "b__y".to_string()]);
+        assert!(m.contains("a__x"));
+        assert!(!m.contains("x"), "membership is on the canonical qualified name");
+        assert!(m.has_server("a") && m.has_server("b") && !m.has_server("c"));
+        assert_eq!(m.len(), 2);
+        assert!(!m.is_empty());
+        assert!(AdmittedManifest::default().is_empty());
+    }
+
+    #[test]
+    fn structured_view_parses_grouped_content() {
+        let content = serde_json::json!({
+            "results": [{"server": "Grafana", "tools": [{
+                "tool_name": "grafana__search_dashboards",
+                "description": "Search Grafana dashboards",
+                "score": 1.5,
+                "input_schema": {"type": "object"}
+            }]}],
+            "total_hidden_tools": 1,
+            "status": "ready"
+        })
+        .to_string();
+        let out = SearchToolOutput {
+            result_count: 1,
+            content,
+        };
+        let discovered = out.discovered();
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].name, "grafana__search_dashboards");
+        assert_eq!(discovered[0].server, "Grafana");
+        assert_eq!(discovered[0].score, 1.5);
+        // The legacy "ready" readiness maps to a completed operation.
+        assert_eq!(out.status(), SearchStatus::Completed);
+    }
+
+    #[test]
+    fn structured_view_handles_note_and_error_content() {
+        // A guidance note carries no "results" JSON — safe to call, still Completed.
+        let note = SearchToolOutput {
+            result_count: 0,
+            content: "No MCP tools are available in this session.".into(),
+        };
+        assert!(note.discovered().is_empty());
+        assert_eq!(note.status(), SearchStatus::Completed);
+
+        // content explicitly marking "error" maps to SearchStatus::Error.
+        let err = SearchToolOutput {
+            result_count: 0,
+            content: serde_json::json!({"results": [], "status": "error"}).to_string(),
+        };
+        assert_eq!(err.status(), SearchStatus::Error);
+        assert!(err.discovered().is_empty());
     }
 }

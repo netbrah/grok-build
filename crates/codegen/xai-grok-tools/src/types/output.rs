@@ -595,6 +595,117 @@ pub struct SearchToolOutput {
     pub result_count: usize,
     pub content: String,
 }
+/// Outcome of a `search_tool` operation.
+///
+/// Models the **operation**, not index readiness: a search that ran is
+/// [`SearchStatus::Completed`] even when the tool index was still warming up —
+/// the legacy `"partial"` readiness signal and its guidance note stay inside
+/// [`SearchToolOutput::content`], alongside `total_hidden_tools`.
+/// [`SearchStatus::Error`] is reserved for a malformed or failed search; the
+/// legacy `search_tool` path never emits it (argument errors surface through the
+/// tool runtime's `ToolError`, not this enum). Adversarial-audit rows C13 / R19 /
+/// R24 (all UNPROVEN) leave the exact error semantics owed, so `Error` must not
+/// be emitted from design prose without live-wire evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchStatus {
+    /// The search ran to completion (ready or partial index).
+    #[default]
+    Completed,
+    /// The search failed or the request was malformed.
+    Error,
+}
+/// A single discovered-tool entry in structured form — the machine-readable
+/// counterpart of one element of [`SearchToolOutput`]'s `content` JSON.
+///
+/// Defined in this crate (not borrowed from `xai-grok-sampling-types`) so the
+/// tools crate keeps no dependency on the IR crate. The dispatcher's encoder
+/// converts these into the wire `tool_search_output.tools` items (plan T10).
+/// `score` is the BM25 relevance carried by the search index.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveredToolDef {
+    /// Canonical tool name (e.g. `linear__save_issue`).
+    pub name: String,
+    /// MCP server / connector the tool belongs to.
+    pub server: String,
+    /// Tool description.
+    #[serde(default)]
+    pub description: String,
+    /// BM25 relevance score.
+    #[serde(default)]
+    pub score: f32,
+    /// Input JSON Schema, so a caller can construct a `use_tool` call.
+    #[serde(default)]
+    pub input_schema: serde_json::Value,
+}
+impl SearchToolOutput {
+    /// Structured view of the discovered tools carried in `content`.
+    ///
+    /// Parses the grouped legacy JSON body the `search_tool` tool builds —
+    /// `{"results":[{"server":..,"tools":[{tool_name,description,score,
+    /// input_schema}]}]}` — the same contract the pager's
+    /// `parse_search_tool_results` relies on. Returns an empty vec when `content`
+    /// is not that shape (e.g. the no-tools guidance note), so it is always safe
+    /// to call.
+    ///
+    /// This is the non-breaking precursor to promoting `results` to a serialized
+    /// field; the field redefinition is deferred to an atomic consumer-migration
+    /// cut because `SearchToolOutput` is exhaustively struct-pattern-matched in
+    /// `xai-grok-pager` and struct-literal-constructed in `xai-grok-shell` (see
+    /// the owned-path handoff on bead apex-waj.4).
+    pub fn discovered(&self) -> Vec<DiscoveredToolDef> {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&self.content) else {
+            return Vec::new();
+        };
+        let Some(groups) = value.get("results").and_then(|v| v.as_array()) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for group in groups {
+            let server = group
+                .get("server")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_owned();
+            let Some(tools) = group.get("tools").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for tool in tools {
+                let Some(name) = tool.get("tool_name").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                out.push(DiscoveredToolDef {
+                    name: name.to_owned(),
+                    server: server.clone(),
+                    description: tool
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_owned(),
+                    score: tool.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                    input_schema: tool
+                        .get("input_schema")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                });
+            }
+        }
+        out
+    }
+    /// Operation status derived from `content`. A top-level `"status": "error"`
+    /// (any case) maps to [`SearchStatus::Error`]; everything else — including
+    /// the legacy `"ready"`/`"partial"` readiness dialect — maps to
+    /// [`SearchStatus::Completed`].
+    pub fn status(&self) -> SearchStatus {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&self.content) else {
+            return SearchStatus::Completed;
+        };
+        match value.get("status").and_then(|v| v.as_str()) {
+            Some(s) if s.eq_ignore_ascii_case("error") => SearchStatus::Error,
+            _ => SearchStatus::Completed,
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize, derive_more::From)]
 #[serde(tag = "type")]
 pub enum ToolOutput {
