@@ -415,6 +415,8 @@ git commit -m "fix(responses): xt2.10 precondition — image-path tool results n
 
 ### Task 6: `tool_search` declaration + both placements
 
+> **BLOCKED — see Amendment A-1 (D3).** Live probe R4 proves the lite placement silently defeats hosted search on the exact rows that carry both flags. Do not implement dual placement until D3 is decided.
+
 **Files:**
 - Modify: `crates/codegen/xai-grok-sampling-types/src/conversation/responses.rs` (`build_responses_tools` :454 + the request-encoding path that assembles `input` — locate the encode entry with `grep -n "fn.*responses.*request\|pub fn build_responses" crates/codegen/xai-grok-sampling-types/src/conversation/responses.rs | head`)
 - Test: conversion test file (same as T5)
@@ -705,6 +707,8 @@ git commit -m "feat(responses): manifest-restricted search dispatch (AdmittedMan
 ---
 
 ### Task 11: D-ERR error channel
+
+> **AMENDED — see A-2.** Orphan/stale discovery output is a provider HTTP 400 (R5), not an in-band D-ERR. Prevent orphan emission at encode; map the 400 as a transport error.
 
 **Files:**
 - Modify: `crates/codegen/xai-grok-tools/src/implementations/search_tool/mod.rs` (arg-parse failure path)
@@ -1113,3 +1117,64 @@ git commit -m "harness: probe kit wire-fact assertions (zero-match, no-reinjecti
 - After EACH wave: run the wave's crate test suites + the raw-key sweep + pathspec-limited commit per task.
 - Live probe runs (bead apex-ayl.146) may run in parallel with code waves (they exercise the CURRENT tree baseline first — that is the pre-divergence baseline the D-ERR and H-3 arms compare against).
 - If any task discovers an out-of-budget file is needed: STOP, record it in the task's notes, raise to the coordinator — do not expand scope silently (spec rule: "Anything outside this list is a spec violation at review").
+
+---
+
+## Amendments (post-plan, evidence-driven)
+
+These amendments record deltas discovered AFTER the plan was ratified. SPEC v1.3 stays frozen; these are
+plan/record deltas only. Evidence: `plans/harness/hosted-tool-search/wire-grounding-probes.md` (live paid probes,
+2026-09-25, 21 POSTs, $0.0388) and `instrumentation-formalism-map.md` (Opus formalism map).
+
+### A-1 (T6) — DECISION REQUIRED (D3): lite placement silently defeats hosted search
+
+**Conflict.** T6 as written sends lite rows' tools (declaration included) in a leading `additional_tools` item and
+clears top-level `tools`. Live probe **R4** (`gpt-5.6-sol`) shows this deployment ACCEPTS that request (HTTP 200)
+but: omits `tool_search` from the echo, sets `defer_loading:null` on every function, emits NO
+`tool_search_call`/`tool_search_output` pair, and calls a function directly. Probe **R1** shows the SAME model with
+TOP-LEVEL placement performs full server-side discovery.
+
+**Blast radius.** T2 baked BOTH flags onto the same three rows — `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`
+carry `supports_search_tool:true` AND `use_responses_lite:true`. Under T6 as written, discovery never runs on
+exactly the rows S3a targets, and the failure is silent (no error, no marker).
+
+**Options.**
+- **D3-A (controller lean):** placement precedence — when a route is ADMITTED for search, use TOP-LEVEL placement
+  even on lite rows; lite placement applies only to non-admitted routes. Rationale: R1 proves top-level works on
+  these exact rows; `use_responses_lite` governs declaration placement, NOT the strict replay contract
+  (`strict_responses_input` is the separate REPLAY-1 field). Requires a T17 live arm asserting the search pair.
+- **D3-B (fail-closed):** treat `supports_search_tool && use_responses_lite` as a CLOSED gate — no declaration, no
+  discovery, log the suppression. Safest, but S3a delivers nothing on its three flagship rows.
+- **D3-C:** keep dual placement and add a live-verified per-row override flag. Most config surface, most churn.
+
+**Until D3 is decided, T6 is BLOCKED.** Do not implement the dual-placement encode as specced.
+
+### A-2 (T11) — orphan/stale discovery is a provider HTTP 400, not an in-band D-ERR
+
+Probe **R5**: a fresh `gpt-5.6-sol` request carrying a client `tool_search_output` with no matching preceding call
+returns Azure `invalid_request_error` (param `input`): "No tool call found for tool search output with call_id …".
+The request never reaches a model turn, so the proposed in-band D-ERR channel CANNOT carry this class. T11 must
+(a) PREVENT orphan emission at encode time (pairing precondition, shared with T15), and (b) treat the 400 as a
+transport-level failure with its own mapped error, not a D-ERR item.
+
+### A-3 (T4) — capability gate confirmed necessary by negative evidence
+
+Probe **R3** (`qwen3.8-27b`, design-OFF row): the same hosted declaration returns HTTP 200, the echo normalizes
+`defer_loading:null`, a skeletal `tool_search` survives, and NO search item is ever produced. Unsupported rows
+degrade SILENTLY rather than failing closed. The T2 catalog flag + T4 gate are therefore load-bearing, and the
+read side must never infer "no search happened" as "search unsupported".
+
+### A-4 (T5/T12) — pending operator decisions D1/D2 (from the formalism map)
+
+- **D1 (T5):** codex's own suite (`codex-rs/core/tests/suite/search_tool.rs:126-145`, `:296-312`) asserts NAMESPACE
+  children inside `tool_search_output.tools[]`, contradicting design.md:151 "flat tools only". Controller lean:
+  unwrap namespace children into flat `DiscoveredTool`s carrying a `namespace` field.
+- **D2 (T12):** silent-drop arms make a dropped `tool_search_call` indistinguishable from "no search". Probe R3
+  makes this concrete. Controller lean: RECORD unknown output items (flag/log), never `continue`-skip.
+
+### A-5 (wave 5 / apex-ayl.146) — remaining capture gap
+
+R1/R2 close the SERVER-executed top-level shapes. Still uncaptured: the CLIENT-executed harness path
+(call → output → next turn with NO re-injection, the H-3 obligation). The 146 baseline must capture that path with
+k≥3 and confounders pinned (`reasoning.effort` and the token cap materially changed R2-luna's outcome; the 64-token
+cap truncated the Anthropic server-search result).
