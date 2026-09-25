@@ -9,12 +9,18 @@ pub mod outbound_lint;
 pub mod projection;
 mod responses;
 mod rules_generated;
+pub mod tool_name;
+pub mod tool_search;
 
 pub use chat_completions::{conversation_item_to_chat_message, conversation_to_chat_messages};
 pub use messages::build_messages_request;
 pub use responses::{
     extra_tool_entries, patch_reasoning_empty_ids, patch_reasoning_text_types,
     response_to_conversation_items,
+};
+pub use tool_name::{
+    FLAT_TOOL_NAME_DELIMITER, MCP_NAMESPACE_PREFIX, NameResolutionError, Resolution, ToolName,
+    ToolResolutionMap, WireToolName, flat_tool_name, parse_flat_tool_name,
 };
 
 use std::sync::Arc;
