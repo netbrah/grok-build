@@ -1289,3 +1289,44 @@ with the router dispatching locally on exactly that value (`core/src/tools/route
 
 Gate coverage: `hts-009-declaration-execution` now asserts the donor value and already fires on our own R1 capture
 ("declared without an execution field"). The red gate caught our own divergence before any donor fixture existed.
+
+### A-9 (LIVE-VERIFIED — the quadrant selector, and a correction to A-8)
+
+Three controller probes on `gpt-5.6-sol`, 2026-09-25 (~$0.01). **A-8's claim that `design.md:49` is wrong is
+RETRACTED** — the design's `execution:"client"` declaration value is CORRECT. Codex's `"sync"` golden is an
+internal/app-tools surface that this deployment rejects outright.
+
+**Probe 1 — `execution:"sync"` (codex golden value) → HTTP 400:**
+`Invalid value: 'sync'. Supported values are: 'server' and 'client'.` param `tools[2].execution`.
+
+**Probe 2 — `execution:"client"` → HTTP 200.** The provider returned:
+`tool_search_call{execution:"client", call_id:"call_qPYlpf…" (NON-NULL), status:"completed",
+arguments:{"query":"shipping ETA tool order_id"}}` and stopped — waiting for the HARNESS to execute.
+
+**Probe 3 — the round trip.** We replied with
+`tool_search_output{call_id, status:"completed", execution:"client", tools:[full definition]}` → the model emitted
+`function_call name="lookup_shipping_eta"` **directly by its real name**. No wrapper, no `use_tool` indirection.
+
+**VERIFIED MECHANICS:**
+| | declaration `execution` absent | `execution:"client"` |
+|---|---|---|
+| who executes | provider (server-side) | **our harness** |
+| `call_id` | `null` | **non-null** (`call_…`) |
+| argument dialect | `{"paths":[...]}` | **`{"query":"..."}`** |
+| output carrier | provider returns it in the same response | harness sends it in the FOLLOWING request |
+
+The declaration's `execution` field IS the quadrant selector; supported values are exactly `server` and `client`.
+Our 21 earlier probes omitted the field, which is why they all landed server-side.
+
+**H-3 no-reinjection demonstrated live:** the follow-up request's `tools[]` still carried the two functions as
+`defer_loading:true` plus the declaration — the discovered schema travelled in the `tool_search_output` ITEM, never
+re-injected into `tools[]`. The obligation is satisfiable, and we now hold bytes proving it.
+
+**REPLAY-FIDELITY DEFECT (new):** the echoed `tool_search_call` carries `created_by`, and replaying it verbatim
+returns `400 Unknown parameter: 'input[1].created_by'`. Replay MUST strip it. Replayable key set observed:
+`{arguments, call_id, execution, id, status, type}`. This is the same class as the REPLAY-1 reasoning-item defect
+and belongs in the T15 pairing/repair path.
+
+**Gate status:** fixture `grok-probe/R6-client-loop` (request + response + next turn) is committed to the battery;
+9 assertions pass. The gate still exits 2 with `NO_DONOR_FINGERPRINT` because passing on our OWN bytes is not donor
+parity — first-party codex / Claude Code capture remains owed.
