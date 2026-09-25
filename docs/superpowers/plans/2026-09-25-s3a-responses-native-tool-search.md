@@ -1922,3 +1922,40 @@ namespace entries the client never sent**: `mcp__ratchet_fixture` AND `mcp__code
 **HANDOFF -> `gate-coverage` (apex-waj.8), who owns the gate file:** add an assertion that tool cardinality is read
 from the REQUEST only, and a positive case that an ECHO may legitimately exceed it. Controller did NOT edit the
 gate; worker 8 owns that path under the wave deconfliction rules.
+
+### A-27 (TASK ORDER REFOLDED: the 17-task plan is stale; A-24..A-26 insert a new tier BEFORE T3)
+
+The original 17-task/5-wave order was written before the IR gap (A-24), provider-side materialisation (A-26), and
+the three normative documents existed. Task order now follows what the bytes proved, not the original guess.
+
+**TIER 0 — foundations that everything else type-checks against (NEW; did not exist in the 17-task plan).**
+| bead | task | why it is tier 0 |
+|---|---|---|
+| `apex-waj.1` | IR discovery representation | A-24: six `ConversationItem` variants, none can hold the search pair. T3 cannot type-check without it. |
+| `apex-waj.12` | `WireToolName` algebra | A-16: child-short-name vs full-flat-name is one `__` algebra. Both wires and the projector need the SAME type. |
+| `apex-waj.11` | compactor variant arm | `compaction_utils.rs:510 _ => None` swallows the new variant on the wires where compaction is still mandatory. |
+| `apex-waj.13` | rules + FAIL-OPEN fix | `outbound_lint.rs:85-88 _ => Vec::new()` fails OPEN for unregistered checks; 4 of 8 CLASS_TOKENS unimplemented. Until fixed, every new invariant is unenforced. |
+
+**TIER 1 — the wire, once the types exist.** `apex-waj.3` (declaration + placement, now decided
+TOP-LEVEL by D3-A), `apex-waj.5` (take the COMPLETED streamed copy, A-22),
+`apex-waj.14` (close the client-executed loop).
+
+**TIER 2 — the seam.** `apex-waj.2`: ladder D0 KEEP / D1 RE-KEY / D2 MATERIALISE / D3 DEMOTE keyed on
+`Boundary` + `ApiBackend` + TARGET admission — NOT `is_family_switch` (too narrow: `claude*`/`gemini*` rows are not
+family switches at all). Invariants XD-1..XD-6; offline tests XT-1..XT-12, each with a fixture and a mutant that
+MUST fail. XT-10 fails against HEAD by construction and stays red until `apex-waj.11` lands.
+
+**TIER 3 — acceptance.** `apex-waj.6` (legacy vs native, real MCP calls),
+`apex-waj.7` (byte-exact `resp-NNN.raw`), `apex-waj.8` (29 of 40 schema cases owed, plus the
+A-26 handoff: read cardinality from the REQUEST).
+
+**Task-order changes forced by evidence, stated plainly:**
+1. **T3 is no longer first.** It types against an IR that cannot yet hold the pair.
+2. **T6 is unblocked** (D3-A) and is no longer a decision, just work.
+3. **A new obligation appears that no original task covered:** the projector/compactor seam. Discovery state must
+   survive a switch the harness performs, on the one wire where compaction is deliberately disabled.
+4. **The legacy arm is not deprecated work** — it is ARM A of acceptance and must stay structured and intact.
+5. **The formalism fix is a PREREQUISITE, not a follow-up.** Landing invariants into an instrument that fails open
+   produces green results that mean nothing — the same failure class as the four inert gate assertions.
+
+Twelve workers, fully disjoint paths, dependencies only where the type system forces them.
