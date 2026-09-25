@@ -1464,3 +1464,40 @@ with the CX1 mocked-response caveat and the Messages-wire skip both still printe
 
 **Rig fixes needed for the operator config (found by running it):** `--strict-config` rejects the fork-only keys
 `[code_mode]` and `["multi_agent_v1"]`; `make_operator_home.py` must strip them when arming the first-party binary.
+
+### A-13 (G-1 CLOSED — fully live first-party codex episode, both sides genuine)
+
+Arm L1c: `codex-cli 0.156.1`, operator config, **gpt-5.5**, live corp llm-proxy through the wiretap2 tee, rc=0,
+4 turns. Fixture `codex/CX3-toolsearch-5.5-LIVE` (request AND response bytes both genuine — no mock anywhere).
+
+**The provider-emitted call and the codex-minted output, verbatim:**
+```json
+{"type":"tool_search_call","id":"tsc_02005a6c7856d15c016ab6aa70e9208194bc939a9b4707c556",
+ "call_id":"call_AOphypzlL1KKckJugyBS2PYn","status":"completed","execution":"client",
+ "arguments":{"query":"crm order management","limit":8}}
+
+{"type":"tool_search_output","id":"tso_01a0d989-caf9-73c1-85e6-2f7944f1c076",
+ "call_id":"call_AOphypzlL1KKckJugyBS2PYn","status":"completed","execution":"client",
+ "tools":[<2 full defs: mcp__ratchet_fixture, mcp__codebase_memory_mcp>]}
+```
+
+**Confirmed on live bytes:**
+- `execution:"client"` on the declaration AND on both items. A-8 is dead three times over.
+- `arguments` is an OBJECT with `{query, limit}` — never a JSON string.
+- **Two distinct id vocabularies**: the call id is PROVIDER-minted (`tsc_<hex>` + `call_id:"call_<b62>"`); the output
+  id is CODEX-minted (`tso_<uuid>`). A replay/repair path must not assume one minting authority.
+- **NO-REINJECTION, LIVE-CONFIRMED**: `tools[]` held at **12 across all four turns**. The two discovered MCP tools
+  never entered the declaration surface. This is the strict codex rule, now donor-proven rather than inferred.
+
+**CORRECTION to A-11:** `internal_chat_message_metadata_passthrough` is **ABSENT** from the live items (verified on
+both). It appeared only in the mock-driven dry run, so it is a DRY-RUN artifact, not a live replay hazard. The
+`created_by` defect from A-9 remains real (observed on live provider bytes). T15's strip-list should carry
+`created_by`; `internal_chat_message_metadata_passthrough` is downgraded to "seen only behind mock_upstream".
+
+**Gate battery: 4 donor episodes / 36 assertions / 0 failed / EXIT=0**, with the CX1 mock caveat and the Messages
+skip still printed. Donor coverage is now: codex tool_search (live), codex code mode (live), codex tool_search
+(dry-run), Claude Code (live, awaiting the S2.9 adapter).
+
+**Incidental live finding:** `reasoning.effort="max"` is rejected for `gpt-5.5-2026-04-24`
+(`Supported values are: none, low, medium, high, xhigh`). The operator config's `max` is 5.6-sol-specific, so any
+multi-model arm must override effort per model row.
