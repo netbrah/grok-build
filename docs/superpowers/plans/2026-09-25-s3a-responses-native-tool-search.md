@@ -1134,6 +1134,13 @@ but: omits `tool_search` from the echo, sets `defer_loading:null` on every funct
 `tool_search_call`/`tool_search_output` pair, and calls a function directly. Probe **R1** shows the SAME model with
 TOP-LEVEL placement performs full server-side discovery.
 
+**Verified from raw bytes (controller, not seat prose).** R1 echo `tools[]` = `[function, function, tool_search]`
+with `defer_loading:[true,true]`; R4 echo `tools[]` = `[function, function]` — the `tool_search` declaration is
+DROPPED and `defer_loading` is stripped to `null`. So lite placement does not merely skip discovery: it discards
+the deferral contract, leaving tools we intended to hide fully exposed AND eagerly callable — the exact inverse of
+S3a's "zero prompt bytes for undeclared tools" intent. Captures: `captures/2026-09-25-wire-grounding/`
+(46 files + MANIFEST.tsv, auth-swept clean); py and TS arms agree independently.
+
 **Blast radius.** T2 baked BOTH flags onto the same three rows — `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`
 carry `supports_search_tool:true` AND `use_responses_lite:true`. Under T6 as written, discovery never runs on
 exactly the rows S3a targets, and the failure is silent (no error, no marker).
