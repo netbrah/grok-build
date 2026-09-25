@@ -1630,3 +1630,35 @@ picture is the same at turn 1 (13 tools, one deferred entry) while `mcp__codegra
 NORMALLY and `codegraph_status` is absent until discovered. **Deferral on this wire = OMISSION + sentinel**, and the
 static shouldDefer table does not reach the wire. Precedence rule reaffirmed: captured bytes outrank binary
 string analysis.
+
+### A-18 (xwire has a WORKING reference implementation: `netbrah__claude-codex` — and it REFUSES the inversion)
+
+`wirejig/repos/netbrah__claude-codex/codex-rs/provider-anthropic/src/wire.rs` (4,875 lines) is a dual
+Responses+Anthropic harness that implements the full client-executed loop. It is the only cross-family donor found
+in 41 harnesses (pi-recon Q6: 3 of 41 implement the loop at all; the other two are Responses-only).
+
+**It solves A-15's inversion by not participating in it.** `tool_reference`: **0 hits**. `defer_loading` appears 7
+times and is `None` at every site. It never uses Anthropic's native deferral.
+
+| seam | what it does | cite |
+|---|---|---|
+| declaration | `ToolSpec::ToolSearch` -> a PLAIN Anthropic tool `{"name":"tool_search","input_schema":...}` | `wire.rs:936-949` |
+| namespaces | flattens `ToolSpec::Namespace` to `<ns>__<name>`; comment warns that without it every MCP server is "silently invisible to Claude" | `wire.rs:950-972` |
+| call item | `ToolSearchCall` -> `tool_use` block named `tool_search`; mints `toolu_search_<hash>` when `call_id` is absent | `wire.rs:364-386` |
+| output item | `ToolSearchOutput` -> `tool_result` with the tools array as content, or `"No tools found."` | `wire.rs:388-400` |
+
+**This CONFIRMS A-16's naming invariant from an independent implementation.** The flattening convention is
+`{ns}__{name}` — exactly the `mcp__codegraph__codegraph_status` shape Claude Code invokes, versus the child short
+name codex invokes. The rewrite A-16 predicted is precisely what a working cross-family harness performs.
+
+**TWO STRATEGIES, now both evidenced — this is the xwire decision:**
+- **Strategy U (uniform emulation)** — claude-codex. Carry the Responses-shaped `tool_search` onto both wires as an
+  ordinary tool, flatten namespaces, translate the two items. No inversion to manage. COST: discovered and
+  namespaced tools are DECLARED, so the Anthropic side forfeits native deferral and pays full context.
+- **Strategy N (native per family)** — Claude Code's own mechanism. Measured win on the same cell (A-10):
+  66 tools -> 13, 161,348 B -> 63,801 B, $0.5655 -> $0.3960. COST: the boundary must transform discovery state in
+  both directions, because the re-declaration rules are inverted and the invocation names differ.
+The choice is a context-cost vs boundary-complexity trade, and both sides now have numbers.
+
+UNDECIDED: whether claude-codex gates WHICH namespaces reach the flattener upstream of `wire.rs`. If it does not,
+Strategy U pays the full eager cost on every Anthropic turn.
