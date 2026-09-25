@@ -1607,3 +1607,26 @@ child is called.
 
 **Both donors now have a full search->invoke episode on disk** (codex CX3+S5, Claude CC2), so the A/B acceptance
 harness has real invocation ground truth on both wires.
+
+### A-17 (S2.9 Messages adapter LANDED; S4 control REFUTES a static prediction)
+
+**Gate: 4 -> 6 donor episodes, 36 -> 66 assertions, 0 failed.** Claude fixtures are SCORED, not skipped.
+Adapter maps the Messages dialect onto the same rec schema and refuses to fake Responses-only fields:
+`execution` is absent by design, so `hts-003/008/009` are exempted for this dialect rather than fabricated.
+
+- `hts-006` is now INVERTED per wire, from one predicate: Responses FAILS on re-declaration; Messages FAILS on
+  OMISSION or on re-declaration without `defer_loading:true`.
+- New `hts-010-messages-reference` (the `ToolSearch` surface must exist and references must name a tool) and
+  `hts-011-messages-deferral` (the sentinel must be present).
+
+**Falsification proof (3 mutations of CC2, each caught):** drop the deferred re-declaration -> hts-006 FAIL;
+re-declare without the flag -> hts-006 FAIL with the subtler message; delete the `ToolSearch` surface -> hts-010
+FAIL naming the ENABLE_TOOL_SEARCH false-negative trap. The assertions are load-bearing, not decorative.
+
+**S4 no-MCP control refutes a static claim.** Binary analysis predicted "47 built-ins carry `shouldDefer:true`, so
+zero MCP servers still triggers deferral". LIVE: with zero MCP servers the request carries 12 tools and exactly ONE
+deferred entry, the `DeferredToolPlaceholder` sentinel; no built-in carries `defer_loading`. With MCP attached the
+picture is the same at turn 1 (13 tools, one deferred entry) while `mcp__codegraph__codegraph_explore` is declared
+NORMALLY and `codegraph_status` is absent until discovered. **Deferral on this wire = OMISSION + sentinel**, and the
+static shouldDefer table does not reach the wire. Precedence rule reaffirmed: captured bytes outrank binary
+string analysis.
