@@ -80,9 +80,10 @@ fn tool_exposure_defaults_immediate_and_round_trips() {
     let mut d = spec.clone();
     d.exposure = ToolExposure::Deferred;
     let v = serde_json::to_value(&d).unwrap();
-    assert_eq!(v["exposure"], "Deferred");
+    assert_eq!(v["exposure"], "deferred"); // wire case = lowercase (crate convention; SDD ruling 2026-09-25 T1 — brief originally said "Deferred", contradiction ruled on)
     let back: ToolSpec = serde_json::from_value(v).unwrap();
     assert_eq!(back.exposure, ToolExposure::Deferred);
+    assert_eq!(serde_json::to_value(back.exposure).unwrap(), "deferred");
 }
 ```
 
