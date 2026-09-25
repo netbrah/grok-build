@@ -1222,3 +1222,30 @@ extra round trip (search turn -> dispatch turn collapses into one response).
 server-native where verified (Responses sol/terra/luna; Anthropic BM25 tool type) -> client-native
 (`execution:"client"` Responses, UNPROVEN; Anthropic `tool_reference`, PROVEN) -> legacy `search_tool`/`use_tool`
 everywhere else. A fallback ladder, not a fork.
+
+### A-7 (donor evidence — codex is CLIENT-executed; our probes covered the wrong quadrant)
+
+Source-verified in the codex pin (READ-ONLY), no spend:
+
+- **Trigger** (`codex-rs/core/src/tools/spec_plan.rs:369-374`, `:624-637`):
+  `model_info.supports_search_tool && provider.capabilities().namespace_tools && any(tool.exposure.is_deferred()
+  && tool.runtime.search_info().is_some())`.
+- **`supports_search_tool` is codex's literal field name** — T2's catalog flag is donor-faithful by identifier.
+- **`tool.exposure.is_deferred()`** — codex has the same exposure concept T1 landed as
+  `ToolExposure::{Immediate, Deferred}`. T1 is donor-faithful.
+- **Codex drives `execution:"client"` with a REUSED non-null `call_id`**
+  (`core/src/tools/executed_tool_calls/request_metadata_tests.rs:1066`). Every one of our 21 paid probes exercised
+  the SERVER path (`execution:"server"`, `call_id:null`). Since the operator defines "native" as "behaves like
+  codex and Claude Code", the CLIENT quadrant is the target and our live evidence does not cover it.
+- **NEW GAP — `namespace_tools`:** codex gates search on a PROVIDER-level namespace-tools capability. We have
+  `supports_search_tool` (T2) but no equivalent provider capability. Scope before T6/T10.
+- **D1 is settled by donor design:** namespace children are structural (the capability is a precondition), which is
+  why `search_tool.rs:296-312` asserts them. `design.md:151` "flat tools only" is a DIVERGENCE from first-party
+  behavior, not a simplification.
+
+**Donor type contract — binding on T3** (`codex-rs/protocol/src/models.rs:1093-1107`, `:1169-1182`):
+`execution` is a REQUIRED `String` on BOTH `ToolSearchCall` and `ToolSearchOutput`; `status` is REQUIRED on output
+but OPTIONAL on call; `call_id` is `Option<String>` on both (accommodating server-null AND codex-reused ids);
+`arguments` is `serde_json::Value` (NOT a string); `tools` is `Vec<serde_json::Value>` — the permissive element
+type is precisely how namespace children round-trip. Typing any of these more strictly REJECTS what first-party
+emits.
