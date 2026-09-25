@@ -1,8 +1,8 @@
 //! A2 — in-product pre-send invariant validator (FMTL-HARDEN-1,
 //! apex-ayl.126.8.2; HARDENING-SPEC §3.2).
 //!
-//! Value-level mirror of the hard invariants H-1..H-5 plus the header-level
-//! H-6, per-rule scope EXACTLY mirroring the A1 offline linter
+//! Value-level mirror of body hard invariants H-1..H-5 and H-8..H-11,
+//! plus header-level H-6, with per-rule scope mirroring the A1 offline linter
 //! (`grok/plans/parity-formalism/tools/invariant_lint.py`) for what a single
 //! `(Boundary, body)` pair can decide:
 //!
@@ -42,6 +42,8 @@
 //! The caller (`xai-grok-sampler` send boundary) decides debug-panic vs
 //! release telemetry (spec D-1).
 
+use std::collections::{HashMap, HashSet};
+
 use serde_json::Value;
 
 use super::projection::Boundary;
@@ -50,7 +52,7 @@ use super::rules_generated::{HARD_RULES, HardRule};
 /// A single hard-invariant violation observed on an outbound request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LintViolation {
-    /// The rule id from the hard-rule table (`H-1`..`H-6`).
+    /// The rule id from the registered hard-rule table.
     pub rule: &'static str,
     /// Body path (`input[i].content`, `body.store`, …) or
     /// `header:<name>` for the header-level H-6.
@@ -59,36 +61,48 @@ pub struct LintViolation {
     pub observed: String,
 }
 
-/// Lint the FINAL outbound request body against the hard invariants
-/// H-1..H-5, scoped per rule (the header-level H-6 lives in
+/// Lint the FINAL outbound request body against the registered body-level
+/// hard invariants, scoped per rule (the header-level H-6 lives in
 /// [`lint_outbound_headers`]).
 ///
 /// `boundary` is the row's boundary class at send time (no inference).
 /// Returns every violation observed — the caller decides what to do with
 /// them (debug-panic / release telemetry; D-1). Never mutates `body`.
 pub fn lint_outbound_request(boundary: Boundary, body: &Value) -> Vec<LintViolation> {
+    lint_body_rules(HARD_RULES, boundary, body)
+}
+
+fn lint_body_rules(rules: &[HardRule], boundary: Boundary, body: &Value) -> Vec<LintViolation> {
     let mut out = Vec::new();
-    for rule in HARD_RULES {
+    for rule in rules {
         if rule.check == "no_empty_x_litellm_tags" {
             continue; // header-level: enforced by `lint_outbound_headers`
         }
         if !rule_in_scope(rule, boundary, body) {
             continue;
         }
-        out.extend(match rule.check {
-            "reasoning_content_absent_or_empty" => check_h1(body),
-            "reasoning_no_encrypted_content" => check_h2(body),
-            "item_id_nonempty_and_minted" => check_h3(body),
-            "store_false" => check_h4(body),
-            "encitem_only_to_matching_azure_row" => check_h5(boundary, body),
-            // Unknown check name in the table: a CI escape (the
-            // `rule_table_registry_complete` test + the T7 drift test pin
-            // table vs dispatch). The observe-only contract (D-1) says skip,
-            // never take a session down.
-            _ => Vec::new(),
-        });
+        out.extend(dispatch_body_rule(rule, boundary, body));
     }
     out
+}
+
+fn dispatch_body_rule(rule: &HardRule, boundary: Boundary, body: &Value) -> Vec<LintViolation> {
+    match rule.check {
+        "reasoning_content_absent_or_empty" => check_h1(body),
+        "reasoning_no_encrypted_content" => check_h2(body),
+        "item_id_nonempty_and_minted" => check_h3(body),
+        "store_false" => check_h4(body),
+        "encitem_only_to_matching_azure_row" => check_h5(boundary, body),
+        "search_pair_correlation" => check_h8(body),
+        "search_arguments_object" => check_h9(body),
+        "search_execution_agreement" => check_h10(body),
+        "tool_reference_declared" => check_h11(body),
+        check => vec![LintViolation {
+            rule: rule.id,
+            path: "rule_registry".into(),
+            observed: format!("unregistered hard check {check:?}"),
+        }],
+    }
 }
 
 /// Lint the FINAL outbound header set against the header-level hard
@@ -120,8 +134,12 @@ pub fn lint_outbound_headers(headers: &[(&str, &str)]) -> Vec<LintViolation> {
 fn rule_in_scope(rule: &HardRule, boundary: Boundary, body: &Value) -> bool {
     match rule.class {
         "AzStrict" => boundary == Boundary::AzStrict,
+        "VLLenient" => boundary == Boundary::VLLenient,
+        "Vertex" => boundary == Boundary::Vertex,
+        "all" => true,
         "all-responses" => matches!(boundary, Boundary::AzStrict | Boundary::VLLenient),
-        "all-envelope" => true,
+        "all-messages" => boundary == Boundary::Vertex,
+        "all-envelope" | "per-class" => true,
         "cross-boundary" => body.is_object(),
         _ => false,
     }
@@ -309,6 +327,188 @@ fn check_h5(boundary: Boundary, body: &Value) -> Vec<LintViolation> {
                 path: format!("input[{i}].{field}"),
                 observed: format!("{observed} (boundary: {boundary:?})"),
             });
+        }
+    }
+    out
+}
+
+/// H-8 (all responses-wire, EV-15): every client-executed
+/// `tool_search_output` pairs one-to-one with a preceding
+/// `tool_search_call` sharing a non-empty `call_id`. Server-executed output
+/// is provider-owned and carries `call_id: null`, so it is out of scope.
+fn check_h8(body: &Value) -> Vec<LintViolation> {
+    let mut out = Vec::new();
+    let mut calls = HashSet::new();
+    let mut seen = HashMap::new();
+    for (i, item) in input_items(body) {
+        match item.get("type").and_then(Value::as_str) {
+            Some("tool_search_call") => {
+                if let Some(call_id) = item
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
+                    calls.insert(call_id);
+                }
+            }
+            Some("tool_search_output") => {
+                if item.get("execution").and_then(Value::as_str) == Some("server") {
+                    continue;
+                }
+                let Some(call_id) = item
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                else {
+                    out.push(LintViolation {
+                        rule: "H-8",
+                        path: format!("input[{i}].call_id"),
+                        observed: format!("call_id={:?}", item.get("call_id")),
+                    });
+                    continue;
+                };
+                if !calls.contains(call_id) {
+                    out.push(LintViolation {
+                        rule: "H-8",
+                        path: format!("input[{i}].call_id"),
+                        observed: format!("call_id={call_id:?} with no preceding tool_search_call"),
+                    });
+                }
+                if let Some(first) = seen.get(call_id) {
+                    out.push(LintViolation {
+                        rule: "H-8",
+                        path: format!("input[{i}].call_id"),
+                        observed: format!(
+                            "call_id={call_id:?} duplicated (first at input[{first}])"
+                        ),
+                    });
+                } else {
+                    seen.insert(call_id, i);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// H-9 (all responses-wire, EV-16): a completed `tool_search_call` carries
+/// `arguments` as a JSON object, never the stringified `function_call` form.
+fn check_h9(body: &Value) -> Vec<LintViolation> {
+    let mut out = Vec::new();
+    for (i, item) in input_items(body) {
+        if item.get("type").and_then(Value::as_str) != Some("tool_search_call")
+            || item.get("status").and_then(Value::as_str) != Some("completed")
+        {
+            continue;
+        }
+        if !item.get("arguments").is_some_and(Value::is_object) {
+            out.push(LintViolation {
+                rule: "H-9",
+                path: format!("input[{i}].arguments"),
+                observed: match item.get("arguments") {
+                    Some(arguments) => format!("arguments={arguments:?}"),
+                    None => "arguments absent".into(),
+                },
+            });
+        }
+    }
+    out
+}
+
+/// H-10 (all responses-wire, EV-17): a correlated search call and output
+/// agree on dispatch ownership (`execution`). H-8 owns missing/orphan ids.
+fn check_h10(body: &Value) -> Vec<LintViolation> {
+    let mut call_execution = HashMap::new();
+    let mut out = Vec::new();
+    for (i, item) in input_items(body) {
+        match item.get("type").and_then(Value::as_str) {
+            Some("tool_search_call") => {
+                if let Some(call_id) = item
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
+                    call_execution.insert(call_id, item.get("execution"));
+                }
+            }
+            Some("tool_search_output") => {
+                let Some(call_id) = item.get("call_id").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Some(expected) = call_execution.get(call_id) else {
+                    continue;
+                };
+                if item.get("execution") != *expected {
+                    out.push(LintViolation {
+                        rule: "H-10",
+                        path: format!("input[{i}].execution"),
+                        observed: format!(
+                            "output execution={:?}, call execution={expected:?}",
+                            item.get("execution")
+                        ),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// H-11 (all messages-wire, EV-18): every `tool_reference.tool_name` nested
+/// in a `tool_result` resolves to a top-level `tools[].name` declaration.
+fn check_h11(body: &Value) -> Vec<LintViolation> {
+    let mut declared = HashSet::new();
+    if let Some(tools) = body.get("tools").and_then(Value::as_array) {
+        for tool in tools {
+            if let Some(name) = tool
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                declared.insert(name);
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    let Some(messages) = body.get("messages").and_then(Value::as_array) else {
+        return out;
+    };
+    for (mi, message) in messages.iter().enumerate() {
+        let Some(blocks) = message.get("content").and_then(Value::as_array) else {
+            continue;
+        };
+        for (bi, block) in blocks.iter().enumerate() {
+            if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                continue;
+            }
+            let Some(content) = block.get("content").and_then(Value::as_array) else {
+                continue;
+            };
+            for (ci, reference) in content.iter().enumerate() {
+                if reference.get("type").and_then(Value::as_str) != Some("tool_reference") {
+                    continue;
+                }
+                let path = format!("messages[{mi}].content[{bi}].content[{ci}].tool_name");
+                match reference.get("tool_name").and_then(Value::as_str) {
+                    Some(name) if !name.is_empty() && declared.contains(name) => {}
+                    Some(name) if !name.is_empty() => out.push(LintViolation {
+                        rule: "H-11",
+                        path,
+                        observed: format!(
+                            "tool_name={name:?} not in tools[] ({} declared)",
+                            declared.len()
+                        ),
+                    }),
+                    name => out.push(LintViolation {
+                        rule: "H-11",
+                        path,
+                        observed: format!("tool_name={name:?}"),
+                    }),
+                }
+            }
         }
     }
     out
@@ -842,9 +1042,177 @@ mod tests {
         }
     }
 
+    // -- native discovery formalism H-8..H-11 --------------------------
+
+    fn synthetic_rule(id: &'static str, class: &'static str, check: &'static str) -> HardRule {
+        HardRule {
+            id,
+            class,
+            severity: "hard",
+            ev: &["EV-test"],
+            check,
+            description: "test rule",
+        }
+    }
+
+    #[test]
+    fn formalism_h8_pair_correlation_and_server_null_guard() {
+        let good = json!({
+            "store": false,
+            "input": [
+                {"type": "tool_search_call", "call_id": "call_1", "execution": "client"},
+                {"type": "tool_search_output", "call_id": "call_1", "execution": "client"},
+                {"type": "tool_search_call", "call_id": null, "execution": "server"},
+                {"type": "tool_search_output", "call_id": null, "execution": "server"}
+            ]
+        });
+        let good_violations = lint_outbound_request(Boundary::AzStrict, &good);
+        assert!(good_violations.is_empty(), "got {good_violations:?}");
+
+        let bad = json!({
+            "store": false,
+            "input": [
+                {"type": "tool_search_output", "call_id": "orphan", "execution": "client"},
+                {"type": "tool_search_call", "call_id": "dup", "execution": "client"},
+                {"type": "tool_search_output", "call_id": "dup", "execution": "client"},
+                {"type": "tool_search_output", "call_id": "dup", "execution": "client"},
+                {"type": "tool_search_output", "call_id": null, "execution": "client"}
+            ]
+        });
+        let violations = lint_outbound_request(Boundary::AzStrict, &bad);
+        assert_eq!(rules_of(&violations), vec!["H-8", "H-8", "H-8"]);
+        assert_eq!(violations[0].path, "input[0].call_id");
+        assert_eq!(violations[1].path, "input[3].call_id");
+        assert_eq!(violations[2].path, "input[4].call_id");
+    }
+
+    #[test]
+    fn formalism_h9_completed_arguments_are_objects() {
+        let body = json!({
+            "store": false,
+            "input": [
+                {"type": "tool_search_call", "status": "completed", "arguments": {"query": "x"}},
+                {"type": "tool_search_call", "status": "in_progress", "arguments": "{}"},
+                {"type": "tool_search_call", "status": "completed", "arguments": "{}"},
+                {"type": "tool_search_call", "status": "completed"}
+            ]
+        });
+        let violations = lint_outbound_request(Boundary::AzStrict, &body);
+        assert_eq!(rules_of(&violations), vec!["H-9", "H-9"]);
+        assert_eq!(violations[0].path, "input[2].arguments");
+        assert_eq!(violations[1].path, "input[3].arguments");
+    }
+
+    #[test]
+    fn formalism_h10_pair_execution_agrees() {
+        let body = json!({
+            "store": false,
+            "input": [
+                {"type": "tool_search_call", "call_id": "a", "execution": "server"},
+                {"type": "tool_search_output", "call_id": "a", "execution": "client"},
+                {"type": "tool_search_output", "call_id": "orphan", "execution": "client"}
+            ]
+        });
+        let violations: Vec<LintViolation> = lint_outbound_request(Boundary::AzStrict, &body)
+            .into_iter()
+            .filter(|violation| violation.rule == "H-10")
+            .collect();
+        assert_eq!(rules_of(&violations), vec!["H-10"]);
+        assert_eq!(violations[0].path, "input[1].execution");
+
+        let reused = json!({
+            "store": false,
+            "input": [
+                {"type": "tool_search_call", "call_id": "a", "execution": "server"},
+                {"type": "tool_search_output", "call_id": "a", "execution": "server"},
+                {"type": "tool_search_call", "call_id": "a", "execution": "client"}
+            ]
+        });
+        let reused_violations: Vec<LintViolation> =
+            lint_outbound_request(Boundary::AzStrict, &reused)
+                .into_iter()
+                .filter(|violation| violation.rule == "H-10")
+                .collect();
+        assert!(reused_violations.is_empty(), "got {reused_violations:?}");
+    }
+
+    #[test]
+    fn formalism_h11_tool_reference_resolves_in_tools() {
+        let body = json!({
+            "tools": [{"name": "lookup_shipping_eta", "input_schema": {"type": "object"}}],
+            "messages": [{"role": "user", "content": [{
+                "type": "tool_result",
+                "content": [
+                    {"type": "tool_reference", "tool_name": "lookup_shipping_eta"},
+                    {"type": "tool_reference", "tool_name": "missing"}
+                ]
+            }]}]
+        });
+        let violations = lint_outbound_request(Boundary::Vertex, &body);
+        assert_eq!(rules_of(&violations), vec!["H-11"]);
+        assert_eq!(
+            violations[0].path,
+            "messages[0].content[0].content[1].tool_name"
+        );
+
+        let scalar_tools = json!({
+            "tools": 1,
+            "messages": [{"content": [{
+                "type": "tool_result",
+                "content": [{"type": "tool_reference", "tool_name": "missing"}]
+            }]}]
+        });
+        let scalar_tools_violations = lint_outbound_request(Boundary::Vertex, &scalar_tools);
+        assert_eq!(rules_of(&scalar_tools_violations), vec!["H-11"]);
+
+        let scalar_messages = json!({"tools": [], "messages": 1});
+        let scalar_messages_violations = lint_outbound_request(Boundary::Vertex, &scalar_messages);
+        assert!(
+            scalar_messages_violations.is_empty(),
+            "got {scalar_messages_violations:?}"
+        );
+    }
+
+    #[test]
+    fn formalism_every_class_token_has_scope_semantics() {
+        let responses = json!({"store": false, "input": []});
+        let messages = json!({"messages": []});
+        let cases = [
+            ("AzStrict", Boundary::AzStrict, &responses, true),
+            ("AzStrict", Boundary::VLLenient, &responses, false),
+            ("VLLenient", Boundary::VLLenient, &responses, true),
+            ("Vertex", Boundary::Vertex, &messages, true),
+            ("all", Boundary::Vertex, &messages, true),
+            ("all-responses", Boundary::AzStrict, &responses, true),
+            ("all-responses", Boundary::Vertex, &messages, false),
+            ("all-messages", Boundary::Vertex, &messages, true),
+            ("all-messages", Boundary::AzStrict, &responses, false),
+            ("all-envelope", Boundary::Vertex, &messages, true),
+            ("per-class", Boundary::VLLenient, &responses, true),
+            ("cross-boundary", Boundary::VLLenient, &responses, true),
+        ];
+        for (class, boundary, body, expected) in cases {
+            let rule = synthetic_rule("H-test", class, "store_false");
+            assert_eq!(
+                rule_in_scope(&rule, boundary, body),
+                expected,
+                "class={class}, boundary={boundary:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn formalism_unregistered_check_fails_closed() {
+        let rule = synthetic_rule("H-test", "all", "unregistered_check");
+        let violations = lint_body_rules(&[rule], Boundary::AzStrict, &json!({}));
+        assert_eq!(rules_of(&violations), vec!["H-test"]);
+        assert_eq!(violations[0].path, "rule_registry");
+        assert!(violations[0].observed.contains("unregistered_check"));
+    }
+
     /// Registry completeness: every table row's `check` name resolves in
-    /// the dispatch (and the dispatch covers exactly the table) — the pin
-    /// that makes the dispatch's unknown-check arm unreachable.
+    /// the dispatch and every dispatch arm has a table row. The unknown arm
+    /// still fails closed in case a future table escapes this CI pin.
     #[test]
     fn rule_table_registry_complete() {
         const DISPATCHED: &[&str] = &[
@@ -854,6 +1222,10 @@ mod tests {
             "store_false",
             "encitem_only_to_matching_azure_row",
             "no_empty_x_litellm_tags",
+            "search_pair_correlation",
+            "search_arguments_object",
+            "search_execution_agreement",
+            "tool_reference_declared",
         ];
         let table: Vec<&str> = HARD_RULES.iter().map(|r| r.check).collect();
         for check in DISPATCHED {
@@ -873,7 +1245,7 @@ mod tests {
         assert_eq!(
             HARD_RULES.len(),
             DISPATCHED.len(),
-            "table and dispatch must cover the same 6 rules"
+            "table and dispatch must cover the same registered hard rules"
         );
     }
 

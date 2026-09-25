@@ -17,7 +17,7 @@
 /// allowed so the non-test lib build stays warning-free.
 #[allow(dead_code)]
 pub const HARD_RULES_CHECKSUM: &str =
-    "f93e94493e0b222ad47c198ca1d8c01154348bb300155571ce5dee943aaddc94";
+    "0f31bf0e8e99db51b01501bdc5069adc21e11a0aa2aa372be65e1a4f36d2b0ff";
 
 /// One hard-rule row — a verbatim mirror of an `invariant_rules.json` row
 /// with `severity == "hard"` (campaign order).
@@ -34,7 +34,7 @@ pub struct HardRule {
     pub description: &'static str,
 }
 
-/// The hard-rule table (H-1..H-6), campaign-JSON order.
+/// The registered hard-rule table, in campaign-JSON order.
 pub const HARD_RULES: &[HardRule] = &[
     HardRule {
         id: "H-1",
@@ -83,5 +83,37 @@ pub const HARD_RULES: &[HardRule] = &[
         ev: &["EV-6"],
         check: "no_empty_x_litellm_tags",
         description: "no empty-string x-litellm-tags header. SCOPED: other empty-string headers are OUT of scope - ~240/400 sampled known-good requests carry empty x-grok-* headers and return 200 (mgw-toolctl-01 req-004; OQ-f)",
+    },
+    HardRule {
+        id: "H-8",
+        class: "all-responses",
+        severity: "hard",
+        ev: &["EV-15"],
+        check: "search_pair_correlation",
+        description: "every client-executed tool_search_output has a non-empty call_id, follows a tool_search_call with the same call_id in input[], and is the only output for that call_id; execution:'server' outputs are provider-owned and excluded",
+    },
+    HardRule {
+        id: "H-9",
+        class: "all-responses",
+        severity: "hard",
+        ev: &["EV-16"],
+        check: "search_arguments_object",
+        description: "every completed tool_search_call carries arguments as a JSON object, never the stringified function_call form",
+    },
+    HardRule {
+        id: "H-10",
+        class: "all-responses",
+        severity: "hard",
+        ev: &["EV-17"],
+        check: "search_execution_agreement",
+        description: "a tool_search_call and its correlated tool_search_output agree on execution",
+    },
+    HardRule {
+        id: "H-11",
+        class: "all-messages",
+        severity: "hard",
+        ev: &["EV-18"],
+        check: "tool_reference_declared",
+        description: "on the messages wire, every tool_reference.tool_name in a tool_result content block resolves to the name of a top-level tools[] definition; defer_loading is optional",
     },
 ];

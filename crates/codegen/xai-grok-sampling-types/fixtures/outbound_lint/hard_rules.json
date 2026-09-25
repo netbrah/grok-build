@@ -68,6 +68,46 @@
       ],
       "check": "no_empty_x_litellm_tags",
       "description": "no empty-string x-litellm-tags header. SCOPED: other empty-string headers are OUT of scope - ~240/400 sampled known-good requests carry empty x-grok-* headers and return 200 (mgw-toolctl-01 req-004; OQ-f)"
+    },
+    {
+      "id": "H-8",
+      "class": "all-responses",
+      "severity": "hard",
+      "ev": [
+        "EV-15"
+      ],
+      "check": "search_pair_correlation",
+      "description": "every client-executed tool_search_output has a non-empty call_id, follows a tool_search_call with the same call_id in input[], and is the only output for that call_id; execution:'server' outputs are provider-owned and excluded"
+    },
+    {
+      "id": "H-9",
+      "class": "all-responses",
+      "severity": "hard",
+      "ev": [
+        "EV-16"
+      ],
+      "check": "search_arguments_object",
+      "description": "every completed tool_search_call carries arguments as a JSON object, never the stringified function_call form"
+    },
+    {
+      "id": "H-10",
+      "class": "all-responses",
+      "severity": "hard",
+      "ev": [
+        "EV-17"
+      ],
+      "check": "search_execution_agreement",
+      "description": "a tool_search_call and its correlated tool_search_output agree on execution"
+    },
+    {
+      "id": "H-11",
+      "class": "all-messages",
+      "severity": "hard",
+      "ev": [
+        "EV-18"
+      ],
+      "check": "tool_reference_declared",
+      "description": "on the messages wire, every tool_reference.tool_name in a tool_result content block resolves to the name of a top-level tools[] definition; defer_loading is optional"
     }
   ]
 }
