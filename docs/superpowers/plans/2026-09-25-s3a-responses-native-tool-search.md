@@ -1330,3 +1330,49 @@ and belongs in the T15 pairing/repair path.
 **Gate status:** fixture `grok-probe/R6-client-loop` (request + response + next turn) is committed to the battery;
 9 assertions pass. The gate still exits 2 with `NO_DONOR_FINGERPRINT` because passing on our OWN bytes is not donor
 parity — first-party codex / Claude Code capture remains owed.
+
+### A-10 (FIRST-PARTY DONOR CAPTURED — Claude Code does tool search, in a THIRD shape)
+
+Live capture 2026-09-25, `claude` 2.1.267 + claude-opus-5, rig `claude-code-parity/bin/cc-arm` (patched additively
+to attach MCP servers), 42 MCP tools from pty + codebase-memory + codegraph.
+
+**A/B on the identical cell — one environment variable:**
+| | gate OFF (default) | gate ON (`ENABLE_TOOL_SEARCH=true`) |
+|---|---|---|
+| tools declared | 66 (all eager) | **13** |
+| `defer_loading:true` | 0 | **1** (`DeferredToolPlaceholder`) |
+| request bytes | 161,348 | **63,801** (-60%) |
+| `anthropic-beta` | no tool-search beta | **`advanced-tool-use-2025-11-20`** |
+| cost | $0.56552625 | **$0.39602375** (-30%) |
+
+**THE TRAP (retracts the first reading of this capture):** Claude Code silently disables tool search when the base
+URL is not first-party. Verbatim from the 2.1.267 binary:
+`[ToolSearch:optimistic] disabled: ANTHROPIC_BASE_URL=<url> is not a first-party Anthropic host. Set
+ENABLE_TOOL_SEARCH=true (or auto / auto:N) if your proxy forwards tool_reference blocks.`
+**Every interception rig in this campaign observes a donor with this feature switched off.** A negative result from
+any base-URL-redirecting rig is worthless unless the gate is explicitly opened. Credit: `ratchet-cc-arm-q`.
+
+**THE DONOR LOOP (captured, turns 1-2):**
+1. Declare built-ins + a plain client tool named **`ToolSearch`** + **`DeferredToolPlaceholder`** carrying
+   `defer_loading:true`. The 53 deferrable MCP tools are ABSENT from `tools[]` entirely.
+2. Model calls `ToolSearch` as an ordinary `tool_use`.
+3. Client answers with a `tool_result` whose content is
+   **`[{"type":"tool_reference","tool_name":"mcp__codegraph__codegraph_status"}]`** — the exact `tool_reference`
+   block our A2 probe proved claude-opus-5 accepts.
+4. The discovered tool is then added to `tools[]` in the FOLLOWING request, marked **`defer_loading:true`** —
+   never as a fresh eager declaration.
+
+**Three distinct native shapes now evidenced — the ladder must carry all three:**
+| shape | declaration | discovery result |
+|---|---|---|
+| codex / Responses | `{"type":"tool_search","execution":"client"}` | `tool_search_output{tools:[full def]}` |
+| Anthropic server-side (probe A2) | `tool_search_tool_bm25_20251119` server tool | provider-executed |
+| **Claude Code (first-party)** | plain `ToolSearch` client tool + `DeferredToolPlaceholder` | `tool_result` of `tool_reference` blocks |
+
+**Consequence for `hts-006`:** the donor DOES re-declare the discovered tool, but always `defer_loading:true`. The
+assertion is therefore correctly written as "not re-injected as a NON-deferred declaration" — and it now has donor
+evidence instead of inference.
+
+**Gate work owed:** the fixture is Messages-wire; the extractor is Responses-shaped. Fingerprint-schema S2.9
+(Responses<->Messages mapping) must land before `claude-code/CC1-toolsearch-mcp` can be scored.
+Fixture on disk: `ratchet-capture/fixtures/claude-code/CC1-toolsearch-mcp/`.
