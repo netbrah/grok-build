@@ -1878,7 +1878,7 @@ async fn build_request_repairs_dangling_tool_calls() {
 
 #[tokio::test]
 async fn build_request_with_tool_definitions() {
-    use xai_grok_sampling_types::ToolSpec;
+    use xai_grok_sampling_types::{ToolExposure, ToolSpec};
 
     let h = TestHarness::with_conversation(vec![
         ConversationItem::system("sys"),
@@ -1889,6 +1889,7 @@ async fn build_request_with_tool_definitions() {
         name: "read_file".to_string(),
         description: Some("Read a file".to_string()),
         parameters: serde_json::json!({"type": "object"}),
+        exposure: ToolExposure::default(),
     }];
 
     let request = h
@@ -4942,7 +4943,7 @@ async fn prefix_stable_with_reasoning_siblings_through_build_request() {
 /// Changing the tool set between requests must not affect the input prefix.
 #[tokio::test]
 async fn prefix_stable_after_tool_schema_change() {
-    use xai_grok_sampling_types::ToolSpec;
+    use xai_grok_sampling_types::{ToolExposure, ToolSpec};
 
     let h = TestHarness::with_conversation(vec![
         ConversationItem::system("sys"),
@@ -4953,6 +4954,7 @@ async fn prefix_stable_after_tool_schema_change() {
         name: "read_file".to_string(),
         description: Some("Read a file".to_string()),
         parameters: serde_json::json!({"type": "object"}),
+        exposure: ToolExposure::default(),
     }];
 
     let req1 = h
@@ -4971,11 +4973,13 @@ async fn prefix_stable_after_tool_schema_change() {
             name: "read_file".to_string(),
             description: Some("Read a file".to_string()),
             parameters: serde_json::json!({"type": "object"}),
+            exposure: ToolExposure::default(),
         },
         ToolSpec {
             name: "edit_file".to_string(),
             description: Some("Edit a file".to_string()),
             parameters: serde_json::json!({"type": "object"}),
+            exposure: ToolExposure::default(),
         },
     ];
 

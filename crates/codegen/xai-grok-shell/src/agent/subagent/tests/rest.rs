@@ -4,6 +4,7 @@ use super::super::resume_window::resume_inherited_prefix_len;
 use crate::session::storage::UnfinishedSubagent;
 use crate::test_support::lsp_runtime::{ctx_with_toggle, test_gateway};
 use crate::upload::trace::SubagentSpawnedRef;
+use xai_grok_sampling_types::ToolExposure;
 use xai_grok_tools::implementations::grok_build::task::backend::ChannelBackend;
 #[test]
 fn normalize_forked_context_strips_project_layout() {
@@ -579,11 +580,13 @@ fn subagent_tool_filter_removes_ask_user_question() {
                 name: "read_file".to_owned(),
                 description: None,
                 parameters: serde_json::json!({}),
+                exposure: ToolExposure::default(),
             },
             xai_grok_sampling_types::ToolSpec {
                 name: "ask_user_question".to_owned(),
                 description: None,
                 parameters: serde_json::json!({}),
+                exposure: ToolExposure::default(),
             },
         ];
     strip_ask_user_question_tool(&mut tools);
@@ -597,21 +600,25 @@ fn inherited_child_toolset_cannot_reintroduce_workflow() {
                 name: "read_file".to_owned(),
                 description: None,
                 parameters: serde_json::json!({}),
+                exposure: ToolExposure::default(),
             },
             xai_grok_sampling_types::ToolSpec {
                 name: "workflow".to_owned(),
                 description: None,
                 parameters: serde_json::json!({}),
+                exposure: ToolExposure::default(),
             },
             xai_grok_sampling_types::ToolSpec {
                 name: "GrokBuild:workflow".to_owned(),
                 description: None,
                 parameters: serde_json::json!({}),
+                exposure: ToolExposure::default(),
             },
             xai_grok_sampling_types::ToolSpec {
                 name: "run_terminal_cmd".to_owned(),
                 description: None,
                 parameters: serde_json::json!({}),
+                exposure: ToolExposure::default(),
             },
         ];
     strip_workflow_tool(&mut tools);

@@ -7,6 +7,7 @@ fn make_test_tool() -> ToolSpec {
         name: "test_tool".to_string(),
         description: Some("A test tool".to_string()),
         parameters: serde_json::json!({}),
+        exposure: ToolExposure::default(),
     }
 }
 
@@ -242,6 +243,7 @@ fn test_conversation_request_with_tools_to_chat_completion() {
                 },
                 "required": ["path"]
             }),
+            exposure: ToolExposure::default(),
         },
         ToolSpec {
             name: "bash".to_string(),
@@ -253,6 +255,7 @@ fn test_conversation_request_with_tools_to_chat_completion() {
                 },
                 "required": ["command"]
             }),
+            exposure: ToolExposure::default(),
         },
     ];
 

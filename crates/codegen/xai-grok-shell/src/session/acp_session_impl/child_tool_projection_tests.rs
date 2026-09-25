@@ -1,10 +1,12 @@
 use super::*;
+use xai_grok_sampling_types::ToolExposure;
 
 fn tool(name: &str, description: Option<&str>, parameters: serde_json::Value) -> ToolSpec {
     ToolSpec {
         name: name.into(),
         description: description.map(str::to_owned),
         parameters,
+        exposure: ToolExposure::default(),
     }
 }
 

@@ -30,11 +30,13 @@ fn function_tool_colliding_with_hosted_web_search_is_dropped() {
                 name: "web_search".to_string(),
                 description: Some("local web search".to_string()),
                 parameters: serde_json::json!({"type": "object"}),
+                exposure: ToolExposure::default(),
             },
             ToolSpec {
                 name: "read_file".to_string(),
                 description: None,
                 parameters: serde_json::json!({"type": "object"}),
+                exposure: ToolExposure::default(),
             },
         ]);
     req.hosted_tools = vec![HostedTool::WebSearch { options: None }];
@@ -78,6 +80,7 @@ fn function_tool_colliding_with_hosted_x_search_is_dropped() {
                 name: "x_search".to_string(),
                 description: None,
                 parameters: serde_json::json!({"type": "object"}),
+                exposure: ToolExposure::default(),
             },
         ]);
     req.hosted_tools = vec![HostedTool::XSearch { options: None }];
@@ -171,6 +174,7 @@ fn function_web_search_kept_when_no_hosted_tools() {
             name: "web_search".to_string(),
             description: None,
             parameters: serde_json::json!({"type": "object"}),
+            exposure: ToolExposure::default(),
         },
     ]);
 
@@ -773,6 +777,7 @@ fn test_conversation_request_with_tools_to_responses_api() {
                 "query": {"type": "string"}
             }
         }),
+        exposure: ToolExposure::default(),
     }];
 
     let req = ConversationRequest::from_items(vec![ConversationItem::user("Find TODO comments")])

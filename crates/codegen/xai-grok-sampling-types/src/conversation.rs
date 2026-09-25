@@ -809,6 +809,18 @@ pub struct ToolCall {
     pub arguments: Arc<str>,
 }
 
+/// How a tool is exposed to the model on the Responses wire.
+/// `Immediate` (default) = declared in `tools[]` today; `Deferred` =
+/// discoverable only via native `tool_search` (S3a) / `tool_reference` (S3b).
+/// Additive: old code and old history are untouched by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolExposure {
+    #[default]
+    Immediate,
+    Deferred,
+}
+
 /// Tool/function definition for the model
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSpec {
@@ -819,6 +831,9 @@ pub struct ToolSpec {
     pub description: Option<String>,
     /// JSON Schema for the parameters
     pub parameters: serde_json::Value,
+    /// Exposure mode (additive; serde default Immediate — old JSONL unaffected).
+    #[serde(default)]
+    pub exposure: ToolExposure,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -875,6 +890,7 @@ impl From<ToolDefinition> for ToolSpec {
             name: td.function.name,
             description: td.function.description,
             parameters: td.function.parameters,
+            exposure: ToolExposure::default(),
         }
     }
 }
@@ -6841,5 +6857,22 @@ mod enc_affinity_mf6_tests {
             usage.cache_creation_1h_input_tokens, 0,
             "responses wire has no split ⇒ 1h must be 0"
         );
+    }
+
+    #[test]
+    fn tool_exposure_defaults_immediate_and_round_trips() {
+        // Old serialized form (no `exposure` key) must deserialize as Immediate.
+        let old_json = r#"{ "name": "read_file", "description": "d", "parameters": {} }"#;
+        let spec: ToolSpec = serde_json::from_str(old_json).unwrap();
+        assert_eq!(spec.exposure, ToolExposure::Immediate);
+
+        // New form round-trips both variants.
+        let mut d = spec.clone();
+        d.exposure = ToolExposure::Deferred;
+        let v = serde_json::to_value(&d).unwrap();
+        assert_eq!(v["exposure"], "deferred");
+        let back: ToolSpec = serde_json::from_value(v).unwrap();
+        assert_eq!(back.exposure, ToolExposure::Deferred);
+        assert_eq!(serde_json::to_value(back.exposure).unwrap(), "deferred");
     }
 }

@@ -3076,6 +3076,7 @@ fn hosted_tools_dropped_from_messages_body() {
         name: "read_file".into(),
         description: Some("read a file".into()),
         parameters: serde_json::json!({ "type": "object" }),
+        exposure: ToolExposure::default(),
     };
 
     // Hosted-only request: the `tools` field is absent from the body entirely.
@@ -3691,16 +3692,19 @@ fn mgw_f5_u_red_4_last_tool_carries_the_breakpoint() {
             name: "t0".to_owned(),
             description: None,
             parameters: serde_json::json!({"type": "object"}),
+            exposure: ToolExposure::default(),
         },
         ToolSpec {
             name: "t1".to_owned(),
             description: None,
             parameters: serde_json::json!({"type": "object"}),
+            exposure: ToolExposure::default(),
         },
         ToolSpec {
             name: "t2".to_owned(),
             description: None,
             parameters: serde_json::json!({"type": "object"}),
+            exposure: ToolExposure::default(),
         },
     ];
     let items = vec![
@@ -3961,11 +3965,13 @@ fn mgw_f1_u_parity_1_default_row_byte_identical() {
             name: "t0".to_owned(),
             description: None,
             parameters: serde_json::json!({"type": "object"}),
+            exposure: ToolExposure::default(),
         },
         ToolSpec {
             name: "t1".to_owned(),
             description: Some("d1".to_owned()),
             parameters: serde_json::json!({"type": "object", "properties": {}}),
+            exposure: ToolExposure::default(),
         },
     ];
     let req = ConversationRequest::from_items(vec![ConversationItem::user("hi")])
@@ -3996,16 +4002,19 @@ fn mgw_f1_u_parity_2_client_then_server_order() {
             name: "c1".to_owned(),
             description: None,
             parameters: serde_json::json!({"type": "object"}),
+            exposure: ToolExposure::default(),
         },
         ToolSpec {
             name: "c2".to_owned(),
             description: None,
             parameters: serde_json::json!({"type": "object"}),
+            exposure: ToolExposure::default(),
         },
         ToolSpec {
             name: "c3".to_owned(),
             description: None,
             parameters: serde_json::json!({"type": "object"}),
+            exposure: ToolExposure::default(),
         },
     ];
     let mut req = ConversationRequest::from_items(vec![ConversationItem::user("hi")])
@@ -4057,16 +4066,19 @@ fn mgw_f1_u_parity_3_marker_budget_with_server_members() {
             name: "t0".to_owned(),
             description: None,
             parameters: serde_json::json!({"type": "object"}),
+            exposure: ToolExposure::default(),
         },
         ToolSpec {
             name: "t1".to_owned(),
             description: None,
             parameters: serde_json::json!({"type": "object"}),
+            exposure: ToolExposure::default(),
         },
         ToolSpec {
             name: "t2".to_owned(),
             description: None,
             parameters: serde_json::json!({"type": "object"}),
+            exposure: ToolExposure::default(),
         },
     ];
     let items = vec![

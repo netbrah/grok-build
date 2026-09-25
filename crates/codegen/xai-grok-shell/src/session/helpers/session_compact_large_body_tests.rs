@@ -1,5 +1,5 @@
 use super::*;
-use crate::sampling::{Client, ContentPart, ConversationItem, SamplerConfig, ToolCall, rs};
+use crate::sampling::{Client, ContentPart, ConversationItem, SamplerConfig, ToolCall, ToolExposure, rs};
 use crate::session::helpers::prepared_compaction_history::build_compaction_chat_history;
 use axum::Router;
 use axum::body::Bytes;
@@ -96,6 +96,7 @@ async fn responses_large_tool_result_images_fit_transport_limit() {
         name: "read_file".into(),
         description: Some("Reads a file".into()),
         parameters: json!({"type":"object","properties":{}}),
+        exposure: ToolExposure::default(),
     }];
     let mut source = vec![
         ConversationItem::system("You are a helpful assistant."),

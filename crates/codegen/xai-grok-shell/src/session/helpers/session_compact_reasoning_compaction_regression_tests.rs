@@ -1,5 +1,5 @@
 use super::*;
-use crate::sampling::{Client, ContentPart, ConversationItem, SamplerConfig, ToolCall, rs};
+use crate::sampling::{Client, ContentPart, ConversationItem, SamplerConfig, ToolCall, ToolExposure, rs};
 use axum::Router;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::post;
@@ -323,6 +323,7 @@ async fn chat_completions_below_trigger_preserves_images_and_tools() {
         name: "read_file".to_string(),
         description: Some("Reads a file".to_string()),
         parameters: json!({"type": "object", "properties": {}}),
+        exposure: ToolExposure::default(),
     }];
     let client = Client::new(config.clone()).unwrap();
     generate_session_compact(
@@ -481,6 +482,7 @@ async fn responses_below_trigger_preserves_images_and_tools() {
         name: "read_file".to_string(),
         description: Some("Reads a file".to_string()),
         parameters: json!({"type": "object", "properties": {}}),
+        exposure: ToolExposure::default(),
     }];
     let hosted = vec![HostedTool::WebSearch { options: None }];
     let client = Client::new(config.clone()).unwrap();

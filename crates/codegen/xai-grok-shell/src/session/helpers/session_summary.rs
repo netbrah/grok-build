@@ -2,7 +2,7 @@
 
 use crate::sampling::{
     ApiBackend, Client as OaiCompatClient, ConversationItem, ConversationRequest,
-    ConversationToolChoice, ToolSpec,
+    ConversationToolChoice, ToolExposure, ToolSpec,
 };
 use crate::session::helpers::chat::floor_char_boundary;
 
@@ -171,6 +171,7 @@ Just generate the session_title and nothing else"#,
             },
             "additionalProperties": false
         }),
+        exposure: ToolExposure::default(),
     }])
     .with_max_output_tokens(100)
     .with_temperature(1.0)

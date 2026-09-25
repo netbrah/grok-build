@@ -1,5 +1,6 @@
 //! Turn execution for `SessionActor`: `handle_prompt`, the sampling loop, and turn-end handling.
 use super::*;
+use crate::sampling::ToolExposure;
 use crate::session::{InputAuthority, SlashAuthority};
 use crate::util::dual_clock::DualClock;
 use tracing::Instrument;
@@ -2814,6 +2815,7 @@ impl SessionActor {
                             .to_string(),
                     ),
                     parameters: schema,
+                    exposure: ToolExposure::default(),
                 });
             }
             let build_req_start = std::time::Instant::now();
