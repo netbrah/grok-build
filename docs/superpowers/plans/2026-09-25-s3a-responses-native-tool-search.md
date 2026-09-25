@@ -1782,3 +1782,34 @@ silent passes.
 **Pattern worth naming:** four separate assertions were vacuous because the extractor read the wrong copy of a
 streamed item or the wrong side of a client-executed exchange. Any new predicate must be proven by a MUTANT before
 it is trusted. Seven mutants now stand behind the suite.
+
+### A-23 (P2 THREE-ARM PROBE, live: `defer_loading` is NOT required — DECLARATION is. A-15 overclaim RETIRED.)
+
+One-variable test on `claude-opus-5`, three arms differing only in the `tools[]` entry for the referenced tool.
+Bodies supplied verbatim by the adversarial audit (P2). Banked at `fixtures/grok-probe/P2-declaration-necessity/`.
+
+| arm | `tools[]` contains the referenced tool | HTTP | result |
+|---|---|---|---|
+| P2-missing | no | **400** | `Tool reference 'lookup_shipping_eta' not found in available tools` |
+| P2-plain | yes, **WITHOUT** `defer_loading` | **200** | `stop_reason: tool_use`, calls `lookup_shipping_eta` |
+| P2-deferred | yes, **WITH** `defer_loading:true` | **200** | `stop_reason: tool_use`, calls `lookup_shipping_eta` |
+
+**VERDICT: the audit's attack (d) is SUSTAINED and my A-15 wording is RETIRED.** The Messages wire requires the
+referenced tool to be **DECLARED**. It does **not** require the declaration to be DEFERRED. A plain declaration
+satisfies `tool_reference` exactly as well as a deferred one.
+
+**Corrected cross-family invariant (final form):**
+- **Messages:** a `tool_reference` naming a tool absent from `tools[]` is rejected 400. Declaration is MANDATORY;
+  `defer_loading` is OPTIONAL and is a CONTEXT OPTIMISATION (it withholds the schema from the model until load),
+  not a validity condition.
+- **Responses:** a discovered definition must NOT appear in `tools[]` at all; it lives in `tool_search_output`
+  history.
+The INVERSION stands, and is now stated at the right strength: Messages requires presence, Responses requires
+absence. Only the reason for `defer_loading` changed — optimisation, not obligation.
+
+Cost signal: plain 681 input tokens vs deferred 676 for an identical single-tool catalogue — the deferral saving is
+real but negligible at this scale, which is consistent with A-10's large saving arising from 53 WITHHELD MCP tools
+rather than from the flag itself.
+
+Process note: this is the first probe fired from the audit's ranked list, and it overturned a published amendment
+on the first shot. The remaining 16 ranked probe families are the standing spend queue.
