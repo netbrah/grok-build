@@ -1539,3 +1539,40 @@ identical discovered list (`mcp__ratchet_fixture.crm_fixture_tool_03`, `...billi
 **D4 recommendation (controller, evidence-backed):** implement wire `tool_search` client-executed on ALL Responses
 routes including sol; keep `search_tool`/`use_tool` for vLLM/SGLang; declare code mode an explicit non-goal
 (it requires a V8 host we do not ship). Operator decision still required.
+
+### A-15 (CROSS-FAMILY INVARIANT — the two wires are INVERTED; proven with a 400 and a 200)
+
+Two probes on claude-opus-5, identical except for one declaration.
+
+**Probe 1 — `tool_reference` naming a tool NOT in `tools[]`:**
+```
+HTTP 400  Tool reference 'crm_fixture_tool_03' not found in available tools
+```
+**Probe 2 — same conversation, tool added to `tools[]` with `defer_loading:true`:**
+```
+HTTP 200  -> text "I found the tool - calling it now." + tool_use crm_fixture_tool_03  (stop_reason: tool_use)
+```
+
+**THE INVARIANT PAIR (inverted between families):**
+| | OpenAI / Responses | Anthropic / Messages |
+|---|---|---|
+| where a DISCOVERED definition must live | **history** (`tool_search_output.tools`) | **`tools[]`**, deferred |
+| what `tools[]` must contain | **NOT** the discovered tool (constant at 12 across S5, incl. after invocation) | **MUST** contain it (`defer_loading:true`) or the reference 400s |
+| what history carries | the full definitions (namespace + children) | only REFERENCES (`tool_reference`) |
+| re-declaring each turn | breaks cache; donor never does it | **REQUIRED** by the provider |
+
+This explains A-10 mechanically: Claude Code re-declares discovered tools every turn **because the provider forces
+it**, not as a style choice. And codex never re-declares because on Responses the definitions already live in
+history.
+
+**Consequence for the xwire cross-family switch (anthropic <-> codex-family <-> sglang-family):** a pass-through
+port breaks in BOTH directions.
+- Responses -> Messages: dropping definitions from `tools[]` yields `400 Tool reference not found`.
+- Messages -> Responses: promoting them into `tools[]` breaks the cache and violates the donor no-reinjection rule
+  proven live in S5.
+The switch must TRANSFORM discovery state, not forward it. Discovered-tool state is per-family representation over
+the same logical loaded set. This is a new invariant class for the xwire campaign
+(`grok/plans/items/xwire`, evidence home `smoke/redteam`) and is a FOLLOW-ON to S3a, per operator.
+
+**Correction to A-14's scope:** A-14's "loaded set survives a model switch" is INTRA-FAMILY only
+(gpt-5.5 / gpt-5.6-sol / gpt-5.4). It does NOT extend across families; A-15 is the cross-family answer.
