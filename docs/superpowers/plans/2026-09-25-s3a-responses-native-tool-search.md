@@ -1813,3 +1813,45 @@ rather than from the flag itself.
 
 Process note: this is the first probe fired from the audit's ranked list, and it overturned a published amendment
 on the first shot. The remaining 16 ranked probe families are the standing spend queue.
+
+### A-24 (STRUCTURAL GAP: native discovery has NO home in the conversation IR, and the projector owns the seam)
+
+Recovered from the failed `opus-spec` seat's nested recon (both fact-files survive on disk:
+`_recon-xwire-facts.md` 19,610 B, `_recon-formalism-facts.md` 29,590 B, every bullet cited at verified HEAD).
+
+**What the recon changes.** SDD-71's switch PROJECTOR has LANDED, not planned:
+`xai-grok-sampling-types/src/conversation/projection.rs:88 project_switch_history(...)`, shell hook
+`acp_session_impl/switch_projection.rs:19-49`, persist `xai-chat-state/src/actor/mutations.rs:276-305`.
+Crucially, **family-switch compaction is backend-gated OFF for Responses targets**:
+`family_switch_compact_required = !matches!(Responses)` (`acp_session_impl/model_switch.rs:464-468`, pinned by
+test `:661-675` -- "the .71 projection owns the seam"). Messages and ChatCompletions still compact; Responses does
+not. The projector also fires on ANY model-id change with no turn in flight (`model_switch.rs:183-195`), which is a
+WIDER gate than `is_family_switch` (that one needs BOTH rows to carry `model_family`, so `claude*`/`gemini*` rows
+are not even family switches).
+
+**THE GAP.** `ConversationItem` has SIX variants -- System, User, Assistant, ToolResult, BackendToolCall,
+Reasoning (`conversation.rs:234-252`). **None can represent `tool_search_call` or `tool_search_output`.**
+`projection.rs` mentions `tool_search` ZERO times. The only `tool_search` tokens in the IR are T1's
+`ToolExposure` doc comment and the Messages-wire BM25/regex server-tool aliases.
+
+`BackendToolCall` is NOT the home: it is documented as "executed server-side by the backend agentic sampler. The
+client does not execute these" -- the SERVER quadrant. Our target is CLIENT-executed (A-9).
+
+**Why this is load-bearing, not cosmetic.** A-14 proved `tool_search_output` items ARE the loaded tool set, and
+A-19/A-23 proved Responses forbids re-declaring those definitions in `tools[]`. So on a Responses->Responses model
+switch -- the seam where compaction is deliberately DISABLED and the projector is the only actor -- discovery state
+that the IR cannot represent is dropped, and the harness is forbidden to re-declare it. The model silently loses
+every discovered tool with no error and no path to recover them. That is exactly the silent mid-turn failure class
+pi-recon found in Pi, reached by a different route.
+
+**Consequences for the SDD:**
+1. `ConversationItem` needs a discovery-state representation (7th variant, or an explicit carrier) BEFORE T3 types
+   land. This was not in the 17-task plan.
+2. `project_switch_history` needs a discovery arm with an explicit transform per target boundary
+   (`Boundary{AzStrict,VLLenient,Vertex}`, `projection.rs:54-67`), and A-15/A-23 say the Messages arm must
+   MATERIALISE declarations while the Responses arm must NOT.
+3. The three overlapping family vocabularies (`CatalogFamily`, `ResponsesWireDialect`, `Boundary`, plus
+   `is_openai_family` where EMPTY string counts as true) must not gain a fourth for discovery.
+
+**UNKNOWN flagged by the recon and inherited here:** `cache_control` behaviour on switch (0 hits in
+`conversation/messages.rs`) and image projection. Both matter for a discovery payload that rides the cached prefix.
