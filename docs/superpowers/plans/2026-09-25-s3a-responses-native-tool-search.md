@@ -1249,3 +1249,43 @@ but OPTIONAL on call; `call_id` is `Option<String>` on both (accommodating serve
 `arguments` is `serde_json::Value` (NOT a string); `tools` is `Vec<serde_json::Value>` — the permissive element
 type is precisely how namespace children round-trip. Typing any of these more strictly REJECTS what first-party
 emits.
+
+### A-8 (donor golden — our declaration bytes are WRONG; two `execution` vocabularies)
+
+Source-verified, no spend. Codex's golden wire-shape test
+(`codex-rs/tools/src/tool_spec_tests.rs:382-411`, `tool_search_tool_spec_serializes_expected_wire_shape`) pins the
+DECLARATION exactly:
+
+```json
+{"type":"tool_search","execution":"sync","description":"Search app tools",
+ "parameters":{"type":"object","properties":{"query":{"type":"string","description":"Tool search query"}},
+               "required":["query"],"additionalProperties":false}}
+```
+
+And the ITEMS codex constructs carry a DIFFERENT value (`codex-rs/core/src/tools/context.rs:229-240`, `:352-359`):
+
+```rust
+ResponseInputItem::ToolSearchOutput { call_id, status: "completed", execution: "client", tools }
+```
+
+with the router dispatching locally on exactly that value (`core/src/tools/router.rs:267`:
+`} if execution == "client" =>`).
+
+**TWO VOCABULARIES — do not conflate:**
+| Position | Value | Cite |
+|---|---|---|
+| declaration in `tools[]` | `"sync"` | `tool_spec_tests.rs:399` |
+| `tool_search_call` / `tool_search_output` items | `"client"` | `context.rs:234,:354`, `parallel.rs:283`, `request_metadata_tests.rs:1066` |
+
+**Two defects this exposes:**
+1. **Our design doc is wrong.** `2026-09-24-hosted-tool-search-design.md:49` specifies the declaration as
+   `{"type":"tool_search","execution":"client",...}`. The donor golden says `"sync"` at that position. `"client"`
+   belongs on the items. T6 must emit the donor shape.
+2. **Our probes omitted the field entirely.** All 21 paid probes sent a bare `{"type":"tool_search"}` — no
+   `execution` key. The provider then executed server-side (`execution:"server"`, `call_id:null`). The leading
+   hypothesis is that the DECLARATION's `execution` value selects the quadrant: absent => provider executes;
+   `"sync"` => the harness is asked to execute and answers with `"client"` items. ONE bounded probe settles it.
+   Status: BLOCKED — Step-0 credential gate returns 401 (stale compound key in `~/.zshrc`; operator-owned refresh).
+
+Gate coverage: `hts-009-declaration-execution` now asserts the donor value and already fires on our own R1 capture
+("declared without an execution field"). The red gate caught our own divergence before any donor fixture existed.
