@@ -1501,3 +1501,41 @@ skip still printed. Donor coverage is now: codex tool_search (live), codex code 
 **Incidental live finding:** `reasoning.effort="max"` is rejected for `gpt-5.5-2026-04-24`
 (`Supported values are: none, low, medium, high, xhigh`). The operator config's `max` is 5.6-sol-specific, so any
 multi-model arm must override effort per model row.
+
+### A-14 (S1+S2 LIVE — code mode sends NOTHING, and the loaded set SURVIVES a model switch)
+
+**S1 (sol, code mode, first-party codex).** The model filtered `ALL_TOOLS` in-sandbox
+(`ALL_TOOLS.filter(entry => entry.name.includes("ratchet_fixture"))`), found 12 deferred tools, invoked
+`mcp__ratchet_fixture__billing_fixture_tool_01`, and returned `fixture result for billing_fixture_tool_01` — a
+string only the fixture server can produce (template `fixture result for %s`). Wire state throughout:
+`tools[]`=0, namespaces = functions(3) + collaboration(6), and **zero `mcp__ratchet_fixture` definitions ever sent**.
+Usage 57,714 in (41,622 cached) / 986 out.
+=> Code mode is MORE context-efficient than wire tool_search (it sends nothing at all), but discovery AND invocation
+both live inside the V8 code-mode host. There is no wire subset of it. It cannot be ported to grok-responses.
+
+**S2 (model-switch boundary) — answers the operator's strip question: DO NOT STRIP.**
+The live CX3 conversation (containing a real `tool_search_call` + `tool_search_output`) was replayed verbatim to
+three different models after stripping only `created_by`/`internal_chat_message_metadata_passthrough` and disabling
+`store`:
+| model | HTTP | accepted tool_search history |
+|---|---|---|
+| gpt-5.5 (control) | 200 | yes |
+| **gpt-5.6-sol** (code-mode model) | **200** | **yes** |
+| gpt-5.4 | 200 | yes |
+
+Then each was asked to name the loaded tools WITHOUT calling anything. Both gpt-5.5 and gpt-5.6-sol returned the
+identical discovered list (`mcp__ratchet_fixture.crm_fixture_tool_03`, `...billing_fixture_tool_01`, ...).
+
+**Consequences:**
+1. `tool_search_output` items are portable across model boundaries; the provider does not reject foreign
+   discovery history.
+2. The loaded-tool set IS the `tool_search_output.tools` payload carried in history — matching
+   `tools-tool-search.md:860`. A model-boundary strip of those items would DESTROY the loaded set and degrade
+   discovery. **The strip hypothesis is refuted: these items must survive the boundary.**
+3. gpt-5.6-sol reads wire `tool_search` history correctly even though first-party codex drives it in code mode.
+   Our wire-tool_search direction therefore works ON SOL — we diverge from the donor's mechanism, not from the
+   model's capability.
+
+**D4 recommendation (controller, evidence-backed):** implement wire `tool_search` client-executed on ALL Responses
+routes including sol; keep `search_tool`/`use_tool` for vLLM/SGLang; declare code mode an explicit non-goal
+(it requires a V8 host we do not ship). Operator decision still required.
