@@ -618,6 +618,49 @@ class ClassifyGitStateTest(GitFixtureCase):
         )
         self.assertEqual(states, _EXPECTED_GIT_STATES)
 
+    def test_root_beneath_the_toplevel_classifies_in_root_space(self):
+        # Bead apex-ayl.137.7: `git ls-files` answers in ROOT-relative
+        # space while `git status --porcelain` answers in TOP-relative
+        # space, so a root that is a repository subdirectory used to
+        # miss every changed record and publish modified files as
+        # tracked-clean. `corpus/` is exactly such a root.
+        states = inventory.classify_git_state(
+            self.repo / "corpus",
+            [
+                "tracked-clean.txt",
+                "tracked-modified.txt",
+                "my report.txt",
+                "untracked.txt",
+                "ignored-dir/cache.cache",
+            ],
+        )
+        self.assertEqual(
+            states,
+            {
+                "tracked-clean.txt": "tracked-clean",
+                "tracked-modified.txt": "tracked-modified",
+                # a modified path containing a space must survive the
+                # translation too, not only the simple names
+                "my report.txt": "tracked-modified",
+                "untracked.txt": "untracked",
+                "ignored-dir/cache.cache": "ignored",
+            },
+        )
+
+    def test_root_beneath_the_toplevel_maps_renames_in_root_space(self):
+        states = inventory.classify_git_state(
+            self.repo / "corpus",
+            ["renamed-new.txt", "renamed-old.txt", "new name with spaces.txt"],
+        )
+        self.assertEqual(
+            states,
+            {
+                "renamed-new.txt": "tracked-modified",
+                "renamed-old.txt": "untracked",
+                "new name with spaces.txt": "tracked-modified",
+            },
+        )
+
     def test_outside_repository_when_not_a_repo(self):
         plain = Path(tempfile.mkdtemp(prefix="eval-harness-inv-plain-", dir="/tmp"))
         self.addCleanup(shutil.rmtree, plain, True)

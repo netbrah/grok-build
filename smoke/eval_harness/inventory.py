@@ -16,12 +16,19 @@ Git state is one of the exact five enums and comes from NUL-delimited
 Git output scoped to the owning repository (``git -C <root>`` with
 ``GIT_OPTIONAL_LOCKS=0`` so the invocation never rewrites the index):
 
-- ``git ls-files -z``                     -> tracked set
+- ``git rev-parse --show-toplevel``       -> the top-level whose pathspace ``status`` answers in
+- ``git ls-files --full-name -z``         -> tracked set
 - ``git status --porcelain=v2 -z``        -> changed-tracked records
-- ``git ls-files -z --others --exclude-standard``        -> untracked
-- ``git ls-files -z --others --ignored --exclude-standard`` -> untracked+ignored
+- ``git ls-files --full-name -z --others --exclude-standard``        -> untracked
+- ``git ls-files --full-name -z --others --ignored --exclude-standard`` -> untracked+ignored
 
-The state is parsed once per owning repository (chunked pathspec
+Pathspace is not uniform across those commands: run from a subdirectory,
+``ls-files`` answers relative to the current directory while
+``status --porcelain`` answers relative to the top-level. ``--full-name``
+puts every query in top-level space and the answers are translated back
+once, so a declared root that is a repository SUBDIRECTORY cannot report
+a modified tracked file as ``tracked-clean`` (Bead apex-ayl.137.7). The
+state is parsed once per owning repository (chunked pathspec
 batching merged into a single map). A path under a nested repository is
 ``outside-repository``.
 
@@ -569,6 +576,38 @@ def _chunks(items: list, size: int) -> Iterator[list]:
         yield items[start : start + size]
 
 
+def _root_to_toplevel_prefix(root_abs: Path, toplevel: str) -> str | None:
+    """The declared root's POSIX prefix beneath the repository
+    top-level, or ``""`` when the root *is* the top-level.
+
+    ``git ls-files`` answers in current-directory (root-relative) space
+    while ``git status --porcelain`` answers in top-level-relative space,
+    so the two answer sets are only comparable after one translation
+    (Bead apex-ayl.137.7). ``--show-toplevel`` reports a resolved path,
+    so the root is compared resolved as well. ``None`` means the reported
+    top-level does not contain the root: the root's paths are not
+    addressable in that repository's pathspace, and the caller must not
+    guess a Git state for them.
+    """
+    resolved = os.path.realpath(os.fspath(root_abs))
+    top = toplevel.rstrip("/") or "/"
+    if resolved == top:
+        return ""
+    if resolved.startswith(top + "/"):
+        return resolved[len(top) + 1 :]
+    return None
+
+
+def _from_top_space(path: str, prefix: str) -> str | None:
+    """Translate a top-level-relative Git answer into root-relative
+    space; ``None`` when the answer lies outside the declared root."""
+    if not prefix:
+        return path
+    if path.startswith(prefix + "/"):
+        return path[len(prefix) + 1 :]
+    return None
+
+
 def classify_git_state(repo_root: os.PathLike, paths: Iterable[str]) -> dict:
     """Classify repository-relative POSIX paths into exactly one of
     :data:`GIT_STATES`, parsed from NUL-delimited Git output scoped to
@@ -579,35 +618,71 @@ def classify_git_state(repo_root: os.PathLike, paths: Iterable[str]) -> dict:
     if not path_list:
         return {}
     states = {p: "outside-repository" for p in path_list}
-    if _git_or_none(repo_root, ["rev-parse", "--show-toplevel"]) is None:
+    toplevel = _git_or_none(repo_root, ["rev-parse", "--show-toplevel"])
+    if toplevel is None:
         return states
     repo_abs = Path(os.fspath(repo_root))
+    prefix = _root_to_toplevel_prefix(repo_abs, toplevel)
+    if prefix is None:
+        return states
     nested = {p for p in path_list if _inside_nested_repo(repo_abs, p)}
     tracked: set = set()
     changed: set = set()
     untracked: set = set()
     ignored: set = set()
+
+    def in_root_space(data: bytes) -> set:
+        """Answer set translated into root-relative space. Every query
+        below is issued with ``--full-name`` (or is ``status``, which is
+        already top-level-relative) so this single translation covers all
+        four, and answers outside the declared root are dropped."""
+        return {
+            rel
+            for rel in (_from_top_space(p, prefix) for p in _split_nul_paths(data))
+            if rel is not None
+        }
+
     for chunk in _chunks(path_list, _GIT_PATH_CHUNK):
-        tracked |= _split_nul_paths(_run_git(repo_root, ["ls-files", "-z", "--", *chunk]))
+        tracked |= in_root_space(
+            _run_git(
+                repo_root,
+                ["ls-files", "--full-name", "-z", "--", *chunk],
+            )
+        )
         status_changed, status_untracked = _parse_status_v2_nul(
             _run_git(
                 repo_root,
                 ["status", "--porcelain=v2", "-z", "--untracked-files=all", "--", *chunk],
             )
         )
-        changed |= status_changed
-        untracked |= status_untracked
-        others = _split_nul_paths(
-            _run_git(
-                repo_root,
-                ["ls-files", "-z", "--others", "--exclude-standard", "--", *chunk],
-            )
-        )
-        others_ignored = _split_nul_paths(
+        changed |= {
+            rel for rel in (_from_top_space(p, prefix) for p in status_changed)
+            if rel is not None
+        }
+        untracked |= {
+            rel for rel in (_from_top_space(p, prefix) for p in status_untracked)
+            if rel is not None
+        }
+        others = in_root_space(
             _run_git(
                 repo_root,
                 [
                     "ls-files",
+                    "--full-name",
+                    "-z",
+                    "--others",
+                    "--exclude-standard",
+                    "--",
+                    *chunk,
+                ],
+            )
+        )
+        others_ignored = in_root_space(
+            _run_git(
+                repo_root,
+                [
+                    "ls-files",
+                    "--full-name",
                     "-z",
                     "--others",
                     "--ignored",

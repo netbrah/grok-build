@@ -143,13 +143,18 @@ invocation; catalog rows never contain user-specific absolute paths.
 - `git_state` (five values: `tracked-clean`, `tracked-modified`,
   `untracked`, `ignored`, `outside-repository`) and `generation_state`
   (`source-authored`, `declared-generated`, `unknown`) are per-record
-  facts. Git state is assembled from four NUL-delimited read-only Git
-  queries: `ls-files -z` gives the tracked set, `status --porcelain=v2 -z`
-  gives the changed-tracked and `?`-untracked sets,
-  `ls-files -z --others --exclude-standard` gives untracked, and
-  `ls-files -z --others --ignored --exclude-standard` gives ignored; the
-  directory-collapsed `!` status records are discarded in favour of the
-  per-file `ls-files` answer. A declared required source entrypoint, or a
+  facts. Git state is assembled from read-only NUL-delimited Git queries:
+  `ls-files --full-name -z` gives the tracked set, `status --porcelain=v2
+  -z` gives the changed-tracked and `?`-untracked sets,
+  `ls-files --full-name -z --others --exclude-standard` gives untracked,
+  and `ls-files --full-name -z --others --ignored --exclude-standard`
+  gives ignored; the directory-collapsed `!` status records are discarded
+  in favour of the per-file `ls-files` answer. Those commands do **not**
+  share a pathspace — from a subdirectory `ls-files` answers
+  root-relative while `status` answers top-level-relative — so every query
+  is issued with `--full-name` and translated back once, which is what
+  lets a declared root be a repository subdirectory without every modified
+  file being reported `tracked-clean`. A declared required source entrypoint, or a
   declared generated target, that resolves to nothing is a hard
   `ContractError` (DESIGN.md §8), scoped to the one scope that owns it.
 - `content_policy` is derived from the catalog allowlist, never from file
