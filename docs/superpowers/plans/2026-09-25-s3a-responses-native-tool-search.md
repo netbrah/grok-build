@@ -1426,3 +1426,41 @@ the S2.9 adapter lands. `hts-001` was corrected by these bytes: deferral is acce
 
 **Codex has NO base-URL gate** (binary strings: `ENABLE_TOOL_SEARCH` 0 hits, `not a first-party` 0 hits; the three
 `first-party` hits are unrelated prose). The A-10 interception trap is Claude-specific; tee captures of codex are valid.
+
+### A-12 (LIVE — on gpt-5.6-sol first-party codex does NOT use tool search; it uses CODE MODE)
+
+Arm L1, live against the real corp llm-proxy through the wiretap2 tee: `codex-cli 0.156.1` + the OPERATOR's real
+config (6 MCP servers) + `gpt-5.6-sol`. 10 request/response pairs captured.
+Usage: **input 226,406 (189,838 cached) / output 2,470 (1,842 reasoning)**.
+
+**Result: ZERO occurrences of `tool_search` in the entire live capture.** Instead:
+- top-level `tools`: **absent (0)**
+- an `additional_tools` INPUT item, `role:"developer"`, carrying namespace groups:
+  `functions` = [`exec`, `wait`, `request_user_input`], `collaboration` = [6 agent tools]
+- `exec` is a **custom tool that runs JavaScript in a V8 isolate to orchestrate nested tools**
+- the turn proceeds through **8 `custom_tool_call` / `custom_tool_call_output` rounds**, not a search pair
+
+**The mechanism is model-selected, and the donor switches:**
+| donor + model | mechanism | evidence |
+|---|---|---|
+| codex 0.156.1 + gpt-5.5 | `tool_search`, client-executed | fixture CX1 (A-11) |
+| codex 0.156.1 + gpt-5.6-sol | **code mode** (`additional_tools` + `exec`) | fixture CX2, live |
+| Claude Code 2.1.267 + claude-opus-5 | `ToolSearch` client tool + `tool_reference` | fixture CC1 (A-10) |
+
+This is NOT a provider limitation: probe R1 proved the 5.6-sol ENDPOINT accepts a `tool_search` declaration and will
+execute it server-side. Codex CHOOSES code mode for this model row (`use_responses_lite:true`,
+`tool_mode:code_mode_only`).
+
+**Consequence for the operator's "native like codex" target.** On our flagship model, native codex behaviour is code
+mode, not tool search. S3a's `tool_search` work is faithful to the **gpt-5.5/5.4/5.2 class** (`use_responses_lite:false`).
+Claiming S3a delivers "codex parity on 5.6-sol" would be false. Either (a) scope S3a to the non-lite class and treat
+5.6-sol parity as a separate code-mode workstream, or (b) accept deliberate divergence and say so. This needs an
+operator decision — logged as **D4**.
+
+**Gate:** `hts-001/002/003` now detect `mechanism == "code_mode"` (no `tool_search` declaration + an
+`additional_tools` item) and exempt it, because scoring tool_search predicates against code mode would report a
+defect where the donor simply chose another mechanism. Battery now **3 donor episodes / 27 assertions / 0 failed**,
+with the CX1 mocked-response caveat and the Messages-wire skip both still printed.
+
+**Rig fixes needed for the operator config (found by running it):** `--strict-config` rejects the fork-only keys
+`[code_mode]` and `["multi_agent_v1"]`; `make_operator_home.py` must strip them when arming the first-party binary.
