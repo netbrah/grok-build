@@ -131,10 +131,18 @@ invocation; catalog rows never contain user-specific absolute paths.
   bracketed by `lstat`. Regular files are opened with `O_NOFOLLOW`, so a
   path that became a symlink mid-scan is refused rather than followed. A
   scope *include* must itself be a real directory: a symlinked include is
-  a hard `include-not-directory` `ContractError`. The live plans estate put
-  its campaign entries behind symlinks on 2026-09-24 (plans commit
-  `5839c1f`, Bead `apex-ayl.137.5`), so this scope currently fails loud
-  instead of walking; the two declared-input scopes still scan.
+  a hard `include-not-directory` `ContractError` whose message names the
+  object found there, including the raw link string for a doorway
+  (reported without reading, stat-ing or resolving the target). The live
+  plans estate put its campaign entries behind symlinks on 2026-09-24 (plans
+  commit `5839c1f`, Bead `apex-ayl.137.5`), so this scope currently fails
+  loud instead of walking; the two declared-input scopes still scan, because
+  a declared spec traverses intermediate directories through the OS and only
+  `lstat`s the final component. The layout question — whether a declared
+  doorway may be transited — is open as Bead `apex-ayl.137.15`; until it is
+  ruled, work against a dereferenced snapshot (see **Tests**), which is also
+  what DESIGN.md §7's frozen input snapshot will need regardless of how that
+  ruling lands.
 - Every regular file is hashed between a pre-`lstat` and a post-`lstat`
   with a mid-scan `fstat`; any change in identity, size or mtime — or a
   changed symlink string, or a vanished entry — raises
@@ -262,12 +270,54 @@ PYTHONDONTWRITEBYTECODE=1 python3.14 -m unittest -v \
 and the live worktree in addition to their own sandboxes, and they handle a
 missing root **differently**: `test_inventory` skips (4 `skipTest` sites),
 `test_formalism` fails — `RealCorpusPinTest.setUpClass` asserts the roots
-exist and `_copy_corpus` copies from the plans estate, so 149 of its 182
+exist and `_copy_corpus` copies from the plans estate, so 164 of its 184
 tests are not self-contained (Bead `apex-ayl.137.9`). A green run is
 therefore a statement about this host. Skips are not zero elsewhere either:
 3 tests need the optional `jsonschema` package, 21 need the `git` CLI, and
 9 skip when a live root is absent, so quote a test count together with its
 skip count (Bead `apex-ayl.137.10`).
+
+### Redirecting the live roots
+
+Both live suites take the same two environment variables, and neither one
+changes what the harness enforces — they only name where the live roots are,
+so a reorganised or symlinked estate does not have to be walked through:
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `EVAL_PLANS_ROOT` | tree to read the plans scopes and the formalism corpus from | `<worktree>/../../grok/plans` |
+| `EVAL_WORKTREE_ROOT` | checkout to read the worktree scopes from | the directory holding this package |
+
+A set value that does not resolve is an **assertion failure**, not a skip: a
+mistyped root must not be able to buy a green run.
+
+While the plans estate keeps its campaign entries behind symlinks
+(`apex-ayl.137.5`), point `EVAL_PLANS_ROOT` at a dereferenced snapshot — the
+same frozen-input discipline DESIGN.md §7 requires for `acceptance.json`:
+
+```sh
+SNAP=/tmp/apex-eval-snapshot/plans          # any writable location
+mkdir -p "$SNAP"
+rsync -aL --delete --exclude=.git --exclude=.DS_Store \
+  "$HOME/Projects/upstream/grok/plans/" "$SNAP/"
+EVAL_PLANS_ROOT="$SNAP" PYTHONDONTWRITEBYTECODE=1 python3.14 -m unittest \
+  smoke.eval_harness.tests.test_catalog smoke.eval_harness.tests.test_paths \
+  smoke.eval_harness.tests.test_inventory \
+  smoke.eval_harness.tests.test_formalism   # 428 tests, 0 skips
+```
+
+`-L` dereferences every link, including the three declared corpus doors, so
+the snapshot is ~700 MB (the 327 compat symlinks each materialise their
+target). It is a *redirect*, not a relaxation: the corpus walk is still
+checked against an independent non-following walk of the same tree, digests
+are still recomputed and compared across two scans, and
+`include-not-directory` still fires if a snapshot is built without `-L`.
+What a redirected run does **not** prove is Git-state classification against
+the real plans repository — with `.git` excluded every record is
+`outside-repository`, and the live tests only pin `git_state` membership in
+the enum. Synthetic-repository fixtures own Git-state coverage, and the
+unredirected run still reports the 3 live-corpus errors until
+`apex-ayl.137.15` is ruled.
 
 Under `pytest` add `-p no:cacheprovider`. `NoWriteProofTest` fails the suite
 on any `__pycache__` directory or `*.pyc` file under this package and on

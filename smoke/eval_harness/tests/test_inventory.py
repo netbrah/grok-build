@@ -775,6 +775,51 @@ class PlansCorpusScopeTest(GitFixtureCase):
             "corpus/outside-target.txt", by_path
         )
 
+    def test_symlinked_include_is_refused_without_resolving_the_target(self):
+        # DESIGN.md §4 "never open or resolve the symlink target" covers the
+        # doorway too: a symlinked include is refused, and the note carries
+        # the raw link string. The identical outcome for a dangling link is
+        # only reachable if the target was never resolved.
+        for link_kind in ("live", "dangling"):
+            with self.subTest(link=link_kind):
+                root = Path(tempfile.mkdtemp(prefix="evh-door-"))
+                self.addCleanup(shutil.rmtree, root, True)
+                if link_kind == "live":
+                    (root / "items" / "corpus").mkdir(parents=True)
+                    (root / "items" / "corpus" / "a.md").write_text(
+                        "a\n", encoding="utf-8"
+                    )
+                os.symlink("items/corpus", root / "corpus")
+                ctx = contract.AdapterContext(
+                    roots={"plans": root}, catalog=_corpus_catalog()
+                )
+                with self.assertRaises(contract.ContractError) as caught:
+                    inventory.inventory_scope(ctx, "plans-corpus")
+                self.assertEqual(
+                    caught.exception.code, "include-not-directory"
+                )
+                self.assertEqual(
+                    str(caught.exception),
+                    "scope include 'corpus' is not a real directory"
+                    " (found a symlink to 'items/corpus')",
+                )
+
+    def test_include_that_is_a_regular_file_names_the_shape(self):
+        root = Path(tempfile.mkdtemp(prefix="evh-nondir-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / "corpus").write_text("not a tree\n", encoding="utf-8")
+        ctx = contract.AdapterContext(
+            roots={"plans": root}, catalog=_corpus_catalog()
+        )
+        with self.assertRaises(contract.ContractError) as caught:
+            inventory.inventory_scope(ctx, "plans-corpus")
+        self.assertEqual(caught.exception.code, "include-not-directory")
+        self.assertEqual(
+            str(caught.exception),
+            "scope include 'corpus' is not a real directory"
+            " (found a regular file)",
+        )
+
     def test_exact_git_state_enum_values(self):
         snap = inventory.inventory_scope(self.ctx, "plans-corpus")
         by_path = {r["path"]: r for r in snap.records}
@@ -1241,12 +1286,39 @@ class PlanCorpusAdapterTest(GitFixtureCase):
 # ---------------------------------------------------------------------------
 
 
+def _env_root(name: str) -> Path | None:
+    """A live root named at invocation instead of inferred from this file."""
+    value = os.environ.get(name)
+    return Path(value) if value else None
+
+
 def _real_plans_root() -> Path | None:
+    # EVAL_PLANS_ROOT (also honoured by tests.test_formalism) redirects the
+    # live-corpus assertions at any tree that has the declared include
+    # directories as real directories; the default is the plans repository
+    # beside this worktree.
+    override = _env_root("EVAL_PLANS_ROOT")
+    if override is not None:
+        assert override.is_dir(), (
+            f"EVAL_PLANS_ROOT={override} is not a directory"
+        )
+        return override
     worktree = Path(__file__).resolve().parents[3]
     candidate = os.path.normpath(
         os.path.join(str(worktree), "..", "..", "grok", "plans")
     )
     return Path(candidate) if Path(candidate).is_dir() else None
+
+
+def _live_worktree_root() -> Path | None:
+    override = _env_root("EVAL_WORKTREE_ROOT")
+    if override is not None:
+        assert (override / "crates").is_dir(), (
+            f"EVAL_WORKTREE_ROOT={override} has no crates/ directory"
+        )
+        return override
+    worktree = Path(__file__).resolve().parents[3]
+    return worktree if (worktree / "crates").is_dir() else None
 
 
 def _independent_walk(root: Path, includes: list[str]) -> set[tuple[str, str, str]]:
@@ -1275,7 +1347,10 @@ class RealCorpusIntegrationTest(unittest.TestCase):
     def setUp(self) -> None:
         self.plans_root = _real_plans_root()
         if self.plans_root is None:
-            self.skipTest("the plans repository is not available on this host")
+            self.skipTest(
+                "the plans repository is not available on this host "
+                "(set EVAL_PLANS_ROOT)"
+            )
         self.catalog = contract.load_catalog()
         self.includes = [
             row
@@ -1376,9 +1451,12 @@ class RealCorpusIntegrationTest(unittest.TestCase):
 
 class RealWorktreeScopeTest(unittest.TestCase):
     def setUp(self):
-        worktree = Path(__file__).resolve().parents[3]
-        if not (worktree / "crates").is_dir():
-            self.skipTest("the live worktree is not available on this host")
+        worktree = _live_worktree_root()
+        if worktree is None:
+            self.skipTest(
+                "the live worktree is not available on this host "
+                "(set EVAL_WORKTREE_ROOT)"
+            )
         self.ctx = contract.AdapterContext(
             roots={"worktree": worktree},
             catalog=contract.load_catalog(),
@@ -1484,7 +1562,10 @@ class RealPlansDeclaredInputsScopeTest(unittest.TestCase):
     def setUp(self):
         self.plans_root = _real_plans_root()
         if self.plans_root is None:
-            self.skipTest("the plans repository is not available on this host")
+            self.skipTest(
+                "the plans repository is not available on this host "
+                "(set EVAL_PLANS_ROOT)"
+            )
         self.catalog = contract.load_catalog()
         self.ctx = contract.AdapterContext(
             roots={"plans": self.plans_root, "worktree": Path(".")},

@@ -1279,6 +1279,24 @@ def _expand_spec(root_dir: Path, spec: str, origin: str) -> list:
     return []
 
 
+def _what_is_there_note(path: Path, info: os.stat_result) -> str:
+    """Name the object that blocked a scope include.
+
+    A symlink target is reported as the raw link string; it is never
+    opened, stat'd, or resolved (DESIGN.md §4), so the note cannot leak
+    whether the target exists or what kind of object it is.
+    """
+    if stat.S_ISLNK(info.st_mode):
+        try:
+            target = os.readlink(path)
+        except OSError:
+            return " (found a symlink whose link bytes cannot be read)"
+        return f" (found a symlink to {target!r})"
+    if stat.S_ISREG(info.st_mode):
+        return " (found a regular file)"
+    return f" (found file type {oct(stat.S_IFMT(info.st_mode))})"
+
+
 def _candidate_rels(
     catalog: Mapping, scope: Mapping, root_dir: Path
 ) -> list:
@@ -1302,7 +1320,8 @@ def _candidate_rels(
                 ) from None
             if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
                 raise ContractError(
-                    f"scope include {include!r} is not a real directory",
+                    f"scope include {include!r} is not a real directory"
+                    + _what_is_there_note(top, info),
                     code="include-not-directory",
                 )
             rel_set.update(rel for rel, _ in _walk_files(root_dir, include))
