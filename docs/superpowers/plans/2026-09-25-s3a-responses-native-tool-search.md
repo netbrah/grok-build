@@ -1726,3 +1726,21 @@ the definition in `tools[]` in both forms.
 
 **Also sustained:** A-14's model-switch bodies were never banked to disk (run in-kernel only), so that claim is
 asserted rather than independently verifiable; re-running it must write fixtures.
+
+### A-21 (evidence-count honesty: windows are not episodes)
+
+The adversarial seat's final note claimed CC2 and CC3 are "byte-identical (one episode, two meta files)".
+**Factually wrong, methodologically right.** They are not identical:
+
+| | request.json | response.jsonl | next-turn.json |
+|---|---|---|---|
+| CC2 | `2abc191a3b2d` (13 tools) | `bf18d1eb541f` | `c3e6de3efc5b` |
+| CC3 | `c3e6de3efc5b` (14 tools) | `678f9ab8de65` | `58a8694f4752` |
+
+They OVERLAP by one turn -- CC2's next-turn IS CC3's request -- because they are a sliding window over a single
+3-turn session. The underlying point stands: two windows over one captured session are NOT two independent donor
+episodes, and reporting them as such inflates the apparent evidence base.
+
+**Fixed in the gate.** Every fixture meta now carries a `session` key, and the verdict line reports both numbers:
+`7 scored windows over 6 independent episodes, 77 assertions, 0 failed`. An audit can no longer read the case count
+as a donor count, and adding more windows over the same capture cannot manufacture apparent coverage.
