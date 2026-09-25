@@ -1662,3 +1662,32 @@ The choice is a context-cost vs boundary-complexity trade, and both sides now ha
 
 UNDECIDED: whether claude-codex gates WHICH namespaces reach the flattener upstream of `wire.rs`. If it does not,
 Strategy U pays the full eager cost on every Anthropic turn.
+
+### A-19 (hts-006 was VACUOUS on the client quadrant; fixed, and it exposed TWO deferral sub-patterns)
+
+The adversarial seat reported that an isolated deferred-reinjection mutant still passed. It was right, and the root
+cause was worse than the symptom.
+
+**Root cause.** `fingerprint()` harvested discovered names ONLY from the RESPONSE. In the client quadrant -- the
+quadrant we are targeting -- the harness sends `tool_search_output` in the FOLLOWING request, so the response
+carries no results, `discovered` was always the empty set, and `hts-006` could never flag anything. The assertion
+was vacuous for every client-executed episode. Fixed by harvesting from the next turn's `tool_search_output` as
+well, and by walking NAMESPACE CHILDREN (S5: the model invokes the child short name, so a child reappearing is just
+as much a re-injection as the parent).
+
+**The fix immediately flagged our own probe R6 -- and that exposed a real distinction we had been blurring.**
+Two deferral sub-patterns share the Responses wire:
+- **(a) DECLARED-DEFERRED** (the documented pattern, our probe R6): the tool sits in `tools[]` with
+  `defer_loading:true` from the FIRST request; tool search merely ACTIVATES it. Continued presence next turn is
+  correct, not re-injection.
+- **(b) HISTORY-ONLY** (codex + MCP, CX3/S5): the definition is never in `tools[]` at all; it exists only inside
+  `tool_search_output`. Any appearance in a later `tools[]` IS a re-injection.
+The predicate now compares against the ORIGINAL request's `tools[]`: a discovered name that was never originally
+declared must not appear later. R6 passes correctly; the donor pattern is enforced strictly.
+
+**Falsification proof (3 mutants of CX3, all caught):** history-only tool re-declared DEFERRED (the seat's exact
+case) -> FAIL; re-declared non-deferred -> FAIL with the distinct message; NAMESPACE PARENT re-injected -> FAIL.
+
+**Implementation consequence:** our harness must implement sub-pattern (b) for MCP tools. Sub-pattern (a) is a
+legitimate second mode and the two must not be merged in `ToolSpec`, because the no-reinjection obligation applies
+only to (b).
