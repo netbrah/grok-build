@@ -1,3 +1,8 @@
+use super::responses::{
+    MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES, SearchAdmission, ToolSearchExecution,
+    ToolSearchSource, ToolSearchSourceListing, extra_tool_entries_with_declaration,
+    tool_search_declaration_entry, tool_search_description,
+};
 use super::test_support::*;
 use super::*;
 use crate::tool_overrides::*;
@@ -188,6 +193,1057 @@ fn function_web_search_kept_when_no_hosted_tools() {
         })
         .collect();
     assert_eq!(function_names, vec!["web_search"]);
+}
+
+/// The `- <name>: <description>` block the declaration's description carries, sliced out
+/// of the surrounding donor template so a test can pin the block without repeating it.
+fn tool_search_source_block(description: &str) -> &str {
+    let (_, rest) = description
+        .split_once("You have access to tools from the following sources:\n")
+        .expect("sources sentence");
+    rest.split_once("\nSome of the tools may not have been provided")
+        .expect("discovery instructions")
+        .0
+}
+
+/// An object's keys in serialized order. `serde_json`'s object equality ignores key order, so a
+/// reorder that does move the bytes is only visible as this sequence.
+fn json_keys(value: &serde_json::Value) -> Vec<String> {
+    value
+        .as_object()
+        .expect("json value is an object")
+        .keys()
+        .cloned()
+        .collect()
+}
+
+/// Donor key order and the fixed half of the declaration. `preserve_order` makes the insertion
+/// order the wire order, and `serde_json`'s object equality ignores it, so the sequence is
+/// asserted beside the value.
+fn assert_declaration_fixed_half_is_donor_exact(entry: &serde_json::Value) {
+    assert_eq!(
+        entry["parameters"],
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of tools to return. Defaults to 8.",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Search query for deferred tools.",
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": false,
+        }),
+        "`limit` before `query` is the donor `BTreeMap` sort"
+    );
+
+    let keys_at = |pointer: &str| -> Vec<String> {
+        entry
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_object)
+            .expect("object at pointer")
+            .keys()
+            .cloned()
+            .collect()
+    };
+    assert_eq!(entry["type"], "tool_search");
+    assert_eq!(entry["execution"], "client");
+    assert_eq!(
+        keys_at(""),
+        ["type", "execution", "description", "parameters"]
+    );
+    assert_eq!(
+        keys_at("/parameters"),
+        ["type", "properties", "required", "additionalProperties"]
+    );
+    assert_eq!(keys_at("/parameters/properties"), ["limit", "query"]);
+    assert_eq!(
+        keys_at("/parameters/properties/limit"),
+        ["type", "description"]
+    );
+    assert_eq!(
+        keys_at("/parameters/properties/query"),
+        ["type", "description"]
+    );
+}
+
+/// The half of the declaration that carries no source data — `type`, `execution`,
+/// `parameters` and their key order — does not move with the advertised source set.
+#[test]
+fn tool_search_declaration_fixed_half_is_donor_exact() {
+    let drive =
+        "Use Google Drive as the single entrypoint for Drive, Docs, Sheets, and Slides work.";
+    let sources = [ToolSearchSource {
+        name: "Google Drive",
+        description: Some(drive),
+    }];
+    for listing in [
+        ToolSearchSourceListing::Include,
+        ToolSearchSourceListing::Omit,
+    ] {
+        let entry = tool_search_declaration_entry(
+            ToolSearchExecution::Client,
+            &sources,
+            listing,
+            /*default_limit*/ 8,
+        );
+        assert_declaration_fixed_half_is_donor_exact(&entry);
+    }
+}
+
+/// `default_limit` is interpolated into the `limit` description, never baked into it: a row
+/// configured with a different default must advertise its own number or the schema describes a
+/// tool that does not exist. Pinned at a non-default value because every call site here and the
+/// CX1 capture use 8, which a constant string would satisfy.
+///
+/// The second half of that claim — that `default_limit` interpolates ONLY into the `limit`
+/// description — is enforced by building the entry twice with `ToolSearchSourceListing::Include`
+/// and a real source, at `default_limit` 3 and 8, and requiring the two `description`s to be
+/// byte-identical: an added interpolation site anywhere in the prose splits the two strings. That
+/// form was chosen over a second hand-written literal because the description's bytes are already
+/// donor-pinned twice in this file, and a third copy would rot the same way the copy it duplicates
+/// would; the limit itself is the only moving part here. A hard-coded interpolation of
+/// this test's own value would survive that compare, so the donor prose — the description with its
+/// rendered source block removed — is additionally required to carry no `3`. The sentinel need only
+/// be a digit the prose lacks: it carries exactly the digits `2` and `5`, both from `BM25`, so 0, 1,
+/// 3, 4, 6, 7 and 9 would serve equally, while a default of 2 or 5 would trip that guard on a digit
+/// the prose carries anyway. `8` is absent from the prose too, but it would duplicate the other
+/// side of the `at_3 == at_8` compare, so it is not used here. The
+/// block is excluded because its text is this test's own input: a source
+/// name that happened to contain the digit would otherwise fail the guard for the wrong reason.
+#[test]
+fn tool_search_declaration_limit_description_tracks_default_limit() {
+    let entry = tool_search_declaration_entry(
+        ToolSearchExecution::Client,
+        &[],
+        ToolSearchSourceListing::Omit,
+        /*default_limit*/ 3,
+    );
+
+    assert_eq!(
+        entry["parameters"],
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of tools to return. Defaults to 3.",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Search query for deferred tools.",
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": false,
+        }),
+        "only the interpolated default moves; the rest of the schema stays donor-pinned"
+    );
+
+    let drive = "Use Google Drive as the single entrypoint for Drive, Docs, Sheets, and Slides.";
+    let description_at = |default_limit| {
+        tool_search_declaration_entry(
+            ToolSearchExecution::Client,
+            &[ToolSearchSource {
+                name: "Google Drive",
+                description: Some(drive),
+            }],
+            ToolSearchSourceListing::Include,
+            default_limit,
+        )["description"]
+            .as_str()
+            .expect("description is a string")
+            .to_owned()
+    };
+    let at_3 = description_at(3);
+    let at_8 = description_at(8);
+    assert!(
+        at_3.contains("- Google Drive: "),
+        "the listing has to be rendered for the compare below to mean anything: {at_3}"
+    );
+    assert_eq!(
+        at_3, at_8,
+        "`default_limit` interpolates into the `limit` description only, never into the prose"
+    );
+    let prose = at_3.replace(tool_search_source_block(&at_3), "");
+    assert!(
+        !prose.contains('3'),
+        "the donor prose carries no trace of the request's default limit: {prose}"
+    );
+}
+
+/// Whole-entry byte parity against captured wire bytes. The expected entry is a copy of the
+/// `tool_search` declaration captured at index 11 of the 13-entry `tools` array in
+/// `/Users/palanisd/Projects/upstream/grok/plans/harness/hosted-tool-search/ratchet-capture/fixtures/codex/CX1-toolsearch-mcp-dryrun/request.json`.
+/// That capture lives in the campaign tree, outside this worktree, so nothing reads it at run
+/// time and a transcription error here cannot fail on its own —
+/// [`tool_search_declaration_fixed_half_is_donor_exact`] pins the source-independent half
+/// alongside it for that reason.
+#[test]
+fn tool_search_declaration_matches_cx1_fixture_bytes() {
+    let entry = tool_search_declaration_entry(
+        ToolSearchExecution::Client,
+        &[
+            ToolSearchSource {
+                name: "Multi-agent tools",
+                description: Some("Spawn and manage sub-agents."),
+            },
+            ToolSearchSource {
+                name: "ratchet_fixture",
+                description: Some("Deterministic fixture server for wire-fingerprint capture."),
+            },
+        ],
+        ToolSearchSourceListing::Include,
+        /*default_limit*/ 8,
+    );
+
+    assert_eq!(
+        entry,
+        serde_json::json!({
+            "type": "tool_search",
+            "execution": "client",
+            "description": "# Tool discovery\n\nSearches over deferred tool metadata with BM25 and exposes matching tools for the next model call.\n\nYou have access to tools from the following sources:\n- Multi-agent tools: Spawn and manage sub-agents.\n- ratchet_fixture: Deterministic fixture server for wire-fingerprint capture.\nSome of the tools may not have been provided to you upfront, and you should use this tool (`tool_search`) to search for the required tools. For MCP tool discovery, always use `tool_search` instead of `list_mcp_resources` or `list_mcp_resource_templates`.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "number",
+                        "description": "Maximum number of tools to return. Defaults to 8.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Search query for deferred tools.",
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": false,
+            },
+        }),
+    );
+    assert_declaration_fixed_half_is_donor_exact(&entry);
+}
+
+/// `execution` is total over the only two values the wire accepts, so the donor's `sync` —
+/// which the API 400s — has no value to reach the entry through.
+#[test]
+fn tool_search_declaration_execution_is_total() {
+    assert_eq!(ToolSearchExecution::Server.as_str(), "server");
+    assert_eq!(
+        ToolSearchExecution::Client.as_str(),
+        super::tool_search::CLIENT_EXECUTION,
+        "`client` is defined once in the crate, by the discovery module"
+    );
+
+    let wire_execution = |execution: ToolSearchExecution| {
+        tool_search_declaration_entry(
+            execution,
+            &[],
+            ToolSearchSourceListing::Omit,
+            /*default_limit*/ 8,
+        )["execution"]
+            .clone()
+    };
+    assert_eq!(wire_execution(ToolSearchExecution::Server), "server");
+    assert_eq!(wire_execution(ToolSearchExecution::Client), "client");
+}
+
+/// Donor listing semantics: one line per name sorted by name, the first description a name ever
+/// carries winning whichever order the duplicates arrive in, a bare line for an undescribed
+/// source, and no listing under `Omit`. Both duplicate pairs pinned here carry exactly one blank
+/// description, so they read the same under first-non-empty and last-non-empty coalescing; two
+/// competing non-empty descriptions are pinned by
+/// [`tool_search_source_listing_first_description_wins_among_duplicates`].
+#[test]
+fn tool_search_source_listing_rendering() {
+    let drive =
+        "Use Google Drive as the single entrypoint for Drive, Docs, Sheets, and Slides work.";
+    assert_eq!(
+        tool_search_source_block(&tool_search_description(
+            &[
+                ToolSearchSource {
+                    name: "Google Drive",
+                    description: Some(drive),
+                },
+                ToolSearchSource {
+                    name: "Google Drive",
+                    description: None,
+                },
+                ToolSearchSource {
+                    name: "docs",
+                    description: None,
+                },
+            ],
+            ToolSearchSourceListing::Include,
+        )),
+        format!("- Google Drive: {drive}\n- docs"),
+        "a later blank must not erase an earlier description"
+    );
+
+    assert_eq!(
+        tool_search_source_block(&tool_search_description(
+            &[
+                ToolSearchSource {
+                    name: "Slack",
+                    description: None,
+                },
+                ToolSearchSource {
+                    name: "Slack",
+                    description: Some("Search Slack messages and channels."),
+                },
+            ],
+            ToolSearchSourceListing::Include,
+        )),
+        "- Slack: Search Slack messages and channels.",
+        "a later description must fill the earlier blank"
+    );
+
+    assert_eq!(
+        tool_search_source_block(&tool_search_description(
+            &[],
+            ToolSearchSourceListing::Include,
+        )),
+        "None currently enabled."
+    );
+
+    let omitted = tool_search_description(
+        &[ToolSearchSource {
+            name: "Google Drive",
+            description: Some(drive),
+        }],
+        ToolSearchSourceListing::Omit,
+    );
+    assert!(
+        omitted
+            .contains("for the next model call.\n\nSome of the tools may not have been provided"),
+        "omit must join the template with a bare blank line: {omitted}"
+    );
+    assert!(!omitted.contains("You have access to tools from the following sources"));
+    assert!(!omitted.contains("Google Drive"));
+}
+
+/// The coalescing rule is first-to-arrive, not last-non-empty and not lexicographically smallest.
+/// Neither duplicate pair in [`tool_search_source_listing_rendering`] can see this: each carries
+/// one blank description, so first-non-empty, last-non-empty and "skip the blanks, keep one" all
+/// agree there. Here both duplicates are non-empty and distinct, and both arrival orders are
+/// pinned so the surviving description is the one that arrived first.
+#[test]
+fn tool_search_source_listing_first_description_wins_among_duplicates() {
+    let search = "Search Slack messages and channels.";
+    let summarize = "Summarize Slack threads and channels.";
+
+    assert_eq!(
+        tool_search_source_block(&tool_search_description(
+            &[
+                ToolSearchSource {
+                    name: "Slack",
+                    description: Some(search),
+                },
+                ToolSearchSource {
+                    name: "Slack",
+                    description: Some(summarize),
+                },
+            ],
+            ToolSearchSourceListing::Include,
+        )),
+        format!("- Slack: {search}"),
+        "a second non-empty description must not displace the first"
+    );
+
+    assert_eq!(
+        tool_search_source_block(&tool_search_description(
+            &[
+                ToolSearchSource {
+                    name: "Slack",
+                    description: Some(summarize),
+                },
+                ToolSearchSource {
+                    name: "Slack",
+                    description: Some(search),
+                },
+            ],
+            ToolSearchSourceListing::Include,
+        )),
+        format!("- Slack: {summarize}"),
+        "the survivor follows arrival order, not the two strings' own order"
+    );
+}
+
+/// The one input in `render_tool_search_sources`'s domain no other fixture in this directory
+/// reaches: a description that is present but empty, in both duplicate orders — empty then real,
+/// empty then `None`. This is THIS HARNESS's behaviour, not donor-pinned parity: the donor's fold
+/// (`tool_search_spec.rs:38-45`) and render (`:73-81`) are byte-EQUIVALENT to this crate's `by_name`
+/// BTreeMap loop and `for (name, description) in by_name` loop in `render_tool_search_sources`, not
+/// identical to them. The fold matches line for line, the donor just cloning the
+/// `String`/`Option<String>` this crate carries by `&str`; the render differs at its truncation call
+/// — this crate's `truncate_bytes` call against `take_bytes_at_char_boundary` (`:78-79`) — and that
+/// call's wrapped second line is why the donor's clause runs to `:81`; this crate's is one line.
+/// The helpers agree byte for byte: whole value if it fits, else back off to a char boundary
+/// (`conversation.rs:33-42` against `codex-rs/utils/string/src/lib.rs:13-26`). So the bytes the
+/// donor would produce for an empty description are citable and would agree, but the donor never
+/// exercises one — its three tests pass `Some(..)`/`None` only (`:122`, `:129`, `:133`, `:164`,
+/// `:183`) — so no donor expectation backs
+/// these pins. The coalescing fills a `None` and nothing else, so an empty first arrival survives
+/// and the real description behind it is dropped; the render matches `Some(_)`, so it still emits
+/// `": "` and still charges those 2 bytes to the shared budget.
+#[test]
+fn tool_search_source_listing_treats_an_empty_description_as_a_description() {
+    assert_eq!(
+        tool_search_source_block(&tool_search_description(
+            &[
+                ToolSearchSource {
+                    name: "Slack",
+                    description: Some(""),
+                },
+                ToolSearchSource {
+                    name: "Slack",
+                    description: Some("Search Slack messages and channels."),
+                },
+            ],
+            ToolSearchSourceListing::Include,
+        )),
+        "- Slack: ",
+        "an empty first arrival is `is_some()`, so the later real description is dropped"
+    );
+
+    // The other direction of the same rule: a later `None` does not evict an empty first arrival, so
+    // the empty slot keeps its separator. Read an empty description as absent anywhere in the fold
+    // or the render and this collapses to a bare `- Slack`.
+    assert_eq!(
+        tool_search_source_block(&tool_search_description(
+            &[
+                ToolSearchSource {
+                    name: "Slack",
+                    description: Some(""),
+                },
+                ToolSearchSource {
+                    name: "Slack",
+                    description: None,
+                },
+            ],
+            ToolSearchSourceListing::Include,
+        )),
+        "- Slack: ",
+        "an empty first arrival survives a later `None`"
+    );
+
+    // The dangling separator is not free. `reserved = (2 - 1) + (2 + 3) + (2 + 3) = 11` opens the
+    // budget at `524_288 - 11 = 524_277`; `aaa` spends 2 budget bytes on its separator and nothing on
+    // text, leaving 524_275. `bbb` then pays 2 more for its own separator, so its 524_274-byte
+    // description has 524_273 bytes of room and is cut by 1: the charge is 2 budget bytes, the loss
+    // is the single byte it happened to be over. Without `aaa`'s charge the room is 524_275 and the
+    // description stays whole.
+    let long = "y".repeat(524_274);
+    let sources = [
+        ToolSearchSource {
+            name: "aaa",
+            description: Some(""),
+        },
+        ToolSearchSource {
+            name: "bbb",
+            description: Some(&long),
+        },
+    ];
+    assert_eq!(
+        tool_search_source_block(&tool_search_description(
+            &sources,
+            ToolSearchSourceListing::Include,
+        )),
+        format!("- aaa: \n- bbb: {}", "y".repeat(524_273)),
+        "an empty description renders the separator alone and charges it to the shared budget"
+    );
+}
+
+/// The donor keys the source map by `String`, so lines sort in byte order: `Alpha` (0x41) leads,
+/// `Zeta` (0x5A) follows, `alpha` (0x61) trails. What this trio alone pins is a name-keyed render
+/// against a description-keyed one: its descriptions open `A` (0x41), `m` (0x6D), `z` (0x7A), the
+/// exact reverse of the names' byte order, so a render keyed on the description rather than the name
+/// emits the three lines backwards. A length-keyed sort puts the 4-byte `Zeta` first, because
+/// `Alpha`/`alpha` are 5 bytes apiece; an insertion-order render starts at `alpha`. Case-folding is
+/// split here too — a case-insensitive sort groups `Alpha` with `alpha` and sends `Zeta` last — but
+/// that is not this trio's own contribution: the `Google Drive`/`docs` pair in
+/// [`tool_search_source_listing_rendering`] splits it as well (`G` 0x47 leads `d` 0x64 bytewise, `g`
+/// 0x67 trails it case-folded), while the CX1 fixture's two names sort the same both ways and cannot
+/// see it at all. Only a name-keyed byte order yields the block below.
+#[test]
+fn tool_search_source_listing_sorts_by_byte_order() {
+    assert_eq!(
+        tool_search_source_block(&tool_search_description(
+            &[
+                ToolSearchSource {
+                    name: "alpha",
+                    description: Some("Apple: 0x61 trails, tied on length with Alpha"),
+                },
+                ToolSearchSource {
+                    name: "Zeta",
+                    description: Some("middle: 0x5A follows, though it is the shortest name"),
+                },
+                ToolSearchSource {
+                    name: "Alpha",
+                    description: Some("zebra: 0x41 leads the set"),
+                },
+            ],
+            ToolSearchSourceListing::Include,
+        )),
+        "- Alpha: zebra: 0x41 leads the set\n\
+         - Zeta: middle: 0x5A follows, though it is the shortest name\n\
+         - alpha: Apple: 0x61 trails, tied on length with Alpha",
+        "only a name-keyed byte order sort keeps this three-line block"
+    );
+}
+
+/// Past the shared budget the descriptions give way and the names never do: every source keeps a
+/// complete `- name` line, a cut description stops on a UTF-8 char boundary, a source whose own
+/// `- name` line cannot fit is skipped whole rather than sliced, and a source that reaches the
+/// render with no budget left still carries the `": "` separator.
+///
+/// These pins are deliberately STRICTER than the donor's own budget test, which asserts only
+/// `len() <= MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES` plus a tolerant name read
+/// (`split_once(": ").map_or(..)`). That is a ratchet on the reserved-bytes formula: a donor change
+/// to how the name lines are reserved, or to the cap itself, is expected to fail here loudly, and
+/// the cap is asserted under its own name first so such a change never reports as a char-boundary
+/// failure. The literal `11_044` is kept rather than derived from the constant, because deriving it
+/// would make the pin tautological.
+#[test]
+fn tool_search_source_listing_budget_keeps_names() {
+    assert_eq!(MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES, 512 * 1024);
+    let long = "🦀".repeat(20_000);
+    let names: Vec<String> = (0..8).map(|index| format!("source-{index:02}")).collect();
+    let sources: Vec<ToolSearchSource<'_>> = names
+        .iter()
+        .map(|name| ToolSearchSource {
+            name: name.as_str(),
+            description: Some(&long),
+        })
+        .collect();
+
+    let described = tool_search_description(&sources, ToolSearchSourceListing::Include);
+    let block = tool_search_source_block(&described);
+    let lines: Vec<&str> = block.lines().collect();
+    let advertised_names: Vec<&str> = lines
+        .iter()
+        .map(|line| {
+            let source = line
+                .strip_prefix("- ")
+                .expect("each source should be a complete list item");
+            source.split_once(": ").map_or(source, |(name, _)| name)
+        })
+        .collect();
+
+    assert_eq!(
+        advertised_names, names,
+        "names are never truncated or dropped"
+    );
+    assert!(
+        block.len() <= MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES,
+        "source block is {} bytes",
+        block.len(),
+    );
+    assert!(block.starts_with("- source-00: 🦀"));
+    assert_eq!(
+        block.matches(&long).count(),
+        6,
+        "a description that fits must stay whole"
+    );
+
+    // The name lines are reserved out of the shared budget first: `(8 - 1) + 8 * (2 + 9)` = 95
+    // bytes for these names leaves 524_193 for eight identical 80_000-byte descriptions, so six
+    // fit whole, the seventh loses 2 bytes to its separator and is cut from the remaining
+    // 44_179 down to 44_176 (11_044 whole code points), leaving 3.
+    assert_eq!(
+        lines[6],
+        format!("- source-06: {}", "🦀".repeat(11_044)),
+        "the last described line takes the remaining budget on a char boundary"
+    );
+    // No per-line boundary scan is asserted: `lines[6]` and the exhausted-budget line below pin the
+    // only two cut descriptions byte for byte, `matches(&long)` above pins the six whole ones, and a
+    // `&str` cannot hold a partial code point anyway — a scan could only restate those pins.
+    let cut_description = lines[6]
+        .split_once(": ")
+        .expect("the cut line keeps its separator")
+        .1;
+    assert_eq!(
+        cut_description.len(),
+        44_176,
+        "bytes taken by the partially rendered description"
+    );
+
+    // The gate is `description_budget >= 2`, not "some description still fits", so the last line
+    // pays 2 bytes for the separator and `truncate_bytes(.., 1)` yields an empty remainder. The
+    // donor is byte-equivalent here — `tool_search_spec.rs:74-79` pushes `": "` (`:76`), subtracts
+    // 2 (`:77`) and calls `take_bytes_at_char_boundary` (`:78-79`; this crate's `truncate_bytes`) —
+    // and its own budget test reads names tolerantly (`split_once(": ").map_or(..)`) for exactly
+    // this tail. The dangling separator is parity; do not "clean it up".
+    assert_eq!(
+        lines.last().copied(),
+        Some("- source-07: "),
+        "an exhausted budget keeps the separator with an empty description"
+    );
+
+    let oversized = "x".repeat(MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES);
+    assert_eq!(
+        tool_search_source_block(&tool_search_description(
+            &[
+                ToolSearchSource {
+                    name: "a",
+                    description: Some("short"),
+                },
+                ToolSearchSource {
+                    name: &oversized,
+                    description: Some("short"),
+                },
+            ],
+            ToolSearchSourceListing::Include,
+        )),
+        "- a",
+        "an unfillable name is skipped whole, and its reserved bytes leave no description budget"
+    );
+}
+
+/// The reserved-name fold runs over the deduplicated names, not over the `sources` slice: three
+/// arrivals of one name reserve their `- <name>` bytes once, and exactly one line renders. The
+/// 8-unique-name fixture in [`tool_search_source_listing_budget_keeps_names`] cannot see the
+/// difference — with every name unique, folding `sources` adds the same bytes folding
+/// `by_name.keys()` does. The survivor stays described only because the first arrival carries the
+/// description, which is the coalescing rule pinned by
+/// [`tool_search_source_listing_first_description_wins_among_duplicates`]: change that rule and this
+/// test reddens as well, with a failure message that blames the reserved bytes rather than the
+/// coalescing.
+///
+/// The cap is the only seam that can show it: `MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES` is a
+/// fixed constant with no per-request input, so a reservation is observable only once the
+/// descriptions actually reach it — the same reason the 8-name fixture is 8 × 80 000 bytes.
+///
+/// Three arrivals of `dup` (3 bytes), the first described: the keys fold reserves
+/// `(1 - 1) + (2 + 3) = 5`, so the description budget is `524_288 - 5 = 524_283`; the `": "`
+/// separator takes 2 of that and a `524_275`-byte description still fits whole, for a
+/// `7 + 524_275 = 524_282`-byte block. A fold over the input slice would reserve
+/// `(3 - 1) + 3 * (2 + 3) = 17`, leaving `524_269` after the separator and cutting 6 bytes off the
+/// description.
+#[test]
+fn tool_search_source_listing_budget_counts_a_duplicated_name_once() {
+    let long = "y".repeat(524_275);
+    let sources = [
+        ToolSearchSource {
+            name: "dup",
+            description: Some(&long),
+        },
+        ToolSearchSource {
+            name: "dup",
+            description: None,
+        },
+        ToolSearchSource {
+            name: "dup",
+            description: None,
+        },
+    ];
+
+    let described = tool_search_description(&sources, ToolSearchSourceListing::Include);
+    let block = tool_search_source_block(&described);
+
+    assert_eq!(
+        block.lines().count(),
+        1,
+        "three arrivals of one name render exactly one line"
+    );
+    assert_eq!(
+        block,
+        format!("- dup: {long}"),
+        "the `- dup` line is reserved once, so the whole description still fits"
+    );
+    assert!(
+        block.len() <= MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES,
+        "source block is {} bytes",
+        block.len(),
+    );
+}
+
+/// The fit gate is `render_tool_search_sources`'s `if required > MAX - rendered.len()` comparison,
+/// and the comparisons either side of `required == MAX - rendered.len()` are its whole behaviour.
+/// No pre-existing test in this directory sat on that boundary: the smallest `room` any of their
+/// gate comparisons sees is the 15 that [`tool_search_source_listing_budget_keeps_names`] presents
+/// at its last gate (`required` 12; the block it emits is 524_287 bytes, ONE byte under the cap, so
+/// 15 is the room open at that gate and not the margin of the result). That fixture's own over-cap
+/// case fires the gate from 6 bytes past the line (`required` 524_291 against `room` 524_285). The
+/// nearest miss anywhere else is 2, in
+/// [`tool_search_source_listing_accounts_name_bytes_not_char_count`] (`required` 524_287 against
+/// the same `room` 524_285). Past those three the next-nearest
+/// comparison sits 44_193 bytes clear of the line. This test is the only one that stands on the
+/// line: the 524_282-byte name has `required` exactly equal to `room` (524_285), so the gate does
+/// not fire, and the 524_283-byte name has `required` one byte PAST `room` (524_286), so it skips.
+///
+/// The boundary is reached through NAME length, not description length, and the reason is an exact
+/// cancellation. While `reserved_name_bytes <= MAX`, `room - required` for the LAST name becomes the
+/// unspent `description_budget` and is never negative: 3 against 3 at `source-07` of the 8-name
+/// fixture, 0 against 0 in the fitting case below. A saturated reservation cancels nothing: the
+/// reduction is then `MAX - reserved - Σspent`, negative 6 in this file's own over-cap case.
+/// Descriptions can therefore never supply the last byte, which is why name length is the
+/// only handle that walks onto the boundary. For a name at index `i` the same cancellation EXCLUDES
+/// that name's own charge — `required` pays `separator_bytes + 2 + name.len()` and cancels it
+/// against the same amount in the reservation — so `room - required` is the unspent
+/// `description_budget` plus `(n - 1 - i) + Σ (2 + name.len())` over the names STRICTLY AFTER `i`:
+/// `44_181 + 1 + 11 = 44_193` at `source-06` of the 8-name fixture, `0 + 1 + 524_284 = 524_285` at
+/// `a` of the boundary one. While `reserved_name_bytes` fits inside `MAX` the gate can therefore
+/// never fire: every skip this render can produce comes from a reservation that saturated. When
+/// each name fits on its own that saturation is a property of the whole deduplicated NAME SET —
+/// `(n - 1) + Σ (2 + name.len())` over `by_name.keys()` — not of the name being skipped; one
+/// oversized name can also do it alone, and the `oversized` name of
+/// [`tool_search_source_listing_budget_keeps_names`] charges `2 + 524_288` by itself. A short name
+/// is not exempt either: `required` is `3 + name.len()` for every name after the first, so once
+/// `rendered` leaves `room` under 4 even a 1-byte name is skipped whole. Name-length arithmetic
+/// therefore walks onto the boundary without any prose at all.
+///
+/// Both cases start from one source, `a` with no description, which renders `- a` (3 bytes) and
+/// leaves `room = 524_288 - 3 = 524_285` for the second name (`separator_bytes` 1, so
+/// `required = 3 + name.len()`):
+/// * a 524_282-byte name: `required` = 524_285 = `room`, so it renders, and the block lands on
+///   exactly `MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES` (`3 + 1 + 2 + 524_282`);
+/// * a 524_283-byte name: `required` = 524_286 = `room + 1`, so it is skipped whole and the block
+///   stays the 3-byte `- a`. The margin is exactly the byte that a dropped `separator_bytes` gives
+///   back: under that mutant the line is admitted and the block becomes
+///   `3 + 1 + 2 + 524_283 = 524_289`, one byte past the donor cap.
+#[test]
+fn tool_search_source_listing_fit_gate_boundary() {
+    let a = ToolSearchSource {
+        name: "a",
+        description: None,
+    };
+    // `a` (0x61) sorts before `x` (0x78), so the short name always renders first.
+    let fitting_name = "x".repeat(524_282);
+    let fitting = ToolSearchSource {
+        name: &fitting_name,
+        description: None,
+    };
+    let fitting_sources = [a, fitting];
+    let fitting_described =
+        tool_search_description(&fitting_sources, ToolSearchSourceListing::Include);
+    let fits = tool_search_source_block(&fitting_described);
+    assert_eq!(
+        fits.len(),
+        MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES,
+        "`required == MAX - rendered.len()` must render the line: the gate is `>`, not `>=`"
+    );
+
+    let over_name = "x".repeat(524_283);
+    let over = ToolSearchSource {
+        name: &over_name,
+        description: None,
+    };
+    let over_sources = [a, over];
+    let over_described = tool_search_description(&over_sources, ToolSearchSourceListing::Include);
+    let skipped = tool_search_source_block(&over_described);
+    assert_eq!(
+        skipped.len(),
+        "- a".len(),
+        "`required` one byte past the room must skip the source whole"
+    );
+}
+
+/// Both `name.len()` sites in `render_tool_search_sources` — the `reserved_name_bytes` fold and the
+/// `if required >` comparison — charge UTF-8 BYTES, and every other fixture name in this directory is
+/// ASCII, so a slip to `name.chars().count()` is invisible there. Each case below is sized so the
+/// two accountings disagree about an observable:
+/// * Reservation: one source named `🦀` (4 UTF-8 bytes, 1 code point) with a 524_285-byte
+///   description. The byte reserve is `(1 - 1) + (2 + 4) = 6`, so the budget opens at 524_282; the
+///   `": "` costs 2 of that and the description is cut to 524_280, filling the block to exactly the
+///   524_288-byte cap. A code-point reserve of 3 would open the budget at 524_285, give the
+///   description 3 more bytes and emit a 524_291-byte block — 3 past the cap, one per uncounted byte.
+/// * Fit gate: `a` plus a name of 262_142 `é`s (524_284 bytes, 262_142 code points). After `- a` the
+///   room is 524_285 and `required` is `1 + 2 + 524_284 = 524_287`, 2 over, so the source is skipped
+///   whole and the block stays 3 bytes. Under code-point counting `required` would be 262_145, the
+///   line would render, and the block would be `3 + 1 + 2 + 524_284 = 524_290` — 2 past the cap. The
+///   margin is 2 rather than 1 so this pin stays green under the dropped-`separator_bytes` mutant
+///   above and reddens only for a code-point slip.
+#[test]
+fn tool_search_source_listing_accounts_name_bytes_not_char_count() {
+    let long = "y".repeat(524_285);
+    let described = tool_search_description(
+        &[ToolSearchSource {
+            name: "🦀",
+            description: Some(&long),
+        }],
+        ToolSearchSourceListing::Include,
+    );
+    let (_, description) = tool_search_source_block(&described)
+        .split_once(": ")
+        .expect("the described line keeps its separator");
+    assert_eq!(
+        description.len(),
+        524_280,
+        "the reservation charges the crab's 4 UTF-8 bytes, not its 1 code point"
+    );
+
+    let wide_name = "é".repeat(262_142);
+    let a = ToolSearchSource {
+        name: "a",
+        description: None,
+    };
+    let wide = ToolSearchSource {
+        name: &wide_name,
+        description: None,
+    };
+    let wide_sources = [a, wide];
+    let wide_described = tool_search_description(&wide_sources, ToolSearchSourceListing::Include);
+    let skipped = tool_search_source_block(&wide_described);
+    assert_eq!(
+        skipped.len(),
+        "- a".len(),
+        "a multi-byte name wider than the room is skipped whole, not admitted on a code-point count"
+    );
+}
+
+/// D3-A placement, as far as this crate can see it: an admitted route leads the raw-JSON channel
+/// this crate returns with the declaration, so the entries handed to the sampler are
+/// `tool_search, web_search, x_search` — that slice's own order, not a rule placed here, exactly as
+/// `extra_tool_entries_with_declaration`'s own doc has it. The splice of those entries into the
+/// serialized body's top-level `tools` array is the sampler's
+/// (`xai-grok-sampler/src/client.rs:879`, `splice_extra_tool_entries`), and a wire-order
+/// assertion for it belongs there.
+///
+/// What the entry compare here pins is order and count only: its expected declaration is built by
+/// the same producer, so the entry's own bytes contribute nothing to it. They are pinned by the
+/// donor-parity tests instead — [`tool_search_declaration_matches_cx1_fixture_bytes`] for the whole
+/// entry and [`tool_search_declaration_fixed_half_is_donor_exact`] for the half that carries no
+/// source data — and both that helper and a key-order pin read the element the function actually
+/// emitted, not the value handed to it, so a re-key or a normalisation inside
+/// `extra_tool_entries_with_declaration` cannot hide behind `serde_json`'s order-blind equality.
+///
+/// No production caller passes a declaration yet: `extra_tool_entries`
+/// passes `declaration: None` and all three sampler call sites (`client.rs:2652`, `client.rs:3415`,
+/// `client.rs:3509`) call exactly that, so no route can put this entry on the wire and this test
+/// cannot fail on that account. The top-level splice is the sampler's own
+/// (`client.rs:879` `splice_extra_tool_entries`; its tests at `client.rs:3779-3800` splice hosted
+/// entries only, never a declaration). The end-to-end proof is owed by apex-waj.9 (wiring) and
+/// apex-waj.20 (live arm).
+#[test]
+fn declaration_leads_the_raw_json_channel_when_admitted() {
+    assert!(
+        SearchAdmission {
+            supports_search_tool: true,
+            has_searchable_tools: true,
+        }
+        .admitted(),
+        "an admitted route advertises the declaration"
+    );
+    let mut admission = SearchAdmission {
+        supports_search_tool: false,
+        has_searchable_tools: false,
+    };
+    for (supports_search_tool, has_searchable_tools) in
+        [(false, false), (false, true), (true, false)]
+    {
+        admission.supports_search_tool = supports_search_tool;
+        admission.has_searchable_tools = has_searchable_tools;
+        assert!(
+            !admission.admitted(),
+            "both inputs are required, got {admission:?}"
+        );
+    }
+
+    let hosted = [HostedTool::WebSearch { options: None }];
+    let declaration = || {
+        tool_search_declaration_entry(
+            ToolSearchExecution::Client,
+            &[],
+            ToolSearchSourceListing::Omit,
+            /*default_limit*/ 8,
+        )
+    };
+    // The value compare cannot pin the entry this test places (object equality ignores key
+    // order), so every pin below reads the emitted element rather than the value handed in.
+    let entries = extra_tool_entries_with_declaration(&hosted, Some(declaration()));
+    assert_declaration_fixed_half_is_donor_exact(&entries[0]);
+    assert_eq!(
+        json_keys(&entries[0]),
+        ["type", "execution", "description", "parameters"],
+        "the declaration keeps the donor key order on its way out"
+    );
+    assert_eq!(
+        entries,
+        vec![declaration(), serde_json::json!({"type": "web_search"})],
+        "the declaration leads the hosted entries"
+    );
+
+    // With no function tools the typed body this crate builds carries no `tools` key at all, so
+    // the raw-JSON channel is the declaration's only route; what the splice makes of that is the
+    // sampler's `splice_extra_tool_entries_creates_tools_array_when_absent` test.
+    let mut req = ConversationRequest::from_items(vec![ConversationItem::user("hi")]);
+    req.hosted_tools = hosted.to_vec();
+    let body: rs::CreateResponse = (&req).into();
+    assert_matches!(body.tools, None);
+}
+
+/// What this pins is the rendering of a declaration built with `ToolSearchSourceListing::Include`
+/// and an EMPTY source list: it still renders the donor's `None currently enabled.`
+/// (`core/src/tools/handlers/tool_search_spec.rs:48-49`) and it still leads the hosted entries.
+/// Admission is a separate question and is not asserted here — `SearchAdmission` has no source-list
+/// input at all, so the emptiness of this list could not change an `admitted()` verdict even by
+/// mistake (a coupling would be a compile error), and the truth table is pinned by
+/// [`declaration_leads_the_raw_json_channel_when_admitted`]. The admission-to-manifest wiring is
+/// owned by apex-waj.9 and the live arm by apex-waj.20.
+///
+/// No production caller passes a declaration yet: `extra_tool_entries` passes
+/// `declaration: None` and all three sampler call sites (`client.rs:2652`, `client.rs:3415`,
+/// `client.rs:3509`) call exactly that, so this declaration cannot reach the wire and this test
+/// cannot fail on that account. The top-level splice is the sampler's own (`client.rs:879`
+/// `splice_extra_tool_entries`; its tests at `client.rs:3779-3800` splice hosted entries only,
+/// never a declaration). The end-to-end proof is owed by apex-waj.9 and apex-waj.20.
+#[test]
+fn admitted_route_with_no_advertised_sources_still_declares_search() {
+    let declaration = || {
+        tool_search_declaration_entry(
+            ToolSearchExecution::Client,
+            &[],
+            ToolSearchSourceListing::Include,
+            /*default_limit*/ 8,
+        )
+    };
+    let hosted = [HostedTool::WebSearch { options: None }];
+    // Every pin below reads the element the function emitted, never the value handed to it, so a
+    // re-key or a normalisation inside `extra_tool_entries_with_declaration` cannot hide behind
+    // `serde_json`'s order-blind value equality.
+    let entries = extra_tool_entries_with_declaration(&hosted, Some(declaration()));
+    assert_declaration_fixed_half_is_donor_exact(&entries[0]);
+    assert_eq!(
+        json_keys(&entries[0]),
+        ["type", "execution", "description", "parameters"],
+        "the declaration keeps the donor key order on its way out"
+    );
+    assert_eq!(
+        entries,
+        vec![declaration(), serde_json::json!({"type": "web_search"})],
+        "the declaration is emitted with an empty source list"
+    );
+    assert_eq!(
+        tool_search_source_block(
+            entries[0]["description"]
+                .as_str()
+                .expect("description is a string"),
+        ),
+        "None currently enabled.",
+        "the donor declares the tool rather than withholding it"
+    );
+}
+
+/// A route that is not admitted passes no declaration, and that path must not change a single
+/// byte: the hosted entries are pinned by VALUE and by KEY ORDER. `serde_json`'s object equality
+/// ignores key order (see [`assert_declaration_fixed_half_is_donor_exact`]), so the value compare
+/// alone would survive a reorder inside `WebSearchOptions::to_tool_entry()` that does move the
+/// serialized bytes; the key sequences below close that hole. The `filters` sub-object carries a
+/// single key on every validating ingress (`WebSearchOptions::validate` rejects both lists
+/// together), so only that one key is pinned here; the two-key order a directly constructed
+/// [`WebSearchOptions`] still emits is pinned by
+/// [`directly_constructed_web_search_options_pin_both_filter_keys`]. Nothing at all stays an empty
+/// vec (which the splice short-circuits, leaving `tools` untouched).
+///
+/// No production caller passes a declaration yet: `extra_tool_entries` passes
+/// `declaration: None`, which is exactly the branch under test, so this is the only path any route
+/// takes today; the admitted branch is inert until apex-waj.9 (wiring) lands and apex-waj.20 (live
+/// arm) proves it. The top-level splice a declaration would ride is the sampler's own
+/// (`client.rs:879` `splice_extra_tool_entries`).
+#[test]
+fn non_admitted_routes_emit_no_declaration() {
+    let hosted = [
+        HostedTool::WebSearch {
+            options: Some(WebSearchOptions {
+                allowed_domains: Some(vec!["docs.x.ai".into()]),
+                excluded_domains: None,
+            }),
+        },
+        HostedTool::XSearch { options: None },
+    ];
+    let entries = extra_tool_entries_with_declaration(&hosted, None);
+    assert_eq!(
+        // Pinned by value so a drift in `extra_tool_entries` cannot cancel itself out here.
+        entries,
+        vec![
+            serde_json::json!({
+                "type": "web_search",
+                "filters": { "allowed_domains": ["docs.x.ai"] },
+            }),
+            serde_json::json!({"type": "x_search"}),
+        ]
+    );
+
+    // `preserve_order` makes the producer's insertion order the wire order, so the sequences are
+    // asserted next to the value: a reorder is a wire change value equality cannot see.
+    assert_eq!(json_keys(&entries[0]), ["type", "filters"]);
+    assert_eq!(
+        json_keys(&entries[0]["filters"]),
+        ["allowed_domains"],
+        "an absent `excluded_domains` is skipped, never emitted as null"
+    );
+    assert_eq!(json_keys(&entries[1]), ["type"]);
+
+    assert_eq!(
+        extra_tool_entries_with_declaration(&[], None),
+        Vec::<serde_json::Value>::new()
+    );
+}
+
+/// The pair order the single-key pin above cannot reach. Both keys are emitted whenever both lists
+/// hold entries — `to_tool_entry` serializes what it is handed — and both fields are public, so
+/// nothing type-level stops a caller from building that value. `validate` rejects the combination only
+/// when both lists are non-empty (`tool_overrides.rs:189-192`: a `Some(vec![])` beside a populated
+/// list passes), and it gates every literal outside a test module: the deserialize ingress builds
+/// through `TryFrom<WebSearchOptionsWire>` (`tool_overrides.rs:273`, validated at `:277`), and the
+/// one builder that skips that ingress — `web_search_options_from_section` in the sibling
+/// `xai-grok-shell` crate (`src/util/config/resolve/toolset.rs:500`, validated at `:507`, its
+/// both-set arm rebuilt with `excluded_domains: None` at `:517-519`) — is the only other one. Every
+/// remaining literal in the tree sits in a test module, so no config path reaches this shape and a
+/// direct construction is the only way to pin it. The expected sequence is the producer's own field
+/// order: the `WebSearchToolFilters` local to `to_tool_entry` (`tool_overrides.rs:214-219`) declares
+/// `allowed_domains` before `excluded_domains`, each `skip_serializing_if` only `Option::is_none`,
+/// emptiness having been normalised to `None` one statement earlier (`:232-233`) — never an explicit
+/// null. That pair is also alphabetical order, so the sequence catches a swapped field pair but
+/// cannot tell declaration order from a sorted one; do not over-trust it as a declaration-order
+/// proof.
+///
+/// The whole-entry value compare freezes PRODUCER behaviour, not an API-accepted request: `validate`
+/// rejects this combination, a request carrying both filters is expected to 400 upstream, and no
+/// capture under `smoke/redteam/` carries either filter key, let alone both. It is kept as a freeze
+/// on what `to_tool_entry` emits for a directly constructed value.
+#[test]
+fn directly_constructed_web_search_options_pin_both_filter_keys() {
+    let options = WebSearchOptions {
+        allowed_domains: Some(vec!["docs.x.ai".into()]),
+        excluded_domains: Some(vec!["reddit.com".into()]),
+    };
+    // `tool_overrides.rs:420-426 deserialize_hard_errors_on_both_set` already proves this
+    // combination is rejected, but tolerantly — `is_err()` on the deserialize ingress. This is the
+    // only assertion that NAMES the variant, so a guard that started rejecting for some other
+    // reason would still read green over there.
+    assert_matches!(
+        options.validate(),
+        Err(WebSearchOptionsError::BothAllowedAndExcluded)
+    );
+
+    let entries = extra_tool_entries_with_declaration(
+        &[HostedTool::WebSearch {
+            options: Some(options),
+        }],
+        None,
+    );
+    assert_eq!(
+        entries,
+        vec![serde_json::json!({
+            "type": "web_search",
+            "filters": {
+                "allowed_domains": ["docs.x.ai"],
+                "excluded_domains": ["reddit.com"],
+            },
+        })]
+    );
+    assert_eq!(json_keys(&entries[0]), ["type", "filters"]);
+    // Declaration order, which here is also alphabetical order — see the doc above.
+    assert_eq!(
+        json_keys(&entries[0]["filters"]),
+        ["allowed_domains", "excluded_domains"],
+        "the allowlist precedes the blocklist, as the wire struct declares them"
+    );
 }
 
 #[test]
@@ -1085,6 +2141,202 @@ fn test_tool_result_without_images_stays_text() {
     assert!(matches!(&fco.output, rs::FunctionCallOutput::Text(t) if t == "file1.txt\nfile2.txt"));
 }
 
+/// Lowers `item` through the real request conversion and returns the output of
+/// the single `function_call_output` item it produced.
+fn lowered_tool_result_output(item: ConversationItem) -> rs::FunctionCallOutput {
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::user("Read this image"),
+        ConversationItem::assistant_tool_calls(vec![ToolCall {
+            id: "call_1".into(),
+            name: "read_file".to_string(),
+            arguments: r#"{"target_file": "photo.png"}"#.into(),
+        }]),
+        item,
+    ]);
+
+    let responses_req: rs::CreateResponse = (&req).into();
+    let rs::InputParam::Items(items) = responses_req.input else {
+        panic!("Expected Items input");
+    };
+    let outputs: Vec<_> = items
+        .iter()
+        .filter_map(|item| {
+            if let rs::InputItem::Item(rs::Item::FunctionCallOutput(fco)) = item {
+                Some(fco)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].call_id, "call_1");
+    outputs[0].output.clone()
+}
+
+/// An `images` vec that carries no image part must not lower to an all-text
+/// output array: a shim in front of a ChatCompletions backend rejects that
+/// shape, so the donor collapses it to a bare string (`normalize_tool_output`,
+/// codex-rs/codex-api/src/endpoint/content_type_compat.rs:94 in the external donor tree).
+#[test]
+fn test_tool_result_with_non_image_parts_collapses_to_text() {
+    let output = lowered_tool_result_output(ConversationItem::tool_result_with_images(
+        "call_1",
+        "Read image file: photo.png",
+        vec![ContentPart::Text {
+            text: "metadata".into(),
+        }],
+    ));
+
+    assert_eq!(
+        output,
+        rs::FunctionCallOutput::Text("Read image file: photo.png".to_string())
+    );
+}
+
+#[test]
+fn test_tool_result_with_text_and_image_parts_keeps_text_first() {
+    let output = lowered_tool_result_output(ConversationItem::tool_result_with_images(
+        "call_1",
+        "Read image file: photo.png",
+        vec![
+            ContentPart::Text {
+                text: "metadata".into(),
+            },
+            ContentPart::Image {
+                url: "data:image/png;base64,iVBOR".into(),
+            },
+        ],
+    ));
+
+    assert_eq!(
+        output,
+        rs::FunctionCallOutput::Content(vec![
+            rs::InputContent::InputText(rs::InputTextContent {
+                text: "Read image file: photo.png".to_string(),
+            }),
+            rs::InputContent::InputImage(rs::InputImageContent {
+                detail: rs::ImageDetail::Auto,
+                file_id: None,
+                image_url: Some("data:image/png;base64,iVBOR".to_string()),
+            }),
+        ])
+    );
+}
+
+/// A blank result text keeps its text part when an image rides with it. The donor filters
+/// blank segments only inside the all-text collapse
+/// (`codex-rs/codex-api/src/endpoint/content_type_compat.rs:117-129`, the filter at `:124`); the
+/// mixed branch relabels the parts in place (`:130-132`) and leaves the empty one standing.
+/// Pinned so dropping the blank part reads as the wire change it is, not a cleanup.
+#[test]
+fn test_tool_result_with_blank_content_and_image_keeps_blank_text_part() {
+    let output = lowered_tool_result_output(ConversationItem::tool_result_with_images(
+        "call_1",
+        "",
+        vec![ContentPart::Image {
+            url: "data:image/png;base64,iVBOR".into(),
+        }],
+    ));
+
+    assert_eq!(
+        output,
+        rs::FunctionCallOutput::Content(vec![
+            rs::InputContent::InputText(rs::InputTextContent {
+                text: String::new(),
+            }),
+            rs::InputContent::InputImage(rs::InputImageContent {
+                detail: rs::ImageDetail::Auto,
+                file_id: None,
+                image_url: Some("data:image/png;base64,iVBOR".to_string()),
+            }),
+        ]),
+        "a mixed output keeps its blank text part"
+    );
+}
+
+/// The result text rides first and the image parts follow in input order.
+#[test]
+fn test_tool_result_with_two_images_keeps_images_in_input_order() {
+    let output = lowered_tool_result_output(ConversationItem::tool_result_with_images(
+        "call_1",
+        "Read 2 image files",
+        vec![
+            ContentPart::Image {
+                url: "data:image/png;base64,aG90".into(),
+            },
+            ContentPart::Image {
+                url: "data:image/png;base64,aW1n".into(),
+            },
+        ],
+    ));
+
+    assert_eq!(
+        output,
+        rs::FunctionCallOutput::Content(vec![
+            rs::InputContent::InputText(rs::InputTextContent {
+                text: "Read 2 image files".to_string(),
+            }),
+            rs::InputContent::InputImage(rs::InputImageContent {
+                detail: rs::ImageDetail::Auto,
+                file_id: None,
+                image_url: Some("data:image/png;base64,aG90".to_string()),
+            }),
+            rs::InputContent::InputImage(rs::InputImageContent {
+                detail: rs::ImageDetail::Auto,
+                file_id: None,
+                image_url: Some("data:image/png;base64,aW1n".to_string()),
+            }),
+        ]),
+        "the images follow the order they were carried in"
+    );
+}
+
+/// A text part riding BETWEEN two images is dropped — not appended, not merged into the item's own
+/// content: the harness gives a tool result one textual part (its result text, leading the array),
+/// so mid-array text is dropped by the `ContentPart::Text { .. } => None` arm of the ToolResult
+/// lowering. This known loss is handoff H-4; the sibling dialects drop it identically. Pinned so the
+/// loss reads as the deliberate contract it is: an implementation that started carrying this text is
+/// a wire change to review, not a silent cleanup.
+#[test]
+fn test_tool_result_with_text_between_images_drops_the_text_part() {
+    let output = lowered_tool_result_output(ConversationItem::tool_result_with_images(
+        "call_1",
+        "Read 2 image files",
+        vec![
+            ContentPart::Image {
+                url: "data:image/png;base64,aG90".into(),
+            },
+            ContentPart::Text {
+                text: "caption between the images".into(),
+            },
+            ContentPart::Image {
+                url: "data:image/png;base64,aW1n".into(),
+            },
+        ],
+    ));
+
+    assert_eq!(
+        output,
+        rs::FunctionCallOutput::Content(vec![
+            rs::InputContent::InputText(rs::InputTextContent {
+                text: "Read 2 image files".to_string(),
+            }),
+            rs::InputContent::InputImage(rs::InputImageContent {
+                detail: rs::ImageDetail::Auto,
+                file_id: None,
+                image_url: Some("data:image/png;base64,aG90".to_string()),
+            }),
+            rs::InputContent::InputImage(rs::InputImageContent {
+                detail: rs::ImageDetail::Auto,
+                file_id: None,
+                image_url: Some("data:image/png;base64,aW1n".to_string()),
+            }),
+        ]),
+        "the text between the images is dropped; the images stay adjacent in input order"
+    );
+}
+
 #[test]
 fn responses_api_conversion_preserves_model_fingerprint() {
     use std::collections::HashMap;
@@ -1561,7 +2813,7 @@ fn empty_content_assistant_with_tool_calls_and_reasoning() {
     let input = input_items_json(&req);
     let summary = summarise_input(&input);
 
-    // (assistant message DROPPED because content is empty -- per conversation_item_to_input_items, lines 1718-1724) function_call_output (tool result)
+    // (assistant message DROPPED by the `!a.content.is_empty()` guard in conversation_item_to_input_items) function_call_output (tool result)
     // No spurious extra reasoning items, no placeholder.
     let reasoning_count = summary
         .iter()
