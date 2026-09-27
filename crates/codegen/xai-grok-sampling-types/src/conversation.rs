@@ -2725,7 +2725,7 @@ pub enum DanglingToolCallReason {
 /// The API rejects this with "No tool output found for function call …".
 ///
 /// Every synthetic pairing is flagged `is_error == true` (via
-/// [`Self::tool_result_error`]): both [`DanglingToolCallReason`] variants are
+/// [`ConversationItem::tool_result_error`]): both [`DanglingToolCallReason`] variants are
 /// the spec's cancelled/fatal class (spec L3898-3902), so a resumed or
 /// aborted session must never present an unflagged success pairing for a
 /// tool call that never produced output.
