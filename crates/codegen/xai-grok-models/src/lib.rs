@@ -87,6 +87,12 @@ pub struct DefaultModelEntry {
     pub compactions_remaining: Option<CompactionsRemaining>,
     pub multi_agent_v2: Option<bool>,
     pub strict_responses_input: Option<bool>,
+    /// Native hosted tool discovery (S3a): row advertises the model-side
+    /// `tool_search` contract. Additive; absent = off.
+    pub supports_search_tool: Option<bool>,
+    /// Responses-lite declaration placement (tools ride a leading
+    /// `additional_tools` input item, not top-level `tools`). Additive; absent = off.
+    pub use_responses_lite: Option<bool>,
     pub cache_ttl: Option<String>,
     pub extra_headers: Option<BTreeMap<String, String>>,
 }
@@ -138,4 +144,24 @@ pub fn default_session_summary_model() -> &'static str {
         .session_summary
         .as_deref()
         .unwrap_or(&DEFAULTS.default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// S3a (apex-ayl.142, T2): the two capability flags parse from the
+    /// baked catalog; absent-on-row = off by default.
+    #[test]
+    fn catalog_flags_parse_and_default_off() {
+        let m: DefaultModels = serde_json::from_str(DEFAULT_MODELS_JSON).unwrap();
+        let find = |id: &str| m.models.iter().find(|e| e.model == id);
+        assert_eq!(find("gpt-5.6-sol").unwrap().supports_search_tool, Some(true));
+        assert_eq!(find("gpt-5.2").unwrap().supports_search_tool, Some(true));
+        assert_eq!(find("glm-5.2").unwrap().supports_search_tool, Some(false));
+        assert_eq!(find("qwen3.8-27b").unwrap().supports_search_tool, Some(false));
+        // absent-on-row = off by default
+        let off_row = m.models.iter().find(|e| e.supports_search_tool.is_none()).expect("a row without the flag");
+        assert_eq!(off_row.supports_search_tool.unwrap_or(false), false);
+    }
 }

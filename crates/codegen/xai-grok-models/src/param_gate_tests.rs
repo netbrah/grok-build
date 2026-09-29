@@ -39,15 +39,15 @@ fn selftest_happy_path_passes() {
     assert_eq!(report.effort_values.len(), 8);
     assert!(report.effort_values.contains(&"xhigh".to_string()));
     assert!(report.effort_values.contains(&"ultra".to_string()));
-    assert_eq!(report.required_fields.len(), 15);
+    assert_eq!(report.required_fields.len(), 17); // S3a T2: + supports_search_tool / use_responses_lite
     assert!(report.required_fields.contains(&"api_backend".to_string()));
     assert!(report.required_fields.contains(&"reasoning_efforts".to_string()));
     assert!(!report.required_fields.contains(&"model".to_string()));
     assert!(!report.required_fields.contains(&"context_window".to_string()));
-    assert_eq!(report.schema_properties.len(), 48);
+    assert_eq!(report.schema_properties.len(), 50); // S3a T2: + supports_search_tool / use_responses_lite
     assert!(report.schema_properties.contains(&"api_backend".to_string()));
     assert!(report.schema_properties.contains(&"temperature".to_string()));
-    assert_eq!(report.struct_fields.len(), 22);
+    assert_eq!(report.struct_fields.len(), 24); // S3a T2: + supports_search_tool / use_responses_lite
     assert_eq!(
         report.struct_fields.first().map(String::as_str),
         Some("id")
@@ -176,7 +176,7 @@ fn selftest_baked_row_key_drift_fails() {
 fn selftest_struct_field_parser_sanity() {
     let (_schema, lib, _baked) = real_inputs();
     let fields = gate::parse_struct_fields(&lib).expect("parse DefaultModelEntry fields");
-    assert_eq!(fields.len(), 22);
+    assert_eq!(fields.len(), 24); // S3a T2: + supports_search_tool / use_responses_lite
     assert_eq!(fields[0], "id");
     assert_eq!(fields[1], "model");
     assert_eq!(fields.last().map(String::as_str), Some("extra_headers"));

@@ -1,14 +1,14 @@
 {
  "schema_version": 1,
- "generated_at": "2026-09-24T16:52:42Z",
+ "generated_at": "2026-09-29T16:37:35Z",
  "gate": "scripts/catalog_gate.py (apex-ayl.128 ZC-SUBSET-DRIFT-1)",
  "inputs": {
   "generated": {
-   "path": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/crates/codegen/xai-grok-models/catalog_generated.json",
+   "path": "/Users/palanisd/Projects/upstream/wt/apex-ayl-hosted-tool-search/crates/codegen/xai-grok-models/catalog_generated.json",
    "generated_at": "2026-09-22T19:21:54.296168+00:00"
   },
-  "overlay": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/crates/codegen/xai-grok-models/catalog_overlay.json",
-  "schema": "/Users/palanisd/Projects/upstream/wt/grok-build-responses/crates/codegen/xai-grok-shell/config.schema.json",
+  "overlay": "/Users/palanisd/Projects/upstream/wt/apex-ayl-hosted-tool-search/crates/codegen/xai-grok-models/catalog_overlay.json",
+  "schema": "/Users/palanisd/Projects/upstream/wt/apex-ayl-hosted-tool-search/crates/codegen/xai-grok-shell/config.schema.json",
   "digest": {
    "path": "/Users/palanisd/Projects/upstream/grok/plans/model/data/catalog-digest.json",
    "captured_at": "2026-09-18T23:37:16.832488+00:00"
@@ -16,9 +16,9 @@
  },
  "counts": {
   "on_proxy": 76,
-  "overlay_rows": 12,
-  "curated": 8,
-  "skipped": 68,
+  "overlay_rows": 18,
+  "curated": 14,
+  "skipped": 62,
   "new_unlisted": 0,
   "removed_but_curated": 0,
   "skip_stale": 0,
@@ -30,10 +30,16 @@
    "claude-sonnet-5",
    "gemini-3.1-pro-preview",
    "gemini-3.8-flash",
+   "glm-5.2",
+   "gpt-5.2",
+   "gpt-5.4",
+   "gpt-5.4-mini",
+   "gpt-5.5",
    "gpt-5.6-luna",
    "gpt-5.6-sol",
    "gpt-5.6-terra",
-   "grok-4.6"
+   "grok-4.6",
+   "qwen3.8-27b"
   ],
   "skipped": [
    {
@@ -137,10 +143,6 @@
     "reason": "superseded \u2014 3.8-flash + 3.1-pro-preview kept"
    },
    {
-    "model": "glm-5.2",
-    "reason": "power-user path (endpoint + [model.*] config entries); excluded from zero-config menu \u2014 operator ruling 2026-09-22"
-   },
-   {
     "model": "gpt-3.5-turbo",
     "reason": "superseded legacy"
    },
@@ -233,10 +235,6 @@
     "reason": "superseded legacy"
    },
    {
-    "model": "gpt-5.2",
-    "reason": "superseded legacy"
-   },
-   {
     "model": "gpt-5.2-chat",
     "reason": "superseded legacy"
    },
@@ -253,19 +251,7 @@
     "reason": "superseded legacy"
    },
    {
-    "model": "gpt-5.4",
-    "reason": "superseded legacy"
-   },
-   {
-    "model": "gpt-5.4-mini",
-    "reason": "superseded legacy"
-   },
-   {
     "model": "gpt-5.4-nano",
-    "reason": "superseded legacy"
-   },
-   {
-    "model": "gpt-5.5",
     "reason": "superseded legacy"
    },
    {
@@ -291,10 +277,6 @@
    {
     "model": "o4-mini",
     "reason": "superseded legacy"
-   },
-   {
-    "model": "qwen3.8-27b",
-    "reason": "power-user path (endpoint + [model.*] config entries); excluded from zero-config menu \u2014 operator ruling 2026-09-22"
    },
    {
     "model": "text-embedding-3-large",
@@ -380,6 +362,100 @@
      "low",
      "medium",
      "ultra"
+    ],
+    "live_only": [
+     "none"
+    ],
+    "curated_only": [
+     "ultra"
+    ]
+   },
+   {
+    "model": "gpt-5.2",
+    "live_hint": [
+     "high",
+     "low",
+     "medium",
+     "none",
+     "xhigh"
+    ],
+    "curated": [
+     "high",
+     "low",
+     "medium",
+     "ultra",
+     "xhigh"
+    ],
+    "live_only": [
+     "none"
+    ],
+    "curated_only": [
+     "ultra"
+    ]
+   },
+   {
+    "model": "gpt-5.4",
+    "live_hint": [
+     "high",
+     "low",
+     "medium",
+     "minimal",
+     "none",
+     "xhigh"
+    ],
+    "curated": [
+     "high",
+     "low",
+     "medium",
+     "ultra",
+     "xhigh"
+    ],
+    "live_only": [
+     "minimal",
+     "none"
+    ],
+    "curated_only": [
+     "ultra"
+    ]
+   },
+   {
+    "model": "gpt-5.4-mini",
+    "live_hint": [
+     "high",
+     "low",
+     "medium",
+     "none",
+     "xhigh"
+    ],
+    "curated": [
+     "high",
+     "low",
+     "medium",
+     "ultra",
+     "xhigh"
+    ],
+    "live_only": [
+     "none"
+    ],
+    "curated_only": [
+     "ultra"
+    ]
+   },
+   {
+    "model": "gpt-5.5",
+    "live_hint": [
+     "high",
+     "low",
+     "medium",
+     "none",
+     "xhigh"
+    ],
+    "curated": [
+     "high",
+     "low",
+     "medium",
+     "ultra",
+     "xhigh"
     ],
     "live_only": [
      "none"
