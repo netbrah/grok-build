@@ -93,43 +93,90 @@ fn xw_proj_orphaned_result_direction() {
     );
 }
 
-/// Table 2 case 2 — CARRIER SURVIVAL (sdd-71 §4 invariant 2).
+/// Table 2 case 2 — CARRIER SURVIVAL (sdd-71 §4 invariant 2), pinned on BOTH
+/// boundaries this shape can be projected to.
 ///
 /// History with a `CodexRawInput` carrier + foreign reasoning → project → the
-/// carrier survives byte-identical/opaque (the H-2 silent-loss class the
-/// projector must not reproduce at switch time), the reasoning is projected
-/// per floor.
+/// carrier survives untouched and opaque (value equality through `as_value`; the
+/// H-2 silent-loss class the projector must not reproduce at switch time), the
+/// reasoning is projected per floor, and the drop ledger stays empty.
 ///
-/// Right-reason failure after the fn lands: carriers mutated/dropped.
+/// The two legs do NOT prove the same half of the invariant:
+/// - `VLLenient` → the carrier is inert. No Vertex arm is reachable, so this
+///   leg only pins "a lenient target never mutates the carrier". It cannot see
+///   a carrier dropped: the T3 guard
+///   (`ConversationItem::BackendToolCall(b) if boundary == Boundary::Vertex &&
+///   !is_carrier(b)`, `projection.rs:214-215`) short-circuits on `&&` and never
+///   calls `is_carrier` off Vertex.
+/// - `Vertex` → the ONLY boundary where `is_carrier` is consulted, so this is
+///   the crate's sole falsifier of its TRUE branch. It is also the only leg
+///   that can tell a surviving carrier from a dropped one, which is why it
+///   asserts the ledger as well as the record's value: dropping the carrier files
+///   `vertex_non_carrier_backend_call`, a reason asserting the item was NOT a
+///   carrier, about an item that was. Before this leg existed,
+///   `is_carrier(_b) -> false` (harness mutant `S-CARRIER-ALL`) passed all 792
+///   library tests in both profiles.
+///
+/// Both legs share the body because this shape's counts are the same on both
+/// boundaries — 4 records in, 4 out, 0 drops, reasoning re-keyed T1 either way
+/// (owner `gpt-5.6-sol` is foreign to both targets). A shape whose counts
+/// differed per boundary would need per-boundary asserts, not this loop.
+///
+/// Right-reason failure after the fn lands: carriers mutated/dropped — the
+/// `drops.is_empty()` line fires first on a drop (naming the ledger that
+/// claimed a non-carrier), the value-identity line on a mutation.
 #[test]
 fn xw_proj_carrier_survival() {
     let (items, values) = items_from(carrier_shape());
-    let history = project_switch_history(
-        &items,
-        "qwen3.8-27b",
-        Boundary::VLLenient,
-        None,
-    );
-    let out = proj_items(&history);
-    assert_eq!(out.len(), 4, "carrier shape: projected record count changed");
-    assert_eq!(
-        as_value(&out[1]),
-        values[1],
-        "invariant 2 violated: CodexRawInput carrier must survive byte-identical/opaque"
-    );
-    let ConversationItem::Reasoning(r) = &out[2] else {
-        panic!("carrier shape: reasoning slot lost in projection");
-    };
-    assert!(
-        r.id.starts_with("xw_"),
-        "foreign reasoning beside the carrier must be projected per floor (T1 re-key), got {:?}",
-        r.id
-    );
-    assert!(
-        r.encrypted_content.is_none(),
-        "foreign encrypted_content must be stripped"
-    );
-    assert_eq!(r.summary.len(), 1, "summary must be kept");
+    for (target_model_id, boundary) in [
+        ("qwen3.8-27b", Boundary::VLLenient),
+        ("claude-sonnet-5", Boundary::Vertex),
+    ] {
+        let history = project_switch_history(&items, target_model_id, boundary, None);
+        let out = proj_items(&history);
+        assert!(
+            history.drops.is_empty(),
+            "invariant 2 violated at {boundary:?}: a CodexRawInput carrier must never \
+             reach a drop arm, but the ledger records {:?}",
+            history.drops
+        );
+        assert_eq!(
+            out.len(),
+            4,
+            "carrier shape at {boundary:?}: projected record count changed"
+        );
+        assert_eq!(
+            as_value(&out[1]),
+            values[1],
+            "invariant 2 violated at {boundary:?}: CodexRawInput carrier must survive \
+             untouched and opaque (value equality through `as_value`, the crate's \
+             parsed-equal standard — not a byte comparison)"
+        );
+        let ConversationItem::Reasoning(r) = &out[2] else {
+            panic!("carrier shape at {boundary:?}: reasoning slot lost in projection");
+        };
+        assert!(
+            r.id.starts_with("xw_"),
+            "foreign reasoning beside the carrier must be projected per floor (T1 re-key), got {:?}",
+            r.id
+        );
+        assert!(
+            r.encrypted_content.is_none(),
+            "foreign encrypted_content must be stripped"
+        );
+        assert_eq!(r.summary.len(), 1, "summary must be kept");
+        // The partition the projection result claims by construction. Stated
+        // honestly: with the empty ledger and `out.len() == 4` already asserted
+        // above, this reduces to `items.len() == 4` — it guards the shape of
+        // `carrier_shape()` rather than the projector, and it is not this test's
+        // falsifier for a drop-and-don't-record defect (the ledger assert is).
+        assert_eq!(
+            out.len() + history.drops.len(),
+            items.len(),
+            "carrier shape at {boundary:?}: projected items and recorded drops must \
+             partition the input"
+        );
+    }
 }
 
 /// Table 2 case 3 — the §3 decision-table rows as L0 pins.
@@ -156,7 +203,7 @@ fn xw_proj_boundary_decision_table() {
         assert_eq!(
             as_value(&out[1]),
             values[1],
-            "sol→sol: T0-KEEP must be byte-identical (id + encrypted kept, same boundary)"
+            "sol→sol: T0-KEEP must be value-identical (id + encrypted kept, same boundary)"
         );
     }
     // (b) sol→qwen — T1 re-key + strip (foreign reasoning on a lenient target).
@@ -324,14 +371,25 @@ fn xw_proj_id_grammar_canonical() {
     );
 }
 
-/// Table 2 case 5 — BYTE-IDENTITY of non-projected (sdd-71 §4 invariant 6, the
-/// over-strip guard). Every record whose expected mirror is unchanged (T0)
-/// must come back byte-identical (parsed-equal — the corpus's own
-/// verification standard) to its storage form.
+/// Table 2 case 5 — VALUE identity of non-projected records (the case the spec
+/// labels sdd-71 §4 invariant 6 “BYTE-IDENTITY of non-projected items”, and the
+/// over-strip guard). Every record whose expected mirror is unchanged (T0) must
+/// come back equal to its storage form **as parsed JSON values**.
 ///
-/// Right-reason failure after the fn lands: incidental mutation.
+/// What is asserted, precisely: `as_value` serialises the projected record and
+/// the fixture record to `serde_json::Value` and compares those, so key order,
+/// number spelling and escape spelling are all invisible — this is the corpus's
+/// own stated verification standard (“parsed-equal”), not a byte comparison. The
+/// name used to read `byte_identity`, which claimed more than the comparison
+/// enforces: a projector that re-serialised an untouched record with reordered
+/// keys or a re-escaped string would pass here, and nothing in this crate claims
+/// otherwise. Byte-level identity over these fixtures is owed to whoever first
+/// compares the stored text against what the projector sends, byte for byte.
+///
+/// Right-reason failure after the fn lands: incidental mutation of a record this
+/// switch had no reason to touch (content, id, or a strip that was not owed).
 #[test]
-fn xw_proj_byte_identity_nonprojected() {
+fn xw_proj_value_identity_nonprojected() {
     for (pre_json, exp_json, target, boundary) in [
         (VXM_AZ_PRE, VXM_AZ_EXPECTED, "gpt-5.6-terra", Boundary::AzStrict),
         (AZ_VLQ_PRE, AZ_VLQ_EXPECTED, "qwen3.8-27b", Boundary::VLLenient),
@@ -352,7 +410,7 @@ fn xw_proj_byte_identity_nonprojected() {
                     as_value(&out[i]),
                     *pv,
                     "{target}: record {i} mutated — T0 (non-projected) records must be \
-                     byte-identical to the storage form"
+                     value-identical to the storage form (`as_value` = parsed-equal)"
                 );
             }
         }
@@ -553,7 +611,7 @@ fn boundary_row(
 }
 
 /// Case-2 shape: a `CodexRawInput` carrier item (opaque raw payload, incl.
-/// its own ciphertext — D-ENC-spared, survives byte-identical) beside foreign
+/// its own ciphertext — D-ENC-spared, survives value-identically) beside foreign
 /// reasoning.
 fn carrier_shape() -> serde_json::Value {
     serde_json::json!([
@@ -864,4 +922,68 @@ fn mf6_u5_foreign_t1_row_strips_regardless_of_pin() {
         Some("East US 2"),
         "the mint tag rides the re-keyed item too (provenance survives T1)"
     );
+}
+
+/// Rule 13's testable half at this seam: the projector may **remove** a record —
+/// and then it must name it in `drops` — and it may rewrite a `Reasoning` item,
+/// which is the one class the T1 ladder exists to rewrite. It may not silently
+/// **change** a record it keeps: `ProjectionDrop` is `{ index, reason }`, a
+/// removal, so a modified survivor has no accounting surface anywhere (§4.2 rule
+/// 13, `xwire-boundary-map.md:311` — “The transition MUST be recorded, never
+/// silent”). This test is that reconstruction claim: drop the indices the ledger
+/// names, and every remaining projected record must still equal the stored record
+/// it came from.
+///
+/// Both shapes carry an assistant `tool_call` with no result — the input the
+/// `/messages` build's D5 pass would rewrite (`messages.rs:109-118` filters
+/// `tool_calls` to the paired set, then deletes the record if that empties it and
+/// its content is empty). Mirroring that half is deliberately out of scope here
+/// (comment at `projection.rs:180`; owner: the follow-on bead filed from the px29
+/// F-2 handoff), so this test is NOT a pin that the gap stays: if that bead lands
+/// a rewrite, it extends this assertion **together with** the ledger, which is
+/// exactly the forcing function the assertion is for. Harness mutant `MUT-H`
+/// filters `tool_calls` without naming the change, so it fails the assertion below
+/// on the first shape; the second shape is its deletion half, which the ledger CAN
+/// name — a removal this projector is allowed to make and record — so that shape is
+/// reconstruction-clean by design, not by accident.
+#[test]
+fn vertex_ledger_explains_every_change_to_a_record_it_keeps() {
+    let shapes = [
+        // Content plus one paired and one orphaned call: `clean_orphaned_items`
+        // would keep this record and shrink its `tool_calls`.
+        serde_json::json!([
+            {"type": "user", "content": [{"type": "text", "text": "go"}]},
+            {"type": "assistant", "content": "reading", "model_id": "gpt-5.6-sol",
+             "tool_calls": [{"id": "tc_paired", "name": "read_file", "arguments": "{}"},
+                            {"id": "tc_orphan", "name": "write_file", "arguments": "{}"}]},
+            {"type": "tool_result", "tool_call_id": "tc_paired", "content": "body",
+             "is_error": false}
+        ]),
+        // No content and only an orphaned call: `clean_orphaned_items` would
+        // delete this record outright.
+        serde_json::json!([
+            {"type": "user", "content": [{"type": "text", "text": "go"}]},
+            {"type": "assistant", "content": "", "model_id": "gpt-5.6-sol",
+             "tool_calls": [{"id": "tc_orphan", "name": "write_file", "arguments": "{}"}]},
+            {"type": "user", "content": [{"type": "text", "text": "next"}]}
+        ]),
+    ];
+    for shape in shapes {
+        let (items, _) = items_from(shape);
+        let history = project_switch_history(&items, "claude-sonnet-5", Boundary::Vertex, None);
+        let dropped: Vec<usize> = history.drops.iter().map(|drop| drop.index).collect();
+        let kept: Vec<serde_json::Value> = items
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !dropped.contains(index))
+            .map(|(_, item)| as_value(item))
+            .collect();
+        let projected: Vec<serde_json::Value> = proj_items(&history).iter().map(as_value).collect();
+        assert_eq!(
+            projected, kept,
+            "unaccounted change: the ledger names {:?} as the only removals, so every \
+             other record must come back exactly as stored",
+            history.drops
+        );
+    }
 }
