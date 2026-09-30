@@ -1,0 +1,79 @@
+[
+  {
+    "data": {
+      "type": "response.created",
+      "sequence_number": 0,
+      "response": {
+        "id": "resp_v2",
+        "object": "response",
+        "created_at": 1234567890,
+        "model": "fixture-primary",
+        "status": "in_progress",
+        "output": []
+      }
+    }
+  },
+  {
+    "data": {
+      "type": "response.reasoning_summary_text.delta",
+      "sequence_number": 1,
+      "item_id": "reasoning_v2",
+      "output_index": 0,
+      "summary_index": 0,
+      "delta": "synthetic fallback tool reasoning"
+    }
+  },
+  {
+    "data": {
+      "type": "response.output_item.added",
+      "sequence_number": 2,
+      "output_index": 1,
+      "item": {
+        "type": "function_call",
+        "call_id": "call_v2",
+        "name": "fixture_tool",
+        "arguments": "{}"
+      }
+    }
+  },
+  {
+    "data": {
+      "type": "response.completed",
+      "sequence_number": 3,
+      "response": {
+        "id": "resp_v2",
+        "object": "response",
+        "created_at": 1234567890,
+        "model": "fixture-primary",
+        "status": "completed",
+        "output": [
+          {
+            "type": "reasoning",
+            "id": "reasoning_v2",
+            "summary": [
+              {
+                "type": "summary_text",
+                "text": "synthetic fallback tool reasoning"
+              }
+            ],
+            "encrypted_content": "synthetic-first-class-fallback-v2-ciphertext",
+            "status": "completed"
+          },
+          {
+            "type": "function_call",
+            "call_id": "call_v2",
+            "name": "fixture_tool",
+            "arguments": "{}"
+          }
+        ],
+        "usage": {
+          "input_tokens": 10,
+          "output_tokens": 4,
+          "total_tokens": 14,
+          "input_tokens_details": { "cached_tokens": 0 },
+          "output_tokens_details": { "reasoning_tokens": 3 }
+        }
+      }
+    }
+  }
+]

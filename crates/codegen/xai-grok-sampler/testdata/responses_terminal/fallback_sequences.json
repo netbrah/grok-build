@@ -1,0 +1,521 @@
+[
+  {
+    "id": "semantic-e1-terra-success",
+    "cap": 3,
+    "fallback_available": true,
+    "primary_cases": ["E1", "E1"],
+    "fallback_case": "V1",
+    "replay_gate": {
+      "visible_output_observed": false,
+      "tool_activity": false,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1, 2, 3],
+    "expected_attempt_roles": ["primary", "primary", "fallback"],
+    "expected_attempt_models": ["fixture-primary", "fixture-primary", "gpt-5.6-terra"],
+    "expected_terminal_class": "valid_text"
+  },
+  {
+    "id": "semantic-e2-terra-success",
+    "cap": 3,
+    "fallback_available": true,
+    "primary_cases": ["E2", "E2"],
+    "fallback_case": "V1",
+    "replay_gate": {
+      "visible_output_observed": false,
+      "tool_activity": false,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1, 2, 3],
+    "expected_attempt_roles": ["primary", "primary", "fallback"],
+    "expected_attempt_models": ["fixture-primary", "fixture-primary", "gpt-5.6-terra"],
+    "expected_terminal_class": "valid_text"
+  },
+  {
+    "id": "semantic-e3-terra-success",
+    "cap": 3,
+    "fallback_available": true,
+    "primary_cases": ["E3", "E3"],
+    "fallback_case": "V1",
+    "replay_gate": {
+      "visible_output_observed": false,
+      "tool_activity": false,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1, 2, 3],
+    "expected_attempt_roles": ["primary", "primary", "fallback"],
+    "expected_attempt_models": ["fixture-primary", "fixture-primary", "gpt-5.6-terra"],
+    "expected_terminal_class": "valid_text"
+  },
+  {
+    "id": "semantic-e4-terra-success",
+    "cap": 3,
+    "fallback_available": true,
+    "primary_cases": ["E4", "E4"],
+    "fallback_case": "V1",
+    "replay_gate": {
+      "visible_output_observed": false,
+      "tool_activity": false,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1, 2, 3],
+    "expected_attempt_roles": ["primary", "primary", "fallback"],
+    "expected_attempt_models": ["fixture-primary", "fixture-primary", "gpt-5.6-terra"],
+    "expected_terminal_class": "valid_text"
+  },
+  {
+    "id": "visible-output-policy-disabled-allows-terra",
+    "cap": 3,
+    "fallback_available": true,
+    "primary_cases": ["E1", "E1"],
+    "fallback_case": "V1",
+    "replay_gate": {
+      "visible_output_observed": true,
+      "tool_activity": false,
+      "irreversible_effect": false,
+      "retry_only_before_output": false
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1, 2, 3],
+    "expected_attempt_roles": ["primary", "primary", "fallback"],
+    "expected_attempt_models": ["fixture-primary", "fixture-primary", "gpt-5.6-terra"],
+    "expected_terminal_class": "valid_text"
+  },
+  {
+    "id": "transport-eof-excludes-terra",
+    "cap": 2,
+    "fallback_available": true,
+    "primary_cases": ["T1", "V1"],
+    "fallback_case": null,
+    "replay_gate": {
+      "visible_output_observed": false,
+      "tool_activity": false,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1, 2],
+    "expected_attempt_roles": ["primary", "primary"],
+    "expected_attempt_models": ["fixture-primary", "fixture-primary"],
+    "expected_terminal_class": "valid_text"
+  },
+  {
+    "id": "provider-failure-excludes-terra",
+    "cap": 2,
+    "fallback_available": true,
+    "primary_cases": ["F1", "V1"],
+    "fallback_case": null,
+    "replay_gate": {
+      "visible_output_observed": false,
+      "tool_activity": false,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1, 2],
+    "expected_attempt_roles": ["primary", "primary"],
+    "expected_attempt_models": ["fixture-primary", "fixture-primary"],
+    "expected_terminal_class": "valid_text"
+  },
+  {
+    "id": "responses-length-excludes-terra",
+    "cap": 2,
+    "fallback_available": true,
+    "primary_cases": ["L1"],
+    "fallback_case": null,
+    "replay_gate": {
+      "visible_output_observed": true,
+      "tool_activity": true,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1],
+    "expected_attempt_roles": ["primary"],
+    "expected_attempt_models": ["fixture-primary"],
+    "expected_terminal_class": "length"
+  },
+  {
+    "id": "chat-length-excludes-terra",
+    "cap": 2,
+    "fallback_available": true,
+    "primary_cases": ["L2"],
+    "fallback_case": null,
+    "replay_gate": {
+      "visible_output_observed": true,
+      "tool_activity": true,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1],
+    "expected_attempt_roles": ["primary"],
+    "expected_attempt_models": ["fixture-primary"],
+    "expected_terminal_class": "length"
+  },
+  {
+    "id": "cancelled-excludes-terra",
+    "cap": 2,
+    "fallback_available": true,
+    "primary_cases": ["C1"],
+    "fallback_case": null,
+    "replay_gate": {
+      "visible_output_observed": false,
+      "tool_activity": false,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1],
+    "expected_attempt_roles": ["primary"],
+    "expected_attempt_models": ["fixture-primary"],
+    "expected_terminal_class": "cancelled"
+  },
+  {
+    "id": "tool-activity-excludes-terra",
+    "cap": 2,
+    "fallback_available": true,
+    "primary_cases": ["V2"],
+    "fallback_case": null,
+    "replay_gate": {
+      "visible_output_observed": false,
+      "tool_activity": true,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1],
+    "expected_attempt_roles": ["primary"],
+    "expected_attempt_models": ["fixture-primary"],
+    "expected_terminal_class": "valid_tool"
+  },
+  {
+    "id": "visible-output-policy-excludes-terra",
+    "cap": 3,
+    "fallback_available": true,
+    "primary_cases": ["E1"],
+    "fallback_case": null,
+    "replay_gate": {
+      "visible_output_observed": true,
+      "tool_activity": false,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1],
+    "expected_attempt_roles": ["primary"],
+    "expected_attempt_models": ["fixture-primary"],
+    "expected_terminal_class": "exact_empty"
+  },
+  {
+    "id": "irreversible-effect-excludes-terra",
+    "cap": 3,
+    "fallback_available": true,
+    "primary_cases": ["E1"],
+    "fallback_case": null,
+    "replay_gate": {
+      "visible_output_observed": false,
+      "tool_activity": false,
+      "irreversible_effect": true,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1],
+    "expected_attempt_roles": ["primary"],
+    "expected_attempt_models": ["fixture-primary"],
+    "expected_terminal_class": "exact_empty"
+  },
+  {
+    "id": "terra-unavailable-keeps-final-primary-slot",
+    "cap": 3,
+    "fallback_available": false,
+    "primary_cases": ["E4", "E4", "V1"],
+    "fallback_case": null,
+    "replay_gate": {
+      "visible_output_observed": false,
+      "tool_activity": false,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1, 2, 3],
+    "expected_attempt_roles": ["primary", "primary", "primary"],
+    "expected_attempt_models": ["fixture-primary", "fixture-primary", "fixture-primary"],
+    "expected_terminal_class": "valid_text"
+  },
+  {
+    "id": "terra-semantic-failure-is-terminal",
+    "cap": 3,
+    "fallback_available": true,
+    "primary_cases": ["E1", "E1"],
+    "fallback_case": "E3",
+    "replay_gate": {
+      "visible_output_observed": false,
+      "tool_activity": false,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1, 2, 3],
+    "expected_attempt_roles": ["primary", "primary", "fallback"],
+    "expected_attempt_models": ["fixture-primary", "fixture-primary", "gpt-5.6-terra"],
+    "expected_terminal_class": "reasoning_only"
+  },
+  {
+    "id": "terra-eof-failure-is-terminal",
+    "cap": 3,
+    "fallback_available": true,
+    "primary_cases": ["E2", "E2"],
+    "fallback_case": "T1",
+    "replay_gate": {
+      "visible_output_observed": false,
+      "tool_activity": false,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1, 2, 3],
+    "expected_attempt_roles": ["primary", "primary", "fallback"],
+    "expected_attempt_models": ["fixture-primary", "fixture-primary", "gpt-5.6-terra"],
+    "expected_terminal_class": "transport_eof"
+  },
+  {
+    "id": "terra-provider-failure-is-terminal",
+    "cap": 3,
+    "fallback_available": true,
+    "primary_cases": ["E4", "E4"],
+    "fallback_case": "F1",
+    "replay_gate": {
+      "visible_output_observed": false,
+      "tool_activity": false,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1, 2, 3],
+    "expected_attempt_roles": ["primary", "primary", "fallback"],
+    "expected_attempt_models": ["fixture-primary", "fixture-primary", "gpt-5.6-terra"],
+    "expected_terminal_class": "provider_failed"
+  },
+  {
+    "id": "cap-one-is-primary-only",
+    "cap": 1,
+    "fallback_available": true,
+    "primary_cases": ["E1"],
+    "fallback_case": null,
+    "replay_gate": {
+      "visible_output_observed": false,
+      "tool_activity": false,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1],
+    "expected_attempt_roles": ["primary"],
+    "expected_attempt_models": ["fixture-primary"],
+    "expected_terminal_class": "exact_empty"
+  },
+  {
+    "id": "mixed-no-fallback-stays-with-primary",
+    "cap": 3,
+    "fallback_available": false,
+    "primary_cases": ["E4", "T1", "V1"],
+    "fallback_case": null,
+    "replay_gate": {
+      "visible_output_observed": false,
+      "tool_activity": false,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1, 2, 3],
+    "expected_attempt_roles": ["primary", "primary", "primary"],
+    "expected_attempt_models": ["fixture-primary", "fixture-primary", "fixture-primary"],
+    "expected_terminal_class": "valid_text"
+  },
+  {
+    "id": "outbound-ciphertext-sanitizes-reasoning-only",
+    "cap": 3,
+    "fallback_available": true,
+    "primary_cases": ["E3", "E3"],
+    "fallback_case": "N1",
+    "replay_gate": {
+      "visible_output_observed": false,
+      "tool_activity": false,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "synthetic_encrypted_content",
+    "fallback_response_provider_state": "none",
+    "baseline_provider_items": [
+      {
+        "type": "reasoning",
+        "id": "reasoning_outbound_baseline",
+        "summary": [
+          {
+            "type": "summary_text",
+            "text": "synthetic baseline reasoning"
+          }
+        ],
+        "encrypted_content": "synthetic-first-class-baseline-ciphertext-v1",
+        "status": "completed"
+      },
+      {
+        "type": "backend_tool_call",
+        "kind": {
+          "tool_type": "codex_raw_input",
+          "id": "codex_raw_input_outbound_baseline",
+          "raw": {
+            "type": "context_compaction",
+            "encrypted_content": "synthetic-codex-raw-input-carrier-v1",
+            "summary": []
+          },
+          "cross_provider_fallback": "synthetic portable tail"
+        }
+      },
+      {
+        "type": "assistant",
+        "content": "synthetic baseline answer",
+        "model_id": "gpt-5.6-sol"
+      }
+    ],
+    "fallback_response_provider_items": [],
+    "expected_attempt_indices": [1, 2, 3],
+    "expected_attempt_roles": ["primary", "primary", "fallback"],
+    "expected_attempt_models": ["fixture-primary", "fixture-primary", "gpt-5.6-terra"],
+    "expected_terminal_class": "valid_text"
+  },
+  {
+    "id": "accepted-v1-handback-sanitizes-ciphertext",
+    "cap": 3,
+    "fallback_available": true,
+    "primary_cases": ["E1", "E1"],
+    "fallback_case": "V1",
+    "replay_gate": {
+      "visible_output_observed": false,
+      "tool_activity": false,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "synthetic_encrypted_content",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [
+      {
+        "type": "reasoning",
+        "id": "reasoning_fallback_v1",
+        "summary": [
+          {
+            "type": "summary_text",
+            "text": "synthetic fallback V1 reasoning"
+          }
+        ],
+        "encrypted_content": "synthetic-first-class-fallback-v1-ciphertext",
+        "status": "completed"
+      }
+    ],
+    "expected_attempt_indices": [1, 2, 3],
+    "expected_attempt_roles": ["primary", "primary", "fallback"],
+    "expected_attempt_models": ["fixture-primary", "fixture-primary", "gpt-5.6-terra"],
+    "expected_terminal_class": "valid_text"
+  },
+  {
+    "id": "accepted-v2-handback-sanitizes-ciphertext",
+    "cap": 3,
+    "fallback_available": true,
+    "primary_cases": ["E2", "E2"],
+    "fallback_case": "V2",
+    "replay_gate": {
+      "visible_output_observed": false,
+      "tool_activity": false,
+      "irreversible_effect": false,
+      "retry_only_before_output": true
+    },
+    "baseline_provider_state": "none",
+    "fallback_response_provider_state": "synthetic_encrypted_content",
+    "baseline_provider_items": [],
+    "fallback_response_provider_items": [
+      {
+        "type": "reasoning",
+        "id": "reasoning_v2",
+        "summary": [
+          {
+            "type": "summary_text",
+            "text": "synthetic fallback tool reasoning"
+          }
+        ],
+        "encrypted_content": "synthetic-first-class-fallback-v2-ciphertext",
+        "status": "completed"
+      }
+    ],
+    "expected_attempt_indices": [1, 2, 3],
+    "expected_attempt_roles": ["primary", "primary", "fallback"],
+    "expected_attempt_models": ["fixture-primary", "fixture-primary", "gpt-5.6-terra"],
+    "expected_terminal_class": "valid_tool"
+  }
+]

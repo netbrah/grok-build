@@ -1,0 +1,67 @@
+[
+  {
+    "data": {
+      "type": "response.created",
+      "sequence_number": 0,
+      "response": {
+        "id": "resp_e2",
+        "object": "response",
+        "created_at": 1234567890,
+        "model": "fixture-primary",
+        "status": "in_progress",
+        "output": []
+      }
+    }
+  },
+  {
+    "data": {
+      "type": "response.output_text.delta",
+      "sequence_number": 1,
+      "item_id": "msg_e2",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": " "
+    }
+  },
+  {
+    "data": {
+      "type": "response.output_text.delta",
+      "sequence_number": 2,
+      "item_id": "msg_e2",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "\n"
+    }
+  },
+  {
+    "data": {
+      "type": "response.completed",
+      "sequence_number": 3,
+      "response": {
+        "id": "resp_e2",
+        "object": "response",
+        "created_at": 1234567890,
+        "model": "fixture-primary",
+        "status": "completed",
+        "output": [
+          {
+            "type": "message",
+            "id": "msg_e2",
+            "role": "assistant",
+            "status": "completed",
+            "content": [
+              { "type": "output_text", "text": " \n", "annotations": [] }
+            ]
+          }
+        ],
+        "usage": {
+          "input_tokens": 10,
+          "output_tokens": 2,
+          "total_tokens": 12,
+          "input_tokens_details": { "cached_tokens": 0 },
+          "output_tokens_details": { "reasoning_tokens": 0 }
+        }
+      }
+    }
+  }
+]

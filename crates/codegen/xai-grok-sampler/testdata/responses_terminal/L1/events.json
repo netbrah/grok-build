@@ -1,0 +1,71 @@
+[
+  {
+    "data": {
+      "type": "response.created",
+      "sequence_number": 0,
+      "response": {
+        "id": "resp_l1",
+        "object": "response",
+        "created_at": 1234567890,
+        "model": "fixture-primary",
+        "status": "in_progress",
+        "output": []
+      }
+    }
+  },
+  {
+    "data": {
+      "type": "response.output_item.added",
+      "sequence_number": 1,
+      "output_index": 0,
+      "item": {
+        "type": "function_call",
+        "id": "fc_l1",
+        "call_id": "call_l1",
+        "name": "fixture_tool",
+        "arguments": "",
+        "status": "in_progress"
+      }
+    }
+  },
+  {
+    "data": {
+      "type": "response.function_call_arguments.delta",
+      "sequence_number": 2,
+      "item_id": "fc_l1",
+      "output_index": 0,
+      "delta": "{\"path\":"
+    }
+  },
+  {
+    "data": {
+      "type": "response.incomplete",
+      "sequence_number": 3,
+      "response": {
+        "id": "resp_l1",
+        "object": "response",
+        "created_at": 1234567890,
+        "model": "fixture-primary",
+        "status": "incomplete",
+        "incomplete_details": { "reason": "max_output_tokens" },
+        "output": [
+          {
+            "type": "function_call",
+            "id": "fc_l1",
+            "call_id": "call_l1",
+            "name": "fixture_tool",
+            "arguments": "{\"path\":",
+            "status": "in_progress"
+          }
+        ],
+        "usage": {
+          "input_tokens": 10,
+          "output_tokens": 5,
+          "total_tokens": 15,
+          "input_tokens_details": { "cached_tokens": 0 },
+          "output_tokens_details": { "reasoning_tokens": 0 }
+        }
+      }
+    }
+  }
+]

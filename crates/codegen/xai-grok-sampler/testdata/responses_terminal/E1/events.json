@@ -1,0 +1,47 @@
+[
+  {
+    "data": {
+      "type": "response.created",
+      "sequence_number": 0,
+      "response": {
+        "id": "resp_e1",
+        "object": "response",
+        "created_at": 1234567890,
+        "model": "fixture-primary",
+        "status": "in_progress",
+        "output": []
+      }
+    }
+  },
+  {
+    "data": {
+      "type": "response.completed",
+      "sequence_number": 1,
+      "response": {
+        "id": "resp_e1",
+        "object": "response",
+        "created_at": 1234567890,
+        "model": "fixture-primary",
+        "status": "completed",
+        "output": [
+          {
+            "type": "message",
+            "id": "msg_e1",
+            "role": "assistant",
+            "status": "completed",
+            "content": [
+              { "type": "output_text", "text": "", "annotations": [] }
+            ]
+          }
+        ],
+        "usage": {
+          "input_tokens": 10,
+          "output_tokens": 0,
+          "total_tokens": 10,
+          "input_tokens_details": { "cached_tokens": 0 },
+          "output_tokens_details": { "reasoning_tokens": 0 }
+        }
+      }
+    }
+  }
+]

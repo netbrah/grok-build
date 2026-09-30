@@ -1,0 +1,16 @@
+[
+  {
+    "data": {
+      "type": "response.created",
+      "sequence_number": 0,
+      "response": {
+        "id": "resp_t1",
+        "object": "response",
+        "created_at": 1234567890,
+        "model": "fixture-primary",
+        "status": "in_progress",
+        "output": []
+      }
+    }
+  }
+]
