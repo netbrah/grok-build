@@ -152,16 +152,58 @@ mod tests {
 
     /// S3a (apex-ayl.142, T2): the two capability flags parse from the
     /// baked catalog; absent-on-row = off by default.
+    ///
+    /// apex-waj.55 Option B: the bake is the operator-approved 12-row menu,
+    /// so the flags are pinned to menu rows. The six non-menu rows spec §2
+    /// also names (gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.2, glm-5.2,
+    /// qwen3.8-27b) are skip-listed — they carry their flags only where a
+    /// config.toml row exists (the fleet config tier), never in the
+    /// no-endpoint tier whose whole config surface this baked catalog is.
     #[test]
     fn catalog_flags_parse_and_default_off() {
         let m: DefaultModels = serde_json::from_str(DEFAULT_MODELS_JSON).unwrap();
-        let find = |id: &str| m.models.iter().find(|e| e.model == id);
-        assert_eq!(find("gpt-5.6-sol").unwrap().supports_search_tool, Some(true));
-        assert_eq!(find("gpt-5.2").unwrap().supports_search_tool, Some(true));
-        assert_eq!(find("glm-5.2").unwrap().supports_search_tool, Some(false));
-        assert_eq!(find("qwen3.8-27b").unwrap().supports_search_tool, Some(false));
-        // absent-on-row = off by default
-        let off_row = m.models.iter().find(|e| e.supports_search_tool.is_none()).expect("a row without the flag");
-        assert_eq!(off_row.supports_search_tool.unwrap_or(false), false);
+        let ids_on = |read: fn(&DefaultModelEntry) -> Option<bool>| {
+            let mut ids: Vec<&str> = m
+                .models
+                .iter()
+                .filter(|e| read(e) == Some(true))
+                // id-less rows fall back to the wire slug, so no row can
+                // silently leave the pinned set uncounted.
+                .map(|e| e.id.as_deref().unwrap_or(e.model.as_str()))
+                .collect();
+            ids.sort_unstable();
+            ids
+        };
+        assert_eq!(
+            ids_on(|e| e.supports_search_tool),
+            ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]
+        );
+        assert_eq!(
+            ids_on(|e| e.use_responses_lite),
+            [
+                "gpt-5.6-luna",
+                "gpt-5.6-sol",
+                "gpt-5.6-sol-1m",
+                "gpt-5.6-terra",
+                "gpt-5.6-terra-1m"
+            ]
+        );
+        // the one menu row that curates the flag OFF parses Some(false)
+        let off_row = m
+            .models
+            .iter()
+            .find(|e| e.id.as_deref() == Some("grok-4.6"))
+            .expect("the grok-4.6 row");
+        assert_eq!(off_row.supports_search_tool, Some(false));
+        // absent-on-row = off by default: the 1M twin curates
+        // `use_responses_lite` but not the search-tool flag, so that flag
+        // must parse as absent (the shell maps absent to off). Pinned by id
+        // — finding it through `is_none()` would make this unfailable.
+        let absent_row = m
+            .models
+            .iter()
+            .find(|e| e.id.as_deref() == Some("gpt-5.6-sol-1m"))
+            .expect("the sol 1M twin row");
+        assert_eq!(absent_row.supports_search_tool, None);
     }
 }
