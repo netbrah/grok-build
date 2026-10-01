@@ -182,6 +182,9 @@ pub fn apply_enc_affinity_gate(
                     }
                 }
             }
+            // Reasoning with no ciphertext: nothing to gate (the guarded arm above
+            // took every item that had any).
+            ConversationItem::Reasoning(_) => {}
             ConversationItem::BackendToolCall(b) => {
                 if let BackendToolKind::CodexRawInput(raw) = &b.kind
                     && raw.raw.get("encrypted_content").is_some()
@@ -189,7 +192,17 @@ pub fn apply_enc_affinity_gate(
                     carriers += 1;
                 }
             }
-            _ => {}
+            // A client-authored discovery item carries no `encrypted_content`: the
+            // pair is a call + a tool list, not ciphertext. Named rather than
+            // counted-as-carrier on purpose — this gate is not the place that would
+            // ever mutate those bytes even if a provider minted a ciphertext-bearing
+            // discovery item (wire invariant 6: opaque handles are never rewritten).
+            ConversationItem::Discovery { .. } => {}
+            // Neither item can hold ciphertext.
+            ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::Assistant(_)
+            | ConversationItem::ToolResult(_) => {}
         }
     }
     (stripped, retained, carriers)
@@ -229,7 +242,16 @@ pub fn stamp_reasoning_mint_tag(items: &mut [ConversationItem], pin: Option<&str
                     raw.mint_tag = pin.map(str::to_owned);
                 }
             }
-            _ => {}
+            // No mint tag on a discovery item: it carries no ciphertext, so there is
+            // no mint domain to record, and stamping a field into `raw` would rewrite
+            // provider bytes (wire invariant 6) and break the byte-exact replay the
+            // variant exists to guarantee.
+            ConversationItem::Discovery { .. } => {}
+            // Items with no ciphertext and no provenance field.
+            ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::Assistant(_)
+            | ConversationItem::ToolResult(_) => {}
         }
     }
 }
@@ -255,6 +277,37 @@ pub enum ConversationItem {
     /// XW-ENC-AFFINITY-1 mint provenance) so no field is dropped on the
     /// way through and the mint tag round-trips with the storage form.
     Reasoning(ReasoningItemStore),
+    /// One native tool-discovery item (`tool_search_call` or
+    /// `tool_search_output`), held verbatim (apex-waj.1, variant per apex-waj.18).
+    ///
+    /// WHY A VARIANT AND NOT A FIELD (ruling:
+    /// `plans/harness/hosted-tool-search/ratchet-capture/RULING-apex-waj-18-ir-shape.md`):
+    /// the provider reads `tool_search_output` back out of the conversation history
+    /// and reconstructs the loaded tool set SERVER-side (A-26, measured in
+    /// `ratchet-capture/captures/2026-09-25-ratchet-live/wire2-live3/req-004.json`:
+    /// 12 tools sent, 14 echoed, and the two extras appear ONLY inside that item).
+    /// A payload that can ride along silently inside another item can therefore be
+    /// dropped silently, and the corruption is invisible on our side — the provider
+    /// simply behaves as though different tools exist. A variant forces every
+    /// consumer to decide; an `Option<ToolDiscovery>` field does not.
+    ///
+    /// A-26 is binding on every arm that sees this variant: NEVER strip or drop a
+    /// discovery item on any path (persist, compact, project, switch, encode,
+    /// render). An arm that discards one must be a deliberate, commented, tested
+    /// decision.
+    ///
+    /// SHAPE: `item` is a NAMED FIELD, not a newtype payload. This enum is
+    /// internally tagged on `type`, and [`tool_search::ToolSearchItem`] serialises
+    /// its provider bytes verbatim — bytes that already carry `type`. A flattened
+    /// newtype would therefore emit two `type` keys, and a reader that has parsed
+    /// the line into a `Value` keeps only the LAST one (the provider's tag), so the
+    /// row no longer names a known variant and `chat_history.jsonl`'s `skip_line`
+    /// loses that half of the pair with nothing but a warning. Pinned by
+    /// `tool_search::tests::a_newtype_discovery_variant_would_emit_two_type_tags_and_a_loader_would_drop_them`.
+    ///
+    /// The bytes are handles, not content (wire invariant 6): the ids (`tsc_*`,
+    /// `tso_*`) and the `call_id` join key are copied, never rewritten.
+    Discovery { item: tool_search::ToolSearchItem },
 }
 
 /// System message content
@@ -458,15 +511,26 @@ impl BackendToolCallItem {
     pub fn text_summary(&self) -> String {
         match &self.kind {
             BackendToolKind::WebSearch(ws) => {
-                let action_desc = match &ws.action {
-                    rs::WebSearchToolCallAction::Search(s) => format!("search: {}", s.query),
-                    rs::WebSearchToolCallAction::OpenPage(o) => {
+                let action_desc = match ws.action.as_ref() {
+                    Some(rs::WebSearchToolCallAction::Search(s)) => {
+                        let query = s
+                            .queries
+                            .as_deref()
+                            .map(|qs| qs.join(", "))
+                            .or_else(|| s.query.clone())
+                            .unwrap_or_default();
+                        format!("search: {query}")
+                    }
+                    Some(rs::WebSearchToolCallAction::OpenPage(o)) => {
                         format!("open: {}", o.url.as_deref().unwrap_or("?"))
                     }
-                    rs::WebSearchToolCallAction::Find(f)
-                    | rs::WebSearchToolCallAction::FindInPage(f) => {
+                    Some(
+                        rs::WebSearchToolCallAction::Find(f)
+                        | rs::WebSearchToolCallAction::FindInPage(f),
+                    ) => {
                         format!("find \"{}\" in {}", f.pattern, f.url)
                     }
+                    None => String::new(),
                 };
                 format!("[backend web_search] {action_desc}")
             }
@@ -650,6 +714,12 @@ pub fn codex_cross_provider_fallback(items: &[ConversationItem], max_chars: usiz
                 kind: BackendToolKind::CodexRawInput(raw),
             }) if raw.cross_provider_fallback.is_some() => "Prior compacted context",
             ConversationItem::BackendToolCall(_) => continue,
+            // Provider-owned loaded-tool state, deliberately absent from the
+            // plaintext fallback: the set only means anything to the Responses
+            // provider that minted it (A-26 is a Responses-wire concern), the
+            // fallback's budget is small, and echoing the marker would churn the
+            // prefix for no signal on the row that finally reads it.
+            ConversationItem::Discovery { .. } => continue,
         };
         let text = item.text_content();
         if text.trim().is_empty() {
@@ -768,7 +838,7 @@ impl ReasoningContent {
         Some(Self {
             text,
             encrypted: r.encrypted_content.as_deref().map(Arc::<str>::from),
-            id: Some(Arc::<str>::from(r.id.as_str())),
+            id: r.id.as_deref().map(Arc::<str>::from),
         })
     }
 
@@ -777,11 +847,13 @@ impl ReasoningContent {
         self.text.is_none() && self.encrypted.is_none()
     }
 
-    fn join_content(content: &Option<Vec<rs::ReasoningTextContent>>) -> Option<Arc<str>> {
+    fn join_content(content: &Option<Vec<rs::ReasoningItemContent>>) -> Option<Arc<str>> {
         let parts = content.as_ref()?;
         let joined: String = parts
             .iter()
-            .map(|p| p.text.as_str())
+            .filter_map(|p| match p {
+                rs::ReasoningItemContent::ReasoningText(t) => Some(t.text.as_str()),
+            })
             .collect::<Vec<_>>()
             .join("\n");
         (!joined.is_empty()).then_some(Arc::<str>::from(joined))
@@ -1194,7 +1266,7 @@ pub fn is_sentinel_web_search_action(action: &rs::WebSearchToolCallAction) -> bo
     matches!(
         action,
         rs::WebSearchToolCallAction::Search(search)
-            if search.query.is_empty()
+            if search.query.as_deref().map_or(false, str::is_empty)
                 && search.sources.as_ref().is_none_or(|sources| sources.is_empty())
     )
 }
@@ -1310,7 +1382,15 @@ pub fn drop_model_bound_items(items: &mut Vec<ConversationItem>) -> usize {
         .iter()
         .filter_map(|item| match item {
             ConversationItem::BackendToolCall(call) => Some(call.id().to_owned()),
-            _ => None,
+            // Nothing else contributes an id this strip co-drops. A Discovery
+            // `call_id` is named out: it joins a `tool_search_output`, not a
+            // `ToolResult`, and no `ToolResult` is ever paired to it.
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::Assistant(_)
+            | ConversationItem::ToolResult(_)
+            | ConversationItem::Reasoning(_) => None,
         })
         .collect();
     let before = items.len();
@@ -1319,7 +1399,20 @@ pub fn drop_model_bound_items(items: &mut Vec<ConversationItem>) -> usize {
         ConversationItem::ToolResult(result) => {
             !dropped_backend_call_ids.contains(result.tool_call_id.as_str())
         }
-        _ => true,
+        // A-26, named rather than inherited from the old wildcard: a discovery pair
+        // is provider-side loaded-tool state, NOT model-bound continuation state. The
+        // provider reconstructs the loaded set from `tool_search_output` in history, so
+        // dropping it here would desynchronise the provider invisibly. Consequence
+        // this strip cannot fix (recorded in `projection.rs`'s DiscoveryTier doc): the
+        // reactive net is a strict ONE retry, and on a history whose only strippable
+        // state is the discovery pair this returns `0` and the retry fails closed
+        // (`xai-grok-sampler/src/retry.rs:135-136`), so a foreign row that rejects
+        // `tool_search` items cannot be rescued by stripping. Teaching the net that
+        // class needs wire evidence per row class (wire invariant C4), not a wildcard.
+        ConversationItem::Discovery { .. } => true,
+        ConversationItem::System(_) | ConversationItem::User(_) | ConversationItem::Assistant(_) => {
+            true
+        }
     });
     before.saturating_sub(items.len())
 }
@@ -1348,7 +1441,17 @@ pub fn drop_orphaned_tool_results(items: &mut Vec<ConversationItem>) -> usize {
                 .map(|call| call.id.to_string())
                 .collect::<Vec<_>>(),
             ConversationItem::BackendToolCall(call) => vec![call.id().to_string()],
-            _ => Vec::new(),
+            // A discovery `call_id` is deliberately NOT a live-call owner: a client
+            // `tool_search` is answered by a `tool_search_output`, never by a
+            // `function_call_output`, so counting it here would keep a genuinely
+            // orphaned `function_call_output` on the wire — the exact Azure
+            // `Invalid 'input[N].call_id'` 400 this pass exists to remove. The pair
+            // itself is never orphan-checked here (H-8 owns that, at the lint).
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::ToolResult(_)
+            | ConversationItem::Reasoning(_) => Vec::new(),
         })
         .collect();
     let before = items.len();
@@ -1397,6 +1500,10 @@ fn strip_images_where(
                     ContentPart::Image { .. } | ContentPart::Text { .. } => true,
                 });
             }
+            // A discovery item has no `ContentPart` at all — its payload is opaque
+            // provider JSON — so it can carry no image to strip, and the strip
+            // passes must not touch it (A-26).
+            ConversationItem::Discovery { .. } => {}
             // Exhaustive on purpose, the items here and the content parts above
             // A future image-bearing variant of either must choose its strip behavior here, not silently keep images
             ConversationItem::System(_)
@@ -1588,7 +1695,15 @@ impl ConversationResponse {
     pub fn assistant(&self) -> Option<&AssistantItem> {
         self.items.iter().rev().find_map(|item| match item {
             ConversationItem::Assistant(a) => Some(a),
-            _ => None,
+            // Named per ruling apex-waj.18 rule 2: a discovery sibling is not the
+            // trailing assistant and does not stop the reverse scan (the producer
+            // appends the Assistant last, so a pair before it is still skipped).
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::ToolResult(_)
+            | ConversationItem::BackendToolCall(_)
+            | ConversationItem::Reasoning(_) => None,
         })
     }
 
@@ -1596,7 +1711,13 @@ impl ConversationResponse {
     pub fn assistant_mut(&mut self) -> Option<&mut AssistantItem> {
         self.items.iter_mut().rev().find_map(|item| match item {
             ConversationItem::Assistant(a) => Some(a),
-            _ => None,
+            // Same decision as [`Self::assistant`].
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::ToolResult(_)
+            | ConversationItem::BackendToolCall(_)
+            | ConversationItem::Reasoning(_) => None,
         })
     }
 
@@ -1613,8 +1734,30 @@ impl ConversationResponse {
     pub fn reasoning_items(&self) -> impl Iterator<Item = &rs::ReasoningItem> {
         self.items.iter().filter_map(|item| match item {
             ConversationItem::Reasoning(r) => Some(&r.item),
-            _ => None,
+            // Named per ruling apex-waj.18 rule 2 — a discovery sibling is not a
+            // reasoning item and does not end the scan.
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::Assistant(_)
+            | ConversationItem::ToolResult(_)
+            | ConversationItem::BackendToolCall(_) => None,
         })
+    }
+
+    /// Native discovery items (the `tool_search_call` / `tool_search_output` pair)
+    /// produced by this turn, in emission order.
+    ///
+    /// This is a convenience VIEW, not the persistence seam (cut review WAJ21R2-06): the
+    /// shell persists a turn by pushing the WHOLE `items` vector through
+    /// `ChatStateHandle::push_model_output`, so a Discovery row reaches
+    /// `chat_history.jsonl` whether or not anyone calls this. That persistence is pinned by
+    /// `xai-chat-state`'s `actor::tests::push_model_output_persists_both_halves_of_a_discovery_pair`
+    /// — nothing here enforces it, so do not read this iterator as the reason the pair is on
+    /// disk. It exists for callers that want the pair alone (and, like its neighbour
+    /// `backend_tool_items`, currently has no production caller).
+    pub fn discovery_items(&self) -> impl Iterator<Item = &tool_search::ToolSearchItem> {
+        self.items.iter().filter_map(ConversationItem::discovery)
     }
 
     /// Backend-executed tool calls (web search, X search, code interpreter) produced by this turn, in emission order.
@@ -1767,7 +1910,15 @@ impl ConversationItem {
             {
                 user.cwd_generation
             }
-            _ => None,
+            // Only the CWD-switch reminder carries a generation; every other item
+            // (a discovery pair included) has none.
+            Self::System(_)
+            | Self::User(_)
+            | Self::Assistant(_)
+            | Self::ToolResult(_)
+            | Self::BackendToolCall(_)
+            | Self::Reasoning(_)
+            | Self::Discovery { .. } => None,
         }
     }
 
@@ -2049,6 +2200,29 @@ impl ConversationItem {
             },
             // Reasoning is part of the assistant's turn
             Self::Reasoning(_) => Role::Assistant,
+            // Assistant, never Tool: `Role::Tool` makes the shared engine's
+            // `CompactionItem::is_tool_result()` (xai-grok-compaction/src/item.rs)
+            // true for a discovery item, which corrupts every split-snap predicate
+            // that keys on it (`select.rs`). It is model-side state belonging to the
+            // assistant's turn, like `Reasoning`.
+            Self::Discovery { .. } => Role::Assistant,
+        }
+    }
+
+    /// The native discovery payload, if this is a [`Self::Discovery`] item.
+    /// The single accessor every consumer walks through — see the variant doc for
+    /// why the payload is never re-wrapped or re-serialised.
+    pub fn discovery(&self) -> Option<&tool_search::ToolSearchItem> {
+        match self {
+            Self::Discovery { item } => Some(item),
+            // Named, not `_ =>`: a new variant must choose whether it carries
+            // discovery state rather than silently reading as "no payload".
+            Self::System(_)
+            | Self::User(_)
+            | Self::Assistant(_)
+            | Self::ToolResult(_)
+            | Self::BackendToolCall(_)
+            | Self::Reasoning(_) => None,
         }
     }
 
@@ -2078,6 +2252,13 @@ impl ConversationItem {
             Self::ToolResult(t) => t.content.as_ref().to_owned(),
             Self::BackendToolCall(b) => b.text_summary(),
             Self::Reasoning(r) => reasoning_item_text(r),
+            // The bounded summary, never the payload: this arm is what every
+            // `_ => text_content()` consumer reads (transcript renderers, recap,
+            // prefix fingerprint, digests, the compaction byte estimate), and a
+            // `tool_search_output` can carry tens of KB of tool definitions —
+            // §6.7 ("bounded, stable model-visible items"). The bytes stay intact
+            // for replay regardless of what this returns.
+            Self::Discovery { item } => item.text_summary(),
         }
     }
 }
@@ -2151,7 +2332,9 @@ pub fn reasoning_item_text(r: &rs::ReasoningItem) -> String {
     }
     if let Some(ref content) = r.content {
         for c in content {
-            parts.push(c.text.clone());
+            if let rs::ReasoningItemContent::ReasoningText(t) = c {
+                parts.push(t.text.clone());
+            }
         }
     }
     parts.join("\n")
@@ -2162,7 +2345,9 @@ pub fn reasoning_item_text(r: &rs::ReasoningItem) -> String {
 /// `encrypted_content` is `None` because its only source is the Responses API itself.
 pub fn synthesized_reasoning_item(text: impl Into<String>) -> rs::ReasoningItem {
     rs::ReasoningItem {
-        id: String::new(),
+        // 0.42.1 widened `id` to `Option<String>`; keep the synthesized empty id as
+        // `Some("")` so replayed bytes are unchanged (the fork serialized `id: ""`).
+        id: Some(String::new()),
         summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
             text: text.into(),
         })],
@@ -2182,7 +2367,14 @@ pub fn inject_streaming_reasoning_fallback(items: &mut Vec<ConversationItem>, te
         ConversationItem::Reasoning(r) => r.summary.iter().any(|sp| match sp {
             rs::SummaryPart::SummaryText(t) => !t.text.is_empty(),
         }),
-        _ => false,
+        // Named per ruling apex-waj.18 rule 2: only a Reasoning sibling can already
+        // carry the fallback text.
+        ConversationItem::Discovery { .. }
+        | ConversationItem::System(_)
+        | ConversationItem::User(_)
+        | ConversationItem::Assistant(_)
+        | ConversationItem::ToolResult(_)
+        | ConversationItem::BackendToolCall(_) => false,
     });
     if any_with_text {
         return;
@@ -2315,7 +2507,7 @@ fn build_synthetic_reasoning(
         None => Vec::new(),
     };
     Some(rs::ReasoningItem {
-        id,
+        id: Some(id),
         summary,
         content: None,
         encrypted_content: encrypted.map(String::from),
@@ -2406,8 +2598,8 @@ impl ConversationRequest {
         let mut replacements = Vec::new();
         let mut input_item_index = 0usize;
         for item in &self.items {
-            if let ConversationItem::BackendToolCall(backend) = item {
-                let value = match (dialect, &backend.kind) {
+            let value = match item {
+                ConversationItem::BackendToolCall(backend) => match (dialect, &backend.kind) {
                     (
                         ResponsesReplayDialect::Codex,
                         BackendToolKind::CodexRawInput(raw),
@@ -2422,15 +2614,57 @@ impl ConversationRequest {
                     // closed until their replay contract is defined.
                     // (donor parity: open-grok@049664b5
                     // conversation.rs:1766-1781.)
+                    // This wildcard is over the (dialect, BackendToolKind) PAIR,
+                    // not over `ConversationItem`, so it cannot swallow a new
+                    // conversation variant — the outer `match item` names all seven.
                     _ => None,
-                };
-                if let Some(value) = value {
-                    replacements.push(RawInputItemReplacement {
-                        input_item_index,
-                        value,
-                    });
-                }
+                },
+                // Native tool-discovery replay (apex-waj.21). The item is a
+                // Responses-wire item: async-openai 0.33.1 models neither
+                // `tool_search_call` nor `tool_search_output`
+                // (`conversation/responses.rs`'s `Discovery` arm), so the flattened
+                // typed item is a bounded placeholder and the real bytes can only
+                // arrive by this splice — the `CodexRawInput`/`XSearch` precedent.
+                // Verbatim `raw()`: no re-serialisation, no re-wrapped `arguments`,
+                // and NO strip here — the `created_by` replay hazard and its
+                // allow-list belong to T15 (`tool_search.rs` CALL_REPLAYABLE_KEYS,
+                // PLAN:1421), and inventing a second strip-list is the forbidden move.
+                ConversationItem::Discovery { item: discovery } => match dialect {
+                    // Proven on live bytes: `wire2-live3/req-004.json` (gpt-5.5 via
+                    // the deployed proxy) sent `tool_search_call` at `input[11]` and
+                    // `tool_search_output` at `input[12]` and the response opened;
+                    // that same capture measured A-26 (12 sent / 14 echoed), i.e. the
+                    // row READS them back out of history.
+                    ResponsesReplayDialect::Other => Some(discovery.raw().clone()),
+                    // Donor parity: codex replays its own pairs on this wire
+                    // (`fixtures/codex/CX1-toolsearch-mcp-dryrun/next-turn.json`
+                    // `input[3]`/`input[4]`, `CX3-toolsearch-5.5-LIVE/next-turn.json`
+                    // `input[11]`/`input[12]`).
+                    ResponsesReplayDialect::Codex => Some(discovery.raw().clone()),
+                    // No captured grok row models either item type; splicing an
+                    // un-modelled input type is a hard 400 (the `compaction`
+                    // precedent, `xai-grok-sampler/src/client.rs:2726-2733`), so keep
+                    // the bounded placeholder the flattener emitted. Wire evidence
+                    // per row class is what would change this arm (invariant C4).
+                    ResponsesReplayDialect::Xai => None,
+                },
+                // Every other item type is fully modelled by the typed encoder, so
+                // there is nothing to splice.
+                ConversationItem::System(_)
+                | ConversationItem::User(_)
+                | ConversationItem::Assistant(_)
+                | ConversationItem::ToolResult(_)
+                | ConversationItem::Reasoning(_) => None,
+            };
+            if let Some(value) = value {
+                replacements.push(RawInputItemReplacement {
+                    input_item_index,
+                    value,
+                });
             }
+            // Splice indices are the TYPED prefix sums: the encoder and this pass
+            // must agree item-for-item, or `patch_raw_input_replacements`
+            // (sampler client.rs:740) overwrites the wrong slot.
             input_item_index += responses::conversation_item_to_input_items(item).len();
         }
         replacements
@@ -2498,13 +2732,37 @@ impl ConversationRequest {
 
 /// Calculate how many conversation items to keep so that everything from prompt-turn `target_prompt_index` onward is dropped.
 /// **Before the first** [`UserItem::prompt_index`]: legacy rules apply. The first marker-less non-synthetic is the `<user_info>` preamble. Later non-synthetics and [`SyntheticReason::starts_prompt_turn`] synthetics are turns; **From the first marker onward**: only marked rows open turns; unmarked mid-turn phantoms (bash / permission followup) never open a cut.
+///
+/// The count it returns is pair-ATOMIC (apex-waj.21): every caller of this function
+/// does `conversation.truncate(count)` — a rewind, a cancelled turn, a replay, a
+/// fork copy — and a prompt boundary can fall BETWEEN a `tool_search_call` and the
+/// `tool_search_output` that answers it. Truncating there persists half a pair,
+/// which is the strict-backend 400 (lone call) or the provider loaded-tool-set
+/// desync (lone output) that ruling apex-waj.18 A-26 exists to prevent. The snap
+/// only moves DOWN, so the answer stays "drop this whole turn", never "keep half of
+/// it"; `tool_search::snap_index_over_discovery_pairs` owns the grouping.
 pub fn conversation_truncate_for_prompt(
+    conversation: &[ConversationItem],
+    target_prompt_index: usize,
+) -> usize {
+    let keep = conversation_truncate_unsnapped(conversation, target_prompt_index);
+    tool_search::snap_index_over_discovery_pairs(conversation, keep)
+}
+
+fn conversation_truncate_unsnapped(
     conversation: &[ConversationItem],
     target_prompt_index: usize,
 ) -> usize {
     let first_marker = conversation.iter().find_map(|item| match item {
         ConversationItem::User(u) => u.prompt_index,
-        _ => None,
+        // Only a `User` row carries a prompt marker; nothing else can open a turn,
+        // a discovery pair included (it is provider state interleaved mid-turn).
+        ConversationItem::System(_)
+        | ConversationItem::Assistant(_)
+        | ConversationItem::ToolResult(_)
+        | ConversationItem::BackendToolCall(_)
+        | ConversationItem::Reasoning(_)
+        | ConversationItem::Discovery { .. } => None,
     });
 
     let Some(first_marker_idx) = first_marker else {
@@ -2680,6 +2938,11 @@ pub fn transform_conversation_cwd(
             }
             // Backend tool calls don't contain workspace paths, so there is nothing to rewrite
             ConversationItem::BackendToolCall(_) => {}
+            // Rewriting `raw` is forbidden even when a `tool_search` query or a
+            // discovered tool description names the old CWD: these are opaque
+            // provider handles (wire invariant 6), and the byte-exact replay and the
+            // cached prefix both depend on the bytes being the minted ones.
+            ConversationItem::Discovery { .. } => {}
             // Reasoning items rarely reference CWD paths, but they can; patch both summary parts and content blocks defensively
             ConversationItem::Reasoning(r) => {
                 for sp in r.summary.iter_mut() {
@@ -2693,8 +2956,10 @@ pub fn transform_conversation_cwd(
                 }
                 if let Some(ref mut content) = r.content {
                     for c in content.iter_mut() {
-                        if c.text.contains(source_cwd) {
-                            c.text = c.text.replace(source_cwd, target_cwd);
+                        if let rs::ReasoningItemContent::ReasoningText(t) = c {
+                            if t.text.contains(source_cwd) {
+                                t.text = t.text.replace(source_cwd, target_cwd);
+                            }
                         }
                     }
                 }
@@ -2753,11 +3018,21 @@ pub fn repair_dangling_tool_calls(
             let mut answered = std::collections::HashSet::new();
             let mut j = i + 1;
             while j < conversation.len() {
-                if let ConversationItem::ToolResult(tr) = &conversation[j] {
-                    answered.insert(tr.tool_call_id.clone());
-                    j += 1;
-                } else {
-                    break;
+                match &conversation[j] {
+                    ConversationItem::ToolResult(tr) => {
+                        answered.insert(tr.tool_call_id.clone());
+                        j += 1;
+                    }
+                    // Transparent: a discovery pair interleaved here is provider
+                    // state, not the end of the assistant's result run. Ending the
+                    // run on it would make every answered call look unanswered and
+                    // splice a DUPLICATE synthetic result into real history.
+                    ConversationItem::Discovery { .. } => j += 1,
+                    ConversationItem::System(_)
+                    | ConversationItem::User(_)
+                    | ConversationItem::Assistant(_)
+                    | ConversationItem::BackendToolCall(_)
+                    | ConversationItem::Reasoning(_) => break,
                 }
             }
 
@@ -2800,14 +3075,22 @@ pub fn has_dangling_tool_calls(conversation: &[ConversationItem]) -> bool {
             && !a.tool_calls.is_empty()
         {
             // Collect answered IDs from the immediately following ToolResults.
+            // Discovery is transparent here too — the read-only counterpart and
+            // [`repair_dangling_tool_calls`] must agree on which calls are answered.
             let mut answered = std::collections::HashSet::new();
             let mut j = i + 1;
             while j < conversation.len() {
-                if let ConversationItem::ToolResult(tr) = &conversation[j] {
-                    answered.insert(tr.tool_call_id.clone());
-                    j += 1;
-                } else {
-                    break;
+                match &conversation[j] {
+                    ConversationItem::ToolResult(tr) => {
+                        answered.insert(tr.tool_call_id.clone());
+                        j += 1;
+                    }
+                    ConversationItem::Discovery { .. } => j += 1,
+                    ConversationItem::System(_)
+                    | ConversationItem::User(_)
+                    | ConversationItem::Assistant(_)
+                    | ConversationItem::BackendToolCall(_)
+                    | ConversationItem::Reasoning(_) => break,
                 }
             }
             if a.tool_calls
@@ -3059,7 +3342,7 @@ mod tests {
         vec![
             ConversationItem::user("question for source model"),
             ConversationItem::Reasoning(rs::ReasoningItem {
-                id: "rs_model_bound".to_string(),
+                id: Some("rs_model_bound".to_string()),
                 summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                     text: "private continuation".to_string(),
                 })],
@@ -3601,7 +3884,7 @@ mod tests {
         };
         assert_eq!(f.name, STRUCTURED_OUTPUT_SCHEMA_NAME);
         assert_eq!(f.strict, Some(true));
-        assert_eq!(f.schema, Some(schema.clone()));
+        assert_eq!(f.schema, schema.clone());
 
         // Messages API: json_schema becomes output_config.format
         let msgs_req = build_messages_request(&req);
@@ -3696,6 +3979,67 @@ mod tests {
 
         // Keep up to and including prompt 2 (all messages)
         assert_eq!(conversation_truncate_for_prompt(&conversation, 2), 6);
+    }
+
+    /// Cut review F-4: this function is the single seam every history cut in the
+    /// product walks through — the chat-state actor's rewind, `rewind.rs`, `cancel.rs`,
+    /// `helpers/replay.rs` (three sites) and the persisted fork copy in
+    /// `storage/jsonl/copy.rs` all do `conversation.truncate(count)` with this return
+    /// value. A prompt boundary can land between a `tool_search_call` and the
+    /// `tool_search_output` that answers it, so the COUNT is pair-atomic: those six
+    /// callers cannot split a pair without each of them having to remember to.
+    #[test]
+    fn truncate_for_prompt_never_returns_a_count_inside_a_discovery_pair() {
+        let discovery = |raw: serde_json::Value| {
+            ConversationItem::Discovery {
+                item: tool_search::ToolSearchItem::from_wire(raw)
+                    .expect("fixture is a tool_search item"),
+            }
+        };
+        let call = || {
+            discovery(serde_json::json!({
+                "type": "tool_search_call",
+                "id": "tsc_cut_1",
+                "call_id": "call_cut_1",
+                "status": "completed",
+                "execution": "client",
+                "arguments": { "query": "crm", "limit": 1 }
+            }))
+        };
+        let output = || {
+            discovery(serde_json::json!({
+                "type": "tool_search_output",
+                "id": "tso_cut_1",
+                "call_id": "call_cut_1",
+                "status": "completed",
+                "execution": "client",
+                "tools": [{ "type": "function", "name": "crm_fixture_tool_00" }]
+            }))
+        };
+        // prompt 0 = [user, call, assistant], prompt 1 = [user, output, assistant]:
+        // the `User` row that opens prompt 1 sits between the two halves.
+        let conversation = vec![
+            ConversationItem::system("sys"),
+            ConversationItem::user("find the crm tools"),
+            call(),
+            ConversationItem::assistant("searching"),
+            ConversationItem::user("and now?"),
+            output(),
+            ConversationItem::assistant("found them"),
+        ];
+        let keep = conversation_truncate_for_prompt(&conversation, 0);
+        assert_eq!(
+            keep, 2,
+            "the cut moves below the call instead of keeping a lone tool_search_call"
+        );
+        let kept_discovery = conversation[..keep]
+            .iter()
+            .filter(|item| item.discovery().is_some())
+            .count();
+        assert_eq!(kept_discovery, 0, "no half survives the widened cut: {keep}");
+        // Rewinding past the whole pair keeps both halves — snapping only moves DOWN.
+        let keep_all = conversation_truncate_for_prompt(&conversation, 2);
+        assert_eq!(keep_all, conversation.len());
     }
 
     #[test]
@@ -5475,7 +5819,7 @@ mod tests {
     fn multi_tco_reasoning_items_round_trip_as_siblings() {
         let make_reasoning = |suffix: &str, summary: &str, encrypted: Option<&str>| {
             rs::OutputItem::Reasoning(rs::ReasoningItem {
-                id: format!("rs_resp123_{suffix}"),
+                id: Some(format!("rs_resp123_{suffix}")),
                 summary: if summary.is_empty() {
                     vec![]
                 } else {
@@ -5490,7 +5834,7 @@ mod tests {
         };
         let make_tco = |suffix: &str| {
             rs::OutputItem::Reasoning(rs::ReasoningItem {
-                id: format!("tco_resp123_call-{suffix}"),
+                id: Some(format!("tco_resp123_call-{suffix}")),
                 summary: vec![],
                 content: None,
                 encrypted_content: Some(format!("enc_blob_{suffix}")),
@@ -5500,11 +5844,12 @@ mod tests {
         let make_ws = |suffix: &str, query: &str| {
             rs::OutputItem::WebSearchCall(rs::WebSearchToolCall {
                 id: format!("ws_resp123_{suffix}"),
-                status: rs::WebSearchToolCallStatus::Completed,
-                action: rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
-                    query: query.to_string(),
+                status: rs::WebSearchCallStatus::Completed,
+                action: Some(rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
+                    query: Some(query.to_string()),
+                    queries: None,
                     sources: Some(vec![]),
-                }),
+                })),
             })
         };
 
@@ -5549,6 +5894,9 @@ mod tests {
             top_p: None,
             truncation: None,
             usage: None,
+            prompt_cache_options: None,
+            prompt_cache_diagnostics: None,
+            moderation: None,
         };
 
         let items = response_to_conversation_items(response);
@@ -5557,7 +5905,7 @@ mod tests {
         let reasoning_ids: Vec<&str> = items
             .iter()
             .filter_map(|i| match i {
-                ConversationItem::Reasoning(r) => Some(r.id.as_str()),
+                ConversationItem::Reasoning(r) => r.id.as_deref(),
                 _ => None,
             })
             .collect();
@@ -5589,7 +5937,7 @@ mod tests {
         let items = vec![
             ConversationItem::user("hi"),
             ConversationItem::Reasoning(rs::ReasoningItem {
-                id: "r1".to_string(),
+                id: Some("r1".to_string()),
                 summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                     text: "thinking step 1".to_string(),
                 })],
@@ -5599,7 +5947,7 @@ mod tests {
             }
             .into()),
             ConversationItem::Reasoning(rs::ReasoningItem {
-                id: "r2".to_string(),
+                id: Some("r2".to_string()),
                 summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                     text: "thinking step 2".to_string(),
                 })],
@@ -5628,7 +5976,7 @@ mod tests {
         let items = vec![
             ConversationItem::user("hi"),
             ConversationItem::Reasoning(rs::ReasoningItem {
-                id: "r1".to_string(),
+                id: Some("r1".to_string()),
                 summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                     text: "abandoned thinking".to_string(),
                 })],
@@ -5657,11 +6005,12 @@ mod tests {
             ConversationItem::BackendToolCall(BackendToolCallItem {
                 kind: BackendToolKind::WebSearch(rs::WebSearchToolCall {
                     id: "ws_1".to_string(),
-                    status: rs::WebSearchToolCallStatus::Completed,
-                    action: rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
-                        query: "capybaras".to_string(),
+                    status: rs::WebSearchCallStatus::Completed,
+                    action: Some(rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
+                        query: Some("capybaras".to_string()),
+                        queries: None,
                         sources: Some(vec![]),
-                    }),
+                    })),
                 }),
             }),
             ConversationItem::assistant("answer"),
@@ -5700,11 +6049,12 @@ mod tests {
         let item = ConversationItem::BackendToolCall(BackendToolCallItem {
             kind: BackendToolKind::WebSearch(rs::WebSearchToolCall {
                 id: "ws_1".to_string(),
-                status: rs::WebSearchToolCallStatus::Completed,
-                action: rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
-                    query: "capybaras".to_string(),
+                status: rs::WebSearchCallStatus::Completed,
+                action: Some(rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
+                    query: Some("capybaras".to_string()),
+                    queries: None,
                     sources: Some(vec![]),
-                }),
+                })),
             }),
         });
 
@@ -5744,7 +6094,7 @@ mod tests {
         let ConversationItem::Reasoning(r) = &siblings[0] else {
             panic!("expected Reasoning sibling, got {:?}", siblings[0]);
         };
-        assert_eq!(r.id, "rs_00000000-0000-4000-8000-000000000001");
+        assert_eq!(r.id.as_deref(), Some("rs_00000000-0000-4000-8000-000000000001"));
         assert_eq!(r.summary.len(), 1);
         let rs::SummaryPart::SummaryText(s) = &r.summary[0];
         assert_eq!(
@@ -5789,7 +6139,7 @@ mod tests {
         let reasoning_ids: Vec<&str> = siblings
             .iter()
             .filter_map(|s| match s {
-                ConversationItem::Reasoning(r) => Some(r.id.as_str()),
+                ConversationItem::Reasoning(r) => r.id.as_deref(),
                 _ => None,
             })
             .collect();
@@ -6100,6 +6450,9 @@ mod tests {
             top_p: None,
             truncation: None,
             usage: None,
+            prompt_cache_options: None,
+            prompt_cache_diagnostics: None,
+            moderation: None,
         };
 
         let items = response_to_conversation_items(response);
@@ -6502,7 +6855,7 @@ mod enc_affinity_mf6_tests {
     fn reasoning_with_ciphertext(mint_tag: Option<&str>) -> ConversationItem {
         ConversationItem::Reasoning(ReasoningItemStore {
             item: rs::ReasoningItem {
-                id: "encitem_bGl0ZWxsbTp0ZXN0".to_string(),
+                id: Some("encitem_bGl0ZWxsbTp0ZXN0".to_string()),
                 summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                     text: "cargo-check summary".to_string(),
                 })],
@@ -6517,7 +6870,7 @@ mod enc_affinity_mf6_tests {
     fn reasoning_no_ciphertext(mint_tag: Option<&str>) -> ConversationItem {
         ConversationItem::Reasoning(ReasoningItemStore {
             item: rs::ReasoningItem {
-                id: "encitem_none".to_string(),
+                id: Some("encitem_none".to_string()),
                 summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                     text: "summary only".to_string(),
                 })],
@@ -6610,7 +6963,7 @@ mod enc_affinity_mf6_tests {
         assert_eq!((stripped, retained, carriers), (1, 0, 0));
         if let ConversationItem::Reasoning(r) = &items[0] {
             assert!(r.item.encrypted_content.is_none());
-            assert_eq!(r.item.id, "encitem_bGl0ZWxsbTp0ZXN0", "id survives the field strip");
+            assert_eq!(r.item.id.as_deref(), Some("encitem_bGl0ZWxsbTp0ZXN0"), "id survives the field strip");
             assert_eq!(
                 r.summary.first().and_then(|p| match p {
                     rs::SummaryPart::SummaryText(t) => Some(t.text.as_str()),
@@ -6784,7 +7137,7 @@ mod enc_affinity_mf6_tests {
         let back: ConversationItem = serde_json::from_str(&json).expect("reload stamped");
         if let ConversationItem::Reasoning(r) = &back {
             assert_eq!(r.mint_tag.as_deref(), Some("East US 2"));
-            assert_eq!(r.item.id, "encitem_bGl0ZWxsbTp0ZXN0");
+            assert_eq!(r.item.id.as_deref(), Some("encitem_bGl0ZWxsbTp0ZXN0"));
             assert!(r.item.encrypted_content.is_some());
         } else {
             panic!("not a reasoning item after reload");
@@ -6802,7 +7155,7 @@ mod enc_affinity_mf6_tests {
         let back: ConversationItem = serde_json::from_str(&legacy_str).expect("legacy load");
         if let ConversationItem::Reasoning(r) = &back {
             assert_eq!(r.mint_tag, None, "legacy jsonl must deserialize to mint_tag None");
-            assert_eq!(r.item.id, "encitem_legacy");
+            assert_eq!(r.item.id.as_deref(), Some("encitem_legacy"));
         } else {
             panic!("not a reasoning item after legacy reload");
         }

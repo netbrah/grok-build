@@ -43,7 +43,16 @@ impl ModelRequestHistory {
                         );
                         ConversationItem::User(user)
                     }
-                    other => other,
+                    // Pass-through: only the agent-message label is applied here. A
+                    // discovery pair rides unlabelled — its `raw` is provider bytes and
+                    // rewriting them is forbidden (wire invariant 6).
+                    ConversationItem::User(_)
+                    | ConversationItem::System(_)
+                    | ConversationItem::Assistant(_)
+                    | ConversationItem::ToolResult(_)
+                    | ConversationItem::BackendToolCall(_)
+                    | ConversationItem::Reasoning(_)
+                    | ConversationItem::Discovery { .. } => item,
                 })
                 .collect(),
         )
@@ -80,7 +89,19 @@ pub(crate) fn strip_tool_messages_for_conversation_item(
                 }
                 Some(ConversationItem::Assistant(a))
             }
-            other => Some(other),
+            // A discovery pair is NOT passed to the summariser verbatim: the whole
+            // `tools[]` payload would ride into a summarisation prompt, which breaks
+            // the bounded-model-visible-fragment rule (§6.7) and pays cache-busting
+            // cost for no summarisation signal. It is substituted by its bounded
+            // summary, so the summariser still sees that tools were loaded and with
+            // which query — and the STORED pair is untouched (this function only ever
+            // builds a throwaway summariser view; the IR keeps the bytes).
+            ConversationItem::Discovery { item } => {
+                Some(ConversationItem::assistant(item.text_summary()))
+            }
+            ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::Reasoning(_) => Some(item),
         })
         .collect()
 }
@@ -108,7 +129,17 @@ pub(crate) fn strip_images(conversation: Vec<ConversationItem>) -> Vec<Conversat
                 }
                 ConversationItem::User(u)
             }
-            other => other,
+            // Only user parts carry `ContentPart::Image` in this conversation model.
+            // A discovery item is named because it must never be rewritten here even if
+            // a provider ever nested a part inside it: `raw` is an opaque handle domain
+            // (wire invariant 6) and byte-editing it breaks the replay it exists for.
+            // (`User` is fully consumed by the arm above, so it is not repeated here.)
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
+            | ConversationItem::Assistant(_)
+            | ConversationItem::ToolResult(_)
+            | ConversationItem::BackendToolCall(_)
+            | ConversationItem::Reasoning(_) => item,
         })
         .collect()
 }
@@ -129,6 +160,13 @@ pub fn prepare_conversation_for_segment(
     strip_images(strip_reasoning_blocks(conversation))
 }
 /// Drop a trailing assistant turn whose `tool_calls` lack a `ToolResult` (else strict backends reject the dangling `tool_use`).
+///
+/// This is SUMMARISER / RECAP INPUT PREP, not a pre-send guard (cut review WAJ21R2-04):
+/// its only caller is [`prepare_conversation_for_verbatim_summarization`], reached from
+/// the recap and compaction paths — never from building the next model request. A lone
+/// `tool_search_call` on the wire therefore has NO trim in front of it; the only thing
+/// that observes that shape pre-send is the outbound lint's H-8 call-side arm
+/// (`xai-grok-sampling-types`), which never mutates the request.
 pub fn truncate_trailing_incomplete_tool_call(
     mut conversation: Vec<ConversationItem>,
 ) -> Vec<ConversationItem> {
@@ -138,7 +176,31 @@ pub fn truncate_trailing_incomplete_tool_call(
     ) {
         conversation.pop();
     }
+    // A trailing unanswered `tool_search_call` is the same incomplete shape for a
+    // strict backend (PLAN:946 keeps a call and its output together; PLAN:948's
+    // synthesis of a missing output is T15's, not this guard's), so it goes too.
+    while trailing_discovery_is_unpaired(&conversation) {
+        conversation.pop();
+    }
     conversation
+}
+
+/// Whether the history's LAST item is a discovery half that cannot be sent as it
+/// stands: a `tool_search_call` at the very tail is unanswered, and a
+/// `tool_search_output` whose call does not immediately precede it (same `call_id`,
+/// or both keyless as the provider mints them) cannot be certified as paired.
+///
+/// An answered `[call, output]` tail is kept: the pair is the provider's own record
+/// of the loaded tool set and must never be stripped (A-26). The pop is pair-atomic
+/// because the caller loops and re-tests the new tail, so the call behind a popped
+/// output goes with it rather than being left dangling.
+///
+/// The decision itself is owned by
+/// `tool_search::trailing_discovery_is_unpaired`, so the recap trim in
+/// `xai-grok-shell` answers the same question with the same rules; this is the
+/// crate-local name the guard below (and its mutation witness) reads.
+fn trailing_discovery_is_unpaired(items: &[ConversationItem]) -> bool {
+    xai_grok_sampling_types::conversation::tool_search::trailing_discovery_is_unpaired(items)
 }
 /// Cache-aligned summarizer prep: keep tool I/O + images so the prefix matches the engine cache; set `strip_reasoning` when the provider rejects mutated thinking blocks.
 pub fn prepare_conversation_for_verbatim_summarization(
@@ -184,6 +246,16 @@ pub fn fit_conversation_to_budget(
     while start < body.len() && matches!(body[start], ConversationItem::ToolResult(_)) {
         start += 1;
     }
+    // Pair-atomic window start (apex-waj.21): the budget cut must never begin between
+    // a `tool_search_call` and the `tool_search_output` that answers it, or the
+    // retained history holds an answer whose call was budgeted away. Snapping DOWN
+    // keeps the whole pair — the ToolResult skip above goes UP instead, because a
+    // result with no surviving call cannot be sent at all.
+    if start < body.len() {
+        start = xai_grok_sampling_types::conversation::tool_search::snap_index_over_discovery_pairs(
+            &body, start,
+        );
+    }
     if start < body.len() {
         head.extend(body.into_iter().skip(start));
     } else {
@@ -196,6 +268,15 @@ fn recover_truncated_tail_unit(
     mut body: Vec<ConversationItem>,
     budget: u64,
 ) -> Vec<ConversationItem> {
+    // The unit this function can rebuild is `assistant + its tool results` only, so a
+    // discovery pair left at the tail would be half-consumed: the loop below pops
+    // `ToolResult`s only, and the fallback would then hand back a bare
+    // `tool_search_output` whose call stayed behind in the dropped part of `body`.
+    // Drop the trailing discovery items FIRST, so this last-resort path can only ever
+    // lose a pair whole or not at all (apex-waj.21).
+    while matches!(body.last(), Some(ConversationItem::Discovery { .. })) {
+        body.pop();
+    }
     let mut results: Vec<ConversationItem> = Vec::new();
     while matches!(body.last(), Some(ConversationItem::ToolResult(_))) {
         results.push(body.pop().expect("last() was Some"));
@@ -251,7 +332,16 @@ fn truncate_item_to_tokens(item: ConversationItem, max_tokens: u64) -> Conversat
             }
             ConversationItem::User(u)
         }
-        other => other,
+        // Unshrinkable, deliberately: a discovery pair (like a backend call or a
+        // reasoning item) is opaque provider state, so the lossy budget ladder silently
+        // fails past it and whole turns get dropped instead. Any future shrink must be
+        // a TYPED stub that drops `tools[]` while keeping both ids and the `call_id` —
+        // never a byte truncation of `raw`, which would corrupt a handle (wire
+        // invariant 6) and break the byte-exact replay the variant exists for (A-26).
+        ConversationItem::Discovery { .. }
+        | ConversationItem::BackendToolCall(_)
+        | ConversationItem::Reasoning(_)
+        | ConversationItem::System(_) => item,
     }
 }
 /// Char-boundary-safe prefix of `s` (incl. truncation marker) within `max_bytes`; `None` if `s` already fits.
@@ -365,7 +455,15 @@ pub fn is_real_user_turn(item: &ConversationItem) -> bool {
             let extracted = extract_user_query(&item.text_content());
             !is_synthetic_extracted_query(&extracted)
         }
-        _ => false,
+        // Only a `User` item can anchor a human turn. A discovery item is named
+        // explicitly: it must never become a compaction boundary, or the pair would be
+        // split by the tail-window walk instead of snapped over.
+        ConversationItem::Discovery { .. }
+        | ConversationItem::System(_)
+        | ConversationItem::Assistant(_)
+        | ConversationItem::ToolResult(_)
+        | ConversationItem::BackendToolCall(_)
+        | ConversationItem::Reasoning(_) => false,
     }
 }
 /// Extract all real user queries, in order ([`is_real_user_turn`]).
@@ -387,29 +485,74 @@ pub fn extract_last_real_user_query(conversation: &[ConversationItem]) -> Option
         .find(|item| is_real_user_turn(item))
         .map(|item| extract_user_query(&item.text_content()))
 }
+/// The first conversation index a compaction tail window may retain.
+///
+/// `raw_start` is whatever boundary the caller found (last user turn, last real user
+/// turn, last compaction anchor). It is moved DOWN, never up, so a window can never
+/// begin between a `tool_search_call` and the `tool_search_output` that answers it.
+/// Widening the window is the sanctioned answer to "the pair does not fit the
+/// boundary": the alternative readings — keep the output alone (provider desync, and
+/// the A-26 strip of the call) or drop the output alone (the A-26 strip of the only
+/// record of the loaded tool set) — are both forbidden by ruling apex-waj.18, so the
+/// cut moves instead. A window that gains a pair costs the compaction two items.
+fn discovery_window_start(conversation: &[ConversationItem], raw_start: usize) -> usize {
+    xai_grok_sampling_types::conversation::tool_search::snap_index_over_discovery_pairs(
+        conversation,
+        raw_start.min(conversation.len()),
+    )
+}
+/// Whether a discovery item at `index` may be left out of a window.
+///
+/// `lone` is [`unpaired_discovery_indices`] computed over the FULL conversation,
+/// which is the point of the whole helper (cut review F-1): the question "does this
+/// half have a partner?" must be answered against every item the session holds. A
+/// `call_id: null` pair whose halves are not physically adjacent is invisible to
+/// anything that only sees the window, so a window-local answer calls a complete pair
+/// two lone halves and deletes the provider's loaded-tool-set record — silently, out
+/// of the only verbatim content a compacted history keeps.
+fn discovery_is_certifiably_lone(lone: &[usize], index: usize) -> bool {
+    lone.contains(&index)
+}
+/// A discovery item for a compaction window: verbatim, or dropped when the FULL
+/// history certifies it has no partner. Never stubbed.
+///
+/// A tail window is the only verbatim content a compacted history keeps, so the
+/// choice per discovery pair is: both halves verbatim, or neither. Half a pair is
+/// not a smaller history — a lone `tool_search_call` is the strict-backend 400
+/// shape and a lone `tool_search_output` names a call the provider never saw — and
+/// placeholder-replacement is refused for the same reason it is accepted for a
+/// `ToolResult`: the pair is the only record of which tools the provider loaded, so
+/// stubbing it would be the A-26 strip wearing a different hat (ruling
+/// apex-waj.18, dispatch XT-10: discovery must survive compaction).
+///
+/// The `Tool call omitted...` stubs at the call sites below stay for `ToolResult`
+/// only; that data is re-derivable from the tool, the loaded tool set is not.
+fn discovery_for_window(
+    item: &xai_grok_sampling_types::conversation::tool_search::ToolSearchItem,
+    index: usize,
+    lone: &[usize],
+) -> Option<ConversationItem> {
+    if discovery_is_certifiably_lone(lone, index) {
+        None
+    } else {
+        Some(ConversationItem::Discovery {
+            item: item.clone(),
+        })
+    }
+}
 /// Extract messages since the last user message. Tool results are placeholder-replaced.
 /// Uses the raw `User` boundary, which includes synthetics.
 /// For compaction, prefer [`extract_messages_since_last_real_user`].
 pub fn extract_messages_since_last_user(
     conversation: &[ConversationItem],
 ) -> Vec<ConversationItem> {
-    let mut messages: Vec<_> = conversation
+    // The same suffix as the previous backwards `take_while`, expressed as a start
+    // index so the discovery snap can widen it (see [`discovery_window_start`]).
+    let raw_start = conversation
         .iter()
-        .rev()
-        .take_while(|item| !matches!(item, ConversationItem::User(_)))
-        .filter_map(|item| match item {
-            ConversationItem::Assistant(a) => Some(ConversationItem::Assistant(a.clone())),
-            ConversationItem::ToolResult(t) => Some(ConversationItem::ToolResult(ToolResultItem {
-                tool_call_id: t.tool_call_id.clone(),
-                content: std::sync::Arc::<str>::from("Tool call omitted..."),
-                images: Vec::new(),
-                is_error: false,
-            })),
-            _ => None,
-        })
-        .collect();
-    messages.reverse();
-    messages
+        .rposition(|item| matches!(item, ConversationItem::User(_)))
+        .map_or(0, |last_user_index| last_user_index + 1);
+    verbatim_window_from(conversation, raw_start)
 }
 /// Extract messages since the last real user turn. Synthetics do not reset the boundary.
 /// Prevents compaction from splitting an assistant/tool pair across a synthetic injection
@@ -417,14 +560,21 @@ pub fn extract_messages_since_last_user(
 pub fn extract_messages_since_last_real_user(
     conversation: &[ConversationItem],
 ) -> Vec<ConversationItem> {
-    let boundary_idx = conversation.iter().rposition(is_real_user_turn);
-    let start = match boundary_idx {
-        Some(idx) => idx + 1,
-        None => 0,
-    };
+    let raw_start = conversation.iter().rposition(is_real_user_turn).map_or(0, |idx| idx + 1);
+    verbatim_window_from(conversation, raw_start)
+}
+/// The verbatim tail window: assistant turns, stubbed tool results and every closed
+/// discovery group, taken from `raw_start` widened over any pair the cut would split.
+fn verbatim_window_from(conversation: &[ConversationItem], raw_start: usize) -> Vec<ConversationItem> {
+    let start = discovery_window_start(conversation, raw_start);
+    let lone =
+        xai_grok_sampling_types::conversation::tool_search::unpaired_discovery_indices(
+            conversation,
+        );
     conversation[start..]
         .iter()
-        .filter_map(|item| match item {
+        .enumerate()
+        .filter_map(|(offset, item)| match item {
             ConversationItem::Assistant(a) => Some(ConversationItem::Assistant(a.clone())),
             ConversationItem::ToolResult(t) => Some(ConversationItem::ToolResult(ToolResultItem {
                 tool_call_id: t.tool_call_id.clone(),
@@ -432,7 +582,15 @@ pub fn extract_messages_since_last_real_user(
                 images: Vec::new(),
                 is_error: false,
             })),
-            _ => None,
+            // Verbatim pair, never the `Tool call omitted...` stub — see
+            // [`discovery_for_window`] (ruling apex-waj.18 A-26 / XT-10).
+            ConversationItem::Discovery { item } => discovery_for_window(item, start + offset, &lone),
+            // System/user context is rebuilt around the window; backend tool calls
+            // and reasoning items are not portable continuation context here.
+            ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::BackendToolCall(_)
+            | ConversationItem::Reasoning(_) => None,
         })
         .collect()
 }
@@ -477,7 +635,7 @@ fn extract_messages_since_last_compaction_anchor(
                     if user.synthetic_reason == Some(SyntheticReason::AgentMessage)
             )
     });
-    let start = boundary.map_or(0, |idx| {
+    let raw_start = boundary.map_or(0, |idx| {
         if matches!(
             &conversation[idx],
             ConversationItem::User(user)
@@ -488,9 +646,19 @@ fn extract_messages_since_last_compaction_anchor(
             idx + 1
         }
     });
+    // Pair-atomic window start + FULL-history lone certification: this is the
+    // window `CompactionStateContext::build` puts into the reassembled history, i.e.
+    // the ONLY verbatim content a compacted conversation keeps (ruling apex-waj.18
+    // A-26; dispatch XT-10; cut review F-1).
+    let start = discovery_window_start(conversation, raw_start);
+    let lone =
+        xai_grok_sampling_types::conversation::tool_search::unpaired_discovery_indices(
+            conversation,
+        );
     conversation[start..]
         .iter()
-        .filter_map(|item| match item {
+        .enumerate()
+        .filter_map(|(offset, item)| match item {
             ConversationItem::User(user)
                 if user.synthetic_reason == Some(SyntheticReason::AgentMessage) =>
             {
@@ -507,7 +675,17 @@ fn extract_messages_since_last_compaction_anchor(
                     is_error: false,
                 }))
             }
-            _ => None,
+            // The discovery pair rides whole and unstubbed: placeholder-replacing it
+            // is how the loaded tool set would vanish.
+            ConversationItem::Discovery { item } => discovery_for_window(item, start + offset, &lone),
+            // Real human turns rebuild the head of the window, not its tail;
+            // synthetic user turns other than the agent-message arm above, system
+            // prompts, backend tool calls and reasoning items are all rebuilt or
+            // dropped by the reassembly in `build_compacted_history`.
+            ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::BackendToolCall(_)
+            | ConversationItem::Reasoning(_) => None,
         })
         .collect()
 }
@@ -970,7 +1148,21 @@ pub fn validate_compacted_history(items: &[ConversationItem]) -> Vec<String> {
             ConversationItem::ToolResult(tr) if !seen_ids.contains(tr.tool_call_id.as_str()) => {
                 invalid_ids.push(tr.tool_call_id.clone());
             }
-            _ => {}
+            // A result whose declaring assistant call came earlier is well-formed.
+            ConversationItem::ToolResult(_) => {}
+            // Deliberately NOT validated here, and that is a load-bearing decision:
+            // a non-empty return makes the shell's compaction path throw away
+            // `recent_messages` entirely (session/compaction.rs), i.e. report a
+            // discovery problem here and the caller destroys the very pair this
+            // invariant protects (ruling apex-waj.18 A-26). The fail-loud home for a
+            // split pair is the pre-send shape guard
+            // (`truncate_trailing_incomplete_tool_call`) and the outbound H-8 lint,
+            // not this validator. Its pairing vocabulary stays Assistant↔ToolResult.
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::BackendToolCall(_)
+            | ConversationItem::Reasoning(_) => {}
         }
     }
     invalid_ids
@@ -998,7 +1190,16 @@ pub fn sanitize_compacted_history(items: Vec<ConversationItem>) -> SanitizeResul
                     false
                 }
             }
-            _ => true,
+            // Kept unconditionally, and never co-dropped with its partner: a
+            // `tool_search_output` IS the record of which tools the provider loaded,
+            // so dropping it is the A-26 strip (ruling apex-waj.18). PLAN:947's
+            // "drop client-executed outputs whose call is gone" belongs to T15 and is
+            // deliberately not invented here.
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::BackendToolCall(_)
+            | ConversationItem::Reasoning(_) => true,
         })
         .collect();
     SanitizeResult {
@@ -1066,7 +1267,21 @@ pub fn strip_displaced_tool_results(items: &mut Vec<ConversationItem>) -> Vec<St
                 false
             }
         }
-        _ => {
+        // Transparent: the assistant→results run CONTINUES across a discovery
+        // pair. Clearing `run_ids` here would strip every legitimately-paired
+        // `ToolResult` that follows a provider-minted `tool_search_call` as
+        // "displaced" — a real history rewrite, reported as
+        // `stripped_tool_result_ids`. Same transparency decision as
+        // `has_dangling_tool_calls` / `repair_dangling_tool_calls` in
+        // xai-grok-sampling-types, so the repair passes still agree on which
+        // calls are answered. The pair itself is never stripped (A-26).
+        ConversationItem::Discovery { .. } => true,
+        // Any other item does end the run: only the contiguous results after
+        // their declaring assistant are wire-legal.
+        ConversationItem::System(_)
+        | ConversationItem::User(_)
+        | ConversationItem::BackendToolCall(_)
+        | ConversationItem::Reasoning(_) => {
             run_ids.clear();
             true
         }

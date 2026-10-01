@@ -4043,19 +4043,22 @@ mod tests {
                     rs::InputMessage {
                         content: vec![rs::InputContent::InputText(rs::InputTextContent {
                             text: "hi".to_string(),
+                            prompt_cache_breakpoint: None,
                         })],
                         role: rs::InputRole::User,
                         status: None,
                     },
                 ))),
                 rs::InputItem::Item(rs::Item::Reasoning(rs::ReasoningItem {
-                    id: "rs_0123456789abcdef0123456789abcdef".to_string(),
+                    id: Some("rs_0123456789abcdef0123456789abcdef".to_string()),
                     summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                         text: "s".to_string(),
                     })],
-                    content: Some(vec![rs::ReasoningTextContent {
-                        text: "chain of thought".to_string(),
-                    }]),
+                    content: Some(vec![rs::ReasoningItemContent::ReasoningText(
+                        rs::ReasoningTextContent {
+                            text: "chain of thought".to_string(),
+                        },
+                    )]),
                     encrypted_content: None,
                     status: None,
                 })),
@@ -6423,11 +6426,11 @@ mod tests {
             panic!("expected WebSearchCall output item");
         };
         assert_eq!(call.id, "ws_123");
-        assert_eq!(call.status, rs::WebSearchToolCallStatus::Completed);
-        let rs::WebSearchToolCallAction::Search(search) = call.action else {
+        assert_eq!(call.status, rs::WebSearchCallStatus::Completed);
+        let Some(rs::WebSearchToolCallAction::Search(search)) = call.action else {
             panic!("expected the sentinel search action");
         };
-        assert!(search.query.is_empty(), "the filled action must be the empty-search sentinel");
+        assert!(search.query.as_deref().map_or(true, str::is_empty), "the filled action must be the empty-search sentinel");
     }
 
     /// W2-4 RED pin: a native xAI x_search_call frame is an unknown variant of
@@ -6528,10 +6531,10 @@ mod tests {
         let rs::OutputItem::WebSearchCall(call) = typed else {
             panic!("expected WebSearchCall");
         };
-        let rs::WebSearchToolCallAction::Search(search) = call.action else {
+        let Some(rs::WebSearchToolCallAction::Search(search)) = call.action else {
             panic!("expected the sentinel search action");
         };
-        assert!(search.query.is_empty());
+        assert!(search.query.as_deref().map_or(true, str::is_empty));
         assert!(search.sources.is_none_or(|sources| sources.is_empty()));
     }
 
@@ -6615,6 +6618,102 @@ mod tests {
         assert!(
             body["input"][0].get("id").is_none(),
             "strict rows keep REPLAY-1: the projector strips the reasoning id afterwards"
+        );
+    }
+
+    /// apex-6c6: a `tool_search_call` frame must not kill the turn.
+    ///
+    /// Every `data:` frame of the two real ratchet-live captures (wire2-live3) goes through the
+    /// exact per-frame decode the production stream loop invokes (`decode_responses_sse_frame_for_model`,
+    /// the `scan` arm at the Responses stream builder) with the capture's own dialect and model
+    /// (`Codex` / `gpt-5.5`, per `req-00*.json`). The turn SURVIVES iff no frame returns `Err`:
+    /// the stream loop turns a decode `Err` into `SamplingEvent::Failed` and ends the turn.
+    /// Before the async-openai 0.42.1 bump the `tool_search_call` items die here with
+    /// `unknown variant` and the turn is killed.
+    ///
+    /// The structural guard walks the PARSED frames (never substrings, FOOTGUNS C1) and asserts
+    /// the captures still carry the discovery shapes this test claims to cover, so a stale or
+    /// truncated capture fails the test instead of passing vacuously.
+    #[test]
+    fn tool_search_call_frames_do_not_kill_the_turn() {
+        const CAPTURES: &[&str] = &[
+            "/Users/palanisd/Projects/upstream/grok/plans/harness/hosted-tool-search/ratchet-capture/captures/2026-09-25-ratchet-live/wire2-live3/resp-003.sse",
+            "/Users/palanisd/Projects/upstream/grok/plans/harness/hosted-tool-search/ratchet-capture/captures/2026-09-25-ratchet-live/wire2-live3/resp-004.sse",
+        ];
+        let mut saw_discovery_item = false;
+        let mut saw_tool_search_tool = false;
+        let mut saw_namespace_tool = false;
+        for path in CAPTURES {
+            let sse = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("apex-6c6 capture missing at {path}: {e}"));
+            let mut frame_no = 0usize;
+            let mut fatal: Vec<(usize, String)> = Vec::new();
+            for line in sse.lines() {
+                let Some(data) = line.strip_prefix("data:") else {
+                    continue;
+                };
+                let data = data.trim();
+                if data == "[DONE]" {
+                    continue;
+                }
+                frame_no += 1;
+                // Structural guard over the parsed frame.
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+                    let output_has_discovery = value
+                        .pointer("/response/output")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|out| {
+                            out.iter().any(|i| {
+                                i.get("type")
+                                    .and_then(serde_json::Value::as_str)
+                                    == Some("tool_search_call")
+                            })
+                        });
+                    if value.pointer("/item/type").and_then(serde_json::Value::as_str)
+                        == Some("tool_search_call")
+                        || output_has_discovery
+                    {
+                        saw_discovery_item = true;
+                    }
+                    if let Some(tools) = value
+                        .pointer("/response/tools")
+                        .and_then(serde_json::Value::as_array)
+                    {
+                        let kinds: Vec<&str> = tools
+                            .iter()
+                            .filter_map(|t| t.get("type").and_then(serde_json::Value::as_str))
+                            .collect();
+                        if kinds.iter().any(|&k| k == "tool_search") {
+                            saw_tool_search_tool = true;
+                        }
+                        if kinds.iter().any(|&k| k == "namespace") {
+                            saw_namespace_tool = true;
+                        }
+                    }
+                }
+                let decoded =
+                    decode_responses_sse_frame_for_model("", data, ResponsesWireDialect::Codex, "gpt-5.5");
+                if let Err(error) = decoded {
+                    fatal.push((frame_no, error.to_string()));
+                }
+            }
+            assert!(frame_no > 0, "no data frames parsed from {path}");
+            assert!(
+                fatal.is_empty(),
+                "turn dies in {path}: {frame_no} frames decoded, fatal: {fatal:?}"
+            );
+        }
+        assert!(
+            saw_discovery_item,
+            "captures no longer carry a tool_search_call item; re-pin the capture"
+        );
+        assert!(
+            saw_tool_search_tool,
+            "captures no longer carry an echoed tool_search tool; re-pin the capture"
+        );
+        assert!(
+            saw_namespace_tool,
+            "captures no longer carry an echoed namespace tool; re-pin the capture"
         );
     }
 }

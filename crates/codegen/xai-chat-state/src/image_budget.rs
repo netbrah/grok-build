@@ -75,7 +75,12 @@ fn inline_image_count(conversation: &[ConversationItem]) -> usize {
                 .iter()
                 .filter(|part| matches!(part, ContentPart::Image { .. }))
                 .count(),
-            ConversationItem::System(_)
+            // A discovery item has no ContentPart images: a client `tool_search_output`
+            // is a tool-definition list, and a provider-minted one carries no image part
+            // in any captured shape. Naming it keeps the image-budget trigger from
+            // treating an un-evictable multi-KB item as an image source.
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
             | ConversationItem::Assistant(_)
             | ConversationItem::BackendToolCall(_)
             | ConversationItem::Reasoning(_) => 0,
@@ -183,7 +188,14 @@ fn conversation_body_bytes(conversation: &[ConversationItem]) -> usize {
             ConversationItem::ToolResult(tool_result) => {
                 blank_image_urls(&mut tool_result.images, &mut image_url_bytes);
             }
-            ConversationItem::System(_)
+            // No image URLs to blank (see `inline_image_count`). Note the consequence
+            // the trigger still has: `conversation_body_bytes` measures the whole
+            // serialized item, so a large `tool_search_output` raises the trigger while
+            // nothing about it is evictable here. That asymmetry is intended — the pair
+            // may not be shrunk or stripped (A-26); any future shrink must be a typed
+            // stub that keeps both ids, never a byte truncation of `raw`.
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
             | ConversationItem::Assistant(_)
             | ConversationItem::BackendToolCall(_)
             | ConversationItem::Reasoning(_) => {}
@@ -241,7 +253,10 @@ fn evict_images_to_budget(
                     }
                 }
             }
-            ConversationItem::System(_)
+            // Eviction only ever touches ContentPart images; a discovery item has none
+            // and may not be evicted (A-26).
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
             | ConversationItem::Assistant(_)
             | ConversationItem::BackendToolCall(_)
             | ConversationItem::Reasoning(_) => {}

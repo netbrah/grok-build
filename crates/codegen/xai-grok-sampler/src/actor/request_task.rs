@@ -898,6 +898,34 @@ async fn drive_l2(
                     });
                 }
                 Some(other) => {
+                    // Verdict on the client-executed discovery events (`ToolSearchCallReceived` /
+                    // `ToolSearchCompleted`): no entry needed here. Neither variant has an in-tree
+                    // emitter yet — `stream/responses.rs` (apex-waj.5) owes the derivation — so this
+                    // verdict is CONDITIONAL, and the condition is on that lane: it holds only if every
+                    // variant apex-waj.5 derives rides a frame that `responses_event_may_have_output`
+                    // accepts. Under that condition `stream_responses_tracked` stores the SAME `Arc`
+                    // for the frame before yielding anything derived from it, which is what makes output
+                    // already observed by the time the derived event reaches this arm. No in-tree code
+                    // enforces that derivation. Deriving `ToolSearchCompleted` from a buffered item at
+                    // `response.completed` does NOT break the premise: `ResponseCompleted` sits in
+                    // `responses_event_has_meaningful_content`'s `=> true` group and the wrapper only
+                    // excludes `ResponseError`, so that frame trips the store itself before anything
+                    // derived from it is yielded. Nor does an event synthesised after the terminal: this
+                    // arm is unreachable once `Completed` or `Failed` has returned the attempt. The
+                    // premise stops holding only for an event that can reach this arm with the flag
+                    // still clear — one derived from a frame the predicate REJECTS (the liveness-only
+                    // `ResponseCreated` / `ResponseInProgress` / `ResponseQueued` group, or a
+                    // `ResponseError`, which `responses_event_may_have_output` excludes by name), or one
+                    // emitted on a lane whose transform never holds the flag: `stream_chat_completions`
+                    // and `stream_messages` take no `output_observed` at all. Such an event needs its
+                    // own entry here.
+                    // The same verdict, under the same condition, covers the second statement of
+                    // the `if matches!(...)` block below, `await_first_output_span.take()`: the two
+                    // discovery variants are NOT in that `matches!` list, so on a stream whose only
+                    // content is a discovery pair the `sampling.await_first_output` span is not taken
+                    // at first output and instead runs to the attempt's end. It cannot leak —
+                    // `Completed` and `Failed` both take it — so only the span's measured duration is
+                    // overstated on such a stream, never its lifetime.
                     if matches!(
                         other,
                         SamplingEvent::FirstToken { .. }
@@ -1719,7 +1747,7 @@ mod tests {
                 t::ConversationItem::user("q1"),
                 t::ConversationItem::Reasoning(t::ReasoningItemStore {
                     item: t::rs::ReasoningItem {
-                        id: "rs_mbs".to_string(),
+                        id: Some("rs_mbs".to_string()),
                         summary: vec![t::rs::SummaryPart::SummaryText(t::rs::SummaryTextContent {
                             text: "private continuation".to_string(),
                         })],
@@ -2041,7 +2069,7 @@ mod enc_boundary_mf6_tests {
                 t::ConversationItem::user("q1"),
                 t::ConversationItem::Reasoning(t::ReasoningItemStore {
                     item: t::rs::ReasoningItem {
-                        id: "encitem_sig_enc_1".to_string(),
+                        id: Some("encitem_sig_enc_1".to_string()),
                         summary: vec![t::rs::SummaryPart::SummaryText(t::rs::SummaryTextContent {
                             text: "minted under EU2".to_string(),
                         })],
@@ -2054,7 +2082,7 @@ mod enc_boundary_mf6_tests {
                 t::ConversationItem::assistant("a1"),
                 t::ConversationItem::Reasoning(t::ReasoningItemStore {
                     item: t::rs::ReasoningItem {
-                        id: "encitem_sig_enc_2".to_string(),
+                        id: Some("encitem_sig_enc_2".to_string()),
                         summary: vec![t::rs::SummaryPart::SummaryText(t::rs::SummaryTextContent {
                             text: "untagged mint".to_string(),
                         })],

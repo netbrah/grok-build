@@ -27,6 +27,14 @@
 //!   state this value linter does not receive, so that clause is
 //!   unreachable in-product." — false against the frozen A1 (the .126.8.5
 //!   H-5' cut removed the domain clause; AzStrict is SILENT in A1 too).
+//! - **H-8 (call side, apex-waj.21 r2)**: A2-SUPERSET of A1. The output-side
+//!   correlation is the EV-15 parity arm; the call-side arm (a client-executed
+//!   `tool_search_call` with no `tool_search_output` in the body) exists because it is
+//!   the ONLY pre-send check of that shape in-product — the trailing-shape trim in
+//!   `xai-chat-state` is summariser/recap prep, not the request path. A1 has no
+//!   counterpart yet, so a capture classified by `tools/invariant_lint.py` will not
+//!   report a lone call that A2 flags; the sweep must stay keyed on the rule id, not on
+//!   the arm count.
 //! - **H-6** is header-level: [`lint_outbound_headers`], not the body fn.
 //! - **H-7** is OUT of scope (history shape, not a flat request body;
 //!   asserted at the existing projection seam —
@@ -332,23 +340,43 @@ fn check_h5(boundary: Boundary, body: &Value) -> Vec<LintViolation> {
     out
 }
 
-/// H-8 (all responses-wire, EV-15): every client-executed
-/// `tool_search_output` pairs one-to-one with a preceding
-/// `tool_search_call` sharing a non-empty `call_id`. Server-executed output
-/// is provider-owned and carries `call_id: null`, so it is out of scope.
+/// H-8 (all responses-wire, EV-15): the discovery pair correlates one-to-one, in
+/// BOTH directions.
+///
+/// * OUTPUT side (A1 parity): every client-executed `tool_search_output` has a
+///   preceding `tool_search_call` sharing a non-empty `call_id`, and no duplicate.
+///   Server-executed output is provider-owned and carries `call_id: null`, so it is
+///   out of scope.
+/// * CALL side (apex-waj.21 r2 / cut review WAJ21R2-04, **A2-superset of A1**): every
+///   client-executed `tool_search_call` with a non-empty `call_id` is ANSWERED by a
+///   `tool_search_output` in the same body. The call-side arm exists because it is the
+///   only pre-send check that sees this shape at all: `truncate_trailing_incomplete_tool_call`
+///   is summariser/recap prep (its only caller is
+///   `prepare_conversation_for_verbatim_summarization`), never the request path, so
+///   without this arm the lone `tool_search_call` — the exact shape a strict backend
+///   rejects — crossed the boundary unobserved on every dialect. A
+///   client-executed call with NO `call_id` is still unguarded here (there is no join
+///   key to report against); that quadrant is not a real shape — the harness authors
+///   `call_id` on every client pair and `call_id: null` means server-minted.
 fn check_h8(body: &Value) -> Vec<LintViolation> {
     let mut out = Vec::new();
-    let mut calls = HashSet::new();
+    let mut calls: HashMap<&str, usize> = HashMap::new();
+    let mut answered: HashSet<&str> = HashSet::new();
     let mut seen = HashMap::new();
     for (i, item) in input_items(body) {
         match item.get("type").and_then(Value::as_str) {
             Some("tool_search_call") => {
+                if item.get("execution").and_then(Value::as_str) == Some("server") {
+                    continue;
+                }
                 if let Some(call_id) = item
                     .get("call_id")
                     .and_then(Value::as_str)
                     .filter(|s| !s.is_empty())
                 {
-                    calls.insert(call_id);
+                    // First occurrence wins: the duplicate's own position is already
+                    // reported by the output side's duplicate arm.
+                    calls.entry(call_id).or_insert(i);
                 }
             }
             Some("tool_search_output") => {
@@ -367,7 +395,8 @@ fn check_h8(body: &Value) -> Vec<LintViolation> {
                     });
                     continue;
                 };
-                if !calls.contains(call_id) {
+                answered.insert(call_id);
+                if !calls.contains_key(call_id) {
                     out.push(LintViolation {
                         rule: "H-8",
                         path: format!("input[{i}].call_id"),
@@ -388,6 +417,20 @@ fn check_h8(body: &Value) -> Vec<LintViolation> {
             }
             _ => {}
         }
+    }
+    // The call side, in body order so the violations are reproducible.
+    let mut unanswered: Vec<(usize, &&str)> = calls
+        .iter()
+        .filter(|(call_id, _)| !answered.contains(*call_id))
+        .map(|(call_id, index)| (*index, call_id))
+        .collect();
+    unanswered.sort_unstable();
+    for (index, call_id) in unanswered {
+        out.push(LintViolation {
+            rule: "H-8",
+            path: format!("input[{index}].call_id"),
+            observed: format!("call_id={call_id:?} sent with no tool_search_output in the body"),
+        });
     }
     out
 }
@@ -1084,6 +1127,52 @@ mod tests {
         assert_eq!(violations[0].path, "input[0].call_id");
         assert_eq!(violations[1].path, "input[3].call_id");
         assert_eq!(violations[2].path, "input[4].call_id");
+    }
+
+    /// H-8 call side (cut review WAJ21R2-04): a client-executed `tool_search_call` with
+    /// no answer anywhere in the body is the strict-backend 400 shape, and this is the
+    /// only pre-send site that can see it — the chat-state trailing trim is summariser
+    /// prep. The server quadrant stays out of scope (the provider authors its own output)
+    /// and an answered pair stays clean, so the arm cannot fire on a healthy body.
+    #[test]
+    fn formalism_h8_flags_a_client_call_with_no_output_in_the_body() {
+        let lone_call = json!({
+            "store": false,
+            "input": [
+                {"type": "tool_search_call", "call_id": "call_alone", "execution": "client"},
+                {"type": "function_call", "call_id": "call_tool", "name": "read", "arguments": "{}"}
+            ]
+        });
+        let violations = lint_outbound_request(Boundary::AzStrict, &lone_call);
+        assert_eq!(rules_of(&violations), vec!["H-8"]);
+        assert_eq!(violations[0].path, "input[0].call_id");
+
+        // The server quadrant is provider-owned: no output is expected from us.
+        let server_call = json!({
+            "store": false,
+            "input": [
+                {"type": "tool_search_call", "call_id": null, "execution": "server"}
+            ]
+        });
+        assert!(
+            lint_outbound_request(Boundary::AzStrict, &server_call).is_empty(),
+            "a server-executed call must not fire the call-side arm"
+        );
+
+        // Order is body order, and one violation per unanswered key (a call repeated
+        // under one key is one violation, not two).
+        let two_lone = json!({
+            "store": false,
+            "input": [
+                {"type": "tool_search_call", "call_id": "call_b", "execution": "client"},
+                {"type": "tool_search_call", "call_id": "call_a", "execution": "client"},
+                {"type": "tool_search_call", "call_id": "call_b", "execution": "client"}
+            ]
+        });
+        let violations = lint_outbound_request(Boundary::AzStrict, &two_lone);
+        assert_eq!(rules_of(&violations), vec!["H-8", "H-8"]);
+        assert_eq!(violations[0].path, "input[0].call_id");
+        assert_eq!(violations[1].path, "input[1].call_id");
     }
 
     #[test]

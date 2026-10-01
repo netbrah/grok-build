@@ -11,10 +11,7 @@ use std::path::Path;
 
 use agent_client_protocol as acp;
 
-use crate::sampling::{
-    ConversationItem, conversation_truncate_for_prompt, fork_filter_chat,
-    transform_conversation_cwd,
-};
+use crate::sampling::{ConversationItem, fork_filter_chat, transform_conversation_cwd};
 use crate::session::info::Info;
 use crate::session::persistence::{CHAT_FORMAT_VERSION, Summary};
 use crate::session::storage::jsonl::{JsonlStorageAdapter, transform_session_id_in_update};
@@ -284,8 +281,10 @@ impl JsonlStorageAdapter {
 
         if let Some(target_idx) = options.target_prompt_index {
             // +1: the cut keeps the target prompt inclusive.
-            let keep = conversation_truncate_for_prompt(&chat_to_copy, target_idx + 1);
-            chat_to_copy.truncate(keep);
+            crate::sampling::conversation::truncate_conversation_for_prompt(
+                &mut chat_to_copy,
+                target_idx + 1,
+            );
         }
 
         if options.fork_filter {

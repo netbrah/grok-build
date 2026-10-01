@@ -809,13 +809,15 @@ mod tests {
         // projection removes it for strict targets only.
         use xai_grok_sampling_types::rs;
         let make_item = || rs::ReasoningItem {
-            id: "rs_288b9ed724204ccd8cffb5ae41ca4753".to_owned(),
+            id: Some("rs_288b9ed724204ccd8cffb5ae41ca4753".to_owned()),
             summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                 text: "thinking...".to_owned(),
             })],
-            content: Some(vec![rs::ReasoningTextContent {
-                text: "thinking...".to_owned(),
-            }]),
+            content: Some(vec![rs::ReasoningItemContent::ReasoningText(
+                rs::ReasoningTextContent {
+                    text: "thinking...".to_owned(),
+                },
+            )]),
             encrypted_content: None,
             status: None,
         };

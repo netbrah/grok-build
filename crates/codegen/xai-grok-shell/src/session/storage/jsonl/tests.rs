@@ -1831,6 +1831,9 @@ fn read_chat_history_upgrades_raw_output_parallel_tco_reasoning() {
             ConversationItem::ToolResult(_) => "tool_result",
             ConversationItem::BackendToolCall(_) => "backend_tool_call",
             ConversationItem::Reasoning(_) => "reasoning",
+            // The seventh on-disk tag, and it must be `"discovery"` — the same string
+            // `item_kind_str` traces and the serde tag the loader resolves.
+            ConversationItem::Discovery { .. } => "discovery",
         })
         .collect();
     assert_eq!(
@@ -1881,6 +1884,9 @@ fn read_chat_history_handles_hybrid_legacy_and_post_pr_lines() {
             ConversationItem::ToolResult(_) => "tool_result",
             ConversationItem::BackendToolCall(_) => "backend_tool_call",
             ConversationItem::Reasoning(_) => "reasoning",
+            // The seventh on-disk tag, and it must be `"discovery"` — the same string
+            // `item_kind_str` traces and the serde tag the loader resolves.
+            ConversationItem::Discovery { .. } => "discovery",
         })
         .collect();
     assert_eq!(
@@ -1955,6 +1961,9 @@ fn read_chat_history_is_idempotent_on_post_pr_sessions() {
             ConversationItem::ToolResult(_) => "tool_result",
             ConversationItem::BackendToolCall(_) => "backend_tool_call",
             ConversationItem::Reasoning(_) => "reasoning",
+            // The seventh on-disk tag, and it must be `"discovery"` — the same string
+            // `item_kind_str` traces and the serde tag the loader resolves.
+            ConversationItem::Discovery { .. } => "discovery",
         })
         .collect();
     assert_eq!(kinds, vec!["system", "user", "reasoning", "assistant"]);
@@ -2627,4 +2636,198 @@ async fn corrupt_usage_json_does_not_read_as_missing() {
     let err = adapter.read_usage(&info).await.unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not-json");
+}
+/// The provider's loaded-tool-set pair, in the shapes the capture recorded: a
+/// completed client `tool_search_call` (no `tools` key) and a namespaced
+/// `tool_search_output` re-keyed to the same `call_id` (the captures pair across
+/// files, so the join key is set here rather than claimed from a capture).
+fn discovery_pair_raws() -> (serde_json::Value, serde_json::Value) {
+    let call = serde_json::json!({
+        "type": "tool_search_call",
+        "id": "tsc_02005a6c7856d15c016ab6aa70e9208194bc939a9b4707c556",
+        "call_id": "call_AOphypzlL1KKckJugyBS2PYn",
+        "status": "completed",
+        "execution": "client",
+        "arguments": { "query": "crm order management", "limit": 8 }
+    });
+    let output = serde_json::json!({
+        "type": "tool_search_output",
+        "id": "tso_01a0d978-6771-7420-8b21-567a1f96b61c",
+        "call_id": "call_AOphypzlL1KKckJugyBS2PYn",
+        "status": "completed",
+        "execution": "client",
+        "tools": [{
+            "type": "namespace",
+            "name": "mcp__ratchet_fixture",
+            "tools": [
+                { "type": "function", "name": "crm_fixture_tool_00" }
+            ]
+        }]
+    });
+    (call, output)
+}
+
+fn discovery_line(raw: serde_json::Value) -> ConversationItem {
+    ConversationItem::Discovery {
+        item: xai_grok_sampling_types::conversation::tool_search::ToolSearchItem::from_wire(raw)
+            .expect("fixture is a tool_search item"),
+    }
+}
+
+/// A stored discovery pair must come back through the real loader as two items, in
+/// authoring order, byte-identical, with the join key intact.
+///
+/// This is the A-26 load-side witness (RULING-apex-waj-18): the pair is the only
+/// record of the tool set the provider loaded, and the loader skips a line it cannot
+/// parse, so an envelope that does not survive `to_string` → `from_value` loses one
+/// half silently. The bytes are written exactly as the production writer writes them
+/// (`serde_json::to_string(&ConversationItem)` + `\n`, see `rebuild_chat_history`).
+#[test]
+fn chat_history_discovery_pair_round_trips_both_halves_verbatim() {
+    let (call_raw, output_raw) = discovery_pair_raws();
+    let items = vec![
+        ConversationItem::user("find the crm tools"),
+        discovery_line(call_raw.clone()),
+        discovery_line(output_raw.clone()),
+        ConversationItem::assistant("found them"),
+    ];
+    let lines: Vec<String> = items
+        .iter()
+        .map(|item| serde_json::to_string(item).expect("item serialises"))
+        .collect();
+    let borrowed: Vec<&str> = lines.iter().map(String::as_str).collect();
+
+    let loaded = load_lines(&borrowed);
+    assert_eq!(
+        loaded.len(),
+        4,
+        "both discovery halves must load; a skipped `discovery` line is the A-26 drop"
+    );
+    let discovered: Vec<&str> = loaded
+        .iter()
+        .filter_map(|item| item.discovery())
+        .map(|item| item.kind().item_type())
+        .collect();
+    assert_eq!(
+        discovered,
+        vec!["tool_search_call", "tool_search_output"],
+        "the call precedes the output, as the provider authored it"
+    );
+    let keys: Vec<Option<&str>> = loaded
+        .iter()
+        .filter_map(|item| item.discovery())
+        .map(|item| item.call_id())
+        .collect();
+    assert_eq!(
+        keys[0], keys[1],
+        "the pair still shares one call_id after the round trip"
+    );
+    assert_eq!(keys[0], Some("call_AOphypzlL1KKckJugyBS2PYn"));
+    let round_tripped: Vec<serde_json::Value> = loaded
+        .iter()
+        .filter_map(|item| item.discovery())
+        .map(|item| item.raw().clone())
+        .collect();
+    assert_eq!(round_tripped[0], call_raw, "call bytes are verbatim");
+    assert_eq!(round_tripped[1], output_raw, "output bytes are verbatim");
+}
+
+/// An unparseable `discovery` line still cannot take its healthy partner with it, and
+/// the file is quarantined so the loss is recoverable rather than silent.
+/// Refusing the whole load is deliberately NOT the behaviour (it would brick resume);
+/// the loader skips, attributes (see the A-26 `tracing::error!`) and preserves the
+/// original as `chat_history.jsonl.corrupt`.
+#[test]
+fn chat_history_unparseable_discovery_line_only_loses_itself_and_quarantines() {
+    let (call_raw, output_raw) = discovery_pair_raws();
+    let call_line = serde_json::to_string(&discovery_line(call_raw)).unwrap();
+    let output_line = serde_json::to_string(&discovery_line(output_raw)).unwrap();
+    let temp_dir = TempDir::new().unwrap();
+    let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
+    let info = create_test_info();
+    let chat_path = adapter.chat_file(&info);
+    std::fs::create_dir_all(chat_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &chat_path,
+        // A JSON-valid discovery row whose payload does not deserialise: the tag
+        // resolves, the item does not, so only this line is skipped. A genuinely torn
+        // (non-JSON) discovery line is attributed by the other test below.
+        format!("{call_line}\n{{\"type\":\"discovery\",\"item\":42}}\n{output_line}\n"),
+    )
+    .unwrap();
+
+    let loaded = adapter
+        .read_chat_history_sync(chat_path.clone(), CHAT_FORMAT_VERSION)
+        .unwrap();
+    let discovered: Vec<&str> = loaded
+        .iter()
+        .filter_map(|item| item.discovery())
+        .map(|item| item.kind().item_type())
+        .collect();
+    assert_eq!(
+        discovered,
+        vec!["tool_search_call", "tool_search_output"],
+        "the two good halves both load; only the malformed line is dropped"
+    );
+    assert!(
+        chat_path.with_extension("jsonl.corrupt").exists(),
+        "the dropped line is preserved on disk, not lost"
+    );
+}
+
+/// W21R1-01: the discovery drop is a counted, observable outcome — not only a log line.
+///
+/// Every row here goes through the parse the real loader runs. A JSON-valid row whose
+/// payload does not deserialise is attributed by its parsed tag; a torn row is attributed
+/// byte-wise (a torn append destroys the tail of a line, never its
+/// `{"type":"discovery"` head); and a corrupt row of another kind must NOT be counted, or
+/// the counter says nothing and the mutant that deletes the attribution survives.
+#[test]
+fn chat_history_parse_counts_dropped_discovery_lines() {
+    let (call_raw, output_raw) = discovery_pair_raws();
+    let call_line = serde_json::to_string(&discovery_line(call_raw)).unwrap();
+    let output_line = serde_json::to_string(&discovery_line(output_raw)).unwrap();
+
+    // A genuinely torn discovery row: the same bytes, cut short.
+    let torn = &call_line.as_bytes()[..call_line.len() - 6];
+    assert!(
+        serde_json::from_slice::<serde_json::Value>(torn).is_err(),
+        "fixture must not be valid JSON, or it is not a torn row"
+    );
+    assert!(
+        raw_line_is_discovery_row(torn),
+        "a torn append keeps its head, so the tag survives the damage"
+    );
+
+    let valid_tag =
+        parse_chat_history_lines(b"{\"type\":\"discovery\",\"item\":42}\n", CHAT_FORMAT_VERSION);
+    assert_eq!(valid_tag.items.len(), 0);
+    assert_eq!(valid_tag.skipped_lines, 1);
+    assert_eq!(
+        valid_tag.dropped_discovery_lines, 1,
+        "a `discovery` row that will not deserialise is a lost tool_search half"
+    );
+
+    let torn_load = parse_chat_history_lines(&[torn, b"\n"].concat(), CHAT_FORMAT_VERSION);
+    assert_eq!(torn_load.skipped_lines, 1);
+    assert_eq!(
+        torn_load.dropped_discovery_lines, 1,
+        "the torn row is still attributable: the byte-level tag check is the only one \
+         available once the parse has failed"
+    );
+
+    let other = parse_chat_history_lines(b"{not-json\n", CHAT_FORMAT_VERSION);
+    assert_eq!(other.skipped_lines, 1);
+    assert_eq!(
+        other.dropped_discovery_lines, 0,
+        "an ordinary corrupt row is a skip, not a discovery loss"
+    );
+
+    let healthy = parse_chat_history_lines(
+        format!("{call_line}\n{output_line}\n").as_bytes(),
+        CHAT_FORMAT_VERSION,
+    );
+    assert_eq!(healthy.items.len(), 2, "the pair loads whole");
+    assert_eq!(healthy.dropped_discovery_lines, 0);
+    assert_eq!(healthy.skipped_lines, 0);
 }

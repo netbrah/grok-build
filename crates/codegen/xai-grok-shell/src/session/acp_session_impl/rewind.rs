@@ -341,6 +341,14 @@ impl SessionActor {
                         } else {
                             // Keep System (index 0)
                             // Replace User(user_info) at index 1 with the original from the checkpoint if available, otherwise keep the current one
+                            //
+                            // These are the only raw-index conversation cuts in the shell, and
+                            // `sampling::conversation::tests` pins that count: they keep the
+                            // session PREAMBLE (`System` at 0, `User(user_info)` at 1), so index 1
+                            // cannot be a discovery half, and everything from the cut onward is
+                            // replaced wholesale by the replayed conversation — which the replay
+                            // path itself cut pair-atomically. A pair therefore cannot straddle
+                            // either trim (apex-waj.21 review F-4).
                             if let Some(ui0) = replay_result.original_user_info {
                                 conversation.truncate(1); // keep System only
                                 conversation.push(ConversationItem::user(ui0));
@@ -379,8 +387,10 @@ impl SessionActor {
             } else {
                 // Standard rewind: truncate the in-memory conversation
                 // "Rewind to N" means restoring the state from before prompt N ran, keeping prompts 0..N-1; target 0 keeps only the session preamble
-                let keep_count = conversation_truncate_for_prompt(&conversation, target_index);
-                conversation.truncate(keep_count);
+                crate::sampling::conversation::truncate_conversation_for_prompt(
+                    &mut conversation,
+                    target_index,
+                );
             }
 
             self.cancel_active_sampling_requests();

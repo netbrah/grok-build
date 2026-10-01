@@ -117,7 +117,17 @@ fn snap_split_idx_to_tool_boundaries(
         }
     }
 
-    split_idx.min(n)
+    // Every predicate above is a ToolResult or an assistant-with-tool_calls turn, so
+    // the default two-pass configuration could otherwise land the pass-1 / pass-2
+    // boundary between a `tool_search_call` and the `tool_search_output` that answers
+    // it: one half summarised into NOTE₁, the other retained verbatim, and the loaded
+    // tool set either duplicated or broken. The snap only moves DOWN, and the pair's
+    // first member becomes the new split, so pass 2 RETAINS the whole pair verbatim and
+    // pass 1 summarises none of it (`prefix = [..split]`, `tail = [split..]`).
+    xai_grok_sampling_types::conversation::tool_search::snap_index_over_discovery_pairs(
+        conversation,
+        split_idx.min(n),
+    )
 }
 
 /// Split `conversation` into pass1 prefix / pass2 tail by estimated-token weight.
@@ -335,6 +345,120 @@ mod tests {
             .any(|i| matches!(i, ConversationItem::ToolResult(t) if t.tool_call_id == "tc1"));
         assert_eq!(prefix_has_call, prefix_has_result);
         assert_eq!(tail_has_call, tail_has_result);
+    }
+
+    /// The pair the provider authored, as the shell sees it on resume: a completed
+    /// client call and the output that answers it, one join key.
+    fn discovery_pair() -> Vec<ConversationItem> {
+        let mk = |raw: serde_json::Value| ConversationItem::Discovery {
+            item: xai_grok_sampling_types::conversation::tool_search::ToolSearchItem::from_wire(
+                raw,
+            )
+            .expect("fixture is a tool_search item"),
+        };
+        vec![
+            mk(serde_json::json!({
+                "type": "tool_search_call",
+                "id": "tsc_02005a6c7856d15c016ab6aa70e9208194bc939a9b4707c556",
+                "call_id": "call_AOphypzlL1KKckJugyBS2PYn",
+                "status": "completed",
+                "execution": "client",
+                "arguments": { "query": "crm order management", "limit": 8 }
+            })),
+            mk(serde_json::json!({
+                "type": "tool_search_output",
+                "id": "tso_01a0d978-6771-7420-8b21-567a1f96b61c",
+                "call_id": "call_AOphypzlL1KKckJugyBS2PYn",
+                "status": "completed",
+                "execution": "client",
+                "tools": [{
+                    "type": "namespace",
+                    "name": "mcp__ratchet_fixture",
+                    "tools": [{ "type": "function", "name": "crm_fixture_tool_00" }]
+                }]
+            })),
+        ]
+    }
+
+    /// apex-waj.21 (A-26): every other predicate in the snap is a ToolResult or an
+    /// assistant-with-tool_calls turn, so the pass-1/pass-2 boundary used to be able to
+    /// fall between a call and its output — one half summarised into NOTE₁, the other
+    /// retained verbatim. The snap must move the cut back to the group's first item.
+    #[test]
+    fn snap_never_lands_between_a_discovery_call_and_its_output() {
+        let mut conv = vec![ConversationItem::user("a".repeat(400))];
+        conv.extend(discovery_pair());
+        conv.push(ConversationItem::assistant("tail"));
+        // `2` is exactly the split that leaves the call in pass 1 and its answer in
+        // pass 2; `1` and `3` are already pair-atomic and must not move.
+        assert_eq!(snap_split_idx_to_tool_boundaries(&conv, 2), 1);
+        assert_eq!(snap_split_idx_to_tool_boundaries(&conv, 1), 1);
+        assert_eq!(snap_split_idx_to_tool_boundaries(&conv, 3), 3);
+    }
+
+    /// Same invariant seen through the entry point the compactor actually calls: a
+    /// half-pair may never straddle the split whatever the weight lands on.
+    ///
+    /// Both fixtures are needed. The adjacent one is the common shape but it is
+    /// VACUOUS against the snap (cut review R2L2-08): no weighted fraction of
+    /// `[user, call, output, assistant]` lands between the halves, so it passes with the
+    /// snap deleted. Only the straddling fixture — a `User` row injected between the
+    /// halves, which is what the harness's own interjection does — puts a raw split index
+    /// inside the group, and it reddens when the snap is removed.
+    #[test]
+    fn two_pass_split_keeps_a_discovery_pair_on_one_side() {
+        let fractions = [0.1, 0.25, 0.5, 0.75, 0.9, TWO_PASS_DEFAULT_SPLIT_FRACTION];
+        let halves = |items: &[ConversationItem]| {
+            items
+                .iter()
+                .filter(|item| item.discovery().is_some())
+                .count()
+        };
+
+        let mut adjacent = vec![ConversationItem::user("a".repeat(4000))];
+        adjacent.extend(discovery_pair());
+        adjacent.push(ConversationItem::assistant("b".repeat(4000)));
+
+        // The discriminating shape: `User` between the halves means a weighted split can
+        // fall at index 2 or 3, both inside the group `[1, 3]`.
+        let mut straddling = vec![ConversationItem::user("a".repeat(4000))];
+        straddling.push(discovery_pair()[0].clone());
+        straddling.push(ConversationItem::user("interjection".repeat(400)));
+        straddling.push(discovery_pair()[1].clone());
+        straddling.push(ConversationItem::assistant("b".repeat(4000)));
+        // Fixture sanity, on the RAW index: every candidate boundary the weighted walk can
+        // hand the snap is inside the group `[1, 3]` or above it, and at least one is
+        // strictly inside — otherwise this test would survive the snap's removal (the exact
+        // vacuity mutant 19 exists to catch).
+        let raw_candidates: Vec<usize> = (1..straddling.len()).collect();
+        assert!(
+            raw_candidates.iter().any(|at| (2..=3).contains(at)),
+            "fixture sanity: no raw boundary lands inside the pair"
+        );
+        for raw in raw_candidates.iter().filter(|at| (2..=3).contains(*at)) {
+            assert_eq!(
+                snap_split_idx_to_tool_boundaries(&straddling, *raw),
+                1,
+                "the raw boundary {raw} splits the pair and the snap must pull it to the call"
+            );
+        }
+
+        for fraction in fractions {
+            for (name, conv) in [("adjacent", &adjacent), ("straddling", &straddling)] {
+                let split = split_conversation_for_two_pass(conv, fraction);
+                assert_eq!(
+                    halves(split.prefix) + halves(split.tail),
+                    2,
+                    "{name}: the split lost a half of the pair at fraction {fraction}"
+                );
+                assert_ne!(
+                    halves(split.prefix),
+                    1,
+                    "{name}: the split cut the pair at fraction {fraction}: {:?}",
+                    split.prefix.last().map(ConversationItem::role)
+                );
+            }
+        }
     }
 
     #[test]

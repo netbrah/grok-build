@@ -35,26 +35,38 @@
 //! existing Vertex drop arms: the T3 non-carrier drop and its pair-atomic
 //! co-drop. It is
 //! NOT XD-1 SURVIVAL: XD-1's subject is a `Discovery` item's presence in the
-//! projected history (§4.3), `ConversationItem` has no such variant until
-//! apex-waj.21 lands, and no test here can fail for what XD-1 forbids. Reach
+//! projected history (§4.3); the variant landed with apex-waj.21 and
+//! `switch_projection_keeps_a_discovery_pair_on_every_boundary` is the test that
+//! fails for what XD-1 forbids. Reach
 //! against XD-1..XD-6, stated rather than implied: this ledger pins XD-2 PAIR
 //! ATOMICITY's DROP direction for the one pair class that exists here —
 //! `vertex_target_records_both_drop_reasons` records the non-carrier call
 //! together with the result co-dropped with it — and
 //! `legacy_search_tool_discovery_round_survives_every_boundary` pins XD-2's KEEP
 //! direction for the live discovery round, the `search_tool` pair surviving every
-//! boundary. XD-6 (idempotence) is also partially pinned. XD-1, XD-3, XD-4 and
-//! XD-5 have no discovery subject at this seam until apex-waj.21 lands.
+//! boundary. XD-6 (idempotence) is also partially pinned. XD-1 is pinned by the
+//! named arm test above; XD-3, XD-4 and XD-5 still have no subject at this seam.
 //!
 //! Discovery tier decision (xwire-boundary-map.md §4.1): [`discovery_tier`]
 //! decides which of the D0/D1/D2/D3 tiers a discovery record takes on a target
-//! route, off `ApiBackend` + `Boundary` + the target row's admission gate: §9
+//! route, off `ApiBackend` + `Boundary` + the target row's admission gate. THE
+//! LADDER IS DECIDED BUT NOT YET CONSULTED: `project_switch_history` keeps the pair
+//! unconditionally until apex-waj.35 supplies the route tuple, so no production call
+//! site reads a tier on this seam (cut review WAJ21R2-12). §9
 //! item 6 is the no-fourth-family rule and names only `Boundary` + `ApiBackend`,
 //! while the admission gate is item 3's third key ("keyed on `Boundary` plus
 //! `ApiBackend`, and on the TARGET row's admission gate"), not a fourth name for
 //! a family.
-//! The projector arm itself is NOT here: it is pending beads apex-waj.21 /
-//! apex-waj.5 / apex-waj.11, and this function has no production caller yet.
+//! The projector arm landed with apex-waj.21 and it does NOT call this function:
+//! `project_switch_history` is handed a `Boundary` and a target model id, never the
+//! [`TargetRoute`] (`ApiBackend` + `Boundary` + the target row's admission gate) a
+//! tier is decided on, and fabricating the two missing inputs here would decide the
+//! tier off defaults — an unknown admission reads as "not admitted", which §4.1 step
+//! 4 sends to D3, i.e. dropping the pair on every switch including the Vertex switch
+//! the ruling rejected the `BackendToolKind::ToolSearch` carrier over. The arm's own
+//! note states the same. The route tuple that would let the arm consult the ladder
+//! lands with apex-waj.35 (and the D2 Materialise half with apex-waj.5 / .11), so
+//! this function still has no production caller.
 //!
 //! Dependency note (sdd-71 §9 step 7, the named G3 item): the T1 id grammar
 //! needs SHA-256. `sha2` is a workspace dependency but NOT a direct
@@ -69,6 +81,7 @@ use std::collections::HashSet;
 use serde_json::Value;
 
 use super::responses::SearchAdmission;
+use super::tool_search::{ToolSearchItem, ToolSearchKind};
 use super::{
     BackendToolCallItem, BackendToolKind, ConversationItem, EncAffinityVerdict, ReasoningItemStore,
     enc_affinity_gate,
@@ -100,8 +113,11 @@ pub enum Boundary {
 /// the existing Vertex arms: a removal must be visible in the projection
 /// result, never a silent skip. One variant per existing Vertex drop arm.
 /// XD-1 SURVIVAL (§4.3) is a different subject — the `Discovery` item's own
-/// presence — and is pending apex-waj.21. Surfacing this type outside the
-/// crate is bead apex-waj.37.
+/// presence — and this seam keeps it unconditionally (apex-waj.21), so this ledger
+/// records no Discovery drop. The reason a demoting tier needs does now exist
+/// (`DiscoveryDemoted`, PA-29) for `strip_discovery_pair`, which no arm calls yet:
+/// the tier is decided on a route this seam is never handed (apex-waj.35). See the
+/// arm's note. Surfacing this type outside the crate is bead apex-waj.37.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropReason {
     /// The T3 arm: a non-carrier backend tool call on a Vertex target —
@@ -112,6 +128,12 @@ pub enum DropReason {
     /// tool_call to pair with on a Vertex target (covers results paired
     /// only with a dropped backend call and pre-existing orphans alike).
     VertexUnpairedToolResult,
+    /// The D3 demotion (PA-28/PA-29): the typed pair is not emitted on a target
+    /// that cannot serve it, and the loaded set falls back to the legacy
+    /// `ToolIndex` for rediscovery. It carries its OWN label because both Vertex
+    /// labels assert a fact about a different item class, which PA-29 forbids
+    /// borrowing. Produced by `strip_discovery_pair`; no arm reaches it yet.
+    DiscoveryDemoted,
 }
 
 impl DropReason {
@@ -128,6 +150,7 @@ impl DropReason {
         match self {
             Self::VertexNonCarrierBackendCall => "vertex_non_carrier_backend_call",
             Self::VertexUnpairedToolResult => "vertex_unpaired_tool_result",
+            Self::DiscoveryDemoted => "discovery_demoted",
         }
     }
 }
@@ -272,7 +295,48 @@ pub fn project_switch_history(
                     reason: DropReason::VertexUnpairedToolResult,
                 });
             }
-            other => projected.push(other.clone()),
+            // A backend call that survived the T3 guard rides verbatim.
+            ConversationItem::BackendToolCall(_)
+            | ConversationItem::ToolResult(_)
+            | ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::Assistant(_) => projected.push(item.clone()),
+            // KEEP — verbatim, ids included, on all three boundaries (apex-waj.21,
+            // pinned by `switch_projection_keeps_a_discovery_pair_on_every_boundary`).
+            // This is the ONLY decision this seam can make; it is deliberately not a
+            // call to [`discovery_tier`], which decides the tier on a [`TargetRoute`]
+            // (`ApiBackend` + `Boundary` + the target row's admission gate) that
+            // `project_switch_history` is never handed. Fabricating the two missing
+            // inputs to consult the ladder here would decide the tier off defaults:
+            // an unknown admission reads as "not admitted" and §4.1 step 4 sends an
+            // unadmitted route to D3 — dropping the pair on EVERY switch, and step 3
+            // drops it on every Vertex switch, which is the exact A-26 violation the
+            // ruling rejected the `BackendToolKind::ToolSearch` carrier for. The
+            // route tuple is apex-waj.35's.
+            //   * A-26 — the provider rebuilds the loaded tool set from
+            //     `tool_search_output` in the history it is sent, so removing the
+            //     pair here desynchronises the provider invisibly;
+            //   * the Vertex T3 arm above keys on `BackendToolCall`, so a discovery
+            //     item is outside its reach (this is why the ruling rejected the
+            //     `BackendToolKind::ToolSearch` carrier);
+            //   * `DropReason`'s Discovery variant (`DiscoveryDemoted`, PA-29) exists
+            //     for the D3 strip helper that no arm calls yet, so this seam still
+            //     has no tier to record with: a drop here would be an unrecorded
+            //     decision in all but name and would violate §4.2 rule 13
+            //     ("recorded, never silent").
+            // "A typed item on a wire that does not model it" is prevented at the
+            // encoder seam, where the target API IS known: a ChatCompletions target
+            // renders the record as one bounded assistant text message without
+            // clearing the reasoning fold
+            // (`tool_search::tests::chat_completions_projection_renders_a_stub_and_keeps_the_reasoning_fold`),
+            // a Messages target renders one bounded text block and no `tool_use` /
+            // `tool_reference` block
+            // (`tool_search::tests::messages_wire_renders_one_bounded_text_block_per_discovery_item`),
+            // and the Responses encoder flattens exactly one placeholder slot per
+            // item and splices the provider bytes verbatim into it (M-D5/M-D8 in the
+            // same battery). D2 Materialise (Messages `tools[]`) is that same
+            // send-time seam and stays on the ladder for apex-waj.5 / .11.
+            ConversationItem::Discovery { .. } => projected.push(item.clone()),
         }
     }
 
@@ -287,6 +351,150 @@ pub fn project_switch_history(
     }
 }
 
+/// The D1 ReKey tier's body (PA-10..PA-14): the record survives, every
+/// provider-minted handle survives, and ONLY the `tool_search_output`'s own `id`
+/// is re-minted (via [`tool_search_output_id`]).
+///
+/// This is a callee, not a decision: `project_switch_history` still keeps the pair
+/// unconditionally (apex-waj.21) because the tier is decided on the `TargetRoute`
+/// tuple apex-waj.35 owns and this seam is never handed. `pub(crate)`, pure and
+/// side-effect-free so that bead wires it in one line, and it never calls
+/// [`strip_discovery_pair`] — a tier that keeps and a tier that drops are separate
+/// arms, never one arm doing both.
+///
+/// # Slice contract — the caller owes this, the callee cannot enforce it
+///
+/// `{ord}` is the index of the output **within `items`**, counted over discovery
+/// outputs only (PA-11: not the item index, so an interleaved reasoning row cannot
+/// shift it). It is therefore NOT a function of the stored item alone: the same stored
+/// pair mints `ord = 1` when one earlier output precedes it in the slice and `ord = 0`
+/// when the slice starts at it, and the two answers are different handles.
+///
+/// So the caller (apex-waj.35's route arm) MUST hand the SAME history on every request
+/// — the full stored history, or one window that never moves the count of outputs
+/// ahead of a given pair. Handing a tail window, or running after a compaction that
+/// removed an earlier discovery pair, re-numbers every later output and re-mints a
+/// handle the provider has already been given: a cache-break and a broken join, both
+/// silent. A windowed call is not invalid as a call — it is a DIFFERENT logical
+/// history, and its ids are not the ids of the full one. Pinned by
+/// `projection_tests::two_discovery_pairs_mint_ordinal_distinct_handles`.
+///
+/// What it provably does NOT touch:
+/// - the `tool_search_call` half (PA-13: both its `tsc_` id and `call_id` are
+///   provider-minted, and §4.2 rule 5 forbids pre-emptive stripping);
+/// - the `call_id` join key on either half (PA-10: it is what binds the pair);
+/// - the id of an output that has none (PA-12: `ToolSearchItem`'s own doctrine is
+///   "copy what is there, mint nothing" — minting would advertise a handle the
+///   origin never issued, and a fabricated handle that collides with a real mint is
+///   worse than an absent one). "Has none" is read through [`ToolSearchItem::id`],
+///   which filters the empty string, so a PRESENT-but-empty `"id": ""` is treated as
+///   having none and rides the new row's request byte-identically. That is the
+///   deliberate choice, not an accident of the accessor: `id()`'s own note says an
+///   empty id "identifies nothing", and re-minting onto it would name a record the
+///   origin declined to name. What this seam therefore does NOT do is repair an empty
+///   id — if the A2 non-empty-id rule is ever enforced on this wire, the repair belongs
+///   at the encoder seam that owns the target format, not here. Pinned by
+///   `projection_tests::an_empty_output_id_reads_as_absent_and_rides_verbatim`.
+/// - any other key of `raw`, or their order (PA-7 byte-verbatim: the rewrite is an
+///   in-place `insert` on a clone of the stored bytes, so `id` keeps its document
+///   position and an unknown key such as the echoed `created_by` rides along
+///   untouched — the strip-list is the pairing/repair path's, not this one's).
+///   Pinned against an unsorted key-vector compare on a fixture whose keys are neither
+///   modelled nor alphabetically placed:
+///   `projection_tests::d1_rekey_preserves_key_order_and_unmodelled_keys`, plus the
+///   order clause in this file's own `d1_rekey_mints_only_the_output_id_and_is_stable_and_row_scoped`
+///   — `Value` equality alone could not see either failure mode);
+/// - the order or the count of the history: D1 removes nothing, so a pair stays a
+///   pair (PA-14 / XD-2).
+#[allow(dead_code)] // built for the route tuple (apex-waj.35); no arm can decide D1 yet
+pub(crate) fn project_discovery_rekey(
+    items: &[ConversationItem],
+    cell: &str,
+) -> Vec<ConversationItem> {
+    let mut outputs = 0usize;
+    items
+        .iter()
+        .map(|item| match item {
+            ConversationItem::BackendToolCall(_)
+            | ConversationItem::ToolResult(_)
+            | ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::Assistant(_)
+            | ConversationItem::Reasoning(_) => item.clone(),
+            ConversationItem::Discovery { item: search } => match search.kind() {
+                ToolSearchKind::Call => item.clone(),
+                ToolSearchKind::Output => {
+                    // PA-11: `{ord}` counts discovery OUTPUTS, not items, so an
+                    // interleaved reasoning row cannot shift it. Every output
+                    // counts, including one PA-12 leaves alone.
+                    let ord = outputs;
+                    outputs += 1;
+                    if search.id().is_none() {
+                        return item.clone();
+                    }
+                    let no_tools = Value::Array(Vec::new());
+                    let minted = tool_search_output_id(
+                        cell,
+                        ord,
+                        search.call_id().unwrap_or_default(),
+                        search.raw().get("tools").unwrap_or(&no_tools),
+                    );
+                    let mut raw = search.raw().clone();
+                    raw.as_object_mut()
+                        .expect("a discovery item's raw is always an object")
+                        .insert("id".to_string(), Value::String(minted));
+                    ConversationItem::Discovery {
+                        // The bytes were already validated by `from_wire` and only a
+                        // string value changed, so a rejection here is a bug.
+                        item: ToolSearchItem::from_wire(raw)
+                            .expect("re-keying a validated item cannot invalidate it"),
+                    }
+                }
+            },
+        })
+        .collect()
+}
+
+/// The D3 Demote tier's body (PA-28/PA-29): emit no typed discovery item, and
+/// record ONE [`ProjectionDrop`] per removed item so `items` and `drops` still
+/// account for every input row. Both halves of a pair always go together — this
+/// removes the whole `Discovery` class, so PA-28's "no `Discovery` survives" and
+/// XD-2's pair atomicity are the same fact here, and a two-item pair yields exactly
+/// two drops (one per removed item, never one per pair).
+///
+/// `source_offset` is where `items` starts in the caller's stored history, so the
+/// recorded indices are SOURCE indices — the same accounting the Vertex arms inside
+/// [`project_switch_history`] use — rather than indices into this slice. Drops are
+/// emitted in source order.
+///
+/// Like the D1 callee, nothing reaches it yet: the tier needs the route tuple
+/// apex-waj.35 owns. It must stay out of `project_switch_history` until then — an
+/// unreachable strip is correct here (A-26: removing the pair desynchronises the
+/// provider invisibly), not dead code to delete.
+#[allow(dead_code)] // built for the route tuple (apex-waj.35); no arm can decide D3 yet
+pub(crate) fn strip_discovery_pair(
+    items: &[ConversationItem],
+    source_offset: usize,
+) -> (Vec<ConversationItem>, Vec<ProjectionDrop>) {
+    let mut kept = Vec::with_capacity(items.len());
+    let mut drops = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        match item {
+            ConversationItem::Discovery { .. } => drops.push(ProjectionDrop {
+                index: source_offset + index,
+                reason: DropReason::DiscoveryDemoted,
+            }),
+            ConversationItem::BackendToolCall(_)
+            | ConversationItem::ToolResult(_)
+            | ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::Assistant(_)
+            | ConversationItem::Reasoning(_) => kept.push(item.clone()),
+        }
+    }
+    (kept, drops)
+}
+
 /// Forward attribution (sdd-71 §2.3): the owning model of a reasoning item
 /// is the `model_id` of the next `Assistant` item after it that carries a
 /// resolvable model. `None` when unresolvable (trailing run / no owner) —
@@ -294,7 +502,15 @@ pub fn project_switch_history(
 fn forward_owner_model(items: &[ConversationItem], idx: usize) -> Option<&str> {
     items.iter().skip(idx + 1).find_map(|item| match item {
         ConversationItem::Assistant(a) => a.model_id.as_deref(),
-        _ => None,
+        // Only an `Assistant` can own a reasoning item. A discovery item is named so
+        // it can neither supply an owner nor terminate the scan (it is provider state
+        // interleaved inside the owner's turn); the search continues past it.
+        ConversationItem::Discovery { .. }
+        | ConversationItem::System(_)
+        | ConversationItem::User(_)
+        | ConversationItem::ToolResult(_)
+        | ConversationItem::BackendToolCall(_)
+        | ConversationItem::Reasoning(_) => None,
     })
 }
 
@@ -327,7 +543,9 @@ fn project_reasoning(
     let keep_original_id = boundary == Boundary::AzStrict
         && owner.map(model_boundary_class) == Some(Boundary::AzStrict);
     let mut id = if keep_original_id {
-        r.id.clone()
+        // 0.42.1 widened `Reasoning.id` to `Option<String>`; an absent id is the
+        // empty-id anomaly the next guard already repairs with the T1 synthesis.
+        r.id.clone().unwrap_or_default()
     } else {
         xw_reasoning_id(target_model_id, ord, &r.item)
     };
@@ -356,7 +574,9 @@ fn project_reasoning(
 
     ReasoningItemStore {
         item: ReasoningItem {
-            id,
+            // 0.42.1 widened `rs::ReasoningItem.id` to `Option<String>`; the store
+            // id is always Some after the empty-id repair above.
+            id: Some(id),
             summary: r.summary.clone(),
             content: r.content.clone(),
             encrypted_content,
@@ -448,6 +668,53 @@ pub(crate) fn xw_reasoning_id_values(
     let digest = sha256(preimage.as_bytes());
     let hex = hex_digest(&digest);
     format!("xw_{}", &hex[..24])
+}
+
+/// The D1 `tso_` mint (PA-11), sitting next to the grammar it reuses: the same
+/// `|`-joined preimage, the same `sha256` + `hex_digest`, the same 24 hex chars,
+/// under a `tso_` prefix. There is deliberately no second hash path and no `uuid`
+/// dependency (PA-11 F-9), and it is not named `with_suffix` /
+/// `SYNTHETIC_OUTPUT_ID_NAMESPACE` — those describe a v5 scheme this crate cannot
+/// implement.
+///
+/// - `{cell}` is the TARGET row, so re-keying to another row changes the id; that
+///   is the point of D1, and dropping the term degrades D1 to D0 unnoticed.
+/// - `{call_id}` is `""` when absent: the preimage is total, matching how
+///   `ToolSearchItem::call_id` already reads an empty key as absent.
+/// - `tools` arrives absent-normalised: PA-11 maps a missing `tools` key to `[]`,
+///   exactly the rule `xw_reasoning_id` applies to a missing `content`, and
+///   canonicalises through `py_json_canonicalize` — Python's separators, not
+///   serde_json's compact ones (see the parity note above).
+///
+/// Determinism (XD-6 / S-1): the mint is a pure function of the target row and of the
+/// item's POSITION in the slice handed to [`project_discovery_rekey`] — no clock, no
+/// RNG, no hash-map iteration order — so re-projecting one and the same history
+/// re-sends a byte-identical payload.
+///
+/// `ord` is the one term that is NOT a property of the stored item alone: it is
+/// positional (the callee's own counter over the discovery outputs it is handed,
+/// `project_discovery_rekey`'s slice contract), which is precisely what gives two
+/// outputs of one history two handles while keeping the projection idempotent. Read
+/// the other way — "the handle is a function of the item" — the invariant is false,
+/// and a caller that windows or compacts the slice would silently re-key a live
+/// provider handle. A 24-hex prefix is 96 bits; two outputs colliding inside one
+/// conversation would have to agree on all four terms, which makes a collision the
+/// same logical record and therefore a correct join.
+fn tool_search_output_id(cell: &str, ord: usize, call_id: &str, tools: &Value) -> String {
+    let canonical_tools = py_json_canonicalize(tools);
+    let mut preimage =
+        String::with_capacity(cell.len() + call_id.len() + 32 + canonical_tools.len());
+    preimage.push_str(cell);
+    preimage.push('|');
+    preimage.push_str(&ord.to_string());
+    preimage.push('|');
+    preimage.push_str(call_id);
+    preimage.push('|');
+    preimage.push_str(&canonical_tools);
+
+    let digest = sha256(preimage.as_bytes());
+    let hex = hex_digest(&digest);
+    format!("tso_{}", &hex[..24])
 }
 
 /// Python-`json.dumps`-default canonicalization (sdd-71 §5
@@ -666,11 +933,11 @@ fn hex_digest(bytes: &[u8]) -> String {
 }
 
 /// Which discovery-fidelity tier a discovery record takes on a target route
-/// (xwire-boundary-map.md §4.1 ladder). Decided by [`discovery_tier`]; the
-/// projector arm that acts on it is pending beads apex-waj.21 / apex-waj.5 /
-/// apex-waj.11.
+/// (xwire-boundary-map.md §4.1 ladder). Decided by [`discovery_tier`]. The
+/// projector arm landed with apex-waj.21 and keeps unconditionally: see the module
+/// note for why this seam cannot build the route the tier is decided on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // pending apex-waj.21 / .5 / .11; the caller lands with the route tuple (apex-waj.35)
+#[allow(dead_code)] // decided, not yet consulted: the caller lands with the route tuple (apex-waj.35)
 pub(super) enum DiscoveryTier {
     /// D0 — same mint domain, same row, same boundary: the record rides on
     /// verbatim, `wire_ids` included.
@@ -746,7 +1013,7 @@ pub(super) enum DiscoveryTier {
 /// `messages_target_on_a_non_vertex_boundary_still_materialises` pins what
 /// totality answers there.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // pending apex-waj.21 / .5 / .11; the caller lands with the route tuple (apex-waj.35)
+#[allow(dead_code)] // decided, not yet consulted: the caller lands with the route tuple (apex-waj.35)
 pub(super) struct TargetRoute {
     pub backend: ApiBackend,
     pub boundary: Boundary,
@@ -771,7 +1038,7 @@ pub(super) struct TargetRoute {
 /// row that owns it. `owner_model_id` is `None` when attribution is
 /// unresolvable (mirrors [`forward_owner_model`]); that is never a KEEP.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // pending apex-waj.21 / .5 / .11; the caller lands with the route tuple (apex-waj.35)
+#[allow(dead_code)] // decided, not yet consulted: the caller lands with the route tuple (apex-waj.35)
 pub(super) struct DiscoveryOrigin {
     pub boundary: Boundary,
     pub owner_model_id: Option<String>,
@@ -871,7 +1138,7 @@ pub(super) struct DiscoveryOrigin {
 /// The keying reads `backend`, `boundary` and `admission` only. It never
 /// consults `is_family_switch` (§9 item 3 — too narrow, it is false for
 /// family-unset rows), and there is no parameter through which it could.
-#[allow(dead_code)] // pending apex-waj.21 / .5 / .11; the caller lands with the route tuple (apex-waj.35)
+#[allow(dead_code)] // decided, not yet consulted: the caller lands with the route tuple (apex-waj.35)
 pub(super) fn discovery_tier(
     target_model_id: &str,
     target: &TargetRoute,
@@ -1885,9 +2152,10 @@ mod tests {
 
     // ---- discovery invariants at the seam as it exists today ----
 
-    /// Pre-search control (§5.3 XT-12): no item carries discovery state (the IR
-    /// has no discovery variant yet — §9 item 1), no orphan pairing, and no
-    /// reasoning item — the T1 ladder legitimately re-keys those.
+    /// Pre-search control (§5.3 XT-12): no item carries discovery state — this shape
+    /// holds no `ConversationItem::Discovery` row, the variant landed with apex-waj.21
+    /// — no orphan pairing, and no reasoning item — the T1 ladder legitimately re-keys
+    /// those.
     const NO_DISCOVERY_SHAPE: &str = r#"[
         {"type":"user","content":[{"type":"text","text":"pre-search control"}]},
         {"type":"assistant","content":"reading first","tool_calls":[{"id":"tc_paired","name":"read_file","arguments":"{\"path\":\"x\"}"}],"model_id":"gpt-5.6-sol"},
@@ -1992,5 +2260,306 @@ mod tests {
                 "{boundary:?} rewrote the live discovery round"
             );
         }
+    }
+
+    /// A typed discovery pair — the seventh variant's own records, in the store
+    /// envelope `{"type":"discovery","item":{…provider bytes…}}`. The inner bytes are
+    /// the CX3 capture's shapes (completed call + completed namespaced output sharing
+    /// one `call_id`), re-keyed onto one join key so the two halves are one pair.
+    const DISCOVERY_PAIR_SHAPE: &str = r#"[
+        {"type":"user","content":[{"type":"text","text":"find the crm tools"}]},
+        {"type":"discovery","item":{"type":"tool_search_call","id":"tsc_waj21_probe","call_id":"call_waj21","status":"completed","execution":"client","arguments":{"query":"crm order management","limit":8}}},
+        {"type":"discovery","item":{"type":"tool_search_output","id":"tso_waj21_probe","call_id":"call_waj21","status":"completed","execution":"client","tools":[{"type":"namespace","name":"mcp__ratchet_fixture","tools":[{"type":"function","name":"crm_fixture_tool_00"}]}]}},
+        {"type":"assistant","content":"found them","model_id":"gpt-5.6-sol"}
+    ]"#;
+
+    /// XD-1 SURVIVAL (§4.3) / ruling apex-waj.18 A-26, pinned on the variant itself
+    /// rather than on the legacy `search_tool` round: a `Discovery` item survives the
+    /// switch projection on EVERY boundary this seam can be handed, verbatim, with no
+    /// drop recorded. The Vertex leg is the load-bearing one — the ruling rejected the
+    /// `BackendToolKind::ToolSearch` carrier precisely because a Vertex switch strips
+    /// every non-carrier backend call, so the same boundary must be shown to leave the
+    /// pair untouched here. Mutation witness M-D14: making the arm drop (or record a
+    /// drop) reddens this test.
+    #[test]
+    fn switch_projection_keeps_a_discovery_pair_on_every_boundary() {
+        let items = items_from(DISCOVERY_PAIR_SHAPE);
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| matches!(item, ConversationItem::Discovery { .. }))
+                .count(),
+            2,
+            "fixture sanity: one typed pair"
+        );
+        for boundary in [Boundary::AzStrict, Boundary::VLLenient, Boundary::Vertex] {
+            let projected = project_switch_history(&items, "gpt-5.6-sol", boundary, None);
+            assert!(
+                projected.drops.is_empty(),
+                "{boundary:?} must record no discovery drop — this seam has NO tier to \
+                 record with: `DiscoveryDemoted` exists for `strip_discovery_pair`, which \
+                 no arm can reach until apex-waj.35's route tuple, so a drop recorded \
+                 here would be an unrecorded decision in all but name — §4.2 rule 13's \
+                 silent skip: {:?}",
+                projected.drops
+            );
+            assert_eq!(
+                item_values(&projected.items),
+                item_values(&items),
+                "{boundary:?} stripped or rewrote the discovery pair (A-26: the provider \
+                 rebuilds the loaded tool set from these bytes)"
+            );
+        }
+    }
+
+    /// The same pair with an interleaved `reasoning` row ahead of it, and the same pair
+    /// whose output carries no `id` at all — the two shapes the D1 callee has to treat
+    /// differently and that no fixture in this file held before apex-waj.21 r2.
+    const DISCOVERY_PAIR_AFTER_REASONING_SHAPE: &str = r#"[
+        {"type":"user","content":[{"type":"text","text":"find the crm tools"}]},
+        {"type":"reasoning","id":"encitem_waj21_interloper","summary":[],"content":null,"encrypted_content":null,"status":null},
+        {"type":"discovery","item":{"type":"tool_search_call","id":"tsc_waj21_probe","call_id":"call_waj21","status":"completed","execution":"client","arguments":{"query":"crm order management","limit":8}}},
+        {"type":"discovery","item":{"type":"tool_search_output","id":"tso_waj21_probe","call_id":"call_waj21","status":"completed","execution":"client","tools":[{"type":"namespace","name":"mcp__ratchet_fixture","tools":[{"type":"function","name":"crm_fixture_tool_00"}]}]}},
+        {"type":"assistant","content":"found them","model_id":"gpt-5.6-sol"}
+    ]"#;
+
+    /// The R6 shape: an output authored with no `id` (the harness's own scored probe
+    /// writes exactly this), so PA-12 forbids minting one.
+    const DISCOVERY_OUTPUT_WITHOUT_ID_SHAPE: &str = r#"[
+        {"type":"user","content":[{"type":"text","text":"find the crm tools"}]},
+        {"type":"discovery","item":{"type":"tool_search_call","id":"tsc_waj21_nooutid","call_id":"call_waj21_noid","status":"completed","execution":"client","arguments":{"query":"crm order management","limit":8}}},
+        {"type":"discovery","item":{"type":"tool_search_output","call_id":"call_waj21_noid","status":"completed","execution":"client","tools":[]}}
+    ]"#;
+
+    /// The `tool_search_output` id the D1 callee leaves on the pair in `items` when
+    /// re-keyed to `cell`.
+    fn rekeyed_output_id(items: &[ConversationItem], cell: &str) -> String {
+        project_discovery_rekey(items, cell)
+            .iter()
+            .filter_map(ConversationItem::discovery)
+            .find(|search| search.kind() == ToolSearchKind::Output)
+            .and_then(|search| search.id())
+            .expect("a re-keyed output carries an id")
+            .to_string()
+    }
+
+    /// PA-28 / PA-29, pinned in the file that OWNS the drop (cut review WAJ21R2-05).
+    /// `strip_discovery_pair` is the one place in this cut that discards a whole item
+    /// class, and the ruling requires every discard to be commented AND tested where it
+    /// lives; its only tests used to sit in `projection_tests.rs`, a sibling-owned file
+    /// outside this cut's pathspec, so the drop could ship in a pathspec-limited commit
+    /// with nothing in the same file defending it.
+    #[test]
+    fn d3_strip_removes_both_halves_and_records_one_drop_per_removed_half() {
+        let items = items_from(DISCOVERY_PAIR_SHAPE);
+        let (kept, drops) = strip_discovery_pair(&items, 0);
+        assert_eq!(
+            kept.iter()
+                .filter(|item| item.discovery().is_some())
+                .count(),
+            0,
+            "PA-28: no typed discovery item may survive a D3 projection"
+        );
+        assert_eq!(
+            drops,
+            vec![
+                ProjectionDrop {
+                    index: 1,
+                    reason: DropReason::DiscoveryDemoted,
+                },
+                ProjectionDrop {
+                    index: 2,
+                    reason: DropReason::DiscoveryDemoted,
+                },
+            ],
+            "PA-29: one drop per removed HALF, at its source index, in source order — a \
+             one-drop-for-the-pair implementation under-counts the ledger with nothing \
+             failing (the seam's partition check is a debug_assert the release GATE compiles out)"
+        );
+        let labels: Vec<&str> = drops.iter().map(|drop| drop.reason.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec!["discovery_demoted", "discovery_demoted"],
+            "PA-29: the demotion names itself; borrowing a Vertex label would assert a \
+             fact about a different item class"
+        );
+        assert_eq!(
+            kept.len() + drops.len(),
+            items.len(),
+            "PA-29: kept items and recorded drops partition the input"
+        );
+        assert_eq!(
+            item_values(&kept),
+            item_values(&[items[0].clone(), items[3].clone()]),
+            "PA-28 strips the discovery pair and nothing else"
+        );
+
+        let (offset_kept, offset_drops) = strip_discovery_pair(&items, 7);
+        assert_eq!(
+            offset_drops
+                .iter()
+                .map(|drop| drop.index)
+                .collect::<Vec<_>>(),
+            vec![8, 9],
+            "the recorded index is a SOURCE index, not an index into the slice handed in"
+        );
+        assert_eq!(
+            offset_kept.len(),
+            kept.len(),
+            "the offset changes the accounting, never the survivors"
+        );
+    }
+
+    /// PA-10..PA-14 + XD-6, pinned in the owning file (cut review WAJ21R2-05). No
+    /// golden id literal here on purpose: every claim below is a relation the mint must
+    /// satisfy, so the test cannot be satisfied by an implementation that hashes
+    /// anything at all, and it cannot drift when the preimage format is re-decided.
+    #[test]
+    fn d1_rekey_mints_only_the_output_id_and_is_stable_and_row_scoped() {
+        let items = items_from(DISCOVERY_PAIR_SHAPE);
+        let stored_call_raw = items[1]
+            .discovery()
+            .expect("call half")
+            .raw()
+            .clone();
+        let stored_output_raw = items[2].discovery().expect("output half").raw().clone();
+        let stored_output_id = stored_output_raw["id"].as_str().expect("fixture id");
+
+        let once = project_discovery_rekey(&items, "gpt-5.6-sol");
+        assert_eq!(once.len(), items.len(), "PA-14: D1 removes nothing");
+        assert_eq!(
+            once[1].discovery().expect("call half").raw(),
+            &stored_call_raw,
+            "PA-13: the `tool_search_call` is byte-identical — both its `tsc_` id and \
+             its `call_id` are provider-minted"
+        );
+        let minted_raw = once[2].discovery().expect("output half").raw().clone();
+        let minted = minted_raw["id"].as_str().expect("a minted id").to_string();
+        assert_ne!(
+            minted, stored_output_id,
+            "PA-10: the origin's stale handle must not ride the new row's request"
+        );
+        let mut expected_raw = stored_output_raw.clone();
+        expected_raw
+            .as_object_mut()
+            .expect("raw is an object")
+            .insert("id".to_string(), Value::String(minted.clone()));
+        assert_eq!(
+            minted_raw, expected_raw,
+            "PA-7 byte-verbatim: `id` is the ONLY key a re-key touches, value-wise"
+        );
+        // The assert above is `serde_json::Value` equality, which is
+        // key-order-INSENSITIVE (stated in-crate at `tool_search.rs:4302-4304`), so it
+        // cannot see a re-ordering. Pin the ORDER separately, unsorted: the rewrite is
+        // an in-place `insert`, so every key sits exactly where the provider wrote it.
+        // Non-vacuous because the fixture's order is the capture's, not alphabetical —
+        // the `id` the re-key rewrote would move to position 2 under a sorted rebuild.
+        let key_order = |value: &Value| -> Vec<String> {
+            value
+                .as_object()
+                .expect("discovery raw is an object")
+                .keys()
+                .cloned()
+                .collect()
+        };
+        assert_ne!(
+            key_order(&stored_output_raw),
+            {
+                let mut sorted = key_order(&stored_output_raw);
+                sorted.sort();
+                sorted
+            },
+            "fixture sanity: the stored key order is not alphabetical, or the assert \
+             below cannot see a re-ordering"
+        );
+        assert_eq!(
+            key_order(&minted_raw),
+            key_order(&stored_output_raw),
+            "PA-7 byte-verbatim: `id` keeps its DOCUMENT POSITION — a sorted or \
+             accessor-rebuilt `raw` mints the same id and passes Value equality"
+        );
+
+        // XD-6 / S-1: the retry path re-sends, so a second projection must be identical.
+        let twice = project_discovery_rekey(&once, "gpt-5.6-sol");
+        assert_eq!(
+            item_values(&twice),
+            item_values(&once),
+            "XD-6: a second projection is byte-identical, not merely equal in ids"
+        );
+
+        // PA-11: `{cell}` is a term — dropping it silently degrades D1 to D0.
+        assert_ne!(
+            rekeyed_output_id(&items, "gpt-5.6-terra"),
+            minted,
+            "PA-11: two target rows must not mint one id"
+        );
+        // PA-11: `{ord}` counts OUTPUTS, not items, so an interleaved reasoning row
+        // cannot shift it. Idempotence alone survives an item-indexed `ord`.
+        let with_reasoning = items_from(DISCOVERY_PAIR_AFTER_REASONING_SHAPE);
+        assert_eq!(
+            rekeyed_output_id(&with_reasoning, "gpt-5.6-sol"),
+            minted,
+            "PA-11: the reasoning row ahead of the pair must not move `ord` off 0"
+        );
+    }
+
+    /// PA-12: the mint runs only on an output that already carries an `id`. Minting onto
+    /// the R6 shape advertises a handle the origin never issued, and a fabricated handle
+    /// that collides with a real mint is worse than an absent one.
+    #[test]
+    fn d1_rekey_leaves_an_output_without_an_id_exactly_as_stored() {
+        let items = items_from(DISCOVERY_OUTPUT_WITHOUT_ID_SHAPE);
+        assert_eq!(
+            items[2].discovery().expect("output half").id(),
+            None,
+            "fixture sanity: the R6 shape omits the id"
+        );
+        let projected = project_discovery_rekey(&items, "gpt-5.6-sol");
+        assert_eq!(
+            item_values(&projected),
+            item_values(&items),
+            "PA-12: the id-less pair projects verbatim, key set included"
+        );
+    }
+
+    /// The forward-owner scan (§2.3) names a `Discovery` item so it can neither supply
+    /// an owner nor END the scan. Breaking at one — the obvious "unknown item type,
+    /// stop here" reflex — leaves `owner` unresolved, and an unresolvable owner is
+    /// fail-closed foreign: T1 re-key plus `encrypted_content` stripped instead of the
+    /// T0 keep. So the observable difference is the reasoning item's own bytes.
+    #[test]
+    fn reasoning_owner_scan_passes_a_discovery_pair_to_its_assistant_owner() {
+        let mut items = vec![
+            ConversationItem::user("find the crm tools"),
+            ConversationItem::Reasoning(
+                ReasoningItem {
+                    id: Some("encitem_own_row".to_string()),
+                    summary: vec![],
+                    content: None,
+                    encrypted_content: Some("az_ciphertext".to_string()),
+                    status: None,
+                }
+                .into(),
+            ),
+        ];
+        items.extend(items_from(DISCOVERY_PAIR_SHAPE)[1..3].to_vec());
+        items.push(ConversationItem::assistant_with_model(
+            "found them",
+            "gpt-5.6-sol",
+        ));
+        let projected = project_switch_history(&items, "gpt-5.6-sol", Boundary::AzStrict, None);
+        let ConversationItem::Reasoning(reasoning) = &projected.items[1] else {
+            panic!("the reasoning item must survive projection in place");
+        };
+        assert_eq!(
+            reasoning.id.as_deref(), Some("encitem_own_row"),
+            "the owner resolved past the pair, so T0 keeps the id; an `xw_…` id here means \
+             the scan stopped at the Discovery item and treated the row as foreign"
+        );
+        assert_eq!(
+            reasoning.encrypted_content.as_deref(),
+            Some("az_ciphertext"),
+            "T0 (owner == target) never strips the ciphertext"
+        );
     }
 }

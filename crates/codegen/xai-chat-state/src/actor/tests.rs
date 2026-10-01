@@ -968,7 +968,7 @@ async fn strip_model_bound_history_drops_reasoning_and_backend_tool_call() {
     let mut h = TestHarness::with_conversation(vec![
         ConversationItem::user("q1"),
         ConversationItem::Reasoning(xai_grok_sampling_types::rs::ReasoningItem {
-            id: "rs_mbs".to_string(),
+            id: Some("rs_mbs".to_string()),
             summary: vec![xai_grok_sampling_types::rs::SummaryPart::SummaryText(
                 xai_grok_sampling_types::rs::SummaryTextContent {
                     text: "private continuation".to_string(),
@@ -4792,7 +4792,7 @@ fn assert_prefix_stable_pair(
 fn reasoning_sibling(id: &str, encrypted: Option<&str>) -> ConversationItem {
     use xai_grok_sampling_types::rs;
     ConversationItem::Reasoning(rs::ReasoningItem {
-        id: id.to_string(),
+        id: Some(id.to_string()),
         summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
             text: format!("thinking for {id}"),
         })],
@@ -5371,11 +5371,12 @@ async fn prefix_stable_with_backend_tool_calls() {
         .push_tool_result(ConversationItem::BackendToolCall(BackendToolCallItem {
             kind: BackendToolKind::WebSearch(rs::WebSearchToolCall {
                 id: "ws_capybara".to_string(),
-                status: rs::WebSearchToolCallStatus::Completed,
-                action: rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
-                    query: "capybara facts".to_string(),
+                status: rs::WebSearchCallStatus::Completed,
+                action: Some(rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
+                    query: Some("capybara facts".to_string()),
+                    queries: None,
                     sources: Some(vec![]),
-                }),
+                })),
             }),
         }));
     h.handle
@@ -5748,4 +5749,313 @@ async fn mgw_f5_actor_default_keeps_tool_control_keys_absent() {
             );
         }
     }
+}
+
+// ---------- apex-waj.21: the discovery pair through actor history mutations ----------
+//
+// A-26 (RULING-apex-waj-18): `tool_search_output` is the only record of the tool set
+// the provider loaded, so no actor-side rewrite — persist, strip, project, rewind —
+// may lose or split it. M-D17 covers the rewind snap; the rest pin the keeps.
+
+/// The pair the provider authored: completed client call, completed namespaced
+/// output, one join key. The shapes are the captures'; the join key is set here
+/// because the captures split the pair across files.
+const DISCOVERY_TEST_KEY: &str = "call_AOphypzlL1KKckJugyBS2PYn";
+
+fn discovery_item(raw: serde_json::Value) -> ConversationItem {
+    ConversationItem::Discovery {
+        item: xai_grok_sampling_types::conversation::tool_search::ToolSearchItem::from_wire(raw)
+            .expect("fixture is a tool_search item"),
+    }
+}
+
+fn discovery_call_item() -> ConversationItem {
+    discovery_item(serde_json::json!({
+        "type": "tool_search_call",
+        "id": "tsc_02005a6c7856d15c016ab6aa70e9208194bc939a9b4707c556",
+        "call_id": DISCOVERY_TEST_KEY,
+        "status": "completed",
+        "execution": "client",
+        "arguments": { "query": "crm order management", "limit": 8 }
+    }))
+}
+
+fn discovery_output_item() -> ConversationItem {
+    discovery_item(serde_json::json!({
+        "type": "tool_search_output",
+        "id": "tso_01a0d978-6771-7420-8b21-567a1f96b61c",
+        "call_id": DISCOVERY_TEST_KEY,
+        "status": "completed",
+        "execution": "client",
+        "tools": [{
+            "type": "namespace",
+            "name": "mcp__ratchet_fixture",
+            "tools": [{ "type": "function", "name": "crm_fixture_tool_00" }]
+        }]
+    }))
+}
+
+fn discovery_half_count(items: &[ConversationItem]) -> usize {
+    items.iter().filter(|item| item.discovery().is_some()).count()
+}
+
+/// M-D17a: a turn's discovery siblings reach persistence through the same append seam
+/// the shell uses for backend tool items, in authoring order, so a resumed session
+/// reloads the pair rather than starting a search the provider already answered.
+#[tokio::test]
+async fn push_model_output_persists_both_halves_of_a_discovery_pair() {
+    let mut h = TestHarness::new();
+    h.handle.push_user_message(ConversationItem::user("find the crm tools"));
+    h.handle.push_model_output(discovery_call_item());
+    h.handle.push_model_output(discovery_output_item());
+
+    let conv = h.handle.get_conversation().await;
+    assert_eq!(discovery_half_count(&conv), 2, "both halves are stored");
+    let keys: Vec<Option<&str>> = conv
+        .iter()
+        .filter_map(|item| item.discovery())
+        .map(|item| item.call_id())
+        .collect();
+    assert_eq!(keys.len(), 2);
+    assert_eq!(keys[0], keys[1], "the stored pair still shares its call_id");
+
+    let records = h.drain_persistence();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record, PersistenceRecord::Message(_)))
+            .count(),
+        3,
+        "user + call + output each append one line; a dropped sibling is the A-26 loss"
+    );
+}
+
+/// M-D17b: the model-bound strip keeps the pair. The strip drops the provider's
+/// model-bound CONTINUATION state (reasoning, backend tool calls); a discovery pair is
+/// provider-side loaded-tool state and is not in its set, so the rewrite must not even
+/// fire (a needless backup-gated full-history write is itself a regression).
+#[tokio::test]
+async fn strip_model_bound_history_keeps_a_discovery_pair_and_writes_nothing() {
+    let mut h = TestHarness::with_conversation(vec![
+        ConversationItem::user("q"),
+        discovery_call_item(),
+        discovery_output_item(),
+        ConversationItem::assistant("a"),
+    ]);
+    let outcome = h.handle.strip_model_bound_history().await;
+    assert_eq!(
+        outcome,
+        crate::StripOutcome::NoMatch,
+        "a discovery pair is not model-bound state; stripping it would be the A-26 drop"
+    );
+    let conv = h.handle.get_conversation().await;
+    assert_eq!(discovery_half_count(&conv), 2);
+    assert!(
+        h.drain_persistence().is_empty(),
+        "changed == 0 must not rewrite the stored history"
+    );
+}
+
+/// The switch-time projection must report zero changes for a history whose only
+/// non-portable content is a discovery pair. A spurious non-zero would rewrite the
+/// whole stored conversation (and its backup) on every model switch.
+#[tokio::test]
+async fn project_switch_history_reports_no_change_for_a_discovery_pair_only_history() {
+    let mut h = TestHarness::with_conversation(vec![
+        ConversationItem::user("q"),
+        discovery_call_item(),
+        discovery_output_item(),
+        ConversationItem::assistant("a"),
+    ]);
+    let outcome = h.handle.project_switch_history("gpt-5.5", None).await;
+    assert_eq!(
+        outcome,
+        crate::StripOutcome::NoMatch,
+        "AzStrict projection has no rule for a discovery pair; touching one is A-26"
+    );
+    let conv = h.handle.get_conversation().await;
+    assert_eq!(discovery_half_count(&conv), 2, "both halves ride the switch verbatim");
+    let raws: Vec<&serde_json::Value> = conv
+        .iter()
+        .filter_map(|item| item.discovery())
+        .map(|item| item.raw())
+        .collect();
+    assert_eq!(
+        raws,
+        vec![discovery_call_item().discovery().unwrap().raw(), discovery_output_item().discovery().unwrap().raw()],
+        "the provider bytes are the ones that went in"
+    );
+    assert!(h.drain_persistence().is_empty(), "no change means no rewrite");
+}
+
+/// M-D17a2: a rewind to a turn boundary keeps the pair. `truncate_to_prompt_index`
+/// cuts at the NEXT `User` item, so a turn that was answered keeps everything the
+/// provider answered with — dropping the pair here would be the A-26 strip wearing a
+/// rewind's clothes.
+#[tokio::test]
+async fn rewind_to_a_turn_boundary_keeps_a_discovery_pair_intact() {
+    let h = TestHarness::new();
+    h.handle.push_user_message(ConversationItem::user("q1"));
+    h.handle.increment_prompt_index();
+    h.handle.push_model_output(discovery_call_item());
+    h.handle.push_model_output(discovery_output_item());
+    h.handle.push_assistant_response(ConversationItem::assistant("a1"));
+    h.handle.push_user_message(ConversationItem::user("q2"));
+    h.handle.increment_prompt_index();
+    assert_eq!(h.handle.get_prompt_index().await, 2, "two prompts cached");
+
+    h.handle.truncate_to_prompt_index(1).await;
+    let conv = h.handle.get_conversation().await;
+    assert_eq!(
+        discovery_half_count(&conv),
+        2,
+        "the kept turn loses neither half, got {conv:?}"
+    );
+    let halves: Vec<&str> = conv
+        .iter()
+        .filter_map(|item| item.discovery())
+        .map(|t| t.kind().item_type())
+        .collect();
+    assert_eq!(
+        halves,
+        vec!["tool_search_call", "tool_search_output"],
+        "call still precedes its output in the stored order"
+    );
+    assert!(
+        conv.iter()
+            .any(|item| item.text_content().contains("crm order management")),
+        "the kept pair keeps its model-visible trace"
+    );
+}
+
+/// M-D17b2: when a cut genuinely does fall INSIDE a pair — here a `User` item that
+/// landed between a call and its output — the pair-atomic snap must move the cut
+/// DOWN to the group's first item and drop BOTH halves. Persisting `[call]` is the
+/// strict-backend 400 shape; persisting `[output]` alone references a call the
+/// provider never saw.
+#[tokio::test]
+async fn rewind_snaps_a_cut_that_would_land_inside_a_discovery_pair() {
+    // Synthetic interleaving on purpose: it is the only history shape that puts a
+    // User boundary between the halves, which is what the snap exists to catch. The
+    // index arithmetic itself is witnessed in
+    // `snap_index_over_discovery_pairs_never_splits_a_group`.
+    let h = TestHarness::with_conversation(vec![
+        ConversationItem::user("q1"),
+        discovery_call_item(),
+        ConversationItem::user("q2"),
+        discovery_output_item(),
+        ConversationItem::assistant("a1"),
+    ]);
+    h.handle.increment_prompt_index();
+    h.handle.increment_prompt_index();
+    assert_eq!(h.handle.get_prompt_index().await, 2, "two prompts cached");
+
+    h.handle.truncate_to_prompt_index(1).await;
+    let conv = h.handle.get_conversation().await;
+    assert_eq!(
+        discovery_half_count(&conv),
+        0,
+        "the cut sat between the halves; the snap must drop both, got {conv:?}"
+    );
+    assert_eq!(
+        conv.len(),
+        1,
+        "the snap dropped back to the call, so the whole pair is gone, got {conv:?}"
+    );
+    assert!(
+        !conv
+            .iter()
+            .any(|item| item.text_content().contains("crm order management")),
+        "the pair's trace is gone too, not just the typed items"
+    );
+}
+
+/// The operator-visible count: a desync that lost one half of a pair has to be
+/// diagnosable from `/session-info`, so each half is counted.
+#[tokio::test]
+async fn get_conversation_counts_reports_discovery_halves() {
+    let h = TestHarness::with_conversation(vec![
+        ConversationItem::user("q"),
+        discovery_call_item(),
+        discovery_output_item(),
+        ConversationItem::assistant("a"),
+    ]);
+    let counts = h.handle.get_conversation_counts().await;
+    assert_eq!(counts.discovery, 2, "each half counts once");
+    assert_eq!(counts.total, 4);
+}
+
+/// The pair is transparent to the dangling-call repair pass: a `tool_search_output`
+/// is not an unanswered client tool call, so repairing must not synthesise a
+/// `ToolResult` for it or treat the assistant behind it as unfinished.
+#[tokio::test]
+async fn repair_history_does_not_answer_a_discovery_pair_with_a_synthetic_result() {
+    let h = TestHarness::with_conversation(vec![
+        ConversationItem::user("q"),
+        ConversationItem::assistant_tool_calls(vec![xai_grok_sampling_types::ToolCall {
+            id: "call_1".into(),
+            name: "search".to_string(),
+            arguments: "{}".into(),
+        }]),
+        discovery_call_item(),
+        discovery_output_item(),
+        ConversationItem::tool_result("call_1", "hits"),
+    ]);
+    let report = h
+        .handle
+        .repair_history(true, None)
+        .await
+        .expect("actor alive")
+        .expect("no turn in flight");
+    assert_eq!(
+        report.synthetic_results_inserted, 0,
+        "the discovery pair must not break the assistant→results walk: {report:?}"
+    );
+    assert!(
+        report.stripped_tool_result_ids.is_empty(),
+        "nor make a paired result look displaced: {report:?}"
+    );
+    let _ = h.handle.get_conversation().await;
+}
+
+/// W21R1-10: the salvage join treats a provider-executed tool search as a real step
+/// boundary, exactly as it treats a hosted backend tool call — text before the search
+/// belongs to an earlier step, not to the trailing report.
+#[tokio::test]
+async fn get_trailing_assistant_report_stops_at_a_discovery_step_boundary() {
+    let h = TestHarness::new();
+    h.handle.push_user_message(ConversationItem::user("q"));
+    h.handle
+        .push_assistant_response(ConversationItem::assistant("seg1"));
+    h.handle.push_model_output(discovery_call_item());
+    h.handle.push_model_output(discovery_output_item());
+    h.handle
+        .push_user_message(ConversationItem::length_continue_reminder("continue"));
+    h.handle
+        .push_assistant_response(ConversationItem::assistant("seg2"));
+
+    assert_eq!(
+        h.handle.get_trailing_assistant_report().await.as_deref(),
+        Some("seg2"),
+        "the report stops at the search instead of joining across a step boundary"
+    );
+}
+
+/// The other side of the same seek: a pair committed AFTER the last assistant text is
+/// mid-turn noise, not a boundary and not a turn end — the backwards seek walks past it
+/// to find the turn's last assistant text.
+#[tokio::test]
+async fn get_trailing_assistant_report_seeks_past_a_trailing_discovery_pair() {
+    let h = TestHarness::new();
+    h.handle.push_user_message(ConversationItem::user("q"));
+    h.handle
+        .push_assistant_response(ConversationItem::assistant("the report"));
+    h.handle.push_model_output(discovery_call_item());
+    h.handle.push_model_output(discovery_output_item());
+
+    assert_eq!(
+        h.handle.get_trailing_assistant_report().await.as_deref(),
+        Some("the report"),
+        "a trailing pair neither hides the report nor truncates the walk"
+    );
 }

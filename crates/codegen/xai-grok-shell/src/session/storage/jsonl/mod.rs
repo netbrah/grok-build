@@ -953,67 +953,16 @@ impl JsonlStorageAdapter {
             return Ok(Vec::new());
         }
         let contents = std::fs::read(&path)?;
-        let mut sibling_btc_ids_seen: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        let mut upgraded_reasoning_count: usize = 0;
-        let mut upgraded_btc_count: usize = 0;
-        let mut skipped_lines: usize = 0;
-        let mut first_skipped: Option<(usize, String)> = None;
-        let mut skip_line = |line_no: usize, error: String| {
-            skipped_lines += 1;
-            if first_skipped.is_none() {
-                first_skipped = Some((line_no, error));
-            }
-        };
-        let mut items = Vec::new();
-        for (line_idx, line) in contents.split(|b| *b == b'\n').enumerate() {
-            let line = line.trim_ascii();
-            if line.is_empty() {
-                continue;
-            }
-            let raw: serde_json::Value = match serde_json::from_slice(line) {
-                Ok(raw) => raw,
-                Err(e) => {
-                    skip_line(line_idx + 1, e.to_string());
-                    continue;
-                }
-            };
-            let item_result = if chat_format_version >= CHAT_FORMAT_VERSION {
-                serde_json::from_value::<ConversationItem>(raw.clone()).or_else(|e| {
-                    serde_json::from_value::<ChatRequestMessage>(raw.clone())
-                        .map(ConversationItem::from)
-                        .map_err(|_| e)
-                })
-            } else {
-                serde_json::from_value::<ChatRequestMessage>(raw.clone())
-                    .map(ConversationItem::from)
-                    .or_else(|e| {
-                        serde_json::from_value::<ConversationItem>(raw.clone()).map_err(|_| e)
-                    })
-            };
-            let item = match item_result {
-                Ok(item) => item,
-                Err(e) => {
-                    skip_line(line_idx + 1, e.to_string());
-                    continue;
-                }
-            };
-            let siblings =
-                xai_grok_sampling_types::upgrade_legacy_reasoning(&raw, &mut sibling_btc_ids_seen);
-            for sib in siblings {
-                match &sib {
-                    ConversationItem::Reasoning(_) => upgraded_reasoning_count += 1,
-                    ConversationItem::BackendToolCall(_) => upgraded_btc_count += 1,
-                    _ => {}
-                }
-                items.push(sib);
-            }
-            if let ConversationItem::BackendToolCall(b) = &item {
-                sibling_btc_ids_seen.insert(b.id().to_string());
-            }
-            items.push(item);
-        }
-        let stripped = strip_invalid_images(&mut items);
+        let load = parse_chat_history_lines(&contents, chat_format_version);
+        let ChatHistoryLoad {
+            items,
+            upgraded_reasoning_count,
+            upgraded_btc_count,
+            skipped_lines,
+            dropped_discovery_lines,
+            stripped,
+            first_skipped,
+        } = load;
         if first_skipped.is_some() || stripped > 0 {
             let quarantine = path.with_extension("jsonl.corrupt");
             if !quarantine.exists()
@@ -1029,6 +978,7 @@ impl JsonlStorageAdapter {
         if let Some((first_line, first_error)) = first_skipped {
             tracing::warn!(
                 skipped = skipped_lines,
+                dropped_discovery_lines,
                 loaded = items.len(),
                 first_line,
                 first_error = %first_error,
@@ -1963,7 +1913,14 @@ pub(crate) fn strip_invalid_images(items: &mut [ConversationItem]) -> usize {
                 t.images.retain(|part| !invalid(part));
                 stripped += before - t.images.len();
             }
-            _ => {}
+            // Nothing to strip, and nothing may be rewritten: a discovery item carries
+            // no `ContentPart` images, and its `raw` is provider bytes that the strip
+            // path must never touch (ruling apex-waj.18 A-26, wire invariant 6).
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
+            | ConversationItem::Assistant(_)
+            | ConversationItem::BackendToolCall(_)
+            | ConversationItem::Reasoning(_) => {}
         }
     }
     stripped
@@ -2004,6 +1961,158 @@ fn is_valid_data_uri_image(url: &str) -> bool {
 }
 #[cfg(test)]
 mod durable_tests;
+/// What one `chat_history.jsonl` parse produced, beyond the items themselves.
+///
+/// The counters are RETURNED, not only logged. `dropped_discovery_lines` counts the
+/// loss the ruling singles out — an unreadable `discovery` row is one half of the
+/// provider's loaded-tool-set pair (RULING-apex-waj-18 A-26) — and a claim that only
+/// ever exists inside a `tracing` field is a claim no test can defend: it was added, and
+/// a reader could delete it with nothing failing (cut review W21R1-01). So the load
+/// result carries it, the test asserts it, and `read_chat_history_sync` logs it.
+#[derive(Debug, Default)]
+struct ChatHistoryLoad {
+    items: Vec<ConversationItem>,
+    upgraded_reasoning_count: usize,
+    upgraded_btc_count: usize,
+    skipped_lines: usize,
+    dropped_discovery_lines: usize,
+    stripped: usize,
+    first_skipped: Option<(usize, String)>,
+}
+
+/// The `{"type":"discovery"` head of a discovery row, in both spellings this repo
+/// writes (`serde_json` compact, and a hand-edited file with a space).
+const DISCOVERY_ROW_HEADS: &[&[u8]] = &[b"{\"type\":\"discovery\"", b"{\"type\": \"discovery\""];
+
+/// Whether an unparseable line is a discovery row.
+///
+/// A torn append loses the TAIL of a line, not its head, so the type tag survives the
+/// damage that made the row unreadable — which matters because the byte-level tag check
+/// is the ONLY check available there: a torn line fails `serde_json::from_slice` before
+/// any parsed `type` field exists to read (cut review W21R1-01). The negative case is
+/// exact for our own writes; a line whose head was destroyed is counted as a skip and
+/// reported as one, just not attributable to a variant.
+///
+/// `pub(super)` because `chat_rebuild::count_chat_rows` shares the same byte test for the
+/// rows it refuses to publish over — one spelling of "is this a discovery row" per crate,
+/// not two that can drift apart.
+pub(super) fn raw_line_is_discovery_row(line: &[u8]) -> bool {
+    DISCOVERY_ROW_HEADS
+        .iter()
+        .any(|head| line.starts_with(*head))
+}
+
+/// Parse `chat_history.jsonl` into items, skipping what cannot be read.
+///
+/// Split out of [`JsonlStorageAdapter::read_chat_history_sync`] so the counters are part
+/// of a callable result; the adapter adds the file IO, the quarantine copy and the logs.
+fn parse_chat_history_lines(contents: &[u8], chat_format_version: u8) -> ChatHistoryLoad {
+    let mut sibling_btc_ids_seen: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let mut upgraded_reasoning_count: usize = 0;
+    let mut upgraded_btc_count: usize = 0;
+    let mut skipped_lines: usize = 0;
+    let mut dropped_discovery_lines: usize = 0;
+    let mut first_skipped: Option<(usize, String)> = None;
+    let mut skip_line = |line_no: usize, error: String, is_discovery: bool| {
+        skipped_lines += 1;
+        if is_discovery {
+            dropped_discovery_lines += 1;
+            tracing::error!(
+                line = line_no,
+                error = %error,
+                "dropped an unparseable discovery line: a missing tool_search half \
+                 desyncs the loaded tool set (apex-waj.18 A-26)"
+            );
+        }
+        if first_skipped.is_none() {
+            first_skipped = Some((line_no, error));
+        }
+    };
+    let mut items = Vec::new();
+    for (line_idx, line) in contents.split(|b| *b == b'\n').enumerate() {
+        let line = line.trim_ascii();
+        if line.is_empty() {
+            continue;
+        }
+        let line_no = line_idx + 1;
+        let raw: serde_json::Value = match serde_json::from_slice(line) {
+            Ok(raw) => raw,
+            Err(e) => {
+                // Torn row: the parsed tag does not exist here, so attribution is
+                // byte-level (see [`raw_line_is_discovery_row`]).
+                skip_line(line_no, e.to_string(), raw_line_is_discovery_row(line));
+                continue;
+            }
+        };
+        let item_result = if chat_format_version >= CHAT_FORMAT_VERSION {
+            serde_json::from_value::<ConversationItem>(raw.clone()).or_else(|e| {
+                serde_json::from_value::<ChatRequestMessage>(raw.clone())
+                    .map(ConversationItem::from)
+                    .map_err(|_| e)
+            })
+        } else {
+            serde_json::from_value::<ChatRequestMessage>(raw.clone())
+                .map(ConversationItem::from)
+                .or_else(|e| {
+                    serde_json::from_value::<ConversationItem>(raw.clone()).map_err(|_| e)
+                })
+        };
+        let item = match item_result {
+            Ok(item) => item,
+            Err(e) => {
+                // A `discovery` line is not an ordinary corrupt row. It is one half
+                // of the provider's loaded-tool-set pair: skipping it while the
+                // other half loads leaves a call with no answer (strict-backend 400)
+                // or an answer with no call (provider desync), which is the drop the
+                // ruling forbids — see RULING-apex-waj-18 A-26. Refusing the whole
+                // file is still the wrong failure (it bricks resume), so the load
+                // proceeds and quarantines as before, but the loss is attributable
+                // instead of hiding in a generic skip count.
+                let is_discovery =
+                    raw.get("type").and_then(serde_json::Value::as_str) == Some("discovery");
+                skip_line(line_no, e.to_string(), is_discovery);
+                continue;
+            }
+        };
+        let siblings =
+            xai_grok_sampling_types::upgrade_legacy_reasoning(&raw, &mut sibling_btc_ids_seen);
+        for sib in siblings {
+            match &sib {
+                ConversationItem::Reasoning(_) => upgraded_reasoning_count += 1,
+                ConversationItem::BackendToolCall(_) => upgraded_btc_count += 1,
+                // `upgrade_legacy_reasoning` re-emits only the two siblings it
+                // reconstructs, so these arms are unreachable today; they are named
+                // rather than wildcarded so that if the upgrader ever learns a third
+                // sibling kind it must be counted here instead of joining the items
+                // unattributed. A discovery pair is never an upgrade product: it is
+                // written as its own typed line (see the `discovery` tag), and the
+                // loader below must never synthesise or drop one from a legacy row.
+                ConversationItem::Discovery { .. }
+                | ConversationItem::System(_)
+                | ConversationItem::User(_)
+                | ConversationItem::Assistant(_)
+                | ConversationItem::ToolResult(_) => {}
+            }
+            items.push(sib);
+        }
+        if let ConversationItem::BackendToolCall(b) = &item {
+            sibling_btc_ids_seen.insert(b.id().to_string());
+        }
+        items.push(item);
+    }
+    let stripped = strip_invalid_images(&mut items);
+    ChatHistoryLoad {
+        items,
+        upgraded_reasoning_count,
+        upgraded_btc_count,
+        skipped_lines,
+        dropped_discovery_lines,
+        stripped,
+        first_skipped,
+    }
+}
+
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

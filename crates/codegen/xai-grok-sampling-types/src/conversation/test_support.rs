@@ -58,7 +58,18 @@ pub(super) fn btw_prepare_items(mut items: Vec<ConversationItem>) -> Vec<Convers
             ConversationItem::ToolResult(_) => {
                 items.pop();
             }
-            _ => break,
+            // A discovery pair is NOT an incomplete tool run: a completed
+            // `tool_search_call` + `tool_search_output` is legal on the wire and is
+            // provider state that must keep riding (A-26), so this helper stops here.
+            // The pair-atomic shape guard is the production
+            // `compaction_utils::truncate_trailing_incomplete_tool_call`, which pops a
+            // trailing UNANSWERED call together with its output.
+            ConversationItem::Discovery { .. } => break,
+            ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::Assistant(_)
+            | ConversationItem::BackendToolCall(_)
+            | ConversationItem::Reasoning(_) => break,
         }
     }
     items.push(ConversationItem::user("btw what is X?"));
@@ -154,7 +165,7 @@ pub(super) fn reasoning_sibling(
     encrypted: Option<&str>,
 ) -> ConversationItem {
     ConversationItem::Reasoning(rs::ReasoningItem {
-        id: id.to_string(),
+        id: Some(id.to_string()),
         summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
             text: summary_text.to_string(),
         })],

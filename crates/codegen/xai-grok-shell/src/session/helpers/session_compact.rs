@@ -704,17 +704,27 @@ pub(crate) async fn generate_session_compact(
                             }
                             ResponseStreamEvent::ResponseFailed(failed_event) => {
                                 let event_error = failed_event.response.error.as_ref();
-                                let code = event_error.map(|e| e.code.as_str());
+                                // async-openai 0.42.1 types the error code as `ResponseErrorCode`
+                                // (the fork carried a bare string); its serialized form is the
+                                // wire spelling the classifier expects.
+                                let code = event_error.and_then(|e| {
+                                    serde_json::to_value(&e.code)
+                                        .ok()
+                                        .and_then(|v| v.as_str().map(str::to_owned))
+                                });
                                 let message = event_error
                                     .map(|e| e.message.as_str())
                                     .unwrap_or("unknown error");
                                 tracing::warn!(
-                                    code = code.unwrap_or("none"),
+                                    code = code.as_deref().unwrap_or("none"),
                                     message = %message,
                                     status = ?failed_event.response.status,
                                     "compact: response.failed event"
                                 );
-                                return Err(classify_response_event_error(code, message));
+                                return Err(classify_response_event_error(
+                                    code.as_deref(),
+                                    message,
+                                ));
                             }
                             ResponseStreamEvent::ResponseError(error_event) => {
                                 let code = error_event.code.as_deref();
