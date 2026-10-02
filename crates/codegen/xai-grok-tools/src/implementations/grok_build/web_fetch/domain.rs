@@ -2,7 +2,9 @@
 //!
 //! Entries are parsed once at construction into a `HashMap<host, HostEntry>`
 //! giving O(1) host lookup followed by a tiny linear scan over path prefixes
-//! for that host.
+//! for that host. `*.domain` wildcard entries (apex-blvg-A) match any
+//! subdomain of `domain` — never the apex itself (RFC 4592 wildcard
+//! semantics) — in either the host-only or the path-scoped form.
 
 use std::collections::HashMap;
 
@@ -36,6 +38,47 @@ enum HostEntry {
     PathPrefixes(Vec<String>),
 }
 
+/// Insert/merge one (host, optional path) entry into a precomputed map:
+/// host-only entries allow any path and override existing prefixes; path
+/// entries accumulate as prefixes (a root path means host-only).
+fn upsert_entry(map: &mut HashMap<String, HostEntry>, key: &str, path: Option<&str>) {
+    match path {
+        None => {
+            // Host-only → any path allowed. Overrides any existing prefixes.
+            map.insert(key.to_owned(), HostEntry::AnyPath);
+        }
+        Some(raw_path) => {
+            // Don't downgrade AnyPath to PathPrefixes if a host-only
+            // entry was already inserted.
+            if matches!(map.get(key), Some(HostEntry::AnyPath)) {
+                return;
+            }
+
+            // Normalize path: ensure leading '/', strip trailing '/'.
+            let prefix = raw_path.trim_end_matches('/');
+            let prefix = if prefix.is_empty() || prefix == "/" {
+                // Entry like "example.com/" → treat as host-only.
+                map.insert(key.to_owned(), HostEntry::AnyPath);
+                return;
+            } else if prefix.starts_with('/') {
+                prefix.to_owned()
+            } else {
+                format!("/{prefix}")
+            };
+
+            map.entry(key.to_owned())
+                .and_modify(|e| {
+                    if let HostEntry::PathPrefixes(v) = e
+                        && !v.contains(&prefix)
+                    {
+                        v.push(prefix.clone());
+                    }
+                })
+                .or_insert_with(|| HostEntry::PathPrefixes(vec![prefix]));
+        }
+    }
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // DomainMatcher
 // ───────────────────────────────────────────────────────────────────────────
@@ -45,12 +88,19 @@ enum HostEntry {
 #[derive(Debug, Clone)]
 pub struct DomainMatcher {
     entries: HashMap<String, HostEntry>,
+    /// Wildcard suffixes: `*.example.com` is stored under `example.com`.
+    /// A host matches when it is a proper subdomain of the suffix (the
+    /// host ends with `.` + suffix) — the apex itself never matches
+    /// (RFC 4592 wildcard semantics).
+    wildcards: HashMap<String, HostEntry>,
 }
 
 impl DomainMatcher {
-    /// Build from raw allowlist entries like `"docs.rs"`, `"vercel.com/docs"`.
+    /// Build from raw allowlist entries like `"docs.rs"`, `"vercel.com/docs"`,
+    /// or the wildcard `"*.netapp.com"` (any subdomain of `netapp.com`).
     pub fn new(raw_entries: &[String]) -> Self {
         let mut entries: HashMap<String, HostEntry> = HashMap::new();
+        let mut wildcards: HashMap<String, HostEntry> = HashMap::new();
 
         for raw in raw_entries {
             let normalized = normalize_domain(raw);
@@ -64,58 +114,52 @@ impl DomainMatcher {
                 None => (normalized, None),
             };
 
-            match path {
-                None => {
-                    // Host-only → any path allowed. Overrides any existing prefixes.
-                    entries.insert(host, HostEntry::AnyPath);
-                }
-                Some(raw_path) => {
-                    // Don't downgrade AnyPath to PathPrefixes if a host-only
-                    // entry was already inserted.
-                    if matches!(entries.get(&host), Some(HostEntry::AnyPath)) {
-                        continue;
-                    }
-
-                    // Normalize path: ensure leading '/', strip trailing '/'.
-                    let prefix = raw_path.trim_end_matches('/');
-                    let prefix = if prefix.is_empty() || prefix == "/" {
-                        // Entry like "example.com/" → treat as host-only.
-                        entries.insert(host, HostEntry::AnyPath);
-                        continue;
-                    } else if prefix.starts_with('/') {
-                        prefix.to_owned()
-                    } else {
-                        format!("/{prefix}")
-                    };
-
-                    entries
-                        .entry(host)
-                        .and_modify(|e| {
-                            if let HostEntry::PathPrefixes(v) = e
-                                && !v.contains(&prefix)
-                            {
-                                v.push(prefix.clone());
-                            }
-                        })
-                        .or_insert_with(|| HostEntry::PathPrefixes(vec![prefix]));
-                }
+            // Wildcard entry (`*.example.com`): any subdomain of `example.com`
+            // matches — never the apex itself (RFC 4592 wildcard semantics).
+            if let Some(suffix) = host.strip_prefix("*.") {
+                upsert_entry(&mut wildcards, suffix, path);
+                continue;
             }
+            upsert_entry(&mut entries, &host, path);
         }
 
-        Self { entries }
+        Self { entries, wildcards }
     }
 
     /// Returns `None` if the URL is permitted, or `Some(WebFetchOutput::DomainNotAllowed)`
-    /// if it should be blocked. When `entries` is empty, all fetches are blocked.
+    /// if it should be blocked. When `entries` is empty, all fetches are
+    /// blocked. An exact entry for the host always wins; otherwise a
+    /// wildcard suffix (`*.example.com`) permits any subdomain of
+    /// `example.com` — never the apex itself (RFC 4592 wildcard semantics).
     pub fn check(&self, url: &Url) -> Option<WebFetchOutput> {
         let Some(raw_host) = url.host_str() else {
             return Some(WebFetchOutput::DomainNotAllowed(String::new()));
         };
         let host = normalize_domain(raw_host);
 
-        match self.entries.get(&host) {
-            Some(HostEntry::AnyPath) => None,
-            Some(HostEntry::PathPrefixes(prefixes)) => {
+        // Wildcards are tested on the host with only the trailing dot
+        // stripped (no `www.` collapse), so `www.sub.example.com` matches
+        // `*.example.com` while the apex `example.com` does not.
+        let entry = self.entries.get(&host).or_else(|| {
+            let raw = raw_host.trim().trim_end_matches('.').to_ascii_lowercase();
+            self.wildcards
+                .iter()
+                .find(|(suffix, _)| raw.ends_with(&format!(".{suffix}")))
+                .map(|(_, entry)| entry)
+        });
+
+        let Some(entry) = entry else {
+            tracing::debug!(
+                domain = %host,
+                allowed_count = self.entries.len(),
+                "web_fetch domain not in allowlist"
+            );
+            return Some(WebFetchOutput::DomainNotAllowed(host));
+        };
+
+        match entry {
+            HostEntry::AnyPath => None,
+            HostEntry::PathPrefixes(prefixes) => {
                 let url_path = url.path().to_lowercase();
                 if prefixes.iter().any(|prefix| {
                     url_path == *prefix
@@ -132,15 +176,21 @@ impl DomainMatcher {
                 );
                 Some(WebFetchOutput::DomainNotAllowed(host))
             }
-            None => {
-                tracing::debug!(
-                    domain = %host,
-                    allowed_count = self.entries.len(),
-                    "web_fetch domain not in allowlist"
-                );
-                Some(WebFetchOutput::DomainNotAllowed(host))
-            }
         }
+    }
+
+    /// Host-level membership (apex-blvg-A allowlist-for-direct): `true` if
+    /// the host is listed — an exact normalized-host entry (path scope, if
+    /// any, ignored) or a `*.domain` wildcard suffix match — independent of
+    /// the URL path.
+    pub fn host_matches(&self, raw_host: &str) -> bool {
+        if self.entries.contains_key(&normalize_domain(raw_host)) {
+            return true;
+        }
+        let raw = raw_host.trim().trim_end_matches('.').to_ascii_lowercase();
+        self.wildcards
+            .keys()
+            .any(|suffix| raw.ends_with(&format!(".{suffix}")))
     }
 }
 
@@ -312,6 +362,72 @@ mod tests {
         // host-only wins — any path is allowed.
         let m = DomainMatcher::new(&["github.com/docs".into(), "github.com".into()]);
         assert!(m.check(&url("https://github.com/anything")).is_none());
+    }
+
+    // ── Wildcard (`*.domain`) entries (apex-blvg-A) ─────────────────────
+
+    #[test]
+    fn wildcard_matches_subdomains_at_any_depth() {
+        let m = DomainMatcher::new(&["*.netapp.com".into()]);
+        assert!(m.check(&url("https://sub.netapp.com/page")).is_none());
+        assert!(m.check(&url("https://a.b.netapp.com/page")).is_none());
+        assert!(m.check(&url("https://www.sub.netapp.com/page")).is_none());
+    }
+
+    #[test]
+    fn wildcard_does_not_match_apex_or_lookalike() {
+        let m = DomainMatcher::new(&["*.netapp.com".into()]);
+        // The apex is not a subdomain of itself (RFC 4592 wildcard
+        // semantics).
+        assert!(m.check(&url("https://netapp.com/page")).is_some());
+        // A lookalike suffix shares no subdomain relation.
+        assert!(m.check(&url("https://evilnetapp.com/page")).is_some());
+        assert!(m.check(&url("https://sub.other.com/page")).is_some());
+    }
+
+    #[test]
+    fn wildcard_normalizes_entry_case_and_dot() {
+        let m = DomainMatcher::new(&["*.NETAPP.COM.".into()]);
+        assert!(m.check(&url("https://Sub.NetApp.com/x")).is_none());
+    }
+
+    #[test]
+    fn wildcard_can_be_path_scoped() {
+        let m = DomainMatcher::new(&["*.netapp.com/docs".into()]);
+        assert!(m.check(&url("https://sub.netapp.com/docs")).is_none());
+        assert!(m.check(&url("https://sub.netapp.com/docs/page")).is_none());
+        assert!(m.check(&url("https://sub.netapp.com/api")).is_some());
+        // The apex stays excluded even under a path-scoped wildcard.
+        assert!(m.check(&url("https://netapp.com/docs")).is_some());
+    }
+
+    #[test]
+    fn wildcard_coexists_with_exact_entries() {
+        // Exact entries keep their behavior alongside wildcards.
+        let m = DomainMatcher::new(&["docs.rs".into(), "*.netapp.com".into()]);
+        assert!(m.check(&url("https://docs.rs/x")).is_none());
+        assert!(m.check(&url("https://sub.netapp.com/x")).is_none());
+        assert!(m.check(&url("https://netapp.com/x")).is_some());
+        assert!(m.check(&url("https://evil.com/x")).is_some());
+    }
+
+    // ── host_matches (apex-blvg-A allowlist-for-direct) ──────────────────
+
+    #[test]
+    fn host_matches_is_path_independent_and_wildcard_aware() {
+        let m = DomainMatcher::new(&["netapp.com".into(), "*.corp.com".into()]);
+        assert!(m.host_matches("netapp.com"));
+        assert!(m.host_matches("www.netapp.com")); // exact, www-collapsed
+        assert!(m.host_matches("sub.corp.com"));
+        assert!(m.host_matches("a.b.corp.com"));
+        assert!(!m.host_matches("corp.com")); // apex not a subdomain of itself
+        assert!(!m.host_matches("evilcorp.com"));
+        assert!(!m.host_matches("example.com"));
+        // A path-scoped exact entry still counts at host level (apex-blvg-A
+        // routing is host-granular).
+        let m2 = DomainMatcher::new(&["vercel.com/docs".into()]);
+        assert!(m2.host_matches("vercel.com"));
+        assert!(!m2.host_matches("other.com"));
     }
 
     // ── Model URL variants ───────────────────────────────────────────────

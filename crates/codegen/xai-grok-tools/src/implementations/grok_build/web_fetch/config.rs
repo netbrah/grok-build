@@ -41,20 +41,33 @@ pub struct WebFetchParams {
     /// `[toolset.web_fetch] allow_local = true` or `GROK_WEB_FETCH_ALLOW_LOCAL=1`.
     #[serde(default)]
     pub allow_local: Option<bool>,
-    /// When true, fetches whose URL is in `url_context_domains` and whose host
-    /// is not an explicit local host route to the Gemini-native `generateContent`
-    /// `urlContext` utility wire instead of the direct HTTP fetch, falling back
-    /// to the direct fetch on any urlContext failure (apex-ylqz Phase 2, SDD
-    /// §13.2). Default: `false` (direct HTTP fetch for every URL, byte-identical
-    /// to the pre-Phase-2 behavior).
+    /// When true, fetches whose host is not a private IP and not in
+    /// `internal_host_allowlist` route to the Gemini-native `generateContent`
+    /// `urlContext` utility wire instead of the direct HTTP fetch, falling
+    /// back to the direct fetch on any urlContext failure (apex-blvg-A
+    /// inversion of SDD §13.2: internal/fetchable hosts go direct, public
+    /// web goes Gemini). Default: `false` (direct HTTP fetch for every URL,
+    /// byte-identical to the pre-Phase-2 behavior).
     #[serde(default)]
     pub url_context: Option<bool>,
     /// Hosts eligible for the `url_context` routing: exact normalized-host
     /// entries, optionally path-scoped (`host/path`) — no globs. Matching uses
     /// the existing `DomainMatcher` (same normalization as the allowlist).
-    /// Default: empty (the routing is valid but inert).
+    /// Default: empty.
+    ///
+    /// Superseded by `internal_host_allowlist` (apex-blvg-A): kept for
+    /// config-compat, the routing predicate no longer reads it.
     #[serde(default)]
     pub url_context_domains: Option<Vec<String>>,
+    /// INTERNAL hosts that must fetch DIRECT, bypassing the Gemini
+    /// `urlContext` wire (apex-blvg-A allowlist-for-direct): exact
+    /// normalized-host entries, `*.domain` glob entries (any subdomain, not
+    /// the apex), and path-scoped entries (`host/path`, which count at host
+    /// level for routing). Matching uses the existing `DomainMatcher` (same
+    /// normalization as the allowlist). Default: empty (nothing exempted;
+    /// only the private-IP safety net routes direct).
+    #[serde(default)]
+    pub internal_host_allowlist: Option<Vec<String>>,
 }
 
 register_resource!("grok_build", "WebFetch", WebFetchParams);
@@ -96,6 +109,10 @@ impl WebFetchParams {
 
     pub fn url_context_domains(&self) -> Vec<String> {
         self.url_context_domains.clone().unwrap_or_default()
+    }
+
+    pub fn internal_host_allowlist(&self) -> Vec<String> {
+        self.internal_host_allowlist.clone().unwrap_or_default()
     }
 
     pub fn allowed_domains(&self) -> Vec<String> {
@@ -248,5 +265,18 @@ mod tests {
     #[test]
     fn url_context_unknown_fields_still_rejected() {
         assert!(serde_json::from_str::<WebFetchParams>(r#"{"url_context_typos": true}"#).is_err());
+    }
+
+    #[test]
+    fn internal_host_allowlist_defaults_empty_and_round_trips() {
+        let params = WebFetchParams::default();
+        assert!(params.internal_host_allowlist().is_empty());
+
+        let json = r#"{"internal_host_allowlist": ["netapp.com", "*.netapp.com"]}"#;
+        let params: WebFetchParams = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            params.internal_host_allowlist(),
+            vec!["netapp.com".to_string(), "*.netapp.com".to_string()]
+        );
     }
 }

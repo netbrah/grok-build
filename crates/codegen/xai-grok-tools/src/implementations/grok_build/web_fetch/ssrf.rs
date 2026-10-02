@@ -38,6 +38,42 @@ pub(crate) fn is_explicit_local_host(host: &str) -> bool {
     false
 }
 
+/// `true` if `host` is a literal in the PRIVATE address space —
+/// 127.0.0.0/8, ::1, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
+/// 169.254.0.0/16 — or the `localhost` alias (plus IPv4-mapped IPv6 forms
+/// of the same addresses). Subsumes the `is_explicit_local_host` loopback
+/// guard; the urlContext routing uses it as the always-on safety net
+/// (apex-blvg-A): a private host must never cross the Gemini wire. Hostnames
+/// that merely *resolve* to private IPs are out of scope here — `check_ssrf`
+/// closes that path.
+pub(crate) fn is_private_ip(host: &str) -> bool {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(&host);
+    // Drop IPv6 zone id if present (`fe80::1%lo0`).
+    let host = host.split('%').next().unwrap_or(host);
+
+    if host == "localhost" {
+        return true;
+    }
+    host.parse::<IpAddr>()
+        .is_ok_and(|ip| is_private_ip_addr(ip))
+}
+
+fn is_private_ip_addr(ip: IpAddr) -> bool {
+    let is_private_v4 = |v4: Ipv4Addr| v4.is_loopback() || v4.is_private() || v4.is_link_local();
+    // IPv4-mapped IPv6 (`::ffff:10.0.0.1`) carries the same address space.
+    match ip {
+        IpAddr::V4(v4) => is_private_v4(v4),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => is_private_v4(v4),
+            None => v6.is_loopback(),
+        },
+    }
+}
+
 /// Returns `true` if an IP is not globally routable and should be treated as
 /// local/private for SSRF.
 pub(crate) fn is_non_public_ip(ip: IpAddr) -> bool {
@@ -335,6 +371,39 @@ mod tests {
         assert!(!is_explicit_local_host("example.com"));
         assert!(!is_explicit_local_host("10.0.0.1"));
         assert!(!is_explicit_local_host("notlocalhost"));
+    }
+
+    #[test]
+    fn private_ip_detection_covers_item_ranges() {
+        // Loopback (subsumes the is_explicit_local_host guard).
+        assert!(is_private_ip("127.0.0.1"));
+        assert!(is_private_ip("127.1.2.3"));
+        assert!(is_private_ip("::1"));
+        assert!(is_private_ip("[::1]"));
+        assert!(is_private_ip("localhost"));
+        assert!(is_private_ip("LOCALHOST."));
+        // RFC 1918.
+        assert!(is_private_ip("10.0.0.1"));
+        assert!(is_private_ip("172.16.0.1"));
+        assert!(is_private_ip("172.31.255.255"));
+        assert!(is_private_ip("192.168.0.1"));
+        // Link-local (cloud metadata).
+        assert!(is_private_ip("169.254.169.254"));
+        // IPv4-mapped IPv6 forms of the same ranges.
+        assert!(is_private_ip("::ffff:127.0.0.1"));
+        assert!(is_private_ip("::ffff:10.0.0.1"));
+        // Public IPs are not private.
+        assert!(!is_private_ip("8.8.8.8"));
+        assert!(!is_private_ip("93.184.216.34"));
+        assert!(!is_private_ip("172.15.0.1"));
+        assert!(!is_private_ip("172.32.0.1"));
+        assert!(!is_private_ip("192.167.0.1"));
+        assert!(!is_private_ip("169.253.0.1"));
+        assert!(!is_private_ip("::ffff:8.8.8.8"));
+        assert!(!is_private_ip("::1a"));
+        // Hostnames are not IP literals (even internal-looking ones).
+        assert!(!is_private_ip("example.com"));
+        assert!(!is_private_ip("internal.netapp.com"));
     }
 
     #[test]

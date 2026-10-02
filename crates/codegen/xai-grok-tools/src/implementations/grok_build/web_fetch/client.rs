@@ -35,9 +35,11 @@ pub struct WebFetchClient {
     /// (apex-ylqz Phase 2, SDD §13.2). `None` (e.g. web_search disabled) keeps
     /// the direct HTTP fetch for every URL.
     gemini: Option<crate::implementations::web_search::client::WebSearchClient>,
-    /// Exact normalized-host matcher for urlContext eligibility (SDD §13.2),
-    /// built from `params.url_context_domains()`.
-    url_context_matcher: DomainMatcher,
+    /// Internal-host matcher for the allowlist-for-direct routing
+    /// (apex-blvg-A), built from `params.internal_host_allowlist()`. A match
+    /// means the host is internal and routes to the DIRECT fetch, bypassing
+    /// the Gemini urlContext wire.
+    internal_host_matcher: DomainMatcher,
 }
 
 struct ProcessedText {
@@ -54,16 +56,14 @@ impl WebFetchClient {
         params: &WebFetchParams,
         gemini: Option<crate::implementations::web_search::client::WebSearchClient>,
     ) -> Result<Self, WebFetchError> {
-        // One-time warn-logs (apex-ylqz Phase 2, SDD §13.2): the urlContext
-        // routing is valid-but-inert in these configurations.
+        // One-time warn-log (apex-ylqz Phase 2, SDD §13.2): without a
+        // Gemini client the urlContext routing is valid-but-inert — every
+        // URL keeps the direct HTTP fetch. (apex-blvg-A: an empty
+        // internal_host_allowlist is NOT inert — it routes the whole public
+        // web to Gemini, so no warn is due there.)
         if params.url_context() && gemini.is_none() {
             tracing::warn!(
                 "web_fetch url_context is enabled but no web_search client is available; urlContext routing is inert"
-            );
-        }
-        if params.url_context() && params.url_context_domains().is_empty() {
-            tracing::warn!(
-                "web_fetch url_context is enabled but url_context_domains is empty; urlContext routing is valid but inert"
             );
         }
         let converter = Arc::new(
@@ -88,7 +88,7 @@ impl WebFetchClient {
             video_writer: SessionFileWriter::new("videos", "mp4"),
             overflow: OverflowHandler::new(),
             gemini,
-            url_context_matcher: DomainMatcher::new(&params.url_context_domains()),
+            internal_host_matcher: DomainMatcher::new(&params.internal_host_allowlist()),
         })
     }
 
@@ -276,18 +276,22 @@ impl WebFetchClient {
         Ok(output)
     }
 
-    /// The normative urlContext routing predicate (apex-ylqz Phase 2, SDD
-    /// §13.2): route iff a Gemini client is available, the opt-in is on, the
-    /// host is not an explicit local host (the one gap `check_ssrf` leaves
-    /// open under `allow_local`), and the URL is in the operator-enumerated
-    /// set (`DomainMatcher::check` is `None` = permitted; exact
-    /// normalized-host, no globs, path-scoped entries honored).
+    /// The normative urlContext routing predicate (apex-blvg-A — inverting
+    /// SDD §13.2's allowlist-for-gemini to allowlist-for-direct): route to
+    /// the Gemini `urlContext` wire iff a Gemini client is available, the
+    /// opt-in is on, the host is NOT a private IP (always-on safety net —
+    /// private/loopback hosts never cross the Gemini wire; subsumes the old
+    /// `ssrf::is_explicit_local_host` guard) and the host is NOT in the
+    /// `internal_host_allowlist` (exact normalized-host or `*.domain` glob;
+    /// path-scoped entries count at host level). Everything else — public
+    /// web — routes to Gemini. The superseded `url_context_domains` knob is
+    /// no longer read by the predicate.
     fn uses_url_context(&self, url: &Url) -> bool {
         let host = url.host_str().unwrap_or("");
         self.gemini.is_some()
             && self.params.url_context()
-            && !ssrf::is_explicit_local_host(host)
-            && self.url_context_matcher.check(&url).is_none()
+            && !ssrf::is_private_ip(host)
+            && !self.internal_host_matcher.host_matches(host)
     }
 
     /// One urlContext attempt (R8: no retry — the caller's direct client fetch
@@ -1656,32 +1660,94 @@ mod tests {
         })
     }
 
-    // ── Routing predicate (the SDD §13.2 normative expression) ────────────
+    // ── Routing predicate (apex-blvg-A: allowlist-for-direct) ────────────
+
+    fn uc_params_full(domains: &[&str], internal: &[&str]) -> WebFetchParams {
+        WebFetchParams {
+            url_context: Some(true),
+            // The superseded knob is set on purpose: the inverted predicate
+            // must ignore it (apex-blvg-A).
+            url_context_domains: Some(domains.iter().map(|s| s.to_string()).collect()),
+            internal_host_allowlist: Some(internal.iter().map(|s| s.to_string()).collect()),
+            proxy_endpoint: Some(UC_DEAD_PROXY.to_string()),
+            ..WebFetchParams::default()
+        }
+    }
 
     #[test]
-    fn uc_predicate_routes_when_host_in_list_with_gemini_client() {
+    fn uc_predicate_public_host_not_in_allowlist_routes_gemini() {
+        // (c) public host, not in the internal_host_allowlist (and nothing
+        // in the superseded url_context_domains knob either) → gemini
+        // urlContext: public web is the default route under apex-blvg-A.
         let client = uc_client(
-            &uc_params(&["93.184.216.34"]),
+            &uc_params_full(&[], &[]),
             Some(uc_gemini_client(UC_DEAD_PROXY)),
         );
+        assert!(client.uses_url_context(&Url::parse("https://example.com/").unwrap()));
         assert!(client.uses_url_context(&Url::parse(UC_URL).unwrap()));
     }
 
     #[test]
-    fn uc_predicate_rejects_host_not_in_list() {
+    fn uc_predicate_internal_allowlisted_host_routes_direct_not_gemini() {
+        // (a) listed in internal_host_allowlist → DIRECT, NOT gemini — even
+        // though the host is public and a gemini client is available.
         let client = uc_client(
-            &uc_params(&["93.184.216.34"]),
+            &uc_params_full(&["other.example.com"], &["netapp.com"]),
             Some(uc_gemini_client(UC_DEAD_PROXY)),
         );
-        assert!(!client.uses_url_context(&Url::parse("https://example.com/").unwrap()));
+        assert!(
+            !client.uses_url_context(&Url::parse("https://netapp.com/wiki/page").unwrap()),
+            "internal-allowlisted host routes direct, NOT gemini"
+        );
     }
 
     #[test]
-    fn uc_predicate_rejects_explicit_local_host_even_if_listed() {
+    fn uc_predicate_private_ip_host_routes_direct() {
+        // (b) private-IP safety net: 10.x / 192.168.x never cross the
+        // Gemini wire — listed in the superseded old knob or not.
+        let client = uc_client(
+            &uc_params_full(&["10.0.0.5", "192.168.1.10"], &[]),
+            Some(uc_gemini_client(UC_DEAD_PROXY)),
+        );
+        assert!(!client.uses_url_context(&Url::parse("https://10.0.0.5/").unwrap()));
+        assert!(!client.uses_url_context(&Url::parse("https://192.168.1.10/").unwrap()));
+    }
+
+    #[test]
+    fn uc_predicate_glob_entry_matches_subdomain_direct() {
+        // (d) `*.netapp.com` matches every subdomain → direct; the apex and
+        // lookalike suffixes are not subdomains → gemini.
+        let client = uc_client(
+            &uc_params_full(&[], &["*.netapp.com"]),
+            Some(uc_gemini_client(UC_DEAD_PROXY)),
+        );
+        assert!(!client.uses_url_context(&Url::parse("https://sub.netapp.com/x").unwrap()));
+        assert!(!client.uses_url_context(&Url::parse("https://a.b.netapp.com/x").unwrap()));
+        assert!(client.uses_url_context(&Url::parse("https://netapp.com/x").unwrap()));
+        assert!(client.uses_url_context(&Url::parse("https://evilnetapp.com/x").unwrap()));
+    }
+
+    #[test]
+    fn uc_predicate_loopback_routes_direct() {
+        // (e) loopback (localhost / 127.0.0.1) is private → direct, never
+        // gemini.
+        let client = uc_client(
+            &uc_params_full(&["127.0.0.1", "localhost"], &[]),
+            Some(uc_gemini_client(UC_DEAD_PROXY)),
+        );
+        assert!(!client.uses_url_context(&Url::parse("http://localhost:8080/").unwrap()));
+        assert!(!client.uses_url_context(&Url::parse("http://127.0.0.1:8080/").unwrap()));
+    }
+
+    #[test]
+    fn uc_predicate_private_ip_stays_direct_even_when_allowlisted() {
+        // A loopback listed in the internal allowlist is still direct: both
+        // mechanisms agree on the client path (a private IP never crosses
+        // the Gemini wire, under allow_local or not).
         let params = WebFetchParams {
             allow_local: Some(true),
             url_context: Some(true),
-            url_context_domains: Some(vec!["127.0.0.1".to_string()]),
+            internal_host_allowlist: Some(vec!["127.0.0.1".to_string()]),
             ..WebFetchParams::default()
         };
         let client = uc_client(&params, Some(uc_gemini_client(UC_DEAD_PROXY)));
@@ -1709,31 +1775,21 @@ mod tests {
     }
 
     #[test]
-    fn uc_predicate_honors_path_scoped_entries() {
+    fn uc_predicate_internal_allowlist_normalizes_case_trailing_dot_and_www() {
+        // Pin the DomainMatcher normalization on the INTERNAL matcher
+        // (apex-blvg-A): trim, strip a trailing dot, strip a *lowercase*
+        // "www." prefix, then lowercase.
         let client = uc_client(
-            &uc_params(&["example.com/docs"]),
+            &uc_params_full(&[], &["NETAPP.COM.", "www.internal.netapp.com"]),
             Some(uc_gemini_client(UC_DEAD_PROXY)),
         );
-        assert!(client.uses_url_context(&Url::parse("https://example.com/docs/build").unwrap()));
-        assert!(!client.uses_url_context(&Url::parse("https://example.com/blog/post").unwrap()));
-    }
-
-    #[test]
-    fn uc_predicate_normalizes_case_trailing_dot_and_www() {
-        // Pin the REAL DomainMatcher normalization (web_fetch/domain.rs):
-        // trim, strip a trailing dot, strip a *lowercase* "www." prefix, then
-        // lowercase. (An uppercase "WWW." prefix is NOT stripped — the strip is
-        // case-sensitive — so the entry is keyed with its www intact.)
-        let client = uc_client(
-            &uc_params(&["EXAMPLE.COM.", "www.example.org"]),
-            Some(uc_gemini_client(UC_DEAD_PROXY)),
-        );
-        // Mixed case + trailing dot, no www: "EXAMPLE.COM." -> "example.com".
-        assert!(client.uses_url_context(&Url::parse("https://example.com/x").unwrap()));
-        // Lowercase www is stripped: "www.example.org" -> "example.org".
-        assert!(client.uses_url_context(&Url::parse("https://example.org/y").unwrap()));
-        // A host not in the list is still rejected (exact normalized-host).
-        assert!(!client.uses_url_context(&Url::parse("https://example.net/z").unwrap()));
+        // Mixed case + trailing dot, no www: "NETAPP.COM." -> "netapp.com".
+        assert!(!client.uses_url_context(&Url::parse("https://netapp.com/x").unwrap()));
+        // Lowercase www is stripped: "www.internal.netapp.com" ->
+        // "internal.netapp.com".
+        assert!(!client.uses_url_context(&Url::parse("https://internal.netapp.com/y").unwrap()));
+        // An unlisted public host still routes gemini.
+        assert!(client.uses_url_context(&Url::parse("https://other.netapp.com/z").unwrap()));
     }
 
     // ── fetch_url_context (single attempt; None on any failure) ───────────
