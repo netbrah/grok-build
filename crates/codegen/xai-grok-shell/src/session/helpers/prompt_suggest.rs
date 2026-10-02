@@ -149,7 +149,15 @@ pub(crate) fn build_transcript(conversation: &[ConversationItem]) -> Option<Stri
                 }
                 line
             }
-            _ => continue,
+            // No transcript line: tool I/O, backend calls, reasoning and discovery
+            // items are not the conversation shape a next-prompt suggestion predicts
+            // from. A discovery item's bounded summary says only "a search happened",
+            // so it would spend budget (and cache) for no signal.
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
+            | ConversationItem::ToolResult(_)
+            | ConversationItem::BackendToolCall(_)
+            | ConversationItem::Reasoning(_) => continue,
         };
         let Some(line) = line else { continue };
         if used + line.len() > TRANSCRIPT_BUDGET_CHARS && !lines.is_empty() {

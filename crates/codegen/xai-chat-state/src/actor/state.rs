@@ -16,7 +16,15 @@ use crate::usage::UsageLedger;
 pub fn estimate_system_message_tokens(item: &ConversationItem) -> u64 {
     match item {
         ConversationItem::System(s) => xai_token_estimation::estimate_tokens(&s.content),
-        _ => 0,
+        // Zero for every non-system item, including a discovery item: the loaded tool
+        // set is charged by `estimate_item_tokens`, never here (charging it twice would
+        // double-count the cached prefix).
+        ConversationItem::Discovery { .. }
+        | ConversationItem::User(_)
+        | ConversationItem::Assistant(_)
+        | ConversationItem::ToolResult(_)
+        | ConversationItem::BackendToolCall(_)
+        | ConversationItem::Reasoning(_) => 0,
     }
 }
 
@@ -90,6 +98,17 @@ pub fn estimate_item_tokens(item: &ConversationItem) -> u64 {
             let text_bytes = xai_grok_sampling_types::reasoning_item_text(r).len();
             let enc_bytes = r.encrypted_content.as_deref().map(str::len).unwrap_or(0);
             (text_bytes.max(enc_bytes * 3 / 4) as u64) / xai_token_estimation::BYTES_PER_TOKEN
+        }
+        // The full payload, never the summary. This estimator is the single item
+        // counter behind `estimate_conversation_tokens`, the auto-compact gate,
+        // `fit_conversation_to_budget`, the two-pass split weights, the recap budgets
+        // and the push ledger: a 20 KB `tool_search_output` charged at its ~30-byte
+        // `text_summary()` reads as ~7 tokens, which silently blows the context window
+        // AND defeats the compaction trigger that is supposed to react to it. The
+        // definitions ride in the model's cached prefix, so they are model-visible
+        // bytes (`estimated_model_visible_len`'s own doc).
+        ConversationItem::Discovery { item } => {
+            (item.estimated_model_visible_len() as u64) / xai_token_estimation::BYTES_PER_TOKEN
         }
     }
 }
@@ -459,5 +478,53 @@ mod tests {
         );
         let single = estimate_tool_definition_tokens(&a);
         assert_eq!(estimate_tool_definitions_tokens(&[a, b]), single * 2);
+    }
+
+    /// apex-waj.21: a discovery item is charged at its payload, not at its bounded
+    /// summary. Charging the summary reads a multi-KB `tool_search_output` as a handful
+    /// of tokens, which blows the context window and defeats the compaction trigger
+    /// that is supposed to react to it.
+    #[test]
+    fn estimate_item_tokens_charges_a_discovery_payload_not_its_summary() {
+        use xai_grok_sampling_types::conversation::tool_search::ToolSearchItem;
+        let tools: Vec<serde_json::Value> = (0..40)
+            .map(|i| {
+                serde_json::json!({
+                    "type": "function",
+                    "name": format!("crm_fixture_tool_{i:02}"),
+                    "parameters": { "type": "object", "properties": {
+                        "customer_id": { "type": "string" } } }
+                })
+            })
+            .collect();
+        let item = ConversationItem::Discovery {
+            item: ToolSearchItem::from_wire(serde_json::json!({
+                "type": "tool_search_output",
+                "id": "tso_estimate",
+                "call_id": "call_estimate",
+                "status": "completed",
+                "execution": "client",
+                "tools": tools
+            }))
+            .expect("fixture is a tool_search item"),
+        };
+        let payload_bytes = item.discovery().unwrap().estimated_model_visible_len();
+        assert!(
+            payload_bytes > 4_000,
+            "fixture must be a realistically large loaded set, got {payload_bytes} bytes"
+        );
+        assert_eq!(
+            estimate_item_tokens(&item),
+            (payload_bytes as u64) / xai_token_estimation::BYTES_PER_TOKEN,
+            "the payload is the charge"
+        );
+        assert!(
+            estimate_item_tokens(&item) > (item.text_content().len() as u64),
+            "the summary must never be the charge: summary {} bytes vs charge {}",
+            item.text_content().len(),
+            estimate_item_tokens(&item),
+        );
+        let alone = estimate_item_tokens(&item);
+        assert_eq!(estimate_conversation_tokens(&[item]), alone);
     }
 }

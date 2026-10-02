@@ -613,6 +613,14 @@ pub(super) fn count_chat_history_stats(history_path: &Path) -> (usize, usize) {
             Ok(ConversationItem::Assistant(AssistantItem { ref tool_calls, .. })) => {
                 tool_call_count += tool_calls.len();
             }
+            // A hosted tool_search pair is neither a user turn nor a model tool call: it is
+            // provider-minted state the harness replays. Counting it as a tool call would
+            // inflate the card's "N tool calls" figure for a search the model did not make.
+            Ok(ConversationItem::Discovery { .. }) => {}
+            // Every other decode outcome — a row of another shape, or a serde error from
+            // schema drift — is swallowed here on purpose: this scanner only feeds a
+            // cosmetic counter, and the loader (`session/storage/jsonl`) is where a torn or
+            // drifted row is attributed and quarantined.
             _ => {}
         }
     }

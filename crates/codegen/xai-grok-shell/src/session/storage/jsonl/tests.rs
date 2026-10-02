@@ -1831,6 +1831,9 @@ fn read_chat_history_upgrades_raw_output_parallel_tco_reasoning() {
             ConversationItem::ToolResult(_) => "tool_result",
             ConversationItem::BackendToolCall(_) => "backend_tool_call",
             ConversationItem::Reasoning(_) => "reasoning",
+            // The seventh on-disk tag, and it must be `"discovery"` — the same string
+            // `item_kind_str` traces and the serde tag the loader resolves.
+            ConversationItem::Discovery { .. } => "discovery",
         })
         .collect();
     assert_eq!(
@@ -1881,6 +1884,9 @@ fn read_chat_history_handles_hybrid_legacy_and_post_pr_lines() {
             ConversationItem::ToolResult(_) => "tool_result",
             ConversationItem::BackendToolCall(_) => "backend_tool_call",
             ConversationItem::Reasoning(_) => "reasoning",
+            // The seventh on-disk tag, and it must be `"discovery"` — the same string
+            // `item_kind_str` traces and the serde tag the loader resolves.
+            ConversationItem::Discovery { .. } => "discovery",
         })
         .collect();
     assert_eq!(
@@ -1955,6 +1961,9 @@ fn read_chat_history_is_idempotent_on_post_pr_sessions() {
             ConversationItem::ToolResult(_) => "tool_result",
             ConversationItem::BackendToolCall(_) => "backend_tool_call",
             ConversationItem::Reasoning(_) => "reasoning",
+            // The seventh on-disk tag, and it must be `"discovery"` — the same string
+            // `item_kind_str` traces and the serde tag the loader resolves.
+            ConversationItem::Discovery { .. } => "discovery",
         })
         .collect();
     assert_eq!(kinds, vec!["system", "user", "reasoning", "assistant"]);

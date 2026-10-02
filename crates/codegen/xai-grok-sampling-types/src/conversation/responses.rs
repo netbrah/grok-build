@@ -461,6 +461,33 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                 }
             }]
         }
+        // Native tool-discovery item. async-openai 0.33.1 models no
+        // `tool_search_call` / `tool_search_output` input item
+        // (`async-openai-rs/.../responses/tool_search.rs:62-66` in the vendored
+        // dependency), so the item can only reach the wire by splice — exactly the
+        // `CodexRawInput` / `XSearch` precedent this arm copies.
+        //
+        // INVARIANT (one placeholder per registered splice):
+        // `ConversationRequest::raw_responses_input_replacements` computes its
+        // splice indices as the prefix sums of THIS function's output length, and
+        // `patch_raw_input_replacements` (`xai-grok-sampler/src/client.rs:740`)
+        // overwrites `input[index]` wholesale. Emit exactly ONE slot here, or the
+        // splice lands on the neighbour item. Pinned by
+        // `tool_search::tests::discovery_encoder_flattens_one_slot_per_item_and_the_splice_lands_in_that_slot`.
+        //
+        // The placeholder is the bounded `text_summary()` (§6.7), so a dialect that
+        // deliberately splices nothing (the Xai row class — no wire evidence) still
+        // tells the model that tools were loaded instead of losing the turn. On a
+        // splicing dialect this exact slot is replaced by `raw()` before the request
+        // leaves, so the placeholder never reaches a row that accepts the real item.
+        ConversationItem::Discovery { item } => vec![rs::InputItem::EasyMessage(
+            rs::EasyInputMessage {
+                r#type: rs::MessageType::Message,
+                role: rs::Role::Assistant,
+                content: rs::EasyInputContent::Text(item.text_summary()),
+                phase: None,
+            },
+        )],
     }
 }
 

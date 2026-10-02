@@ -267,6 +267,15 @@ fn render_item_to_digest(out: &mut String, item: &ConversationItem) {
             }
             push_capped(out, "Prior Context", &b.text_summary(), BACKEND_SUMMARY_CAP);
         }
+        // Rendered, never skipped: hiding from a forked child that tools were loaded
+        // is the same silent-loss class as stripping the pair (A-26). `text_summary()`
+        // is always meaningful (query, or discovered-tool count) and is bounded, so
+        // the CodexRawInput skip above — which exists for a placeholder-only item —
+        // does NOT apply here, and no raw provider byte reaches the digest (this is
+        // the file's provider-isolation guard).
+        ConversationItem::Discovery { item } => {
+            push_capped(out, "Tool Search", &item.text_summary(), BACKEND_SUMMARY_CAP);
+        }
     }
 }
 

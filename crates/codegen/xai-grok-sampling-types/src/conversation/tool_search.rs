@@ -120,6 +120,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 
+use super::ConversationItem;
+
 /// Wire `type` tag of the model-authored discovery request item.
 pub const TOOL_SEARCH_CALL_ITEM_TYPE: &str = "tool_search_call";
 
@@ -2145,6 +2147,302 @@ pub fn invocable_names<'a>(
         .iter()
         .filter_map(|loaded| loaded.name().map(|name| (name, loaded.namespace)))
         .collect()
+}
+
+/// Every discovery item in a conversation history, with its conversation index.
+///
+/// The helpers on this slice-level API (`pairing_of`, `partner_indices`,
+/// `call_id_groups`) index into a slice of `ToolSearchItem`, not into a history;
+/// this is the adapter that carries a history's indices into them, so a caller
+/// that must act on the HISTORY (truncate, split, retain) can address the real
+/// positions instead of slice positions.
+pub fn discovery_items(items: &[ConversationItem]) -> Vec<(usize, &ToolSearchItem)> {
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| item.discovery().map(|found| (index, found)))
+        .collect()
+}
+
+/// The discovery groups in a history, as conversation indices.
+///
+/// Grouping is by `call_id` for the keyed quadrant and by ORDER for the
+/// provider-minted `call_id: null` quadrant. Both rules are KIND-aware: a group is
+/// a `tool_search_call` plus the `tool_search_output` that answers it, so items of
+/// one kind never make a pair however they share a key
+/// ([`partner_indices`] joins across kinds for the same reason, and
+/// `same_kind_items_never_pair_even_when_they_share_a_call_id` records the donor's
+/// reused-`call_id` shape as a real one).
+///
+/// The unkeyed quadrant has no join key, so order is the only signal: a null-key
+/// call groups with the NEXT null-key output anywhere later in the history, not
+/// only with a physically adjacent one. A synthetic `User`/`System` row injected
+/// between the halves is a shape the harness itself produces, and reading it as two
+/// unrelated records is what let a compaction window delete a COMPLETE pair (cut
+/// review F-1).
+///
+/// This is a grouping helper, never a deletion policy: it drops nothing. It claims
+/// only what `items` can support, so a caller that wants to DELETE on the answer
+/// must hand it the full history — see [`unpaired_discovery_indices`].
+fn discovery_groups(items: &[ConversationItem]) -> Vec<Vec<usize>> {
+    let discovery = discovery_items(items);
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    // Keyed quadrant: one group per key, holding every item that carries it. A
+    // same-key run of two calls is therefore grouped and then reported NOT closed
+    // by [`group_is_closed`], rather than being split into two singletons that a
+    // caller could read as two independent lone items.
+    let mut claimed: Vec<usize> = Vec::new();
+    for (index, item) in &discovery {
+        if claimed.contains(index) {
+            continue;
+        }
+        let Some(key) = item.call_id() else {
+            // The unkeyed quadrant is grouped below, in document order.
+            continue;
+        };
+        let group: Vec<usize> = discovery
+            .iter()
+            .filter(|(_, other)| other.call_id() == Some(key))
+            .map(|(other_index, _)| *other_index)
+            .collect();
+        claimed.extend(group.iter().copied());
+        groups.push(group);
+    }
+    // Unkeyed quadrant: FIFO over document order — a null-key call takes the next
+    // null-key output, and an output with no open call is its own group.
+    let mut open_calls: Vec<usize> = Vec::new();
+    for (index, item) in &discovery {
+        if item.call_id().is_some() {
+            continue;
+        }
+        match item.kind() {
+            ToolSearchKind::Call => open_calls.push(*index),
+            ToolSearchKind::Output => match open_calls.is_empty() {
+                true => groups.push(vec![*index]),
+                false => groups.push(vec![open_calls.remove(0), *index]),
+            },
+        }
+    }
+    for call in open_calls {
+        groups.push(vec![call]);
+    }
+    // Ascending by first member, which is the group's minimum in both quadrants;
+    // [`snap_index_over_discovery_pairs`] no longer relies on that order, but the
+    // ledger-style callers want a deterministic one.
+    groups.sort_by_key(|group| group.first().copied().unwrap_or(usize::MAX));
+    groups
+}
+
+/// Whether a group actually answers itself: at least one `tool_search_call` AND at
+/// least one `tool_search_output`.
+///
+/// `group.len() >= 2` is NOT this question (cut review F-3): two `tool_search_call`s
+/// sharing a reused `call_id` are a length-2 group that answers nothing, and the
+/// wire shape that keeps one of them is the strict-backend 400 this helper family
+/// exists to prevent.
+fn group_is_closed(discovery: &[(usize, &ToolSearchItem)], group: &[usize]) -> bool {
+    let holds = |kind: ToolSearchKind| {
+        group.iter().any(|index| {
+            discovery
+                .iter()
+                .any(|(found, item)| *found == *index && item.kind() == kind)
+        })
+    };
+    holds(ToolSearchKind::Call) && holds(ToolSearchKind::Output)
+}
+
+/// Whether the LAST item of `items` is a discovery half that cannot be sent as it
+/// stands: a `tool_search_call` at the very tail is unanswered, and a
+/// `tool_search_output` whose call does not immediately precede it (same `call_id`,
+/// or both keyless as the provider mints them) cannot be certified as paired.
+///
+/// An answered `[call, output]` tail is NOT unpaired: the pair is the provider's own
+/// record of the loaded tool set and must never be stripped (ruling apex-waj.18
+/// A-26). This is the SUMMARISER/RECAP prep question, so it is deliberately stricter
+/// than [`unpaired_discovery_indices`] — it asks about the ORDER the wire reads, not
+/// just about key membership, and an output that precedes its call is exactly as
+/// unsendable as no output at all.
+///
+/// Owned here so every prep trim answers the same question with the same rules:
+/// `xai-chat-state`'s `truncate_trailing_incomplete_tool_call` (reached only
+/// through `prepare_conversation_for_verbatim_summarization`, i.e. summariser/recap
+/// input prep) and the `xai-grok-shell` recap pop. **It is NOT a pre-send guard**:
+/// no outbound model request runs it — `truncate_trailing_incomplete_tool_call`'s
+/// only caller is the summariser prep above, and the recap/compaction callers feed a
+/// summariser, not the next turn (cut review WAJ21R2-04). The only defence a lone
+/// `tool_search_call` meets on the way to the wire is the outbound lint's H-8
+/// call-side arm, which OBSERVES and never mutates the request.
+pub fn trailing_discovery_is_unpaired(items: &[ConversationItem]) -> bool {
+    let Some((index, item)) = discovery_items(items).last().copied() else {
+        return false;
+    };
+    if index + 1 != items.len() {
+        // The tail is some other item type; nothing discovery-shaped to guard.
+        return false;
+    }
+    match item.kind() {
+        ToolSearchKind::Call => true,
+        ToolSearchKind::Output => {
+            match index
+                .checked_sub(1)
+                .and_then(|previous| items.get(previous))
+                .and_then(ConversationItem::discovery)
+            {
+                Some(before) => {
+                    before.kind() != ToolSearchKind::Call
+                        || (item.call_id().is_some() && before.call_id() != item.call_id())
+                }
+                None => true,
+            }
+        }
+    }
+}
+
+/// The conversation indices of discovery items that are NOT part of a closed group.
+///
+/// A closed group holds a `tool_search_call` and the `tool_search_output` that
+/// answers it ([`group_is_closed`]). A window that keeps one half of a pair and not
+/// the other is not a smaller history, it is a different (invalid) one: a lone
+/// `tool_search_call` is the strict-backend 400 shape and a lone
+/// `tool_search_output` references a call the provider never saw. So a caller that
+/// must cut a history mid-pair — a compaction tail window, a summariser slice —
+/// drops the returned indices and keeps every closed group verbatim.
+///
+/// **The argument is the whole scope of the answer.** Grouping can only use the
+/// items it is handed, so passing a WINDOW and deleting on this answer is how a
+/// complete pair gets stripped: the cut review's F-1 shape is a `call_id: null`
+/// pair whose halves sit on either side of a window edge, which the window reads as
+/// two lone items and deletes — the A-26 violation, silently, out of the only
+/// verbatim content a compacted history keeps. A caller deleting MUST hand this the
+/// FULL history (and move its cut instead, see
+/// [`snap_index_over_discovery_pairs`]) so that "no partner" is certified against
+/// every item the session holds and not a slice of it.
+pub fn unpaired_discovery_indices(items: &[ConversationItem]) -> Vec<usize> {
+    let discovery = discovery_items(items);
+    let mut unpaired: Vec<usize> = discovery_groups(items)
+        .into_iter()
+        .filter(|group| !group_is_closed(&discovery, group))
+        .flatten()
+        .collect();
+    unpaired.sort_unstable();
+    unpaired
+}
+
+/// The widest discovery group a history cut may be lowered across.
+///
+/// A real pair is narrow. The provider mints `[call, output]` adjacently, and the
+/// widest interleaving the harness itself produces is a handful of sibling rows
+/// between the halves (reasoning rows, a `User` echo, one tool result) — the
+/// straddling shapes every fixture in this module carries span 3 and 4. A group
+/// spanning more rows than this is not one pair: it is the reused-`call_id` shape
+/// this module's own notes call "a length-2 group that answers nothing"
+/// ([`discovery_groups`], keyed quadrant) or a keyless call that never got its
+/// answer. Letting one of those drag the cut back turns a pair guard into a
+/// history-deletion mechanism: the keyed rule groups EVERY item sharing a key with
+/// no distance bound, so one colliding `call_id` at turn 5 and its answer at turn
+/// 60 would rewind a rewind/cancel/replay/fork-copy cut across 55 turns of
+/// unrelated history and then PERSIST the shortened history (the snap sits on
+/// `conversation_truncate_for_prompt`, which is a disk write). That is a far larger
+/// silent loss than the half-pair it was preventing (cut review WAJ21R2-03).
+///
+/// Refusing is the safe direction for a second reason: an over-wide group's answer
+/// cannot be certified at all, so the body it produces is the loud failure (a
+/// strict-backend 400, flagged on the wire by the outbound lint's H-8 call-side
+/// arm), never a silent whole-turn loss.
+pub const MAX_SNAP_GROUP_SPAN: usize = 8;
+
+/// Whether a group is narrow enough for the snap to honour it, see
+/// [`MAX_SNAP_GROUP_SPAN`].
+fn group_is_snappable(group: &[usize]) -> bool {
+    let (Some(first), Some(last)) = (
+        group.iter().min().copied(),
+        group.iter().max().copied(),
+    ) else {
+        return false;
+    };
+    last - first + 1 <= MAX_SNAP_GROUP_SPAN
+}
+
+/// Snap a history cut DOWN so it can never fall between a `tool_search_call` and
+/// the `tool_search_output` that answers it.
+///
+/// `cut` is a split index in `items`: everything below it is on one side,
+/// everything at or above it on the other. That covers every cut this codebase
+/// makes — a rewind truncation, the head of a retained budget window, a two-pass
+/// split, the start of a compaction tail window — and in every one of them a cut
+/// inside a pair leaves one half alone on the wrong side: a call with no answer
+/// (a strict-backend 400) or an answer with no call (the reverse desync).
+///
+/// The snap only ever moves DOWN, to the group's first item, because that is the
+/// one direction safe for both readings of a cut: a truncation then drops the
+/// whole pair, and a retained window keeps the whole pair. It never moves UP,
+/// which would silently retain a half.
+///
+/// Grouping is [`discovery_groups`]. This is a pair-atomicity guard, never a
+/// deletion policy: it drops nothing.
+///
+/// The snap is BOUNDED. A group wider than [`MAX_SNAP_GROUP_SPAN`] is not one
+/// pair, and lowering across it would delete whole turns of unrelated history to
+/// save a pair that no wire reading can certify anyway — see
+/// [`MAX_SNAP_GROUP_SPAN`] and
+/// `a_reused_call_id_spanning_whole_turns_does_not_drag_the_cut_back`.
+pub fn snap_index_over_discovery_pairs(items: &[ConversationItem], cut: usize) -> usize {
+    let groups = discovery_groups(items);
+    let splits = |group: &[usize], at: usize| {
+        let first = group.iter().min().copied().unwrap_or(0);
+        let last = group.iter().max().copied().unwrap_or(0);
+        // `first < at <= last` is exactly "the cut splits this group": some member is
+        // below the cut and some is at or above it.
+        first < at && at <= last
+    };
+    let first_of = |group: &[usize]| group.iter().min().copied().unwrap_or(0);
+    let mut snapped = cut;
+    // One pass is not a fixpoint, and a pass that mutates `snapped` as it walks the
+    // group list is order-dependent (cut review F-2): with interleaved searches
+    // `[callA, callB, outA, outB]` and cut 3, group `[1,3]` drops the cut to 1, which
+    // splits the already-visited group `[0,2]`. So each pass folds every group to the
+    // LOWEST first member it forces, regardless of iteration order, and only then
+    // moves. Each pass strictly lowers `snapped` and a group's first member is an
+    // index into `items`, so at most `items.len()` passes can lower it — the bound is
+    // structural, not a hope, and leaving the loop returns a fixed point (a further
+    // lowering would require a strictly lower group start, which the last pass would
+    // have found).
+    for _pass in 0..items.len() {
+        let next = groups
+            .iter()
+            .filter(|group| group_is_snappable(group))
+            .filter(|group| splits(group, snapped))
+            .map(|group| first_of(group))
+            .min()
+            .unwrap_or(snapped);
+        if next >= snapped {
+            if let Some(too_wide) = groups
+                .iter()
+                .find(|group| !group_is_snappable(group) && splits(group, snapped))
+            {
+                // Loud, not silent: the cut still splits this group and the snap
+                // will NOT fix it. Nothing else in the pipeline reports a split pair
+                // whose halves are both present-but-far-apart, so this is the only
+                // witness that the body about to be sent is the shape a strict
+                // backend rejects (cut review WAJ21R2-03).
+                let too_wide_span = too_wide.iter().max().unwrap_or(&0)
+                    - too_wide.iter().min().unwrap_or(&0)
+                    + 1;
+                tracing::error!(
+                    span = too_wide_span,
+                    max_span = MAX_SNAP_GROUP_SPAN,
+                    group = ?too_wide,
+                    cut = snapped,
+                    "refusing to snap a cut across an over-wide discovery group: an \
+                     answer that far from its call is not a pair, and lowering here \
+                     would delete the turns between them (apex-waj.21 WAJ21R2-03)"
+                );
+            }
+            return snapped;
+        }
+        snapped = next;
+    }
+    snapped
 }
 
 #[cfg(test)]
@@ -5722,5 +6020,996 @@ mod tests {
             vec![Some(""), None, None, Some("kept")],
             "`\"\"` stays Some(\"\") — unlike `name()`, which filters it to None"
         );
+    }
+
+    // ==========================================================================
+    // apex-waj.21 — the `ConversationItem::Discovery` variant battery.
+    //
+    // Each ST-M-D line names one behaviour, the harness mutant number that breaks
+    // the arm, and the test that must redden (harness: /tmp/waj21-evidence/mutate.py,
+    // witnesses: /tmp/waj21-evidence/mutants/NN-red.log + NN-green.log).
+    // Lines marked NO MUTANT are labelled for what they actually are — a shape
+    // rationale, or a mutation the types make impossible — and are NOT witnesses
+    // (cut review W21R1-04/06/07: a test that cannot fail is the defect being audited).
+    // The chat-state battery keeps its own CS-M-Dn ids; the two maps are namespaced
+    // apart on purpose (W21R1-14).
+    //   ST-M-D1  (07) envelope `type` tag renamed              → `discovery_envelope_nests_the_provider_item_under_a_named_field`
+    //            (r2 correction, cut review R2L2-05): mutant 07 reddens ONLY that test —
+    //            `mutants/07-red.log` shows the store round-trip test passing beside it,
+    //            because a self-round-trip re-reads the same derive the mutation edits.
+    //            The on-disk spelling is pinned SEPARATELY, by the checked-in `STORED_PAIR_LINES`
+    //            literal in `the_store_spelling_of_a_stored_pair_is_a_checked_in_literal` — a
+    //            different test, not this one — and that one IS discriminating: harness mutant 68
+    //            applies this same tag rename and reddens it. 68 exists as its own id because 07's
+    //            filter is `discovery`, which that test's name does not contain, so 07's log could
+    //            never have shown it (cut review R2L2-05).
+    //            The newtype form itself (`Discovery(ToolSearchItem)`) is NOT a one-line
+    //            mutation — the `{ item }` struct pattern is written at every arm site — so
+    //            `a_newtype_discovery_variant_would_emit_two_type_tags_and_a_loader_would_drop_them`
+    //            argues the SHAPE on a local fixture type and cannot be reddened by any
+    //            product change. Kept as documentation, claimed as nothing (W21R1-07).
+    //   ST-M-D2  (07) inner field renamed / flattened          → `discovery_envelope_nests_the_provider_item_under_a_named_field`
+    //   ST-M-D3  (01) `role()` returns Tool                    → `discovery_role_is_assistant_and_its_text_view_is_the_bounded_summary`
+    //   ST-M-D4  (02) `text_content()` returns raw / empty     → same test
+    //   ST-M-D5  (03) encoder emits 2 slots for one item       → `discovery_encoder_flattens_one_slot_per_item_and_the_splice_lands_in_that_slot`
+    //   ST-M-D6  (26) splice rebuilt from the parsed model instead of `raw()` verbatim → same slot test
+    //   ST-M-D7  (04) the Xai dialect splices anyway (no wire evidence) → `discovery_replay_is_per_row_class_and_fail_closed_without_wire_evidence`
+    //   ST-M-D8  "the encoder may never half-emit" is pinned by the SLOT-COUNT test
+    //            above (harness 03), NOT by the lint test: `check_h8` reports only an
+    //            empty, orphaned or duplicated `call_id`, so a body with no output half
+    //            at all is lint-clean. `discovery_pair_passes_the_outbound_lint…` proves
+    //            the lint sees an orphaned output — that, and nothing more (W21R1-06).
+    //   ST-M-D9  (23) `drop_model_bound_items` drops the pair  → `discovery_survives_the_model_bound_strip_and_reports_zero_drops`
+    //   ST-M-D10 (25) a discovery `call_id` counted as a live tool-call owner → `a_discovery_call_id_is_not_a_live_tool_call_owner`
+    //   ST-M-D11 NO MUTANT: `ToolSearchItem::raw(&self) -> &Value` is the only accessor
+    //            and there is no setter anywhere in the crate, so no affinity gate, mint
+    //            stamp or cwd walk CAN rewrite the bytes. `no_wire_walk_rewrites_discovery_bytes`
+    //            pins an invariant the type already enforces; it is listed because the
+    //            invariant matters, not because a mutant backs it (W21R1-04).
+    //   ST-M-D12 (49) the cross-provider fallback renders the pair → `codex_cross_provider_fallback_omits_discovery_state`
+    //   ST-M-D13 (24) the dangling-repair walk stops at a pair → `repair_dangling_tool_calls_is_transparent_to_a_discovery_pair`
+    //   ST-M-D14 (28) switch projection drops the pair         → `switch_projection_keeps_discovery_verbatim_on_every_boundary`
+    //   ST-M-D15 (21) the ChatCompletions stub clears the reasoning fold → `chat_completions_projection_renders_a_stub_and_keeps_the_reasoning_fold`
+    //   ST-M-D16 (22) the Messages wire emits a typed block    → `messages_wire_renders_one_bounded_text_block_per_discovery_item`
+    //   ST-M-D17 (05) the pair-snap split test inverted        → `snap_index_over_discovery_pairs_never_splits_a_group`
+    //   ST-M-D18 (31) the snap takes ONE pass instead of looping to a fixpoint (review F-2) → `snap_index_over_discovery_pairs_loops_until_a_fixpoint_when_pairs_interleave`
+    //   ST-M-D19 (30) closedness read off `len()` instead of one Call + one Output (review F-3) → `unpaired_discovery_indices_requires_one_call_and_one_output`, `a_keyed_pair_groups_across_an_intervening_duplicate_call`
+    //   ST-M-D20 (06) the closedness predicate inverted (every pair looks open) → the chat-state tail-window keep tests
+    //   ST-M-D21 (43) a history cut stops snapping (review F-4) → `truncate_for_prompt_never_returns_a_count_inside_a_discovery_pair`
+    // ==========================================================================
+
+    use crate::conversation::{
+        DanglingToolCallReason, ResponsesReplayDialect, Role, ToolCall,
+        apply_enc_affinity_gate, codex_cross_provider_fallback, conversation_to_chat_messages,
+        drop_model_bound_items, drop_orphaned_tool_results, repair_dangling_tool_calls,
+        stamp_reasoning_mint_tag, transform_conversation_cwd,
+    };
+    use crate::conversation::{ConversationItem, ConversationRequest};
+
+    /// The only way to build the variant outside `conversation.rs`: the payload
+    /// type has no public constructor except [`ToolSearchItem::from_wire`].
+    fn disc(raw: Value) -> ConversationItem {
+        ConversationItem::Discovery { item: item(raw) }
+    }
+
+    /// The CX1 namespace payload re-keyed onto the CX3 call, so the two fixtures
+    /// form ONE `call_id` group. The captures author them as separate pairs
+    /// (`cx3_call` ↔ `call_AOphypzlL1KKckJugyBS2PYn`, the CX1 dry run ↔
+    /// `dryrun-search-1`); nothing here claims a provider ever sent this exact
+    /// combination — it is the pair shape the harness has to keep together.
+    fn paired_output_raw() -> Value {
+        let mut raw = cx1_namespaced_output();
+        raw["call_id"] = json!(CX3_KEY);
+        raw
+    }
+
+    /// A whole conversation carrying one complete client-executed pair, in the
+    /// order the provider authored it: call, then output, same `call_id`.
+    fn history_with_discovery_pair() -> Vec<ConversationItem> {
+        vec![
+            ConversationItem::system("sys"),
+            ConversationItem::user("find the crm tools"),
+            disc(cx3_call()),
+            disc(paired_output_raw()),
+            ConversationItem::assistant("found them"),
+        ]
+    }
+
+    /// M-D2: the on-disk / in-memory envelope. `ConversationItem` is
+    /// internally tagged on `type`, and `ToolSearchItem::Serialize` re-emits the
+    /// provider bytes verbatim (which already carry `type`), so the payload MUST
+    /// ride under a named field — a flattened newtype emits two `type` keys (see
+    /// [`a_newtype_discovery_variant_would_emit_two_type_tags_and_a_loader_would_drop_them`]).
+    #[test]
+    fn discovery_envelope_nests_the_provider_item_under_a_named_field() {
+        let json = serde_json::to_string(&disc(cx3_call())).unwrap();
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            value["type"],
+            json!("discovery"),
+            "the IR tag is `discovery`; `item_kind_str` in xai-chat-state and the \
+             jsonl loader both read this spelling"
+        );
+        assert_eq!(
+            value["item"], cx3_call(),
+            "the provider item rides verbatim under `item`"
+        );
+        let top_level_keys: Vec<&str> = value
+            .as_object()
+            .expect("envelope is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            top_level_keys,
+            vec!["type", "item"],
+            "the envelope adds exactly one key beside the tag — nothing of the \
+             provider item is hoisted or re-wrapped"
+        );
+        assert_eq!(
+            json.matches("\"type\":").count(),
+            2,
+            "exactly two `type` keys: the IR tag and the provider tag inside `item`"
+        );
+    }
+
+    /// M-D1 witness for the shape decision, pinned rather than argued: the
+    /// internally-tagged NEWTYPE form serialises with two `type` keys, and a
+    /// reader that has already parsed the line into a `Value` sees only the
+    /// LAST one — the provider's tag — so `from_value::<ConversationItem>` fails
+    /// with "unknown variant" and the jsonl loader's `skip_line`
+    /// (`xai-grok-shell/src/session/storage/jsonl/mod.rs`) drops the row with a
+    /// warning. That is a silent A-26 drop of one half of the pair, which is why
+    /// the variant is a named-field struct variant instead.
+    #[test]
+    fn a_newtype_discovery_variant_would_emit_two_type_tags_and_a_loader_would_drop_them() {
+        #[derive(Debug, serde::Serialize, serde::Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum NaiveConversationItem {
+            Discovery(ToolSearchItem),
+        }
+
+        let naive = NaiveConversationItem::Discovery(item(cx3_call()));
+        let json = serde_json::to_string(&naive).unwrap();
+        assert_eq!(
+            json.matches("\"type\":").count(),
+            2,
+            "the newtype form flattens `raw` beside the injected tag: {json}"
+        );
+
+        let as_value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            as_value["type"],
+            json!("tool_search_call"),
+            "a duplicate key collapses to the LAST occurrence, so the IR tag is gone"
+        );
+        let reloaded: Result<NaiveConversationItem, _> = serde_json::from_value(as_value.clone());
+        assert!(
+            reloaded.is_err(),
+            "and the collapsed line is not a known variant — the loader's path for it \
+             is `skip_line`, i.e. the pair loses a half in silence: {reloaded:?}"
+        );
+    }
+
+    /// The exact bytes `chat_history.jsonl` carries for one pair, as a checked-in
+    /// literal (cut review R2L2-05).
+    ///
+    /// A round-trip through the same `Serialize`/`Deserialize` pair the mutation edits
+    /// cannot redden a tag rename — `#[serde(rename = "tool_search_item")]` is
+    /// symmetric, so `to_string` → `from_str` → `to_string` compares two identical
+    /// spellings and stays green while every previously-stored pair becomes an unknown
+    /// variant the loader `skip_line`s past. Only a literal written by a DIFFERENT
+    /// author than the derive can pin the spelling, which is exactly what
+    /// `discovery_envelope_nests_the_provider_item_under_a_named_field` does for the
+    /// tag; this is that literal for the whole stored line, both kinds.
+    /// Witnessed by harness mutant 68, which renames the tag exactly as mutant 07 does —
+    /// 07's own filter is `discovery` and this test's name does not contain that, so the
+    /// literal needed its own id rather than a wider claim on 07.
+    const STORED_PAIR_LINES: [&str; 2] = [
+        r#"{"type":"discovery","item":{"type":"tool_search_call","id":"tsc_probe_call_store","call_id":"call_store","execution":"client","arguments":{"query":"crm order management","limit":8}}}"#,
+        r#"{"type":"discovery","item":{"type":"tool_search_output","id":"tso_probe_call_store","call_id":"call_store","execution":"client","tools":[]}}"#,
+    ];
+
+    #[test]
+    fn the_store_spelling_of_a_stored_pair_is_a_checked_in_literal() {
+        let items = vec![
+            ConversationItem::Discovery {
+                item: keyed_call("call_store", None),
+            },
+            ConversationItem::Discovery {
+                item: keyed_output("call_store", None),
+            },
+        ];
+        let stored: Vec<String> = items
+            .iter()
+            .map(|item| serde_json::to_string(item).expect("a discovery row serialises"))
+            .collect();
+        assert_eq!(
+            stored,
+            STORED_PAIR_LINES,
+            "the spelling a `chat_history.jsonl` row carries is a contract with every \
+             file already on disk: a renamed tag or a re-wrapped payload makes the \
+             loader's `skip_line` drop a whole pair in silence (apex-waj.18 A-26)"
+        );
+        // And the literal is live, not decorative: it re-reads to the same items.
+        let reread: Vec<ConversationItem> = stored
+            .iter()
+            .map(|line| serde_json::from_str(line).expect("the checked-in literal parses"))
+            .collect();
+        assert_eq!(
+            serde_json::to_string(&reread).expect("re-read items serialise"),
+            serde_json::to_string(&items).expect("the originals serialise"),
+            "the literal must re-read to the very items it was written from"
+        );
+    }
+
+    /// M-D1 + M-D2 + rule 7: `chat_history.jsonl` writes and reads these bytes,
+    /// so the pair must round-trip byte-identically AND keep its order and its
+    /// shared `call_id` (call precedes output is the H-8 precondition).
+    /// The on-disk SPELLING is not this test's claim — see
+    /// [`STORED_PAIR_LINES`], which a derive-side rename cannot glide past.
+    #[test]
+    fn a_discovery_pair_round_trips_the_store_bytes_verbatim_in_call_output_order() {
+        let items = history_with_discovery_pair();
+        let stored = serde_json::to_string(&items).unwrap();
+        let reread: Vec<ConversationItem> = serde_json::from_str(&stored).unwrap();
+        assert_eq!(
+            serde_json::to_string(&reread).unwrap(),
+            stored,
+            "byte-for-byte store round-trip — a key reorder is a cache-break"
+        );
+
+        let discovery: Vec<&ToolSearchItem> = reread
+            .iter()
+            .filter_map(ConversationItem::discovery)
+            .collect();
+        assert_eq!(discovery.len(), 2, "both halves survive");
+        assert_eq!(discovery[0].kind(), ToolSearchKind::Call);
+        assert_eq!(discovery[1].kind(), ToolSearchKind::Output);
+        assert_eq!(discovery[0].raw(), &cx3_call());
+        assert_eq!(discovery[1].raw(), &paired_output_raw());
+        assert_eq!(
+            discovery[0].call_id(),
+            discovery[1].call_id(),
+            "the pair keeps its join key"
+        );
+    }
+
+    /// M-D3 + M-D4: `role()` and `text_content()` are the two arms every
+    /// wildcard consumer reads through (`CompactionItem`, transcript renderers,
+    /// fingerprint, digests). Role MUST be `Assistant`: `Role::Tool` makes
+    /// `CompactionItem::is_tool_result()` true and corrupts every split-snap
+    /// predicate in the shared compaction engine. Text MUST be the bounded
+    /// summary, never the payload (`text_summary()` is bounded by
+    /// `MAX_SUMMARY_QUERY_BYTES`; the loaded set can be tens of KB).
+    #[test]
+    fn discovery_role_is_assistant_and_its_text_view_is_the_bounded_summary() {
+        let call = disc(cx3_call());
+        let output = disc(paired_output_raw());
+        for item in [&call, &output] {
+            assert_eq!(
+                item.role(),
+                Role::Assistant,
+                "a discovery item is model-side continuation state, not a tool result"
+            );
+        }
+        assert_eq!(call.text_content(), "[tool_search] \"crm order management\"");
+        assert_eq!(
+            output.text_content(),
+            "[tool_search results] 3 tools in 1 namespace(s)"
+        );
+        assert!(
+            output.text_content().len() < 64,
+            "the view stays bounded while the payload is {} bytes",
+            output.discovery().unwrap().estimated_model_visible_len()
+        );
+    }
+
+    /// M-D5 + M-D6: the Responses encoder owns the splice-index contract.
+    /// `patch_raw_input_replacements`
+    /// (`xai-grok-sampler/src/client.rs:740-763`) OVERWRITES `input[index]`
+    /// wholesale, so the encoder must register exactly one placeholder slot per
+    /// discovery item and the splice must carry `raw()` verbatim — one extra or
+    /// one missing slot silently replaces the WRONG item (the assistant turn, in
+    /// the assert below).
+    #[test]
+    fn discovery_encoder_flattens_one_slot_per_item_and_the_splice_lands_in_that_slot() {
+        let request = ConversationRequest::from_items(history_with_discovery_pair());
+        let slots: Vec<usize> = request
+            .items
+            .iter()
+            .map(|item| crate::conversation::responses::conversation_item_to_input_items(item).len())
+            .collect();
+        assert_eq!(
+            slots,
+            vec![1; 5],
+            "one flattened input slot per conversation item"
+        );
+
+        let inner: crate::rs::CreateResponse = (&request).into();
+        let mut body = serde_json::to_value(inner).unwrap();
+        let input = body["input"].as_array().expect("input array").clone();
+        assert_eq!(input.len(), 5);
+        assert_eq!(
+            input[2]["content"],
+            json!("[tool_search] \"crm order management\""),
+            "pre-splice the slot holds the bounded placeholder, never the provider payload"
+        );
+
+        let replacements = request.raw_responses_input_replacements(ResponsesReplayDialect::Other);
+        assert_eq!(replacements.len(), 2, "both halves splice");
+        let expected_indices: Vec<usize> = replacements
+            .iter()
+            .map(|r| r.input_item_index)
+            .collect();
+        assert_eq!(
+            expected_indices,
+            vec![2, 3],
+            "splice indices are the TYPED prefix sums — same rule as the \
+             CodexRawInput/XSearch carriers"
+        );
+        for replacement in &replacements {
+            body["input"][replacement.input_item_index] = replacement.value.clone();
+        }
+        assert_eq!(
+            body["input"][2], cx3_call(),
+            "the spliced bytes are `raw()` verbatim: no re-serialisation, no \
+             re-wrapped `arguments`, no stripped key (T15 owns the `created_by` strip)"
+        );
+        assert_eq!(body["input"][3], paired_output_raw());
+        assert_eq!(
+            body["input"][4]["role"],
+            json!("assistant"),
+            "the neighbour slot is untouched — an off-by-one splice overwrites it"
+        );
+    }
+
+    /// M-D7: replay is a per-row-class wire decision (wire invariant C4). The
+    /// evidence, per dialect:
+    /// - `Other` (the Strict family): PROVEN on live bytes —
+    ///   `ratchet-capture/captures/2026-09-25-ratchet-live/wire2-live3/req-004.json`
+    ///   (gpt-5.5 through the deployed proxy, `store=false`) sent
+    ///   `tool_search_call` at `input[11]` and `tool_search_output` at
+    ///   `input[12]`, same `call_id`, and `resp-004.sse` opened a response — the
+    ///   very capture that measured A-26 (12 tools sent, 14 echoed).
+    /// - `Codex`: the donor replays its own pairs
+    ///   (`ratchet-capture/fixtures/codex/CX1-toolsearch-mcp-dryrun/next-turn.json`
+    ///   `input[3]`/`input[4]`, `CX3-toolsearch-5.5-LIVE/next-turn.json`
+    ///   `input[11]`/`input[12]`).
+    /// - `Xai`: NO evidence a grok row models either item type, so the carrier
+    ///   stays fail-closed on the bounded placeholder (the XSearch precedent)
+    ///   rather than inventing a wire type.
+    #[test]
+    fn discovery_replay_is_per_row_class_and_fail_closed_without_wire_evidence() {
+        let request = ConversationRequest::from_items(history_with_discovery_pair());
+        for dialect in [
+            ResponsesReplayDialect::Other,
+            ResponsesReplayDialect::Codex,
+        ] {
+            let replacements = request.raw_responses_input_replacements(dialect);
+            assert_eq!(
+                replacements.len(),
+                2,
+                "{dialect:?} is evidenced to read the pair from history"
+            );
+            assert_eq!(replacements[0].value, cx3_call());
+            assert_eq!(replacements[1].value, paired_output_raw());
+        }
+
+        assert!(
+            request
+                .raw_responses_input_replacements(ResponsesReplayDialect::Xai)
+                .is_empty(),
+            "no captured grok row accepts a tool_search item — splice nothing"
+        );
+        let inner: crate::rs::CreateResponse = (&request).into();
+        let body = serde_json::to_value(inner).unwrap();
+        assert_eq!(
+            body["input"][3],
+            json!({"type":"message","role":"assistant","content":"[tool_search results] 3 tools in 1 namespace(s)"}),
+            "the fail-closed shape is the bounded summary, so the model still knows \
+             tools were loaded even where the pair cannot ride"
+        );
+    }
+
+    /// M-D8: the H-8/H-9/H-10 pair invariants are value-level, so they lint the
+    /// spliced request. A whole pair is clean; an encoder that loses the call
+    /// half must trip H-8 (`tool_search_output` with no preceding
+    /// `tool_search_call`), which is the machine-checked proof that the encoder
+    /// may never half-emit.
+    #[test]
+    fn discovery_pair_passes_the_outbound_lint_and_a_lost_call_half_trips_h8() {
+        let request = ConversationRequest::from_items(history_with_discovery_pair());
+        let inner: crate::rs::CreateResponse = (&request).into();
+        let mut body = serde_json::to_value(inner).unwrap();
+        // H-4 is the sampler's own send-time contract (`store = Some(false)`,
+        // client.rs) — the typed body built here has not passed through it yet.
+        body["store"] = json!(false);
+        for replacement in request.raw_responses_input_replacements(ResponsesReplayDialect::Other) {
+            body["input"][replacement.input_item_index] = replacement.value.clone();
+        }
+
+        let violations = crate::conversation::outbound_lint::lint_outbound_request(
+            crate::conversation::projection::Boundary::AzStrict,
+            &body,
+        );
+        assert_eq!(
+            violations,
+            Vec::new(),
+            "a verbatim replayed pair must satisfy H-3/H-8/H-9/H-10 — every id rides \
+             as minted: {violations:?}"
+        );
+
+        let mut half = body.clone();
+        let input = half["input"].as_array_mut().unwrap();
+        input.remove(2);
+        let violations = crate::conversation::outbound_lint::lint_outbound_request(
+            crate::conversation::projection::Boundary::AzStrict,
+            &half,
+        );
+        assert!(
+            violations.iter().any(|v| v.rule == "H-8"),
+            "the orphaned output must be visible to the lint: {violations:?}"
+        );
+    }
+
+    /// M-D9 — A-26 at the reactive strip. `drop_model_bound_items` is the single
+    /// source of truth for both the sampler's in-flight strip-retry and the
+    /// chat-state persisted strip; its retain predicate ends in a wildcard arm,
+    /// which is exactly where a 7th variant would be dropped silently. A
+    /// discovery pair is provider-side loaded-tool state, not model-bound
+    /// continuation state, so it must survive and the strip must report `0` for
+    /// it (the sampler's one-retry net fails closed on a zero-count strip —
+    /// `retry.rs:135-136`).
+    #[test]
+    fn discovery_survives_the_model_bound_strip_and_reports_zero_drops() {
+        let mut items = history_with_discovery_pair();
+        assert_eq!(
+            drop_model_bound_items(&mut items),
+            0,
+            "the pair is not strippable state — and a discovery-only history gives \
+             the reactive net nothing to rescue, which is the recorded consequence"
+        );
+        assert_eq!(
+            items.iter().filter_map(ConversationItem::discovery).count(),
+            2,
+            "both halves survive, in order"
+        );
+
+        let mut mixed = history_with_discovery_pair();
+        mixed.push(ConversationItem::Reasoning(
+            crate::synthesized_reasoning_item("private continuation").into(),
+        ));
+        let dropped = drop_model_bound_items(&mut mixed);
+        assert_eq!(dropped, 1, "the genuinely model-bound item still goes");
+        assert_eq!(
+            mixed.iter().filter_map(ConversationItem::discovery).count(),
+            2,
+            "and the pair rides through the same walk"
+        );
+    }
+
+    /// M-D10: a client `tool_search` is answered by a `tool_search_output`, never
+    /// by a `function_call_output`, so its `call_id` is deliberately NOT a live
+    /// call owner. Treating it as one would keep a real orphaned tool result on
+    /// the wire (the Azure `Invalid 'input[N].call_id'` 400 this net exists to
+    /// keep off).
+    #[test]
+    fn a_discovery_call_id_is_not_a_live_tool_call_owner() {
+        let mut items = vec![
+            disc(cx3_call()),
+            disc(paired_output_raw()),
+            ConversationItem::tool_result(CX3_KEY, "looks like a match, is not one"),
+        ];
+        assert_eq!(
+            drop_orphaned_tool_results(&mut items),
+            1,
+            "the result is orphaned: only an Assistant tool_call or a BackendToolCall owns a call id"
+        );
+        assert_eq!(items.len(), 2, "the discovery pair itself is never pair-checked here");
+    }
+
+    /// M-D11: opaque artifacts are handles, not content (wire invariant 6) and
+    /// byte-exact replay is what keeps the cached prefix. No send-time walk may
+    /// rewrite discovery bytes — not the affinity gate, not the mint stamp (the
+    /// item carries no ciphertext), not the CWD transform (even if a query or a
+    /// tool description names the old workspace).
+    #[test]
+    fn no_wire_walk_rewrites_discovery_bytes() {
+        let mut items = history_with_discovery_pair();
+        let before: Vec<Value> = items
+            .iter()
+            .filter_map(ConversationItem::discovery)
+            .map(|t| t.raw().clone())
+            .collect();
+
+        let (stripped, retained, carriers) = apply_enc_affinity_gate(&mut items, Some("pin-1"));
+        assert_eq!((stripped, retained, carriers), (0, 0, 0));
+        stamp_reasoning_mint_tag(&mut items, Some("pin-1"));
+        transform_conversation_cwd(&mut items, "/old/cwd", "/new/cwd");
+
+        let after: Vec<Value> = items
+            .iter()
+            .filter_map(ConversationItem::discovery)
+            .map(|t| t.raw().clone())
+            .collect();
+        assert_eq!(
+            after, before,
+            "a discovery item's raw payload is never rewritten in place"
+        );
+        assert_eq!(
+            serde_json::to_string(&items).unwrap(),
+            serde_json::to_string(&history_with_discovery_pair()).unwrap()
+        );
+    }
+
+    /// M-D12: the plaintext cross-provider fallback is the last-resort transcript
+    /// for a session that leaves the provider. The loaded set is provider state,
+    /// so it is intentionally ABSENT from the plaintext (A-26 is a Responses-wire
+    /// concern); the bounded summary would only churn the fallback text.
+    #[test]
+    fn codex_cross_provider_fallback_omits_discovery_state() {
+        let items = history_with_discovery_pair();
+        let fallback = codex_cross_provider_fallback(&items, 4096);
+        assert!(fallback.contains("find the crm tools"));
+        assert!(fallback.contains("found them"));
+        assert!(
+            !fallback.contains("tool_search")
+                && !fallback.contains("crm_fixture_tool_00")
+                && !fallback.contains("mcp__ratchet_fixture"),
+            "neither the marker nor any loaded tool name may leak into the fallback: {fallback}"
+        );
+    }
+
+    /// M-D14: the switch projector keeps the pair verbatim on every boundary
+    /// (tier D0, Keep). It is NOT a `BackendToolCall`, so the Vertex T3 arm
+    /// cannot reach it, and `DropReason` has no Discovery variant — a discovery
+    /// drop is not even expressible here today. `changed == 0` also pins that no
+    /// backup-gated full-history rewrite is triggered by a pair (chat-state
+    /// `projection_changed_count`).
+    #[test]
+    fn switch_projection_keeps_discovery_verbatim_on_every_boundary() {
+        let items = history_with_discovery_pair();
+        for boundary in [
+            crate::conversation::projection::Boundary::AzStrict,
+            crate::conversation::projection::Boundary::VLLenient,
+            crate::conversation::projection::Boundary::Vertex,
+        ] {
+            let projected = crate::conversation::projection::project_switch_history(&items, "target-row", boundary, None);
+            assert_eq!(projected.items.len(), items.len(), "{boundary:?}");
+            assert!(projected.drops.is_empty(), "{boundary:?}: {:?}", projected.drops);
+            let discovery: Vec<&ToolSearchItem> = projected
+                .items
+                .iter()
+                .filter_map(ConversationItem::discovery)
+                .collect();
+            assert_eq!(discovery[0].raw(), &cx3_call(), "{boundary:?}");
+            assert_eq!(discovery[1].raw(), &paired_output_raw(), "{boundary:?}");
+        }
+    }
+
+    /// M-D15: the ChatCompletions wire has no typed discovery item. The safe stub
+    /// is ONE synthetic assistant text message per half (the BackendToolCall
+    /// precedent) — and, like BackendToolCall, it must NOT clear the pending
+    /// reasoning fold: a persisted pair sits between the reasoning and its
+    /// assistant on every ChatCompletions row, and a `panic!` is not a safe stub.
+    #[test]
+    fn chat_completions_projection_renders_a_stub_and_keeps_the_reasoning_fold() {
+        let mut items = history_with_discovery_pair();
+        items.insert(
+            2,
+            ConversationItem::Reasoning(crate::synthesized_reasoning_item("thinking first").into()),
+        );
+        let messages = conversation_to_chat_messages(items);
+        let roles: Vec<String> = messages
+            .iter()
+            .map(|m| serde_json::to_value(m.role).unwrap().as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            roles,
+            vec!["system", "user", "assistant", "assistant", "assistant"],
+            "one synthetic assistant per half, no orphan tool message"
+        );
+        let stubs: Vec<String> = messages[2..4]
+            .iter()
+            .map(|m| match &m.content {
+                crate::types::MessageContent::Text(text) => text.clone(),
+                crate::types::MessageContent::Blocks(blocks) => {
+                    panic!("discovery stub must be bare text, got {blocks:?}")
+                }
+            })
+            .collect();
+        assert_eq!(
+            stubs,
+            vec![
+                "[tool_search] \"crm order management\"".to_owned(),
+                "[tool_search results] 3 tools in 1 namespace(s)".to_owned(),
+            ]
+        );
+        for message in &messages[2..4] {
+            assert!(message.tool_calls.is_empty());
+            assert_eq!(message.tool_call_id, None, "no tool_use/tool_result id is invented");
+        }
+        assert_eq!(
+            messages[4].reasoning_content.as_deref(),
+            Some("thinking first"),
+            "the reasoning still folds onto its own assistant turn"
+        );
+    }
+
+    /// M-D16: the /messages wire has no typed discovery item either. It renders
+    /// as bounded assistant text — and explicitly NOT as a `tool_reference`
+    /// block: H-11 (declared-name lint) fires for an undeclared tool name, and
+    /// A-24.2's `tools[]` materialisation is a send-time encoder job (later bead).
+    #[test]
+    fn messages_wire_renders_one_bounded_text_block_per_discovery_item() {
+        let request = ConversationRequest::from_items(history_with_discovery_pair())
+            .with_model("messages-compatible-model");
+        let body = serde_json::to_value(crate::conversation::build_messages_request(&request)).unwrap();
+        let rendered = body.to_string();
+        assert!(rendered.contains("[tool_search] \\\"crm order management\\\""));
+        assert!(
+            !rendered.contains("tool_reference")
+                && !rendered.contains("tool_use")
+                && !rendered.contains("tool_result"),
+            "no block type the target wire would reject: {rendered}"
+        );
+        assert!(
+            !rendered.contains("crm_fixture_tool_00"),
+            "the loaded definitions must not ride into the /messages request"
+        );
+        // D5 orphan cleanup must never eat a discovery item: it only pair-checks
+        // Assistant <-> ToolResult.
+        let cleaned = crate::conversation::messages::clean_orphaned_items(&request.items);
+        assert_eq!(
+            cleaned.iter().filter_map(ConversationItem::discovery).count(),
+            2
+        );
+    }
+
+    /// M-D13: the dangling-repair walk collects answered call ids over the
+    /// CONTIGUOUS ToolResult run and breaks on anything else. A discovery pair
+    /// between an assistant-with-calls and its results therefore made the calls
+    /// look unanswered and spliced DUPLICATE synthetic results into history.
+    #[test]
+    fn repair_dangling_tool_calls_is_transparent_to_a_discovery_pair() {
+        let mut items = vec![
+            ConversationItem::assistant_tool_calls(vec![ToolCall {
+                id: "call_real".into(),
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            }]),
+            disc(cx3_call()),
+            disc(paired_output_raw()),
+            ConversationItem::tool_result("call_real", "file contents"),
+        ];
+        assert_eq!(
+            repair_dangling_tool_calls(&mut items, DanglingToolCallReason::UserCancelled),
+            0,
+            "the call IS answered — a discovery item must not end the result run"
+        );
+        assert_eq!(items.len(), 4);
+        assert_eq!(
+            items[3].text_content(),
+            "file contents",
+            "no synthetic duplicate was spliced ahead of the real result"
+        );
+    }
+
+    /// M-D17: every window/cut decision in the compaction + rewind stack must be
+    /// pair-atomic. The snap only ever moves DOWN, to the group's first item, so
+    /// a cut can never land between a call and its output: rewind drops both
+    /// halves, a retained window keeps both.
+    #[test]
+    fn snap_index_over_discovery_pairs_never_splits_a_group() {
+        let items = history_with_discovery_pair();
+        for (cut, expected) in [(0, 0), (1, 1), (2, 2), (3, 2), (4, 4), (5, 5)] {
+            assert_eq!(
+                snap_index_over_discovery_pairs(&items, cut),
+                expected,
+                "cut {cut} (3 would keep the call without its output)"
+            );
+        }
+
+        // A provider-minted pair carries `call_id: null`, so it forms no key
+        // group; adjacency is the only grouping signal available and the snap
+        // still refuses to split it.
+        let server_pair = sol_hosted_server_pair();
+        let items = vec![
+            ConversationItem::user("q"),
+            disc(server_pair[0].clone()),
+            disc(server_pair[1].clone()),
+            ConversationItem::assistant("a"),
+        ];
+        assert_eq!(snap_index_over_discovery_pairs(&items, 2), 1);
+        assert_eq!(snap_index_over_discovery_pairs(&items, 3), 3);
+
+        // A cut past the whole pair does not move: the fixture's pair is one keyed
+        // group at [2, 3] and cut 4 is above its last member.
+        assert_eq!(snap_index_over_discovery_pairs(&history_with_discovery_pair(), 4), 4);
+    }
+
+    /// Cut review F-2 in its hardest quadrant: the keyed rule groups by `call_id`
+    /// across the WHOLE history, so a pair whose output precedes its partner call
+    /// (`[out(A), call(B), out(B), call(A)]`) is the group `[0, 3]` — a group whose
+    /// FIRST member is an output. A snap that walks the group list once, mutating as
+    /// it goes, is order-dependent and can stop on a value that still splits `[0, 3]`,
+    /// retaining `out(A)` with no `call(A)` (the provider-desync half of the shape).
+    /// The snap must therefore be a fixed point over ALL groups, with an explicit
+    /// bound rather than an unbounded `loop`.
+    #[test]
+    fn snap_index_over_discovery_pairs_survives_any_pair_rotation() {
+        let rotated = vec![
+            disc_item(keyed_output("call_A", None)),
+            disc_item(keyed_call("call_B", None)),
+            disc_item(keyed_output("call_B", None)),
+            disc_item(keyed_call("call_A", None)),
+        ];
+        // The review's falsifier, by value: cut 3 must leave the whole history.
+        assert_eq!(
+            snap_index_over_discovery_pairs(&rotated, 3),
+            0,
+            "cut 3 splits BOTH [0,3] and [1,2]; the snap must fall to the outermost \
+             first member, not stop at 1 and hand a retained window `out(A)` alone"
+        );
+        assert_eq!(snap_index_over_discovery_pairs(&rotated, 1), 0);
+        assert_eq!(snap_index_over_discovery_pairs(&rotated, 2), 0);
+        // A cut that splits nothing must not move, in either direction.
+        assert_eq!(snap_index_over_discovery_pairs(&rotated, 0), 0);
+        assert_eq!(
+            snap_index_over_discovery_pairs(&rotated, rotated.len()),
+            rotated.len()
+        );
+
+        // The same rule as a property, over every rotation of the shape and every
+        // cut: never move UP, never land strictly inside any group, and be a no-op
+        // where the cut was already pair-atomic.
+        for shift in 0..rotated.len() {
+            let shape: Vec<ConversationItem> = (0..rotated.len())
+                .map(|i| rotated[(i + shift) % rotated.len()].clone())
+                .collect();
+            let groups = discovery_groups(&shape);
+            for cut in 0..=shape.len() {
+                let snapped = snap_index_over_discovery_pairs(&shape, cut);
+                assert!(snapped <= cut, "rotation {shift}: cut {cut} moved UP to {snapped}");
+                for group in &groups {
+                    let first = group.iter().min().copied().unwrap_or(0);
+                    let last = group.iter().max().copied().unwrap_or(0);
+                    assert!(
+                        !(first < snapped && snapped <= last),
+                        "rotation {shift}: cut {cut} snapped to {snapped}, which splits \
+                         group {group:?} of {shape:?}"
+                    );
+                }
+                let split_by_cut = groups.iter().any(|group| {
+                    let first = group.iter().min().copied().unwrap_or(0);
+                    let last = group.iter().max().copied().unwrap_or(0);
+                    first < cut && cut <= last
+                });
+                if !split_by_cut {
+                    assert_eq!(
+                        snapped, cut,
+                        "rotation {shift}: cut {cut} splits no group, so the snap must be a no-op"
+                    );
+                }
+            }
+        }
+
+        // A same-key run that is NOT adjacent — the donor's reused-`call_id` shape,
+        // two calls plus the one answer — is one group spanning the whole window, so
+        // every interior cut has to fall out of it entirely.
+        let same_key = vec![
+            disc_item(keyed_call("call_A", None)),
+            ConversationItem::user("injected"),
+            disc_item(keyed_call("call_A", None)),
+            disc_item(keyed_output("call_A", None)),
+        ];
+        for cut in 1..same_key.len() {
+            assert_eq!(
+                snap_index_over_discovery_pairs(&same_key, cut),
+                0,
+                "cut {cut} splits the same-key group [0, 2, 3]"
+            );
+        }
+    }
+
+    /// Every test in this module builds the variant through
+    /// [`ToolSearchItem::from_wire`]; this is the history-shaped constructor.
+    fn disc_item(item: ToolSearchItem) -> ConversationItem {
+        ConversationItem::Discovery { item }
+    }
+
+    /// Cut review F-1, at the helper level: the provider mints its hosted pair with
+    /// `call_id: null`, and a synthetic `User` row can land between the halves. Order
+    /// is then the ONLY grouping signal, and requiring the two halves to be physically
+    /// adjacent reads that pair as two unrelated lone items — which is how a compaction
+    /// window came to delete a complete pair out of the only verbatim content a
+    /// compacted history keeps.
+    #[test]
+    fn a_keyless_pair_is_one_group_even_when_its_halves_are_not_adjacent() {
+        let server_pair = sol_hosted_server_pair();
+        let items = vec![
+            disc(server_pair[0].clone()),
+            ConversationItem::user("injected between the halves"),
+            disc(server_pair[1].clone()),
+        ];
+        assert!(
+            unpaired_discovery_indices(&items).is_empty(),
+            "a null-key call followed (anywhere later) by a null-key output is ONE closed \
+             group; calling it two lone halves is the false-lone strip: {items:?}"
+        );
+        assert_eq!(snap_index_over_discovery_pairs(&items, 1), 0);
+        assert_eq!(
+            snap_index_over_discovery_pairs(&items, 2),
+            0,
+            "a cut between the two halves must move below the call"
+        );
+        assert_eq!(snap_index_over_discovery_pairs(&items, 3), 3);
+    }
+
+    /// Cut review F-2: groups are visited in ascending-first order, so a single pass
+    /// lets a LATER group lower `snapped` past an EARLIER one that was already tested
+    /// and return an index that splits that earlier group. Interleaved parallel
+    /// searches are exactly that shape.
+    #[test]
+    fn snap_index_over_discovery_pairs_loops_until_a_fixpoint_when_pairs_interleave() {
+        let items = vec![
+            disc_item(keyed_call("call_A", None)),
+            disc_item(keyed_call("call_B", None)),
+            disc_item(keyed_output("call_A", None)),
+            disc_item(keyed_output("call_B", None)),
+        ];
+        // Groups: A = [0, 2], B = [1, 3]. A one-pass snap at cut 3 moves to 1 (B's
+        // first), which is INSIDE group A — the retained window would then hold `outA`
+        // with no `callA`, the bare-output desync this helper exists to prevent. The
+        // fixpoint answer is 0: nothing of either pair is split.
+        for (cut, expected) in [(0, 0), (1, 0), (2, 0), (3, 0), (4, 4)] {
+            let snapped = snap_index_over_discovery_pairs(&items, cut);
+            assert_eq!(
+                snapped, expected,
+                "cut {cut} must land at {expected}, below the first member of every pair \
+                 it would otherwise split"
+            );
+            // The general property, not just the literal: no group may straddle the
+            // returned index.
+            for group in [[0usize, 2], [1, 3]] {
+                let straddles = group[0] < snapped && snapped <= group[1];
+                assert!(!straddles, "cut {snapped} splits group {group:?}");
+            }
+        }
+    }
+
+    /// A same-key non-adjacent pair (the replayed-window shape the donor's reused
+    /// `call_id` note names) groups across the gap, so a cut inside it snaps below the
+    /// first half.
+    #[test]
+    fn a_keyed_pair_groups_across_an_intervening_duplicate_call() {
+        let items = vec![
+            disc_item(keyed_call("call_X", None)),
+            ConversationItem::user("mid-turn injection"),
+            disc_item(keyed_call("call_X", None)),
+            disc_item(keyed_output("call_X", None)),
+        ];
+        // One key group [0, 2, 3]; it holds a call and an output, so it is closed and
+        // nothing here is a lone half…
+        assert!(unpaired_discovery_indices(&items).is_empty());
+        // …and no cut between 0 and 4 survives.
+        for cut in 1..4 {
+            assert_eq!(snap_index_over_discovery_pairs(&items, cut), 0, "cut {cut}");
+        }
+        // Past the last member the cut splits nothing, so it does not move.
+        assert_eq!(snap_index_over_discovery_pairs(&items, 4), 4);
+    }
+
+    /// Cut review WAJ21R2-03: the keyed quadrant groups EVERY item carrying the same
+    /// `call_id`, with no distance bound, so one colliding key turns ten turns of
+    /// unrelated history into a single group. The snap sits on
+    /// `conversation_truncate_for_prompt`, `truncate_conversation_at`, `fork_filter_chat`
+    /// and the budget fit, and an unbounded lowering there rewinds a rewind across all
+    /// ten turns and then PERSISTS the shortened history — a silent whole-turn loss far
+    /// larger than the half-pair it was preventing. So the snap honours only groups
+    /// within [`MAX_SNAP_GROUP_SPAN`] and leaves the rest to the loud failure.
+    #[test]
+    fn a_reused_call_id_spanning_whole_turns_does_not_drag_the_cut_back() {
+        let mut items = vec![
+            ConversationItem::user("turn A"),
+            disc_item(keyed_call("call_reused", None)),
+        ];
+        for turn in 0..10 {
+            items.push(ConversationItem::assistant(format!("answer {turn}")));
+            items.push(ConversationItem::user(format!("turn {}", turn + 1)));
+        }
+        items.push(disc_item(keyed_output("call_reused", None)));
+
+        // Fixture sanity: the reused key really is ONE group across the whole window.
+        let wide = discovery_groups(&items)
+            .into_iter()
+            .find(|group| group.len() == 2)
+            .expect("the two reused-key rows are one group");
+        let span = wide[1] - wide[0] + 1;
+        assert!(
+            span > MAX_SNAP_GROUP_SPAN,
+            "fixture must straddle MORE than the snap window, got span {span}"
+        );
+
+        // A cut that would delete only the answer must not delete the ten turns too.
+        let tail_cut = items.len() - 1;
+        assert_eq!(
+            snap_index_over_discovery_pairs(&items, tail_cut),
+            tail_cut,
+            "an over-wide group must not drag the cut back across {} turns of unrelated \
+             history (retained history after the cut: {:?})",
+            tail_cut,
+            &items[tail_cut..],
+        );
+        // The trade-off the bound makes, stated as an assertion rather than a comment:
+        // the cut stays, so the retained side DOES hold a lone call. That is the loud
+        // shape (a strict-backend 400, and H-8's call-side arm flags it on the wire),
+        // which this cut prefers over deleting whole turns.
+        assert_eq!(
+            unpaired_discovery_indices(&items[..tail_cut]),
+            vec![1],
+            "the refused snap must leave the loud half-pair (the outbound lint's H-8 \
+             call-side arm flags exactly this row), not a silent whole-turn loss"
+        );
+
+        // The guard is bounded, not disabled: move the answer next to its call and the
+        // very same cut snaps, because a real pair spans a handful of rows at most.
+        let mut narrow = items.clone();
+        let answer = narrow.pop().expect("the answer row");
+        narrow.insert(2, answer);
+        assert_eq!(
+            discovery_groups(&narrow)
+                .into_iter()
+                .find(|group| group.len() == 2)
+                .map(|group| group[1] - group[0] + 1),
+            Some(2),
+            "fixture sanity: the narrow pair is adjacent"
+        );
+        assert_eq!(
+            snap_index_over_discovery_pairs(&narrow, 2),
+            1,
+            "a pair inside the window must still snap DOWN below its call"
+        );
+    }
+
+    /// Cut review F-3: `group.len() >= 2` is not "this pair is answered". Two
+    /// `tool_search_call`s sharing a reused `call_id` (PLAN:1248 names reused ids as a
+    /// real shape; `same_kind_items_never_pair_even_when_they_share_a_call_id` pins the
+    /// pairing rule) answer nothing, and keeping them verbatim is the strict-backend 400
+    /// this helper family exists to remove.
+    #[test]
+    fn unpaired_discovery_indices_requires_one_call_and_one_output() {
+        let two_calls = vec![
+            disc_item(keyed_call("call_X", None)),
+            disc_item(keyed_call("call_X", None)),
+        ];
+        assert_eq!(
+            unpaired_discovery_indices(&two_calls),
+            vec![0, 1],
+            "two calls sharing a key are NOT a closed group"
+        );
+        let two_outputs = vec![
+            disc_item(keyed_output("call_Y", None)),
+            disc_item(keyed_output("call_Y", None)),
+        ];
+        assert_eq!(
+            unpaired_discovery_indices(&two_outputs),
+            vec![0, 1],
+            "…and neither are two outputs"
+        );
+        let pair = vec![
+            disc_item(keyed_call("call_Z", None)),
+            disc_item(keyed_output("call_Z", None)),
+        ];
+        assert!(unpaired_discovery_indices(&pair).is_empty());
+        // The unkeyed quadrant follows the same rule: an output with no open call is
+        // its own group, however many outputs sit together.
+        let server_pair = sol_hosted_server_pair();
+        let orphan_outputs = vec![
+            disc(server_pair[1].clone()),
+            disc(server_pair[1].clone()),
+        ];
+        assert_eq!(unpaired_discovery_indices(&orphan_outputs), vec![0, 1]);
     }
 }

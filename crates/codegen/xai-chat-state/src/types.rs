@@ -143,6 +143,15 @@ pub struct ConversationCounts {
     pub assistant: usize,
     /// Number of `ToolResult` items.
     pub tool_result: usize,
+    /// Number of `Discovery` items — `tool_search_call` / `tool_search_output`
+    /// halves, counted separately (a complete pair is 2).
+    ///
+    /// This one is deliberately surfaced where `System` / `BackendToolCall` /
+    /// `Reasoning` are not: the pair is the provider's own record of which tools it
+    /// has loaded for this session (A-26), so an operator debugging a
+    /// "the model claims a tool it was never given" desync needs to see whether the
+    /// history still carries it.
+    pub discovery: usize,
 }
 
 /// Info returned when auto-compact threshold is exceeded.

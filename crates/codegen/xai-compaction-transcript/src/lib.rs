@@ -60,7 +60,7 @@ impl CompactionDetail {
 
 /// Role label per item, mapped onto the Python `Turn` role vocabulary
 /// (`System`/`Human`/`Assistant`/`Function`). Model-side items with no Python
-/// analog (`BackendToolCall`, `Reasoning`) fold into `Assistant`.
+/// analog (`BackendToolCall`, `Reasoning`, `Discovery`) fold into `Assistant`.
 fn role_label(item: &ConversationItem) -> &'static str {
     match item {
         ConversationItem::System(_) => "System",
@@ -69,6 +69,71 @@ fn role_label(item: &ConversationItem) -> &'static str {
         ConversationItem::ToolResult(_) => "Function",
         ConversationItem::BackendToolCall(_) => "Assistant",
         ConversationItem::Reasoning(_) => "Assistant",
+        ConversationItem::Discovery { .. } => "Assistant",
+    }
+}
+
+/// Cap on the discovered tool names one discovery item renders, so the segment
+/// text stays a bounded model-visible fragment (AGENTS §6.7: prefix churn is
+/// cache invalidation, and a `tool_search_output` can name hundreds of tools).
+const DISCOVERY_NAMES_CAP: usize = 24;
+
+/// One bounded rendering of a discovery item for a summariser-facing transcript.
+///
+/// `text_content()` alone reports only a COUNT ("3 tools"), so a summary built
+/// from it could never carry the loaded set forward. This renders the query for a
+/// call and the discovered NAMES for an output.
+///
+/// Names are emitted in the SHORT (Responses) form and a namespace group is
+/// listed SEPARATELY, never joined onto its children: the two wires invoke a
+/// discovered child differently (Responses by the short name, Messages by the flat
+/// `mcp__server__tool` name) and `tool_search::invocable_names` deliberately does
+/// not join them — inventing a third spelling here would be the fourth tool-name
+/// vocabulary A-24 warns about.
+fn discovery_turn_text(item: &xai_grok_sampling_types::conversation::tool_search::ToolSearchItem) -> String {
+    use xai_grok_sampling_types::conversation::tool_search::{
+        DiscoveredToolKind, ToolSearchKind, invocable_names,
+    };
+    match item.kind() {
+        ToolSearchKind::Call => item.text_summary(),
+        ToolSearchKind::Output => {
+            let names = invocable_names(std::iter::once(item));
+            let total = names.len();
+            let mut shown: Vec<&str> = names.iter().map(|(name, _)| *name).collect();
+            shown.truncate(DISCOVERY_NAMES_CAP);
+            let namespaces: Vec<String> = item
+                .tools()
+                .iter()
+                .filter(|tool| matches!(tool.kind(), DiscoveredToolKind::Namespace))
+                .filter_map(|tool| tool.name())
+                .map(str::to_owned)
+                .collect();
+            let mut line = if shown.is_empty() {
+                "[tool_search results] (no callable tools)".to_owned()
+            } else if total > shown.len() {
+                format!(
+                    "[tool_search results] {} (+{} more)",
+                    shown.join(", "),
+                    total - shown.len()
+                )
+            } else {
+                format!("[tool_search results] {}", shown.join(", "))
+            };
+            if !namespaces.is_empty() {
+                // Same cap as the callable names: a heavily namespaced output would
+                // otherwise defeat the bounded-fragment contract DISCOVERY_NAMES_CAP
+                // exists to enforce (AGENTS §6.7) — this text is pushed into the
+                // summariser-facing segment body.
+                let total_groups = namespaces.len();
+                let mut shown_groups = namespaces;
+                shown_groups.truncate(DISCOVERY_NAMES_CAP);
+                line.push_str(&format!(" (from: {})", shown_groups.join(", ")));
+                if total_groups > shown_groups.len() {
+                    line.push_str(&format!(" (+{} more groups)", total_groups - shown_groups.len()));
+                }
+            }
+            line
+        }
     }
 }
 
@@ -238,7 +303,18 @@ fn compute_turn_stats(items: &[ConversationItem]) -> TurnStats {
                     tool_error_count += 1;
                 }
             }
-            other => verbose_byte_estimate += other.text_content().len(),
+            // The real payload, not the summary: the INDEX "Approx bytes" column is a
+            // size signal, and charging a multi-KB loaded-tool payload at its ~30-byte
+            // summary hides it from every reader of that column.
+            ConversationItem::Discovery { item } => {
+                verbose_byte_estimate += item.estimated_model_visible_len();
+            }
+            ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::BackendToolCall(_)
+            | ConversationItem::Reasoning(_) => {
+                verbose_byte_estimate += item.text_content().len();
+            }
         }
     }
 
@@ -334,8 +410,15 @@ fn render_turn_verbose(item: &ConversationItem, index: usize) -> String {
                 parts.push(t.content.to_string());
             }
         }
-        other => {
-            let txt = other.text_content();
+        // The query and the DISCOVERED NAMES, not just `text_content()`'s count: a
+        // summariser reading "3 tools" cannot carry the loaded set into the compacted
+        // summary, which is the whole content of a discovery pair (apex-waj.21).
+        ConversationItem::Discovery { item } => parts.push(discovery_turn_text(item)),
+        ConversationItem::System(_)
+        | ConversationItem::User(_)
+        | ConversationItem::BackendToolCall(_)
+        | ConversationItem::Reasoning(_) => {
+            let txt = item.text_content();
             if !txt.is_empty() {
                 parts.push(txt);
             }
@@ -378,8 +461,17 @@ fn render_turn_balanced(item: &ConversationItem, index: usize) -> String {
                 ));
             }
         }
-        other => {
-            let txt = other.text_content();
+        // Same content as the verbose level, capped like every other balanced block.
+        ConversationItem::Discovery { item } => parts.push(truncate_chars(
+            &discovery_turn_text(item),
+            BALANCED_RESPONSE_CHARS,
+            "... [truncated]",
+        )),
+        ConversationItem::System(_)
+        | ConversationItem::User(_)
+        | ConversationItem::BackendToolCall(_)
+        | ConversationItem::Reasoning(_) => {
+            let txt = item.text_content();
             if !txt.is_empty() {
                 parts.push(txt);
             }
@@ -425,7 +517,16 @@ fn render_turn_signature(item: &ConversationItem, index: usize) -> String {
             format!("### Turn {index} ({role})  {sig_str}\n")
         }
         ConversationItem::ToolResult(_) => format!("### Turn {index} ({role})  [tool_response]\n"),
-        _ => format!("### Turn {index} ({role})\n"),
+        // One line, but WHICH tools: without the names a pair renders as two bare
+        // headers and the compacted summary can never carry the loaded set.
+        ConversationItem::Discovery { item } => format!(
+            "### Turn {index} ({role})  {}\n",
+            truncate_chars(&discovery_turn_text(item), 120, "...")
+        ),
+        ConversationItem::System(_)
+        | ConversationItem::User(_)
+        | ConversationItem::BackendToolCall(_)
+        | ConversationItem::Reasoning(_) => format!("### Turn {index} ({role})\n"),
     }
 }
 
@@ -814,5 +915,122 @@ mod tests {
                 .last_assistant_excerpt
                 .contains("the final answer is 42")
         );
+    }
+
+    /// apex-waj.21: a discovery pair in a summariser-facing transcript. `role_label`
+    /// folds it into Assistant (never Function/Tool — that would make the shared
+    /// compaction engine treat it as a tool result), and the renderers must show WHICH
+    /// tools were loaded, not merely that some were: `text_content()` alone says only a
+    /// count, so a summary built from it could never carry the loaded set forward.
+    #[test]
+    fn discovery_items_render_the_loaded_tool_names_under_an_assistant_role() {
+        use xai_grok_sampling_types::conversation::tool_search::ToolSearchItem;
+        let discovery = |raw: serde_json::Value| ConversationItem::Discovery {
+            item: ToolSearchItem::from_wire(raw).expect("fixture is a tool_search item"),
+        };
+        let call = discovery(serde_json::json!({
+            "type": "tool_search_call",
+            "id": "tsc_tr_1",
+            "call_id": "call_tr_1",
+            "status": "completed",
+            "execution": "client",
+            "arguments": { "query": "crm order management", "limit": 8 }
+        }));
+        let output = discovery(serde_json::json!({
+            "type": "tool_search_output",
+            "id": "tso_tr_1",
+            "call_id": "call_tr_1",
+            "status": "completed",
+            "execution": "client",
+            "tools": [
+                { "type": "function", "name": "crm_fixture_tool_00" },
+                { "type": "namespace", "name": "mcp__ratchet_fixture", "tools": [
+                    { "type": "function", "name": "crm_fixture_tool_06" } ] }
+            ]
+        }));
+        let conv = vec![user("find them"), call, output, ConversationItem::assistant("ok")];
+
+        for detail in [
+            CompactionDetail::Minimal,
+            CompactionDetail::Balanced,
+            CompactionDetail::Verbose,
+        ] {
+            let md = render_segment_md(&conv, "s", 0, detail, "t");
+            assert!(
+                md.contains("crm_fixture_tool_00") && md.contains("crm_fixture_tool_06"),
+                "{detail:?} transcript must name the loaded tools"
+            );
+            assert!(
+                md.contains("mcp__ratchet_fixture"),
+                "{detail:?} transcript must list the namespace group separately"
+            );
+            // The role fold, pinned on the PAIR's own turn headers: the fixture's
+            // trailing `assistant("ok")` renders an `(Assistant)` header whatever the
+            // Discovery arm returns, so a bare `md.contains("Assistant")` would stay
+            // true with the arm folded to `Function` — and Function is exactly the
+            // wrong answer, because the shared compaction engine reads a Function turn
+            // as a tool result.
+            assert_eq!(
+                md.matches("(Function)").count(),
+                0,
+                "{detail:?} folded a discovery item into Function (a tool result): {md}"
+            );
+            assert!(
+                md.matches("(Assistant)").count() >= 3,
+                "{detail:?} must give the call, the output AND the real assistant turn an \
+                 Assistant header; the pair alone is two of the three: {md}"
+            );
+        }
+        // The byte charge is the payload, not the ~30-byte summary — the segment INDEX
+        // is what an operator triages a size problem from.
+        let stats = compute_turn_stats(&conv);
+        assert!(
+            stats.verbose_byte_estimate > 200,
+            "a discovery payload booked at its summary would hide it: {:?}",
+            stats.verbose_byte_estimate
+        );
+    }
+    /// F-10: the namespace GROUP list is capped like the callable-name list. A
+    /// `tool_search_output` that loads dozens of servers must not turn one transcript
+    /// line into an unbounded model-visible fragment (AGENTS §6.7).
+    #[test]
+    fn a_heavily_namespaced_output_stays_a_bounded_line() {
+        use xai_grok_sampling_types::conversation::tool_search::ToolSearchItem;
+        let tools: Vec<serde_json::Value> = (0..40)
+            .map(|i| {
+                serde_json::json!({
+                    "type": "namespace",
+                    "name": format!("mcp__server_{i:02}"),
+                    "tools": [{ "type": "function", "name": format!("tool_{i:02}") }]
+                })
+            })
+            .collect();
+        let output = ConversationItem::Discovery {
+            item: ToolSearchItem::from_wire(serde_json::json!({
+                "type": "tool_search_output",
+                "id": "tso_tr_cap",
+                "call_id": "call_tr_cap",
+                "status": "completed",
+                "execution": "client",
+                "tools": tools
+            }))
+            .expect("fixture is a tool_search item"),
+        };
+        let line = discovery_turn_text(output.discovery().unwrap());
+        let shown_groups = line
+            .split_once("(from: ")
+            .expect("the group list is rendered")
+            .1
+            .trim_end_matches(')');
+        assert_eq!(
+            shown_groups.matches(',').count(),
+            super::DISCOVERY_NAMES_CAP - 1,
+            "exactly the cap of group names is spelled out"
+        );
+        assert!(
+            line.contains("(+16 more groups)"),
+            "the rest is counted, not listed: {line}"
+        );
+        assert!(line.len() < 1_200, "the line stays a bounded fragment: {}", line.len());
     }
 }
