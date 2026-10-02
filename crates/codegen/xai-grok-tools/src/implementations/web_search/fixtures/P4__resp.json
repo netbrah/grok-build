@@ -1,0 +1,97 @@
+{
+ "probed_at": "2026-09-30T20:57:10Z",
+ "http_status": 200,
+ "error": null,
+ "headers": {
+  "Content-Length": "1111",
+  "Content-Security-Policy": "frame-ancestors 'none'",
+  "Content-Type": "application/json",
+  "Date": "Wed, 30 Sep 2026 20:57:02 GMT",
+  "Server": "uvicorn",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "X-Litellm-Attempted-Fallbacks": "0",
+  "X-Litellm-Attempted-Retries": "0",
+  "X-Litellm-Call-Id": "0a8bfe1f-6fce-49f1-8e70-6c75eff28b0e",
+  "X-Litellm-Callback-Duration-Ms": "0.0",
+  "X-Litellm-Key-Spend": "0.047178000000000005",
+  "X-Litellm-Model-Group": "gemini-3.1-pro-preview",
+  "X-Litellm-Model-Id": "d9049dac0034cd19c3299d468c300059cec9b3b24482e47dc65edf00f0a67b3b",
+  "X-Litellm-Model-Name": "vertex_ai/gemini-3.1-pro-preview",
+  "X-Litellm-Overhead-Duration-Ms": "7.217",
+  "X-Litellm-Response-Cost": "0.047178000000000005",
+  "X-Litellm-Response-Cost-Discount-Amount": "0.0",
+  "X-Litellm-Response-Cost-Input": "6.599999999999999e-05",
+  "X-Litellm-Response-Cost-Margin-Amount": "0.0",
+  "X-Litellm-Response-Cost-Margin-Percent": "0.0",
+  "X-Litellm-Response-Cost-Original": "0.047178000000000005",
+  "X-Litellm-Response-Cost-Output": "0.005111999999999999",
+  "X-Litellm-Response-Cost-Reasoning": "0.005004",
+  "X-Litellm-Response-Cost-Tool-Usage": "0.042",
+  "X-Litellm-Response-Duration-Ms": "7372.516",
+  "X-Litellm-Version": "1.102.0rc1",
+  "X-Ratelimit-Api_key-Limit-Max_parallel_requests": "100",
+  "X-Ratelimit-Api_key-Remaining-Max_parallel_requests": "99",
+  "X-Ratelimit-Limit-Tokens": "2000000",
+  "X-Ratelimit-Remaining-Tokens": "1999541",
+  "Connection": "close"
+ },
+ "body": {
+  "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOnZlcnRleF9haTttb2RlbF9pZDpkOTA0OWRhYzAwMzRjZDE5YzMyOTlkNDY4YzMwMDA1OWNlYzliM2IyNDQ4MmU0N2RjNjVlZGYwMGYwYTY3YjNiO3Jlc3BvbnNlX2lkOm5uZTlhcHloTmRTYW90UVB3cnFzLUFv",
+  "created_at": 1790801822,
+  "error": null,
+  "incomplete_details": null,
+  "instructions": null,
+  "metadata": {},
+  "model": "gemini-3.1-pro-preview",
+  "object": "response",
+  "output": [
+   {
+    "type": "message",
+    "id": "msg_9cfac346-6abf-44f5-b743-92b53db2163b",
+    "status": "incomplete",
+    "role": "assistant",
+    "content": [
+     {
+      "type": "output_text",
+      "text": "As of 30 September 20",
+      "annotations": []
+     }
+    ],
+    "phase": null
+   }
+  ],
+  "parallel_tool_calls": false,
+  "temperature": 0.0,
+  "tool_choice": "auto",
+  "tools": [],
+  "top_p": null,
+  "max_output_tokens": null,
+  "previous_response_id": null,
+  "reasoning": null,
+  "status": "incomplete",
+  "text": {},
+  "truncation": null,
+  "usage": {
+   "input_tokens": 33,
+   "input_tokens_details": {
+    "audio_tokens": null,
+    "cached_tokens": 0,
+    "text_tokens": 33
+   },
+   "output_tokens": 426,
+   "output_tokens_details": {
+    "audio_tokens": null,
+    "reasoning_tokens": 417,
+    "text_tokens": 9
+   },
+   "total_tokens": 459,
+   "cost": null
+  },
+  "user": null,
+  "store": null,
+  "provider_specific_fields": {
+   "traffic_type": "ON_DEMAND"
+  }
+ }
+}

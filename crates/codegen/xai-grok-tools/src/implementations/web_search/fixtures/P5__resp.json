@@ -1,0 +1,112 @@
+{
+ "probed_at": "2026-09-30T20:57:15Z",
+ "http_status": 200,
+ "error": null,
+ "headers": {
+  "Content-Length": "1312",
+  "Content-Security-Policy": "frame-ancestors 'none'",
+  "Content-Type": "application/json",
+  "Date": "Wed, 30 Sep 2026 20:57:10 GMT",
+  "Server": "uvicorn",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "X-Litellm-Attempted-Fallbacks": "0",
+  "X-Litellm-Attempted-Retries": "0",
+  "X-Litellm-Call-Id": "4f645d5c-4b1a-4bff-a5f0-bc03f6bbc511",
+  "X-Litellm-Callback-Duration-Ms": "0.0",
+  "X-Litellm-Key-Spend": "0.0022739999999999995",
+  "X-Litellm-Model-Group": "gemini-3.1-pro-preview",
+  "X-Litellm-Model-Id": "d9049dac0034cd19c3299d468c300059cec9b3b24482e47dc65edf00f0a67b3b",
+  "X-Litellm-Model-Name": "vertex_ai/gemini-3.1-pro-preview",
+  "X-Litellm-Response-Cost": "0.0022739999999999995",
+  "X-Litellm-Response-Cost-Discount-Amount": "0.0",
+  "X-Litellm-Response-Cost-Input": "5.4e-05",
+  "X-Litellm-Response-Cost-Margin-Amount": "0.0",
+  "X-Litellm-Response-Cost-Margin-Percent": "0.0",
+  "X-Litellm-Response-Cost-Original": "0.0022739999999999995",
+  "X-Litellm-Response-Cost-Output": "0.0022199999999999998",
+  "X-Litellm-Response-Cost-Reasoning": "0.001992",
+  "X-Litellm-Response-Cost-Tool-Usage": "0.0",
+  "X-Litellm-Response-Duration-Ms": "5125.911",
+  "X-Litellm-Version": "1.102.0rc1",
+  "X-Ratelimit-Api_key-Limit-Max_parallel_requests": "100",
+  "X-Ratelimit-Api_key-Remaining-Max_parallel_requests": "99",
+  "X-Ratelimit-Limit-Tokens": "2000000",
+  "X-Ratelimit-Remaining-Tokens": "2000000",
+  "Connection": "close"
+ },
+ "body": {
+  "candidates": [
+   {
+    "content": {
+     "role": "model",
+     "parts": [
+      {
+       "text": "The latest stable Linux kernel version listed on kernel.org is 7.2.8.",
+       "thoughtSignature": "AY89a19MArv5fD2z2BcWaezJPd2QBZt8kmx6QdmAxqps0u3oQnS04nPp6JXNiAMD089Q0A0W3gB7zD5waQXifohmO+heoFPncyrXIZvi0MFP6xaDo2NPOQ4twQMEpoxzN0ynSiNAyG+udWuntERta6cnkPHsQ6Xj3WoLtgj1/wn4d+yNg7ELX6ukkM1ubgoM3ucc5n08YjE4mnTfBS2rYBzzEQr3OwSYXssTjE8b/XuZDDbjQpXnLxg="
+      }
+     ]
+    },
+    "finishReason": "STOP",
+    "groundingMetadata": {
+     "groundingChunks": [
+      {
+       "web": {
+        "uri": "https://kernel.org",
+        "title": "The Linux Kernel Archives"
+       }
+      }
+     ],
+     "groundingSupports": [
+      {
+       "segment": {
+        "endIndex": 69,
+        "text": "The latest stable Linux kernel version listed on kernel.org is 7.2.8."
+       },
+       "groundingChunkIndices": [
+        0
+       ]
+      }
+     ]
+    },
+    "urlContextMetadata": {
+     "urlMetadata": [
+      {
+       "retrievedUrl": "https://kernel.org",
+       "urlRetrievalStatus": "URL_RETRIEVAL_STATUS_SUCCESS"
+      }
+     ]
+    }
+   }
+  ],
+  "usageMetadata": {
+   "promptTokenCount": 27,
+   "candidatesTokenCount": 19,
+   "totalTokenCount": 899,
+   "trafficType": "ON_DEMAND",
+   "promptTokensDetails": [
+    {
+     "modality": "TEXT",
+     "tokenCount": 27
+    }
+   ],
+   "candidatesTokensDetails": [
+    {
+     "modality": "TEXT",
+     "tokenCount": 19
+    }
+   ],
+   "toolUsePromptTokensDetails": [
+    {
+     "modality": "TEXT",
+     "tokenCount": 687
+    }
+   ],
+   "toolUsePromptTokenCount": 687,
+   "thoughtsTokenCount": 166
+  },
+  "modelVersion": "gemini-3.1-pro-preview",
+  "createTime": "2026-09-30T20:57:10.785371Z",
+  "responseId": "pne9atv3L-qYotQPsobS2As"
+ }
+}

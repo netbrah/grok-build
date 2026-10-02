@@ -1,5 +1,12 @@
+use std::time::Duration;
+
+use super::gemini::{
+    self, GROUNDING_RETRY_INSTRUCTION, GeminiToolKind, GeminiUtilityRequest, GeminiUtilityResult,
+    GroundingChunk,
+};
 use super::types::WebSearchConfig;
 use crate::attribution::{SharedAttributionCallback, ToolConsumer};
+use crate::implementations::grok_build::web_fetch::domain::normalize_domain;
 use crate::types::SharedApiKeyProvider;
 use async_openai::types::responses as rs;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
@@ -23,6 +30,17 @@ pub struct WebSearchClient {
     /// from the Responses API emits an `auth_401_attribution` event
     /// with `consumer == "WebSearch"`.
     attribution_callback: Option<SharedAttributionCallback>,
+    /// Per-attempt total timeout for the native generateContent wire
+    /// (SDD §4.1, cf M6); production default is
+    /// `gemini::ATTEMPT_TIMEOUT_SECS` (60 s). Tests shorten it.
+    gemini_attempt_timeout: Duration,
+    /// Dedicated client for the native generateContent wire, mirroring the
+    /// web_fetch pattern: the same corp-CA builder and default headers as the
+    /// shared client plus a 10 s connect timeout. reqwest has no
+    /// per-request `connect_timeout`, so it rides on this client; the total
+    /// per-attempt timeout is applied per request on top of it. The shared
+    /// `http` client stays unbounded for legacy-wire parity.
+    gemini_http: reqwest::Client,
 }
 impl WebSearchClient {
     /// Create a new web search client from `WebSearchConfig::Enabled`.
@@ -86,14 +104,27 @@ impl WebSearchClient {
                 format!("Failed to build HTTP client: {e}"),
             )
         })?;
+        let gemini_http = xai_grok_extra_ca::build_reqwest_client(|builder| {
+            builder
+                .default_headers(headers.clone())
+                .connect_timeout(Duration::from_secs(gemini::CONNECT_TIMEOUT_SECS))
+        })
+        .map_err(|e| {
+            xai_tool_runtime::ToolError::execution(
+                xai_tool_protocol::ToolId::new("web_search").expect("valid"),
+                format!("Failed to build Gemini HTTP client: {e}"),
+            )
+        })?;
         Ok(Self {
             http,
+            gemini_http,
             base_url: base_url.clone(),
             model: model.clone(),
             default_allowed_domains: allowed_domains.clone(),
             default_excluded_domains: excluded_domains.clone(),
             api_key_provider,
             attribution_callback: None,
+            gemini_attempt_timeout: Duration::from_secs(gemini::ATTEMPT_TIMEOUT_SECS),
         })
     }
     /// Resolve the effective domain filters for a request. This is required for `excluded_domains` to be a real block. Otherwise the model could
@@ -183,6 +214,114 @@ impl WebSearchClient {
             sent_bearer,
         );
     }
+    /// D4: derived wire selection — gemini-prefixed model pins take the native
+    /// generateContent wire; everything else stays on the legacy `/responses`
+    /// wire byte-identical (G3). Lowercase FIRST: the proxy lowercases the model
+    /// before its `startswith('gemini')` test (llm-proxy tool.py:39-42), so a
+    /// case-sensitive check would disagree with the proxy on mixed-case pins.
+    fn is_gemini_wire(&self) -> bool {
+        self.model.to_ascii_lowercase().starts_with("gemini")
+    }
+    /// D1/D2/D3: the Gemini-native side-call wire. Fires the generateContent
+    /// utility call (non-streaming, §4.1), applies the §4.3 no-grounding
+    /// retry, and post-filters the grounding chunks per D7.
+    async fn search_gemini(
+        &self,
+        query: &str,
+        model_allowed: Option<Vec<String>>,
+    ) -> Result<(String, Vec<GroundingChunk>), xai_tool_runtime::ToolError> {
+        let first = self.gemini_attempt(query, None).await?;
+        let result = if first.grounded() && first.finish_reason != "MAX_TOKENS" {
+            first
+        } else {
+            // §4.3: exactly ONE retry, forcing the search tool (R3 mitigation).
+            let retried = self
+                .gemini_attempt(query, Some(GROUNDING_RETRY_INSTRUCTION))
+                .await?;
+            if retried.grounded() && !retried.text.is_empty() {
+                retried
+            } else {
+                // Never return success on an ungrounded search (R2/P4 trap).
+                return Ok(("No search results found.".to_string(), Vec::new()));
+            }
+        };
+        let (allowed, excluded) = self.resolve_filters(model_allowed);
+        Ok((
+            result.text,
+            filter_grounding_chunks(result.chunks, (allowed, excluded)),
+        ))
+    }
+    /// One generateContent attempt: build the §4.1 request, POST it through the
+    /// session proxy with per-attempt timeouts (cf M6), and parse the response.
+    /// Transport errors, 5xx, 401 (→ attribution), and unparseable 200 bodies
+    /// are `Err`; callers retry only per §4.3, never on these.
+    async fn gemini_attempt(
+        &self,
+        query: &str,
+        system_instruction: Option<&str>,
+    ) -> Result<GeminiUtilityResult, xai_tool_runtime::ToolError> {
+        let err = |msg: String| {
+            xai_tool_runtime::ToolError::execution(
+                xai_tool_protocol::ToolId::new("web_search").expect("valid"),
+                msg,
+            )
+        };
+        let request =
+            GeminiUtilityRequest::new(self.model.as_str(), query, GeminiToolKind::GoogleSearch);
+        let request = match system_instruction {
+            Some(instruction) => request.system_instruction(instruction),
+            None => request,
+        };
+        let url = format!("{}{}", gemini::url_root(&self.base_url), request.path());
+        let sent_bearer = self.current_bearer().await;
+        let body = request.body();
+        let mut req = self
+            .gemini_http
+            .post(&url)
+            .json(&body)
+            .timeout(self.gemini_attempt_timeout);
+        if let Some(ref key) = sent_bearer {
+            req = req.header(AUTHORIZATION, format!("Bearer {key}"));
+        }
+        let response = req
+            .send()
+            .await
+            .map_err(|e| err(format!("generateContent request failed: {e}")))?;
+        let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            self.record_401_attribution(sent_bearer.as_deref());
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Failed to read error body".to_string());
+            return Err(xai_tool_runtime::ToolError::unauthorized(format!(
+                "generateContent returned 401 Unauthorized: {body}"
+            ))
+            .with_details(serde_json::json!({
+                "tool_id": "web_search",
+                "status": 401,
+            })));
+        }
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Failed to read error body".to_string());
+            return Err(err(format!("generateContent returned {status}: {body}")));
+        }
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| err(format!("Failed to read generateContent body: {e}")))?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|e| err(format!("Failed to parse generateContent body: {e}")))?;
+        GeminiUtilityResult::parse(&value).ok_or_else(|| {
+            let head = String::from_utf8_lossy(&bytes[..bytes.len().min(512)]);
+            err(format!(
+                "generateContent returned 200 but the body is not a successful search (head: {head})"
+            ))
+        })
+    }
     /// Perform a web search query using the Responses API. Returns `(content, citations)` where
     /// content is the assistant's text and citations are unique URLs found in the response
     /// annotations.
@@ -191,6 +330,10 @@ impl WebSearchClient {
         query: &str,
         allowed_domains: Option<Vec<String>>,
     ) -> Result<(String, Vec<String>), xai_tool_runtime::ToolError> {
+        if self.is_gemini_wire() {
+            let (content, chunks) = self.search_gemini(query, allowed_domains).await?;
+            return Ok((content, chunks.into_iter().map(|chunk| chunk.uri).collect()));
+        }
         let (allowed, excluded) = self.resolve_filters(allowed_domains);
         let request = self.build_request_json(query, allowed, excluded)?;
         let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
@@ -256,6 +399,16 @@ impl WebSearchClient {
         query: &str,
         allowed_domains: Option<Vec<String>>,
     ) -> Result<(String, Vec<(String, String)>), xai_tool_runtime::ToolError> {
+        if self.is_gemini_wire() {
+            let (content, chunks) = self.search_gemini(query, allowed_domains).await?;
+            return Ok((
+                content,
+                chunks
+                    .into_iter()
+                    .map(|chunk| (chunk.title, chunk.uri))
+                    .collect(),
+            ));
+        }
         let (allowed, excluded) = self.resolve_filters(allowed_domains);
         let request = self.build_request_json(query, allowed, excluded)?;
         let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
@@ -371,6 +524,56 @@ fn extract_citation_pairs(response: &rs::Response) -> Vec<(String, String)> {
     let mut seen = std::collections::HashSet::new();
     pairs.retain(|(_t, url)| seen.insert(url.clone()));
     pairs
+}
+/// D7 match rule: the chunk's effective domain for policy matching.
+/// The normalized `web.domain` when present and non-empty; otherwise the host
+/// parsed from `web.uri` (urlContext chunks carry the target URL and no
+/// domain, P5). On googleSearch chunks `web.uri` is the opaque
+/// `vertexaisearch.cloud.google.com/grounding-api-redirect/…` URL, so the
+/// domain — not the uri host — is what the policy must match (M1).
+fn chunk_domain(chunk: &GroundingChunk) -> Option<String> {
+    if let Some(domain) = chunk.domain.as_deref()
+        && !domain.is_empty()
+    {
+        return Some(normalize_domain(domain));
+    }
+    url::Url::parse(&chunk.uri)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(normalize_domain))
+}
+/// §D7 post-filter: keep allowed / drop excluded on the grounding chunks,
+/// preserving `resolve_filters`' mutually-exclusive semantics, then dedup by
+/// uri in first-seen order (§4.2). A chunk with no matchable domain is
+/// dropped under an allowlist, kept under a blocklist. The model's text is
+/// never filtered (R4).
+fn filter_grounding_chunks(
+    chunks: Vec<GroundingChunk>,
+    filters: (Option<Vec<String>>, Option<Vec<String>>),
+) -> Vec<GroundingChunk> {
+    let normalize_list = |list: &[String]| {
+        list.iter()
+            .map(|d| normalize_domain(d))
+            .filter(|d| !d.is_empty())
+            .collect::<std::collections::HashSet<_>>()
+    };
+    let allowed = filters.0.as_deref().map(normalize_list);
+    let excluded = filters.1.as_deref().map(normalize_list);
+    let mut kept: Vec<GroundingChunk> = chunks
+        .into_iter()
+        .filter(|chunk| match (&allowed, &excluded) {
+            (Some(allowed), _) => chunk_domain(chunk)
+                .as_deref()
+                .is_some_and(|domain| allowed.contains(domain)),
+            (None, Some(excluded)) => chunk_domain(chunk)
+                .as_deref()
+                .map(|domain| !excluded.contains(domain))
+                .unwrap_or(true),
+            (None, None) => true,
+        })
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    kept.retain(|chunk| seen.insert(chunk.uri.clone()));
+    kept
 }
 #[cfg(test)]
 mod tests {
@@ -869,5 +1072,519 @@ mod tests {
         }));
         let citations = extract_citations(&response);
         assert!(citations.is_empty());
+    }
+    // G3 golden: with a NON-gemini model pin, the legacy /responses request body is
+    // byte-identical to the pre-cut wire (captured from the uncut tree, 2026-10-02).
+    // The golden pins the REQUEST, not the proxy outcome — the live proxy 403s this
+    // wire on this deployment (SDD P1/P1c); that is documented reality, not a failure.
+    const G3_MODEL: &str = "gpt-5.6-terra";
+    const G3_QUERY: &str = "what is the latest linux kernel";
+    const G3_LEGACY_BODY_NO_FILTERS: &str = r#"{"input":"what is the latest linux kernel","max_output_tokens":8192,"model":"gpt-5.6-terra","store":false,"temperature":0.10000000149011612,"tools":[{"type":"web_search","filters":{}}],"top_p":0.949999988079071}"#;
+    const G3_LEGACY_BODY_FILTERS: &str = r#"{"input":"what is the latest linux kernel","max_output_tokens":8192,"model":"gpt-5.6-terra","store":false,"temperature":0.10000000149011612,"tools":[{"type":"web_search","filters":{"allowed_domains":["docs.x.ai"],"excluded_domains":["reddit.com"]}}],"top_p":0.949999988079071}"#;
+
+    fn g3_client() -> WebSearchClient {
+        let config = WebSearchConfig::Enabled {
+            api_key: "test-key".to_string(),
+            base_url: "https://api.x.ai/v1".to_string(),
+            model: G3_MODEL.to_string(),
+            extra_headers: IndexMap::new(),
+            alpha_test_key: None,
+            allowed_domains: None,
+            excluded_domains: None,
+        };
+        WebSearchClient::new(&config, None).expect("client should build")
+    }
+
+    #[test]
+    fn g3_non_gemini_pin_keeps_legacy_responses_body_byte_identical() {
+        let client = g3_client();
+        assert!(
+            !client.is_gemini_wire(),
+            "golden model must take the legacy wire"
+        );
+        let plain = client
+            .build_request_json(G3_QUERY, None, None)
+            .expect("request json builds");
+        assert_eq!(
+            serde_json::to_string(&plain).unwrap(),
+            G3_LEGACY_BODY_NO_FILTERS
+        );
+        let filtered = client
+            .build_request_json(
+                G3_QUERY,
+                Some(vec!["docs.x.ai".to_string()]),
+                Some(vec!["reddit.com".to_string()]),
+            )
+            .expect("request json builds");
+        assert_eq!(
+            serde_json::to_string(&filtered).unwrap(),
+            G3_LEGACY_BODY_FILTERS
+        );
+    }
+    // ── T3: search_gemini end-to-end against a local wiremock stub ──────────
+    // wiremock (an existing dev-dep) serves the canned generateContent bodies:
+    // xai-grok-test-support's MockInferenceServer only knows /v1/chat/completions
+    // and /v1/responses (implementation decision, noted per SDD §5 T3).
+
+    const T3_MODEL: &str = "gemini-test-model";
+    const T3_PATH: &str = "/v1beta/models/gemini-test-model:generateContent";
+
+    /// Read the `body` of a §9 envelope fixture (sanitized RESPONSE capture).
+    fn t3_fixture_body(name: &str) -> serde_json::Value {
+        let raw = match name {
+            "P3a__resp.json" => include_str!("fixtures/P3a__resp.json"),
+            "P3b__resp.json" => include_str!("fixtures/P3b__resp.json"),
+            "P4__resp.json" => include_str!("fixtures/P4__resp.json"),
+            "P5__resp.json" => include_str!("fixtures/P5__resp.json"),
+            "P6__resp.json" => include_str!("fixtures/P6__resp.json"),
+            other => panic!("unknown fixture {other}"),
+        };
+        let envelope: serde_json::Value = serde_json::from_str(raw).expect("fixture is valid JSON");
+        envelope["body"].clone()
+    }
+
+    fn t3_fixture_text(name: &str) -> String {
+        t3_fixture_body(name)
+            .pointer("/candidates/0/content/parts/0/text")
+            .and_then(serde_json::Value::as_str)
+            .expect("fixture carries candidate text")
+            .to_string()
+    }
+
+    fn t3_fixture_chunk_uri(name: &str, index: usize) -> String {
+        t3_fixture_body(name)
+            .pointer(&format!(
+                "/candidates/0/groundingMetadata/groundingChunks/{index}/web/uri"
+            ))
+            .and_then(serde_json::Value::as_str)
+            .expect("fixture carries the grounding chunk uri")
+            .to_string()
+    }
+
+    fn t3_client(
+        server: &wiremock::MockServer,
+        allowed: Option<Vec<String>>,
+        excluded: Option<Vec<String>>,
+    ) -> WebSearchClient {
+        let config = WebSearchConfig::Enabled {
+            api_key: "test-key".to_string(),
+            base_url: server.uri(),
+            model: T3_MODEL.to_string(),
+            extra_headers: IndexMap::new(),
+            alpha_test_key: None,
+            allowed_domains: allowed,
+            excluded_domains: excluded,
+        };
+        WebSearchClient::new(&config, None).expect("client should build")
+    }
+
+    /// Sequential canned bodies: call N gets body[N] (the last one repeats), so
+    /// the retry tests pin "first attempt X, retry Y" on a single mock.
+    struct SequentialBodies(std::sync::atomic::AtomicUsize, Vec<serde_json::Value>);
+
+    impl wiremock::Respond for SequentialBodies {
+        fn respond(&self, _request: &wiremock::Request) -> wiremock::ResponseTemplate {
+            let n = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let body = &self.1[n.min(self.1.len() - 1)];
+            wiremock::ResponseTemplate::new(200).set_body_json(body.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn t3_p3a_grounded_success_returns_text_and_citation_uri() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(T3_PATH))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(t3_fixture_body("P3a__resp.json")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = t3_client(&server, None, None);
+        let (content, citations) = client
+            .search("what is the latest linux kernel", None)
+            .await
+            .expect("grounded P3a must succeed");
+        assert_eq!(content, t3_fixture_text("P3a__resp.json"));
+        assert_eq!(citations, vec![t3_fixture_chunk_uri("P3a__resp.json", 0)]);
+        let reqs = server.received_requests().await.expect("requests recorded");
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].url.path(), T3_PATH);
+        let body: serde_json::Value = reqs[0].body_json().expect("request body is JSON");
+        assert_eq!(
+            body["contents"][0]["parts"][0]["text"],
+            serde_json::json!("what is the latest linux kernel")
+        );
+        assert_eq!(
+            body["generationConfig"]["maxOutputTokens"],
+            serde_json::json!(8192)
+        );
+        assert_eq!(
+            body["generationConfig"]["temperature"],
+            serde_json::json!(0.1)
+        );
+        assert_eq!(body["tools"], serde_json::json!([{"googleSearch": {}}]));
+        assert!(
+            body.get("systemInstruction").is_none(),
+            "base request carries no systemInstruction"
+        );
+        assert!(body.get("stream").is_none(), "non-streaming only");
+    }
+
+    #[tokio::test]
+    async fn t3_not_grounded_retries_once_with_the_forcing_instruction() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(T3_PATH))
+            .respond_with(SequentialBodies(
+                std::sync::atomic::AtomicUsize::new(0),
+                vec![
+                    t3_fixture_body("P3b__resp.json"),
+                    t3_fixture_body("P3a__resp.json"),
+                ],
+            ))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = t3_client(&server, None, None);
+        let (content, citations) = client
+            .search("what is the latest linux kernel", None)
+            .await
+            .expect("retry path must succeed");
+        assert_eq!(content, t3_fixture_text("P3a__resp.json"));
+        assert_eq!(citations, vec![t3_fixture_chunk_uri("P3a__resp.json", 0)]);
+        let reqs = server.received_requests().await.expect("requests recorded");
+        assert_eq!(reqs.len(), 2, "exactly one retry");
+        let first: serde_json::Value = reqs[0].body_json().expect("first body is JSON");
+        let second: serde_json::Value = reqs[1].body_json().expect("second body is JSON");
+        assert!(
+            first.get("systemInstruction").is_none(),
+            "first attempt carries no systemInstruction"
+        );
+        assert_eq!(
+            second["systemInstruction"]["parts"][0]["text"],
+            serde_json::json!(GROUNDING_RETRY_INSTRUCTION)
+        );
+        assert_eq!(
+            first["contents"], second["contents"],
+            "the retry changes ONLY the systemInstruction"
+        );
+        assert_eq!(first["generationConfig"], second["generationConfig"]);
+        assert_eq!(first["tools"], second["tools"]);
+    }
+
+    #[tokio::test]
+    async fn t3_retry_still_not_grounded_returns_the_no_results_convention() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(T3_PATH))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(t3_fixture_body("P3b__resp.json")),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = t3_client(&server, None, None);
+        let (content, citations) = client
+            .search("what is the latest linux kernel", None)
+            .await
+            .expect("exhausted retries are Ok, not Err");
+        assert_eq!(content, "No search results found.");
+        assert!(citations.is_empty());
+        let reqs = server.received_requests().await.expect("requests recorded");
+        assert_eq!(
+            reqs.len(),
+            2,
+            "exactly one retry, then the no-results convention"
+        );
+    }
+
+    #[tokio::test]
+    async fn t3_p4_responses_wire_body_is_an_error_never_a_success() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(T3_PATH))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(t3_fixture_body("P4__resp.json")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = t3_client(&server, None, None);
+        let err = client
+            .search("what is the latest linux kernel", None)
+            .await
+            .expect_err("P4 false-green trap must surface as an error");
+        assert_eq!(err.kind, xai_tool_runtime::ToolErrorKind::Execution);
+        assert!(
+            err.detail.contains("200"),
+            "detail carries the status: {}",
+            err.detail
+        );
+        let reqs = server.received_requests().await.expect("requests recorded");
+        assert_eq!(reqs.len(), 1, "unparseable 200 bodies are not retried");
+    }
+
+    #[tokio::test]
+    async fn t3_401_maps_to_unauthorized_with_attribution_and_no_retry() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(T3_PATH))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_json(serde_json::json!({"error": "invalid api key"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let cb = std::sync::Arc::new(CountingCallback::default());
+        let cb_dyn: crate::attribution::SharedAttributionCallback = cb.clone();
+        let client = t3_client(&server, None, None).with_attribution_callback(Some(cb_dyn));
+        let err = client
+            .search("what is the latest linux kernel", None)
+            .await
+            .expect_err("401 must never surface as success");
+        assert_eq!(err.kind, xai_tool_runtime::ToolErrorKind::Unauthorized);
+        assert!(
+            err.detail.contains("401"),
+            "detail carries the status: {}",
+            err.detail
+        );
+        let details = err.details.clone().expect("401 details present");
+        assert_eq!(details["tool_id"], serde_json::json!("web_search"));
+        assert_eq!(details["status"], serde_json::json!(401));
+        let calls = cb.invocations.lock().expect("callback lock");
+        assert_eq!(calls.len(), 1, "attribution emitted exactly once");
+        assert_eq!(calls[0].0, ToolConsumer::WebSearch);
+        let reqs = server.received_requests().await.expect("requests recorded");
+        assert_eq!(reqs.len(), 1, "401 is not retried");
+    }
+
+    #[tokio::test]
+    async fn t3_500_maps_to_execution_error_with_no_retry() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(T3_PATH))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_json(serde_json::json!({"error": "boom"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = t3_client(&server, None, None);
+        let err = client
+            .search("what is the latest linux kernel", None)
+            .await
+            .expect_err("5xx must surface as an error");
+        assert_eq!(err.kind, xai_tool_runtime::ToolErrorKind::Execution);
+        assert!(
+            err.detail.contains("500"),
+            "detail carries the status: {}",
+            err.detail
+        );
+        let reqs = server.received_requests().await.expect("requests recorded");
+        assert_eq!(reqs.len(), 1, "5xx is not retried");
+    }
+
+    #[tokio::test]
+    async fn t3_slow_response_aborts_within_the_attempt_timeout() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(T3_PATH))
+            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(10)))
+            .mount(&server)
+            .await;
+        let mut client = t3_client(&server, None, None);
+        // Test knob: the production default is gemini::ATTEMPT_TIMEOUT_SECS (60 s).
+        client.gemini_attempt_timeout = std::time::Duration::from_secs(2);
+        let started = std::time::Instant::now();
+        let err = client
+            .search("what is the latest linux kernel", None)
+            .await
+            .expect_err("a 10 s response must trip the 2 s attempt timeout");
+        assert_eq!(err.kind, xai_tool_runtime::ToolErrorKind::Execution);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(8),
+            "timed out after {} s: the per-attempt timeout is not applied",
+            started.elapsed().as_secs_f64()
+        );
+        let reqs = server.received_requests().await.expect("requests recorded");
+        assert_eq!(reqs.len(), 1, "transport errors are not retried");
+    }
+
+    #[tokio::test]
+    async fn t3_allowlist_falls_back_to_uri_host_when_domain_is_absent() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        // P5's urlContext chunk carries no web.domain (the uri IS the site),
+        // plus a chunk on a domain the operator allowlist does not cover.
+        let mut body = t3_fixture_body("P5__resp.json");
+        let chunks = body
+            .pointer_mut("/candidates/0/groundingMetadata/groundingChunks")
+            .and_then(serde_json::Value::as_array_mut)
+            .expect("P5 carries grounding chunks");
+        chunks.push(serde_json::json!({
+            "web": {"uri": "https://evil.example/page", "title": "Evil", "domain": "evil.example"}
+        }));
+        Mock::given(method("POST"))
+            .and(path(T3_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = t3_client(&server, Some(vec!["kernel.org".to_string()]), None);
+        let (content, citations) = client
+            .search("what is the latest linux kernel", None)
+            .await
+            .expect("grounded P5 must succeed");
+        assert_eq!(
+            content,
+            t3_fixture_text("P5__resp.json"),
+            "model text is never domain-filtered (R4)"
+        );
+        assert_eq!(
+            citations,
+            vec!["https://kernel.org".to_string()],
+            "allowlist keeps only the kernel.org chunk (uri-host fallback, D7)"
+        );
+    }
+
+    #[tokio::test]
+    async fn t3_blocklist_matches_the_real_domain_not_the_redirect_uri_host() {
+        // M1: a googleSearch chunk's uri is the opaque
+        // vertexaisearch.cloud.google.com/grounding-api-redirect/… URL. Matching on
+        // the uri host would keep this chunk under an excluded kernel.org; the
+        // block must match web.domain.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let mut body = t3_fixture_body("P3a__resp.json");
+        let chunks = body
+            .pointer_mut("/candidates/0/groundingMetadata/groundingChunks")
+            .and_then(serde_json::Value::as_array_mut)
+            .expect("P3a carries grounding chunks");
+        chunks.push(serde_json::json!({
+            "web": {"uri": "https://example.com/a", "title": "Example", "domain": "example.com"}
+        }));
+        Mock::given(method("POST"))
+            .and(path(T3_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = t3_client(&server, None, Some(vec!["kernel.org".to_string()]));
+        let (content, citations) = client
+            .search("what is the latest linux kernel", None)
+            .await
+            .expect("grounded P3a must succeed");
+        assert!(!content.is_empty());
+        assert_eq!(
+            citations,
+            vec!["https://example.com/a".to_string()],
+            "kernel.org chunk dropped by its real domain; example.com kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn t3_blocklist_dropping_every_chunk_keeps_text_with_empty_citations() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(T3_PATH))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(t3_fixture_body("P3a__resp.json")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = t3_client(&server, None, Some(vec!["kernel.org".to_string()]));
+        let (content, citations) = client
+            .search("what is the latest linux kernel", None)
+            .await
+            .expect("a fully filtered grounded result is still Ok");
+        assert!(
+            !content.is_empty(),
+            "text is returned even when every chunk is filtered"
+        );
+        assert!(citations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn t3_search_with_titles_dedupes_by_uri_first_seen() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let mut body = t3_fixture_body("P3a__resp.json");
+        let chunks = body
+            .pointer_mut("/candidates/0/groundingMetadata/groundingChunks")
+            .and_then(serde_json::Value::as_array_mut)
+            .expect("P3a carries grounding chunks");
+        chunks.push(chunks[0].clone()); // duplicate uri: first-seen order must win
+        chunks.push(serde_json::json!({
+            "web": {"uri": "https://example.com/b", "title": "Example B", "domain": "example.com"}
+        }));
+        Mock::given(method("POST"))
+            .and(path(T3_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = t3_client(&server, None, None);
+        let (content, pairs) = client
+            .search_with_titles("what is the latest linux kernel", None)
+            .await
+            .expect("grounded P3a must succeed");
+        assert_eq!(content, t3_fixture_text("P3a__resp.json"));
+        assert_eq!(pairs.len(), 2, "duplicate uri collapses to one pair");
+        assert_eq!(pairs[0].0, "kernel.org");
+        assert_eq!(pairs[0].1, t3_fixture_chunk_uri("P3a__resp.json", 0));
+        assert_eq!(pairs[1].0, "Example B");
+        assert_eq!(pairs[1].1, "https://example.com/b");
+    }
+
+    #[test]
+    fn t2_is_gemini_wire_lowercases_before_the_prefix() {
+        fn takes_gemini_wire(model: &str) -> bool {
+            let config = WebSearchConfig::Enabled {
+                api_key: "test-key".to_string(),
+                base_url: "https://api.x.ai/v1".to_string(),
+                model: model.to_string(),
+                extra_headers: IndexMap::new(),
+                alpha_test_key: None,
+                allowed_domains: None,
+                excluded_domains: None,
+            };
+            WebSearchClient::new(&config, None)
+                .expect("client should build")
+                .is_gemini_wire()
+        }
+        assert!(takes_gemini_wire("gemini-3.8-flash"));
+        assert!(takes_gemini_wire("Gemini-3.1-Pro-Preview"));
+        assert!(takes_gemini_wire("GEMINI-3.8-FLASH"));
+        assert!(takes_gemini_wire("gemini"));
+        assert!(!takes_gemini_wire("gpt-5.6-terra"));
+        assert!(!takes_gemini_wire("grok-4.5"));
+        assert!(!takes_gemini_wire("test-model"));
+        assert!(
+            !takes_gemini_wire("google/gemini-3.1-pro-preview"),
+            "n12 edge: a provider-qualified id falls to the legacy wire"
+        );
     }
 }
