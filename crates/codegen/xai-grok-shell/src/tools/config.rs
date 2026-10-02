@@ -109,6 +109,18 @@ pub struct WebFetchToolConfig {
     /// Private and metadata ranges stay blocked.
     /// Resolution: TOML > `GROK_WEB_FETCH_ALLOW_LOCAL` env > false.
     pub allow_local: Option<bool>,
+    /// When `true`, fetches to hosts that are not private IPs and not in
+    /// `internal_host_allowlist` route to the Gemini-native `urlContext`
+    /// `generateContent` wire, falling back to the direct fetch on any
+    /// urlContext failure (apex-blvg-A).
+    /// Resolution: TOML only (no env fallback in this cut) > false.
+    pub url_context: Option<bool>,
+    /// INTERNAL hosts that fetch DIRECT, bypassing the Gemini `urlContext`
+    /// wire (apex-blvg-A): exact normalized-host entries, `*.domain` glob
+    /// entries (any subdomain, not the apex), and path-scoped entries
+    /// (`host/path`, which count at host level for routing).
+    /// Resolution: TOML only (no env fallback in this cut) > empty.
+    pub internal_host_allowlist: Option<Vec<String>>,
 }
 
 impl WebFetchToolConfig {
@@ -145,6 +157,8 @@ impl WebFetchToolConfig {
             allowed_domains,
             context_window_tokens,
             allow_local,
+            url_context: self.url_context,
+            internal_host_allowlist: self.internal_host_allowlist.clone(),
             ..Default::default()
         }
     }
@@ -556,6 +570,7 @@ mod tests {
             proxy_endpoint: Some("https://toml-proxy.example.com".to_owned()),
             allowed_domains: Some(vec!["toml.example.com".to_owned()]),
             allow_local: Some(true),
+            ..WebFetchToolConfig::default()
         };
         let params = local.resolve_params(
             Some("https://remote-proxy.example.com"),
@@ -608,9 +623,59 @@ mod tests {
             proxy_endpoint: None,
             allowed_domains: Some(vec![]),
             allow_local: None,
+            ..WebFetchToolConfig::default()
         };
         let params = local.resolve_params(None, Some(&["remote.example.com".to_owned()]), None);
         assert_eq!(params.allowed_domains, Some(vec![]));
+    }
+
+    // -- apex-blvg-B: apex-blvg-A routing knobs go live through config.toml ([toolset.web_fetch]) --
+
+    #[test]
+    fn web_fetch_config_round_trips_url_context_and_internal_host_allowlist() {
+        let cfg: WebFetchToolConfig = serde_json::from_str(
+            r#"{"url_context": true, "internal_host_allowlist": ["10.0.0.5", "*.corp.example"]}"#,
+        )
+        .expect("TOML-layer keys must deserialize");
+        assert_eq!(cfg.url_context, Some(true));
+        assert_eq!(
+            cfg.internal_host_allowlist,
+            Some(vec!["10.0.0.5".to_owned(), "*.corp.example".to_owned()])
+        );
+        let out = serde_json::to_string(&cfg).expect("serialize");
+        let back: WebFetchToolConfig = serde_json::from_str(&out).expect("round-trip");
+        assert_eq!(back.url_context, Some(true));
+        assert_eq!(back.internal_host_allowlist, cfg.internal_host_allowlist);
+    }
+
+    #[test]
+    fn resolve_params_forwards_url_context_and_internal_host_allowlist() {
+        let local = WebFetchToolConfig {
+            url_context: Some(true),
+            internal_host_allowlist: Some(vec!["10.0.0.5".to_owned()]),
+            ..WebFetchToolConfig::default()
+        };
+        let params = local.resolve_params(None, None, None);
+        assert_eq!(params.url_context, Some(true));
+        assert!(params.url_context());
+        assert_eq!(
+            params.internal_host_allowlist,
+            Some(vec!["10.0.0.5".to_owned()])
+        );
+        assert_eq!(
+            params.internal_host_allowlist(),
+            vec!["10.0.0.5".to_owned()]
+        );
+    }
+
+    #[test]
+    fn resolve_params_url_context_knob_off_and_allowlist_empty_by_default() {
+        let local = WebFetchToolConfig::default();
+        let params = local.resolve_params(None, None, None);
+        assert!(params.url_context.is_none());
+        assert!(!params.url_context());
+        assert!(params.internal_host_allowlist.is_none());
+        assert!(params.internal_host_allowlist().is_empty());
     }
 
     // -- to_bash_params_json allow_background_operator precedence (local > remote > true) --

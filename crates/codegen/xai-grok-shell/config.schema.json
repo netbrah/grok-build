@@ -4496,10 +4496,27 @@
             "null"
           ]
         },
+        "internal_host_allowlist": {
+          "description": "INTERNAL hosts that fetch DIRECT, bypassing the Gemini `urlContext`\nwire (apex-blvg-A): exact normalized-host entries, `*.domain` glob\nentries (any subdomain, not the apex), and path-scoped entries\n(`host/path`, which count at host level for routing).\nResolution: TOML only (no env fallback in this cut) > empty.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "proxy_endpoint": {
           "description": "When set, all HTTP requests are routed through this URL.\nResolution: TOML > `GROK_WEB_FETCH_PROXY` env > remote settings > None.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "url_context": {
+          "description": "When `true`, fetches to hosts that are not private IPs and not in\n`internal_host_allowlist` route to the Gemini-native `urlContext`\n`generateContent` wire, falling back to the direct fetch on any\nurlContext failure (apex-blvg-A).\nResolution: TOML only (no env fallback in this cut) > false.",
+          "type": [
+            "boolean",
             "null"
           ]
         }
