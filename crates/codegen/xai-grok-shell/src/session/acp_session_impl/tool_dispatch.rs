@@ -409,13 +409,24 @@ mod tests {
     use super::*;
     use xai_grok_sampling_types::rs;
 
-    fn web_search_payload(status: rs::WebSearchToolCallStatus) -> serde_json::Value {
-        // The exact serialized `web_search_call` payload the sampler forwards on `BackendToolCallCompleted` (via `serde_json::to_value(ws)`)
-        serde_json::to_value(rs::WebSearchToolCall {
-            action: rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
-                query: "rust async runtime".to_string(),
+    fn web_search_payload(status: rs::WebSearchCallStatus) -> serde_json::Value {
+        // Hand-built, then serialized through the same `serde_json::to_value(ws)` the sampler
+        // calls on `BackendToolCallCompleted` (`xai-grok-sampler/src/stream/responses.rs`).
+        // The action carries 0.42.1's `queries`; the sampler's minted sentinel carries the
+        // deprecated empty `query` instead (`conversation::sentinel_web_search_action_json`).
+        // `query` must be named because `WebSearchActionSearch` derives no `Default`
+        // (async-openai 0.42.1 response.rs:2160), and the suppression is scoped to this
+        // literal — not to the whole fixture — so a later deprecated use here still warns.
+        let action = {
+            #[allow(deprecated)]
+            rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
+                query: None,
+                queries: Some(vec!["rust async runtime".to_string()]),
                 sources: None,
-            }),
+            })
+        };
+        serde_json::to_value(rs::WebSearchToolCall {
+            action: Some(action),
             id: "ws1".to_string(),
             status,
         })
@@ -427,14 +438,14 @@ mod tests {
     /// Exercises the real payload shape, not a hand-built status.
     #[test]
     fn backend_failed_web_search_maps_to_failed_status() {
-        let failed = web_search_payload(rs::WebSearchToolCallStatus::Failed);
+        let failed = web_search_payload(rs::WebSearchCallStatus::Failed);
         assert_eq!(failed["status"], "failed", "wire field name is `status`");
         assert_eq!(
             backend_tool_call_status(Some(&failed)),
             acp::ToolCallStatus::Failed
         );
 
-        let completed = web_search_payload(rs::WebSearchToolCallStatus::Completed);
+        let completed = web_search_payload(rs::WebSearchCallStatus::Completed);
         assert_eq!(
             backend_tool_call_status(Some(&completed)),
             acp::ToolCallStatus::Completed
