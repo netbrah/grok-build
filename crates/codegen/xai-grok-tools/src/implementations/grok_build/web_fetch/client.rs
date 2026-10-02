@@ -278,17 +278,22 @@ impl WebFetchClient {
 
     /// The normative urlContext routing predicate (apex-blvg-A — inverting
     /// SDD §13.2's allowlist-for-gemini to allowlist-for-direct): route to
-    /// the Gemini `urlContext` wire iff a Gemini client is available, the
-    /// opt-in is on, the host is NOT a private IP (always-on safety net —
+    /// the Gemini `urlContext` wire iff a Gemini-native client is available,
+    /// the opt-in is on, the host is NOT a private IP (always-on safety net —
     /// private/loopback hosts never cross the Gemini wire; subsumes the old
     /// `ssrf::is_explicit_local_host` guard) and the host is NOT in the
     /// `internal_host_allowlist` (exact normalized-host or `*.domain` glob;
     /// path-scoped entries count at host level). Everything else — public
     /// web — routes to Gemini. The superseded `url_context_domains` knob is
     /// no longer read by the predicate.
+    ///
+    /// (apex-blvg-C) the urlContext routing engages only for a Gemini-native
+    /// web_search backend (`is_gemini_wire`): a non-Gemini web_search, e.g. a
+    /// stock gpt-pinned web_search, stays on the direct path even with
+    /// url_context=true.
     fn uses_url_context(&self, url: &Url) -> bool {
         let host = url.host_str().unwrap_or("");
-        self.gemini.is_some()
+        self.gemini.as_ref().is_some_and(|g| g.is_gemini_wire())
             && self.params.url_context()
             && !ssrf::is_private_ip(host)
             && !self.internal_host_matcher.host_matches(host)
@@ -1614,10 +1619,17 @@ mod tests {
     type WebSearchClient = crate::implementations::web_search::client::WebSearchClient;
 
     fn uc_gemini_client(base_url: &str) -> WebSearchClient {
+        uc_gemini_client_model(base_url, UC_MODEL)
+    }
+
+    fn uc_gemini_client_model(base_url: &str, model: &str) -> WebSearchClient {
+        // (apex-blvg-C) same stub as `uc_gemini_client` with a selectable
+        // model slug, to exercise the is_gemini_wire guard on the
+        // urlContext routing predicate.
         let config = crate::implementations::web_search::WebSearchConfig::Enabled {
             api_key: "test-key".to_string(),
             base_url: base_url.to_string(),
-            model: UC_MODEL.to_string(),
+            model: model.to_string(),
             extra_headers: indexmap::IndexMap::new(),
             alpha_test_key: None,
             allowed_domains: None,
@@ -1765,7 +1777,10 @@ mod tests {
 
     #[test]
     fn uc_predicate_rejects_when_flag_off() {
+        // url_context is now baked true by default (apex-blvg-C), so the
+        // flag-off case must be set explicitly.
         let params = WebFetchParams {
+            url_context: Some(false),
             url_context_domains: Some(vec!["93.184.216.34".to_string()]),
             proxy_endpoint: Some(UC_DEAD_PROXY.to_string()),
             ..WebFetchParams::default()
@@ -1790,6 +1805,65 @@ mod tests {
         assert!(!client.uses_url_context(&Url::parse("https://internal.netapp.com/y").unwrap()));
         // An unlisted public host still routes gemini.
         assert!(client.uses_url_context(&Url::parse("https://other.netapp.com/z").unwrap()));
+    }
+
+    // ── Baked zero-fuss defaults + is_gemini_wire guard (apex-blvg-C) ────
+
+    #[test]
+    fn uc_predicate_non_gemini_model_web_search_routes_direct_at_baked_default() {
+        // (apex-blvg-C) stock-safety pin: a web_search backend whose model is
+        // NOT a gemini slug (e.g. a stock gpt-pinned web_search) is not
+        // Gemini-native — the is_gemini_wire guard keeps a public
+        // (non-private, non-allowlisted) host on the DIRECT path even with
+        // url_context at the baked default.
+        let params = WebFetchParams {
+            proxy_endpoint: Some(UC_DEAD_PROXY.to_string()),
+            ..WebFetchParams::default()
+        };
+        let client = uc_client(
+            &params,
+            Some(uc_gemini_client_model(UC_DEAD_PROXY, "gpt-5.6-terra")),
+        );
+        assert!(
+            !client.uses_url_context(&Url::parse("https://example.com/").unwrap()),
+            "non-gemini web_search model keeps the direct path at the baked url_context default"
+        );
+    }
+
+    #[test]
+    fn uc_predicate_gemini_model_web_search_routes_gemini_at_baked_default() {
+        // (apex-blvg-C) the baked url_context=true default engages the
+        // urlContext routing for a Gemini-native web_search backend on a
+        // public host — the zero-touch Linux fleet behavior with no config.
+        let params = WebFetchParams {
+            proxy_endpoint: Some(UC_DEAD_PROXY.to_string()),
+            ..WebFetchParams::default()
+        };
+        let client = uc_client(
+            &params,
+            Some(uc_gemini_client_model(UC_DEAD_PROXY, "gemini-3.8-flash")),
+        );
+        assert!(
+            client.uses_url_context(&Url::parse("https://example.com/").unwrap()),
+            "gemini web_search model + baked default routes a public host to the Gemini wire"
+        );
+    }
+
+    #[test]
+    fn uc_predicate_baked_netapp_allowlist_routes_direct() {
+        // (apex-blvg-C) the baked internal_host_allowlist=["*.netapp.com"]
+        // default is a live safety net: NetApp internal subdomains route
+        // DIRECT even with a gemini web_search backend and url_context=true.
+        let params = WebFetchParams {
+            url_context: Some(true),
+            proxy_endpoint: Some(UC_DEAD_PROXY.to_string()),
+            ..WebFetchParams::default()
+        };
+        let client = uc_client(&params, Some(uc_gemini_client(UC_DEAD_PROXY)));
+        assert!(
+            !client.uses_url_context(&Url::parse("https://sub.netapp.com/wiki").unwrap()),
+            "baked *.netapp.com allowlist keeps internal subdomains on the direct path"
+        );
     }
 
     // ── fetch_url_context (single attempt; None on any failure) ───────────
@@ -2084,11 +2158,13 @@ mod tests {
 
     #[tokio::test]
     async fn uc_fetch_default_off_keeps_client_path_byte_identical() {
-        // url_context=false (the default) with a gemini client present: the
-        // LLM wire is never called and the client path runs (dead proxy fails
-        // it deterministically).
+        // url_context=false (explicit opt-out; the default is now baked
+        // true, apex-blvg-C) with a gemini client present: the LLM wire is
+        // never called and the client path runs (dead proxy fails it
+        // deterministically).
         let server = wiremock::MockServer::start().await;
         let params = WebFetchParams {
+            url_context: Some(false),
             proxy_endpoint: Some(UC_DEAD_PROXY.to_string()),
             ..WebFetchParams::default()
         };

@@ -46,8 +46,12 @@ pub struct WebFetchParams {
     /// `urlContext` utility wire instead of the direct HTTP fetch, falling
     /// back to the direct fetch on any urlContext failure (apex-blvg-A
     /// inversion of SDD §13.2: internal/fetchable hosts go direct, public
-    /// web goes Gemini). Default: `false` (direct HTTP fetch for every URL,
-    /// byte-identical to the pre-Phase-2 behavior).
+    /// web goes Gemini). Default: `true` (apex-blvg-C bake): public web
+    /// routes to the Gemini urlContext wire ONLY when a Gemini-native
+    /// web_search backend is present (the `is_gemini_wire` guard in the
+    /// predicate); gemini=None (no web_search backend, e.g. the zero-touch
+    /// Mac/npm install) stays on the direct path, so the bake is inert where
+    /// there is no Gemini backend.
     #[serde(default)]
     pub url_context: Option<bool>,
     /// Hosts eligible for the `url_context` routing: exact normalized-host
@@ -64,8 +68,10 @@ pub struct WebFetchParams {
     /// normalized-host entries, `*.domain` glob entries (any subdomain, not
     /// the apex), and path-scoped entries (`host/path`, which count at host
     /// level for routing). Matching uses the existing `DomainMatcher` (same
-    /// normalization as the allowlist). Default: empty (nothing exempted;
-    /// only the private-IP safety net routes direct).
+    /// normalization as the allowlist). Default: `["*.netapp.com"]`
+    /// (apex-blvg-C bake): the NetApp internal apex routes direct as a
+    /// safety net so no internal URL is disclosed to Gemini; the operator
+    /// can extend or override via config.
     #[serde(default)]
     pub internal_host_allowlist: Option<Vec<String>>,
 }
@@ -104,7 +110,7 @@ impl WebFetchParams {
     }
 
     pub fn url_context(&self) -> bool {
-        self.url_context.unwrap_or(false)
+        self.url_context.unwrap_or(true)
     }
 
     pub fn url_context_domains(&self) -> Vec<String> {
@@ -112,7 +118,9 @@ impl WebFetchParams {
     }
 
     pub fn internal_host_allowlist(&self) -> Vec<String> {
-        self.internal_host_allowlist.clone().unwrap_or_default()
+        self.internal_host_allowlist
+            .clone()
+            .unwrap_or_else(|| vec!["*.netapp.com".to_string()])
     }
 
     pub fn allowed_domains(&self) -> Vec<String> {
@@ -237,9 +245,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn url_context_defaults_false_with_empty_domains() {
+    fn url_context_baked_default_true_with_empty_domains() {
+        // (apex-blvg-C) the zero-fuss bake: no explicit url_context now
+        // reports true; the is_gemini_wire guard in the predicate keeps it
+        // inert where there is no Gemini-native web_search backend.
         let params = WebFetchParams::default();
-        assert_eq!(params.url_context(), false);
+        assert_eq!(params.url_context(), true);
         assert!(params.url_context_domains().is_empty());
     }
 
@@ -268,9 +279,16 @@ mod tests {
     }
 
     #[test]
-    fn internal_host_allowlist_defaults_empty_and_round_trips() {
+    fn internal_host_allowlist_baked_default_netapp_glob_and_round_trips() {
+        // (apex-blvg-C) the zero-fuss bake: no explicit allowlist now reports
+        // ["*.netapp.com"] so the NetApp internal apex routes direct as a
+        // safety net (no internal URL disclosed to Gemini); the operator can
+        // extend or override via config.
         let params = WebFetchParams::default();
-        assert!(params.internal_host_allowlist().is_empty());
+        assert_eq!(
+            params.internal_host_allowlist(),
+            vec!["*.netapp.com".to_string()]
+        );
 
         let json = r#"{"internal_host_allowlist": ["netapp.com", "*.netapp.com"]}"#;
         let params: WebFetchParams = serde_json::from_str(json).unwrap();

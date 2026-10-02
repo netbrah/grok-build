@@ -219,7 +219,7 @@ impl WebSearchClient {
     /// wire byte-identical (G3). Lowercase FIRST: the proxy lowercases the model
     /// before its `startswith('gemini')` test (llm-proxy tool.py:39-42), so a
     /// case-sensitive check would disagree with the proxy on mixed-case pins.
-    fn is_gemini_wire(&self) -> bool {
+    pub(crate) fn is_gemini_wire(&self) -> bool {
         self.model.to_ascii_lowercase().starts_with("gemini")
     }
     /// D1/D2/D3: the Gemini-native side-call wire. Fires the generateContent
