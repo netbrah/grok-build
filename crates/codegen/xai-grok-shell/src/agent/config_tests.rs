@@ -10595,3 +10595,29 @@ mod zc_apex_feature {
         );
     }
 }
+
+/// S3a A/B blocker: `supports_search_tool` on a model OVERRIDE is tri-state.
+/// It was a plain `bool` merged with `if self.x { entry.x = true }` -- a one-way
+/// latch. An operator could enable native tool search but never DISABLE it on a
+/// bundled row that ships it enabled, so the legacy-path A/B arm could not be
+/// expressed on the same binary at all.
+#[test]
+fn model_row_supports_search_tool_serde_states() {
+    let on: ConfigModelOverride =
+        toml::from_str("supports_search_tool = true").expect("explicit true");
+    assert_eq!(on.supports_search_tool, Some(true));
+
+    let off: ConfigModelOverride =
+        toml::from_str("supports_search_tool = false").expect("explicit false");
+    assert_eq!(
+        off.supports_search_tool,
+        Some(false),
+        "explicit false must survive as Some(false), not collapse to the default"
+    );
+
+    let absent: ConfigModelOverride = toml::from_str("").expect("absent row");
+    assert_eq!(
+        absent.supports_search_tool, None,
+        "absent must stay None so the bundled row is left untouched"
+    );
+}
