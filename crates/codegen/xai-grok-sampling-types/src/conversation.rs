@@ -2598,8 +2598,8 @@ impl ConversationRequest {
         let mut replacements = Vec::new();
         let mut input_item_index = 0usize;
         for item in &self.items {
-            if let ConversationItem::BackendToolCall(backend) = item {
-                let value = match (dialect, &backend.kind) {
+            let value = match item {
+                ConversationItem::BackendToolCall(backend) => match (dialect, &backend.kind) {
                     (
                         ResponsesReplayDialect::Codex,
                         BackendToolKind::CodexRawInput(raw),
@@ -2614,15 +2614,60 @@ impl ConversationRequest {
                     // closed until their replay contract is defined.
                     // (donor parity: open-grok@049664b5
                     // conversation.rs:1766-1781.)
+                    // This wildcard is over the (dialect, BackendToolKind) PAIR,
+                    // not over `ConversationItem`, so it cannot swallow a new
+                    // conversation variant — the outer `match item` names all seven.
                     _ => None,
-                };
-                if let Some(value) = value {
-                    replacements.push(RawInputItemReplacement {
-                        input_item_index,
-                        value,
-                    });
-                }
+                },
+                // Native tool-discovery replay (apex-waj.21; U17-adjudicated form).
+                // async-openai 0.42.1 models both `tool_search_call` and
+                // `tool_search_output` (the 0.33.1 claim below the pre-re-pin
+                // seam is false since seq 1), so the flattened typed item is a
+                // bounded placeholder; verbatim `raw()` bytes are spliced only where
+                // the row and the pair share a mint domain (Codex arm below).
+                // NO strip here — the `created_by` replay hazard and its allow-list
+                // belong to T15 (`tool_search.rs` CALL_REPLAYABLE_KEYS, PLAN:1421).
+                ConversationItem::Discovery { item: discovery } => match dialect {
+                    // U17 (coordinator ruling, 2026-10-01): the splice as written
+                    // (`Some(discovery.raw().clone())`) is REFUSED for this arm — it
+                    // put provider-minted `tsc_`/`tso_` bytes on the row class this
+                    // arm serves (the Strict family / `model_family ∉ {codex, xai}`),
+                    // and the only banked pair (`wire2-live3/req-004.json`) is a
+                    // Codex-dialect request: its headers (`originator: codex_exec`,
+                    // `x-codex-beta-features`) prove the Codex arm, not this one.
+                    // Fail-closed until a per-row-class replay decision lands. The
+                    // gate row pinned to `gemini-3.8-flash` is CONDITIONAL on that
+                    // row declaring `supports_search_tool` (an unowned config change).
+                    ResponsesReplayDialect::Other => None,
+                    // Donor parity: codex replays its own pairs on this wire
+                    // (`fixtures/codex/CX1-toolsearch-mcp-dryrun/next-turn.json`
+                    // `input[3]`/`input[4]`, `CX3-toolsearch-5.5-LIVE/next-turn.json`
+                    // `input[11]`/`input[12]`).
+                    ResponsesReplayDialect::Codex => Some(discovery.raw().clone()),
+                    // No captured grok row models either item type; splicing an
+                    // un-modelled input type is a hard 400 (the `compaction`
+                    // precedent, `xai-grok-sampler/src/client.rs:2726-2733`), so keep
+                    // the bounded placeholder the flattener emitted. Wire evidence
+                    // per row class is what would change this arm (invariant C4).
+                    ResponsesReplayDialect::Xai => None,
+                },
+                // Every other item type is fully modelled by the typed encoder, so
+                // there is nothing to splice.
+                ConversationItem::System(_)
+                | ConversationItem::User(_)
+                | ConversationItem::Assistant(_)
+                | ConversationItem::ToolResult(_)
+                | ConversationItem::Reasoning(_) => None,
+            };
+            if let Some(value) = value {
+                replacements.push(RawInputItemReplacement {
+                    input_item_index,
+                    value,
+                });
             }
+            // Splice indices are the TYPED prefix sums: the encoder and this pass
+            // must agree item-for-item, or `patch_raw_input_replacements`
+            // (sampler client.rs:740) overwrites the wrong slot.
             input_item_index += responses::conversation_item_to_input_items(item).len();
         }
         replacements
