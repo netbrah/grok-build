@@ -132,14 +132,21 @@ pub fn replay_to_prompt(
                     }
                 }
             }
-            state.conversation.truncate(cut_pos);
+            // A checkpoint cut lands on a `User` row, which is exactly where a
+            // `call_id: null` tool_search pair can straddle, so it goes through the
+            // snapping raw-index cut (apex-waj.21 review F-4).
+            crate::sampling::conversation::truncate_conversation_at(
+                &mut state.conversation,
+                cut_pos,
+            );
         } else if target_prompt_index == 0 {
             state.conversation.clear();
         } else {
             let truncate_at = state.truncate_target(target_prompt_index);
-            let keep =
-                crate::sampling::conversation_truncate_for_prompt(&state.conversation, truncate_at);
-            state.conversation.truncate(keep);
+            crate::sampling::conversation::truncate_conversation_for_prompt(
+                &mut state.conversation,
+                truncate_at,
+            );
         }
         state.prompt_counter = target_prompt_index;
     }
@@ -457,7 +464,12 @@ impl ReplayState {
                     }
                 }
             }
-            self.conversation.truncate(cut_pos);
+            // The checkpoint sibling of the cut above: same `User`-row boundary, same
+            // snap (apex-waj.21 review F-4).
+            crate::sampling::conversation::truncate_conversation_at(
+                &mut self.conversation,
+                cut_pos,
+            );
         } else if marker_target == 0 {
             // Rewind to the very beginning: discard everything
             self.conversation.clear();
@@ -466,14 +478,16 @@ impl ReplayState {
             // Marker target is before the checkpoint: discard the checkpoint entirely and truncate the pre-checkpoint conversation
             self.checkpoint_active = false;
             let truncate_at = self.truncate_target(marker_target);
-            let keep =
-                crate::sampling::conversation_truncate_for_prompt(&self.conversation, truncate_at);
-            self.conversation.truncate(keep);
+            crate::sampling::conversation::truncate_conversation_for_prompt(
+                &mut self.conversation,
+                truncate_at,
+            );
         } else {
             let truncate_at = self.truncate_target(marker_target);
-            let keep =
-                crate::sampling::conversation_truncate_for_prompt(&self.conversation, truncate_at);
-            self.conversation.truncate(keep);
+            crate::sampling::conversation::truncate_conversation_for_prompt(
+                &mut self.conversation,
+                truncate_at,
+            );
         }
 
         self.prompt_counter = marker_target;

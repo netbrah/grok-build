@@ -134,14 +134,21 @@ pub(crate) fn responses_event_may_have_output(event: &rs::ResponseStreamEvent) -
 }
 /// Whether a completed response leaves a pending CLIENT tool call behind.
 ///
-/// Extracted from the completion handler so the arm is pinned by a test
-/// (cut review W21R1-10). The `Discovery` item arm of this match lands with
-/// the variant (the pair-atomic cut, apex-waj.21); until then the wildcard
-/// covers every non-assistant item.
+/// Extracted from the completion handler so the seventh variant is pinned by a test:
+/// a `tool_search_call` is answered by the `tool_search_output` the provider mints,
+/// never by a `function_call_output` from us, so a discovery item must NOT trip the
+/// tool-call stop path (it would report a stop reason that promises a result the client
+/// is never asked to send). Cut review W21R1-10 asked for this arm to be witnessed
+/// rather than asserted in a comment.
 fn response_has_pending_tool_calls(items: &[ConversationItem]) -> bool {
     items.iter().any(|i| match i {
         ConversationItem::Assistant(a) => !a.tool_calls.is_empty(),
-        _ => false,
+        ConversationItem::Discovery { .. }
+        | ConversationItem::System(_)
+        | ConversationItem::User(_)
+        | ConversationItem::ToolResult(_)
+        | ConversationItem::BackendToolCall(_)
+        | ConversationItem::Reasoning(_) => false,
     })
 }
 
@@ -1974,5 +1981,53 @@ mod tests {
             }
             other => panic!("expected Completed, got {other:?}"),
         }
+    }
+
+    /// W21R1-10: the stop-path predicate must read a discovery pair as completed
+    /// provider state, not as a pending client call. Tripping it would report a stop
+    /// reason that promises a `function_call_output` the client is never asked for.
+    #[test]
+    fn response_has_pending_tool_calls_ignores_a_discovery_pair() {
+        let discovery = |raw: serde_json::Value| ConversationItem::Discovery {
+            item: xai_grok_sampling_types::conversation::tool_search::ToolSearchItem::from_wire(
+                raw,
+            )
+            .expect("fixture is a tool_search item"),
+        };
+        let pair = vec![
+            discovery(serde_json::json!({
+                "type": "tool_search_call",
+                "id": "tsc_stream_1",
+                "call_id": "call_stream_1",
+                "status": "completed",
+                "execution": "client",
+                "arguments": { "query": "crm" }
+            })),
+            discovery(serde_json::json!({
+                "type": "tool_search_output",
+                "id": "tso_stream_1",
+                "call_id": "call_stream_1",
+                "status": "completed",
+                "execution": "client",
+                "tools": [{ "type": "function", "name": "crm_fixture_tool_00" }]
+            })),
+        ];
+        assert!(
+            !response_has_pending_tool_calls(&pair),
+            "a provider-executed search is not a pending client call"
+        );
+
+        let mut with_real_call = pair.clone();
+        with_real_call.push(ConversationItem::assistant_tool_calls(vec![
+            xai_grok_sampling_types::ToolCall {
+                id: "call_real".into(),
+                name: "read_file".to_string(),
+                arguments: "{}".into(),
+            },
+        ]));
+        assert!(
+            response_has_pending_tool_calls(&with_real_call),
+            "the real shape still trips the stop path"
+        );
     }
 }

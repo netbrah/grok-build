@@ -81,6 +81,16 @@ fn fingerprint_prefix(items: &[ConversationItem]) -> u64 {
             ConversationItem::ToolResult(_) => 3,
             ConversationItem::BackendToolCall(_) => 4,
             ConversationItem::Reasoning(_) => 5,
+            // Tag 6 for the seventh variant. Two consequences to state plainly: every
+            // fingerprint of a history that already contains a discovery item changes
+            // when this variant ships (a one-off prefire NOTE₁ invalidation, never a
+            // wire prefix change — this hash is local-only), and the hash below covers
+            // `text_content()`, i.e. the bounded `text_summary()`, so two different
+            // loaded-tool payloads under the same query fingerprint alike. That is
+            // acceptable for a prefix-CHANGE detector — it answers "did the history
+            // shape move?", not "is the payload the same?" — but it is why a discovery
+            // item must never be the only evidence a cache key relies on.
+            ConversationItem::Discovery { .. } => 6,
         };
         tag.hash(&mut h);
         it.text_content().hash(&mut h);
@@ -112,7 +122,19 @@ fn rewrite_codex_tool_outputs_to_fit_context_window(
                 output.images.clear();
                 true
             }
-            _ => false,
+            // Halting here is the intended behaviour, not a defect: this reverse fit
+            // only shrinks tool OUTPUTS, and any other item means it cannot make the
+            // request fit, so the endpoint error is left intact (see the fn doc).
+            // A discovery pair is never shrunk to make room — `raw` is opaque provider
+            // state (wire invariant 6) and the pair is the loaded-tool-set record
+            // (ruling apex-waj.18 A-26). Any future shrink must be a typed stub that
+            // keeps both ids, never a byte edit of `raw`.
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::Assistant(_)
+            | ConversationItem::BackendToolCall(_)
+            | ConversationItem::Reasoning(_) => false,
         };
         if !did_rewrite {
             break;
@@ -1208,7 +1230,17 @@ impl SessionActor {
             .iter()
             .map(|item| match item {
                 ConversationItem::BackendToolCall(item) => item.estimated_content_len(),
-                _ => item.text_content().chars().count(),
+                // The real payload, not `text_content()`: for a discovery item the
+                // bounded summary understates a multi-KB `tool_search_output` by orders
+                // of magnitude (tool_search.rs), and this number feeds the
+                // `compaction_summary_chars` telemetry a post-compaction cap check is
+                // judged against.
+                ConversationItem::Discovery { item } => item.estimated_model_visible_len(),
+                ConversationItem::System(_)
+                | ConversationItem::User(_)
+                | ConversationItem::Assistant(_)
+                | ConversationItem::ToolResult(_)
+                | ConversationItem::Reasoning(_) => item.text_content().chars().count(),
             })
             .sum::<usize>();
         // Base instructions are request controls in codex-rs rather than part
@@ -1254,10 +1286,21 @@ impl SessionActor {
                             xai_grok_sampling_types::ContentPart::Text { text } => {
                                 Some(text.as_ref().to_owned())
                             }
+                            // The first part of a stored `User` row is whatever the harness
+                            // put there; a non-text part is not the user_info text.
                             _ => None,
                         })
                 }
-                _ => None,
+                // Stored index 1 is the `User(user_info)` row. Anything else — including a
+                // discovery row, which is provider state and is never the user_info source —
+                // simply has no user_info text (cut review WAJ21R2-13: named so this arm is a
+                // decision and not a silent catch-all over the seventh variant).
+                ConversationItem::Discovery { .. }
+                | ConversationItem::System(_)
+                | ConversationItem::Assistant(_)
+                | ConversationItem::ToolResult(_)
+                | ConversationItem::BackendToolCall(_)
+                | ConversationItem::Reasoning(_) => None,
             });
         if cancel.is_cancelled() {
             return self.emit_compact_cancelled(auto_trigger).await;
@@ -2480,7 +2523,14 @@ impl SessionActor {
                         _ => None,
                     })
                 }
-                _ => None,
+                // Same arm as the one in `install_codex_remote_compacted_history`: index 1
+                // is the `User(user_info)` row and a discovery row is never that (WAJ21R2-13).
+                ConversationItem::Discovery { .. }
+                | ConversationItem::System(_)
+                | ConversationItem::Assistant(_)
+                | ConversationItem::ToolResult(_)
+                | ConversationItem::BackendToolCall(_)
+                | ConversationItem::Reasoning(_) => None,
             });
         if cancel.is_cancelled() {
             return self.emit_compact_cancelled(auto_trigger).await;

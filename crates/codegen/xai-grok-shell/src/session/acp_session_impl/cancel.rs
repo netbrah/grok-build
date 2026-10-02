@@ -220,9 +220,10 @@ impl SessionActor {
             snapshot.prompt_index = target_prompt_index;
             snapshot.prompt_texts.truncate(target_prompt_index);
             // The cut counts turns by prompt markers; this path never replays, so conversation after a compact relies on the marker
-            let keep_count =
-                conversation_truncate_for_prompt(&snapshot.conversation, target_prompt_index);
-            snapshot.conversation.truncate(keep_count);
+            crate::sampling::conversation::truncate_conversation_for_prompt(
+                &mut snapshot.conversation,
+                target_prompt_index,
+            );
             self.chat_state_handle.restore_snapshot(snapshot);
             self.file_state_tracker
                 .truncate_from(target_prompt_index)

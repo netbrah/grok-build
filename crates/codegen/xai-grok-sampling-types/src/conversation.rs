@@ -182,6 +182,9 @@ pub fn apply_enc_affinity_gate(
                     }
                 }
             }
+            // Reasoning with no ciphertext: nothing to gate (the guarded arm above
+            // took every item that had any).
+            ConversationItem::Reasoning(_) => {}
             ConversationItem::BackendToolCall(b) => {
                 if let BackendToolKind::CodexRawInput(raw) = &b.kind
                     && raw.raw.get("encrypted_content").is_some()
@@ -189,7 +192,17 @@ pub fn apply_enc_affinity_gate(
                     carriers += 1;
                 }
             }
-            _ => {}
+            // A client-authored discovery item carries no `encrypted_content`: the
+            // pair is a call + a tool list, not ciphertext. Named rather than
+            // counted-as-carrier on purpose — this gate is not the place that would
+            // ever mutate those bytes even if a provider minted a ciphertext-bearing
+            // discovery item (wire invariant 6: opaque handles are never rewritten).
+            ConversationItem::Discovery { .. } => {}
+            // Neither item can hold ciphertext.
+            ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::Assistant(_)
+            | ConversationItem::ToolResult(_) => {}
         }
     }
     (stripped, retained, carriers)
@@ -229,7 +242,16 @@ pub fn stamp_reasoning_mint_tag(items: &mut [ConversationItem], pin: Option<&str
                     raw.mint_tag = pin.map(str::to_owned);
                 }
             }
-            _ => {}
+            // No mint tag on a discovery item: it carries no ciphertext, so there is
+            // no mint domain to record, and stamping a field into `raw` would rewrite
+            // provider bytes (wire invariant 6) and break the byte-exact replay the
+            // variant exists to guarantee.
+            ConversationItem::Discovery { .. } => {}
+            // Items with no ciphertext and no provenance field.
+            ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::Assistant(_)
+            | ConversationItem::ToolResult(_) => {}
         }
     }
 }
@@ -255,6 +277,37 @@ pub enum ConversationItem {
     /// XW-ENC-AFFINITY-1 mint provenance) so no field is dropped on the
     /// way through and the mint tag round-trips with the storage form.
     Reasoning(ReasoningItemStore),
+    /// One native tool-discovery item (`tool_search_call` or
+    /// `tool_search_output`), held verbatim (apex-waj.1, variant per apex-waj.18).
+    ///
+    /// WHY A VARIANT AND NOT A FIELD (ruling:
+    /// `plans/harness/hosted-tool-search/ratchet-capture/RULING-apex-waj-18-ir-shape.md`):
+    /// the provider reads `tool_search_output` back out of the conversation history
+    /// and reconstructs the loaded tool set SERVER-side (A-26, measured in
+    /// `ratchet-capture/captures/2026-09-25-ratchet-live/wire2-live3/req-004.json`:
+    /// 12 tools sent, 14 echoed, and the two extras appear ONLY inside that item).
+    /// A payload that can ride along silently inside another item can therefore be
+    /// dropped silently, and the corruption is invisible on our side — the provider
+    /// simply behaves as though different tools exist. A variant forces every
+    /// consumer to decide; an `Option<ToolDiscovery>` field does not.
+    ///
+    /// A-26 is binding on every arm that sees this variant: NEVER strip or drop a
+    /// discovery item on any path (persist, compact, project, switch, encode,
+    /// render). An arm that discards one must be a deliberate, commented, tested
+    /// decision.
+    ///
+    /// SHAPE: `item` is a NAMED FIELD, not a newtype payload. This enum is
+    /// internally tagged on `type`, and [`tool_search::ToolSearchItem`] serialises
+    /// its provider bytes verbatim — bytes that already carry `type`. A flattened
+    /// newtype would therefore emit two `type` keys, and a reader that has parsed
+    /// the line into a `Value` keeps only the LAST one (the provider's tag), so the
+    /// row no longer names a known variant and `chat_history.jsonl`'s `skip_line`
+    /// loses that half of the pair with nothing but a warning. Pinned by
+    /// `tool_search::tests::a_newtype_discovery_variant_would_emit_two_type_tags_and_a_loader_would_drop_them`.
+    ///
+    /// The bytes are handles, not content (wire invariant 6): the ids (`tsc_*`,
+    /// `tso_*`) and the `call_id` join key are copied, never rewritten.
+    Discovery { item: tool_search::ToolSearchItem },
 }
 
 /// System message content
@@ -661,6 +714,12 @@ pub fn codex_cross_provider_fallback(items: &[ConversationItem], max_chars: usiz
                 kind: BackendToolKind::CodexRawInput(raw),
             }) if raw.cross_provider_fallback.is_some() => "Prior compacted context",
             ConversationItem::BackendToolCall(_) => continue,
+            // Provider-owned loaded-tool state, deliberately absent from the
+            // plaintext fallback: the set only means anything to the Responses
+            // provider that minted it (A-26 is a Responses-wire concern), the
+            // fallback's budget is small, and echoing the marker would churn the
+            // prefix for no signal on the row that finally reads it.
+            ConversationItem::Discovery { .. } => continue,
         };
         let text = item.text_content();
         if text.trim().is_empty() {
@@ -1323,7 +1382,15 @@ pub fn drop_model_bound_items(items: &mut Vec<ConversationItem>) -> usize {
         .iter()
         .filter_map(|item| match item {
             ConversationItem::BackendToolCall(call) => Some(call.id().to_owned()),
-            _ => None,
+            // Nothing else contributes an id this strip co-drops. A Discovery
+            // `call_id` is named out: it joins a `tool_search_output`, not a
+            // `ToolResult`, and no `ToolResult` is ever paired to it.
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::Assistant(_)
+            | ConversationItem::ToolResult(_)
+            | ConversationItem::Reasoning(_) => None,
         })
         .collect();
     let before = items.len();
@@ -1332,7 +1399,20 @@ pub fn drop_model_bound_items(items: &mut Vec<ConversationItem>) -> usize {
         ConversationItem::ToolResult(result) => {
             !dropped_backend_call_ids.contains(result.tool_call_id.as_str())
         }
-        _ => true,
+        // A-26, named rather than inherited from the old wildcard: a discovery pair
+        // is provider-side loaded-tool state, NOT model-bound continuation state. The
+        // provider reconstructs the loaded set from `tool_search_output` in history, so
+        // dropping it here would desynchronise the provider invisibly. Consequence
+        // this strip cannot fix (recorded in `projection.rs`'s DiscoveryTier doc): the
+        // reactive net is a strict ONE retry, and on a history whose only strippable
+        // state is the discovery pair this returns `0` and the retry fails closed
+        // (`xai-grok-sampler/src/retry.rs:135-136`), so a foreign row that rejects
+        // `tool_search` items cannot be rescued by stripping. Teaching the net that
+        // class needs wire evidence per row class (wire invariant C4), not a wildcard.
+        ConversationItem::Discovery { .. } => true,
+        ConversationItem::System(_) | ConversationItem::User(_) | ConversationItem::Assistant(_) => {
+            true
+        }
     });
     before.saturating_sub(items.len())
 }
@@ -1361,7 +1441,17 @@ pub fn drop_orphaned_tool_results(items: &mut Vec<ConversationItem>) -> usize {
                 .map(|call| call.id.to_string())
                 .collect::<Vec<_>>(),
             ConversationItem::BackendToolCall(call) => vec![call.id().to_string()],
-            _ => Vec::new(),
+            // A discovery `call_id` is deliberately NOT a live-call owner: a client
+            // `tool_search` is answered by a `tool_search_output`, never by a
+            // `function_call_output`, so counting it here would keep a genuinely
+            // orphaned `function_call_output` on the wire — the exact Azure
+            // `Invalid 'input[N].call_id'` 400 this pass exists to remove. The pair
+            // itself is never orphan-checked here (H-8 owns that, at the lint).
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::ToolResult(_)
+            | ConversationItem::Reasoning(_) => Vec::new(),
         })
         .collect();
     let before = items.len();
@@ -1410,6 +1500,10 @@ fn strip_images_where(
                     ContentPart::Image { .. } | ContentPart::Text { .. } => true,
                 });
             }
+            // A discovery item has no `ContentPart` at all — its payload is opaque
+            // provider JSON — so it can carry no image to strip, and the strip
+            // passes must not touch it (A-26).
+            ConversationItem::Discovery { .. } => {}
             // Exhaustive on purpose, the items here and the content parts above
             // A future image-bearing variant of either must choose its strip behavior here, not silently keep images
             ConversationItem::System(_)
@@ -1601,7 +1695,15 @@ impl ConversationResponse {
     pub fn assistant(&self) -> Option<&AssistantItem> {
         self.items.iter().rev().find_map(|item| match item {
             ConversationItem::Assistant(a) => Some(a),
-            _ => None,
+            // Named per ruling apex-waj.18 rule 2: a discovery sibling is not the
+            // trailing assistant and does not stop the reverse scan (the producer
+            // appends the Assistant last, so a pair before it is still skipped).
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::ToolResult(_)
+            | ConversationItem::BackendToolCall(_)
+            | ConversationItem::Reasoning(_) => None,
         })
     }
 
@@ -1609,7 +1711,13 @@ impl ConversationResponse {
     pub fn assistant_mut(&mut self) -> Option<&mut AssistantItem> {
         self.items.iter_mut().rev().find_map(|item| match item {
             ConversationItem::Assistant(a) => Some(a),
-            _ => None,
+            // Same decision as [`Self::assistant`].
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::ToolResult(_)
+            | ConversationItem::BackendToolCall(_)
+            | ConversationItem::Reasoning(_) => None,
         })
     }
 
@@ -1626,8 +1734,30 @@ impl ConversationResponse {
     pub fn reasoning_items(&self) -> impl Iterator<Item = &rs::ReasoningItem> {
         self.items.iter().filter_map(|item| match item {
             ConversationItem::Reasoning(r) => Some(&r.item),
-            _ => None,
+            // Named per ruling apex-waj.18 rule 2 — a discovery sibling is not a
+            // reasoning item and does not end the scan.
+            ConversationItem::Discovery { .. }
+            | ConversationItem::System(_)
+            | ConversationItem::User(_)
+            | ConversationItem::Assistant(_)
+            | ConversationItem::ToolResult(_)
+            | ConversationItem::BackendToolCall(_) => None,
         })
+    }
+
+    /// Native discovery items (the `tool_search_call` / `tool_search_output` pair)
+    /// produced by this turn, in emission order.
+    ///
+    /// This is a convenience VIEW, not the persistence seam (cut review WAJ21R2-06): the
+    /// shell persists a turn by pushing the WHOLE `items` vector through
+    /// `ChatStateHandle::push_model_output`, so a Discovery row reaches
+    /// `chat_history.jsonl` whether or not anyone calls this. That persistence is pinned by
+    /// `xai-chat-state`'s `actor::tests::push_model_output_persists_both_halves_of_a_discovery_pair`
+    /// — nothing here enforces it, so do not read this iterator as the reason the pair is on
+    /// disk. It exists for callers that want the pair alone (and, like its neighbour
+    /// `backend_tool_items`, currently has no production caller).
+    pub fn discovery_items(&self) -> impl Iterator<Item = &tool_search::ToolSearchItem> {
+        self.items.iter().filter_map(ConversationItem::discovery)
     }
 
     /// Backend-executed tool calls (web search, X search, code interpreter) produced by this turn, in emission order.
@@ -1780,7 +1910,15 @@ impl ConversationItem {
             {
                 user.cwd_generation
             }
-            _ => None,
+            // Only the CWD-switch reminder carries a generation; every other item
+            // (a discovery pair included) has none.
+            Self::System(_)
+            | Self::User(_)
+            | Self::Assistant(_)
+            | Self::ToolResult(_)
+            | Self::BackendToolCall(_)
+            | Self::Reasoning(_)
+            | Self::Discovery { .. } => None,
         }
     }
 
@@ -2062,6 +2200,29 @@ impl ConversationItem {
             },
             // Reasoning is part of the assistant's turn
             Self::Reasoning(_) => Role::Assistant,
+            // Assistant, never Tool: `Role::Tool` makes the shared engine's
+            // `CompactionItem::is_tool_result()` (xai-grok-compaction/src/item.rs)
+            // true for a discovery item, which corrupts every split-snap predicate
+            // that keys on it (`select.rs`). It is model-side state belonging to the
+            // assistant's turn, like `Reasoning`.
+            Self::Discovery { .. } => Role::Assistant,
+        }
+    }
+
+    /// The native discovery payload, if this is a [`Self::Discovery`] item.
+    /// The single accessor every consumer walks through — see the variant doc for
+    /// why the payload is never re-wrapped or re-serialised.
+    pub fn discovery(&self) -> Option<&tool_search::ToolSearchItem> {
+        match self {
+            Self::Discovery { item } => Some(item),
+            // Named, not `_ =>`: a new variant must choose whether it carries
+            // discovery state rather than silently reading as "no payload".
+            Self::System(_)
+            | Self::User(_)
+            | Self::Assistant(_)
+            | Self::ToolResult(_)
+            | Self::BackendToolCall(_)
+            | Self::Reasoning(_) => None,
         }
     }
 
@@ -2091,6 +2252,13 @@ impl ConversationItem {
             Self::ToolResult(t) => t.content.as_ref().to_owned(),
             Self::BackendToolCall(b) => b.text_summary(),
             Self::Reasoning(r) => reasoning_item_text(r),
+            // The bounded summary, never the payload: this arm is what every
+            // `_ => text_content()` consumer reads (transcript renderers, recap,
+            // prefix fingerprint, digests, the compaction byte estimate), and a
+            // `tool_search_output` can carry tens of KB of tool definitions —
+            // §6.7 ("bounded, stable model-visible items"). The bytes stay intact
+            // for replay regardless of what this returns.
+            Self::Discovery { item } => item.text_summary(),
         }
     }
 }
@@ -2199,7 +2367,14 @@ pub fn inject_streaming_reasoning_fallback(items: &mut Vec<ConversationItem>, te
         ConversationItem::Reasoning(r) => r.summary.iter().any(|sp| match sp {
             rs::SummaryPart::SummaryText(t) => !t.text.is_empty(),
         }),
-        _ => false,
+        // Named per ruling apex-waj.18 rule 2: only a Reasoning sibling can already
+        // carry the fallback text.
+        ConversationItem::Discovery { .. }
+        | ConversationItem::System(_)
+        | ConversationItem::User(_)
+        | ConversationItem::Assistant(_)
+        | ConversationItem::ToolResult(_)
+        | ConversationItem::BackendToolCall(_) => false,
     });
     if any_with_text {
         return;
@@ -2515,13 +2690,37 @@ impl ConversationRequest {
 
 /// Calculate how many conversation items to keep so that everything from prompt-turn `target_prompt_index` onward is dropped.
 /// **Before the first** [`UserItem::prompt_index`]: legacy rules apply. The first marker-less non-synthetic is the `<user_info>` preamble. Later non-synthetics and [`SyntheticReason::starts_prompt_turn`] synthetics are turns; **From the first marker onward**: only marked rows open turns; unmarked mid-turn phantoms (bash / permission followup) never open a cut.
+///
+/// The count it returns is pair-ATOMIC (apex-waj.21): every caller of this function
+/// does `conversation.truncate(count)` — a rewind, a cancelled turn, a replay, a
+/// fork copy — and a prompt boundary can fall BETWEEN a `tool_search_call` and the
+/// `tool_search_output` that answers it. Truncating there persists half a pair,
+/// which is the strict-backend 400 (lone call) or the provider loaded-tool-set
+/// desync (lone output) that ruling apex-waj.18 A-26 exists to prevent. The snap
+/// only moves DOWN, so the answer stays "drop this whole turn", never "keep half of
+/// it"; `tool_search::snap_index_over_discovery_pairs` owns the grouping.
 pub fn conversation_truncate_for_prompt(
+    conversation: &[ConversationItem],
+    target_prompt_index: usize,
+) -> usize {
+    let keep = conversation_truncate_unsnapped(conversation, target_prompt_index);
+    tool_search::snap_index_over_discovery_pairs(conversation, keep)
+}
+
+fn conversation_truncate_unsnapped(
     conversation: &[ConversationItem],
     target_prompt_index: usize,
 ) -> usize {
     let first_marker = conversation.iter().find_map(|item| match item {
         ConversationItem::User(u) => u.prompt_index,
-        _ => None,
+        // Only a `User` row carries a prompt marker; nothing else can open a turn,
+        // a discovery pair included (it is provider state interleaved mid-turn).
+        ConversationItem::System(_)
+        | ConversationItem::Assistant(_)
+        | ConversationItem::ToolResult(_)
+        | ConversationItem::BackendToolCall(_)
+        | ConversationItem::Reasoning(_)
+        | ConversationItem::Discovery { .. } => None,
     });
 
     let Some(first_marker_idx) = first_marker else {
@@ -2697,6 +2896,11 @@ pub fn transform_conversation_cwd(
             }
             // Backend tool calls don't contain workspace paths, so there is nothing to rewrite
             ConversationItem::BackendToolCall(_) => {}
+            // Rewriting `raw` is forbidden even when a `tool_search` query or a
+            // discovered tool description names the old CWD: these are opaque
+            // provider handles (wire invariant 6), and the byte-exact replay and the
+            // cached prefix both depend on the bytes being the minted ones.
+            ConversationItem::Discovery { .. } => {}
             // Reasoning items rarely reference CWD paths, but they can; patch both summary parts and content blocks defensively
             ConversationItem::Reasoning(r) => {
                 for sp in r.summary.iter_mut() {
@@ -2772,11 +2976,21 @@ pub fn repair_dangling_tool_calls(
             let mut answered = std::collections::HashSet::new();
             let mut j = i + 1;
             while j < conversation.len() {
-                if let ConversationItem::ToolResult(tr) = &conversation[j] {
-                    answered.insert(tr.tool_call_id.clone());
-                    j += 1;
-                } else {
-                    break;
+                match &conversation[j] {
+                    ConversationItem::ToolResult(tr) => {
+                        answered.insert(tr.tool_call_id.clone());
+                        j += 1;
+                    }
+                    // Transparent: a discovery pair interleaved here is provider
+                    // state, not the end of the assistant's result run. Ending the
+                    // run on it would make every answered call look unanswered and
+                    // splice a DUPLICATE synthetic result into real history.
+                    ConversationItem::Discovery { .. } => j += 1,
+                    ConversationItem::System(_)
+                    | ConversationItem::User(_)
+                    | ConversationItem::Assistant(_)
+                    | ConversationItem::BackendToolCall(_)
+                    | ConversationItem::Reasoning(_) => break,
                 }
             }
 
@@ -2819,14 +3033,22 @@ pub fn has_dangling_tool_calls(conversation: &[ConversationItem]) -> bool {
             && !a.tool_calls.is_empty()
         {
             // Collect answered IDs from the immediately following ToolResults.
+            // Discovery is transparent here too — the read-only counterpart and
+            // [`repair_dangling_tool_calls`] must agree on which calls are answered.
             let mut answered = std::collections::HashSet::new();
             let mut j = i + 1;
             while j < conversation.len() {
-                if let ConversationItem::ToolResult(tr) = &conversation[j] {
-                    answered.insert(tr.tool_call_id.clone());
-                    j += 1;
-                } else {
-                    break;
+                match &conversation[j] {
+                    ConversationItem::ToolResult(tr) => {
+                        answered.insert(tr.tool_call_id.clone());
+                        j += 1;
+                    }
+                    ConversationItem::Discovery { .. } => j += 1,
+                    ConversationItem::System(_)
+                    | ConversationItem::User(_)
+                    | ConversationItem::Assistant(_)
+                    | ConversationItem::BackendToolCall(_)
+                    | ConversationItem::Reasoning(_) => break,
                 }
             }
             if a.tool_calls
@@ -3715,6 +3937,67 @@ mod tests {
 
         // Keep up to and including prompt 2 (all messages)
         assert_eq!(conversation_truncate_for_prompt(&conversation, 2), 6);
+    }
+
+    /// Cut review F-4: this function is the single seam every history cut in the
+    /// product walks through — the chat-state actor's rewind, `rewind.rs`, `cancel.rs`,
+    /// `helpers/replay.rs` (three sites) and the persisted fork copy in
+    /// `storage/jsonl/copy.rs` all do `conversation.truncate(count)` with this return
+    /// value. A prompt boundary can land between a `tool_search_call` and the
+    /// `tool_search_output` that answers it, so the COUNT is pair-atomic: those six
+    /// callers cannot split a pair without each of them having to remember to.
+    #[test]
+    fn truncate_for_prompt_never_returns_a_count_inside_a_discovery_pair() {
+        let discovery = |raw: serde_json::Value| {
+            ConversationItem::Discovery {
+                item: tool_search::ToolSearchItem::from_wire(raw)
+                    .expect("fixture is a tool_search item"),
+            }
+        };
+        let call = || {
+            discovery(serde_json::json!({
+                "type": "tool_search_call",
+                "id": "tsc_cut_1",
+                "call_id": "call_cut_1",
+                "status": "completed",
+                "execution": "client",
+                "arguments": { "query": "crm", "limit": 1 }
+            }))
+        };
+        let output = || {
+            discovery(serde_json::json!({
+                "type": "tool_search_output",
+                "id": "tso_cut_1",
+                "call_id": "call_cut_1",
+                "status": "completed",
+                "execution": "client",
+                "tools": [{ "type": "function", "name": "crm_fixture_tool_00" }]
+            }))
+        };
+        // prompt 0 = [user, call, assistant], prompt 1 = [user, output, assistant]:
+        // the `User` row that opens prompt 1 sits between the two halves.
+        let conversation = vec![
+            ConversationItem::system("sys"),
+            ConversationItem::user("find the crm tools"),
+            call(),
+            ConversationItem::assistant("searching"),
+            ConversationItem::user("and now?"),
+            output(),
+            ConversationItem::assistant("found them"),
+        ];
+        let keep = conversation_truncate_for_prompt(&conversation, 0);
+        assert_eq!(
+            keep, 2,
+            "the cut moves below the call instead of keeping a lone tool_search_call"
+        );
+        let kept_discovery = conversation[..keep]
+            .iter()
+            .filter(|item| item.discovery().is_some())
+            .count();
+        assert_eq!(kept_discovery, 0, "no half survives the widened cut: {keep}");
+        // Rewinding past the whole pair keeps both halves — snapping only moves DOWN.
+        let keep_all = conversation_truncate_for_prompt(&conversation, 2);
+        assert_eq!(keep_all, conversation.len());
     }
 
     #[test]

@@ -1102,8 +1102,30 @@ fn clean_fork_prefix_len(
                 | ConversationItem::Assistant(_)
                 | ConversationItem::ToolResult(_),
             ) => {}
-            // Reasoning / backend-call / system tails are mid-turn artifacts.
-            _ => return false,
+            // Reasoning / backend-call / system tails are mid-turn artifacts, and
+            // `None` (empty prefix) is trivially not a clean prefix either.
+            //
+            // A discovery tail is judged by its PAIR, not by its variant (cut review
+            // R2L2-02). The shape that makes a fork prefix incoherent is an unanswered
+            // `tool_search_call` — a lone half the child's first request would carry to a
+            // strict backend. An ANSWERED `[call, output]` tail is the opposite: it is the
+            // provider's own record of which tools are loaded, and rejecting the variant
+            // wholesale dropped that record from every native fork whose parent history
+            // happened to end on a completed search, so the child re-ran the search and
+            // re-paid for a set it had already been given.
+            Some(ConversationItem::Discovery { .. }) => {
+                if xai_grok_sampling_types::conversation::tool_search::trailing_discovery_is_unpaired(
+                    prefix,
+                ) {
+                    return false;
+                }
+            }
+            Some(
+                ConversationItem::System(_)
+                | ConversationItem::BackendToolCall(_)
+                | ConversationItem::Reasoning(_),
+            )
+            | None => return false,
         }
         let mut dangling: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for item in prefix {
@@ -1114,7 +1136,15 @@ fn clean_fork_prefix_len(
                 ConversationItem::ToolResult(result) => {
                     dangling.remove(result.tool_call_id.as_str());
                 }
-                _ => {}
+                // Neither side of a client tool pair. A discovery pair is deliberately
+                // absent from `dangling`: a `tool_search_call` is answered by the
+                // provider's own `tool_search_output`, never by a `function_call_output`,
+                // so counting it would make every forked history look dangling.
+                ConversationItem::Discovery { .. }
+                | ConversationItem::System(_)
+                | ConversationItem::User(_)
+                | ConversationItem::BackendToolCall(_)
+                | ConversationItem::Reasoning(_) => {}
             }
         }
         dangling.is_empty()
@@ -1141,6 +1171,10 @@ fn select_native_fork_turns(
     count: Option<usize>,
 ) -> Vec<ConversationItem> {
     let Some(count) = count else { return items };
+    // Cut-site gate F-4/R2L2-01: this is a raw cut on a derived length, so it is listed
+    // in the inventory. It needs no snap of its own — `clean_fork_prefix_len` now judges
+    // a discovery tail by its pair (R2L2-02), so a boundary that would strand half a pair
+    // is rejected and the walk moves below it instead.
     items.truncate(clean_fork_prefix_len(&items));
     let start = items
         .iter()
@@ -1153,6 +1187,19 @@ fn select_native_fork_turns(
         .last()
         .map(|(index, _)| index)
         .unwrap_or(0);
+    if start == 0 {
+        return items;
+    }
+    // The turn window is a conversation cut like any other: the Nth-from-last `User` row
+    // can land BETWEEN a search and its answer (a provider echo, or the harness's own
+    // interjection, can drop a `User` row between the halves), and `split_off` then hands
+    // the child a lone `tool_search_output` whose call stayed in the discarded head —
+    // an answer referencing a call the provider never saw (cut review R2L2-01, found by
+    // making the cut-site inventory mechanical). Snapping DOWN keeps the whole pair with
+    // the child; the discarded head is the summarised path's problem, not the child's.
+    let start = xai_grok_sampling_types::conversation::tool_search::snap_index_over_discovery_pairs(
+        &items, start,
+    );
     if start == 0 {
         return items;
     }
@@ -3114,3 +3161,5 @@ pub(crate) async fn reconcile_live_orphaned_subagents(
 }
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod fork_prefix_tests;
