@@ -560,6 +560,7 @@ pub(crate) mod goal_strategist;
 pub(crate) mod goal_summarizer;
 pub mod goal_tracker;
 pub mod helpers;
+pub mod insights;
 pub(crate) mod image_describe;
 pub(crate) mod image_normalize;
 pub(crate) mod inference_metrics;
