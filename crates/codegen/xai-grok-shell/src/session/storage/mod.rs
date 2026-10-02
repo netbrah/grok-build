@@ -252,7 +252,11 @@ fn temp_sibling(path: &Path) -> PathBuf {
 }
 
 /// Rebuild the derived `chat_history.jsonl` cache from `updates.jsonl`, the durable source of truth.
-/// A session then restores from its update stream alone.
+///
+/// A session then restores from its update stream alone — EXCEPT for discovery rows,
+/// which the update stream cannot carry at all. See [`chat_rebuild::RebuildOutcome`] and
+/// `chat_rebuild::rebuild_chat_history` for the fail-closed rule that keeps that gap from
+/// being a silent A-26 drop.
 pub(crate) mod chat_rebuild {
     use std::collections::{HashMap, HashSet};
     use std::io;
@@ -265,14 +269,51 @@ pub(crate) mod chat_rebuild {
         AssistantItem, ContentPart, ConversationItem, SyntheticReason, ToolCall, UserItem,
     };
 
+    /// What one [`rebuild_chat_history`] pass did.
+    ///
+    /// `lost_discovery_rows` is returned rather than only logged for the same reason the
+    /// loader's counter is (cut review W21R1-01): a claim that lives solely in a
+    /// `tracing` field is a claim no test can defend.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub(crate) struct RebuildOutcome {
+        /// Items in the cache the pass ended up standing.
+        pub(crate) items: usize,
+        /// Discovery rows the durable update stream cannot reproduce, and that a publish
+        /// would therefore have destroyed. Non-zero means the pass refused to publish.
+        pub(crate) lost_discovery_rows: usize,
+        /// Whether the rebuilt cache replaced the previous one.
+        pub(crate) published: bool,
+    }
+
     /// Rebuild `chat_history.jsonl` from `updates.jsonl` alone. Builds a temp file and renames it over the target.
     /// A failed rebuild leaves the existing cache intact rather than a truncated partial that load would trust.
-    pub(crate) fn rebuild_chat_history(dir: &Path) -> io::Result<usize> {
+    ///
+    /// **A-26 fail-closed rule (cut review WAJ21R2-01, a second F-7-class BLOCK).** The
+    /// reducer's arm set is `UserMessageChunk` / `AgentMessageChunk` / `ToolCall` /
+    /// `ToolCallUpdate` plus `CompactionCheckpoint`, and `SessionUpdate` (both the ACP and
+    /// the xai enum) has NO discovery-bearing variant, so a rebuild emits ZERO discovery
+    /// rows — provably, not by omission. A cache that already carries a
+    /// `tool_search_call` / `tool_search_output` pair would therefore be replaced by a
+    /// history with no record of any loaded tool, every resumed request going out as if no
+    /// tools had ever been loaded, with nothing to show the loss. That is the A-26 silent
+    /// drop this campaign's ruling names, so the pass now compares the rows it can emit
+    /// against the rows already on disk and REFUSES to publish when it would lose any,
+    /// reporting the count instead. Reachable on every resume via
+    /// `jsonl::ensure_chat_history` and after every pull via `remote::pull`'s unconditional
+    /// rebuild.
+    ///
+    /// FIXING it (not this cut): give the update stream a discovery-bearing variant so the
+    /// reducer can re-emit the provider bytes, or copy the surviving rows into the rebuild
+    /// at a position that keeps each pair whole. Both need apex-waj.5 to mint a Discovery
+    /// item from a live response first — nothing in-tree can today (`conversation/responses.rs`
+    /// decode seam, F-7 BLOCK).
+    pub(crate) fn rebuild_chat_history(dir: &Path) -> io::Result<RebuildOutcome> {
         use std::io::{Seek, Write};
 
         let updates_path = dir.join(UPDATES_FILE);
         let Some(iter) = UpdatesIterator::open(&updates_path)? else {
-            return Ok(0);
+            // No stream at all: nothing was rebuilt and nothing was lost.
+            return Ok(RebuildOutcome::default());
         };
 
         let chat_path = dir.join(CHAT_HISTORY_FILE);
@@ -281,6 +322,25 @@ pub(crate) mod chat_rebuild {
         let mut writer = std::io::BufWriter::new(file);
         let mut reducer = ChatReducer::new();
 
+        /// One row out, counting the discovery rows this pass could put on disk.
+        /// Structurally 0 today: the reducer has no arm that can mint one (see the fn's
+        /// doc). Counting it rather than asserting it means a future arm that DOES emit
+        /// discovery rows closes the gap without touching the guard below.
+        fn emit(
+            item: &ConversationItem,
+            writer: &mut std::io::BufWriter<std::fs::File>,
+            emitted_discovery: &mut usize,
+        ) {
+            if item.discovery().is_some() {
+                *emitted_discovery += 1;
+            }
+            if let Ok(line) = serde_json::to_string(item) {
+                let _ = writer.write_all(line.as_bytes());
+                let _ = writer.write_all(b"\n");
+            }
+        }
+
+        let mut emitted_discovery = 0usize;
         for result in iter {
             let update = match result {
                 Ok(u) => u,
@@ -288,25 +348,20 @@ pub(crate) mod chat_rebuild {
             };
 
             for item in reducer.process(&update) {
-                if let Ok(line) = serde_json::to_string(&item) {
-                    let _ = writer.write_all(line.as_bytes());
-                    let _ = writer.write_all(b"\n");
-                }
+                emit(&item, &mut writer, &mut emitted_discovery);
             }
 
             // CompactionCheckpoint: truncate file and reset
             if reducer.should_truncate() {
                 reducer.clear_truncate_flag();
+                emitted_discovery = 0;
                 let _ = writer.seek(std::io::SeekFrom::Start(0));
                 let _ = writer.get_mut().set_len(0);
             }
         }
 
         for item in reducer.flush() {
-            if let Ok(line) = serde_json::to_string(&item) {
-                let _ = writer.write_all(line.as_bytes());
-                let _ = writer.write_all(b"\n");
-            }
+            emit(&item, &mut writer, &mut emitted_discovery);
         }
 
         if let Err(e) = writer.flush() {
@@ -314,11 +369,66 @@ pub(crate) mod chat_rebuild {
             return Err(e);
         }
         drop(writer);
+
+        // A-26 fail-closed gate (cut review WAJ21R2-01): never publish a cache that
+        // silently loses a provider-minted discovery row.
+        let (on_disk_discovery, on_disk_rows) = count_chat_rows(&chat_path)?;
+        if on_disk_discovery > emitted_discovery {
+            let lost = on_disk_discovery - emitted_discovery;
+            let _ = std::fs::remove_file(&tmp_path);
+            tracing::error!(
+                lost_discovery_rows = lost,
+                on_disk_rows,
+                rebuilt_rows = reducer.count(),
+                path = %chat_path.display(),
+                "refused to rebuild chat_history.jsonl: updates.jsonl carries no \
+                 discovery-bearing variant, so publishing would drop the provider's \
+                 loaded-tool-set pair(s) and every later request would read as if no \
+                 tools were ever loaded (apex-waj.18 A-26, apex-waj.21 WAJ21R2-01); \
+                 keeping the existing cache"
+            );
+            return Ok(RebuildOutcome {
+                items: on_disk_rows,
+                lost_discovery_rows: lost,
+                published: false,
+            });
+        }
+
         if let Err(e) = std::fs::rename(&tmp_path, &chat_path) {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(e);
         }
-        Ok(reducer.count())
+        Ok(RebuildOutcome {
+            items: reducer.count(),
+            lost_discovery_rows: 0,
+            published: true,
+        })
+    }
+
+    /// `(discovery_rows, total_rows)` of an existing `chat_history.jsonl`.
+    ///
+    /// Discovery rows are counted at the BYTE level with the loader's own head test, so a
+    /// row too damaged to parse still counts as a row this rebuild would destroy — the
+    /// conservative direction for a loss guard.
+    fn count_chat_rows(path: &Path) -> io::Result<(usize, usize)> {
+        let contents = match std::fs::read(path) {
+            Ok(contents) => contents,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((0, 0)),
+            Err(e) => return Err(e),
+        };
+        let mut discovery = 0usize;
+        let mut total = 0usize;
+        for line in contents.split(|b| *b == b'\n') {
+            let line = line.trim_ascii();
+            if line.is_empty() {
+                continue;
+            }
+            total += 1;
+            if super::jsonl::raw_line_is_discovery_row(line) {
+                discovery += 1;
+            }
+        }
+        Ok((discovery, total))
     }
 
     /// Turn boundaries: a switch from user to agent flushes the user item, and a switch from agent to user flushes the agent item.
@@ -3602,6 +3712,143 @@ mod tests {
                 );
             }
             SessionUpdate::Acp(_) => panic!("expected Xai variant"),
+        }
+    }
+
+    /// apex-waj.21 r2, cut review WAJ21R2-01 — the SECOND A-26 silent-drop path, and the
+    /// one no `ConversationItem` match can see: `ensure_chat_history` rebuilds the derived
+    /// `chat_history.jsonl` from `updates.jsonl`, and the reducer's arm set mints only
+    /// `UserItem` / `AssistantItem` / `ToolResult`, because NEITHER `SessionUpdate` enum has
+    /// a discovery-bearing variant. So a rebuild emits ZERO discovery rows, and a resumed
+    /// session would lose every `tool_search_call` / `tool_search_output` record for its
+    /// whole history — the next request going out as if no tools had ever been loaded, with
+    /// nothing logged. E0004 cannot see this (it is a builder, not a match) and the cut-site
+    /// inventory cannot see it (it walks position-cuts on a conversation).
+    mod rebuild_discovery_guard {
+        use super::*;
+        use crate::sampling::ConversationItem;
+        use std::sync::Arc;
+        use xai_grok_sampling_types::conversation::tool_search::ToolSearchItem;
+
+        fn user(text: &str) -> acp::SessionUpdate {
+            acp::SessionUpdate::UserMessageChunk(acp::ContentChunk::new(acp::ContentBlock::Text(
+                acp::TextContent::new(text),
+            )))
+        }
+
+        fn agent(text: &str) -> acp::SessionUpdate {
+            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
+                acp::ContentBlock::Text(acp::TextContent::new(text)),
+            ))
+        }
+
+        /// A stored discovery row, written exactly as the live turn writer writes it.
+        fn stored_discovery_line(kind: &str, call_id: &str) -> String {
+            let raw = serde_json::json!({
+                "type": kind,
+                "id": format!("{}_{call_id}", if kind.ends_with("call") { "tsc" } else { "tso" }),
+                "call_id": call_id,
+                "status": "completed",
+                "execution": "client",
+                "arguments": { "query": "crm order management", "limit": 8 },
+                "tools": [{ "type": "function", "name": "crm_fixture_tool_00" }]
+            });
+            serde_json::to_string(&ConversationItem::Discovery {
+                item: ToolSearchItem::from_wire(raw).expect("fixture is a tool_search item"),
+            })
+            .expect("a discovery row serialises")
+        }
+
+        /// A session dir whose update stream is one hosted-search turn: the user asked for
+        /// tools, the model answered. The provider's `tool_search_*` rows are NOT in this
+        /// stream — that is the whole finding.
+        fn search_turn_dir(with_cache: bool) -> tempfile::TempDir {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let sid = acp::SessionId::new(Arc::from("s"));
+            let envelopes: Vec<SessionUpdateEnvelope> = [user("find the crm tools"), agent("found them")]
+                .into_iter()
+                .map(|update| {
+                    SessionUpdateEnvelope::from_update(&SessionUpdate::Acp(Box::new(
+                        acp::SessionNotification::new(sid.clone(), update),
+                    )))
+                    .expect("envelope")
+                })
+                .collect();
+            write_jsonl_atomic(&dir.path().join(UPDATES_FILE), &envelopes).expect("updates written");
+            if with_cache {
+                let pair = format!(
+                    "{}\n{}\n",
+                    stored_discovery_line("tool_search_call", "call_rebuild_guard"),
+                    stored_discovery_line("tool_search_output", "call_rebuild_guard"),
+                );
+                std::fs::write(dir.path().join(CHAT_HISTORY_FILE), pair).expect("cache seeded");
+            }
+            dir
+        }
+
+        fn discovery_rows(path: &Path) -> usize {
+            std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .filter(|line| line.contains("\"type\":\"discovery\""))
+                .count()
+        }
+
+        /// The guard: a rebuild that would erase the provider's loaded-tool-set record
+        /// refuses to publish, keeps the existing cache byte-for-byte, and REPORTS the count
+        /// (returned, not merely logged — the same discipline as `dropped_discovery_lines`).
+        #[test]
+        fn a_rebuild_that_would_lose_a_stored_discovery_pair_is_refused_and_reported() {
+            let dir = search_turn_dir(true);
+            let chat_path = dir.path().join(CHAT_HISTORY_FILE);
+            let before = std::fs::read_to_string(&chat_path).expect("seeded cache");
+
+            let outcome = chat_rebuild::rebuild_chat_history(dir.path()).expect("rebuild runs");
+
+            assert_eq!(
+                (outcome.published, outcome.lost_discovery_rows),
+                (false, 2),
+                "the pass must refuse the publish and name both lost rows: {outcome:?}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&chat_path).expect("cache still there"),
+                before,
+                "refusing means the durable cache is untouched, not truncated"
+            );
+            assert_eq!(discovery_rows(&chat_path), 2, "the pair survives the resume");
+            assert_eq!(
+                outcome.items, 2,
+                "the reported count is the cache that is actually standing"
+            );
+            // No temp file left behind by the refused pass.
+            let leftovers: Vec<String> = std::fs::read_dir(dir.path())
+                .expect("dir readable")
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.ends_with(".tmp"))
+                .collect();
+            assert!(leftovers.is_empty(), "refused rebuild left {leftovers:?} behind");
+        }
+
+        /// The other side of the same gate, and the disclosure: with no cache standing there
+        /// is nothing to lose, the rebuild publishes, and the rebuilt history carries NO
+        /// discovery record at all. That is not a pass — it is the apex-waj.5 BLOCK made
+        /// visible: nothing in the update stream can carry the provider's rows, so a session
+        /// whose cache is lost cannot have its loaded-tool-set state reconstructed, only
+        /// re-searched for.
+        #[test]
+        fn a_rebuild_with_nothing_to_lose_publishes_and_carries_no_discovery_record() {
+            let dir = search_turn_dir(false);
+            let chat_path = dir.path().join(CHAT_HISTORY_FILE);
+
+            let outcome = chat_rebuild::rebuild_chat_history(dir.path()).expect("rebuild runs");
+
+            assert_eq!(
+                (outcome.published, outcome.lost_discovery_rows, outcome.items),
+                (true, 0, 2),
+                "a plain turn rebuilds normally: {outcome:?}"
+            );
+            assert_eq!(discovery_rows(&chat_path), 0);
         }
     }
 }
