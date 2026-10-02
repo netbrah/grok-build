@@ -16,6 +16,7 @@ pub mod fs;
 pub mod git;
 pub mod hooks;
 pub mod hunk_tracker;
+pub mod insights;
 pub mod interject;
 pub mod jj;
 pub mod marketplace;

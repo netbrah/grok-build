@@ -636,6 +636,18 @@ pub enum SessionUpdate {
     /// The pager shows a loading spinner for `/recap` and clears it on receipt; without this signal that spinner would animate forever.
     /// Never emitted for an automatic recap (those show no spinner).
     SessionRecapUnavailable,
+    /// The shell-side `/insights` job finished and wrote its report. Carries the one thing the job
+    /// hands back to the pager: the report path plus the at-a-glance lines.
+    /// Emitted by the `x.ai/insights` ext method's handling; display-only, like `SessionRecap` —
+    /// never added to the model conversation. An older leader that does not know this variant
+    /// decodes it as `Unknown` and ignores it; the version-skew fallback (the same lines on a
+    /// rail an older leader renders) lands with item 6's progress-line work, not in item 0.
+    SessionInsights {
+        /// Absolute path of the written report (`{grok_home}/insights/<ts>/report.html`).
+        report_path: String,
+        /// The at-a-glance lines (the report's headline figures), rendered alongside the path.
+        at_a_glance: Vec<String>,
+    },
     /// Ultra-short summary of the just-finished successful turn, generated at turn end for the dashboard row's secondary line. Rows show it until the next successful turn's summary replaces it.
     /// Transient (never persisted to `updates.jsonl`): the durable copy lives in `summary.json` and reaches non-attached clients via the roster.
     /// Generation is serialized shell-side (one in-flight call, aborted by newer turns) and gateway delivery is ordered. So the latest delivery is the latest summary, and clients may apply deliveries directly.
@@ -2585,5 +2597,38 @@ mod tests {
         assert!(serde_json::from_str::<SessionUpdate>(missing_prompt_id).is_err());
         let missing_stop_reason = r#"{"sessionUpdate": "turn_completed", "prompt_id": "p-1"}"#;
         assert!(serde_json::from_str::<SessionUpdate>(missing_stop_reason).is_err());
+    }
+
+    // ── SessionInsights (x.ai/insights triple: report path + at-a-glance lines) ──
+
+    #[test]
+    fn session_insights_serializes_snake_case_tag_and_fields() {
+        // Mirrors the SubagentProgress/TurnCompleted convention: `rename_all = "snake_case"` only renames the tag
+        // Struct fields keep their Rust snake_case names on the wire
+        let update = SessionUpdate::SessionInsights {
+            report_path: "/grok-home/insights/2026-10-02T00-00-00Z/report.html".into(),
+            at_a_glance: vec!["12 sessions over 30 days".into(), "$4.20 total".into()],
+        };
+        let json = serde_json::to_value(&update).unwrap();
+        assert_eq!(json["sessionUpdate"], "session_insights");
+        assert_eq!(
+            json["report_path"],
+            "/grok-home/insights/2026-10-02T00-00-00Z/report.html"
+        );
+        assert_eq!(
+            json["at_a_glance"],
+            serde_json::json!(["12 sessions over 30 days", "$4.20 total"])
+        );
+    }
+
+    #[test]
+    fn session_insights_roundtrips_through_json() {
+        let update = SessionUpdate::SessionInsights {
+            report_path: "/grok-home/insights/x/report.html".into(),
+            at_a_glance: vec!["line one".into(), "line two".into(), "line three".into()],
+        };
+        let json = serde_json::to_value(&update).unwrap();
+        let back: SessionUpdate = serde_json::from_value(json).unwrap();
+        assert_eq!(back, update);
     }
 }

@@ -2234,6 +2234,68 @@ async fn skills_list_refreshes_session_skill_baseline() {
         .expect("channel should stay open");
     assert!(matches!(cmd, SessionCommand::RefreshSkillBaseline));
 }
+/// The `x.ai/insights` triple's entry point: the ext method dispatches to the insights handler,
+/// which queues `SessionCommand::Insights` on the session (fire-and-forget, like `x.ai/recap`).
+#[tokio::test(flavor = "current_thread")]
+async fn insights_ext_method_dispatches_session_insights_command() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            use acp::Agent as _;
+            let agent = build_minimal_agent_for_tests();
+            let sid = acp::SessionId::new("sess-insights-ext");
+            let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
+            agent.insert_resident(&sid, handle);
+            let req = acp::ExtRequest::new(
+                "x.ai/insights",
+                serde_json::value::to_raw_value(&serde_json::json!({
+                    "sessionId": "sess-insights-ext"
+                }))
+                .unwrap()
+                .into(),
+            );
+            let resp = agent
+                .ext_method(req)
+                .await
+                .expect("x.ai/insights must route to the insights handler");
+            let body: serde_json::Value =
+                serde_json::from_str(resp.0.get()).expect("response is JSON");
+            assert_eq!(
+                body["result"]["ok"], true,
+                "handler acks {{ok: true}} without blocking on the job"
+            );
+            let cmd = tokio::time::timeout(std::time::Duration::from_secs(1), cmd_rx.recv())
+                .await
+                .expect("SessionCommand::Insights should be sent")
+                .expect("channel should stay open");
+            assert!(matches!(cmd, SessionCommand::Insights));
+        })
+        .await;
+}
+/// An unknown session fails the way `x.ai/recap` does: invalid_params, no command queued.
+#[tokio::test(flavor = "current_thread")]
+async fn insights_ext_method_unknown_session_is_invalid_params() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            use acp::Agent as _;
+            let agent = build_minimal_agent_for_tests();
+            let req = acp::ExtRequest::new(
+                "x.ai/insights",
+                serde_json::value::to_raw_value(&serde_json::json!({
+                    "sessionId": "no-such-session"
+                }))
+                .unwrap()
+                .into(),
+            );
+            let err = agent
+                .ext_method(req)
+                .await
+                .expect_err("unknown session must fail");
+            assert_eq!(err.code, acp::Error::invalid_params().code);
+        })
+        .await;
+}
 /// Gateway tools live on the agent catalog, so sessions only rebuild `search_tool`.
 #[tokio::test(flavor = "current_thread")]
 async fn refresh_mcp_search_index_broadcasts_to_sessions() {

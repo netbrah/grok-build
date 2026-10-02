@@ -2122,6 +2122,12 @@ pub(super) async fn run_session(
                                 s.handle_recap(auto).await;
                             });
                         }
+                        SessionCommand::Insights => {
+                            let s = session.clone();
+                            tokio::task::spawn_local(async move {
+                                s.handle_insights().await;
+                            });
+                        }
                         SessionCommand::AISuggest { prefix, cwd, model_override, respond_to } => {
                             let s = session.clone();
                             tokio::task::spawn_local(async move {

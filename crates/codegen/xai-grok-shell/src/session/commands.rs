@@ -824,6 +824,13 @@ pub enum SessionCommand {
         /// `true` when triggered automatically on return-from-away, `false` for an explicit `/recap`.
         auto: bool,
     },
+    /// The `x.ai/insights` job: analyze past sessions shell-side and hand the result back via
+    /// `SessionUpdate::SessionInsights` (the report path plus the at-a-glance lines).
+    /// Fire-and-forget, like `Recap`: it needs no reply channel; the answer travels back as a
+    /// notification on the `x.ai/session_notification` rail. An older leader that does not know
+    /// the variant decodes it as `Unknown` and ignores it; the version-skew fallback lands with
+    /// item 6's progress-line work.
+    Insights,
     /// Request an AI-generated shell command suggestion.
     /// The session actor builds a minimal prompt from `prefix` and `cwd`.
     /// It calls the sampler with low temperature and low max_tokens, and returns the suggested completion via `respond_to`.

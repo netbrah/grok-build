@@ -228,6 +228,8 @@ pub use stop_gate::MAX_STOP_HOOK_CONTINUATIONS_PER_TURN;
 mod background_tasks;
 #[path = "acp_session_impl/context_snapshot.rs"]
 mod context_snapshot;
+#[path = "acp_session_impl/insights.rs"]
+mod insights;
 #[path = "acp_session_impl/recap.rs"]
 mod recap;
 #[path = "acp_session_impl/rewind.rs"]
@@ -2222,6 +2224,9 @@ mod managed_gateway_tool_tests {
 #[cfg(test)]
 #[path = "acp_session_tests/goal/goal_planner_e2e_tests.rs"]
 mod goal_planner_e2e_tests;
+#[cfg(test)]
+#[path = "acp_session_tests/insights_triple_tests.rs"]
+mod insights_triple_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/interjection_tests.rs"]
 mod interjection_tests;
