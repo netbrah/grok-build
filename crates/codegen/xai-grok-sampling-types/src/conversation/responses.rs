@@ -155,10 +155,10 @@ impl From<&ConversationRequest> for rs::CreateResponse {
         let tools = build_responses_tools(req);
 
         let tool_choice = req.tool_choice.as_ref().map(|tc| match tc {
-            ConversationToolChoice::Auto => rs::ToolChoiceParam::Mode(rs::ToolChoiceOptions::Auto),
-            ConversationToolChoice::None => rs::ToolChoiceParam::Mode(rs::ToolChoiceOptions::None),
+            ConversationToolChoice::Auto => rs::ToolChoiceParam::Option(rs::ToolChoiceOptions::Auto),
+            ConversationToolChoice::None => rs::ToolChoiceParam::Option(rs::ToolChoiceOptions::None),
             ConversationToolChoice::Required => {
-                rs::ToolChoiceParam::Mode(rs::ToolChoiceOptions::Required)
+                rs::ToolChoiceParam::Option(rs::ToolChoiceOptions::Required)
             }
             ConversationToolChoice::Function(name) => {
                 rs::ToolChoiceParam::Function(rs::ToolChoiceFunction { name: name.clone() })
@@ -173,7 +173,7 @@ impl From<&ConversationRequest> for rs::CreateResponse {
                     rs::ResponseFormatJsonSchema {
                         description: None,
                         name: STRUCTURED_OUTPUT_SCHEMA_NAME.to_string(),
-                        schema: Some(schema.clone()),
+                        schema: schema.clone(),
                         strict: Some(true),
                     },
                 ),
@@ -201,6 +201,8 @@ impl From<&ConversationRequest> for rs::CreateResponse {
             reasoning: Some(rs::Reasoning {
                 effort: req.reasoning_effort.map(|e| e.to_responses_api()),
                 summary: Some(rs::ReasoningSummary::Concise),
+                mode: None,
+                context: None,
             }),
             safety_identifier: None,
             service_tier: None,
@@ -214,6 +216,9 @@ impl From<&ConversationRequest> for rs::CreateResponse {
             top_logprobs: None,
             top_p: req.top_p,
             truncation: None,
+            context_management: None,
+            moderation: None,
+            prompt_cache_options: None,
         }
     }
 }
@@ -308,6 +313,7 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                 r#type: rs::MessageType::Message,
                 role: rs::Role::System,
                 content: rs::EasyInputContent::Text(s.content.as_ref().to_owned()),
+                phase: None,
             })]
         }
         ConversationItem::User(u) => {
@@ -316,6 +322,7 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                 r#type: rs::MessageType::Message,
                 role: rs::Role::User,
                 content,
+                phase: None,
             })]
         }
         ConversationItem::Reasoning(r) => {
@@ -332,6 +339,7 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                     r#type: rs::MessageType::Message,
                     role: rs::Role::Assistant,
                     content: rs::EasyInputContent::Text(a.content.as_ref().to_owned()),
+                    phase: None,
                 }));
             }
 
@@ -344,6 +352,9 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                         arguments: arguments.as_ref().to_owned(),
                         id: None,
                         status: None,
+                        namespace: None,
+                        caller: None,
+                        r#async: None,
                     },
                 )));
             }
@@ -368,6 +379,7 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                             detail: rs::ImageDetail::Auto,
                             file_id: None,
                             image_url: Some(url.as_ref().to_owned()),
+                            prompt_cache_breakpoint: None,
                         }))
                     }
                     // A text part riding inside `images` is dropped here and never reaches this
@@ -385,16 +397,20 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
             } else {
                 let mut parts = vec![rs::InputContent::InputText(rs::InputTextContent {
                     text: t.content.as_ref().to_owned(),
+                    prompt_cache_breakpoint: None,
                 })];
                 parts.extend(images);
                 rs::FunctionCallOutput::Content(parts)
             };
             vec![rs::InputItem::Item(rs::Item::FunctionCallOutput(
                 rs::FunctionCallOutputItemParam {
-                    call_id: t.tool_call_id.clone(),
+                    call_id: Some(t.tool_call_id.clone()),
                     output,
                     id: None,
                     status: None,
+                    name: None,
+                    namespace: None,
+                    caller: None,
                 },
             ))]
         }
@@ -421,6 +437,7 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                     content: rs::EasyInputContent::Text(
                         PROVIDER_NATIVE_SEARCH_REPLAY_SUMMARY.to_owned(),
                     ),
+                    phase: None,
                 }),
                 BackendToolKind::CodeInterpreter(ci) => {
                     rs::InputItem::Item(rs::Item::CodeInterpreterCall(ci.clone()))
@@ -434,6 +451,7 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                     rs::InputItem::EasyMessage(rs::EasyInputMessage {
                         r#type: rs::MessageType::Message,
                         role: raw.responses_placeholder_role(),
+                        phase: None,
                         // A non-Codex request deliberately does not receive
                         // the opaque provider item. Give cross-provider model
                         // switches the safe retained-message summary instead
@@ -458,11 +476,13 @@ fn content_parts_to_easy_input_content(parts: &[ContentPart]) -> rs::EasyInputCo
         .map(|part| match part {
             ContentPart::Text { text } => rs::InputContent::InputText(rs::InputTextContent {
                 text: text.as_ref().to_owned(),
+                prompt_cache_breakpoint: None,
             }),
             ContentPart::Image { url } => rs::InputContent::InputImage(rs::InputImageContent {
                 image_url: Some(url.as_ref().to_owned()),
                 file_id: None,
                 detail: rs::ImageDetail::default(),
+                prompt_cache_breakpoint: None,
             }),
         })
         .collect();
@@ -493,6 +513,10 @@ fn build_responses_tools(req: &ConversationRequest) -> Vec<rs::Tool> {
                 description: t.description.clone(),
                 parameters: Some(t.parameters.clone()),
                 strict: None,
+                defer_loading: None,
+                r#async: None,
+                output_schema: None,
+                allowed_callers: None,
             })
         })
         .collect();

@@ -213,6 +213,7 @@ mod tests {
                     id: "raw-1".to_string(),
                     raw: serde_json::json!({"type": "compaction"}),
                     cross_provider_fallback: None,
+                    mint_tag: None,
                 }),
             }),
             ConversationItem::assistant_with_model("b", "model-a"),

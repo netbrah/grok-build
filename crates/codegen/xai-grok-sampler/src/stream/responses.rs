@@ -74,6 +74,20 @@ pub(crate) fn responses_event_has_meaningful_content(event: &rs::ResponseStreamE
         ResponseStreamEvent::ResponseCodeInterpreterCallCodeDone(event) => !event.code.is_empty(),
         ResponseStreamEvent::ResponseCustomToolCallInputDelta(event) => !event.delta.is_empty(),
         ResponseStreamEvent::ResponseCustomToolCallInputDone(event) => !event.input.is_empty(),
+        // async-openai 0.42.1 added the audio and shell-call stream events; they carry model
+        // content, so they are meaningful progress exactly like the other delta/done events.
+        ResponseStreamEvent::ResponseAudioDelta(event) => !event.delta.is_empty(),
+        ResponseStreamEvent::ResponseAudioTranscriptDelta(event) => !event.delta.is_empty(),
+        ResponseStreamEvent::ResponseShellCallCommandDelta(event) => !event.delta.is_empty(),
+        ResponseStreamEvent::ResponseShellCallOutputContentDelta(event) => {
+            event.delta.stdout.as_deref().is_some_and(|s| !s.is_empty())
+                || event.delta.stderr.as_deref().is_some_and(|s| !s.is_empty())
+        }
+        ResponseStreamEvent::ResponseAudioDone(_)
+        | ResponseStreamEvent::ResponseAudioTranscriptDone(_)
+        | ResponseStreamEvent::ResponseShellCallCommandAdded(_)
+        | ResponseStreamEvent::ResponseShellCallCommandDone(_)
+        | ResponseStreamEvent::ResponseShellCallOutputContentDone(_) => true,
         ResponseStreamEvent::ResponseFailed(event) => {
             !event.response.output.is_empty()
                 || event
@@ -468,21 +482,31 @@ where
 
                 ResponseStreamEvent::ResponseFailed(failed_event) => {
                     let response = failed_event.response;
-                    let error_message = response
+                    // async-openai 0.42.1 types `ResponseError.code` as `ResponseErrorCode`
+                    // (the fork carried a bare string). Its serialized form is the wire spelling
+                    // (`server_error`, or the untagged `Other` string) — what the message and the
+                    // `ApiErrorCode` classification always consumed.
+                    let error_code_str = response
                         .error
                         .as_ref()
-                        .map(|e| format!("{}: {}", e.code, e.message))
-                        .unwrap_or_else(|| "Response failed with unknown error".to_string());
+                        .and_then(|e| {
+                            serde_json::to_value(&e.code)
+                                .ok()
+                                .and_then(|v| v.as_str().map(str::to_owned))
+                        });
+                    let error_message = match (&response.error, &error_code_str) {
+                        (Some(e), Some(code)) => format!("{code}: {}", e.message),
+                        _ => "Response failed with unknown error".to_string(),
+                    };
                     let err = SamplingError::Api {
                         status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
                         message: error_message,
                         model_metadata: None,
                         retry_after_secs: None,
                         should_retry: None,
-                        error_code: response
-                            .error
-                            .as_ref()
-                            .map(|e| xai_grok_sampling_types::ApiErrorCode::parse(&e.code)),
+                        error_code: error_code_str
+                            .as_deref()
+                            .map(xai_grok_sampling_types::ApiErrorCode::parse),
                     };
                     yield SamplingEvent::Failed {
                         request_id: request_id.clone(),
@@ -859,6 +883,9 @@ mod tests {
             top_p: None,
             truncation: None,
             usage: None,
+            prompt_cache_options: None,
+            prompt_cache_diagnostics: None,
+            moderation: None,
         }
     }
 
@@ -868,9 +895,10 @@ mod tests {
 
     fn failed_response_with_error(message: &str) -> rs_types::Response {
         let mut r = build_response(rs_types::Status::Failed);
-        r.error = Some(rs_types::ErrorObject {
-            code: "server_error".into(),
+        r.error = Some(rs_types::ResponseError {
+            code: rs_types::ResponseErrorCode::ServerError,
             message: message.into(),
+            misalignment: None,
         });
         r
     }
@@ -1105,6 +1133,9 @@ mod tests {
                 name: "do_thing".into(),
                 id: None,
                 status: None,
+                namespace: None,
+                caller: None,
+                r#async: None,
             },
         )];
         let event =
@@ -1151,6 +1182,9 @@ mod tests {
                 name: "do_thing".into(),
                 id: None,
                 status: None,
+                namespace: None,
+                caller: None,
+                r#async: None,
             },
         )];
         let event =
@@ -1611,6 +1645,9 @@ mod tests {
                 name: name.into(),
                 id: None,
                 status: None,
+                namespace: None,
+                caller: None,
+                r#async: None,
             }),
         })
     }

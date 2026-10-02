@@ -1801,7 +1801,7 @@ fn read_chat_history_upgrades_legacy_singular_reasoning_to_sibling() {
         );
     match &items[3] {
         ConversationItem::Reasoning(r) => {
-            assert_eq!(r.id, "rs_legacy");
+            assert_eq!(r.id.as_deref(), Some("rs_legacy"));
             assert_eq!(r.encrypted_content.as_deref(), Some("enc-blob"));
             let xai_grok_sampling_types::rs::SummaryPart::SummaryText(s) = &r.summary[0];
             assert_eq!(s.text, "the results are about cats");
@@ -1849,7 +1849,7 @@ fn read_chat_history_upgrades_raw_output_parallel_tco_reasoning() {
     let reasoning_ids: Vec<&str> = items
         .iter()
         .filter_map(|i| match i {
-            ConversationItem::Reasoning(r) => Some(r.id.as_str()),
+            ConversationItem::Reasoning(r) => r.id.as_deref(),
             _ => None,
         })
         .collect();
@@ -1904,7 +1904,7 @@ fn read_chat_history_handles_hybrid_legacy_and_post_pr_lines() {
     let reasoning_ids: Vec<&str> = items
         .iter()
         .filter_map(|i| match i {
-            ConversationItem::Reasoning(r) => Some(r.id.as_str()),
+            ConversationItem::Reasoning(r) => r.id.as_deref(),
             _ => None,
         })
         .collect();
@@ -1929,7 +1929,7 @@ fn read_chat_history_handles_hybrid_legacy_and_post_pr_lines() {
     let ConversationItem::Reasoning(reconstructed) = &items[3] else {
         panic!("expected reconstructed Reasoning at index 3");
     };
-    assert_eq!(reconstructed.id, "rs_legacy");
+    assert_eq!(reconstructed.id.as_deref(), Some("rs_legacy"));
     assert_eq!(reconstructed.encrypted_content.as_deref(), Some("enc"));
     let xai_grok_sampling_types::rs::SummaryPart::SummaryText(s) = &reconstructed
         .summary[0];
