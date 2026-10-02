@@ -295,7 +295,7 @@ impl WebFetchClient {
     /// grounded, non-empty result; `None` on ANY failure (transport error,
     /// timeout, any non-200 including 401, parse failure, not-grounded, empty
     /// text) so the caller falls back to the direct client fetch.
-    async fn fetch_url_context(&self, url: &Url, url_str: &str) -> Option<WebFetchOutput> {
+    async fn fetch_url_context(&self, _url: &Url, url_str: &str) -> Option<WebFetchOutput> {
         let gemini = self.gemini.as_ref()?;
         let prompt = super::url_context::build_prompt(url_str);
         let result = gemini.url_context(&prompt).await.ok()?;
