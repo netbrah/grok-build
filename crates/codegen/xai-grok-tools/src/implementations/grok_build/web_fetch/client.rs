@@ -9,6 +9,7 @@ use url::Url;
 
 use super::cache::FetchCache;
 use super::config::{MAX_REDIRECTS, MAX_URL_LENGTH, USER_AGENT_STRING, WebFetchParams};
+use super::domain::DomainMatcher;
 use super::error::WebFetchError;
 use super::http::HttpClient;
 use super::overflow::{OverflowHandler, RecoveryTools, inline_budget};
@@ -30,6 +31,13 @@ pub struct WebFetchClient {
     image_writer: SessionFileWriter,
     video_writer: SessionFileWriter,
     overflow: OverflowHandler,
+    /// Optional Gemini-native utility client for the urlContext HYBRID routing
+    /// (apex-ylqz Phase 2, SDD §13.2). `None` (e.g. web_search disabled) keeps
+    /// the direct HTTP fetch for every URL.
+    gemini: Option<crate::implementations::web_search::client::WebSearchClient>,
+    /// Exact normalized-host matcher for urlContext eligibility (SDD §13.2),
+    /// built from `params.url_context_domains()`.
+    url_context_matcher: DomainMatcher,
 }
 
 struct ProcessedText {
@@ -42,7 +50,22 @@ struct ProcessedText {
 }
 
 impl WebFetchClient {
-    pub fn new(params: &WebFetchParams) -> Result<Self, WebFetchError> {
+    pub fn new(
+        params: &WebFetchParams,
+        gemini: Option<crate::implementations::web_search::client::WebSearchClient>,
+    ) -> Result<Self, WebFetchError> {
+        // One-time warn-logs (apex-ylqz Phase 2, SDD §13.2): the urlContext
+        // routing is valid-but-inert in these configurations.
+        if params.url_context() && gemini.is_none() {
+            tracing::warn!(
+                "web_fetch url_context is enabled but no web_search client is available; urlContext routing is inert"
+            );
+        }
+        if params.url_context() && params.url_context_domains().is_empty() {
+            tracing::warn!(
+                "web_fetch url_context is enabled but url_context_domains is empty; urlContext routing is valid but inert"
+            );
+        }
         let converter = Arc::new(
             htmd::HtmlToMarkdown::builder()
                 .skip_tags(vec![
@@ -64,6 +87,8 @@ impl WebFetchClient {
             image_writer: SessionFileWriter::new("images", "jpg"),
             video_writer: SessionFileWriter::new("videos", "mp4"),
             overflow: OverflowHandler::new(),
+            gemini,
+            url_context_matcher: DomainMatcher::new(&params.url_context_domains()),
         })
     }
 
@@ -93,6 +118,19 @@ impl WebFetchClient {
 
         // SSRF check (policy from tool params — not process env at call time).
         ssrf::check_ssrf(&url, self.params.allow_local()).await?;
+
+        // urlContext HYBRID routing (apex-ylqz Phase 2, SDD §13.2): AFTER
+        // check_ssrf, so both engines are DNS-guarded. A `None` from
+        // `fetch_url_context` falls through to the direct client fetch below —
+        // that single client attempt is the fallback (R8: no second LLM hop).
+        // A urlContext success is returned WITHOUT a cache insert: the cache
+        // key is the bare URL, and a Gemini-grounded answer must not poison
+        // the direct-fetch cache (cross-engine cache poisoning, SDD §13.2).
+        if self.uses_url_context(&url)
+            && let Some(output) = self.fetch_url_context(&url, &url_str).await
+        {
+            return Ok(output);
+        }
 
         // Make request and build output.
         let http = self.http.get_or_rebuild()?;
@@ -236,6 +274,32 @@ impl WebFetchClient {
         }
 
         Ok(output)
+    }
+
+    /// The normative urlContext routing predicate (apex-ylqz Phase 2, SDD
+    /// §13.2): route iff a Gemini client is available, the opt-in is on, the
+    /// host is not an explicit local host (the one gap `check_ssrf` leaves
+    /// open under `allow_local`), and the URL is in the operator-enumerated
+    /// set (`DomainMatcher::check` is `None` = permitted; exact
+    /// normalized-host, no globs, path-scoped entries honored).
+    fn uses_url_context(&self, url: &Url) -> bool {
+        let host = url.host_str().unwrap_or("");
+        self.gemini.is_some()
+            && self.params.url_context()
+            && !ssrf::is_explicit_local_host(host)
+            && self.url_context_matcher.check(&url).is_none()
+    }
+
+    /// One urlContext attempt (R8: no retry — the caller's direct client fetch
+    /// is the fallback). Returns the shaped `WebFetchOutput::Content` on a
+    /// grounded, non-empty result; `None` on ANY failure (transport error,
+    /// timeout, any non-200 including 401, parse failure, not-grounded, empty
+    /// text) so the caller falls back to the direct client fetch.
+    async fn fetch_url_context(&self, url: &Url, url_str: &str) -> Option<WebFetchOutput> {
+        let gemini = self.gemini.as_ref()?;
+        let prompt = super::url_context::build_prompt(url_str);
+        let result = gemini.url_context(&prompt).await.ok()?;
+        super::url_context::shape_result(url_str, &result)
     }
 
     async fn process_text_content(
@@ -856,10 +920,13 @@ mod tests {
     #[tokio::test]
     async fn oversized_html_persists_exact_pre_truncation_markdown() {
         let tmp = tempfile::tempdir().unwrap();
-        let client = WebFetchClient::new(&WebFetchParams {
-            context_window_tokens: Some(100),
-            ..WebFetchParams::default()
-        })
+        let client = WebFetchClient::new(
+            &WebFetchParams {
+                context_window_tokens: Some(100),
+                ..WebFetchParams::default()
+            },
+            None,
+        )
         .unwrap();
         let tail = "TAIL-MUST-REMAIN-RECOVERABLE";
         let html = format!(
@@ -1348,7 +1415,7 @@ mod tests {
         );
 
         // Client builds successfully with the proxy endpoint set.
-        let client = WebFetchClient::new(&params);
+        let client = WebFetchClient::new(&params, None);
         assert!(client.is_ok());
     }
 
@@ -1525,5 +1592,460 @@ mod tests {
         assert_eq!(media_extension("image/x-custom"), "bin");
         assert_eq!(media_extension("video/x-custom"), "bin");
         assert_eq!(media_extension("application/octet-stream"), "bin");
+    }
+
+    // ── urlContext HYBRID (apex-ylqz Phase 2, SDD §13.2) ─────────────────
+
+    const UC_MODEL: &str = "gemini-test-model";
+    const UC_PATH: &str = "/v1beta/models/gemini-test-model:generateContent";
+    /// Public IP literal: no DNS (check_ssrf checks literals directly), not an
+    /// explicit local host. Never actually dialed in these tests — the client
+    /// path is pointed at a closed loopback proxy so any fall-through fails
+    /// fast and locally.
+    const UC_URL: &str = "https://93.184.216.34/";
+    /// Closed loopback proxy: any direct client fetch fails fast and
+    /// deterministically (connection refused) without touching the network.
+    const UC_DEAD_PROXY: &str = "http://127.0.0.1:1";
+
+    type WebSearchClient = crate::implementations::web_search::client::WebSearchClient;
+
+    fn uc_gemini_client(base_url: &str) -> WebSearchClient {
+        let config = crate::implementations::web_search::WebSearchConfig::Enabled {
+            api_key: "test-key".to_string(),
+            base_url: base_url.to_string(),
+            model: UC_MODEL.to_string(),
+            extra_headers: indexmap::IndexMap::new(),
+            alpha_test_key: None,
+            allowed_domains: None,
+            excluded_domains: None,
+        };
+        WebSearchClient::new(&config, None).expect("web search client builds for the stub")
+    }
+
+    fn uc_params(domains: &[&str]) -> WebFetchParams {
+        WebFetchParams {
+            url_context: Some(true),
+            url_context_domains: Some(domains.iter().map(|s| s.to_string()).collect()),
+            proxy_endpoint: Some(UC_DEAD_PROXY.to_string()),
+            ..WebFetchParams::default()
+        }
+    }
+
+    fn uc_client(params: &WebFetchParams, gemini: Option<WebSearchClient>) -> WebFetchClient {
+        WebFetchClient::new(params, gemini).expect("web fetch client builds")
+    }
+
+    fn uc_grounded_body() -> serde_json::Value {
+        serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "Latest stable kernel: 6.12"}]},
+                "finishReason": "STOP",
+                "groundingMetadata": {"groundingChunks": [
+                    {"web": {"uri": "https://93.184.216.34/", "title": "Kernel page", "domain": "93.184.216.34"}}
+                ]}
+            }]
+        })
+    }
+
+    fn uc_ungrounded_body() -> serde_json::Value {
+        serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "Latest stable kernel: 6.12"}]},
+                "finishReason": "STOP"
+            }]
+        })
+    }
+
+    // ── Routing predicate (the SDD §13.2 normative expression) ────────────
+
+    #[test]
+    fn uc_predicate_routes_when_host_in_list_with_gemini_client() {
+        let client = uc_client(
+            &uc_params(&["93.184.216.34"]),
+            Some(uc_gemini_client(UC_DEAD_PROXY)),
+        );
+        assert!(client.uses_url_context(&Url::parse(UC_URL).unwrap()));
+    }
+
+    #[test]
+    fn uc_predicate_rejects_host_not_in_list() {
+        let client = uc_client(
+            &uc_params(&["93.184.216.34"]),
+            Some(uc_gemini_client(UC_DEAD_PROXY)),
+        );
+        assert!(!client.uses_url_context(&Url::parse("https://example.com/").unwrap()));
+    }
+
+    #[test]
+    fn uc_predicate_rejects_explicit_local_host_even_if_listed() {
+        let params = WebFetchParams {
+            allow_local: Some(true),
+            url_context: Some(true),
+            url_context_domains: Some(vec!["127.0.0.1".to_string()]),
+            ..WebFetchParams::default()
+        };
+        let client = uc_client(&params, Some(uc_gemini_client(UC_DEAD_PROXY)));
+        assert!(
+            !client.uses_url_context(&Url::parse("http://127.0.0.1:8080/").unwrap()),
+            "explicit loopback stays on the client path even under allow_local"
+        );
+    }
+
+    #[test]
+    fn uc_predicate_rejects_when_gemini_client_absent() {
+        let client = uc_client(&uc_params(&["93.184.216.34"]), None);
+        assert!(!client.uses_url_context(&Url::parse(UC_URL).unwrap()));
+    }
+
+    #[test]
+    fn uc_predicate_rejects_when_flag_off() {
+        let params = WebFetchParams {
+            url_context_domains: Some(vec!["93.184.216.34".to_string()]),
+            proxy_endpoint: Some(UC_DEAD_PROXY.to_string()),
+            ..WebFetchParams::default()
+        };
+        let client = uc_client(&params, Some(uc_gemini_client(UC_DEAD_PROXY)));
+        assert!(!client.uses_url_context(&Url::parse(UC_URL).unwrap()));
+    }
+
+    #[test]
+    fn uc_predicate_honors_path_scoped_entries() {
+        let client = uc_client(
+            &uc_params(&["example.com/docs"]),
+            Some(uc_gemini_client(UC_DEAD_PROXY)),
+        );
+        assert!(client.uses_url_context(&Url::parse("https://example.com/docs/build").unwrap()));
+        assert!(!client.uses_url_context(&Url::parse("https://example.com/blog/post").unwrap()));
+    }
+
+    #[test]
+    fn uc_predicate_normalizes_case_trailing_dot_and_www() {
+        // Pin the REAL DomainMatcher normalization (web_fetch/domain.rs):
+        // trim, strip a trailing dot, strip a *lowercase* "www." prefix, then
+        // lowercase. (An uppercase "WWW." prefix is NOT stripped — the strip is
+        // case-sensitive — so the entry is keyed with its www intact.)
+        let client = uc_client(
+            &uc_params(&["EXAMPLE.COM.", "www.example.org"]),
+            Some(uc_gemini_client(UC_DEAD_PROXY)),
+        );
+        // Mixed case + trailing dot, no www: "EXAMPLE.COM." -> "example.com".
+        assert!(client.uses_url_context(&Url::parse("https://example.com/x").unwrap()));
+        // Lowercase www is stripped: "www.example.org" -> "example.org".
+        assert!(client.uses_url_context(&Url::parse("https://example.org/y").unwrap()));
+        // A host not in the list is still rejected (exact normalized-host).
+        assert!(!client.uses_url_context(&Url::parse("https://example.net/z").unwrap()));
+    }
+
+    // ── fetch_url_context (single attempt; None on any failure) ───────────
+
+    #[tokio::test]
+    async fn uc_fetch_url_context_returns_content_on_grounded_result() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(UC_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(uc_grounded_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = uc_client(
+            &uc_params(&["93.184.216.34"]),
+            Some(uc_gemini_client(&server.uri())),
+        );
+        let out = client
+            .fetch_url_context(&Url::parse(UC_URL).unwrap(), UC_URL)
+            .await
+            .expect("grounded result must shape to Some");
+        match out {
+            WebFetchOutput::Content(content) => {
+                assert_eq!(content.url, UC_URL);
+                assert!(content.content.contains("<untrusted_context>"));
+                assert!(content.content.contains("Latest stable kernel: 6.12"));
+            }
+            other => panic!("expected Content, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn uc_fetch_url_context_none_on_not_grounded() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(UC_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(uc_ungrounded_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = uc_client(
+            &uc_params(&["93.184.216.34"]),
+            Some(uc_gemini_client(&server.uri())),
+        );
+        assert!(
+            client
+                .fetch_url_context(&Url::parse(UC_URL).unwrap(), UC_URL)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn uc_fetch_url_context_none_on_empty_text_with_chunks() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let body = serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{}]},
+                "finishReason": "STOP",
+                "groundingMetadata": {"groundingChunks": [
+                    {"web": {"uri": "https://93.184.216.34/", "title": "Kernel page"}}
+                ]}
+            }]
+        });
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(UC_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = uc_client(
+            &uc_params(&["93.184.216.34"]),
+            Some(uc_gemini_client(&server.uri())),
+        );
+        assert!(
+            client
+                .fetch_url_context(&Url::parse(UC_URL).unwrap(), UC_URL)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn uc_fetch_url_context_none_on_http_404() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(UC_PATH))
+            .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = uc_client(
+            &uc_params(&["93.184.216.34"]),
+            Some(uc_gemini_client(&server.uri())),
+        );
+        assert!(
+            client
+                .fetch_url_context(&Url::parse(UC_URL).unwrap(), UC_URL)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn uc_fetch_url_context_none_on_http_401() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(UC_PATH))
+            .respond_with(ResponseTemplate::new(401).set_body_string("unauthorized"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = uc_client(
+            &uc_params(&["93.184.216.34"]),
+            Some(uc_gemini_client(&server.uri())),
+        );
+        assert!(
+            client
+                .fetch_url_context(&Url::parse(UC_URL).unwrap(), UC_URL)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn uc_fetch_url_context_none_on_malformed_200() {
+        // P4 trap shape: 200 + a responses-wire object, never a success.
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(UC_PATH))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"status": "incomplete", "tools": []})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = uc_client(
+            &uc_params(&["93.184.216.34"]),
+            Some(uc_gemini_client(&server.uri())),
+        );
+        assert!(
+            client
+                .fetch_url_context(&Url::parse(UC_URL).unwrap(), UC_URL)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn uc_fetch_url_context_none_on_transport_error() {
+        // gemini base_url points at a closed loopback port: connection refused.
+        let client = uc_client(
+            &uc_params(&["93.184.216.34"]),
+            Some(uc_gemini_client(UC_DEAD_PROXY)),
+        );
+        assert!(
+            client
+                .fetch_url_context(&Url::parse(UC_URL).unwrap(), UC_URL)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn uc_fetch_url_context_none_when_gemini_absent() {
+        let client = uc_client(&uc_params(&["93.184.216.34"]), None);
+        assert!(
+            client
+                .fetch_url_context(&Url::parse(UC_URL).unwrap(), UC_URL)
+                .await
+                .is_none()
+        );
+    }
+
+    // ── fetch()-level routing: no cache insert, client fallback ───────────
+
+    #[tokio::test]
+    async fn uc_fetch_success_is_routed_twice_and_never_cached() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(UC_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(uc_grounded_body()))
+            .expect(2) // both fetches hit the LLM branch: nothing was cached
+            .mount(&server)
+            .await;
+        let client = uc_client(
+            &uc_params(&["93.184.216.34"]),
+            Some(uc_gemini_client(&server.uri())),
+        );
+        for _ in 0..2 {
+            let out = client
+                .fetch(UC_URL, None, None, None)
+                .await
+                .expect("urlContext success must return Ok");
+            match out {
+                WebFetchOutput::Content(content) => {
+                    assert!(content.content.contains("Latest stable kernel: 6.12"));
+                }
+                other => panic!("expected Content, got {other:?}"),
+            }
+        }
+        assert!(
+            client.cache.read().get(UC_URL).is_none(),
+            "a urlContext success must NOT insert into the direct-fetch cache (cross-engine cache poisoning)"
+        );
+    }
+
+    #[tokio::test]
+    async fn uc_fetch_falls_back_to_client_path_on_not_grounded() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(UC_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(uc_ungrounded_body()))
+            .expect(1) // R8: a single LLM attempt, no second hop
+            .mount(&server)
+            .await;
+        let client = uc_client(
+            &uc_params(&["93.184.216.34"]),
+            Some(uc_gemini_client(&server.uri())),
+        );
+        let err = client
+            .fetch(UC_URL, None, None, None)
+            .await
+            .expect_err("client path (dead proxy) must fail");
+        assert!(matches!(err, WebFetchError::HttpRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn uc_fetch_falls_back_to_client_path_on_gemini_http_500() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(UC_PATH))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = uc_client(
+            &uc_params(&["93.184.216.34"]),
+            Some(uc_gemini_client(&server.uri())),
+        );
+        let err = client
+            .fetch(UC_URL, None, None, None)
+            .await
+            .expect_err("client path (dead proxy) must fail");
+        assert!(matches!(err, WebFetchError::HttpRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn uc_fetch_falls_back_to_client_path_on_gemini_timeout() {
+        use std::time::Duration;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(UC_PATH))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(5))
+                    .set_body_json(uc_grounded_body()),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut gemini = uc_gemini_client(&server.uri());
+        gemini.set_gemini_attempt_timeout_for_test(Duration::from_millis(200));
+        let client = uc_client(&uc_params(&["93.184.216.34"]), Some(gemini));
+        let err = client
+            .fetch(UC_URL, None, None, None)
+            .await
+            .expect_err("client path (dead proxy) must fail");
+        assert!(matches!(err, WebFetchError::HttpRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn uc_fetch_default_off_keeps_client_path_byte_identical() {
+        // url_context=false (the default) with a gemini client present: the
+        // LLM wire is never called and the client path runs (dead proxy fails
+        // it deterministically).
+        let server = wiremock::MockServer::start().await;
+        let params = WebFetchParams {
+            proxy_endpoint: Some(UC_DEAD_PROXY.to_string()),
+            ..WebFetchParams::default()
+        };
+        let client = uc_client(&params, Some(uc_gemini_client(&server.uri())));
+        let err = client
+            .fetch(UC_URL, None, None, None)
+            .await
+            .expect_err("client path (dead proxy) must fail");
+        assert!(matches!(err, WebFetchError::HttpRequest(_)));
+        let reqs = server.received_requests().await.unwrap();
+        assert!(
+            reqs.is_empty(),
+            "default-off must never call the Gemini wire"
+        );
     }
 }

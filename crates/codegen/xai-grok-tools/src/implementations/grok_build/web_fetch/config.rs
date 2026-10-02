@@ -41,6 +41,20 @@ pub struct WebFetchParams {
     /// `[toolset.web_fetch] allow_local = true` or `GROK_WEB_FETCH_ALLOW_LOCAL=1`.
     #[serde(default)]
     pub allow_local: Option<bool>,
+    /// When true, fetches whose URL is in `url_context_domains` and whose host
+    /// is not an explicit local host route to the Gemini-native `generateContent`
+    /// `urlContext` utility wire instead of the direct HTTP fetch, falling back
+    /// to the direct fetch on any urlContext failure (apex-ylqz Phase 2, SDD
+    /// §13.2). Default: `false` (direct HTTP fetch for every URL, byte-identical
+    /// to the pre-Phase-2 behavior).
+    #[serde(default)]
+    pub url_context: Option<bool>,
+    /// Hosts eligible for the `url_context` routing: exact normalized-host
+    /// entries, optionally path-scoped (`host/path`) — no globs. Matching uses
+    /// the existing `DomainMatcher` (same normalization as the allowlist).
+    /// Default: empty (the routing is valid but inert).
+    #[serde(default)]
+    pub url_context_domains: Option<Vec<String>>,
 }
 
 register_resource!("grok_build", "WebFetch", WebFetchParams);
@@ -74,6 +88,14 @@ impl WebFetchParams {
 
     pub fn allow_local(&self) -> bool {
         self.allow_local.unwrap_or(false)
+    }
+
+    pub fn url_context(&self) -> bool {
+        self.url_context.unwrap_or(false)
+    }
+
+    pub fn url_context_domains(&self) -> Vec<String> {
+        self.url_context_domains.clone().unwrap_or_default()
     }
 
     pub fn allowed_domains(&self) -> Vec<String> {
@@ -192,3 +214,39 @@ pub static DEFAULT_ALLOWED_DOMAINS: &[&str] = &[
     "nginx.org",
     "httpd.apache.org",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn url_context_defaults_false_with_empty_domains() {
+        let params = WebFetchParams::default();
+        assert_eq!(params.url_context(), false);
+        assert!(params.url_context_domains().is_empty());
+    }
+
+    #[test]
+    fn url_context_keys_round_trip_through_serde() {
+        let json =
+            r#"{"url_context": true, "url_context_domains": ["kernel.org", "vercel.com/docs"]}"#;
+        let params: WebFetchParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.url_context(), true);
+        assert_eq!(
+            params.url_context_domains(),
+            vec!["kernel.org".to_string(), "vercel.com/docs".to_string()]
+        );
+    }
+
+    #[test]
+    fn url_context_true_with_empty_domains_is_valid_but_inert() {
+        let params: WebFetchParams = serde_json::from_str(r#"{"url_context": true}"#).unwrap();
+        assert_eq!(params.url_context(), true);
+        assert!(params.url_context_domains().is_empty());
+    }
+
+    #[test]
+    fn url_context_unknown_fields_still_rejected() {
+        assert!(serde_json::from_str::<WebFetchParams>(r#"{"url_context_typos": true}"#).is_err());
+    }
+}

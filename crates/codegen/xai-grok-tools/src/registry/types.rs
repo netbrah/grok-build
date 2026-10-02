@@ -1025,7 +1025,16 @@ impl ToolRegistryBuilder {
         if let crate::implementations::grok_build::web_fetch::WebFetchConfig::Enabled { params } =
             &ctx.web_fetch_config
         {
-            match crate::implementations::grok_build::web_fetch::WebFetchClient::new(params) {
+            // urlContext HYBRID (apex-ylqz Phase 2, SDD §13.4): hand the
+            // web_fetch client the registered web_search client (if any) so
+            // opt-in `url_context` routing has a Gemini-native utility wire to
+            // call. `None` (web_search disabled or unbuildable) keeps the
+            // direct HTTP fetch for every URL.
+            let gemini = resources
+                .get::<crate::implementations::web_search::client::WebSearchClient>()
+                .cloned();
+            match crate::implementations::grok_build::web_fetch::WebFetchClient::new(params, gemini)
+            {
                 Ok(client) => {
                     resources.insert(client);
                 }

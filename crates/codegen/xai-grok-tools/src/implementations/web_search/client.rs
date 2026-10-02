@@ -230,13 +230,19 @@ impl WebSearchClient {
         query: &str,
         model_allowed: Option<Vec<String>>,
     ) -> Result<(String, Vec<GroundingChunk>), xai_tool_runtime::ToolError> {
-        let first = self.gemini_attempt(query, None).await?;
+        let first = self
+            .gemini_attempt(GeminiToolKind::GoogleSearch, query, None)
+            .await?;
         let result = if first.grounded() && first.finish_reason != "MAX_TOKENS" {
             first
         } else {
             // §4.3: exactly ONE retry, forcing the search tool (R3 mitigation).
             let retried = self
-                .gemini_attempt(query, Some(GROUNDING_RETRY_INSTRUCTION))
+                .gemini_attempt(
+                    GeminiToolKind::GoogleSearch,
+                    query,
+                    Some(GROUNDING_RETRY_INSTRUCTION),
+                )
                 .await?;
             if retried.grounded() && !retried.text.is_empty() {
                 retried
@@ -251,12 +257,16 @@ impl WebSearchClient {
             filter_grounding_chunks(result.chunks, (allowed, excluded)),
         ))
     }
-    /// One generateContent attempt: build the §4.1 request, POST it through the
-    /// session proxy with per-attempt timeouts (cf M6), and parse the response.
-    /// Transport errors, 5xx, 401 (→ attribution), and unparseable 200 bodies
-    /// are `Err`; callers retry only per §4.3, never on these.
+    /// One generateContent attempt: build the §4.1 request for `kind`, POST it
+    /// through the session proxy with per-attempt timeouts (cf M6), and parse
+    /// the response. Transport errors, 5xx, 401 (→ attribution), and
+    /// unparseable 200 bodies are `Err`; callers retry only per §4.3, never on
+    /// these. The GoogleSearch wire is byte-identical to the pre-Phase-2
+    /// (apex-ylqz) shape; the UrlContext arm pins temperature 0 (deterministic
+    /// extraction) with the same production maxOutputTokens.
     async fn gemini_attempt(
         &self,
+        kind: GeminiToolKind,
         query: &str,
         system_instruction: Option<&str>,
     ) -> Result<GeminiUtilityResult, xai_tool_runtime::ToolError> {
@@ -266,8 +276,10 @@ impl WebSearchClient {
                 msg,
             )
         };
-        let request =
-            GeminiUtilityRequest::new(self.model.as_str(), query, GeminiToolKind::GoogleSearch);
+        let mut request = GeminiUtilityRequest::new(self.model.as_str(), query, kind);
+        if kind == GeminiToolKind::UrlContext {
+            request = request.temperature(0.0);
+        }
         let request = match system_instruction {
             Some(instruction) => request.system_instruction(instruction),
             None => request,
@@ -321,6 +333,24 @@ impl WebSearchClient {
                 "generateContent returned 200 but the body is not a successful search (head: {head})"
             ))
         })
+    }
+    /// The urlContext utility wire (apex-ylqz Phase 2, SDD §13.4): one
+    /// generateContent attempt with `tools:[{"urlContext":{}}]` and
+    /// temperature 0. No grounding retry (R8: the web_fetch caller falls back
+    /// to its direct fetch on any failure; a second LLM hop is never made).
+    pub async fn url_context(
+        &self,
+        prompt: &str,
+    ) -> Result<GeminiUtilityResult, xai_tool_runtime::ToolError> {
+        self.gemini_attempt(GeminiToolKind::UrlContext, prompt, None)
+            .await
+    }
+    /// Test knob (mirrors the direct field writes in the T3 tests): shorten
+    /// the per-attempt timeout so the timeout path is exercisable in other
+    /// modules without waiting 60 s.
+    #[cfg(test)]
+    pub(crate) fn set_gemini_attempt_timeout_for_test(&mut self, timeout: Duration) {
+        self.gemini_attempt_timeout = timeout;
     }
     /// Perform a web search query using the Responses API. Returns `(content, citations)` where
     /// content is the assistant's text and citations are unique URLs found in the response
@@ -1557,6 +1587,85 @@ mod tests {
         assert_eq!(pairs[0].1, t3_fixture_chunk_uri("P3a__resp.json", 0));
         assert_eq!(pairs[1].0, "Example B");
         assert_eq!(pairs[1].1, "https://example.com/b");
+    }
+
+    // ── Phase 2 (apex-ylqz): urlContext wire + GoogleSearch wire pin ──────
+
+    #[tokio::test]
+    async fn t3_url_context_wire_uses_url_context_tool_and_zero_temperature() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(T3_PATH))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(t3_fixture_body("P5__resp.json")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = t3_client(&server, None, None);
+        let result = client
+            .url_context("fetch https://kernel.org")
+            .await
+            .expect("urlContext attempt must succeed on a grounded P5 body");
+        assert!(result.grounded());
+        let reqs = server.received_requests().await.expect("requests recorded");
+        assert_eq!(
+            reqs.len(),
+            1,
+            "url_context is a single attempt (R8: no retry hop)"
+        );
+        let body: serde_json::Value = reqs[0].body_json().expect("request body is JSON");
+        assert_eq!(body["tools"], serde_json::json!([{"urlContext": {}}]));
+        assert_eq!(
+            body["generationConfig"]["temperature"].as_f64(),
+            Some(0.0),
+            "urlContext is deterministic extraction: temperature 0"
+        );
+        assert_eq!(
+            body["generationConfig"]["maxOutputTokens"].as_u64(),
+            Some(8192),
+            "production maxOutputTokens pin — the 256 probe budget is NOT it"
+        );
+        assert!(body.get("systemInstruction").is_none());
+    }
+
+    #[tokio::test]
+    async fn t3_google_search_request_body_stays_pinned_for_phase_2() {
+        // P3(b): parameterizing gemini_attempt must leave the GoogleSearch
+        // wire byte-identical to Phase 1 (tools, generationConfig, path).
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(T3_PATH))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(t3_fixture_body("P3a__resp.json")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = t3_client(&server, None, None);
+        client
+            .search("what is the latest linux kernel", None)
+            .await
+            .expect("grounded P3a must succeed");
+        let reqs = server.received_requests().await.expect("requests recorded");
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].url.path(), T3_PATH);
+        let body: serde_json::Value = reqs[0].body_json().expect("request body is JSON");
+        assert_eq!(body["tools"], serde_json::json!([{"googleSearch": {}}]));
+        assert_eq!(
+            body["generationConfig"]["temperature"].as_f64(),
+            Some(0.1),
+            "GoogleSearch keeps the 0.1 search temperature"
+        );
+        assert_eq!(
+            body["generationConfig"]["maxOutputTokens"].as_u64(),
+            Some(8192)
+        );
+        assert!(body.get("systemInstruction").is_none());
     }
 
     #[test]

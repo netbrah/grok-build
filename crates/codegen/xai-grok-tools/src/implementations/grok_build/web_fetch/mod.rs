@@ -15,6 +15,7 @@ pub mod error;
 mod http;
 pub(crate) mod overflow;
 mod ssrf;
+mod url_context;
 
 pub use client::WebFetchClient;
 pub use config::WebFetchParams;
