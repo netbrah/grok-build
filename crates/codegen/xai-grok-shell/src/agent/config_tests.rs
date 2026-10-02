@@ -1061,6 +1061,8 @@ fn test_model_entry(
 ) -> ModelEntry {
     ModelEntry {
         info: ModelInfo {
+            supports_search_tool: false,
+            use_responses_lite: false,
             multi_agent_v2: None,
             user_selectable: true,
             id: None,
@@ -2232,6 +2234,8 @@ fn model_use_concise_defaults_to_false() {
 #[test]
 fn model_info_from_config_propagates_use_concise() {
     let entry = ModelEntryConfig {
+        supports_search_tool: false,
+        use_responses_lite: false,
         multi_agent_v2: None,
         id: None,
         model_family: None,
@@ -2409,6 +2413,8 @@ fn model_agent_type_defaults_to_grok_build() {
 #[test]
 fn model_info_from_config_propagates_agent_type() {
     let entry = ModelEntryConfig {
+        supports_search_tool: false,
+        use_responses_lite: false,
         multi_agent_v2: None,
         id: None,
         model_family: None,
@@ -2878,6 +2884,8 @@ fn inference_idle_timeout_secs_absent_defaults_to_none() {
 #[test]
 fn inference_idle_timeout_propagates_to_model_info() {
     let entry = ModelEntryConfig {
+        supports_search_tool: false,
+        use_responses_lite: false,
         multi_agent_v2: None,
         id: None,
         model_family: None,
@@ -7579,6 +7587,8 @@ fn slug_propagation_noop_when_no_donor() {
 fn prefetch_model_entry(slug: &str, context_window: u64, api_backend: ApiBackend) -> ModelEntry {
     ModelEntry {
         info: ModelInfo {
+            supports_search_tool: false,
+            use_responses_lite: false,
             multi_agent_v2: None,
             user_selectable: true,
             id: None,
