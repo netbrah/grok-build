@@ -4912,6 +4912,8 @@ pub(crate) fn entry_config_from_default_row(
         model_family: row.model_family.clone(),
         multi_agent_v2: row.multi_agent_v2,
         strict_responses_input: row.strict_responses_input.unwrap_or(false),
+        supports_search_tool: row.supports_search_tool.unwrap_or(false),
+        use_responses_lite: row.use_responses_lite.unwrap_or(false),
         base_url: endpoints.resolve_inference_base_url(),
         api_base_url: Some(endpoints.xai_api_base_url.clone()),
         name: row.name.clone(),
@@ -5021,6 +5023,14 @@ pub struct ModelEntryConfig {
     /// See [`ModelInfo::strict_responses_input`].
     #[serde(default)]
     pub strict_responses_input: bool,
+    /// Native hosted tool discovery (S3a): the row advertises the model-side
+    /// `tool_search` contract. Absent = false (gate stays closed).
+    #[serde(default)]
+    pub supports_search_tool: bool,
+    /// Responses-lite declaration placement (S3a): tools ride a leading
+    /// `additional_tools` input item, not top-level `tools`. Absent = false.
+    #[serde(default)]
+    pub use_responses_lite: bool,
     /// The base URL of the model. e.g. "https://api.x.ai/v1"
     pub base_url: String,
     /// Human-readable display name of the model.
@@ -5217,6 +5227,23 @@ pub struct ConfigModelOverride {
     /// Absent = false (lenient, byte-identical replay).
     #[serde(default)]
     pub strict_responses_input: bool,
+    /// Native hosted tool discovery (S3a): the row advertises the model-side
+    /// `tool_search` contract. TRI-STATE on an override: absent leaves the
+    /// bundled row untouched, `true` enables, `false` DISABLES a bundled row
+    /// that ships it enabled. A plain `bool` here was a one-way latch, so an
+    /// operator could not turn native discovery off for a legacy-path A/B arm
+    /// on the same binary.
+    #[serde(default)]
+    pub supports_search_tool: Option<bool>,
+    /// Responses-lite declaration placement (S3a). As of this commit no
+    /// code in the tree reads the flag: placement is top-level `tools`
+    /// per A-25 / D3-A (probe R4 dropped a declaration sent through a
+    /// leading `additional_tools` input item, so it never reaches the
+    /// model), and the merge below is a one-way latch — `true` sets the
+    /// resolved row, absent or `false` cannot clear a bundled row that
+    /// ships it enabled. Absent = false.
+    #[serde(default)]
+    pub use_responses_lite: bool,
     pub base_url: Option<String>,
     /// Directory containing this model's mTLS client certificate and private key.
     /// Requires one HTTPS `base_url`; an alternate `api_base_url` is rejected.
@@ -5346,6 +5373,12 @@ impl ConfigModelOverride {
         }
         if self.strict_responses_input {
             entry.info.strict_responses_input = true;
+        }
+        if let Some(v) = self.supports_search_tool {
+            entry.info.supports_search_tool = v;
+        }
+        if self.use_responses_lite {
+            entry.info.use_responses_lite = true;
         }
         if let Some(ref v) = self.base_url {
             entry.info.base_url = v.clone();
@@ -5510,6 +5543,16 @@ pub struct ModelInfo {
     /// projection in the sampler transport seam.
     #[serde(default)]
     pub strict_responses_input: bool,
+    /// Native hosted tool discovery (S3a): the resolved row advertises the
+    /// model-side `tool_search` contract; the capability gate (T4) reads
+    /// this through the existing config plumbing. Default false (off).
+    #[serde(default)]
+    pub supports_search_tool: bool,
+    /// Responses-lite declaration placement (S3a): tools ride a leading
+    /// `additional_tools` input item, not top-level `tools` (T6 reads this
+    /// through the existing config plumbing). Default false (off).
+    #[serde(default)]
+    pub use_responses_lite: bool,
     /// The base URL of the model (session endpoint). e.g. "https://cli-chat-proxy.grok.com/v1"
     pub base_url: String,
     /// Human-readable name of the model.
@@ -5646,6 +5689,8 @@ impl ModelInfo {
             model_family: None,
             multi_agent_v2: None,
             strict_responses_input: false,
+            supports_search_tool: false,
+            use_responses_lite: false,
             base_url: String::new(),
             name: None,
             description: None,
@@ -5700,6 +5745,8 @@ impl ModelInfo {
             model_family: entry.model_family.clone(),
             multi_agent_v2: entry.multi_agent_v2.clone(),
             strict_responses_input: entry.strict_responses_input,
+            supports_search_tool: entry.supports_search_tool,
+            use_responses_lite: entry.use_responses_lite,
             base_url: entry.base_url.clone(),
             name: entry.name.clone(),
             description: entry.description.clone(),
@@ -6471,6 +6518,8 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 model_family: None,
                 multi_agent_v2: None,
                 strict_responses_input: false,
+                supports_search_tool: false,
+                use_responses_lite: false,
                 model: catalog_entry
                     .map(|e| e.info.model)
                     .unwrap_or_else(|| model_id.to_owned()),
@@ -6935,6 +6984,8 @@ fn resolve_hidden_default_web_search_sampling_config(
             model_family: None,
             multi_agent_v2: None,
             strict_responses_input: false,
+            supports_search_tool: false,
+            use_responses_lite: false,
             model: model_id.to_owned(),
             base_url: endpoints.resolve_inference_base_url(),
             name: None,
