@@ -1719,7 +1719,7 @@ mod tests {
                 t::ConversationItem::user("q1"),
                 t::ConversationItem::Reasoning(t::ReasoningItemStore {
                     item: t::rs::ReasoningItem {
-                        id: "rs_mbs".to_string(),
+                        id: Some("rs_mbs".to_string()),
                         summary: vec![t::rs::SummaryPart::SummaryText(t::rs::SummaryTextContent {
                             text: "private continuation".to_string(),
                         })],
@@ -2041,7 +2041,7 @@ mod enc_boundary_mf6_tests {
                 t::ConversationItem::user("q1"),
                 t::ConversationItem::Reasoning(t::ReasoningItemStore {
                     item: t::rs::ReasoningItem {
-                        id: "encitem_sig_enc_1".to_string(),
+                        id: Some("encitem_sig_enc_1".to_string()),
                         summary: vec![t::rs::SummaryPart::SummaryText(t::rs::SummaryTextContent {
                             text: "minted under EU2".to_string(),
                         })],
@@ -2054,7 +2054,7 @@ mod enc_boundary_mf6_tests {
                 t::ConversationItem::assistant("a1"),
                 t::ConversationItem::Reasoning(t::ReasoningItemStore {
                     item: t::rs::ReasoningItem {
-                        id: "encitem_sig_enc_2".to_string(),
+                        id: Some("encitem_sig_enc_2".to_string()),
                         summary: vec![t::rs::SummaryPart::SummaryText(t::rs::SummaryTextContent {
                             text: "untagged mint".to_string(),
                         })],

@@ -8,11 +8,12 @@ fn summarization_prep_drops_backend_tool_calls() {
         ConversationItem::BackendToolCall(BackendToolCallItem {
             kind: BackendToolKind::WebSearch(rs::WebSearchToolCall {
                 id: "ws_res-uuid_call-uuid-1".to_string(),
-                status: rs::WebSearchToolCallStatus::Completed,
-                action: rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
-                    query: "weather".to_string(),
+                status: rs::WebSearchCallStatus::Completed,
+                action: Some(rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
+                    query: Some("weather".to_string()),
+                    queries: None,
                     sources: None,
-                }),
+                })),
             }),
         }),
         ConversationItem::assistant("done"),
@@ -2326,7 +2327,7 @@ fn conversation_item_preserves_reasoning_siblings() {
     let result = strip_tool_messages_for_conversation_item(vec![
         ConversationItem::system("system"),
         ConversationItem::Reasoning(rs::ReasoningItem {
-            id: "r_123".to_string(),
+            id: Some("r_123".to_string()),
             summary: vec![],
             content: None,
             encrypted_content: Some("encrypted_sig".to_string()),
@@ -2348,7 +2349,7 @@ fn strip_reasoning_blocks_drops_reasoning_siblings() {
     use xai_grok_sampling_types::{AssistantItem, rs};
     let result = strip_reasoning_blocks(vec![
         ConversationItem::Reasoning(rs::ReasoningItem {
-            id: "r_123".to_string(),
+            id: Some("r_123".to_string()),
             summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                 text: "thinking".to_string(),
             })],
@@ -2386,7 +2387,7 @@ fn prepare_for_summarization_drops_reasoning_sibling_on_mutated_assistant() {
     use xai_grok_sampling_types::{AssistantItem, ToolCall, rs};
     let mk_reasoning = || {
         ConversationItem::Reasoning(rs::ReasoningItem {
-            id: "r_123".to_string(),
+            id: Some("r_123".to_string()),
             summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                 text: "plan".to_string(),
             })],
@@ -2438,7 +2439,7 @@ fn prepare_for_summarization_drops_standalone_reasoning_sibling() {
     use xai_grok_sampling_types::{AssistantItem, rs};
     let result = prepare_conversation_for_summarization(vec![
         ConversationItem::Reasoning(rs::ReasoningItem {
-            id: "r_123".to_string(),
+            id: Some("r_123".to_string()),
             summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                 text: "thinking".to_string(),
             })],
@@ -2466,7 +2467,7 @@ fn prepare_for_summarization_handles_multi_assistant_mixed_conversation() {
     use xai_grok_sampling_types::{AssistantItem, ToolCall, rs};
     let mk_reasoning = || {
         ConversationItem::Reasoning(rs::ReasoningItem {
-            id: "r".to_string(),
+            id: Some("r".to_string()),
             summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                 text: "thinking".to_string(),
             })],
@@ -2556,7 +2557,7 @@ fn prepare_for_summarization_is_idempotent() {
         ConversationItem::system("system prompt"),
         ConversationItem::user("hello"),
         ConversationItem::Reasoning(rs::ReasoningItem {
-            id: "r1".to_string(),
+            id: Some("r1".to_string()),
             summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                 text: "thought".to_string(),
             })],
@@ -2723,7 +2724,7 @@ fn verbatim_reasoning_kept_unless_messages_backend() {
         vec![
             ConversationItem::system("sys"),
             ConversationItem::Reasoning(rs::ReasoningItem {
-                id: "r1".to_string(),
+                id: Some("r1".to_string()),
                 summary: vec![],
                 content: None,
                 encrypted_content: Some("sig".to_string()),
@@ -3129,7 +3130,7 @@ fn fit_counts_encrypted_reasoning_against_budget() {
     use xai_grok_sampling_types::rs;
     let big_enc = "Z".repeat(40_000);
     let reasoning = ConversationItem::Reasoning(rs::ReasoningItem {
-        id: "r1".to_string(),
+        id: Some("r1".to_string()),
         summary: vec![],
         content: None,
         encrypted_content: Some(big_enc),

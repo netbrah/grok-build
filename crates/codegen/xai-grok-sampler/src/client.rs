@@ -337,6 +337,50 @@ fn normalize_response_event_for_dialect(
         .or_insert_with(|| serde_json::Value::String(status.to_owned()));
 }
 
+
+/// async-openai 0.42.1 made `WebSearchToolCall.action` optional: an
+/// action-less `web_search_call` frame now decodes on the strict pass and
+/// short-circuits the salvage chain that used to backfill the sentinel
+/// (`fill_missing_web_search_action` runs only after a failed strict parse).
+/// Re-apply the same apex-ayl.77 contract on the Ok path of every decode:
+/// an action-less call ingests with the empty-search sentinel
+/// (`sentinel_web_search_action_json`, `{"type":"search","query":""}`), and
+/// replay strips it again before the wire (`strip_sentinel_web_search_actions`).
+fn backfill_actionless_web_search_action(event: &mut rs::ResponseStreamEvent) {
+    let fill = |item: &mut rs::OutputItem| {
+        let rs::OutputItem::WebSearchCall(ws) = item else { return };
+        if ws.action.is_none() {
+            ws.action = Some(sentinel_web_search_action_typed());
+        }
+    };
+    match event {
+        rs::ResponseStreamEvent::ResponseOutputItemAdded(evt) => fill(&mut evt.item),
+        rs::ResponseStreamEvent::ResponseOutputItemDone(evt) => fill(&mut evt.item),
+        evt => {
+            let response = match evt {
+                rs::ResponseStreamEvent::ResponseCreated(e) => &mut e.response,
+                rs::ResponseStreamEvent::ResponseInProgress(e) => &mut e.response,
+                rs::ResponseStreamEvent::ResponseCompleted(e) => &mut e.response,
+                rs::ResponseStreamEvent::ResponseFailed(e) => &mut e.response,
+                rs::ResponseStreamEvent::ResponseIncomplete(e) => &mut e.response,
+                _ => return,
+            };
+            for item in &mut response.output {
+                fill(item);
+            }
+        }
+    }
+}
+
+/// Typed mirror of [`xai_grok_sampling_types::sentinel_web_search_action_json`]
+/// (`{"type":"search","query":""}`): built from the JSON literal itself so the
+/// two can never drift. `query` is deprecated in 0.42.1 (superseded by
+/// `queries`); the sentinel keeps the deprecated empty `query` so the byte pin
+/// and the replay-strip classifier keep working unchanged.
+fn sentinel_web_search_action_typed() -> rs::WebSearchToolCallAction {
+    serde_json::from_value(xai_grok_sampling_types::sentinel_web_search_action_json())
+        .expect("the JSON sentinel is a closed literal; it parses by construction")
+}
 fn deserialize_response_event_for_dialect(
     data: &str,
     dialect: ResponsesWireDialect,
@@ -345,6 +389,7 @@ fn deserialize_response_event_for_dialect(
     let first_err = match serde_json::from_str::<rs::ResponseStreamEvent>(data) {
         Ok(mut event) => {
             apply_terminal_event_overrides(&mut event, data);
+            backfill_actionless_web_search_action(&mut event);
             return Ok(Some(event));
         }
         Err(error) => error,
@@ -386,6 +431,7 @@ fn deserialize_response_event_for_dialect(
     match serde_json::from_value::<rs::ResponseStreamEvent>(value.clone()) {
         Ok(mut event) => {
             apply_terminal_event_overrides(&mut event, data);
+            backfill_actionless_web_search_action(&mut event);
             return Ok(Some(event));
         }
         Err(error) => last_err = error,
@@ -398,6 +444,7 @@ fn deserialize_response_event_for_dialect(
     match serde_json::from_value::<rs::ResponseStreamEvent>(value.clone()) {
         Ok(mut event) => {
             apply_terminal_event_overrides(&mut event, data);
+            backfill_actionless_web_search_action(&mut event);
             return Ok(Some(event));
         }
         Err(error) => last_err = error,
@@ -408,6 +455,7 @@ fn deserialize_response_event_for_dialect(
     match serde_json::from_value::<rs::ResponseStreamEvent>(value) {
         Ok(mut event) => {
             apply_terminal_event_overrides(&mut event, data);
+            backfill_actionless_web_search_action(&mut event);
             Ok(Some(event))
         }
         Err(_) => {
@@ -712,6 +760,22 @@ fn repair_output_item(item: &mut serde_json::Value) {
             obj.entry("id").or_insert_with(|| str_value(""));
             obj.entry("summary")
                 .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            // async-openai 0.42.1's `ReasoningItemContent` models only the
+            // `reasoning_text` tag; a gateway (LiteLLM gemini responses-compat,
+            // AT-AZ-VXG-r2 frame 11) that carries the reasoning item's content
+            // part as `output_text` dies the strict parse with
+            // `unknown variant 'output_text', expected 'reasoning_text'`.
+            // Rewrite the part tag in place; the `text` payload is untouched
+            // and the echoed `annotations` member is ignored by the SDK.
+            if let Some(content) = obj.get_mut("content").and_then(|v| v.as_array_mut()) {
+                for part in content {
+                    if let Some(part) = part.as_object_mut()
+                        && part.get("type").and_then(|v| v.as_str()) == Some("output_text")
+                    {
+                        part.insert("type".to_owned(), str_value("reasoning_text"));
+                    }
+                }
+            }
         }
         // `rs::CompactionBody` requires an id even though the wire permits
         // it to be absent; the typed-boundary sentinel must stay empty — it
@@ -4043,19 +4107,22 @@ mod tests {
                     rs::InputMessage {
                         content: vec![rs::InputContent::InputText(rs::InputTextContent {
                             text: "hi".to_string(),
+                            prompt_cache_breakpoint: None,
                         })],
                         role: rs::InputRole::User,
                         status: None,
                     },
                 ))),
                 rs::InputItem::Item(rs::Item::Reasoning(rs::ReasoningItem {
-                    id: "rs_0123456789abcdef0123456789abcdef".to_string(),
+                    id: Some("rs_0123456789abcdef0123456789abcdef".to_string()),
                     summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                         text: "s".to_string(),
                     })],
-                    content: Some(vec![rs::ReasoningTextContent {
-                        text: "chain of thought".to_string(),
-                    }]),
+                    content: Some(vec![rs::ReasoningItemContent::ReasoningText(
+                        rs::ReasoningTextContent {
+                            text: "chain of thought".to_string(),
+                        },
+                    )]),
                     encrypted_content: None,
                     status: None,
                 })),
@@ -6387,19 +6454,29 @@ mod tests {
     const INGRESS77_IDLESS_CUSTOM_TOOL_CALL_ADDED: &str =
         include_str!("../testdata/ingress77/idless_custom_tool_call_added.json");
 
-    /// W2-3 RED pin: an action-less web_search_call frame fatals the strict
-    /// parse with `missing field `action``. Passes at RED; must keep passing
-    /// at GREEN (raw strict parse is never repaired).
+    /// W2-3 (retagged at the 0.42.1 re-pin; B5): async-openai 0.42.1 made
+    /// `WebSearchToolCall.action` an `Option`, so the RAW strict parse of an
+    /// action-less `web_search_call` frame now succeeds with `action: None` —
+    /// the pre-re-pin fatal (`missing field `action``) is gone. This pins the
+    /// raw-parse contract only; the sentinel backfill is the dialect decode's
+    /// Ok-path job (`backfill_actionless_web_search_action`), pinned by the
+    /// sentinel-ingest test below.
     #[test]
-    fn ingress77_actionless_web_search_strict_parse_fatals_missing_action() {
-        let err = serde_json::from_str::<rs::ResponseStreamEvent>(
-            INGRESS77_ACTIONLESS_WEB_SEARCH_DONE,
-        )
-        .unwrap_err();
-        let msg = err.to_string();
+    fn ingress77_actionless_web_search_strict_parse_succeeds_with_action_none() {
+        let event: rs::ResponseStreamEvent =
+            serde_json::from_str(INGRESS77_ACTIONLESS_WEB_SEARCH_DONE)
+                .expect("0.42.1: `action` is `Option`; the raw strict parse no longer fatals");
+        let rs::ResponseStreamEvent::ResponseOutputItemDone(done) = event else {
+            panic!("expected ResponseOutputItemDone");
+        };
+        let rs::OutputItem::WebSearchCall(call) = done.item else {
+            panic!("expected a WebSearchCall output item");
+        };
+        assert_eq!(call.id, "ws_123");
         assert!(
-            msg.contains("missing field `action`"),
-            "RED expectation drifted: {msg}"
+            call.action.is_none(),
+            "the raw strict parse carries no backfill (the dialect layer owns it): {:?}",
+            call.action
         );
     }
 
@@ -6423,11 +6500,11 @@ mod tests {
             panic!("expected WebSearchCall output item");
         };
         assert_eq!(call.id, "ws_123");
-        assert_eq!(call.status, rs::WebSearchToolCallStatus::Completed);
-        let rs::WebSearchToolCallAction::Search(search) = call.action else {
+        assert_eq!(call.status, rs::WebSearchCallStatus::Completed);
+        let Some(rs::WebSearchToolCallAction::Search(search)) = call.action else {
             panic!("expected the sentinel search action");
         };
-        assert!(search.query.is_empty(), "the filled action must be the empty-search sentinel");
+        assert!(search.query.as_deref().map_or(true, str::is_empty), "the filled action must be the empty-search sentinel");
     }
 
     /// W2-4 RED pin: a native xAI x_search_call frame is an unknown variant of
@@ -6528,10 +6605,10 @@ mod tests {
         let rs::OutputItem::WebSearchCall(call) = typed else {
             panic!("expected WebSearchCall");
         };
-        let rs::WebSearchToolCallAction::Search(search) = call.action else {
+        let Some(rs::WebSearchToolCallAction::Search(search)) = call.action else {
             panic!("expected the sentinel search action");
         };
-        assert!(search.query.is_empty());
+        assert!(search.query.as_deref().map_or(true, str::is_empty));
         assert!(search.sources.is_none_or(|sources| sources.is_empty()));
     }
 
@@ -6615,6 +6692,109 @@ mod tests {
         assert!(
             body["input"][0].get("id").is_none(),
             "strict rows keep REPLAY-1: the projector strips the reasoning id afterwards"
+        );
+    }
+
+    /// apex-6c6: a `tool_search_call` frame must not kill the turn.
+    ///
+    /// Every `data:` frame of the two real ratchet-live captures (wire2-live3) goes through the
+    /// exact per-frame decode the production stream loop invokes (`decode_responses_sse_frame_for_model`,
+    /// the `scan` arm at the Responses stream builder) with the capture's own dialect and model
+    /// (`Codex` / `gpt-5.5`, per `req-00*.json`). The turn SURVIVES iff no frame returns `Err`:
+    /// the stream loop turns a decode `Err` into `SamplingEvent::Failed` and ends the turn.
+    /// Before the async-openai 0.42.1 bump the `tool_search_call` items die here with
+    /// `unknown variant` and the turn is killed.
+    ///
+    /// The structural guard walks the PARSED frames (never substrings, FOOTGUNS C1) and asserts
+    /// the captures still carry the discovery shapes this test claims to cover, so a stale or
+    /// truncated capture fails the test instead of passing vacuously.
+    ///
+    /// Banked verbatim (X1): the in-tree fixtures are byte-identical copies of the
+    /// plans-repo captures in ratchet-capture/captures/2026-09-25-ratchet-live/wire2-live3/ —
+    ///   tool_search_call_frames_resp-003.sse  sha256 1a12a2bb34d80d2742834e7b4e49be246834025aebf63d357277532819b7eb5c
+    ///   tool_search_call_frames_resp-004.sse  sha256 9be52e43326361b38a5a35d51e4bbee1d6185daf997fac1595b947c3c42acc03
+    #[test]
+    fn tool_search_call_frames_do_not_kill_the_turn() {
+        const CAPTURES: &[&str] = &[
+            concat!(env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/tool_search_call_frames_resp-003.sse"),
+            concat!(env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/tool_search_call_frames_resp-004.sse"),
+        ];
+        let mut saw_discovery_item = false;
+        let mut saw_tool_search_tool = false;
+        let mut saw_namespace_tool = false;
+        for path in CAPTURES {
+            let sse = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("apex-6c6 capture missing at {path}: {e}"));
+            let mut frame_no = 0usize;
+            let mut fatal: Vec<(usize, String)> = Vec::new();
+            for line in sse.lines() {
+                let Some(data) = line.strip_prefix("data:") else {
+                    continue;
+                };
+                let data = data.trim();
+                if data == "[DONE]" {
+                    continue;
+                }
+                frame_no += 1;
+                // Structural guard over the parsed frame.
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+                    let output_has_discovery = value
+                        .pointer("/response/output")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|out| {
+                            out.iter().any(|i| {
+                                i.get("type")
+                                    .and_then(serde_json::Value::as_str)
+                                    == Some("tool_search_call")
+                            })
+                        });
+                    if value.pointer("/item/type").and_then(serde_json::Value::as_str)
+                        == Some("tool_search_call")
+                        || output_has_discovery
+                    {
+                        saw_discovery_item = true;
+                    }
+                    if let Some(tools) = value
+                        .pointer("/response/tools")
+                        .and_then(serde_json::Value::as_array)
+                    {
+                        let kinds: Vec<&str> = tools
+                            .iter()
+                            .filter_map(|t| t.get("type").and_then(serde_json::Value::as_str))
+                            .collect();
+                        if kinds.iter().any(|&k| k == "tool_search") {
+                            saw_tool_search_tool = true;
+                        }
+                        if kinds.iter().any(|&k| k == "namespace") {
+                            saw_namespace_tool = true;
+                        }
+                    }
+                }
+                let decoded =
+                    decode_responses_sse_frame_for_model("", data, ResponsesWireDialect::Codex, "gpt-5.5");
+                if let Err(error) = decoded {
+                    fatal.push((frame_no, error.to_string()));
+                }
+            }
+            assert!(frame_no > 0, "no data frames parsed from {path}");
+            assert!(
+                fatal.is_empty(),
+                "turn dies in {path}: {frame_no} frames decoded, fatal: {fatal:?}"
+            );
+        }
+        assert!(
+            saw_discovery_item,
+            "captures no longer carry a tool_search_call item; re-pin the capture"
+        );
+        assert!(
+            saw_tool_search_tool,
+            "captures no longer carry an echoed tool_search tool; re-pin the capture"
+        );
+        assert!(
+            saw_namespace_tool,
+            "captures no longer carry an echoed namespace tool; re-pin the capture"
         );
     }
 }

@@ -968,7 +968,7 @@ async fn strip_model_bound_history_drops_reasoning_and_backend_tool_call() {
     let mut h = TestHarness::with_conversation(vec![
         ConversationItem::user("q1"),
         ConversationItem::Reasoning(xai_grok_sampling_types::rs::ReasoningItem {
-            id: "rs_mbs".to_string(),
+            id: Some("rs_mbs".to_string()),
             summary: vec![xai_grok_sampling_types::rs::SummaryPart::SummaryText(
                 xai_grok_sampling_types::rs::SummaryTextContent {
                     text: "private continuation".to_string(),
@@ -4792,7 +4792,7 @@ fn assert_prefix_stable_pair(
 fn reasoning_sibling(id: &str, encrypted: Option<&str>) -> ConversationItem {
     use xai_grok_sampling_types::rs;
     ConversationItem::Reasoning(rs::ReasoningItem {
-        id: id.to_string(),
+        id: Some(id.to_string()),
         summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
             text: format!("thinking for {id}"),
         })],
@@ -5371,11 +5371,12 @@ async fn prefix_stable_with_backend_tool_calls() {
         .push_tool_result(ConversationItem::BackendToolCall(BackendToolCallItem {
             kind: BackendToolKind::WebSearch(rs::WebSearchToolCall {
                 id: "ws_capybara".to_string(),
-                status: rs::WebSearchToolCallStatus::Completed,
-                action: rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
-                    query: "capybara facts".to_string(),
+                status: rs::WebSearchCallStatus::Completed,
+                action: Some(rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
+                    query: Some("capybara facts".to_string()),
+                    queries: None,
                     sources: Some(vec![]),
-                }),
+                })),
             }),
         }));
     h.handle

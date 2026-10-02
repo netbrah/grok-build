@@ -1,8 +1,5 @@
 # Auto-generated workspace root. Prefer editing per-crate Cargo.toml files.
 
-[patch.crates-io]
-async-openai = { git = "https://github.com/netbrah/async-openai.git", rev = "4d72e1d16920834f64843764f9f5f53131f26ddf" }
-
 [workspace]
 resolver = "2"
 members = [
@@ -128,7 +125,7 @@ arc-swap = "1.7"
 assert_matches = "1.5.0"
 async-compression = { version = "0.4.17", default-features = false, features = ["gzip", "zstd", "tokio"] }
 async-lsp = { version = "0.2.3", features = ["tokio", "tracing"] }
-async-openai = { version = "0.33.0", features = ["responses"] }
+async-openai = { version = "0.42.1", features = ["responses"] }
 async-stream = "0.3"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["macros", "ws"] }

@@ -327,7 +327,9 @@ fn project_reasoning(
     let keep_original_id = boundary == Boundary::AzStrict
         && owner.map(model_boundary_class) == Some(Boundary::AzStrict);
     let mut id = if keep_original_id {
-        r.id.clone()
+        // 0.42.1 widened `Reasoning.id` to `Option<String>`; an absent id is the
+        // empty-id anomaly the next guard already repairs with the T1 synthesis.
+        r.id.clone().unwrap_or_default()
     } else {
         xw_reasoning_id(target_model_id, ord, &r.item)
     };
@@ -356,7 +358,9 @@ fn project_reasoning(
 
     ReasoningItemStore {
         item: ReasoningItem {
-            id,
+            // 0.42.1 widened `rs::ReasoningItem.id` to `Option<String>`; the store
+            // id is always Some after the empty-id repair above.
+            id: Some(id),
             summary: r.summary.clone(),
             content: r.content.clone(),
             encrypted_content,

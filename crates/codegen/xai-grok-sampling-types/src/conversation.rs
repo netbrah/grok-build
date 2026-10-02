@@ -458,15 +458,26 @@ impl BackendToolCallItem {
     pub fn text_summary(&self) -> String {
         match &self.kind {
             BackendToolKind::WebSearch(ws) => {
-                let action_desc = match &ws.action {
-                    rs::WebSearchToolCallAction::Search(s) => format!("search: {}", s.query),
-                    rs::WebSearchToolCallAction::OpenPage(o) => {
+                let action_desc = match ws.action.as_ref() {
+                    Some(rs::WebSearchToolCallAction::Search(s)) => {
+                        let query = s
+                            .queries
+                            .as_deref()
+                            .map(|qs| qs.join(", "))
+                            .or_else(|| s.query.clone())
+                            .unwrap_or_default();
+                        format!("search: {query}")
+                    }
+                    Some(rs::WebSearchToolCallAction::OpenPage(o)) => {
                         format!("open: {}", o.url.as_deref().unwrap_or("?"))
                     }
-                    rs::WebSearchToolCallAction::Find(f)
-                    | rs::WebSearchToolCallAction::FindInPage(f) => {
+                    Some(
+                        rs::WebSearchToolCallAction::Find(f)
+                        | rs::WebSearchToolCallAction::FindInPage(f),
+                    ) => {
                         format!("find \"{}\" in {}", f.pattern, f.url)
                     }
+                    None => String::new(),
                 };
                 format!("[backend web_search] {action_desc}")
             }
@@ -768,7 +779,7 @@ impl ReasoningContent {
         Some(Self {
             text,
             encrypted: r.encrypted_content.as_deref().map(Arc::<str>::from),
-            id: Some(Arc::<str>::from(r.id.as_str())),
+            id: r.id.as_deref().map(Arc::<str>::from),
         })
     }
 
@@ -777,11 +788,13 @@ impl ReasoningContent {
         self.text.is_none() && self.encrypted.is_none()
     }
 
-    fn join_content(content: &Option<Vec<rs::ReasoningTextContent>>) -> Option<Arc<str>> {
+    fn join_content(content: &Option<Vec<rs::ReasoningItemContent>>) -> Option<Arc<str>> {
         let parts = content.as_ref()?;
         let joined: String = parts
             .iter()
-            .map(|p| p.text.as_str())
+            .filter_map(|p| match p {
+                rs::ReasoningItemContent::ReasoningText(t) => Some(t.text.as_str()),
+            })
             .collect::<Vec<_>>()
             .join("\n");
         (!joined.is_empty()).then_some(Arc::<str>::from(joined))
@@ -1194,7 +1207,7 @@ pub fn is_sentinel_web_search_action(action: &rs::WebSearchToolCallAction) -> bo
     matches!(
         action,
         rs::WebSearchToolCallAction::Search(search)
-            if search.query.is_empty()
+            if search.query.as_deref().map_or(false, str::is_empty)
                 && search.sources.as_ref().is_none_or(|sources| sources.is_empty())
     )
 }
@@ -2151,7 +2164,9 @@ pub fn reasoning_item_text(r: &rs::ReasoningItem) -> String {
     }
     if let Some(ref content) = r.content {
         for c in content {
-            parts.push(c.text.clone());
+            if let rs::ReasoningItemContent::ReasoningText(t) = c {
+                parts.push(t.text.clone());
+            }
         }
     }
     parts.join("\n")
@@ -2162,7 +2177,9 @@ pub fn reasoning_item_text(r: &rs::ReasoningItem) -> String {
 /// `encrypted_content` is `None` because its only source is the Responses API itself.
 pub fn synthesized_reasoning_item(text: impl Into<String>) -> rs::ReasoningItem {
     rs::ReasoningItem {
-        id: String::new(),
+        // 0.42.1 widened `id` to `Option<String>`; keep the synthesized empty id as
+        // `Some("")` so replayed bytes are unchanged (the fork serialized `id: ""`).
+        id: Some(String::new()),
         summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
             text: text.into(),
         })],
@@ -2315,7 +2332,7 @@ fn build_synthetic_reasoning(
         None => Vec::new(),
     };
     Some(rs::ReasoningItem {
-        id,
+        id: Some(id),
         summary,
         content: None,
         encrypted_content: encrypted.map(String::from),
@@ -2693,8 +2710,10 @@ pub fn transform_conversation_cwd(
                 }
                 if let Some(ref mut content) = r.content {
                     for c in content.iter_mut() {
-                        if c.text.contains(source_cwd) {
-                            c.text = c.text.replace(source_cwd, target_cwd);
+                        if let rs::ReasoningItemContent::ReasoningText(t) = c {
+                            if t.text.contains(source_cwd) {
+                                t.text = t.text.replace(source_cwd, target_cwd);
+                            }
                         }
                     }
                 }
@@ -3059,7 +3078,7 @@ mod tests {
         vec![
             ConversationItem::user("question for source model"),
             ConversationItem::Reasoning(rs::ReasoningItem {
-                id: "rs_model_bound".to_string(),
+                id: Some("rs_model_bound".to_string()),
                 summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                     text: "private continuation".to_string(),
                 })],
@@ -3601,7 +3620,7 @@ mod tests {
         };
         assert_eq!(f.name, STRUCTURED_OUTPUT_SCHEMA_NAME);
         assert_eq!(f.strict, Some(true));
-        assert_eq!(f.schema, Some(schema.clone()));
+        assert_eq!(f.schema, schema.clone());
 
         // Messages API: json_schema becomes output_config.format
         let msgs_req = build_messages_request(&req);
@@ -5475,7 +5494,7 @@ mod tests {
     fn multi_tco_reasoning_items_round_trip_as_siblings() {
         let make_reasoning = |suffix: &str, summary: &str, encrypted: Option<&str>| {
             rs::OutputItem::Reasoning(rs::ReasoningItem {
-                id: format!("rs_resp123_{suffix}"),
+                id: Some(format!("rs_resp123_{suffix}")),
                 summary: if summary.is_empty() {
                     vec![]
                 } else {
@@ -5490,7 +5509,7 @@ mod tests {
         };
         let make_tco = |suffix: &str| {
             rs::OutputItem::Reasoning(rs::ReasoningItem {
-                id: format!("tco_resp123_call-{suffix}"),
+                id: Some(format!("tco_resp123_call-{suffix}")),
                 summary: vec![],
                 content: None,
                 encrypted_content: Some(format!("enc_blob_{suffix}")),
@@ -5500,11 +5519,12 @@ mod tests {
         let make_ws = |suffix: &str, query: &str| {
             rs::OutputItem::WebSearchCall(rs::WebSearchToolCall {
                 id: format!("ws_resp123_{suffix}"),
-                status: rs::WebSearchToolCallStatus::Completed,
-                action: rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
-                    query: query.to_string(),
+                status: rs::WebSearchCallStatus::Completed,
+                action: Some(rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
+                    query: Some(query.to_string()),
+                    queries: None,
                     sources: Some(vec![]),
-                }),
+                })),
             })
         };
 
@@ -5549,15 +5569,18 @@ mod tests {
             top_p: None,
             truncation: None,
             usage: None,
+            prompt_cache_options: None,
+            prompt_cache_diagnostics: None,
+            moderation: None,
         };
 
-        let items = response_to_conversation_items(response);
+        let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
 
         // Five reasoning siblings: 2 real `rs_*` and 3 encrypted `tco_*`
         let reasoning_ids: Vec<&str> = items
             .iter()
             .filter_map(|i| match i {
-                ConversationItem::Reasoning(r) => Some(r.id.as_str()),
+                ConversationItem::Reasoning(r) => r.id.as_deref(),
                 _ => None,
             })
             .collect();
@@ -5589,7 +5612,7 @@ mod tests {
         let items = vec![
             ConversationItem::user("hi"),
             ConversationItem::Reasoning(rs::ReasoningItem {
-                id: "r1".to_string(),
+                id: Some("r1".to_string()),
                 summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                     text: "thinking step 1".to_string(),
                 })],
@@ -5599,7 +5622,7 @@ mod tests {
             }
             .into()),
             ConversationItem::Reasoning(rs::ReasoningItem {
-                id: "r2".to_string(),
+                id: Some("r2".to_string()),
                 summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                     text: "thinking step 2".to_string(),
                 })],
@@ -5628,7 +5651,7 @@ mod tests {
         let items = vec![
             ConversationItem::user("hi"),
             ConversationItem::Reasoning(rs::ReasoningItem {
-                id: "r1".to_string(),
+                id: Some("r1".to_string()),
                 summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                     text: "abandoned thinking".to_string(),
                 })],
@@ -5657,11 +5680,12 @@ mod tests {
             ConversationItem::BackendToolCall(BackendToolCallItem {
                 kind: BackendToolKind::WebSearch(rs::WebSearchToolCall {
                     id: "ws_1".to_string(),
-                    status: rs::WebSearchToolCallStatus::Completed,
-                    action: rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
-                        query: "capybaras".to_string(),
+                    status: rs::WebSearchCallStatus::Completed,
+                    action: Some(rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
+                        query: Some("capybaras".to_string()),
+                        queries: None,
                         sources: Some(vec![]),
-                    }),
+                    })),
                 }),
             }),
             ConversationItem::assistant("answer"),
@@ -5700,11 +5724,12 @@ mod tests {
         let item = ConversationItem::BackendToolCall(BackendToolCallItem {
             kind: BackendToolKind::WebSearch(rs::WebSearchToolCall {
                 id: "ws_1".to_string(),
-                status: rs::WebSearchToolCallStatus::Completed,
-                action: rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
-                    query: "capybaras".to_string(),
+                status: rs::WebSearchCallStatus::Completed,
+                action: Some(rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
+                    query: Some("capybaras".to_string()),
+                    queries: None,
                     sources: Some(vec![]),
-                }),
+                })),
             }),
         });
 
@@ -5744,7 +5769,7 @@ mod tests {
         let ConversationItem::Reasoning(r) = &siblings[0] else {
             panic!("expected Reasoning sibling, got {:?}", siblings[0]);
         };
-        assert_eq!(r.id, "rs_00000000-0000-4000-8000-000000000001");
+        assert_eq!(r.id.as_deref(), Some("rs_00000000-0000-4000-8000-000000000001"));
         assert_eq!(r.summary.len(), 1);
         let rs::SummaryPart::SummaryText(s) = &r.summary[0];
         assert_eq!(
@@ -5789,7 +5814,7 @@ mod tests {
         let reasoning_ids: Vec<&str> = siblings
             .iter()
             .filter_map(|s| match s {
-                ConversationItem::Reasoning(r) => Some(r.id.as_str()),
+                ConversationItem::Reasoning(r) => r.id.as_deref(),
                 _ => None,
             })
             .collect();
@@ -6100,9 +6125,12 @@ mod tests {
             top_p: None,
             truncation: None,
             usage: None,
+            prompt_cache_options: None,
+            prompt_cache_diagnostics: None,
+            moderation: None,
         };
 
-        let items = response_to_conversation_items(response);
+        let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
         let ConversationItem::BackendToolCall(compaction) = &items[0] else {
             panic!("compaction output must remain a raw provider item");
         };
@@ -6502,7 +6530,7 @@ mod enc_affinity_mf6_tests {
     fn reasoning_with_ciphertext(mint_tag: Option<&str>) -> ConversationItem {
         ConversationItem::Reasoning(ReasoningItemStore {
             item: rs::ReasoningItem {
-                id: "encitem_bGl0ZWxsbTp0ZXN0".to_string(),
+                id: Some("encitem_bGl0ZWxsbTp0ZXN0".to_string()),
                 summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                     text: "cargo-check summary".to_string(),
                 })],
@@ -6517,7 +6545,7 @@ mod enc_affinity_mf6_tests {
     fn reasoning_no_ciphertext(mint_tag: Option<&str>) -> ConversationItem {
         ConversationItem::Reasoning(ReasoningItemStore {
             item: rs::ReasoningItem {
-                id: "encitem_none".to_string(),
+                id: Some("encitem_none".to_string()),
                 summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                     text: "summary only".to_string(),
                 })],
@@ -6610,7 +6638,7 @@ mod enc_affinity_mf6_tests {
         assert_eq!((stripped, retained, carriers), (1, 0, 0));
         if let ConversationItem::Reasoning(r) = &items[0] {
             assert!(r.item.encrypted_content.is_none());
-            assert_eq!(r.item.id, "encitem_bGl0ZWxsbTp0ZXN0", "id survives the field strip");
+            assert_eq!(r.item.id.as_deref(), Some("encitem_bGl0ZWxsbTp0ZXN0"), "id survives the field strip");
             assert_eq!(
                 r.summary.first().and_then(|p| match p {
                     rs::SummaryPart::SummaryText(t) => Some(t.text.as_str()),
@@ -6784,7 +6812,7 @@ mod enc_affinity_mf6_tests {
         let back: ConversationItem = serde_json::from_str(&json).expect("reload stamped");
         if let ConversationItem::Reasoning(r) = &back {
             assert_eq!(r.mint_tag.as_deref(), Some("East US 2"));
-            assert_eq!(r.item.id, "encitem_bGl0ZWxsbTp0ZXN0");
+            assert_eq!(r.item.id.as_deref(), Some("encitem_bGl0ZWxsbTp0ZXN0"));
             assert!(r.item.encrypted_content.is_some());
         } else {
             panic!("not a reasoning item after reload");
@@ -6802,7 +6830,7 @@ mod enc_affinity_mf6_tests {
         let back: ConversationItem = serde_json::from_str(&legacy_str).expect("legacy load");
         if let ConversationItem::Reasoning(r) = &back {
             assert_eq!(r.mint_tag, None, "legacy jsonl must deserialize to mint_tag None");
-            assert_eq!(r.item.id, "encitem_legacy");
+            assert_eq!(r.item.id.as_deref(), Some("encitem_legacy"));
         } else {
             panic!("not a reasoning item after legacy reload");
         }

@@ -56,10 +56,21 @@ async fn response_reasoning_does_not_inflate_model_reported_context() {
             let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let (actor, mut event_rx) =
                 create_test_actor_ex(0, 500_000, 95, gateway_tx, persistence_tx).await;
+            let search_action = {
+                // `query` must be named: `WebSearchActionSearch` derives no `Default`
+                // (async-openai 0.42.1 response.rs:2160). This test accounts tokens; it never
+                // reads the action.
+                #[allow(deprecated)]
+                rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
+                    query: None,
+                    queries: Some(vec!["context accounting".to_string()]),
+                    sources: Some(vec![]),
+                })
+            };
             let response = ConversationResponse {
                 items: vec![
                     ConversationItem::Reasoning(rs::ReasoningItem {
-                        id: "reasoning-1".to_string(),
+                        id: Some("reasoning-1".to_string()),
                         summary: vec![],
                         content: None,
                         encrypted_content: Some("r".repeat(984_000)),
@@ -68,13 +79,8 @@ async fn response_reasoning_does_not_inflate_model_reported_context() {
                     ConversationItem::BackendToolCall(BackendToolCallItem {
                         kind: BackendToolKind::WebSearch(rs::WebSearchToolCall {
                             id: "search-1".to_string(),
-                            status: rs::WebSearchToolCallStatus::Completed,
-                            action: rs::WebSearchToolCallAction::Search(
-                                rs::WebSearchActionSearch {
-                                    query: "context accounting".to_string(),
-                                    sources: Some(vec![]),
-                                },
-                            ),
+                            status: rs::WebSearchCallStatus::Completed,
+                            action: Some(search_action),
                         }),
                     }),
                     ConversationItem::assistant("ok"),
@@ -155,7 +161,7 @@ async fn response_without_usage_keeps_model_output_as_estimated_growth() {
             let response = ConversationResponse {
                 items: vec![
                     ConversationItem::Reasoning(rs::ReasoningItem {
-                        id: "reasoning-1".to_string(),
+                        id: Some("reasoning-1".to_string()),
                         summary: vec![],
                         content: None,
                         encrypted_content: Some("r".repeat(4_000)),

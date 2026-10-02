@@ -9,10 +9,5 @@ git = "https://github.com/helix-editor/nucleo.git"
 rev = "5b74652"
 replace-with = "vendored-sources"
 
-[source."git+https://github.com/netbrah/async-openai.git?rev=4d72e1d16920834f64843764f9f5f53131f26ddf"]
-git = "https://github.com/netbrah/async-openai.git"
-rev = "4d72e1d16920834f64843764f9f5f53131f26ddf"
-replace-with = "vendored-sources"
-
 [source.vendored-sources]
 directory = "vendor"

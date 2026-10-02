@@ -1276,6 +1276,7 @@ fn test_responses_api_response_to_conversation_item() {
             id: "msg_123".to_string(),
             role: rs::AssistantRole::Assistant,
             status: rs::OutputStatus::Completed,
+            phase: None,
         })],
         parallel_tool_calls: None,
         previous_response_id: None,
@@ -1294,9 +1295,12 @@ fn test_responses_api_response_to_conversation_item() {
         top_p: None,
         truncation: None,
         usage: None,
+        prompt_cache_options: None,
+        prompt_cache_diagnostics: None,
+        moderation: None,
     };
 
-    let items = response_to_conversation_items(response);
+    let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
     let item = items
         .into_iter()
         .next_back()
@@ -1332,6 +1336,9 @@ fn test_responses_api_response_to_conversation_item() {
             name: "read_file".to_string(),
             id: None,
             status: None,
+            namespace: None,
+            caller: None,
+            r#async: None,
         })],
         parallel_tool_calls: None,
         previous_response_id: None,
@@ -1350,9 +1357,12 @@ fn test_responses_api_response_to_conversation_item() {
         top_p: None,
         truncation: None,
         usage: None,
+        prompt_cache_options: None,
+        prompt_cache_diagnostics: None,
+        moderation: None,
     };
 
-    let items = response_to_conversation_items(response_with_fc);
+    let items = response_to_conversation_items(response_with_fc).expect("the projection succeeds for this response");
     let item = items
         .into_iter()
         .next_back()
@@ -1392,6 +1402,8 @@ fn test_response_reasoning_effort_stamped_on_assistant() {
         reasoning: Some(rs::Reasoning {
             effort: Some(rs::ReasoningEffort::Xhigh),
             summary: None,
+            mode: None,
+            context: None,
         }),
         safety_identifier: None,
         service_tier: None,
@@ -1404,9 +1416,12 @@ fn test_response_reasoning_effort_stamped_on_assistant() {
         top_p: None,
         truncation: None,
         usage: None,
+        prompt_cache_options: None,
+        prompt_cache_diagnostics: None,
+        moderation: None,
     };
 
-    let items = response_to_conversation_items(response);
+    let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
     let ConversationItem::Assistant(a) = items.last().expect("trailing Assistant") else {
         panic!("Expected Assistant item");
     };
@@ -1486,7 +1501,7 @@ fn test_tool_result_to_responses_api() {
     let rs::InputItem::Item(rs::Item::FunctionCallOutput(fco)) = fco_items[0] else {
         panic!("Expected FunctionCallOutput item");
     };
-    assert_eq!(fco.call_id, "call_1");
+    assert_eq!(fco.call_id.as_deref(), Some("call_1"));
     let rs::FunctionCallOutput::Text(text) = &fco.output else {
         panic!("Expected Text output");
     };
@@ -1530,8 +1545,8 @@ fn test_multiple_tool_results_to_responses_api() {
         .collect();
 
     assert_eq!(fco_items.len(), 2);
-    assert_eq!(fco_items[0].call_id, "call_1");
-    assert_eq!(fco_items[1].call_id, "call_2");
+    assert_eq!(fco_items[0].call_id.as_deref(), Some("call_1"));
+    assert_eq!(fco_items[1].call_id.as_deref(), Some("call_2"));
 }
 
 #[test]
@@ -1552,7 +1567,7 @@ fn test_responses_api_with_encrypted_reasoning() {
         object: "response".to_string(),
         output: vec![
             rs::OutputItem::Reasoning(rs::ReasoningItem {
-                id: "reasoning_enc".to_string(),
+                id: Some("reasoning_enc".to_string()),
                 summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                     text: "Visible thinking summary".to_string(),
                 })],
@@ -1571,6 +1586,7 @@ fn test_responses_api_with_encrypted_reasoning() {
                 id: "msg_456".to_string(),
                 role: rs::AssistantRole::Assistant,
                 status: rs::OutputStatus::Completed,
+                phase: None,
             }),
         ],
         parallel_tool_calls: None,
@@ -1590,10 +1606,13 @@ fn test_responses_api_with_encrypted_reasoning() {
         top_p: None,
         truncation: None,
         usage: None,
+        prompt_cache_options: None,
+        prompt_cache_diagnostics: None,
+        moderation: None,
     };
 
     // Exercise the flat-list path: reasoning lives as a sibling
-    let items = response_to_conversation_items(response);
+    let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
     let assistant_idx = items
         .iter()
         .position(|i| matches!(i, ConversationItem::Assistant(_)))
@@ -1641,7 +1660,7 @@ fn test_responses_api_with_only_encrypted_reasoning() {
         object: "response".to_string(),
         output: vec![
             rs::OutputItem::Reasoning(rs::ReasoningItem {
-                id: "reasoning_only_enc".to_string(),
+                id: Some("reasoning_only_enc".to_string()),
                 summary: vec![],
                 content: None,
                 encrypted_content: Some("enc_only_encrypted_no_visible_summary".to_string()),
@@ -1658,6 +1677,7 @@ fn test_responses_api_with_only_encrypted_reasoning() {
                 id: "msg_789".to_string(),
                 role: rs::AssistantRole::Assistant,
                 status: rs::OutputStatus::Completed,
+                phase: None,
             }),
         ],
         parallel_tool_calls: None,
@@ -1677,10 +1697,13 @@ fn test_responses_api_with_only_encrypted_reasoning() {
         top_p: None,
         truncation: None,
         usage: None,
+        prompt_cache_options: None,
+        prompt_cache_diagnostics: None,
+        moderation: None,
     };
 
     // Flat-list path: reasoning sibling carries the encrypted blob, empty summary maps to an empty `Vec<SummaryPart>`
-    let items = response_to_conversation_items(response);
+    let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
     let reasoning_sibling = items
         .iter()
         .find_map(|i| match i {
@@ -1703,7 +1726,7 @@ fn test_encrypted_reasoning_included_in_responses_api_request() {
         ConversationItem::user("What is 2+2?"),
         // Previous reasoning and assistant: reasoning is a sibling
         ConversationItem::Reasoning(rs::ReasoningItem {
-            id: "r1".to_string(),
+            id: Some("r1".to_string()),
             summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                 text: "Let me calculate 2+2...".to_string(),
             })],
@@ -1760,7 +1783,7 @@ fn test_only_encrypted_reasoning_included_in_request() {
     let req = ConversationRequest::from_items(vec![
         ConversationItem::user("Hello"),
         ConversationItem::Reasoning(rs::ReasoningItem {
-            id: String::new(),
+            id: Some(String::new()),
             summary: vec![],
             content: None,
             encrypted_content: Some("enc_hidden_thoughts".to_string()),
@@ -1859,7 +1882,7 @@ fn test_tool_choice_to_responses_api() {
     let responses_req: rs::CreateResponse = (&req).into();
     assert_matches!(
         responses_req.tool_choice,
-        Some(rs::ToolChoiceParam::Mode(rs::ToolChoiceOptions::Auto))
+        Some(rs::ToolChoiceParam::Option(rs::ToolChoiceOptions::Auto))
     );
 
     // Test Required
@@ -1868,7 +1891,7 @@ fn test_tool_choice_to_responses_api() {
     let responses_req: rs::CreateResponse = (&req).into();
     assert_matches!(
         responses_req.tool_choice,
-        Some(rs::ToolChoiceParam::Mode(rs::ToolChoiceOptions::Required))
+        Some(rs::ToolChoiceParam::Option(rs::ToolChoiceOptions::Required))
     );
 
     // Test Function
@@ -1994,7 +2017,7 @@ fn test_btw_cross_api_responses_no_regressions() {
         "completed FunctionCall call_1 must survive; got calls: {function_calls:?}"
     );
     assert!(
-        function_outputs.contains(&"call_1".to_string()),
+        function_outputs.contains(&Some("call_1".to_string())),
         "completed FunctionCallOutput call_1 must survive; got outputs: {function_outputs:?}"
     );
 
@@ -2024,7 +2047,7 @@ fn test_transform_cwd_rewrites_reasoning_sibling() {
 
     let mut items = vec![
         ConversationItem::Reasoning(rs::ReasoningItem {
-            id: "rs_1".to_string(),
+            id: Some("rs_1".to_string()),
             summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                 text: format!("thinking about {worktree}"),
             })],
@@ -2096,7 +2119,7 @@ fn test_tool_result_with_images_to_responses_api() {
         .collect();
 
     assert_eq!(fco_items.len(), 1);
-    assert_eq!(fco_items[0].call_id, "call_1");
+    assert_eq!(fco_items[0].call_id.as_deref(), Some("call_1"));
 
     // Should be Content variant, not Text
     let rs::FunctionCallOutput::Content(parts) = &fco_items[0].output else {
@@ -2170,7 +2193,7 @@ fn lowered_tool_result_output(item: ConversationItem) -> rs::FunctionCallOutput 
         .collect();
 
     assert_eq!(outputs.len(), 1);
-    assert_eq!(outputs[0].call_id, "call_1");
+    assert_eq!(outputs[0].call_id.as_deref(), Some("call_1"));
     outputs[0].output.clone()
 }
 
@@ -2214,11 +2237,13 @@ fn test_tool_result_with_text_and_image_parts_keeps_text_first() {
         rs::FunctionCallOutput::Content(vec![
             rs::InputContent::InputText(rs::InputTextContent {
                 text: "Read image file: photo.png".to_string(),
+                prompt_cache_breakpoint: None,
             }),
             rs::InputContent::InputImage(rs::InputImageContent {
                 detail: rs::ImageDetail::Auto,
                 file_id: None,
                 image_url: Some("data:image/png;base64,iVBOR".to_string()),
+                prompt_cache_breakpoint: None,
             }),
         ])
     );
@@ -2244,11 +2269,13 @@ fn test_tool_result_with_blank_content_and_image_keeps_blank_text_part() {
         rs::FunctionCallOutput::Content(vec![
             rs::InputContent::InputText(rs::InputTextContent {
                 text: String::new(),
+                prompt_cache_breakpoint: None,
             }),
             rs::InputContent::InputImage(rs::InputImageContent {
                 detail: rs::ImageDetail::Auto,
                 file_id: None,
                 image_url: Some("data:image/png;base64,iVBOR".to_string()),
+                prompt_cache_breakpoint: None,
             }),
         ]),
         "a mixed output keeps its blank text part"
@@ -2276,16 +2303,19 @@ fn test_tool_result_with_two_images_keeps_images_in_input_order() {
         rs::FunctionCallOutput::Content(vec![
             rs::InputContent::InputText(rs::InputTextContent {
                 text: "Read 2 image files".to_string(),
+                prompt_cache_breakpoint: None,
             }),
             rs::InputContent::InputImage(rs::InputImageContent {
                 detail: rs::ImageDetail::Auto,
                 file_id: None,
                 image_url: Some("data:image/png;base64,aG90".to_string()),
+                prompt_cache_breakpoint: None,
             }),
             rs::InputContent::InputImage(rs::InputImageContent {
                 detail: rs::ImageDetail::Auto,
                 file_id: None,
                 image_url: Some("data:image/png;base64,aW1n".to_string()),
+                prompt_cache_breakpoint: None,
             }),
         ]),
         "the images follow the order they were carried in"
@@ -2321,16 +2351,19 @@ fn test_tool_result_with_text_between_images_drops_the_text_part() {
         rs::FunctionCallOutput::Content(vec![
             rs::InputContent::InputText(rs::InputTextContent {
                 text: "Read 2 image files".to_string(),
+                prompt_cache_breakpoint: None,
             }),
             rs::InputContent::InputImage(rs::InputImageContent {
                 detail: rs::ImageDetail::Auto,
                 file_id: None,
                 image_url: Some("data:image/png;base64,aG90".to_string()),
+                prompt_cache_breakpoint: None,
             }),
             rs::InputContent::InputImage(rs::InputImageContent {
                 detail: rs::ImageDetail::Auto,
                 file_id: None,
                 image_url: Some("data:image/png;base64,aW1n".to_string()),
+                prompt_cache_breakpoint: None,
             }),
         ]),
         "the text between the images is dropped; the images stay adjacent in input order"
@@ -2369,6 +2402,7 @@ fn responses_api_conversion_preserves_model_fingerprint() {
             id: "msg_test".into(),
             role: rs::AssistantRole::Assistant,
             status: rs::OutputStatus::Completed,
+            phase: None,
         })],
         parallel_tool_calls: None,
         previous_response_id: None,
@@ -2387,9 +2421,12 @@ fn responses_api_conversion_preserves_model_fingerprint() {
         top_p: None,
         truncation: None,
         usage: None,
+        prompt_cache_options: None,
+        prompt_cache_diagnostics: None,
+        moderation: None,
     };
 
-    let items = response_to_conversation_items(response);
+    let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
     let item = items
         .into_iter()
         .next_back()
@@ -2407,7 +2444,7 @@ fn empty_reason_reasoning_only() {
     let response = ConversationResponse {
         items: vec![
             ConversationItem::Reasoning(rs::ReasoningItem {
-                id: "r1".to_string(),
+                id: Some("r1".to_string()),
                 summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                     text: "thinking but no text output".to_string(),
                 })],
@@ -2447,7 +2484,7 @@ fn build_responses_input_preserves_multi_turn_ordering() {
     // [Sys, U1, U2, U3, U4, U5, R, A1, R, A2, ...] which would shift the cache prefix every turn.
     fn r(text: &str) -> ConversationItem {
         ConversationItem::Reasoning(rs::ReasoningItem {
-            id: text.to_string(),
+            id: Some(text.to_string()),
             summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                 text: text.to_string(),
             })],
@@ -2517,7 +2554,7 @@ fn upgrade_legacy_reasoning_singular_chat_completions_text_only() {
     let ConversationItem::Reasoning(r) = &siblings[0] else {
         panic!("expected Reasoning sibling");
     };
-    assert_eq!(r.id, "");
+    assert_eq!(r.id.as_deref(), Some(""));
     assert!(r.encrypted_content.is_none());
     let rs::SummaryPart::SummaryText(s) = &r.summary[0];
     assert_eq!(s.text, "step-by-step plain reasoning");
@@ -2743,21 +2780,23 @@ fn backend_tool_call_position_stable() {
     let ws_a = ConversationItem::BackendToolCall(BackendToolCallItem {
         kind: BackendToolKind::WebSearch(rs::WebSearchToolCall {
             id: "ws_a".to_string(),
-            status: rs::WebSearchToolCallStatus::Completed,
-            action: rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
-                query: "alpha".to_string(),
+            status: rs::WebSearchCallStatus::Completed,
+            action: Some(rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
+                query: Some("alpha".to_string()),
+                queries: None,
                 sources: Some(vec![]),
-            }),
+            })),
         }),
     });
     let ws_b = ConversationItem::BackendToolCall(BackendToolCallItem {
         kind: BackendToolKind::WebSearch(rs::WebSearchToolCall {
             id: "ws_b".to_string(),
-            status: rs::WebSearchToolCallStatus::Completed,
-            action: rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
-                query: "beta".to_string(),
+            status: rs::WebSearchCallStatus::Completed,
+            action: Some(rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
+                query: Some("beta".to_string()),
+                queries: None,
                 sources: Some(vec![]),
-            }),
+            })),
         }),
     });
 
@@ -3067,4 +3106,52 @@ fn emptyid_patch_preserves_nonempty_ids_and_is_idempotent() {
     let first_pass = body.clone();
     patch_reasoning_empty_ids(&mut body, "vxm-az");
     assert_eq!(body, first_pass, "second patch pass must be a byte no-op");
+}
+
+/// U16 fail-closed decode-seam pin (0.42.1 re-pin): a response whose output
+/// carries a `tool_search_call` or `tool_search_output` item has no IR carrier
+/// in this tree (the `Discovery` variant lands with the pair-atomic cut,
+/// apex-waj.21). The projection must REFUSE — `Err`, never a silent drop —
+/// reproducing HEAD's fail-closed turn-kill at the typed seam. Hermetic: the
+/// items are built from the wire shapes the proxy actually sends (ratchet-live
+/// captures), no network, no fixtures.
+#[test]
+fn decode_seam_refuses_discovery_items_without_a_carrier() {
+    let items = [
+        ("tool_search_call", serde_json::json!({
+            "type": "tool_search_call",
+            "id": "tsc_u16",
+            "call_id": "call_u16",
+            "execution": "client",
+            "arguments": { "query": "fixture" },
+            "status": "completed"
+        })),
+        ("tool_search_output", serde_json::json!({
+            "type": "tool_search_output",
+            "id": "tso_u16",
+            "call_id": "call_u16",
+            "execution": "client",
+            "tools": [{ "type": "function", "name": "u16_fixture_tool_00" }],
+            "status": "completed"
+        })),
+    ];
+    for (label, item) in items {
+        let wire = serde_json::json!({
+            "id": "resp_u16",
+            "object": "response",
+            "created_at": 0u64,
+            "status": "completed",
+            "model": "gpt-5.5",
+            "output": [item],
+        });
+        let response: rs::Response =
+            serde_json::from_value(wire).expect("0.42.1 models this response shape");
+        let err = response_to_conversation_items(response)
+            .expect_err("the projection must refuse a carrier-less discovery item");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no IR carrier"),
+            "{label}: fail-closed message drifted: {msg}"
+        );
+    }
 }

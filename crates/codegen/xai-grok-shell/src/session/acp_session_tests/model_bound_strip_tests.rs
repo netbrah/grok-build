@@ -21,7 +21,7 @@ fn model_bound_history() -> Vec<ConversationItem> {
     vec![
         ConversationItem::user("question for source model"),
         ConversationItem::Reasoning(t::rs::ReasoningItem {
-            id: "rs_mbs".to_string(),
+            id: Some("rs_mbs".to_string()),
             summary: vec![t::rs::SummaryPart::SummaryText(t::rs::SummaryTextContent {
                 text: "private continuation".to_string(),
             })],

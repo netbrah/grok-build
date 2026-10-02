@@ -25,7 +25,14 @@ pub(super) const PROVIDER_NATIVE_SEARCH_REPLAY_SUMMARY: &str =
 
 /// Flatten `response.output` into `ConversationItem`s, preserving emission order.
 /// Replaying that order byte for byte on the next turn is what keeps the server-side prefix cache hot.
-pub fn response_to_conversation_items(response: rs::Response) -> Vec<ConversationItem> {
+///
+/// Fails closed (`Err`) instead of silently dropping an item this tree has no IR
+/// carrier for — see the `ToolSearchCall`/`ToolSearchOutput` arm. Callers map the
+/// `Err` to a failed turn (the pre-re-pin deserializer fatal), never to a silent
+/// history loss (U16, round-3 R-3).
+pub fn response_to_conversation_items(
+    response: rs::Response,
+) -> std::result::Result<Vec<ConversationItem>, crate::SamplingError> {
     let model_id = response.model.clone();
     let model_fingerprint = response
         .metadata
@@ -126,6 +133,19 @@ pub fn response_to_conversation_items(response: rs::Response) -> Vec<Conversatio
             rs::OutputItem::McpCall(_) => {
                 backend_tool_count += 1;
             }
+            // Fail-closed decode seam (U16, round-3 R-3): async-openai 0.42.1 models
+            // `tool_search_call` and `tool_search_output`, but this tree has no IR
+            // carrier for them yet (the `Discovery` variant lands with the pair-atomic
+            // cut, apex-waj.21). Dropping them here would turn a fatal decode into a
+            // silent history loss for items the proxy actually sends, so the projection
+            // refuses and the turn is not committed — reproducing the fail-closed
+            // turn-kill this seam had before the re-pin, when the SDK rejected these
+            // items in the deserializer.
+            rs::OutputItem::ToolSearchCall(_) | rs::OutputItem::ToolSearchOutput(_) => {
+                return Err(crate::SamplingError::serialization_message(
+                    "decode seam: a `tool_search_call`/`tool_search_output` item has no IR carrier in this tree; the turn was not committed (the carrier lands with the Discovery variant, apex-waj.21)",
+                ));
+            }
             _ => {}
         }
     }
@@ -146,7 +166,7 @@ pub fn response_to_conversation_items(response: rs::Response) -> Vec<Conversatio
         reasoning_effort,
     }));
 
-    items
+    Ok(items)
 }
 
 impl From<&ConversationRequest> for rs::CreateResponse {
@@ -155,10 +175,10 @@ impl From<&ConversationRequest> for rs::CreateResponse {
         let tools = build_responses_tools(req);
 
         let tool_choice = req.tool_choice.as_ref().map(|tc| match tc {
-            ConversationToolChoice::Auto => rs::ToolChoiceParam::Mode(rs::ToolChoiceOptions::Auto),
-            ConversationToolChoice::None => rs::ToolChoiceParam::Mode(rs::ToolChoiceOptions::None),
+            ConversationToolChoice::Auto => rs::ToolChoiceParam::Option(rs::ToolChoiceOptions::Auto),
+            ConversationToolChoice::None => rs::ToolChoiceParam::Option(rs::ToolChoiceOptions::None),
             ConversationToolChoice::Required => {
-                rs::ToolChoiceParam::Mode(rs::ToolChoiceOptions::Required)
+                rs::ToolChoiceParam::Option(rs::ToolChoiceOptions::Required)
             }
             ConversationToolChoice::Function(name) => {
                 rs::ToolChoiceParam::Function(rs::ToolChoiceFunction { name: name.clone() })
@@ -173,7 +193,7 @@ impl From<&ConversationRequest> for rs::CreateResponse {
                     rs::ResponseFormatJsonSchema {
                         description: None,
                         name: STRUCTURED_OUTPUT_SCHEMA_NAME.to_string(),
-                        schema: Some(schema.clone()),
+                        schema: schema.clone(),
                         strict: Some(true),
                     },
                 ),
@@ -201,6 +221,8 @@ impl From<&ConversationRequest> for rs::CreateResponse {
             reasoning: Some(rs::Reasoning {
                 effort: req.reasoning_effort.map(|e| e.to_responses_api()),
                 summary: Some(rs::ReasoningSummary::Concise),
+                mode: None,
+                context: None,
             }),
             safety_identifier: None,
             service_tier: None,
@@ -214,6 +236,9 @@ impl From<&ConversationRequest> for rs::CreateResponse {
             top_logprobs: None,
             top_p: req.top_p,
             truncation: None,
+            context_management: None,
+            moderation: None,
+            prompt_cache_options: None,
         }
     }
 }
@@ -308,6 +333,7 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                 r#type: rs::MessageType::Message,
                 role: rs::Role::System,
                 content: rs::EasyInputContent::Text(s.content.as_ref().to_owned()),
+                phase: None,
             })]
         }
         ConversationItem::User(u) => {
@@ -316,6 +342,7 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                 r#type: rs::MessageType::Message,
                 role: rs::Role::User,
                 content,
+                phase: None,
             })]
         }
         ConversationItem::Reasoning(r) => {
@@ -332,6 +359,7 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                     r#type: rs::MessageType::Message,
                     role: rs::Role::Assistant,
                     content: rs::EasyInputContent::Text(a.content.as_ref().to_owned()),
+                    phase: None,
                 }));
             }
 
@@ -344,6 +372,9 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                         arguments: arguments.as_ref().to_owned(),
                         id: None,
                         status: None,
+                        namespace: None,
+                        caller: None,
+                        r#async: None,
                     },
                 )));
             }
@@ -368,6 +399,7 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                             detail: rs::ImageDetail::Auto,
                             file_id: None,
                             image_url: Some(url.as_ref().to_owned()),
+                            prompt_cache_breakpoint: None,
                         }))
                     }
                     // A text part riding inside `images` is dropped here and never reaches this
@@ -385,16 +417,20 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
             } else {
                 let mut parts = vec![rs::InputContent::InputText(rs::InputTextContent {
                     text: t.content.as_ref().to_owned(),
+                    prompt_cache_breakpoint: None,
                 })];
                 parts.extend(images);
                 rs::FunctionCallOutput::Content(parts)
             };
             vec![rs::InputItem::Item(rs::Item::FunctionCallOutput(
                 rs::FunctionCallOutputItemParam {
-                    call_id: t.tool_call_id.clone(),
+                    call_id: Some(t.tool_call_id.clone()),
                     output,
                     id: None,
                     status: None,
+                    name: None,
+                    namespace: None,
+                    caller: None,
                 },
             ))]
         }
@@ -421,6 +457,7 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                     content: rs::EasyInputContent::Text(
                         PROVIDER_NATIVE_SEARCH_REPLAY_SUMMARY.to_owned(),
                     ),
+                    phase: None,
                 }),
                 BackendToolKind::CodeInterpreter(ci) => {
                     rs::InputItem::Item(rs::Item::CodeInterpreterCall(ci.clone()))
@@ -434,6 +471,7 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                     rs::InputItem::EasyMessage(rs::EasyInputMessage {
                         r#type: rs::MessageType::Message,
                         role: raw.responses_placeholder_role(),
+                        phase: None,
                         // A non-Codex request deliberately does not receive
                         // the opaque provider item. Give cross-provider model
                         // switches the safe retained-message summary instead
@@ -458,11 +496,13 @@ fn content_parts_to_easy_input_content(parts: &[ContentPart]) -> rs::EasyInputCo
         .map(|part| match part {
             ContentPart::Text { text } => rs::InputContent::InputText(rs::InputTextContent {
                 text: text.as_ref().to_owned(),
+                prompt_cache_breakpoint: None,
             }),
             ContentPart::Image { url } => rs::InputContent::InputImage(rs::InputImageContent {
                 image_url: Some(url.as_ref().to_owned()),
                 file_id: None,
                 detail: rs::ImageDetail::default(),
+                prompt_cache_breakpoint: None,
             }),
         })
         .collect();
@@ -493,6 +533,10 @@ fn build_responses_tools(req: &ConversationRequest) -> Vec<rs::Tool> {
                 description: t.description.clone(),
                 parameters: Some(t.parameters.clone()),
                 strict: None,
+                defer_loading: None,
+                r#async: None,
+                output_schema: None,
+                allowed_callers: None,
             })
         })
         .collect();
