@@ -16,12 +16,18 @@
 
 pub mod aggregate;
 pub mod digest;
+pub mod label;
 pub mod report;
 pub mod types;
 
 pub use digest::{
     CACHE_SCHEMA_VERSION, DegradedTier, DigestInput, IDLE_GAP_SECS, ProjectionCaps, ReaderFacts,
     SessionDigest, SessionFacts, TranscriptContent, digest_one, is_user_turn,
+};
+pub use label::{
+    FACET_CACHE_SCHEMA_VERSION, SessionFacets, facet_schema, friction_schema, fun_ending_schema,
+    horizon_schema, interaction_style_schema, project_areas_schema, suggestions_schema,
+    validate_facet_reply, validate_section_reply, what_works_schema,
 };
 
 /// The ten `/insights` prompts (SOT §7): the ported files under
