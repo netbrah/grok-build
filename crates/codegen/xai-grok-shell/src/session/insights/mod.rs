@@ -239,6 +239,23 @@ mod tests {
         }
     }
 
+    // -- T-9 (item-7 follow-up): the `insights_project_areas` port verdict is
+    // file-level "verbatim minus product name" (SOT §7 :1032) — the ported
+    // file may name neither the source product nor its abbreviation.
+
+    #[test]
+    fn t9_project_areas_is_ported_verbatim_minus_product_name() {
+        let p = prompt("insights_project_areas");
+        assert!(
+            !p.contains("Claude"),
+            "insights_project_areas must carry no \"Claude\" mention (verbatim minus product name)"
+        );
+        assert!(
+            !p.contains("CC"),
+            "insights_project_areas must carry no \"CC\" mention (verbatim minus product name)"
+        );
+    }
+
     // -- The seam: the ten names resolve to pairwise-distinct texts,
     // `SECTION_PROMPTS` is the seven section stems, and unknown names panic.
 

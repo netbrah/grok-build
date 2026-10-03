@@ -7,7 +7,6 @@
 
 use clap::CommandFactory;
 use xai_grok_pager::app::cli::PagerArgs;
-use xai_grok_pager::slash::command::SlashCommand;
 use xai_grok_pager::slash::commands::builtin_commands;
 use xai_grok_shell::session::insights::prompt;
 
