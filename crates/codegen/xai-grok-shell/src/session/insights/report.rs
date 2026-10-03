@@ -24,7 +24,7 @@
 //! only emits the footer link to it.
 
 use html_escape::{encode_double_quoted_attribute, encode_text};
-use pulldown_cmark::{Event, Parser};
+use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 
 use super::aggregate::{Aggregate, Totals};
 use super::types::CappedBy;
@@ -203,6 +203,10 @@ pub fn render_report(aggregate: &Aggregate, ctx: &ReportContext) -> String {
                 html.push_str(&markdown_to_escaped_html(&section.body));
                 html.push_str("</div>");
             }
+            // A card whose body is empty but which carries suggestions is
+            // not no-data: its items, rendered just below, are its content
+            // (SDD §9 rule 5 ties the placeholder to no-data cards).
+            Some(section) if !section.suggestions.is_empty() => {}
             _ => html.push_str("<p class=\"empty\">No data</p>"),
         }
         if let Some(section) = section {
@@ -249,8 +253,11 @@ fn push_suggestions_block(html: &mut String, suggestions: &[String]) {
     for item in suggestions {
         html.push_str("<div class=\"suggestion-item\" data-text=\"");
         html.push_str(&encode_double_quoted_attribute(item));
+        // The checkbox sits inside its label so a label click toggles it
+        // (the label is the row's largest click target); the copy button
+        // stays outside so its click does not toggle.
         html.push_str(
-            "\"><input type=\"checkbox\" checked aria-label=\"check suggestion\"><label>",
+            "\"><label><input type=\"checkbox\" checked aria-label=\"check suggestion\">",
         );
         html.push_str(&encode_text(item));
         html.push_str("</label> <button type=\"button\" class=\"copy-item\">Copy</button></div>");
@@ -331,13 +338,23 @@ fn capped_by_display(cap: CappedBy) -> &'static str {
 /// every raw-HTML event instead of passing it through: pulldown-cmark
 /// emits raw HTML verbatim, and SDD §9's blanket rule is that nothing
 /// crosses the template boundary unescaped.
+///
+/// Link and image destinations are external references of the kind §9's
+/// no-external-refs ban rules out outright (an autolink included — it
+/// arrives as a `Tag::Link`): the tags are dropped and the inner text
+/// (link text / alt text) survives, unlinked.
 fn markdown_to_escaped_html(body: &str) -> String {
     let mut out = String::new();
     for event in Parser::new(body) {
-        if let Event::Html(raw) | Event::InlineHtml(raw) = &event {
-            out.push_str(&encode_text(raw));
-        } else {
-            pulldown_cmark::html::push_html(&mut out, std::iter::once(event));
+        match &event {
+            Event::Html(raw) | Event::InlineHtml(raw) => {
+                out.push_str(&encode_text(raw));
+            }
+            // 0.13's `Event::End` carries the `TagEnd` mirror, not the
+            // `Tag`: drop the close of a dropped open.
+            Event::Start(tag) if matches!(tag, Tag::Link { .. } | Tag::Image { .. }) => {}
+            Event::End(TagEnd::Link) | Event::End(TagEnd::Image) => {}
+            _ => pulldown_cmark::html::push_html(&mut out, std::iter::once(event)),
         }
     }
     out
@@ -407,6 +424,17 @@ mod tests {
         &html[start..end]
     }
 
+    fn section_card_of<'a>(html: &'a str, anchor: &str) -> &'a str {
+        let marker = format!("<section class=\"card\" id=\"{anchor}\"");
+        let start = html
+            .find(&marker)
+            .unwrap_or_else(|| panic!("section card {anchor} missing"));
+        let close = html[start..]
+            .find("</section>")
+            .expect("section card close present");
+        &html[start..start + close]
+    }
+
     // --- T-7: report HTML — escaping in both contexts, the CSP meta, the
     //     no-external-refs ban, the two clipboard behaviours. ---
 
@@ -448,6 +476,40 @@ mod tests {
         );
         // The unescaped fragment must not break out of the attribute.
         assert!(!html.contains("markup</b>"));
+    }
+
+    #[test]
+    fn t7_markdown_link_and_image_hrefs_do_not_cross_the_boundary() {
+        // The model's markdown can carry link and image destinations; §9's
+        // no-external-refs ban is outright, so the tags drop and the inner
+        // text (link text / alt text) survives unlinked (T-7).
+        let section = ReportSection {
+            display_name: "What works".to_string(),
+            anchor_id: "section-what-works".to_string(),
+            body: "See [x](https://example.com) and \
+                   ![diagram](https://example.com/img.png)."
+                .to_string(),
+            suggestions: vec![],
+        };
+        let sections = [section];
+        let html = render_report(&test_aggregate(&[]), &test_ctx(Some(&sections)));
+        assert!(
+            !html.contains("http://"),
+            "external reference crossed the boundary"
+        );
+        assert!(
+            !html.contains("https://"),
+            "external reference crossed the boundary"
+        );
+        // The footer's own report.json link is a well-formed relative
+        // reference (§11), so the tag checks scope to the section card.
+        let card = section_card_of(&html, "section-what-works");
+        assert!(!card.contains("<a "), "link tag must not render");
+        assert!(!card.contains("<img"), "image tag must not render");
+        assert!(
+            card.contains("See x and diagram."),
+            "link inner text / image alt text lost"
+        );
     }
 
     #[test]
@@ -493,6 +555,30 @@ mod tests {
             "copy-all-checked control missing"
         );
         assert!(html.contains("data-text="));
+        // The checkbox sits inside its label: a label click toggles it.
+        assert!(
+            html.contains("<label><input type=\"checkbox\""),
+            "checkbox must be inside its label"
+        );
+    }
+
+    #[test]
+    fn t7_suggestions_card_with_empty_body_is_not_no_data() {
+        // The suggestions card's content is its items, not prose; §9 rule 5
+        // ties the placeholder to no-data cards, so an empty body with real
+        // suggestions must not print "No data" beside them.
+        let section = suggestions_section(vec!["Add a rule to AGENTS.md".to_string()]);
+        let sections = [section];
+        let html = render_report(&test_aggregate(&[]), &test_ctx(Some(&sections)));
+        let card = section_card_of(&html, "section-suggestions");
+        assert!(
+            !card.contains("No data"),
+            "placeholder beside real data: {card}"
+        );
+        assert!(
+            card.contains("suggestion-item"),
+            "items missing from the card"
+        );
     }
 
     // --- T-8: the clipboard payload carries real 0x0a 0x0a bytes, not
