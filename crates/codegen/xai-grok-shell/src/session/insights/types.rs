@@ -236,6 +236,115 @@ mod tests {
         );
     }
 
+    /// (d) — reviewer-minor follow-up: (a)+(b) pin each const's length and
+    /// each const member's serde spelling, but nothing exhausts an enum, so
+    /// a mutant that adds a variant to an enum without adding it to its
+    /// `X_VARIANTS` const slips through green — the const is merely shorter,
+    /// still length-consistent and correctly spelled. These six exhaustive
+    /// matches make that direction a COMPILE ERROR (E0004; no wildcard
+    /// arms): the compiler is the lock the const's type alone does not
+    /// give.
+    fn outcome_wire(v: Outcome) -> &'static str {
+        match v {
+            Outcome::FullyAchieved => "fully_achieved",
+            Outcome::MostlyAchieved => "mostly_achieved",
+            Outcome::PartiallyAchieved => "partially_achieved",
+            Outcome::NotAchieved => "not_achieved",
+            Outcome::UnclearFromTranscript => "unclear_from_transcript",
+        }
+    }
+
+    fn helpfulness_wire(v: Helpfulness) -> &'static str {
+        match v {
+            Helpfulness::Unhelpful => "unhelpful",
+            Helpfulness::SlightlyHelpful => "slightly_helpful",
+            Helpfulness::ModeratelyHelpful => "moderately_helpful",
+            Helpfulness::VeryHelpful => "very_helpful",
+            Helpfulness::Essential => "essential",
+        }
+    }
+
+    fn session_type_wire(v: SessionType) -> &'static str {
+        match v {
+            SessionType::SingleTask => "single_task",
+            SessionType::MultiTask => "multi_task",
+            SessionType::IterativeRefinement => "iterative_refinement",
+            SessionType::Exploration => "exploration",
+            SessionType::QuickQuestion => "quick_question",
+        }
+    }
+
+    fn success_mode_wire(v: SuccessMode) -> &'static str {
+        match v {
+            SuccessMode::None => "none",
+            SuccessMode::FastAccurateSearch => "fast_accurate_search",
+            SuccessMode::CorrectCodeEdits => "correct_code_edits",
+            SuccessMode::GoodExplanations => "good_explanations",
+            SuccessMode::ProactiveHelp => "proactive_help",
+            SuccessMode::MultiFileChanges => "multi_file_changes",
+            SuccessMode::HandledComplexity => "handled_complexity",
+            SuccessMode::GoodDebugging => "good_debugging",
+        }
+    }
+
+    fn satisfaction_wire(v: Satisfaction) -> &'static str {
+        match v {
+            Satisfaction::Frustrated => "frustrated",
+            Satisfaction::Dissatisfied => "dissatisfied",
+            Satisfaction::LikelySatisfied => "likely_satisfied",
+            Satisfaction::Satisfied => "satisfied",
+            Satisfaction::Happy => "happy",
+            Satisfaction::Unsure => "unsure",
+            Satisfaction::Neutral => "neutral",
+            Satisfaction::Delighted => "delighted",
+        }
+    }
+
+    fn friction_wire(v: Friction) -> &'static str {
+        match v {
+            Friction::MisunderstoodRequest => "misunderstood_request",
+            Friction::WrongApproach => "wrong_approach",
+            Friction::BuggyCode => "buggy_code",
+            Friction::UserRejectedAction => "user_rejected_action",
+            Friction::ClaudeGotBlocked => "claude_got_blocked",
+            Friction::UserStoppedEarly => "user_stopped_early",
+            Friction::WrongFileOrLocation => "wrong_file_or_location",
+            Friction::ExcessiveChanges => "excessive_changes",
+            Friction::SlowOrVerbose => "slow_or_verbose",
+            Friction::ToolFailed => "tool_failed",
+            Friction::UserUnclear => "user_unclear",
+            Friction::ExternalIssue => "external_issue",
+        }
+    }
+
+    /// (d): drive each set's exhaustive match over its const, in §5 order —
+    /// every const member is a real enum variant whose match arm spells it
+    /// to the same snake_case literal the wire and §7's schema use. (a)+(b)
+    /// lock serde's spelling for the const members; this locks the match
+    /// arms themselves, so a mutant that rewrites an arm's literal is red
+    /// here rather than only at the wire.
+    fn assert_const_members_spell<T>(
+        name: &str,
+        variants: &[T],
+        wire: &[&str],
+        spell: fn(T) -> &'static str,
+    ) where
+        T: Copy + Debug,
+    {
+        assert_eq!(
+            variants.len(),
+            wire.len(),
+            "{name}: the const and the §5 order list must have the same length"
+        );
+        for (variant, spelling) in variants.iter().zip(wire.iter()) {
+            assert_eq!(
+                spell(*variant),
+                *spelling,
+                "{name}: the exhaustive match must spell the const member {spelling}"
+            );
+        }
+    }
+
     #[test]
     fn t16_facet_variant_sets_are_closed_and_round_trip() {
         // (a)+(b) for every variant of every set, against §5's table.
@@ -330,5 +439,98 @@ mod tests {
         assert_out_of_set_refused::<SuccessMode>("SuccessMode", r#""not_a_success_mode""#);
         assert_out_of_set_refused::<Satisfaction>("Satisfaction", r#""not_a_satisfaction""#);
         assert_out_of_set_refused::<Outcome>("Outcome (case)", r#""FullyAchieved""#);
+    }
+
+    /// (d): the enum-contains-const direction of T-16's closure claim — a
+    /// variant added to an enum without its const entry does not compile
+    /// (the six exhaustive matches above, no wildcard arms), and every
+    /// const member is a real, spellable variant in §5 order.
+    #[test]
+    fn t16_facet_enum_const_closure_is_exhaustively_matched() {
+        assert_const_members_spell(
+            "Outcome",
+            OUTCOME_VARIANTS,
+            &[
+                "fully_achieved",
+                "mostly_achieved",
+                "partially_achieved",
+                "not_achieved",
+                "unclear_from_transcript",
+            ],
+            outcome_wire,
+        );
+        assert_const_members_spell(
+            "Helpfulness",
+            HELPFULNESS_VARIANTS,
+            &[
+                "unhelpful",
+                "slightly_helpful",
+                "moderately_helpful",
+                "very_helpful",
+                "essential",
+            ],
+            helpfulness_wire,
+        );
+        assert_const_members_spell(
+            "SessionType",
+            SESSION_TYPE_VARIANTS,
+            &[
+                "single_task",
+                "multi_task",
+                "iterative_refinement",
+                "exploration",
+                "quick_question",
+            ],
+            session_type_wire,
+        );
+        assert_const_members_spell(
+            "SuccessMode",
+            SUCCESS_MODE_VARIANTS,
+            &[
+                "none",
+                "fast_accurate_search",
+                "correct_code_edits",
+                "good_explanations",
+                "proactive_help",
+                "multi_file_changes",
+                "handled_complexity",
+                "good_debugging",
+            ],
+            success_mode_wire,
+        );
+        assert_const_members_spell(
+            "Satisfaction",
+            SATISFACTION_VARIANTS,
+            &[
+                "frustrated",
+                "dissatisfied",
+                "likely_satisfied",
+                "satisfied",
+                "happy",
+                "unsure",
+                "neutral",
+                "delighted",
+            ],
+            satisfaction_wire,
+        );
+        assert_const_members_spell(
+            "Friction",
+            FRICTION_VARIANTS,
+            &[
+                "misunderstood_request",
+                "wrong_approach",
+                "buggy_code",
+                "user_rejected_action",
+                "claude_got_blocked",
+                "user_stopped_early",
+                "wrong_file_or_location",
+                "excessive_changes",
+                "slow_or_verbose",
+                "tool_failed",
+                "user_unclear",
+                "external_issue",
+            ],
+            friction_wire,
+        );
     }
 }
