@@ -669,13 +669,20 @@ mod tests {
     }
 
     #[test]
-    fn resolve_params_url_context_knob_off_and_allowlist_empty_by_default() {
+    fn resolve_params_baked_defaults_url_context_on_and_netapp_allowlist() {
+        // apex-blvg-C baked the zero-fuss defaults (url_context -> true,
+        // internal_host_allowlist -> ["*.netapp.com"]). The Option fields
+        // stay None — the default is resolved lazily by the accessors — so
+        // raw fields assert None and the accessors assert the baked values.
         let local = WebFetchToolConfig::default();
         let params = local.resolve_params(None, None, None);
         assert!(params.url_context.is_none());
-        assert!(!params.url_context());
+        assert!(params.url_context());
         assert!(params.internal_host_allowlist.is_none());
-        assert!(params.internal_host_allowlist().is_empty());
+        assert_eq!(
+            params.internal_host_allowlist(),
+            vec!["*.netapp.com".to_owned()]
+        );
     }
 
     // -- to_bash_params_json allow_background_operator precedence (local > remote > true) --
