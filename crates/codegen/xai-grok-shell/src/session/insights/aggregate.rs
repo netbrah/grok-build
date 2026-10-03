@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use super::digest::{DegradedTier, SessionDigest};
-use super::types::{Friction, Outcome};
+use super::types::{CappedBy, Friction, Outcome};
 
 /// §9 rule 8's window: a session counts toward the concurrency peak only within
 /// this many seconds of its start. A named const, not a knob — the same treatment
@@ -77,6 +77,10 @@ pub struct Totals {
     pub cost_ticks: u64,
     /// This total hides unpriced calls (§6; declared U-4).
     pub cost_is_partial: bool,
+    /// Sorted, deduped; empty == no ceiling bound the run. The §11
+    /// `insights_generated` event mirrors this one source into the footer
+    /// (item 3's renderer, T-12(i)) and the telemetry (item 8's guard).
+    pub capped_by: Vec<CappedBy>,
     /// Sum of the rendered sessions' wall spans, in seconds.
     pub duration_secs_total: u64,
     /// added + removed, on §5's arithmetic (T-5).
@@ -127,6 +131,11 @@ pub struct AggregateInput<'a> {
     pub sessions_excluded: u32,
     /// The invoking session + any transcript whose mtime moved mid-run.
     pub sessions_self_excluded: u32,
+    /// The run-level ceiling record — which of the four `CappedBy` ceilings
+    /// bound the run (item 8's guard collects it; a cost stop records exactly
+    /// one — `Cost`; the shipped-default chunk-cap tie records both; empty ==
+    /// no ceiling bound the run). `aggregate()` normalizes to sorted, deduped.
+    pub capped_by: &'a [CappedBy],
 }
 
 /// The pure aggregation over passed-in inputs. No storage read, no model call
@@ -151,6 +160,15 @@ pub fn aggregate(input: &AggregateInput<'_>) -> Aggregate {
         .map(|s| i64::max(0, s.digest.cost_usd_ticks.unwrap_or(0)))
         .sum::<i64>() as u64;
     let cost_is_partial = analyzed.iter().any(|s| s.digest.cost_is_partial);
+
+    // §5 :659's invariant, enforced here so the footer always renders sorted+deduped:
+    // the caller passes the raw ceiling record, the pure aggregate normalizes it.
+    let capped_by: Vec<CappedBy> = {
+        let mut v = input.capped_by.to_vec();
+        v.sort();
+        v.dedup();
+        v
+    };
 
     // Wall spans summed in seconds (a negative `wall_minutes` clamps to 0).
     let duration_secs_total = analyzed
@@ -215,6 +233,7 @@ pub fn aggregate(input: &AggregateInput<'_>) -> Aggregate {
             sessions_legacy,
             cost_ticks,
             cost_is_partial,
+            capped_by,
             duration_secs_total,
             lines_changed,
         },
@@ -286,7 +305,7 @@ mod tests {
 
     use super::{AggregateInput, AnalyzedSession, CONCURRENCY_WINDOW_SECS, aggregate};
     use crate::session::insights::digest::{CACHE_SCHEMA_VERSION, DegradedTier, SessionDigest};
-    use crate::session::insights::types::{Friction, Outcome};
+    use crate::session::insights::types::{CappedBy, Friction, Outcome};
 
     fn check<T: std::fmt::Debug + PartialEq>(name: &str, got: &T, want: &T) {
         assert_eq!(got, want, "field `{name}`");
@@ -501,6 +520,7 @@ mod tests {
             analyzed: &[sa, sb, sc, sd, se, sf],
             sessions_excluded: 0,
             sessions_self_excluded: 0,
+            capped_by: &[],
         };
         let agg = aggregate(&input);
 
@@ -624,6 +644,7 @@ mod tests {
             analyzed: &[a1, a2, a3, a4],
             sessions_excluded: 2,
             sessions_self_excluded: 1,
+            capped_by: &[],
         };
         let agg = aggregate(&input);
 
@@ -808,6 +829,7 @@ mod tests {
             analyzed: &sessions[..3],
             sessions_excluded: 0,
             sessions_self_excluded: 0,
+            capped_by: &[],
         });
         check("friction", &agg3.friction, &want_friction);
         check("outcomes", &agg3.outcomes, &want_outcomes);
@@ -817,6 +839,7 @@ mod tests {
             analyzed: &sessions,
             sessions_excluded: 0,
             sessions_self_excluded: 0,
+            capped_by: &[],
         });
         check(
             "friction with badged session",
@@ -827,6 +850,63 @@ mod tests {
             "outcomes with badged session",
             &agg4.outcomes,
             &want_outcomes,
+        );
+    }
+
+    // --- capped_by (item 2c: §5's :659; T-12(i) reads `Totals::capped_by`) ---
+    //
+    // The run-level ceiling record the caller (item 8's guard) collects;
+    // `aggregate()` normalizes it to the SOT invariant — sorted, deduped;
+    // empty == no ceiling bound the run. The field is run-level, independent
+    // of the per-session `analyzed` data, so `analyzed: &[]` isolates the
+    // normalization from everything else the aggregate computes.
+    #[test]
+    fn capped_by_is_normalized_to_sorted_and_deduped() {
+        // (a) No ceiling bound the run: empty in, empty out.
+        let agg_a = aggregate(&AggregateInput {
+            analyzed: &[],
+            sessions_excluded: 0,
+            sessions_self_excluded: 0,
+            capped_by: &[],
+        });
+        check(
+            "capped_by (none)",
+            &agg_a.totals.capped_by,
+            &Vec::<CappedBy>::new(),
+        );
+
+        // (b) A cost stop records exactly one (the §9 :918 cost-stop case).
+        let cost = [CappedBy::Cost];
+        let agg_b = aggregate(&AggregateInput {
+            analyzed: &[],
+            sessions_excluded: 0,
+            sessions_self_excluded: 0,
+            capped_by: &cost,
+        });
+        check(
+            "capped_by (cost)",
+            &agg_b.totals.capped_by,
+            &vec![CappedBy::Cost],
+        );
+
+        // (c) The shipped-default chunk-cap tie with a duplicate: the two chunk
+        //     caps sort by the enum's Ord (ChunkPerSession < ChunkPerRun) and the
+        //     duplicate is dropped — T-12(i) "names both chunk caps".
+        let tie = [
+            CappedBy::ChunkPerRun,
+            CappedBy::ChunkPerSession,
+            CappedBy::ChunkPerRun,
+        ];
+        let agg_c = aggregate(&AggregateInput {
+            analyzed: &[],
+            sessions_excluded: 0,
+            sessions_self_excluded: 0,
+            capped_by: &tie,
+        });
+        check(
+            "capped_by (tie + duplicate)",
+            &agg_c.totals.capped_by,
+            &vec![CappedBy::ChunkPerSession, CappedBy::ChunkPerRun],
         );
     }
 }
