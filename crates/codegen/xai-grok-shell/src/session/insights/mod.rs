@@ -14,6 +14,7 @@
 //! command entry (item 5), and `project()` / the tag neutraliser land in item 4
 //! (SDD §13). No file I/O in this tree yet.
 
+pub mod aggregate;
 pub mod digest;
 
 pub use digest::{
