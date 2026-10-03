@@ -2157,7 +2157,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uc_fetch_default_off_keeps_client_path_byte_identical() {
+    async fn uc_fetch_explicit_off_keeps_client_path_byte_identical() {
         // url_context=false (explicit opt-out; the default is now baked
         // true, apex-blvg-C) with a gemini client present: the LLM wire is
         // never called and the client path runs (dead proxy fails it
@@ -2177,7 +2177,7 @@ mod tests {
         let reqs = server.received_requests().await.unwrap();
         assert!(
             reqs.is_empty(),
-            "default-off must never call the Gemini wire"
+            "explicit-off must never call the Gemini wire"
         );
     }
 }
