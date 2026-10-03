@@ -25,10 +25,13 @@ pub use digest::{
     SessionDigest, SessionFacts, TranscriptContent, digest_one, is_user_turn,
 };
 pub use label::{
-    FACET_CACHE_SCHEMA_VERSION, SessionFacets, facet_schema, friction_schema, fun_ending_schema,
-    horizon_schema, interaction_style_schema, project_areas_schema, suggestions_schema,
-    validate_facet_reply, validate_section_reply, what_works_schema,
+    CallGuard, CallGuardRefusal, FACET_CACHE_SCHEMA_VERSION, LabelInput, LabelOutcome, LabelStatus,
+    SessionFacets, chunk_summary_request, facet_request, facet_schema, friction_schema,
+    fun_ending_schema, horizon_schema, interaction_style_schema, label_sessions,
+    project_areas_schema, suggestions_schema, validate_facet_reply, validate_section_reply,
+    what_works_schema,
 };
+pub use types::InsightsBudget;
 
 /// The ten `/insights` prompts (SOT §7): the ported files under
 /// `session/templates/`, included at compile time. The depth is `../templates/`

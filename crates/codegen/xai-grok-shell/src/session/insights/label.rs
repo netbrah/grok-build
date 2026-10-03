@@ -353,6 +353,407 @@ pub fn validate_section_reply(name: &str, final_text: &str) -> Result<Value, Str
     validate_contract_output(&validator, final_text)
 }
 
+// ============================================================
+// 8a execution: the facet labelling wave — the call helper, the max_calls
+// guard, the max_cost_ticks stop, and validation → SessionFacets with the
+// badge causes. 7b's schemas + validators above are untouched; this is the
+// first caller of `contract_prompt` (Departure 1's emission pair, §6 :678-697).
+// ============================================================
+
+use std::collections::BTreeSet;
+use xai_grok_sampler::SamplingClient;
+use xai_grok_sampling_types::{ConversationItem, ConversationRequest};
+
+use crate::session::insights::digest::{DegradedTier, ProjectionCaps, SessionDigest};
+use crate::session::insights::types::{CappedBy, InsightsBudget};
+use crate::session::workflow::schema_contract::contract_prompt;
+
+/// The STRUCTURED facet request — carries the JSON Schema alongside the
+/// `contract_prompt` wrap (the Departure 1 emission pair). The resolved model
+/// + the shared output cap are inputs (8c resolves the model; 8a takes it).
+pub fn facet_request(model: &str, max_tokens: u32, payload: &str) -> ConversationRequest {
+    ConversationRequest::from_items(vec![
+        ConversationItem::system(contract_prompt(
+            super::prompt("insights_facet"),
+            &facet_schema(),
+        )),
+        ConversationItem::user(payload),
+    ])
+    .with_model(model)
+    .with_json_schema(facet_schema())
+    .with_max_output_tokens(max_tokens)
+}
+
+/// The PROSE chunk-summary request — NO schema (the prose summariser).
+pub fn chunk_summary_request(
+    model: &str,
+    max_tokens: u32,
+    chunk_text: &str,
+) -> ConversationRequest {
+    ConversationRequest::from_items(vec![
+        ConversationItem::system(super::prompt("insights_chunk_summary")),
+        ConversationItem::user(chunk_text),
+    ])
+    .with_model(model)
+    .with_max_output_tokens(max_tokens)
+}
+
+/// The `max_calls` guard (R-guard): reserve-before-compare — the `>=` is
+/// checked BEFORE the counter increments, so a counter at the ceiling is
+/// refused. The counter is shared across facet + chunk calls and counts the
+/// calls actually issued.
+#[derive(Debug)]
+pub struct CallGuard {
+    calls: usize,
+    max_calls: usize,
+}
+
+/// A refused acquire — carries the counter + ceiling so the reason line names
+/// the call ceiling.
+#[derive(Debug)]
+pub struct CallGuardRefusal {
+    pub calls: usize,
+    pub max_calls: usize,
+}
+
+impl CallGuardRefusal {
+    /// The one-line reason: names the call ceiling + the figure.
+    pub fn reason_line(&self) -> String {
+        format!(
+            "call ceiling reached: {} calls (ceiling {}); run stopped",
+            self.calls, self.max_calls
+        )
+    }
+}
+
+impl CallGuard {
+    pub fn new(max_calls: usize) -> Self {
+        Self {
+            calls: 0,
+            max_calls,
+        }
+    }
+
+    /// The current call count (the calls actually issued).
+    pub fn count(&self) -> usize {
+        self.calls
+    }
+
+    /// Reserve a call slot. The `>=` is checked BEFORE issuing: a counter at
+    /// `max_calls` is refused (the 89th acquire with a ceiling of 88). The
+    /// counter increments only on a successful reserve.
+    pub fn acquire(&mut self) -> Result<(), CallGuardRefusal> {
+        if self.calls >= self.max_calls {
+            Err(CallGuardRefusal {
+                calls: self.calls,
+                max_calls: self.max_calls,
+            })
+        } else {
+            self.calls += 1;
+            Ok(())
+        }
+    }
+}
+
+/// The direct input to the labelling wave: the digest (for the degraded
+/// markers + the projection length) + the projection text (for the calls).
+/// The labeller re-projects — the digest stores the length only.
+pub struct LabelInput<'a> {
+    pub digest: &'a SessionDigest,
+    pub projection: &'a str,
+}
+
+/// What happened to a session in the labelling wave (the badge causes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelStatus {
+    /// The facet was issued + validated (a `SessionFacets` was produced).
+    Labelled,
+    /// The facet (or a chunk) failed — badged; the run continued (no retry).
+    FacetValidationFailure,
+    /// A ceiling bound before the session was labelled — badged.
+    StoppedBeforeLabel,
+    /// The label cap bound before the session was labelled — badged.
+    LabelCap,
+}
+
+/// The result of the labelling wave: the badge causes (as numbers, not drops),
+/// the `capped_by` (sorted + deduped, mirrored into `Totals` by item 3's
+/// footer), the cost figure, and the reason line.
+#[derive(Debug)]
+pub struct LabelOutcome {
+    /// One entry per input session: the facets (if labelled) — `None` for the
+    /// badged (non-Labelled) sessions.
+    pub facets: Vec<Option<SessionFacets>>,
+    /// One entry per input session.
+    pub status: Vec<LabelStatus>,
+    /// The sorted, deduped ceilings that bound this run.
+    pub capped_by: Vec<CappedBy>,
+    /// The count of sessions badged `FacetValidationFailure` (a number).
+    pub facet_validation_failure_sessions: usize,
+    /// The count of sessions badged `LabelCap` (a number).
+    pub label_cap_sessions: usize,
+    /// The count of sessions badged `StoppedBeforeLabel` (a number).
+    pub stopped_before_label_sessions: usize,
+    /// True iff some calls were priced and some unpriced (the §9 partial-cost
+    /// badge — some_priced && some_unpriced).
+    pub cost_is_partial: bool,
+    /// The accumulated cost across the run's calls, in USD ticks.
+    pub total_cost_ticks: i64,
+    /// The first ceiling that bound the run, named (one line) — for the footer.
+    pub reason_line: Option<String>,
+    /// The total sessions considered (`inputs.len()`).
+    pub sessions_analyzed: usize,
+    /// The count of non-Labelled sessions (the partial count).
+    pub sessions_partial: usize,
+}
+
+/// Truncate `s` to at most `max_chars` characters (a char boundary, not a byte).
+fn truncate_to_chars(s: &str, max_chars: usize) -> String {
+    s.char_indices()
+        .nth(max_chars)
+        .map(|(i, _)| &s[..i])
+        .unwrap_or(s)
+        .to_string()
+}
+
+/// Fold one call's reported cost into the accumulator (R-cost): `Some` is
+/// priced (adds to the total), `None` is unpriced (the accumulator stays).
+fn accumulate_cost(
+    total: &mut i64,
+    some_priced: &mut bool,
+    some_unpriced: &mut bool,
+    cost: Option<i64>,
+) {
+    match cost {
+        Some(ticks) => {
+            *total += ticks;
+            *some_priced = true;
+        }
+        None => {
+            *some_unpriced = true;
+        }
+    }
+}
+
+/// Run the facet labelling wave over `inputs` (direct inputs: digests +
+/// projections + the caps + the budget), returning the badge causes + the
+/// `capped_by` + the cost figure. Sequential (8a); the `concurrency` bound is
+/// 8c's. No retry (R-noretry): a failed facet/chunk reply badges the session
+/// and the run continues. The cost stop (R-cost) yields a COMPLETED partial
+/// run (not an abort): the crossing session is still labelled, only the
+/// sessions after it render badged.
+pub async fn label_sessions(
+    client: &SamplingClient,
+    model: &str,
+    inputs: &[LabelInput<'_>],
+    caps: &ProjectionCaps,
+    budget: &InsightsBudget,
+) -> LabelOutcome {
+    let mut guard = CallGuard::new(budget.max_calls);
+    let mut capped_by: BTreeSet<CappedBy> = BTreeSet::new();
+    let mut reason_line: Option<String> = None;
+    let mut run_stopped = false;
+    let mut total_cost_ticks: i64 = 0;
+    let mut some_priced = false;
+    let mut some_unpriced = false;
+    let mut chunk_calls_run = 0usize;
+    let mut label_count = 0usize;
+
+    let mut facets: Vec<Option<SessionFacets>> = Vec::with_capacity(inputs.len());
+    let mut status: Vec<LabelStatus> = Vec::with_capacity(inputs.len());
+
+    for input in inputs {
+        // A ceiling bound before this session was labelled → badge + skip.
+        if run_stopped {
+            facets.push(None);
+            status.push(LabelStatus::StoppedBeforeLabel);
+            continue;
+        }
+        // The label cap: a session never labelled once the cap binds.
+        if label_count >= budget.max_sessions {
+            facets.push(None);
+            status.push(LabelStatus::LabelCap);
+            continue;
+        }
+
+        // Consume the digest's markers (R-chunk): InputTruncated → truncate +
+        // no chunk fan-out (the facet carries the truncated projection).
+        let truncated = input
+            .digest
+            .degraded
+            .contains(&DegradedTier::InputTruncated);
+        let projection: String = if truncated {
+            truncate_to_chars(input.projection, caps.max_input_chars)
+        } else {
+            input.projection.to_string()
+        };
+
+        // The chunk plan (R-chunk). The per-session chunk ceiling (the digest's
+        // ChunkCapHit) + the run-level backstop (max_chunk_calls_per_run).
+        let mut chunk_calls = 0usize;
+        if !truncated {
+            let n_chunks = projection.chars().count().div_ceil(caps.chunk_chars.max(1));
+            if n_chunks > 1 {
+                let per_session = n_chunks.min(budget.max_chunk_calls_per_session);
+                if per_session < n_chunks {
+                    capped_by.insert(CappedBy::ChunkPerSession);
+                    reason_line.get_or_insert(format!(
+                        "per-session chunk ceiling: {per_session} of {n_chunks} chunks"
+                    ));
+                }
+                chunk_calls = per_session;
+                let room = budget
+                    .max_chunk_calls_per_run
+                    .saturating_sub(chunk_calls_run);
+                if chunk_calls > room {
+                    capped_by.insert(CappedBy::ChunkPerRun);
+                    reason_line.get_or_insert(format!(
+                        "per-run chunk ceiling: {room} chunks (ceiling {})",
+                        budget.max_chunk_calls_per_run
+                    ));
+                    chunk_calls = room;
+                }
+            }
+        }
+
+        // The chunk calls (each guarded + cost-checked).
+        let chars: Vec<char> = projection.chars().collect();
+        let mut summaries: Vec<String> = Vec::new();
+        let mut session_failed = false;
+        for chunk in chars.chunks(caps.chunk_chars.max(1)).take(chunk_calls) {
+            let chunk_text: String = chunk.iter().collect();
+            let req = chunk_summary_request(model, budget.max_tokens, &chunk_text);
+            if let Err(refusal) = guard.acquire() {
+                capped_by.insert(CappedBy::Calls);
+                reason_line.get_or_insert(refusal.reason_line());
+                run_stopped = true;
+                break;
+            }
+            match client.conversation_collect(req).await {
+                Ok(response) => {
+                    accumulate_cost(
+                        &mut total_cost_ticks,
+                        &mut some_priced,
+                        &mut some_unpriced,
+                        response.cost_usd_ticks,
+                    );
+                    if total_cost_ticks > budget.max_cost_ticks {
+                        capped_by.insert(CappedBy::Cost);
+                        reason_line.get_or_insert(format!(
+                            "cost ceiling reached: {total_cost_ticks} ticks accumulated (ceiling {})",
+                            budget.max_cost_ticks
+                        ));
+                        run_stopped = true;
+                        break;
+                    }
+                    summaries.push(response.assistant_text());
+                    chunk_calls_run += 1;
+                }
+                Err(_) => {
+                    // A chunk error badges the session the same way as a facet
+                    // failure (R-noretry): no retry, the run continues.
+                    session_failed = true;
+                    break;
+                }
+            }
+        }
+
+        // A ceiling bounded before the facet → the session is badged
+        // StoppedBeforeLabel (the run may still have labelled the ones before).
+        if run_stopped {
+            facets.push(None);
+            status.push(LabelStatus::StoppedBeforeLabel);
+            continue;
+        }
+        // A chunk error → badge + skip the facet; the run continues.
+        if session_failed {
+            facets.push(None);
+            status.push(LabelStatus::FacetValidationFailure);
+            continue;
+        }
+
+        // The facet (the validation boundary — one call per labelled session).
+        let payload = if summaries.is_empty() {
+            projection.clone()
+        } else {
+            summaries.join("\n\n")
+        };
+        if let Err(refusal) = guard.acquire() {
+            capped_by.insert(CappedBy::Calls);
+            reason_line.get_or_insert(refusal.reason_line());
+            run_stopped = true;
+            facets.push(None);
+            status.push(LabelStatus::StoppedBeforeLabel);
+            continue;
+        }
+        label_count += 1;
+        let req = facet_request(model, budget.max_tokens, &payload);
+        match client.conversation_collect(req).await {
+            Ok(response) => {
+                accumulate_cost(
+                    &mut total_cost_ticks,
+                    &mut some_priced,
+                    &mut some_unpriced,
+                    response.cost_usd_ticks,
+                );
+                if total_cost_ticks > budget.max_cost_ticks {
+                    capped_by.insert(CappedBy::Cost);
+                    reason_line.get_or_insert(format!(
+                        "cost ceiling reached: {total_cost_ticks} ticks accumulated (ceiling {})",
+                        budget.max_cost_ticks
+                    ));
+                    run_stopped = true;
+                }
+                match validate_facet_reply(&response.assistant_text()) {
+                    Ok(parsed) => {
+                        facets.push(Some(parsed));
+                        status.push(LabelStatus::Labelled);
+                    }
+                    Err(_) => {
+                        facets.push(None);
+                        status.push(LabelStatus::FacetValidationFailure);
+                    }
+                }
+            }
+            Err(_) => {
+                // A transport failure badges the session the same way (no retry).
+                facets.push(None);
+                status.push(LabelStatus::FacetValidationFailure);
+            }
+        }
+    }
+
+    let sessions_partial = status
+        .iter()
+        .filter(|s| **s != LabelStatus::Labelled)
+        .count();
+    let facet_validation_failure_sessions = status
+        .iter()
+        .filter(|s| **s == LabelStatus::FacetValidationFailure)
+        .count();
+    let label_cap_sessions = status
+        .iter()
+        .filter(|s| **s == LabelStatus::LabelCap)
+        .count();
+    let stopped_before_label_sessions = status
+        .iter()
+        .filter(|s| **s == LabelStatus::StoppedBeforeLabel)
+        .count();
+    LabelOutcome {
+        facets,
+        status,
+        capped_by: capped_by.into_iter().collect(),
+        facet_validation_failure_sessions,
+        label_cap_sessions,
+        stopped_before_label_sessions,
+        cost_is_partial: some_priced && some_unpriced,
+        total_cost_ticks,
+        reason_line,
+        sessions_analyzed: inputs.len(),
+        sessions_partial,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! T-6(a) (SOT §12 :1729): the four arms × all eight schemas — plus the
@@ -811,6 +1212,814 @@ mod tests {
                 SECTION_SCHEMAS[i](),
                 expected[i],
                 "{name}: SECTION_SCHEMAS[{i}] is not the matching named schema fn (a swap?)"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod execution_tests {
+    //! 8a execution tests: T-0 c/d/i/j/k/l + T-12 c/d/g/h + T-11 (call-count
+    //! arm). The mock is `xai-grok-test-support`'s `MockInferenceServer`; the
+    //! calls go through a real `SamplingClient` (Responses backend) so the wire
+    //! shape is the production one — Departure 1's `with_json_schema` +
+    //! `contract_prompt`, the shared `max_output_tokens` cap.
+
+    use super::{CallGuard, FACET_CACHE_SCHEMA_VERSION, LabelInput, LabelStatus, label_sessions};
+    use crate::session::insights::digest::{DegradedTier, ProjectionCaps, SessionDigest};
+    use crate::session::insights::types::{CappedBy, InsightsBudget};
+    use chrono::DateTime;
+    use serde_json::{Value, json};
+    use std::collections::BTreeMap;
+    use xai_grok_sampler::{ApiBackend, SamplerConfig, SamplingClient};
+    use xai_grok_test_support::mock_server::MockInferenceServer;
+    use xai_grok_test_support::scripted::{ScriptedResponse, SseEvent};
+    use xai_grok_test_support::sse::responses_api_script_exact;
+
+    fn valid_facet_value() -> Value {
+        json!({
+            "cache_version": FACET_CACHE_SCHEMA_VERSION,
+            "transcript_sha256": "9f2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c",
+            "session_id": "sess-8a",
+            "underlying_goal": "Ship the session insights",
+            "goal_categories": { "debugging": 2 },
+            "outcome": "fully_achieved",
+            "user_satisfaction_counts": { "satisfied": 1 },
+            "claude_helpfulness": "very_helpful",
+            "session_type": "iterative_refinement",
+            "friction_counts": { "tool_failed": 1 },
+            "friction_detail": "The build failed twice.",
+            "primary_success": "good_debugging",
+            "brief_summary": "A short summary."
+        })
+    }
+
+    fn valid_facet_json() -> String {
+        valid_facet_value().to_string()
+    }
+
+    fn invalid_facet_json() -> String {
+        let mut v = valid_facet_value();
+        v["outcome"] = json!("sideways"); // an out-of-range enum variant (the §7 enum is closed)
+        v.to_string()
+    }
+
+    async fn client_for(server: &MockInferenceServer) -> SamplingClient {
+        SamplingClient::new(SamplerConfig {
+            base_url: server.url(),
+            api_backend: ApiBackend::Responses,
+            api_key: Some("test-key".to_string()),
+            model: "test-model".to_string(),
+            context_window: 200_000,
+            ..SamplerConfig::default()
+        })
+        .expect("sampler client should build")
+    }
+
+    fn sse_reply(text: &str, model: &str) -> ScriptedResponse {
+        ScriptedResponse::sse(responses_api_script_exact(text, model))
+    }
+
+    fn cost_reply(text: &str, model: &str, ticks: i64) -> ScriptedResponse {
+        ScriptedResponse::sse(cost_carrying_responses_sse(text, model, ticks))
+    }
+
+    /// The mock's `responses_api_script_exact` carries no cost; this mirrors
+    /// its frame order but stamps `cost_in_usd_ticks` on the `response.completed`
+    /// usage — the wire field the client parses into
+    /// `ConversationResponse::cost_usd_ticks`.
+    fn cost_carrying_responses_sse(text: &str, model: &str, ticks: i64) -> Vec<SseEvent> {
+        vec![
+            SseEvent::data(
+                json!({
+                    "type": "response.created",
+                    "sequence_number": 0,
+                    "response": {
+                        "id": "resp_test", "object": "response", "created_at": 1234567890,
+                        "model": model, "status": "in_progress", "output": []
+                    }
+                })
+                .to_string(),
+            ),
+            SseEvent::data(
+                json!({
+                    "type": "response.output_text.delta",
+                    "sequence_number": 1,
+                    "item_id": "item_test", "output_index": 0, "content_index": 0, "delta": text
+                })
+                .to_string(),
+            ),
+            SseEvent::data(
+                json!({
+                    "type": "response.completed",
+                    "sequence_number": 2,
+                    "response": {
+                        "id": "resp_test", "object": "response", "created_at": 1234567890,
+                        "model": model, "status": "completed",
+                        "output": [{
+                            "type": "message", "id": "msg_test", "role": "assistant", "status": "completed",
+                            "content": [{ "type": "output_text", "text": text, "annotations": [] }]
+                        }],
+                        "usage": {
+                            "input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+                            "cost_in_usd_ticks": ticks
+                        }
+                    }
+                })
+                .to_string(),
+            ),
+            SseEvent::data("[DONE]".to_string()),
+        ]
+    }
+
+    fn test_digest(degraded: Vec<DegradedTier>, projection_chars: usize) -> SessionDigest {
+        SessionDigest {
+            cache_version: 1,
+            session_id: "sess".to_string(),
+            cwd: "/tmp".to_string(),
+            git_root: None,
+            head_branch: None,
+            started_at: DateTime::UNIX_EPOCH,
+            updated_at: DateTime::UNIX_EPOCH,
+            wall_minutes: 0,
+            activity_minutes: 0,
+            user_turns: 1,
+            assistant_turns: 1,
+            tool_counts: BTreeMap::new(),
+            languages: BTreeMap::new(),
+            files_modified: 0,
+            lines_added: 0,
+            lines_removed: 0,
+            projection_chars,
+            input_tokens: 0,
+            output_tokens: 0,
+            reasoning_tokens: 0,
+            cached_read_tokens: 0,
+            cost_usd_ticks: None,
+            cost_is_partial: false,
+            tool_errors: 0,
+            interruptions: 0,
+            response_gaps_secs: Vec::new(),
+            message_hours: Vec::new(),
+            user_message_timestamps: Vec::new(),
+            time_degraded: false,
+            model_ids: Vec::new(),
+            uses_mcp: false,
+            uses_subagent: false,
+            first_prompt: None,
+            degraded,
+            unreadable_lines: 0,
+            transcript_sha256: "0".repeat(64),
+        }
+    }
+
+    // -- T-12(d): the guard seam — no model call, no client.
+
+    #[test]
+    fn t12d_guard_seam_the_89th_acquire_is_refused_and_names_the_ceiling() {
+        let mut guard = CallGuard::new(88);
+        for i in 0..88 {
+            guard
+                .acquire()
+                .unwrap_or_else(|r| panic!("acquire #{i} (of 88) must succeed: {r:?}"));
+        }
+        assert_eq!(
+            guard.count(),
+            88,
+            "after 88 successful acquires the counter must read 88"
+        );
+        let refusal = guard
+            .acquire()
+            .expect_err("the 89th acquire must be refused");
+        let line = refusal.reason_line();
+        assert!(
+            line.contains("88"),
+            "the reason line must name the call ceiling (88): {line}"
+        );
+        assert!(
+            line.to_ascii_lowercase().contains("call"),
+            "the reason line must name the CALL ceiling: {line}"
+        );
+        assert_eq!(
+            guard.count(),
+            88,
+            "a refusal must not increment the counter"
+        );
+    }
+
+    // -- T-11: one facet call per labelled session.
+
+    #[tokio::test]
+    async fn t11_one_facet_call_per_labelled_session() {
+        for n in [1usize, 5] {
+            let server = MockInferenceServer::start()
+                .await
+                .expect("mock should start");
+            server.set_response(valid_facet_json());
+            let client = client_for(&server).await;
+            let digests: Vec<SessionDigest> = (0..n).map(|_| test_digest(Vec::new(), 1)).collect();
+            let projections: Vec<String> = (0..n).map(|_| "x".to_string()).collect();
+            let inputs: Vec<LabelInput> = digests
+                .iter()
+                .zip(projections.iter())
+                .map(|(d, p)| LabelInput {
+                    digest: d,
+                    projection: p,
+                })
+                .collect();
+            let outcome = label_sessions(
+                &client,
+                "test-model",
+                &inputs,
+                &ProjectionCaps::default(),
+                &InsightsBudget::default(),
+            )
+            .await;
+            assert_eq!(
+                server.request_count_for("/v1/responses"),
+                n,
+                "one facet call per labelled session ({n} sessions)"
+            );
+            assert_eq!(
+                outcome
+                    .status
+                    .iter()
+                    .filter(|s| **s == LabelStatus::Labelled)
+                    .count(),
+                n,
+                "all {n} sessions labelled"
+            );
+        }
+    }
+
+    // -- T-0(i): a failed facet reply is badged and the run continues.
+
+    #[tokio::test]
+    async fn t0i_a_failed_facet_reply_badges_and_the_run_continues() {
+        let server = MockInferenceServer::start()
+            .await
+            .expect("mock should start");
+        server.enqueue_response(
+            "/v1/responses",
+            sse_reply(&valid_facet_json(), "test-model"),
+        );
+        server.enqueue_response(
+            "/v1/responses",
+            sse_reply(&invalid_facet_json(), "test-model"),
+        );
+        server.enqueue_response(
+            "/v1/responses",
+            sse_reply(&valid_facet_json(), "test-model"),
+        );
+        let client = client_for(&server).await;
+        let digests: Vec<SessionDigest> = (0..3).map(|_| test_digest(Vec::new(), 1)).collect();
+        let projections: Vec<String> = (0..3).map(|_| "x".to_string()).collect();
+        let inputs: Vec<LabelInput> = digests
+            .iter()
+            .zip(projections.iter())
+            .map(|(d, p)| LabelInput {
+                digest: d,
+                projection: p,
+            })
+            .collect();
+        let outcome = label_sessions(
+            &client,
+            "test-model",
+            &inputs,
+            &ProjectionCaps::default(),
+            &InsightsBudget::default(),
+        )
+        .await;
+        assert_eq!(
+            outcome.facet_validation_failure_sessions, 1,
+            "exactly one session badged (no retry)"
+        );
+        assert_eq!(
+            outcome.status,
+            vec![
+                LabelStatus::Labelled,
+                LabelStatus::FacetValidationFailure,
+                LabelStatus::Labelled
+            ]
+        );
+        assert_eq!(outcome.sessions_analyzed, 3);
+        assert_eq!(
+            outcome.sessions_partial, 1,
+            "only the failed session is partial"
+        );
+        assert_eq!(
+            server.request_count_for("/v1/responses"),
+            3,
+            "the run continues past the failure (3 facet calls)"
+        );
+    }
+
+    // -- T-0(j): the label cap badges the unlabelled remainder as a number.
+
+    #[tokio::test]
+    async fn t0j_the_label_cap_badges_the_unlabelled_remainder_as_a_number() {
+        let server = MockInferenceServer::start()
+            .await
+            .expect("mock should start");
+        server.set_response(valid_facet_json());
+        let client = client_for(&server).await;
+        let digests: Vec<SessionDigest> = (0..5).map(|_| test_digest(Vec::new(), 1)).collect();
+        let projections: Vec<String> = (0..5).map(|_| "x".to_string()).collect();
+        let inputs: Vec<LabelInput> = digests
+            .iter()
+            .zip(projections.iter())
+            .map(|(d, p)| LabelInput {
+                digest: d,
+                projection: p,
+            })
+            .collect();
+        let budget = InsightsBudget {
+            max_sessions: 2,
+            ..InsightsBudget::default()
+        };
+        let outcome = label_sessions(
+            &client,
+            "test-model",
+            &inputs,
+            &ProjectionCaps::default(),
+            &budget,
+        )
+        .await;
+        assert_eq!(
+            outcome.label_cap_sessions, 3,
+            "label_cap_sessions == 3 (a number, not a drop)"
+        );
+        assert_eq!(
+            outcome.status,
+            vec![
+                LabelStatus::Labelled,
+                LabelStatus::Labelled,
+                LabelStatus::LabelCap,
+                LabelStatus::LabelCap,
+                LabelStatus::LabelCap
+            ]
+        );
+        assert_eq!(
+            server.request_count_for("/v1/responses"),
+            2,
+            "only max_sessions facet calls are issued"
+        );
+    }
+
+    // -- T-0(k): a cost crossing completes a partial run.
+
+    #[tokio::test]
+    async fn t0k_a_cost_crossing_completes_a_partial_run() {
+        let server = MockInferenceServer::start()
+            .await
+            .expect("mock should start");
+        for _ in 0..5 {
+            server.enqueue_response(
+                "/v1/responses",
+                cost_reply(&valid_facet_json(), "test-model", 60),
+            );
+        }
+        let client = client_for(&server).await;
+        let digests: Vec<SessionDigest> = (0..5).map(|_| test_digest(Vec::new(), 1)).collect();
+        let projections: Vec<String> = (0..5).map(|_| "x".to_string()).collect();
+        let inputs: Vec<LabelInput> = digests
+            .iter()
+            .zip(projections.iter())
+            .map(|(d, p)| LabelInput {
+                digest: d,
+                projection: p,
+            })
+            .collect();
+        let budget = InsightsBudget {
+            max_cost_ticks: 100,
+            ..InsightsBudget::default()
+        };
+        let outcome = label_sessions(
+            &client,
+            "test-model",
+            &inputs,
+            &ProjectionCaps::default(),
+            &budget,
+        )
+        .await;
+        assert!(
+            outcome.capped_by.contains(&CappedBy::Cost),
+            "capped_by must include Cost: {:?}",
+            outcome.capped_by
+        );
+        assert_eq!(
+            outcome.stopped_before_label_sessions, 3,
+            "the three never-labelled render badged"
+        );
+        assert_eq!(
+            outcome.sessions_analyzed - outcome.sessions_partial,
+            2,
+            "clean = 2 (not 5)"
+        );
+        assert!(
+            outcome
+                .reason_line
+                .as_deref()
+                .unwrap()
+                .contains("cost ceiling"),
+            "the reason line names the cost ceiling: {:?}",
+            outcome.reason_line
+        );
+        assert_eq!(
+            server.request_count_for("/v1/responses"),
+            2,
+            "the run stops after the crossing session (2 facet calls)"
+        );
+        assert_eq!(outcome.total_cost_ticks, 120, "cost = 2 x 60 ticks");
+    }
+
+    // -- T-0(l): a capped-string facet reply is rejected (the same path as (i)).
+
+    #[tokio::test]
+    async fn t0l_a_capped_string_facet_reply_is_rejected_and_badged() {
+        let server = MockInferenceServer::start()
+            .await
+            .expect("mock should start");
+        // brief_summary exceeds the 160-char §7 cap (enforced by rejection, not
+        // truncation) → the same badge path as (i).
+        let mut v = valid_facet_value();
+        v["brief_summary"] = json!("x".repeat(161));
+        let over = v.to_string();
+        server.enqueue_response("/v1/responses", sse_reply(&over, "test-model"));
+        server.enqueue_response(
+            "/v1/responses",
+            sse_reply(&valid_facet_json(), "test-model"),
+        );
+        let client = client_for(&server).await;
+        let digests: Vec<SessionDigest> = (0..2).map(|_| test_digest(Vec::new(), 1)).collect();
+        let projections: Vec<String> = (0..2).map(|_| "x".to_string()).collect();
+        let inputs: Vec<LabelInput> = digests
+            .iter()
+            .zip(projections.iter())
+            .map(|(d, p)| LabelInput {
+                digest: d,
+                projection: p,
+            })
+            .collect();
+        let outcome = label_sessions(
+            &client,
+            "test-model",
+            &inputs,
+            &ProjectionCaps::default(),
+            &InsightsBudget::default(),
+        )
+        .await;
+        assert_eq!(
+            outcome.facet_validation_failure_sessions, 1,
+            "the over-cap reply is rejected and badged (same path as (i))"
+        );
+        assert_eq!(
+            outcome.status,
+            vec![LabelStatus::FacetValidationFailure, LabelStatus::Labelled]
+        );
+    }
+
+    // -- T-0(c): InputTruncated consumes the marker (no chunk fan-out).
+
+    #[tokio::test]
+    async fn t0c_input_truncated_consumes_the_marker_no_chunk_fan_out() {
+        let server = MockInferenceServer::start()
+            .await
+            .expect("mock should start");
+        server.set_response(valid_facet_json());
+        let client = client_for(&server).await;
+        let caps = ProjectionCaps {
+            max_input_chars: 60_000,
+            ..ProjectionCaps::default()
+        };
+        let digests: Vec<SessionDigest> =
+            vec![test_digest(vec![DegradedTier::InputTruncated], 90_000)];
+        let projections: Vec<String> = vec!["x".repeat(90_000)];
+        let inputs: Vec<LabelInput> = digests
+            .iter()
+            .zip(projections.iter())
+            .map(|(d, p)| LabelInput {
+                digest: d,
+                projection: p,
+            })
+            .collect();
+        let outcome = label_sessions(
+            &client,
+            "test-model",
+            &inputs,
+            &caps,
+            &InsightsBudget::default(),
+        )
+        .await;
+        assert_eq!(
+            server.request_count_for("/v1/responses"),
+            1,
+            "one facet call on the truncated projection, zero chunk calls"
+        );
+        assert_eq!(outcome.status, vec![LabelStatus::Labelled]);
+    }
+
+    // -- T-0(d): a ChunkCapHit makes at most the per-session chunk calls.
+
+    #[tokio::test]
+    async fn t0d_chunk_cap_hit_makes_at_most_the_per_session_chunk_calls() {
+        let server = MockInferenceServer::start()
+            .await
+            .expect("mock should start");
+        // 100 001 chars / 25 000 = 5 chunks → capped at 4; the facet carries the
+        // summaries. 4 chunk calls + 1 facet call = 5 total.
+        for _ in 0..4 {
+            server.enqueue_response(
+                "/v1/responses",
+                sse_reply("a summary of this chunk", "test-model"),
+            );
+        }
+        server.enqueue_response(
+            "/v1/responses",
+            sse_reply(&valid_facet_json(), "test-model"),
+        );
+        let client = client_for(&server).await;
+        let digests: Vec<SessionDigest> =
+            vec![test_digest(vec![DegradedTier::ChunkCapHit], 100_001)];
+        let projections: Vec<String> = vec!["x".repeat(100_001)];
+        let inputs: Vec<LabelInput> = digests
+            .iter()
+            .zip(projections.iter())
+            .map(|(d, p)| LabelInput {
+                digest: d,
+                projection: p,
+            })
+            .collect();
+        let outcome = label_sessions(
+            &client,
+            "test-model",
+            &inputs,
+            &ProjectionCaps::default(),
+            &InsightsBudget::default(),
+        )
+        .await;
+        assert_eq!(
+            server.request_count_for("/v1/responses"),
+            5,
+            "4 chunk calls + 1 facet call (the per-session chunk ceiling binds)"
+        );
+        assert_eq!(outcome.status, vec![LabelStatus::Labelled]);
+    }
+
+    // -- T-12(c): a cost crossing mid-facet-loop yields a partial run + reason.
+
+    #[tokio::test]
+    async fn t12c_a_cost_crossing_mid_facet_loop_yields_a_partial_run_and_reason_line() {
+        let server = MockInferenceServer::start()
+            .await
+            .expect("mock should start");
+        for _ in 0..3 {
+            server.enqueue_response(
+                "/v1/responses",
+                cost_reply(&valid_facet_json(), "test-model", 70),
+            );
+        }
+        let client = client_for(&server).await;
+        let digests: Vec<SessionDigest> = (0..3).map(|_| test_digest(Vec::new(), 1)).collect();
+        let projections: Vec<String> = (0..3).map(|_| "x".to_string()).collect();
+        let inputs: Vec<LabelInput> = digests
+            .iter()
+            .zip(projections.iter())
+            .map(|(d, p)| LabelInput {
+                digest: d,
+                projection: p,
+            })
+            .collect();
+        let budget = InsightsBudget {
+            max_cost_ticks: 130,
+            ..InsightsBudget::default()
+        };
+        let outcome = label_sessions(
+            &client,
+            "test-model",
+            &inputs,
+            &ProjectionCaps::default(),
+            &budget,
+        )
+        .await;
+        assert!(
+            outcome.capped_by.contains(&CappedBy::Cost),
+            "capped_by must include Cost"
+        );
+        let line = outcome.reason_line.as_deref().unwrap();
+        assert!(
+            line.contains("cost ceiling"),
+            "the reason line names the cost ceiling: {line}"
+        );
+        assert!(
+            line.contains("140"),
+            "the reason line names the accumulated figure (140): {line}"
+        );
+        assert_eq!(
+            outcome.sessions_analyzed - outcome.sessions_partial,
+            2,
+            "2 clean (sessions 1, 2), 1 stopped (session 3)"
+        );
+    }
+
+    // -- T-12(g): the runtime ceilings name themselves and set capped_by.
+
+    #[tokio::test]
+    async fn t12g_runtime_ceilings_name_themselves_and_set_capped_by() {
+        // ChunkPerSession: one session needing 5 chunks, per-session cap 4.
+        {
+            let server = MockInferenceServer::start()
+                .await
+                .expect("mock should start");
+            for _ in 0..5 {
+                server
+                    .enqueue_response("/v1/responses", sse_reply("a chunk summary", "test-model"));
+            }
+            let client = client_for(&server).await;
+            let digests: Vec<SessionDigest> =
+                vec![test_digest(vec![DegradedTier::ChunkCapHit], 100_001)];
+            let projections: Vec<String> = vec!["x".repeat(100_001)];
+            let inputs: Vec<LabelInput> = digests
+                .iter()
+                .zip(projections.iter())
+                .map(|(d, p)| LabelInput {
+                    digest: d,
+                    projection: p,
+                })
+                .collect();
+            let outcome = label_sessions(
+                &client,
+                "test-model",
+                &inputs,
+                &ProjectionCaps::default(),
+                &InsightsBudget::default(),
+            )
+            .await;
+            assert!(
+                outcome.capped_by.contains(&CappedBy::ChunkPerSession),
+                "ChunkPerSession must be set: {:?}",
+                outcome.capped_by
+            );
+            let line = outcome.reason_line.as_deref().unwrap();
+            assert!(
+                line.contains("per-session"),
+                "the reason line names the PER-SESSION ceiling: {line}"
+            );
+        }
+        // ChunkPerRun: two sessions each needing 4 chunks, per-run cap 3.
+        {
+            let server = MockInferenceServer::start()
+                .await
+                .expect("mock should start");
+            // session 1: 3 chunks + 1 facet; session 2: 0 chunks + 1 facet = 5.
+            for _ in 0..3 {
+                server
+                    .enqueue_response("/v1/responses", sse_reply("a chunk summary", "test-model"));
+            }
+            server.enqueue_response(
+                "/v1/responses",
+                sse_reply(&valid_facet_json(), "test-model"),
+            );
+            server.enqueue_response(
+                "/v1/responses",
+                sse_reply(&valid_facet_json(), "test-model"),
+            );
+            let client = client_for(&server).await;
+            let budget = InsightsBudget {
+                max_chunk_calls_per_run: 3,
+                ..InsightsBudget::default()
+            };
+            let digests: Vec<SessionDigest> =
+                (0..2).map(|_| test_digest(Vec::new(), 100_000)).collect();
+            let projections: Vec<String> = (0..2).map(|_| "x".repeat(100_000)).collect();
+            let inputs: Vec<LabelInput> = digests
+                .iter()
+                .zip(projections.iter())
+                .map(|(d, p)| LabelInput {
+                    digest: d,
+                    projection: p,
+                })
+                .collect();
+            let outcome = label_sessions(
+                &client,
+                "test-model",
+                &inputs,
+                &ProjectionCaps::default(),
+                &budget,
+            )
+            .await;
+            assert!(
+                outcome.capped_by.contains(&CappedBy::ChunkPerRun),
+                "ChunkPerRun must be set: {:?}",
+                outcome.capped_by
+            );
+            let line = outcome.reason_line.as_deref().unwrap();
+            assert!(
+                line.contains("per-run"),
+                "the reason line names the PER-RUN ceiling: {line}"
+            );
+        }
+        // Cost: names itself (covered by T-0(k)/T-12(c); re-asserted here).
+        {
+            let server = MockInferenceServer::start()
+                .await
+                .expect("mock should start");
+            for _ in 0..2 {
+                server.enqueue_response(
+                    "/v1/responses",
+                    cost_reply(&valid_facet_json(), "test-model", 60),
+                );
+            }
+            let client = client_for(&server).await;
+            let budget = InsightsBudget {
+                max_cost_ticks: 100,
+                ..InsightsBudget::default()
+            };
+            let digests: Vec<SessionDigest> = (0..2).map(|_| test_digest(Vec::new(), 1)).collect();
+            let projections: Vec<String> = (0..2).map(|_| "x".to_string()).collect();
+            let inputs: Vec<LabelInput> = digests
+                .iter()
+                .zip(projections.iter())
+                .map(|(d, p)| LabelInput {
+                    digest: d,
+                    projection: p,
+                })
+                .collect();
+            let outcome = label_sessions(
+                &client,
+                "test-model",
+                &inputs,
+                &ProjectionCaps::default(),
+                &budget,
+            )
+            .await;
+            assert!(
+                outcome.capped_by.contains(&CappedBy::Cost),
+                "Cost must be set: {:?}",
+                outcome.capped_by
+            );
+            assert!(
+                outcome
+                    .reason_line
+                    .as_deref()
+                    .unwrap()
+                    .contains("cost ceiling"),
+                "the cost reason line names the cost ceiling: {:?}",
+                outcome.reason_line
+            );
+        }
+    }
+
+    // -- T-12(h): facet AND chunk calls carry the shared output cap (4096).
+
+    #[tokio::test]
+    async fn t12h_facet_and_chunk_calls_carry_the_shared_output_cap() {
+        let server = MockInferenceServer::start()
+            .await
+            .expect("mock should start");
+        // 50 000 chars → 2 chunks (ceil(50 000 / 25 000) = 2); 2 chunk calls +
+        // 1 facet call = 3.
+        server.enqueue_response("/v1/responses", sse_reply("a chunk summary", "test-model"));
+        server.enqueue_response(
+            "/v1/responses",
+            sse_reply("another chunk summary", "test-model"),
+        );
+        server.enqueue_response(
+            "/v1/responses",
+            sse_reply(&valid_facet_json(), "test-model"),
+        );
+        let client = client_for(&server).await;
+        let digests: Vec<SessionDigest> = vec![test_digest(Vec::new(), 50_000)];
+        let projections: Vec<String> = vec!["x".repeat(50_000)];
+        let inputs: Vec<LabelInput> = digests
+            .iter()
+            .zip(projections.iter())
+            .map(|(d, p)| LabelInput {
+                digest: d,
+                projection: p,
+            })
+            .collect();
+        let outcome = label_sessions(
+            &client,
+            "test-model",
+            &inputs,
+            &ProjectionCaps::default(),
+            &InsightsBudget::default(),
+        )
+        .await;
+        assert_eq!(outcome.status, vec![LabelStatus::Labelled]);
+        let responses: Vec<_> = server
+            .requests()
+            .into_iter()
+            .filter(|e| e.path == "/v1/responses")
+            .collect();
+        assert_eq!(responses.len(), 3, "2 chunk calls + 1 facet call");
+        for entry in responses {
+            let body = entry.body.expect("each call carries a JSON body");
+            assert_eq!(
+                body.get("max_output_tokens"),
+                Some(&json!(4096)),
+                "each facet/chunk call must carry the shared output cap (4096)"
             );
         }
     }

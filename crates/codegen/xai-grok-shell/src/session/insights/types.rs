@@ -180,6 +180,45 @@ pub const FRICTION_VARIANTS: &[Friction] = &[
     Friction::ExternalIssue,
 ];
 
+/// The budget + control knobs item 8's functions consume (SOT §7; 8a's
+/// R-budget). One pure home — 8b/8c consume the SAME struct (they do not split
+/// it). Item 5 (deferred) later populates it from the `[insights.*]` CLI
+/// values; 8a's tests construct it directly with known values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InsightsBudget {
+    /// The total model-call ceiling (facet + chunk, the shared guard counter). 208.
+    pub max_calls: usize,
+    /// The per-session chunk-call ceiling (the digest's `ChunkCapHit`). 4.
+    pub max_chunk_calls_per_session: usize,
+    /// The run-level chunk-call backstop. 160.
+    pub max_chunk_calls_per_run: usize,
+    /// The cost ceiling in USD ticks (≈ 3.29e10, §6 :940-990).
+    pub max_cost_ticks: i64,
+    /// The session-label ceiling (`label.max_sessions`). 40.
+    pub max_sessions: usize,
+    /// The shared model-output cap (`narrate.max_tokens`). 4096.
+    pub max_tokens: u32,
+    /// The in-flight bound (`label.concurrency`) — the cost-overshoot bound. 8.
+    pub concurrency: usize,
+    /// The warm-run floor; must not be tuned below it. 8.
+    pub confirm_above_calls: usize,
+}
+
+impl Default for InsightsBudget {
+    fn default() -> Self {
+        Self {
+            max_calls: 208,
+            max_chunk_calls_per_session: 4,
+            max_chunk_calls_per_run: 160,
+            max_cost_ticks: 32_900_000_000,
+            max_sessions: 40,
+            max_tokens: 4096,
+            concurrency: 8,
+            confirm_above_calls: 8,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! T-16 (SDD §12): the six facet variant sets are closed and are exactly
