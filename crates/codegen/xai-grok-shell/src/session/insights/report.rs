@@ -8,10 +8,13 @@
 //! bar-family chart cards (rule-1 global-max bars, rule-2 display names,
 //! rule-4 stated N, rule-6 per-row session ids on the model-derived three;
 //! the rule-5 placeholder when a chart's map is empty), rule 8's
-//! concurrency card and the two scalar cards still rule-5 placeholders
-//! (item 3c), the suggestions/clipboard block, and the footer: §9 rule 3's
+//! concurrency card (one bar, explicit-0, its own denominator instead of a
+//! rule-4 N), and the two scalar cards (the cost total and the
+//! transcript-derived lines-changed count), the suggestions/clipboard
+//! block, and the footer: §9 rule 3's
 //! four counters
 //! with the identity equations holding on the printed numbers, the
+//! medians (rule 6's upper median, named in the label), the
 //! `capped_by` attribution read from `Totals::capped_by` (T-12(i)), the
 //! `report.json` link, the window, the `GROK_HOME` root, the `--project`
 //! scope with its surviving count, and §10's foreign-write disclosure.
@@ -32,8 +35,9 @@ use std::collections::BTreeMap;
 use html_escape::{encode_double_quoted_attribute, encode_text};
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 
-use super::aggregate::{Aggregate, AnalyzedSession, Totals};
+use super::aggregate::{Aggregate, AnalyzedSession, Medians, Totals};
 use super::types::{CappedBy, Friction, Outcome};
+use crate::extensions::notification::USD_TICKS_PER_USD;
 
 /// The inline clipboard script (`session/templates/insights_report.js`):
 /// plain ES2019, no build step, run under the document's CSP
@@ -61,8 +65,8 @@ const SECTION_CARDS: [(&str, &str); 7] = [
 ];
 
 /// The seven chart cards, in report order. Item 3b fills the four
-/// bar-family cards; rule 8's concurrency card and the two scalar cards
-/// stay rule-5 placeholders for item 3c.
+/// bar-family cards; item 3c fills rule 8's concurrency card and the two
+/// scalar cards.
 const CHART_CARDS: [(&str, &str); 7] = [
     ("chart-friction", "Friction (model-estimated)"),
     ("chart-outcome", "Outcome (model-estimated)"),
@@ -234,9 +238,10 @@ pub fn render_report(aggregate: &Aggregate, ctx: &ReportContext) -> String {
     }
 
     // Rule 1: every bar normalises to the report's GLOBAL max across the
-    // four bar families (rule 8's concurrency bar joins the same max when
-    // item 3c lands), so a 3-next-to-4 pair on one card never invites a
-    // ratio comparison another card's scale cannot support.
+    // four bar families and rule 8's concurrency bar, so a 3-next-to-4
+    // pair on one card never invites a ratio comparison another card's
+    // scale cannot support. The cost and lines-changed scalars are not
+    // bars and do not join this max.
     let bar_max = aggregate
         .friction
         .values()
@@ -245,7 +250,8 @@ pub fn render_report(aggregate: &Aggregate, ctx: &ReportContext) -> String {
         .chain(aggregate.hour_histogram.values())
         .copied()
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .max(aggregate.max_concurrent_sessions);
     let norm_max = bar_max.max(1);
 
     // Rule 6 (T-6(d)): the session ids behind each model-derived bar,
@@ -314,27 +320,30 @@ pub fn render_report(aggregate: &Aggregate, ctx: &ReportContext) -> String {
         })
         .collect();
 
-    // The seven chart cards. Item 3b fills the four bar-family cards;
-    // rule 8's concurrency card and the two scalar cards stay rule-5
-    // placeholders for item 3c.
+    // The seven chart cards: the four bar families keep the rule-1/2/4/6
+    // bar render; rule 8's concurrency card and the two scalar cards
+    // (item 3c) render through their own dedicated paths, each always
+    // rendering its value (0 is an explicit value, not "No data").
     for (anchor, display) in CHART_CARDS {
         html.push_str("<section class=\"card chart\" id=\"");
         html.push_str(&encode_double_quoted_attribute(anchor));
         html.push_str("\"><h2>");
         html.push_str(&encode_text(display));
         html.push_str("</h2>");
-        let rows: &[Bar] = match anchor {
-            "chart-friction" => &friction_rows,
-            "chart-outcome" => &outcome_rows,
-            "chart-goal-categories" => &goal_rows,
-            "chart-hours-utc" => &hour_rows,
-            _ => &[],
-        };
-        push_bar_chart(&mut html, norm_max, rows);
+        match anchor {
+            "chart-friction" => push_bar_chart(&mut html, norm_max, &friction_rows),
+            "chart-outcome" => push_bar_chart(&mut html, norm_max, &outcome_rows),
+            "chart-goal-categories" => push_bar_chart(&mut html, norm_max, &goal_rows),
+            "chart-hours-utc" => push_bar_chart(&mut html, norm_max, &hour_rows),
+            "chart-concurrency" => push_concurrency_card(&mut html, norm_max, aggregate),
+            "chart-cost" => push_cost_card(&mut html, totals),
+            "chart-lines-changed" => push_lines_changed_card(&mut html, totals),
+            _ => push_bar_chart(&mut html, norm_max, &[]),
+        }
         html.push_str("</section>");
     }
 
-    push_footer(&mut html, totals, clean, ctx);
+    push_footer(&mut html, totals, &aggregate.medians, clean, ctx);
 
     // The inline clipboard script, verbatim (SDD §9).
     html.push_str("<script>");
@@ -378,10 +387,17 @@ fn push_suggestions_block(html: &mut String, suggestions: &[String]) {
 }
 
 /// §9 rule 3's footer: the four counters with the identity equations
-/// holding on the printed numbers, the `capped_by` attribution (T-12(i)),
-/// the `report.json` link, the window, the root, the scope and the §10
+/// holding on the printed numbers, the medians (rule 6's upper median,
+/// named in the label), the `capped_by` attribution (T-12(i)), the
+/// `report.json` link, the window, the root, the scope and the §10
 /// foreign-write disclosure.
-fn push_footer(html: &mut String, totals: &Totals, clean: u32, ctx: &ReportContext) {
+fn push_footer(
+    html: &mut String,
+    totals: &Totals,
+    medians: &Medians,
+    clean: u32,
+    ctx: &ReportContext,
+) {
     html.push_str("<footer class=\"footer\">");
     html.push_str("<p>Scanned ");
     push_num(html, totals.sessions_scanned);
@@ -396,6 +412,14 @@ fn push_footer(html: &mut String, totals: &Totals, clean: u32, ctx: &ReportConte
     html.push_str(", self-excluded ");
     push_num(html, totals.sessions_self_excluded);
     html.push_str(".</p>");
+
+    // Rule 6: the medians are CC's upper median (sorted[floor(n/2)]), not
+    // the midpoint average — the name sits in the label.
+    html.push_str("<p>Median response time (upper median): ");
+    push_num(html, medians.response_time_secs);
+    html.push_str(" s. Median wall time (upper median): ");
+    push_num(html, medians.wall_time_mins);
+    html.push_str(" m.</p>");
 
     if !totals.capped_by.is_empty() {
         html.push_str("<p>Capped by: ");
@@ -429,7 +453,7 @@ fn push_footer(html: &mut String, totals: &Totals, clean: u32, ctx: &ReportConte
 
 /// The blanket escape discipline reaches numbers too (SDD §9): every
 /// interpolated value crosses the template boundary through `encode_text`.
-fn push_num(html: &mut String, value: u32) {
+fn push_num<T: ToString>(html: &mut String, value: T) {
     html.push_str(&encode_text(&value.to_string()));
 }
 
@@ -531,6 +555,66 @@ fn push_bar_chart(html: &mut String, norm_max: u32, rows: &[Bar]) {
         html.push_str("%\"></div></div>");
     }
     html.push_str("</div>");
+}
+
+/// §9 rule 8's card: the peak-concurrent-sessions bar, always rendered
+/// (0 is an explicit value, not "No data"), normalised to the report's
+/// global max (rule 1 — it joined it in item 3c). It states its OWN
+/// denominator beside the bar — `interval_readable_sessions`, the
+/// sessions the sweep could read an interval for — instead of a rule-4
+/// N, which rule 8 explicitly exempts it from: a maximum cannot sum to a
+/// session count, and the NoTimeAxis sessions sit outside the
+/// denominator, so the peak is under-counted, not accurate. It is not a
+/// model-derived row, so it carries no per-row session ids (T-6(d) does
+/// not apply).
+fn push_concurrency_card(html: &mut String, norm_max: u32, aggregate: &Aggregate) {
+    let value = aggregate.max_concurrent_sessions;
+    html.push_str("<div class=\"bars\"><div class=\"bar-row\">");
+    html.push_str("<span class=\"bar-label\">");
+    html.push_str(&encode_text("peak concurrent sessions (within 30 min)"));
+    html.push_str("</span><span class=\"bar-value\">");
+    push_num(html, value);
+    html.push_str("</span><div class=\"bar-fill\" style=\"width:");
+    // Rule 1: the same one-decimal formula as the bar families.
+    let pct = (value as f64 / norm_max as f64 * 1000.0).round() / 10.0;
+    html.push_str(&encode_double_quoted_attribute(&pct.to_string()));
+    html.push_str("%\"></div></div>");
+    html.push_str("<p class=\"chart-denominator\">Denominator: ");
+    push_num(html, aggregate.interval_readable_sessions);
+    html.push_str(
+        " sessions with a readable interval (sessions without \
+one sit outside it — the peak is under-counted, not accurate).</p></div>",
+    );
+}
+
+/// The scalar cost card: `totals.cost_ticks` rendered as a dollar amount
+/// at the SOT's 1e10 ticks = $1 rate, always rendered (0 → "$0.00" — a
+/// real value, not "No data"). Rule 6: when `cost_is_partial`, the total
+/// hides unpriced calls (§6's U-4), and the caveat says what the number
+/// is derived from. A scalar states no rule-4 N and carries no session
+/// ids.
+fn push_cost_card(html: &mut String, totals: &Totals) {
+    let usd = totals.cost_ticks as f64 / USD_TICKS_PER_USD;
+    html.push_str("<p class=\"scalar-value\">$");
+    html.push_str(&encode_text(&format!("{usd:.2}")));
+    html.push_str("</p>");
+    if totals.cost_is_partial {
+        html.push_str(
+            "<p class=\"scalar-caveat\">The total includes \
+unpriced calls (partial cost).</p>",
+        );
+    }
+}
+
+/// The scalar lines-changed card: `totals.lines_changed` rendered as the
+/// count, always rendered (0 → "0" — a real value, not "No data"). The
+/// rule-6 "transcript-derived" qualifier lives in the card's title
+/// (`CHART_CARDS`) and survives: the count includes rejected edits, so
+/// it may visibly disagree with the harness's accepted-line accounting.
+fn push_lines_changed_card(html: &mut String, totals: &Totals) {
+    html.push_str("<p class=\"scalar-value\">");
+    html.push_str(&encode_text(&totals.lines_changed.to_string()));
+    html.push_str("</p>");
 }
 
 /// Renders a section body (Markdown, model-supplied) to HTML, escaping
@@ -1042,6 +1126,38 @@ mod tests {
         ids.iter().copied().collect()
     }
 
+    /// The scalar card's value text — the text of its
+    /// `<p class="scalar-value">` (the cost and lines-changed cards).
+    fn scalar_value_of<'a>(html: &'a str, anchor: &str) -> &'a str {
+        let card = chart_card_of(html, anchor);
+        let marker = "<p class=\"scalar-value\">";
+        let start = card
+            .find(marker)
+            .unwrap_or_else(|| panic!("chart {anchor}: scalar value missing"));
+        let rest = &card[start + marker.len()..];
+        let end = rest.find('<').expect("scalar text node end");
+        &rest[..end]
+    }
+
+    /// The bar-fill width (as rendered, one decimal, without the `%`) of
+    /// the bar whose label is `label` in chart `anchor` — rule 1's
+    /// normalisation, asserted directly.
+    fn bar_width_of(html: &str, anchor: &str, label: &str) -> f64 {
+        let card = chart_card_of(html, anchor);
+        let label_html = format!("<span class=\"bar-label\">{}</span>", encode_text(label));
+        for row in card.split("<div class=\"bar-row\"").skip(1) {
+            if !row.contains(&label_html) {
+                continue;
+            }
+            let marker = "bar-fill\" style=\"width:";
+            let start = row.find(marker).expect("bar-fill present");
+            let rest = &row[start + marker.len()..];
+            let end = rest.find('%').expect("percent sign");
+            return rest[..end].parse::<f64>().expect("width is a number");
+        }
+        panic!("bar {label} missing in {anchor}");
+    }
+
     // --- T-6(b): chart-N reconciliation (rule 4). Driver ruling
     //     (2026-10-03, coordinator): T-6(b) covers the OUTCOME family
     //     only — the single bar family whose summed bar values reconcile
@@ -1438,6 +1554,305 @@ mod tests {
         assert!(
             !footer.contains("/report.json"),
             "must not be an absolute path"
+        );
+    }
+
+    // --- Item 3c: T-6(c) (rule 8's single concurrency bar — explicit-0,
+    //     its own denominator, exempt from rule 4, no session ids), the
+    //     cost and lines-changed scalars, the footer medians (rule 6's
+    //     upper median, named in the label), and the concurrency bar
+    //     joining rule 1's global max. ---
+
+    #[test]
+    fn t6c_concurrency_card_renders_its_bar_label_and_denominator() {
+        // 7 analysed, of which 5 the sweep could read an interval for
+        // (2 NoTimeAxis sit outside the denominator); peak 3.
+        let mut aggregate = chart_aggregate(
+            7,
+            1,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+        aggregate.max_concurrent_sessions = 3;
+        aggregate.interval_readable_sessions = 5;
+
+        let html = render_report(&aggregate, &test_ctx(None, &[]));
+        let card = chart_card_of(&html, "chart-concurrency");
+        // (1) the bar exists — not the rule-5 placeholder...
+        assert!(card.contains("bar-row"), "concurrency bar missing: {card}");
+        assert!(
+            !card.contains("No data"),
+            "a real value must not be the placeholder"
+        );
+        // (2) ...labelled byte-for-byte per rule 8.
+        assert_eq!(
+            chart_bar_labels(&html, "chart-concurrency"),
+            vec!["peak concurrent sessions (within 30 min)"],
+            "the bar must carry rule 8's exact label"
+        );
+        // (3) the value renders...
+        assert_eq!(
+            chart_bar_values(&html, "chart-concurrency"),
+            vec![3],
+            "the bar must show max_concurrent_sessions"
+        );
+        // (4) ...and the card prints its OWN denominator beside the bar —
+        //     the 5 sessions the sweep could read an interval for — not
+        //     the 7 analysed (the 2 NoTimeAxis sessions sit outside it,
+        //     so the peak is under-counted, not accurate).
+        assert!(
+            card.contains("Denominator: 5"),
+            "the interval_readable_sessions denominator is missing: {card}"
+        );
+        assert!(
+            !card.contains("Denominator: 7"),
+            "the card must state the sweep's denominator, not sessions_analyzed"
+        );
+        // Rule 8 is explicitly exempt from rule 4: a maximum cannot sum
+        // to a session count, so the card states no rule-4 N...
+        assert!(
+            !card.contains("N = "),
+            "the concurrency card is exempt from rule 4's N-reconciliation"
+        );
+        // ...and it is not a model-derived row: no per-row session ids
+        // (T-6(d) does not apply).
+        assert!(
+            !card.contains("data-sessions"),
+            "the concurrency bar carries no per-row session ids"
+        );
+    }
+
+    #[test]
+    fn t6c_concurrency_zero_renders_explicit_zero() {
+        // The zero case: no session had a readable interval, so the peak
+        // is 0 — an explicit value, not "No data" (rule 8).
+        let aggregate = chart_aggregate(
+            0,
+            0,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+
+        let html = render_report(&aggregate, &test_ctx(None, &[]));
+        let card = chart_card_of(&html, "chart-concurrency");
+        assert!(
+            !card.contains("No data"),
+            "the zero peak is an explicit value, not no-data"
+        );
+        assert!(card.contains("bar-row"), "the bar must still render at 0");
+        assert_eq!(
+            chart_bar_values(&html, "chart-concurrency"),
+            vec![0],
+            "the zero peak must render as 0"
+        );
+        assert!(
+            card.contains("Denominator: 0"),
+            "the denominator line must render at 0 too"
+        );
+    }
+
+    #[test]
+    fn cost_scalar_renders_the_dollar_amount_not_the_tick_count() {
+        let mut aggregate = chart_aggregate(
+            3,
+            0,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+        // 1e10 ticks = $1: half of that renders as $0.50.
+        aggregate.totals.cost_ticks = 5_000_000_000;
+
+        let html = render_report(&aggregate, &test_ctx(None, &[]));
+        let card = chart_card_of(&html, "chart-cost");
+        assert!(!card.contains("No data"), "a cost total is always rendered");
+        assert_eq!(
+            scalar_value_of(&html, "chart-cost"),
+            "$0.50",
+            "cost_ticks must render as a dollar amount at 1e10 ticks = $1"
+        );
+        assert!(
+            !card.contains("5000000000"),
+            "the raw tick count must not reach the card"
+        );
+    }
+
+    #[test]
+    fn cost_scalar_zero_renders_explicit_zero() {
+        // 0 ticks is a real total: $0.00, not the placeholder.
+        let aggregate = chart_aggregate(
+            3,
+            0,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+
+        let html = render_report(&aggregate, &test_ctx(None, &[]));
+        let card = chart_card_of(&html, "chart-cost");
+        assert!(
+            !card.contains("No data"),
+            "$0.00 is an explicit value, not no-data"
+        );
+        assert_eq!(scalar_value_of(&html, "chart-cost"), "$0.00");
+    }
+
+    #[test]
+    fn cost_scalar_partial_total_flags_the_unpriced_calls() {
+        let mut aggregate = chart_aggregate(
+            3,
+            0,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+        aggregate.totals.cost_ticks = 2_000_000_000;
+        aggregate.totals.cost_is_partial = true;
+
+        let html = render_report(&aggregate, &test_ctx(None, &[]));
+        let card = chart_card_of(&html, "chart-cost");
+        // Rule 6: the caveat says what the number is derived from — the
+        // total hides unpriced calls (§6's U-4).
+        assert!(
+            card.contains("unpriced"),
+            "a partial cost must caveat its unpriced calls: {card}"
+        );
+    }
+
+    #[test]
+    fn cost_scalar_full_total_states_no_caveat() {
+        // A full (non-partial) total carries no unpriced-calls caveat.
+        let aggregate = chart_aggregate(
+            3,
+            0,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+
+        let html = render_report(&aggregate, &test_ctx(None, &[]));
+        let card = chart_card_of(&html, "chart-cost");
+        assert!(
+            !card.contains("unpriced"),
+            "a full total must not carry the partial-cost caveat"
+        );
+    }
+
+    #[test]
+    fn lines_changed_scalar_renders_the_count_with_its_label() {
+        let mut aggregate = chart_aggregate(
+            3,
+            0,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+        aggregate.totals.lines_changed = 42;
+
+        let html = render_report(&aggregate, &test_ctx(None, &[]));
+        let card = chart_card_of(&html, "chart-lines-changed");
+        assert!(
+            !card.contains("No data"),
+            "a lines-changed count is always rendered"
+        );
+        assert_eq!(
+            scalar_value_of(&html, "chart-lines-changed"),
+            "42",
+            "the count must render as the number"
+        );
+        // Rule 6: the count is transcript-derived (it includes rejected
+        // edits), and the label must survive.
+        assert!(
+            card.contains("transcript-derived"),
+            "the transcript-derived label must survive: {card}"
+        );
+    }
+
+    #[test]
+    fn lines_changed_scalar_zero_renders_explicit_zero() {
+        let aggregate = chart_aggregate(
+            3,
+            0,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+
+        let html = render_report(&aggregate, &test_ctx(None, &[]));
+        let card = chart_card_of(&html, "chart-lines-changed");
+        assert!(
+            !card.contains("No data"),
+            "0 is an explicit value, not no-data"
+        );
+        assert_eq!(scalar_value_of(&html, "chart-lines-changed"), "0");
+    }
+
+    #[test]
+    fn medians_render_named_as_the_upper_median() {
+        let mut aggregate = chart_aggregate(
+            3,
+            0,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+        // CC's sorted[floor(n/2)] — the UPPER median, not the midpoint
+        // average — must be named in the label (rule 6).
+        aggregate.medians.response_time_secs = 17;
+        aggregate.medians.wall_time_mins = 9;
+
+        let html = render_report(&aggregate, &test_ctx(None, &[]));
+        let footer = footer_of(&html);
+        assert!(
+            footer.contains("Median response time (upper median): 17 s"),
+            "the response-time median must render, named as the upper median: {footer}"
+        );
+        assert!(
+            footer.contains("Median wall time (upper median): 9 m"),
+            "the wall-time median must render, named as the upper median: {footer}"
+        );
+    }
+
+    #[test]
+    fn rule1_concurrency_bar_joins_the_report_global_max() {
+        // The concurrency peak is the report's global max (5) while the
+        // friction family's max is lower (3): on the SAME scale the peak
+        // renders at 100% and the family bar below it — excluding the
+        // peak from bar_max would render the peak at 166.7%.
+        let friction = friction_map(&[(Friction::BuggyCode, 3)]);
+        let mut aggregate = chart_aggregate(
+            3,
+            0,
+            friction,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        );
+        aggregate.max_concurrent_sessions = 5;
+        aggregate.interval_readable_sessions = 7;
+
+        let html = render_report(&aggregate, &test_ctx(None, &[]));
+        let peak = bar_width_of(
+            &html,
+            "chart-concurrency",
+            "peak concurrent sessions (within 30 min)",
+        );
+        let family = bar_width_of(&html, "chart-friction", "buggy code");
+        assert_eq!(peak, 100.0, "the global max must render at 100%");
+        assert!(
+            family < 100.0,
+            "a lower family bar must render below the global max"
         );
     }
 }
