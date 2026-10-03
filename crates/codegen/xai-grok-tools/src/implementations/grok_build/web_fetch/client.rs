@@ -61,7 +61,13 @@ impl WebFetchClient {
         // URL keeps the direct HTTP fetch. (apex-blvg-A: an empty
         // internal_host_allowlist is NOT inert — it routes the whole public
         // web to Gemini, so no warn is due there.)
-        if params.url_context() && gemini.is_none() {
+        // (apex-blvg-C3: this warn is for EXPLICIT opt-in only. The baked
+        // url_context=true default (no operator action; the accessor
+        // resolves None to true) stays silent when there is no Gemini
+        // backend — inert without a backend, nothing to inform the
+        // operator about — while an operator who explicitly sets
+        // url_context=true with no backend still gets the one-time warning.)
+        if matches!(params.url_context, Some(true)) && gemini.is_none() {
             tracing::warn!(
                 "web_fetch url_context is enabled but no web_search client is available; urlContext routing is inert"
             );
@@ -2179,5 +2185,96 @@ mod tests {
             reqs.is_empty(),
             "explicit-off must never call the Gemini wire"
         );
+    }
+
+    // ── inert-routing warn gating (apex-blvg-C3) ─────────────────────────
+
+    /// In-memory `io::Write` sink for the warn-capture subscriber below.
+    /// `Arc<Mutex<..>>` because `tracing::subscriber::with_default` bounds
+    /// the subscriber on `Send + Sync + 'static`.
+    struct WarnSink(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for WarnSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("warn sink not poisoned")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct WarnCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl tracing_subscriber::fmt::MakeWriter<'_> for WarnCapture {
+        type Writer = WarnSink;
+
+        fn make_writer(&self) -> Self::Writer {
+            WarnSink(self.0.clone())
+        }
+    }
+
+    /// Run `f` under a thread-local fmt subscriber that captures WARN+
+    /// events into `sink` (minimal in-test subscriber; the crate has no
+    /// tracing-test dependency).
+    fn uc_capture<R>(sink: &Arc<std::sync::Mutex<Vec<u8>>>, f: impl FnOnce() -> R) -> R {
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(WarnCapture(sink.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, f)
+    }
+
+    #[test]
+    fn uc_warn_fires_only_for_explicit_opt_in_baked_default_silent() {
+        // (apex-blvg-C3) pin the warn-gating decision: the inert-routing
+        // warn fires ONLY when the operator EXPLICITLY set url_context=true
+        // with no gemini backend; the baked url_context=true default (the
+        // Option field is None, which the accessor resolves to true) stays
+        // SILENT — it is inert without a backend and the operator enabled
+        // nothing, so there is no operator action to inform.
+        const WARN_MSG: &str = "web_fetch url_context is enabled but no web_search client is available; urlContext routing is inert";
+        let sink = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        // Explicit opt-in: url_context = Some(true) + gemini = None → warn.
+        let explicit = WebFetchParams {
+            url_context: Some(true),
+            ..WebFetchParams::default()
+        };
+        let explicit_client = uc_capture(&sink, || {
+            WebFetchClient::new(&explicit, None).expect("client builds")
+        });
+        let bytes: Vec<u8> = sink.lock().expect("warn sink not poisoned").clone();
+        let out = String::from_utf8_lossy(&bytes);
+        assert!(
+            out.contains(WARN_MSG),
+            "explicit url_context=true with no gemini backend must warn; got: {out:?}"
+        );
+
+        // Baked default: url_context = None (accessor resolves to true) +
+        // gemini = None → silent (the zero-touch Mac/npm startup the bake
+        // must not alarm).
+        sink.lock().expect("warn sink not poisoned").clear();
+        let baked = WebFetchParams::default();
+        let baked_client = uc_capture(&sink, || {
+            WebFetchClient::new(&baked, None).expect("client builds")
+        });
+        let bytes: Vec<u8> = sink.lock().expect("warn sink not poisoned").clone();
+        let out = String::from_utf8_lossy(&bytes);
+        assert!(
+            !out.contains(WARN_MSG),
+            "the baked url_context default must stay silent; got: {out:?}"
+        );
+
+        // Routing is identical in both cases (direct) — only the warn
+        // differs; the gating is pinned by the condition, not the log.
+        let public = Url::parse("https://example.com/").unwrap();
+        assert!(!explicit_client.uses_url_context(&public));
+        assert!(!baked_client.uses_url_context(&public));
     }
 }
