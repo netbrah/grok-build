@@ -16,6 +16,7 @@
 
 pub mod aggregate;
 pub mod digest;
+pub mod report;
 pub mod types;
 
 pub use digest::{

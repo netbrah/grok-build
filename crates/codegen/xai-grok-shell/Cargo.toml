@@ -56,6 +56,8 @@ jsonschema = { workspace = true }
 futures = { workspace = true }
 glob = { workspace = true }
 globset = { workspace = true }
+html-escape = { workspace = true }
+pulldown-cmark = { workspace = true }
 kanal = "0.1"
 regex = { workspace = true }
 # rmcp 2.1 + reqwest 0.13 are quarantined inside `xai-grok-mcp`. The remaining
