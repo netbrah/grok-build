@@ -1,10 +1,11 @@
-//! Item 2's pure, facet-free aggregation: per-session digests → [`Aggregate`]
+//! Item 2's pure aggregation: per-session digests → [`Aggregate`]
 //! (SDD §4 module layout, §13 item 2).
 //!
 //! This is the pure half of item 2. It reads no storage, makes no model call, and
-//! defines none of the six facet enums — [`Aggregate`] carries the six facet-free
-//! fields only; the `friction`/`outcomes` maps and their enums land with item 2b.
-//! What it computes:
+//! defines none of the six facet enums — the `Friction`/`Outcome` enums the
+//! `friction`/`outcomes` maps are keyed by stay in `types` (item 1's types
+//! cycle); this file only carries the maps and the per-session facts that feed
+//! them. What it computes:
 //! - [`Totals`] — §11's footer counters, with the two identity equations holding
 //!   by construction (`scanned = analyzed + excluded + self_excluded`);
 //! - [`Medians`] — §9 rule 6's upper median `sorted[floor(n/2)]`, applied by name;
@@ -13,11 +14,12 @@
 //!   clipped to [`CONCURRENCY_WINDOW_SECS`]; `NoTimeAxis` sessions sit outside the
 //!   denominator (T-4 pins the boundary).
 //!
-//! The per-session facts only the labeller knows (the `partial` badge and the goal
-//! categories) arrive on [`AnalyzedSession`], not on the digest: §11 warns that
+//! The per-session facts only the labeller knows (the `partial` badge, the goal
+//! categories, the per-facet friction counts and the outcome) arrive on
+//! [`AnalyzedSession`], not on the digest: §11 warns that
 //! `partial` is "any badge rendered, whatever the cause" — six causes, four with
 //! no [`DegradedTier`] variant — so it cannot be derived from the digest alone.
-//! Item 8 supplies it; item 4 (the reader) supplies the excluded / self-excluded
+//! Item 8 supplies them; item 4 (the reader) supplies the excluded / self-excluded
 //! counts. Item 3 (the renderer) reads [`Aggregate`].
 
 use std::collections::BTreeMap;
@@ -25,14 +27,16 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use super::digest::{DegradedTier, SessionDigest};
+use super::types::{Friction, Outcome};
 
 /// §9 rule 8's window: a session counts toward the concurrency peak only within
 /// this many seconds of its start. A named const, not a knob — the same treatment
 /// this spec gives its own `IDLE_GAP_SECS` (SDD §12 T-4).
 pub const CONCURRENCY_WINDOW_SECS: i64 = 1800;
 
-/// The pure aggregation output the renderer (item 3) reads. The six facet-free
-/// fields; `friction`/`outcomes` and their enums are item 2b's, not this file's.
+/// The pure aggregation output the renderer (item 3) reads: the facet-free
+/// counters plus the two chart-ordered facet maps; the `Friction`/`Outcome`
+/// enums they are keyed by stay in `types` (item 1's types cycle).
 #[derive(Debug, Clone, Serialize)]
 pub struct Aggregate {
     /// §11's footer counters; its field names ARE the footer terms.
@@ -48,6 +52,10 @@ pub struct Aggregate {
     pub hour_histogram: BTreeMap<u8, u32>,
     /// Chart-ordered, not insertion-ordered.
     pub goal_categories: BTreeMap<String, u32>,
+    /// Chart-ordered, not insertion-ordered (item 2b).
+    pub friction: BTreeMap<Friction, u32>,
+    /// Chart-ordered, not insertion-ordered (item 2b).
+    pub outcomes: BTreeMap<Outcome, u32>,
 }
 
 /// §11's footer counters.
@@ -85,7 +93,7 @@ pub struct Medians {
 }
 
 /// One rendered session as the pure [`aggregate`] sees it: its digest plus the
-/// two per-session facts only the labeller (item 8) knows. Bundled so the caller
+/// four per-session facts only the labeller (item 8) knows. Bundled so the caller
 /// cannot supply a badge for one session against another's digest.
 #[derive(Debug)]
 pub struct AnalyzedSession<'a> {
@@ -97,6 +105,15 @@ pub struct AnalyzedSession<'a> {
     pub partial: bool,
     /// Goal categories (free strings, §5 — not the facet enums).
     pub goal_categories: &'a [String],
+    /// The session's per-facet friction counts (an empty map when the session
+    /// has no labelled friction or is badged; contributes nothing).
+    pub friction_counts: &'a BTreeMap<Friction, u32>,
+    /// The session's labelled outcome; `None` when the session was not labelled
+    /// (badged / unlabelled), which contributes nothing to `outcomes`. A single
+    /// primary outcome per session: §5's `SessionFacets.outcome` is a plain
+    /// `Outcome`, but a badged session has no `SessionFacets` at all, hence
+    /// `Option` here.
+    pub outcome: Option<Outcome>,
 }
 
 /// Everything the pure [`aggregate`] needs. Plain data — no I/O, no model call
@@ -172,6 +189,20 @@ pub fn aggregate(input: &AggregateInput<'_>) -> Aggregate {
         }
     }
 
+    let mut friction: BTreeMap<Friction, u32> = BTreeMap::new();
+    for s in analyzed {
+        for (f, c) in s.friction_counts {
+            *friction.entry(*f).or_insert(0) += c;
+        }
+    }
+
+    let mut outcomes: BTreeMap<Outcome, u32> = BTreeMap::new();
+    for s in analyzed {
+        if let Some(o) = s.outcome {
+            *outcomes.entry(o).or_insert(0) += 1;
+        }
+    }
+
     let (max_concurrent_sessions, interval_readable_sessions) = concurrency_sweep(analyzed);
 
     Aggregate {
@@ -195,6 +226,8 @@ pub fn aggregate(input: &AggregateInput<'_>) -> Aggregate {
         interval_readable_sessions,
         hour_histogram,
         goal_categories,
+        friction,
+        outcomes,
     }
 }
 
@@ -253,6 +286,7 @@ mod tests {
 
     use super::{AggregateInput, AnalyzedSession, CONCURRENCY_WINDOW_SECS, aggregate};
     use crate::session::insights::digest::{CACHE_SCHEMA_VERSION, DegradedTier, SessionDigest};
+    use crate::session::insights::types::{Friction, Outcome};
 
     fn check<T: std::fmt::Debug + PartialEq>(name: &str, got: &T, want: &T) {
         assert_eq!(got, want, "field `{name}`");
@@ -424,31 +458,43 @@ mod tests {
             digest: &a,
             partial: false,
             goal_categories: &[],
+            friction_counts: &BTreeMap::new(),
+            outcome: None,
         };
         let sb = AnalyzedSession {
             digest: &b,
             partial: false,
             goal_categories: &[],
+            friction_counts: &BTreeMap::new(),
+            outcome: None,
         };
         let sc = AnalyzedSession {
             digest: &c,
             partial: false,
             goal_categories: &[],
+            friction_counts: &BTreeMap::new(),
+            outcome: None,
         };
         let sd = AnalyzedSession {
             digest: &d,
             partial: false,
             goal_categories: &[],
+            friction_counts: &BTreeMap::new(),
+            outcome: None,
         };
         let se = AnalyzedSession {
             digest: &e,
             partial: false,
             goal_categories: &[],
+            friction_counts: &BTreeMap::new(),
+            outcome: None,
         };
         let sf = AnalyzedSession {
             digest: &f,
             partial: true,
             goal_categories: &[],
+            friction_counts: &BTreeMap::new(),
+            outcome: None,
         };
 
         let input = AggregateInput {
@@ -549,21 +595,29 @@ mod tests {
             digest: &s1,
             partial: false,
             goal_categories: &[],
+            friction_counts: &BTreeMap::new(),
+            outcome: None,
         };
         let a2 = AnalyzedSession {
             digest: &s2,
             partial: true,
             goal_categories: &goals_2,
+            friction_counts: &BTreeMap::new(),
+            outcome: None,
         };
         let a3 = AnalyzedSession {
             digest: &s3,
             partial: true,
             goal_categories: &goals_3,
+            friction_counts: &BTreeMap::new(),
+            outcome: None,
         };
         let a4 = AnalyzedSession {
             digest: &s4,
             partial: false,
             goal_categories: &goals_4,
+            friction_counts: &BTreeMap::new(),
+            outcome: None,
         };
 
         let input = AggregateInput {
@@ -632,6 +686,147 @@ mod tests {
             "interval_readable_sessions",
             &agg.interval_readable_sessions,
             &4u32,
+        );
+    }
+
+    // --- friction + outcomes (item 2b: the two chart-ordered facet maps) ---
+    //
+    // (a) Labelled A `{BuggyCode:1, ToolFailed:1}` and B `{BuggyCode:2}` overlap
+    //     on `BuggyCode` -> `{BuggyCode:3, ToolFailed:1}`.
+    // (b) A and B are `PartiallyAchieved`, C is `FullyAchieved`
+    //     -> `{PartiallyAchieved:2, FullyAchieved:1}`.
+    // (c) D is badged/unlabelled (empty `friction_counts`, `outcome: None`) and
+    //     contributes nothing: the badged run's maps equal the unbadged run's —
+    //     a `None` outcome counted as a phantom outcome, or an empty map
+    //     contributing a key, would break the equality.
+    #[test]
+    fn friction_and_outcomes_aggregate_exactly_and_badged_sessions_contribute_nothing() {
+        let base = at("2026-01-01T00:00:00Z");
+        let t = |s: i64| base + Duration::seconds(s);
+
+        let da = digest(
+            "fa",
+            t(0),
+            t(100),
+            0,
+            0,
+            0,
+            None,
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let db = digest(
+            "fb",
+            t(200),
+            t(300),
+            0,
+            0,
+            0,
+            None,
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let dc = digest(
+            "fc",
+            t(400),
+            t(500),
+            0,
+            0,
+            0,
+            None,
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let dd = digest(
+            "fd",
+            t(600),
+            t(700),
+            0,
+            0,
+            0,
+            None,
+            false,
+            Vec::new(),
+            Vec::new(),
+            vec![DegradedTier::UnreadableLines],
+        );
+
+        let friction_a =
+            BTreeMap::from([(Friction::BuggyCode, 1u32), (Friction::ToolFailed, 1u32)]);
+        let friction_b = BTreeMap::from([(Friction::BuggyCode, 2u32)]);
+        let friction_c: BTreeMap<Friction, u32> = BTreeMap::new();
+        let friction_d: BTreeMap<Friction, u32> = BTreeMap::new();
+
+        let sa = AnalyzedSession {
+            digest: &da,
+            partial: false,
+            goal_categories: &[],
+            friction_counts: &friction_a,
+            outcome: Some(Outcome::PartiallyAchieved),
+        };
+        let sb = AnalyzedSession {
+            digest: &db,
+            partial: false,
+            goal_categories: &[],
+            friction_counts: &friction_b,
+            outcome: Some(Outcome::PartiallyAchieved),
+        };
+        let sc = AnalyzedSession {
+            digest: &dc,
+            partial: false,
+            goal_categories: &[],
+            friction_counts: &friction_c,
+            outcome: Some(Outcome::FullyAchieved),
+        };
+        let sd = AnalyzedSession {
+            digest: &dd,
+            partial: true,
+            goal_categories: &[],
+            friction_counts: &friction_d,
+            outcome: None,
+        };
+
+        let mut want_friction: BTreeMap<Friction, u32> = BTreeMap::new();
+        want_friction.insert(Friction::BuggyCode, 3);
+        want_friction.insert(Friction::ToolFailed, 1);
+        let mut want_outcomes: BTreeMap<Outcome, u32> = BTreeMap::new();
+        want_outcomes.insert(Outcome::PartiallyAchieved, 2);
+        want_outcomes.insert(Outcome::FullyAchieved, 1);
+
+        // One array, sliced twice: `AnalyzedSession` is not `Copy`, so the
+        // locals move exactly once.
+        let sessions: [AnalyzedSession; 4] = [sa, sb, sc, sd];
+
+        // (a) + (b): the three labelled sessions aggregate exactly.
+        let agg3 = aggregate(&AggregateInput {
+            analyzed: &sessions[..3],
+            sessions_excluded: 0,
+            sessions_self_excluded: 0,
+        });
+        check("friction", &agg3.friction, &want_friction);
+        check("outcomes", &agg3.outcomes, &want_outcomes);
+
+        // (c): adding the badged/unlabelled session changes neither map.
+        let agg4 = aggregate(&AggregateInput {
+            analyzed: &sessions,
+            sessions_excluded: 0,
+            sessions_self_excluded: 0,
+        });
+        check(
+            "friction with badged session",
+            &agg4.friction,
+            &want_friction,
+        );
+        check(
+            "outcomes with badged session",
+            &agg4.outcomes,
+            &want_outcomes,
         );
     }
 }
