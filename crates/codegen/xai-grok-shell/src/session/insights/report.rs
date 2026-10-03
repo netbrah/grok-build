@@ -54,7 +54,7 @@ warn-only) — the run's one foreign write.";
 /// The seven section cards, in report order — the §7 ported-prompt names.
 /// Source of the TOC entries and the placeholder cards when `ctx.sections`
 /// is `None` (v1's no-model checkpoint).
-const SECTION_CARDS: [(&str, &str); 7] = [
+pub const SECTION_CARDS: [(&str, &str); 7] = [
     ("section-project-areas", "Project areas"),
     ("section-interaction-style", "Interaction style"),
     ("section-what-works", "What works"),
