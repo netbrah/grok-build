@@ -1,0 +1,334 @@
+//! The facet TYPE SPINE (SDD §5; item 1's second cycle): the shared pure
+//! types §4's diagram names in `insights/types.rs` — `CappedBy` and the six
+//! closed facet variant sets, with one `X_VARIANTS` const per set as the
+//! single source of truth. §7's JSON Schema `enum` arrays are built from
+//! the consts rather than typed beside the prompt, so the prompt and the
+//! type cannot drift; T-16 (SDD §12) asserts the closure, the order and
+//! the wire round-trip.
+//!
+//! Pure types only — no I/O, no orchestration. `SessionFacets` (item 8's
+//! `label.rs`) and `Aggregate`'s `friction`/`outcomes` fields (item 2b)
+//! consume these enums; neither is declared here.
+
+use serde::{Deserialize, Serialize};
+
+/// Which ceiling bound a run (SDD §5): the four members §11's fence comment
+/// enumerates. The `capped_by` field on `Totals` (item 3's) is the sorted,
+/// deduped `Vec<CappedBy>` that mirrors this one source into the footer and
+/// the `insights_generated` event; the TYPE is this cycle's, the field is
+/// item 3's.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum CappedBy {
+    Calls,
+    ChunkPerSession,
+    ChunkPerRun,
+    Cost,
+}
+
+// The six closed sets (SDD §5). All six carry the same derive line and the
+// same serde attribute; `rename_all` is what makes the Rust spelling and the
+// wire spelling agree, so `FullyAchieved` is `fully_achieved` on the wire
+// and in §7's schema without a rename per variant.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum Outcome {
+    FullyAchieved,
+    MostlyAchieved,
+    PartiallyAchieved,
+    NotAchieved,
+    UnclearFromTranscript,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum Helpfulness {
+    Unhelpful,
+    SlightlyHelpful,
+    ModeratelyHelpful,
+    VeryHelpful,
+    Essential,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionType {
+    SingleTask,
+    MultiTask,
+    IterativeRefinement,
+    Exploration,
+    QuickQuestion,
+}
+
+/// 8: the prompt's 7 plus `handled_complexity`, which the label map knows and the prompt does not.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SuccessMode {
+    None,
+    FastAccurateSearch,
+    CorrectCodeEdits,
+    GoodExplanations,
+    ProactiveHelp,
+    MultiFileChanges,
+    HandledComplexity,
+    GoodDebugging,
+}
+
+/// 8, not the prose's 5: the label map also carries `unsure`, `neutral` and `delighted`, and `Dt`
+/// charts `unsure`. `Dt`'s 6 are a subset of the label map's 8, so the union is the map's.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum Satisfaction {
+    Frustrated,
+    Dissatisfied,
+    LikelySatisfied,
+    Satisfied,
+    Happy,
+    Unsure,
+    Neutral,
+    Delighted,
+}
+
+/// 12, not the prose's 5. This is the widest of the six and the reason §5's "enums, not free
+/// strings" departure needed the sets written down before anyone could implement it.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum Friction {
+    MisunderstoodRequest,
+    WrongApproach,
+    BuggyCode,
+    UserRejectedAction,
+    ClaudeGotBlocked,
+    UserStoppedEarly,
+    WrongFileOrLocation,
+    ExcessiveChanges,
+    SlowOrVerbose,
+    ToolFailed,
+    UserUnclear,
+    ExternalIssue,
+}
+
+// The `X_VARIANTS` consts, one per set, are the single source of truth: §7's JSON Schema `enum`
+// arrays are built from them rather than typed beside the prompt, so prompt and type cannot
+// drift, and T-16 asserts against them. Each lists the FULL closed variant list of its set, in
+// §5 declaration order. (No const for `CappedBy`: it is not a facet variant set.)
+
+/// `Outcome` variants, in §5 declaration order.
+pub const OUTCOME_VARIANTS: &[Outcome] = &[
+    Outcome::FullyAchieved,
+    Outcome::MostlyAchieved,
+    Outcome::PartiallyAchieved,
+    Outcome::NotAchieved,
+    Outcome::UnclearFromTranscript,
+];
+
+/// `Helpfulness` variants, in §5 declaration order.
+pub const HELPFULNESS_VARIANTS: &[Helpfulness] = &[
+    Helpfulness::Unhelpful,
+    Helpfulness::SlightlyHelpful,
+    Helpfulness::ModeratelyHelpful,
+    Helpfulness::VeryHelpful,
+    Helpfulness::Essential,
+];
+
+/// `SessionType` variants, in §5 declaration order.
+pub const SESSION_TYPE_VARIANTS: &[SessionType] = &[
+    SessionType::SingleTask,
+    SessionType::MultiTask,
+    SessionType::IterativeRefinement,
+    SessionType::Exploration,
+    SessionType::QuickQuestion,
+];
+
+/// `SuccessMode` variants, in §5 declaration order.
+pub const SUCCESS_MODE_VARIANTS: &[SuccessMode] = &[
+    SuccessMode::None,
+    SuccessMode::FastAccurateSearch,
+    SuccessMode::CorrectCodeEdits,
+    SuccessMode::GoodExplanations,
+    SuccessMode::ProactiveHelp,
+    SuccessMode::MultiFileChanges,
+    SuccessMode::HandledComplexity,
+    SuccessMode::GoodDebugging,
+];
+
+/// `Satisfaction` variants, in §5 declaration order.
+pub const SATISFACTION_VARIANTS: &[Satisfaction] = &[
+    Satisfaction::Frustrated,
+    Satisfaction::Dissatisfied,
+    Satisfaction::LikelySatisfied,
+    Satisfaction::Satisfied,
+    Satisfaction::Happy,
+    Satisfaction::Unsure,
+    Satisfaction::Neutral,
+    Satisfaction::Delighted,
+];
+
+/// `Friction` variants, in §5 declaration order.
+pub const FRICTION_VARIANTS: &[Friction] = &[
+    Friction::MisunderstoodRequest,
+    Friction::WrongApproach,
+    Friction::BuggyCode,
+    Friction::UserRejectedAction,
+    Friction::ClaudeGotBlocked,
+    Friction::UserStoppedEarly,
+    Friction::WrongFileOrLocation,
+    Friction::ExcessiveChanges,
+    Friction::SlowOrVerbose,
+    Friction::ToolFailed,
+    Friction::UserUnclear,
+    Friction::ExternalIssue,
+];
+
+#[cfg(test)]
+mod tests {
+    //! T-16 (SDD §12): the six facet variant sets are closed and are exactly
+    //! what §5 declares — each `X_VARIANTS` const equals §5's table (same
+    //! count, same members, same order as its enum), every variant
+    //! round-trips through the `rename_all = "snake_case"` spelling the wire
+    //! and §7's schema both use, and a reply carrying a value outside the
+    //! set is refused by validation rather than dropped or drawn as a
+    //! phantom bar.
+
+    use super::*;
+    use serde::{Serialize, de::DeserializeOwned};
+    use std::fmt::Debug;
+
+    /// (a)+(b): `variants` must be exactly §5's table for this set — same
+    /// count, same members, same order as the enum — and each variant must
+    /// round-trip through its snake_case wire spelling.
+    fn assert_variant_spine<T>(name: &str, variants: &[T], wire: &[&str])
+    where
+        T: Serialize + DeserializeOwned + Copy + Debug + PartialEq,
+    {
+        assert_eq!(
+            variants.len(),
+            wire.len(),
+            "{name}: the const must list exactly §5's variants"
+        );
+        for (variant, spelling) in variants.iter().zip(wire.iter()) {
+            let encoded = serde_json::to_string(variant)
+                .unwrap_or_else(|e| panic!("{name}: serializing {spelling}: {e}"));
+            assert_eq!(
+                encoded,
+                format!("\"{spelling}\""),
+                "{name}: the const's member here must serialize to {spelling} (got {encoded}) — §5's order is load-bearing"
+            );
+            let decoded: T = serde_json::from_str(&encoded)
+                .unwrap_or_else(|e| panic!("{name}: deserializing {encoded}: {e}"));
+            assert_eq!(
+                decoded, *variant,
+                "{name}: {spelling} did not round-trip to the same variant"
+            );
+        }
+    }
+
+    /// (c): a value outside the set is refused by validation — no catch-all
+    /// variant, no silent default — so the session gets badged (§9 rule 3)
+    /// instead of a phantom bar.
+    fn assert_out_of_set_refused<T: DeserializeOwned>(name: &str, reply: &str) {
+        let err = serde_json::from_str::<T>(reply).err().unwrap_or_else(|| {
+            panic!("{name}: out-of-set reply {reply} was accepted — validation must refuse it")
+        });
+        assert!(
+            err.to_string().contains("unknown variant"),
+            "{name}: {reply} was refused, but not as an unknown variant: {err}"
+        );
+    }
+
+    #[test]
+    fn t16_facet_variant_sets_are_closed_and_round_trip() {
+        // (a)+(b) for every variant of every set, against §5's table.
+        assert_variant_spine(
+            "Outcome",
+            OUTCOME_VARIANTS,
+            &[
+                "fully_achieved",
+                "mostly_achieved",
+                "partially_achieved",
+                "not_achieved",
+                "unclear_from_transcript",
+            ],
+        );
+        assert_variant_spine(
+            "Helpfulness",
+            HELPFULNESS_VARIANTS,
+            &[
+                "unhelpful",
+                "slightly_helpful",
+                "moderately_helpful",
+                "very_helpful",
+                "essential",
+            ],
+        );
+        assert_variant_spine(
+            "SessionType",
+            SESSION_TYPE_VARIANTS,
+            &[
+                "single_task",
+                "multi_task",
+                "iterative_refinement",
+                "exploration",
+                "quick_question",
+            ],
+        );
+        assert_variant_spine(
+            "SuccessMode",
+            SUCCESS_MODE_VARIANTS,
+            &[
+                "none",
+                "fast_accurate_search",
+                "correct_code_edits",
+                "good_explanations",
+                "proactive_help",
+                "multi_file_changes",
+                "handled_complexity",
+                "good_debugging",
+            ],
+        );
+        assert_variant_spine(
+            "Satisfaction",
+            SATISFACTION_VARIANTS,
+            &[
+                "frustrated",
+                "dissatisfied",
+                "likely_satisfied",
+                "satisfied",
+                "happy",
+                "unsure",
+                "neutral",
+                "delighted",
+            ],
+        );
+        assert_variant_spine(
+            "Friction",
+            FRICTION_VARIANTS,
+            &[
+                "misunderstood_request",
+                "wrong_approach",
+                "buggy_code",
+                "user_rejected_action",
+                "claude_got_blocked",
+                "user_stopped_early",
+                "wrong_file_or_location",
+                "excessive_changes",
+                "slow_or_verbose",
+                "tool_failed",
+                "user_unclear",
+                "external_issue",
+            ],
+        );
+
+        // (c): item-2b keys BTreeMaps on Friction and Outcome, so the
+        // refusal is asserted there first, then spot-checked on the other
+        // four sets — plus the case-sensitivity arm, which keeps a
+        // case-insensitive deserializer from being a false green.
+        assert_out_of_set_refused::<Friction>("Friction", r#""not_a_friction""#);
+        assert_out_of_set_refused::<Outcome>("Outcome", r#""not_an_outcome""#);
+        assert_out_of_set_refused::<Helpfulness>("Helpfulness", r#""not_a_helpfulness""#);
+        assert_out_of_set_refused::<SessionType>("SessionType", r#""not_a_session_type""#);
+        assert_out_of_set_refused::<SuccessMode>("SuccessMode", r#""not_a_success_mode""#);
+        assert_out_of_set_refused::<Satisfaction>("Satisfaction", r#""not_a_satisfaction""#);
+        assert_out_of_set_refused::<Outcome>("Outcome (case)", r#""FullyAchieved""#);
+    }
+}

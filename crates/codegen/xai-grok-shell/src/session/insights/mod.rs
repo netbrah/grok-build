@@ -16,6 +16,7 @@
 
 pub mod aggregate;
 pub mod digest;
+pub mod types;
 
 pub use digest::{
     CACHE_SCHEMA_VERSION, DegradedTier, DigestInput, IDLE_GAP_SECS, ProjectionCaps, ReaderFacts,
