@@ -180,7 +180,7 @@ pub const FRICTION_VARIANTS: &[Friction] = &[
     Friction::ExternalIssue,
 ];
 
-/// The budget + control knobs item 8's functions consume (SOT §7; 8a's
+/// The budget + control knobs item 8's functions consume (SOT §6; 8a's
 /// R-budget). One pure home — 8b/8c consume the SAME struct (they do not split
 /// it). Item 5 (deferred) later populates it from the `[insights.*]` CLI
 /// values; 8a's tests construct it directly with known values.

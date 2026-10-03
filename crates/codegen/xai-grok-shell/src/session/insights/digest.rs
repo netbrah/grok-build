@@ -205,7 +205,13 @@ pub struct ReaderFacts {
     pub unreadable_lines: u32,
 }
 
-/// The SDD §6 `chunk_summarize` knobs that drive the two truncation tiers.
+/// The SDD §6 `chunk_summarize` knobs. The two `max_input_chars`/`chunk_chars`
+/// tiers drive the digest's projection; `threshold_chars` is the third knob in
+/// the same `chunk_summarize` group — the projection length above which
+/// map-reduce kicks in, read by the LABELLING stage (SOT §6:724). The digest
+/// never reads it: a `--no-model` run reports what WOULD have been chunked
+/// without reading the knob, so the carrier lives here and the labeller takes
+/// it from here.
 #[derive(Debug, Clone, Copy)]
 pub struct ProjectionCaps {
     /// `insights.chunk_summarize.max_input_chars` (shipped default 400 000).
@@ -215,6 +221,10 @@ pub struct ProjectionCaps {
     pub chunk_chars: usize,
     /// `insights.max_chunk_calls_per_session` (shipped default 4).
     pub max_chunk_calls: usize,
+    /// `insights.chunk_summarize.threshold_chars` (shipped default 30 000) —
+    /// the projection length above which map-reduce kicks in, read by the
+    /// labelling stage (SOT §6:724). The digest never reads it.
+    pub threshold_chars: usize,
 }
 
 impl Default for ProjectionCaps {
@@ -224,6 +234,7 @@ impl Default for ProjectionCaps {
             max_input_chars: 400_000,
             chunk_chars: 25_000,
             max_chunk_calls: 4,
+            threshold_chars: 30_000,
         }
     }
 }
@@ -1861,6 +1872,7 @@ mod tests {
                 max_input_chars: 10,
                 chunk_chars: 200,
                 max_chunk_calls: 4,
+                threshold_chars: 10,
             },
             first_prompt: None,
         }
