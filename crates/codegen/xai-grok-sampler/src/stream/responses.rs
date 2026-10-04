@@ -35,7 +35,7 @@ use xai_grok_sampling_types::{
 };
 
 use crate::doom_loop_recovery::FailedResponseCapture;
-use crate::events::{SamplingChannel, SamplingErrorInfo, SamplingEvent};
+use crate::events::{SamplingChannel, SamplingErrorInfo, SamplingEvent, ToolSearchStatus};
 use crate::metrics::InferenceLatencyStats;
 use crate::types::{RequestId, ResponsesStreamItem};
 
@@ -47,6 +47,15 @@ const INCOMPLETE_REASON_MAX_OUTPUT_TOKENS: &str = "max_output_tokens";
 const INCOMPLETE_REASON_MAX_PROMPT_TOKENS: &str = "max_prompt_tokens";
 /// A server-side time limit cut generation short (xAI extension).
 const INCOMPLETE_REASON_MAX_TIME_LIMIT: &str = "max_time_limit";
+
+/// Applied to a `tool_search_call` whose `arguments` omits `limit`. The authoritative value
+/// is `TOOL_SEARCH_DEFAULT_LIMIT` at
+/// `xai-grok-sampling-types/src/conversation/responses.rs:695`: the admitted route passes it to
+/// `tool_search_declaration_entry` at :651 and that function interpolates it into the
+/// declaration's `limit` description at :773-774. It is `pub(super)`, so this crate cannot
+/// import it — `the_declaration_documents_the_sampler_default_limit` pins this copy against the
+/// declaration text the model is sent.
+const TOOL_SEARCH_DEFAULT_LIMIT: u64 = 8;
 
 /// Returns whether a Responses API event reflects real model progress rather than a liveness-only heartbeat or status transition.
 pub(crate) fn responses_event_has_meaningful_content(event: &rs::ResponseStreamEvent) -> bool {
@@ -131,6 +140,41 @@ pub(crate) fn responses_event_has_meaningful_content(event: &rs::ResponseStreamE
 pub(crate) fn responses_event_may_have_output(event: &rs::ResponseStreamEvent) -> bool {
     !matches!(event, rs::ResponseStreamEvent::ResponseError(_))
         && responses_event_has_meaningful_content(event)
+}
+
+/// The key a tool-discovery item is paired on: the wire's `call_id`, the field a
+/// `tool_search_output` uses to name the call it answers. A server-executed item has no
+/// client to run the search, so it keys to `None`.
+fn discovery_call_id(
+    execution: rs::ToolSearchExecutionType,
+    call_id: Option<&str>,
+) -> Option<&str> {
+    match execution {
+        rs::ToolSearchExecutionType::Client => call_id,
+        rs::ToolSearchExecutionType::Server => None,
+    }
+}
+
+/// Map the answer item's donor status onto the IR's view of it.
+/// The donor `FunctionCallOutputStatusEnum` (async-openai 0.42.1) has three variants and no
+/// `error`, so [`ToolSearchStatus::Error`] is not reachable from here; the donor's `Incomplete`
+/// has no IR counterpart and lands on [`ToolSearchStatus::Unknown`], whose provider spelling the
+/// T13 payload does not carry. A `status` outside the donor's set never reaches this function:
+/// it fails the typed `rs::ResponseStreamEvent` read (`xai-grok-sampler/src/client.rs:389`) and
+/// `repair_gateway_event` backfills no `status` for a `tool_search_output` item — the type match
+/// inside `repair_output_item` fills `message`, `reasoning` and `compaction` only
+/// (`xai-grok-sampler/src/client.rs:737`) — so the attempt ends with
+/// `SamplingError::Serialization` (`xai-grok-sampler/src/client.rs:467`), which the stream loop
+/// surfaces as `SamplingEvent::Failed` (`xai-grok-sampler/src/stream/responses.rs:375-376`), rather
+/// than the frame being skipped. The decoder's only per-frame skip, `Ok(None)` at
+/// `xai-grok-sampler/src/client.rs:418`, is gated on an event type outside
+/// `RESPONSES_KNOWN_EVENT_TYPES` on the Codex dialect (`xai-grok-sampler/src/client.rs:411`).
+fn tool_search_output_status(status: rs::FunctionCallOutputStatusEnum) -> ToolSearchStatus {
+    match status {
+        rs::FunctionCallOutputStatusEnum::InProgress => ToolSearchStatus::InProgress,
+        rs::FunctionCallOutputStatusEnum::Completed => ToolSearchStatus::Completed,
+        rs::FunctionCallOutputStatusEnum::Incomplete => ToolSearchStatus::Unknown,
+    }
 }
 /// Whether a completed response leaves a pending CLIENT tool call behind.
 ///
@@ -625,6 +669,58 @@ where
                                 name: "code_interpreter".to_string(),
                                 result,
                             };
+                        }
+                        // Tool discovery, client-executed: the provider asks us to run the search.
+                        // `query` and `limit` are read out of the `arguments` OBJECT, which is
+                        // empty on the `added` skeleton and populated on this completed copy;
+                        // a `done` copy that never reached `completed` is not answered.
+                        // The `SamplingEvent::ToolSearchCallReceived` handler opens a pager card
+                        // keyed on this `call_id`
+                        // (`xai-grok-shell/src/session/acp_session_impl/sampling_events.rs:601`).
+                        // The update that retires it is the `SamplingEvent::ToolSearchCompleted`
+                        // handler at `sampling_events.rs:632`, which only an answer frame can
+                        // feed: `discovery_call_id` (`stream/responses.rs:148`) maps
+                        // `rs::ToolSearchExecutionType::Server` to `None`. The stream's terminal
+                        // `Failed` arm (`sampling_events.rs:494-539`) emits no `ToolCallUpdate` of
+                        // its own.
+                        rs::OutputItem::ToolSearchCall(tsc) => {
+                            let key = discovery_call_id(tsc.execution, tsc.call_id.as_deref())
+                                .filter(|_| tsc.status == rs::FunctionCallStatus::Completed);
+                            if let Some(call_id) = key {
+                                yield SamplingEvent::ToolSearchCallReceived {
+                                    request_id: request_id.clone(),
+                                    call_id: call_id.to_string(),
+                                    query: tsc
+                                        .arguments
+                                        .get("query")
+                                        .and_then(serde_json::Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_string(),
+                                    limit: tsc
+                                        .arguments
+                                        .get("limit")
+                                        .and_then(serde_json::Value::as_u64)
+                                        .unwrap_or(TOOL_SEARCH_DEFAULT_LIMIT),
+                                };
+                            }
+                        }
+                        // The search ANSWER, decoded. `result_count` is the length of the item's
+                        // own `tools` array; `status` is the item's own state, not a constant.
+                        // The definitions themselves stop at this arm: the event has no field for
+                        // them and `response_to_conversation_items` refuses an
+                        // `rs::OutputItem::ToolSearchOutput` outright
+                        // (`xai-grok-sampling-types/src/conversation/responses.rs:144-147`).
+                        rs::OutputItem::ToolSearchOutput(tso) => {
+                            if let Some(call_id) =
+                                discovery_call_id(tso.execution, tso.call_id.as_deref())
+                            {
+                                yield SamplingEvent::ToolSearchCompleted {
+                                    request_id: request_id.clone(),
+                                    call_id: call_id.to_string(),
+                                    result_count: tso.tools.len(),
+                                    status: tool_search_output_status(tso.status),
+                                };
+                            }
                         }
                         _ => {}
                     }
@@ -2028,6 +2124,386 @@ mod tests {
         assert!(
             response_has_pending_tool_calls(&with_real_call),
             "the real shape still trips the stop path"
+        );
+    }
+
+    // ── Discovery-frame ingestion (apex-waj.5) ───────────────────────
+    //
+    // Each `LIVE_*` constant is copied byte-for-byte from
+    // `/Users/palanisd/hts-o-durable/captures/2026-10-02T210154Z/`. A constant's own doc
+    // names the capture line it came from, and names the sub-object of that line when the
+    // constant is not a whole `data:` payload.
+    // `banked_discovery_frames_are_their_own_pinned_bytes` pins each constant's byte length
+    // and sha256:12, so an edit to a banked frame is visible rather than silent.
+
+    /// `probe2-client-full.raw` L5 — `response.output_item.added`.
+    const LIVE_CALL_ADDED: &str = r#"{"type":"response.output_item.added","output_index":0,"item":{"id":"tsc_08f7abc693f02e74016ac02242e2fc8190b1842f1acf6b72fc","type":"tool_search_call","status":"in_progress","arguments":{},"call_id":"call_KGrhHQ8F7MeagVDbKnGlq6vv","execution":"client"},"sequence_number":2,"model":"gpt-5.6-sol"}"#;
+
+    /// `probe2-client-full.raw` L7 — `response.output_item.done`.
+    const LIVE_CALL_DONE: &str = r#"{"type":"response.output_item.done","output_index":0,"sequence_number":3,"item":{"id":"tsc_08f7abc693f02e74016ac02242e2fc8190b1842f1acf6b72fc","type":"tool_search_call","status":"completed","arguments":{"query":"shipping ETA lookup by order ID","limit":5},"call_id":"call_KGrhHQ8F7MeagVDbKnGlq6vv","execution":"client"},"model":"gpt-5.6-sol"}"#;
+
+    /// `resp-006.raw` L11 — `response.output_item.done`, server-executed.
+    const LIVE_SERVER_CALL_DONE: &str = r#"{"type":"response.output_item.done","output_index":1,"sequence_number":5,"item":{"id":"tsc_0c1a30c585eeaaf9016ac01db8650081949aff9bff5698a20a","type":"tool_search_call","status":"completed","arguments":{"paths":["lookup_shipping_eta"]},"execution":"server"},"model":"gpt-5.6-sol"}"#;
+
+    /// `resp-006.raw` L15 — `response.output_item.done`, server-executed answer.
+    const LIVE_SERVER_OUTPUT_DONE: &str = r#"{"type":"response.output_item.done","output_index":2,"sequence_number":7,"item":{"id":"tso_0c1a30c585eeaaf9016ac01db86afc8194af526e214666b827","type":"tool_search_output","status":"completed","execution":"server","tools":[{"type":"function","defer_loading":true,"description":"Look up the shipping ETA for an order ID by order ID.","name":"lookup_shipping_eta","output_schema":null,"parameters":{"type":"object","properties":{"order_id":{"type":"string"}},"required":["order_id"],"additionalProperties":false},"strict":true}]},"model":"gpt-5.6-sol"}"#;
+
+    /// `probe2-client-full.raw` L9 — `response.output[0]` of the terminal frame.
+    const LIVE_TERMINAL_CALL_ITEM: &str = r#"{"id":"tsc_08f7abc693f02e74016ac02242e2fc8190b1842f1acf6b72fc","arguments":{"query":"shipping ETA lookup by order ID","limit":5},"call_id":"call_KGrhHQ8F7MeagVDbKnGlq6vv","execution":"client","status":"completed","type":"tool_search_call"}"#;
+
+    /// `resp-006.raw` L15 — the `item.tools` array of the answer item.
+    const LIVE_OUTPUT_TOOLS: &str = r#"[{"type":"function","defer_loading":true,"description":"Look up the shipping ETA for an order ID by order ID.","name":"lookup_shipping_eta","output_schema":null,"parameters":{"type":"object","properties":{"order_id":{"type":"string"}},"required":["order_id"],"additionalProperties":false},"strict":true}]"#;
+
+    fn live_frame(raw: &str) -> rs::ResponseStreamEvent {
+        serde_json::from_str(raw).expect("banked frame decodes as a ResponseStreamEvent")
+    }
+
+    fn sha12(text: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(text.as_bytes());
+        hasher
+            .finalize()
+            .iter()
+            .take(6)
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    /// The banked `tools` entry, written twice.
+    fn duplicated_banked_tool_definitions() -> String {
+        let one = &LIVE_OUTPUT_TOOLS[1..LIVE_OUTPUT_TOOLS.len() - 1];
+        format!("[{one},{one}]")
+    }
+
+    /// A `tool_search_output` in the client-executed shape, carrying `tools_json`.
+    fn client_search_output_frame(status: &str, tools_json: &str) -> rs::ResponseStreamEvent {
+        live_frame(&format!(
+            r#"{{"type":"response.output_item.done","output_index":1,"sequence_number":4,"item":{{"id":"tso_client_1","type":"tool_search_output","status":"{status}","execution":"client","call_id":"call_KGrhHQ8F7MeagVDbKnGlq6vv","tools":{tools_json}}},"model":"gpt-5.6-sol"}}"#
+        ))
+    }
+
+    /// A client-executed `tool_search_call` done-copy with the given `arguments` object.
+    fn client_search_call_frame(arguments_json: &str) -> rs::ResponseStreamEvent {
+        live_frame(&format!(
+            r#"{{"type":"response.output_item.done","output_index":0,"sequence_number":3,"item":{{"id":"tsc_client_1","type":"tool_search_call","status":"completed","arguments":{arguments_json},"call_id":"call_client_1","execution":"client"}},"model":"gpt-5.6-sol"}}"#
+        ))
+    }
+
+    async fn stream_frames(frames: Vec<rs::ResponseStreamEvent>) -> Vec<SamplingEvent> {
+        let items: Vec<Result<rs::ResponseStreamEvent, SamplingError>> = frames
+            .into_iter()
+            .map(Ok)
+            .chain([Ok(completed_event())])
+            .collect();
+        collect(stream_responses(
+            stream::iter(items).boxed(),
+            None,
+            rid(),
+            Duration::from_secs(60),
+            None,
+        ))
+        .await
+    }
+
+    fn discovery_events(events: &[SamplingEvent]) -> Vec<&SamplingEvent> {
+        events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    SamplingEvent::ToolSearchCallReceived { .. }
+                        | SamplingEvent::ToolSearchCompleted { .. }
+                )
+            })
+            .collect()
+    }
+
+    /// A frame bank is only evidence while it is still the banked bytes.
+    #[test]
+    fn banked_discovery_frames_are_their_own_pinned_bytes() {
+        for (name, text, len, digest) in [
+            ("LIVE_CALL_ADDED", LIVE_CALL_ADDED, 294, "fed37a4da85a"),
+            ("LIVE_CALL_DONE", LIVE_CALL_DONE, 342, "304bcd0db3e9"),
+            (
+                "LIVE_SERVER_CALL_DONE",
+                LIVE_SERVER_CALL_DONE,
+                280,
+                "256f7c86d462",
+            ),
+            (
+                "LIVE_SERVER_OUTPUT_DONE",
+                LIVE_SERVER_OUTPUT_DONE,
+                549,
+                "11bcfbae8ed7",
+            ),
+            (
+                "LIVE_TERMINAL_CALL_ITEM",
+                LIVE_TERMINAL_CALL_ITEM,
+                239,
+                "de23aa86fed8",
+            ),
+            ("LIVE_OUTPUT_TOOLS", LIVE_OUTPUT_TOOLS, 304, "ac3b803d358f"),
+        ] {
+            assert_eq!(text.len(), len, "{name} byte length moved");
+            assert_eq!(sha12(text), digest, "{name} is no longer the banked frame");
+        }
+    }
+
+    /// The `added` skeleton carries `arguments: {}`; the `done` copy carries the real
+    /// arguments. Exactly one event derives from the pair, and it is the completed one.
+    #[tokio::test]
+    async fn the_completed_copy_of_a_client_search_call_emits_one_call_received() {
+        let events = stream_frames(vec![
+            live_frame(LIVE_CALL_ADDED),
+            live_frame(LIVE_CALL_DONE),
+        ])
+        .await;
+        let derived = discovery_events(&events);
+        let [event] = derived.as_slice() else {
+            panic!("expected exactly one discovery event, got {derived:?}");
+        };
+        match event {
+            SamplingEvent::ToolSearchCallReceived {
+                request_id,
+                call_id,
+                query,
+                limit,
+            } => assert_eq!(
+                (request_id, call_id.as_str(), query.as_str(), *limit),
+                (
+                    &rid(),
+                    "call_KGrhHQ8F7MeagVDbKnGlq6vv",
+                    "shipping ETA lookup by order ID",
+                    5
+                ),
+                "the whole emitted call event"
+            ),
+            other => panic!("expected ToolSearchCallReceived, got {other:?}"),
+        }
+    }
+
+    /// The pairing key is the wire's `call_id` read off a CLIENT-executed item, so a
+    /// server-executed item keys to `None` and stays event-silent whatever it carries. Both
+    /// frames here are the banked bytes:
+    /// `/Users/palanisd/hts-o-durable/captures/2026-10-02T210154Z/resp-006.raw` L11 and L15.
+    #[tokio::test]
+    async fn server_executed_discovery_frames_emit_no_discovery_event() {
+        let events = stream_frames(vec![
+            live_frame(LIVE_SERVER_CALL_DONE),
+            live_frame(LIVE_SERVER_OUTPUT_DONE),
+        ])
+        .await;
+        assert!(
+            discovery_events(&events).is_empty(),
+            "a server-executed discovery item emitted: {:?}",
+            discovery_events(&events)
+        );
+    }
+
+    /// The rule is execution-first, not key-first: the same two banked frames with a
+    /// `call_id` inserted stay just as silent, so no server-executed item can open a card
+    /// the client is not asked to answer.
+    #[tokio::test]
+    async fn a_server_executed_item_with_a_call_id_still_emits_no_discovery_event() {
+        let keyed = LIVE_SERVER_CALL_DONE.replace(
+            r#""execution":"server""#,
+            r#""call_id":"call_KGrhHQ8F7MeagVDbKnGlq6vv","execution":"server""#,
+        );
+        let keyed_output = LIVE_SERVER_OUTPUT_DONE.replace(
+            r#""execution":"server""#,
+            r#""call_id":"call_KGrhHQ8F7MeagVDbKnGlq6vv","execution":"server""#,
+        );
+        assert_ne!(keyed, LIVE_SERVER_CALL_DONE, "the call_id was not inserted");
+        assert_ne!(
+            keyed_output, LIVE_SERVER_OUTPUT_DONE,
+            "the call_id was not inserted"
+        );
+        let events = stream_frames(vec![live_frame(&keyed), live_frame(&keyed_output)]).await;
+        assert!(
+            discovery_events(&events).is_empty(),
+            "a server-executed item carrying a call_id emitted: {:?}",
+            discovery_events(&events)
+        );
+    }
+
+    /// The answer item's decoded `tools` set the reported count, its `call_id` keys the
+    /// event, and its wire status is the event's status. Only the COUNT leaves the arm — the
+    /// T13 payload has no field for the definitions themselves, and
+    /// `response_to_conversation_items` refuses an `rs::OutputItem::ToolSearchOutput` outright
+    /// (`xai-grok-sampling-types/src/conversation/responses.rs:144-147`, `apex-waj.34`'s `R-3`).
+    #[tokio::test]
+    async fn a_client_search_output_frame_emits_completed_with_its_decoded_tool_count() {
+        let frame = client_search_output_frame("completed", &duplicated_banked_tool_definitions());
+        let events = stream_frames(vec![frame]).await;
+        let derived = discovery_events(&events);
+        let [event] = derived.as_slice() else {
+            panic!("expected exactly one discovery event, got {derived:?}");
+        };
+        match event {
+            SamplingEvent::ToolSearchCompleted {
+                request_id,
+                call_id,
+                result_count,
+                status,
+            } => assert_eq!(
+                (request_id, call_id.as_str(), *result_count, *status),
+                (
+                    &rid(),
+                    "call_KGrhHQ8F7MeagVDbKnGlq6vv",
+                    2,
+                    ToolSearchStatus::Completed
+                ),
+                "the whole emitted completed event"
+            ),
+            other => panic!("expected ToolSearchCompleted, got {other:?}"),
+        }
+    }
+
+    /// A status the IR view cannot name is reported as such, never as `Completed`.
+    #[tokio::test]
+    async fn an_unmodelled_search_output_status_is_not_reported_as_completed() {
+        let frame = client_search_output_frame("incomplete", &duplicated_banked_tool_definitions());
+        let events = stream_frames(vec![frame]).await;
+        let derived = discovery_events(&events);
+        let [event] = derived.as_slice() else {
+            panic!("expected exactly one discovery event, got {derived:?}");
+        };
+        match event {
+            SamplingEvent::ToolSearchCompleted { status, .. } => {
+                assert_eq!(*status, ToolSearchStatus::Unknown);
+            }
+            other => panic!("expected ToolSearchCompleted, got {other:?}"),
+        }
+    }
+
+    /// `arguments.limit` is not in the declaration's `required` list; the event carries
+    /// the default the declaration's own `parameters.limit` description states.
+    #[tokio::test]
+    async fn a_search_call_without_a_limit_carries_the_declaration_default() {
+        let frame = client_search_call_frame(r#"{"query":"shipping ETA tool order_id"}"#);
+        let events = stream_frames(vec![frame]).await;
+        let derived = discovery_events(&events);
+        let [event] = derived.as_slice() else {
+            panic!("expected exactly one discovery event, got {derived:?}");
+        };
+        match event {
+            SamplingEvent::ToolSearchCallReceived { call_id, limit, .. } => {
+                assert_eq!(call_id, "call_client_1");
+                assert_eq!(*limit, TOOL_SEARCH_DEFAULT_LIMIT);
+            }
+            other => panic!("expected ToolSearchCallReceived, got {other:?}"),
+        }
+    }
+
+    /// The declaration an admitted route emits documents this exact number, so the limit the
+    /// event falls back to cannot desync from the limit the model was told about. The IR's own
+    /// `TOOL_SEARCH_DEFAULT_LIMIT` is `pub(super)`
+    /// (`xai-grok-sampling-types/src/conversation/responses.rs:695`), so the binding runs
+    /// through the declaration text that file interpolates at its :773-774.
+    #[test]
+    fn the_declaration_documents_the_sampler_default_limit() {
+        let entries = xai_grok_sampling_types::extra_tool_entries_for_route(
+            &[],
+            Some(xai_grok_sampling_types::SearchAdmission {
+                supports_search_tool: true,
+                has_searchable_tools: true,
+            }),
+        );
+        let declaration = entries
+            .iter()
+            .find(|entry| entry["type"] == xai_grok_sampling_types::TOOL_SEARCH_DECLARATION_TYPE)
+            .expect("an admitted route declares `tool_search`");
+        assert_eq!(
+            declaration["parameters"]["properties"]["limit"]["description"].as_str(),
+            Some(
+                format!(
+                    "Maximum number of tools to return. Defaults to {TOOL_SEARCH_DEFAULT_LIMIT}."
+                )
+                .as_str()
+            ),
+            "the event's fallback limit is no longer the limit the declaration documents"
+        );
+    }
+
+    /// The arm answers a `status: "completed"` done copy; a done copy that never reached
+    /// `completed` emits nothing. The frame is the live completed copy with its status
+    /// rewound, so it still carries the full `arguments` object.
+    #[tokio::test]
+    async fn a_search_call_done_copy_that_never_completed_emits_nothing() {
+        let raw = LIVE_CALL_DONE.replace("\"status\":\"completed\"", "\"status\":\"in_progress\"");
+        let frame = live_frame(&raw);
+        let events = stream_frames(vec![frame]).await;
+        assert!(
+            discovery_events(&events).is_empty(),
+            "a non-completed call copy emitted: {:?}",
+            discovery_events(&events)
+        );
+    }
+
+    /// A completed copy whose `arguments` is the `added` skeleton's empty object still emits:
+    /// the event's `query` is the empty string and its `limit` is the declaration's default.
+    /// The empty query is the deliberate degraded shape — the shell renders it as
+    /// `Tool search: ""` (`xai-grok-shell/src/session/acp_session_impl/tool_dispatch.rs:145`).
+    #[tokio::test]
+    async fn a_completed_call_copy_with_empty_arguments_emits_empty_query_and_default_limit() {
+        let events = stream_frames(vec![client_search_call_frame("{}")]).await;
+        let derived = discovery_events(&events);
+        let [event] = derived.as_slice() else {
+            panic!("expected exactly one discovery event, got {derived:?}");
+        };
+        match event {
+            SamplingEvent::ToolSearchCallReceived {
+                request_id,
+                call_id,
+                query,
+                limit,
+            } => assert_eq!(
+                (request_id, call_id.as_str(), query.as_str(), *limit),
+                (&rid(), "call_client_1", "", TOOL_SEARCH_DEFAULT_LIMIT),
+                "the whole emitted call event"
+            ),
+            other => panic!("expected ToolSearchCallReceived, got {other:?}"),
+        }
+    }
+
+    /// The live turn, end to end: the call event is emitted from the frames the provider
+    /// sent, and the turn still ends at `Failed` because `response_to_conversation_items`
+    /// returns `Err` on `rs::OutputItem::ToolSearchCall` at
+    /// `xai-grok-sampling-types/src/conversation/responses.rs:144-147` (`apex-waj.34`'s `R-3`).
+    #[tokio::test]
+    async fn the_live_client_search_turn_emits_the_call_before_the_ir_seam_ends_it() {
+        let mut response = empty_completed_response();
+        response.output = vec![
+            serde_json::from_str::<rs::OutputItem>(LIVE_TERMINAL_CALL_ITEM)
+                .expect("banked terminal item decodes"),
+        ];
+        let items: Vec<Result<rs::ResponseStreamEvent, SamplingError>> = vec![
+            Ok(live_frame(LIVE_CALL_ADDED)),
+            Ok(live_frame(LIVE_CALL_DONE)),
+            Ok(rs::ResponseStreamEvent::ResponseCompleted(
+                rs_types::ResponseCompletedEvent {
+                    response,
+                    sequence_number: 4,
+                },
+            )),
+        ];
+        let events = collect(stream_responses(
+            stream::iter(items).boxed(),
+            None,
+            rid(),
+            Duration::from_secs(60),
+            None,
+        ))
+        .await;
+        assert_eq!(
+            discovery_events(&events).len(),
+            1,
+            "the call event was not emitted: {events:?}"
+        );
+        assert!(
+            matches!(events.last(), Some(SamplingEvent::Failed { .. })),
+            "the IR seam no longer ends the turn: {events:?}"
         );
     }
 }

@@ -177,13 +177,12 @@ pub enum SamplingEvent {
     },
 
     /// The model asked for tool discovery and the CLIENT executes it.
-    /// Field semantics are settled by the IR corpus, not by any emitter: NO in-tree code emits this
-    /// variant (nor [`Self::ToolSearchCompleted`]) yet — `stream/responses.rs` (apex-waj.5) owes the
-    /// derivation — so the emission rule below is CONDITIONAL and the condition sits on that lane. It
-    /// holds only if apex-waj.5 derives this event from the client-executed item, whose `call_id` is
-    /// non-null there: emitted only for a client-executed item with a non-null `call_id`, while
-    /// server-executed discovery items have no client to run the search and stay event-silent. No
-    /// in-tree code enforces that derivation.
+    /// Emitted by the `rs::OutputItem::ToolSearchCall` arm of the `ResponseOutputItemDone`
+    /// match at `xai-grok-sampler/src/stream/responses.rs:686` (apex-waj.5), for a done copy
+    /// whose `execution` is `client`, whose `call_id` is non-null, and whose `status` is
+    /// `completed`. A server-executed discovery item has no client to run the search, and a
+    /// discovery item with no `call_id` has no key to pair against, so both stay event-silent.
+    /// `call_id` is the pairing key this variant shares with [`Self::ToolSearchCompleted`].
     ToolSearchCallReceived {
         request_id: RequestId,
         call_id: String,
@@ -191,10 +190,15 @@ pub enum SamplingEvent {
         limit: u64,
     },
 
-    /// The client's answer to a [`Self::ToolSearchCallReceived`] for that stream.
-    /// `result_count` is how many tool definitions the search loaded. `status` is the item's own
-    /// state, so a stream that only ever delivered the skeleton leaves the card in progress rather
-    /// than claiming a terminal the wire never sent.
+    /// Emitted by the `rs::OutputItem::ToolSearchOutput` arm of the same match. Its guards are
+    /// the call event's minus the status gate: `execution` is `client` and `call_id` is
+    /// non-null. `call_id` is the key the two variants share; a close may arrive with no open
+    /// card, and the shell admits it unowned
+    /// (`xai-grok-shell/src/session/acp_session_impl/sampling_events.rs:135-139`).
+    /// `result_count` is how many tool definitions the search loaded — the definitions
+    /// themselves are not in this payload. `status` is the item's own state, so a stream that
+    /// only ever delivered the skeleton leaves the card in progress rather than claiming a
+    /// terminal the wire never sent.
     ToolSearchCompleted {
         request_id: RequestId,
         call_id: String,

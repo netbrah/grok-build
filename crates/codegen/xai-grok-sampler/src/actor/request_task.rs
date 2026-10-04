@@ -899,33 +899,37 @@ async fn drive_l2(
                 }
                 Some(other) => {
                     // Verdict on the client-executed discovery events (`ToolSearchCallReceived` /
-                    // `ToolSearchCompleted`): no entry needed here. Neither variant has an in-tree
-                    // emitter yet — `stream/responses.rs` (apex-waj.5) owes the derivation — so this
-                    // verdict is CONDITIONAL, and the condition is on that lane: it holds only if every
-                    // variant apex-waj.5 derives rides a frame that `responses_event_may_have_output`
-                    // accepts. Under that condition `stream_responses_tracked` stores the SAME `Arc`
-                    // for the frame before yielding anything derived from it, which is what makes output
-                    // already observed by the time the derived event reaches this arm. No in-tree code
-                    // enforces that derivation. Deriving `ToolSearchCompleted` from a buffered item at
-                    // `response.completed` does NOT break the premise: `ResponseCompleted` sits in
-                    // `responses_event_has_meaningful_content`'s `=> true` group and the wrapper only
-                    // excludes `ResponseError`, so that frame trips the store itself before anything
-                    // derived from it is yielded. Nor does an event synthesised after the terminal: this
-                    // arm is unreachable once `Completed` or `Failed` has returned the attempt. The
-                    // premise stops holding only for an event that can reach this arm with the flag
-                    // still clear — one derived from a frame the predicate REJECTS (the liveness-only
-                    // `ResponseCreated` / `ResponseInProgress` / `ResponseQueued` group, or a
-                    // `ResponseError`, which `responses_event_may_have_output` excludes by name), or one
-                    // emitted on a lane whose transform never holds the flag: `stream_chat_completions`
-                    // and `stream_messages` take no `output_observed` at all. Such an event needs its
-                    // own entry here.
-                    // The same verdict, under the same condition, covers the second statement of
-                    // the `if matches!(...)` block below, `await_first_output_span.take()`: the two
-                    // discovery variants are NOT in that `matches!` list, so on a stream whose only
-                    // content is a discovery pair the `sampling.await_first_output` span is not taken
-                    // at first output and instead runs to the attempt's end. It cannot leak —
-                    // `Completed` and `Failed` both take it — so only the span's measured duration is
-                    // overstated on such a stream, never its lifetime.
+                    // `ToolSearchCompleted`): both are listed in the `matches!` below, because
+                    // each carries output.
+                    // `ToolSearchCallReceived` derives from `rs::OutputItem::ToolSearchCall` at
+                    // `stream/responses.rs:686`, `ToolSearchCompleted` from
+                    // `rs::OutputItem::ToolSearchOutput` at `stream/responses.rs:713`, both inside
+                    // the `ResponseStreamEvent::ResponseOutputItemDone` arm that
+                    // `responses_event_has_meaningful_content` classifies `true`
+                    // (`stream/responses.rs:111`). `responses_event_may_have_output` accepts
+                    // that frame, so `stream_responses_tracked` sets the very flag this function
+                    // was handed (`stream/responses.rs:392-393`; the `Arc::clone` that shares it
+                    // is `request_task.rs:722`) before yielding anything derived from it, and the
+                    // flag is already set when the derived event reaches this arm.
+                    // An event that could reach this arm with the flag still clear needs its own
+                    // entry here: one derived from a frame the predicate REJECTS —
+                    // `ResponseStreamEvent::ResponseCreated` / `ResponseInProgress` /
+                    // `ResponseQueued` at `stream/responses.rs:65-67`, or the `ResponseError` that
+                    // `responses_event_may_have_output` excludes by name — or one emitted on a lane
+                    // whose transform never holds `output_observed`: `stream_chat_completions`
+                    // (`stream/chat_completions.rs:23`) and `stream_messages`
+                    // (`stream/messages.rs:87`).
+                    // The listing is what keeps `sampling.await_first_output` measuring first
+                    // output on a stream whose only content is a discovery pair: with either
+                    // variant absent the span runs to the attempt's end and its duration is
+                    // overstated, never its lifetime (`Completed` takes the span at
+                    // `request_task.rs:813`, `Failed` at `request_task.rs:876`). The shell counts
+                    // the call event as the turn's first token — its
+                    // `SamplingEvent::ToolSearchCallReceived` handler calls
+                    // `record_turn_first_token`
+                    // (`xai-grok-shell/src/session/acp_session_impl/sampling_events.rs:607`),
+                    // where the `SamplingEvent::ToolSearchCompleted` handler
+                    // (`sampling_events.rs:632`) sends only the card update.
                     if matches!(
                         other,
                         SamplingEvent::FirstToken { .. }
@@ -933,6 +937,8 @@ async fn drive_l2(
                             | SamplingEvent::ToolCallDelta { .. }
                             | SamplingEvent::BackendToolCallStarted { .. }
                             | SamplingEvent::BackendToolCallCompleted { .. }
+                            | SamplingEvent::ToolSearchCallReceived { .. }
+                            | SamplingEvent::ToolSearchCompleted { .. }
                     ) {
                         output_observed.store(true, Ordering::Relaxed);
                         await_first_output_span.take();
