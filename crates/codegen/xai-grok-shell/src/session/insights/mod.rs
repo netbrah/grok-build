@@ -17,6 +17,7 @@
 pub mod aggregate;
 pub mod digest;
 pub mod label;
+pub mod narrate;
 pub mod report;
 pub mod types;
 
@@ -31,7 +32,11 @@ pub use label::{
     project_areas_schema, suggestions_schema, validate_facet_reply, validate_section_reply,
     what_works_schema,
 };
-pub use types::InsightsBudget;
+pub use narrate::{
+    AtAGlance, NarrateFailureClass, NarrateOutcome, SectionFailure, at_a_glance_request,
+    build_session_data, narrate, parse_at_a_glance, section_request, splice_at_a_glance,
+};
+pub use types::{InsightsBudget, NarrateStats};
 
 /// The ten `/insights` prompts (SOT §7): the ported files under
 /// `session/templates/`, included at compile time. The depth is `../templates/`

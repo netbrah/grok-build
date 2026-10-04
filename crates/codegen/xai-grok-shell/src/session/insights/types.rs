@@ -10,6 +10,8 @@
 //! `label.rs`) and `Aggregate`'s `friction`/`outcomes` fields (item 2b)
 //! consume these enums; neither is declared here.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Which ceiling bound a run (SDD §5): the four members §11's fence comment
@@ -217,6 +219,30 @@ impl Default for InsightsBudget {
             confirm_above_calls: 8,
         }
     }
+}
+
+/// The aggregate half of the two-tier narrate payload (R-narrate-stats — one
+/// pure home in the type spine, the same treatment as 8a's `InsightsBudget`):
+/// the 13 keys §7's payload names verbatim (`commits` DROPPED — nothing
+/// produces a commit count). `top_tools` / `top_goals` never exceed 8
+/// entries in the payload (the builder caps them). 8c's orchestrator fills
+/// it from the real `Aggregate` + the digests; 8b's tests construct it
+/// directly.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NarrateStats {
+    pub sessions: u32,
+    pub analyzed: u32,
+    pub date_range: String,
+    pub messages: u32,
+    pub hours: f64,
+    pub cost_usd: f64,
+    pub top_tools: Vec<(String, u32)>,
+    pub top_goals: Vec<(String, u32)>,
+    pub outcomes: BTreeMap<Outcome, u32>,
+    pub satisfaction: BTreeMap<Satisfaction, u32>,
+    pub friction: BTreeMap<Friction, u32>,
+    pub success: BTreeMap<SuccessMode, u32>,
+    pub languages: BTreeMap<String, u32>,
 }
 
 #[cfg(test)]
