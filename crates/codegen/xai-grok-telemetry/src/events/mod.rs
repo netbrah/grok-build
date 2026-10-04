@@ -27,6 +27,7 @@ pub trait TelemetryEvent: Serialize + Send + 'static {
     }
 }
 
+#[macro_export]
 macro_rules! telemetry_event {
     ($struct:path, $name:literal) => {
         impl $crate::events::TelemetryEvent for $struct {

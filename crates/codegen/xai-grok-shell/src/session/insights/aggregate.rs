@@ -289,7 +289,7 @@ fn concurrency_sweep(analyzed: &[AnalyzedSession<'_>]) -> (u32, u32) {
         while j < ends.len() && ends[j] <= start {
             j += 1;
         }
-        let active = (i + 1 - j) as u32;
+        let active = (i + 1).saturating_sub(j) as u32;
         if active > max_active {
             max_active = active;
         }
