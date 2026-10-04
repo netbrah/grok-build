@@ -657,6 +657,11 @@ impl SessionActor {
                 stop_sequences: None,
                 disable_parallel_tool_use: None,
                 tool_cache_breakpoint: None,
+                // apex-waj.35: the row this fallback names is the empty id above, so the flag is
+                // read for that id — `model_supports_search_tool` answers false for any id that
+                // is not a catalog row (the un-admitted route), and it stays a derivation rather
+                // than a literal if a row is ever keyed on an empty model.
+                supports_search_tool: self.models_manager.model_supports_search_tool(""),
                 server_tools: None,
                 mcp_servers: None,
                 mcp_toolset_server: None,

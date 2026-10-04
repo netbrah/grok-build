@@ -278,13 +278,31 @@ impl ChatStateActor {
     /// `x-litellm-tags` pin (`None` = untagged) — feeds the switch-time gate
     /// on the AZ->AZ row (the store keeps the ciphertext only when the item
     /// mint tag is compatible with the target pin).
+    ///
+    /// `route` (apex-waj.35, SPEC-W2 PA-5): the target row's route tuple, built by the
+    /// shell from the row the switch lands on. The boundary below comes out of the ROUTE
+    /// and the slug-derived construction that used to sit here is gone: `model_boundary_class`
+    /// answers from a different vocabulary than the row's own `ApiBackend`, so keeping it
+    /// would put the two axes of the same switch back into disagreement by default. Neither
+    /// value is ever derived from `target_model` here — PA-5 forbids it and the
+    /// `route_tuple_reaches_the_projector_from_the_actor` test kills a mutant that tries it.
     pub(super) fn project_switch_history(
         &mut self,
         target_model: &str,
         target_pin: Option<&str>,
+        route: &xai_grok_sampling_types::conversation::projection::TargetRoute,
     ) -> Option<(usize, tokio::sync::oneshot::Receiver<std::io::Result<()>>)> {
-        let boundary =
-            xai_grok_sampling_types::conversation::projection::model_boundary_class(target_model);
+        let boundary = route.boundary();
+        // apex-waj.35 (ruling `map/RULINGS-o1o5.md` §"O3, run 5"): this pass deliberately does
+        // NOT persist `route.admission()`. The row's `supports_search_tool` flag belongs to the
+        // `SamplingConfig` the switch installs a few statements earlier, and
+        // `build_conversation_request` reads it from there; a second writer here would be a
+        // second, independent answer to "which row is this session on" — the thing the ruling
+        // removed the separate publication command to eliminate. The route's admission half has
+        // no production reader yet: `projection.rs::discovery_tier` (`projection.rs:980`,
+        // `#[allow(dead_code)]` there) is its only consumer and all of its call sites are in
+        // that file's test module (`projection.rs:1008` onward) — those projector arms are
+        // apex-waj.2.
         let (changed, disk_ack) =
             self.rewrite_history(HistoryRewrite::SwitchProjection, |conversation| {
                 let projected =
@@ -293,6 +311,7 @@ impl ChatStateActor {
                         target_model,
                         boundary,
                         target_pin,
+                        route,
                     )
                     .items;
                 let changed = projection_changed_count(conversation, &projected);
@@ -692,6 +711,10 @@ impl ChatStateActor {
         self.state.conversation = snap.conversation;
         self.rebase_turn_capture_offset();
         self.state.sampling_config = snap.sampling_config;
+        // The snapshot's config carries its row's `supports_search_tool` flag and
+        // `build_conversation_request` reads the flag off the installed config, so replacing the
+        // config IS the refresh — a rewind to a pre-switch snapshot cannot leave the old row's
+        // flag behind (apex-waj.35, ruling `map/RULINGS-o1o5.md` §"O3, run 5").
         self.state.prompt_index = snap.prompt_index;
         self.state.total_tokens = snap.total_tokens;
         self.state.estimated_tokens_since_model = 0;

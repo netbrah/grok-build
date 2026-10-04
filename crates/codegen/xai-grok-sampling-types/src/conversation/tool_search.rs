@@ -4,7 +4,7 @@
 //! `tool_search_call` / `tool_search_output` item, so discovery state had no
 //! home in the conversation IR. On a Responses->Responses model switch — the
 //! seam where the preemptive family-switch compaction is deliberately skipped
-//! (`xai-grok-shell/src/session/acp_session_impl/model_switch.rs:464-468`,
+//! (`xai-grok-shell/src/session/acp_session_impl/model_switch.rs:519-526`,
 //! `family_switch_compact_required`, so that the switch-time projection runs on
 //! the real history) and the switch projector is therefore the only actor that
 //! rewrites history at the boundary —
@@ -6594,7 +6594,13 @@ mod tests {
             crate::conversation::projection::Boundary::VLLenient,
             crate::conversation::projection::Boundary::Vertex,
         ] {
-            let projected = crate::conversation::projection::project_switch_history(&items, "target-row", boundary, None);
+            let projected = crate::conversation::projection::project_switch_history(
+                &items,
+                "target-row",
+                boundary,
+                None,
+                &crate::conversation::projection::inert_route(boundary),
+            );
             assert_eq!(projected.items.len(), items.len(), "{boundary:?}");
             assert!(projected.drops.is_empty(), "{boundary:?}: {:?}", projected.drops);
             let discovery: Vec<&ToolSearchItem> = projected

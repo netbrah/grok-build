@@ -1,6 +1,7 @@
 use super::*;
 use crate::remote::DEFAULT_CONTEXT_WINDOW;
 use xai_chat_state::conversation_util::replace_or_insert_system_head;
+use xai_grok_sampling_types::conversation::projection::TargetRoute;
 impl SessionActor {
     pub(super) async fn handle_set_session_model(
         self: &std::sync::Arc<Self>,
@@ -61,6 +62,15 @@ impl SessionActor {
                 "supports_backend_search": sampling_config.supports_backend_search,
             })),
         );
+        // apex-waj.35 (ruling `map/RULINGS-o1o5.md` §"O3, run 5"): the target row's
+        // `supports_search_tool` flag, read once for both readers — the config installed just
+        // below (which is what actually moves the session's admission) and the route tuple the
+        // switch projection carries. A catalog lookup only; the expensive part (the tool-bridge
+        // snapshot the route tuple needs) stays inside the projection window, and a row that
+        // declines the declaration never pays for it.
+        let row_supports_search_tool = self
+            .models_manager
+            .model_supports_search_tool(&sampling_config.model);
         self.chat_state_handle
             .update_sampling_config(xai_grok_sampling_types::SamplingConfig {
                 base_url: sampling_config.base_url.clone(),
@@ -88,6 +98,7 @@ impl SessionActor {
                 stop_sequences: sampling_config.stop_sequences.clone(),
                 disable_parallel_tool_use: sampling_config.disable_parallel_tool_use,
                 tool_cache_breakpoint: sampling_config.tool_cache_breakpoint,
+                supports_search_tool: row_supports_search_tool,
                 // MGW F1 (apex-ayl.115): the config-selected server-tool
                 // surface rides the sampler carrier (F2 carrier precedent).
                 server_tools: sampling_config.server_tools.clone(),
@@ -156,9 +167,12 @@ impl SessionActor {
         if turn_in_flight && is_family_switch {
             tracing::warn!("Family-switch compact skipped: turn in flight");
         }
+        // apex-waj.35: the row's backend now has two readers (this gate and the route tuple below),
+        // so the gate clones instead of moving the field out of `sampling_config` the way it did
+        // before the tuple existed; the shipped by-value signature of the gate is unchanged.
         if is_family_switch
             && !turn_in_flight
-            && family_switch_compact_required(sampling_config.api_backend)
+            && family_switch_compact_required(sampling_config.api_backend.clone())
             && self.history_has_model_minted_items().await
         {
             self.abort_and_clear_prefire().await;
@@ -177,6 +191,10 @@ impl SessionActor {
                 tracing::error!(error = %e, "Family-switch compaction failed; switching anyway");
             }
         }
+        // apex-waj.35: the row's `supports_search_tool` flag already rode the config installed
+        // at the top of this handler, so there is nothing to publish here — and deliberately no
+        // gate on `turn_in_flight`: a switch taken mid-turn moves the row AND its admission
+        // together, rather than moving the row and leaving the previous row's flag behind.
         // XW-PROJECT-1 (apex-ayl.71): proactive switch-time projection for the
         // cross-wire switch; the actor no-ops (NoMatch) when the history is
         // already in the target form. Gated: real model-id change, no turn in flight.
@@ -190,7 +208,29 @@ impl SessionActor {
                 .get(xai_grok_sampling_types::ENC_AFFINITY_PIN_HEADER)
                 .map(|value| value.as_str())
                 .filter(|value| !value.is_empty());
-            self.apply_switch_projection(&sampling_config.model, target_pin).await;
+            // apex-waj.35: the route tuple, assembled from this one target row and threaded
+            // to the projector. `target_route_from_row` reads the row's own `api_backend` and
+            // `model` off the config it is handed — never `infer_api_backend` — takes `Boundary`
+            // from that same id, and admits the row's `supports_search_tool` flag over the
+            // session's declared tool surface. Cloning the Arc so the borrow is gone before the
+            // await.
+            //
+            // The snapshot is taken only on a row that can be admitted. `tool_definitions()`
+            // clones every tool definition on the bridge, and the surface feeds nothing but
+            // `has_searchable_tools`, which `admitted()` ANDs with this same flag — so on a
+            // row that declines the declaration the clone cannot change any answer and a
+            // non-admitting row pays nothing for it. The request path does not read this
+            // value either: it recomputes the surface from `ConversationRequest::tools`.
+            let declared_tools = if row_supports_search_tool {
+                let tool_bridge = self.agent.borrow().tool_bridge().clone();
+                tool_bridge.tool_definitions().await
+            } else {
+                Vec::new()
+            };
+            let route =
+                target_route_from_row(&sampling_config, row_supports_search_tool, &declared_tools);
+            self.apply_switch_projection(&sampling_config.model, target_pin, &route)
+                .await;
         }
         Ok(model_id)
     }
@@ -221,6 +261,16 @@ impl SessionActor {
         // both writers produce identical egress for the same (effort, menu).
         cfg.ultra_wire_effort = self.models_manager.ultra_wire_effort_for(&cfg.model);
         let model_id = acp::ModelId::new(cfg.model.clone());
+        // apex-waj.35 (ruling `map/RULINGS-o1o5.md` §"O3, run 5"): this handler is a writer that
+        // rewrites `cfg.model` (the re-route above), and the config it installs carries the row's
+        // `supports_search_tool` flag, so the flag is re-read against the POST-routing id in the
+        // same breath — the actor takes the admission from this config, not from a second
+        // message. `model_supports_search_tool` answers the routed id's OWN row (its exact key
+        // wins — `agent/remote_config/resolution.rs:16`), and a baked `-1m` row routes to the base
+        // row it names (`default_models.json:425-426`), where the flag can differ.
+        cfg.supports_search_tool = self
+            .models_manager
+            .model_supports_search_tool(cfg.model.as_str());
         self.chat_state_handle.update_sampling_config(cfg);
         let agent_name = self.agent.borrow().definition().name.clone();
         let _ = self
@@ -480,11 +530,54 @@ fn family_switch_compact_required(
     !matches!(api_backend, xai_grok_sampling_types::ApiBackend::Responses)
 }
 
+/// The route tuple a switch hands the projector (apex-waj.35, bead `apex-waj.35`; SPEC-W2 §3.1):
+/// the target row's API backend, that row's boundary regime, and its search admission — all three
+/// keyed off the SAME target row. That is what keeps the backend/boundary pair honest; it does not
+/// make a disagreement unconstructible. `boundary` is `model_boundary_class(row.model)` (slug
+/// vocabulary) and `backend` is the row's `api_backend` (row vocabulary), so `Messages` x
+/// non-`Vertex` still type-checks and is pinned LEGAL by SPEC-W2 PA-6
+/// (`projection.rs::messages_target_on_a_non_vertex_boundary_still_materialises`). The guard that
+/// would catch a genuinely inconsistent tuple — PA-2's release-visible fail-closed, whose test is
+/// `an_inconsistent_route_tuple_demotes_and_records` (SPEC-W2 §4.1 T-2) — is owed by the projector
+/// arms on apex-waj.2, not by this seam.
+///
+/// `row` MUST be the target row's own config, and its `api_backend` MUST be what the function reads:
+/// never [`xai_grok_sampling_types::catalog_wire::infer_api_backend`] of `row.model`. That helper
+/// answers `ChatCompletions` for an Anthropic slug while every claude row here is served on
+/// `/messages`, so a slug-derived backend keys a D2 cell as D3 and silently demotes every vertex
+/// switch. The derivation lives INSIDE this function for that reason: the hazard test hands it a row
+/// whose `api_backend` disagrees with `infer_api_backend(row.model)`, so substituting the slug answer
+/// here (SPEC-W2 mutant MUT-R1) reddens that test rather than passing through a call site that
+/// supplies an already-correct argument. `switch_route_takes_its_backend_from_the_row_not_the_slug`
+/// pins it.
+///
+/// `declared_tools` is the session's tool-bridge surface, bounded by ruling D1 to a declared-tool
+/// type, and it is a SWITCH-time snapshot — valid only for the projector, which does not read the
+/// admission. The request path does not consume it: `xai-chat-state`'s `build_conversation_request`
+/// reads just the persisted row flag and recomputes `has_searchable_tools` over
+/// `ConversationRequest::tools` (see `has_searchable_tools`). That is why the snapshot is taken only
+/// on a row whose `supports_search_tool` is set.
+fn target_route_from_row(
+    row: &xai_grok_sampler::SamplerConfig,
+    row_supports_search_tool: bool,
+    declared_tools: &[xai_grok_tools::types::definition::ToolDefinition],
+) -> TargetRoute {
+    TargetRoute::new(
+        row.api_backend.clone(),
+        xai_grok_sampling_types::conversation::projection::model_boundary_class(&row.model),
+        xai_grok_sampling_types::SearchAdmission::for_row(row_supports_search_tool, declared_tools),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::config::{Config, ModelEntry, ModelInfo};
-    use indexmap::IndexMap;
+    use crate::agent::config::{ModelEntry, ModelInfo};
+    // The row/catalog and turn-request scaffolding is shared with `acp_session_impl/side_call.rs`
+    // (`acp_session_tests/support.rs`), so the two modules cannot drift apart.
+    use super::super::support::{
+        actor_on_row, entry_with_search_flag, manager_with_entries, turn_request,
+    };
     use xai_grok_sampling_types::{ReasoningEffort, ReasoningEffortOption};
 
     fn entry_with_menu(id: &str, supports: bool, menu: &[(ReasoningEffort, bool)]) -> ModelEntry {
@@ -508,24 +601,6 @@ mod tests {
             auth_provider: None,
             api_base_url: None,
         }
-    }
-
-    fn manager_with_entries() -> (
-        crate::agent::remote_config::ModelsManager,
-        tempfile::TempDir,
-    ) {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let auth = std::sync::Arc::new(
-            xai_grok_login::AuthManager::new(tmp.path(), xai_grok_login::GrokComConfig::default()),
-        );
-        let manager = crate::agent::remote_config::ModelsManager::new(
-            None,
-            IndexMap::new(),
-            acp::ModelId::new("default"),
-            auth,
-            Config::default(),
-        );
-        (manager, tmp)
     }
 
     /// S7 (SDD §4, M1 fix — the /effort seed): the /effort write path
@@ -685,5 +760,319 @@ mod tests {
             family_switch_compact_required(ApiBackend::ChatCompletions),
             "ChatCompletions targets keep the compact (fail-closed)"
         );
+    }
+
+    /// One declared tool, as the switch site hands it to [`target_route_from_row`] — the session's
+    /// tool-bridge surface is a `Vec<ToolDefinition>` and the producer only ever asks whether
+    /// it is empty, so this is the real element type, not a stand-in.
+    fn one_declared_tool() -> Vec<xai_grok_tools::types::definition::ToolDefinition> {
+        vec![xai_grok_tools::types::definition::ToolDefinition::function(
+            "read_file",
+            None::<String>,
+            serde_json::json!({ "type": "object" }),
+        )]
+    }
+
+    /// The target row as the switch site actually holds it: a `SamplerConfig`, which is what
+    /// `handle_set_session_model` receives and what `target_route_from_row` reads both of its
+    /// row-derived axes from. Only `model` and `api_backend` matter to the tuple, so the rest is
+    /// the default config.
+    fn row_config(
+        model_id: &str,
+        api_backend: xai_grok_sampling_types::ApiBackend,
+    ) -> xai_grok_sampler::SamplerConfig {
+        xai_grok_sampler::SamplerConfig {
+            model: model_id.to_owned(),
+            api_backend,
+            ..Default::default()
+        }
+    }
+
+    /// The hazard test the brief demands (SPEC-W2 §3.1 / T-1's shell half): `ApiBackend`
+    /// comes from the ROW, never from the slug. `infer_api_backend` answers
+    /// `ChatCompletions` for an Anthropic slug (`catalog_wire.rs:79-81` — "Claude stays on
+    /// Chat Completions until the native `/v1/messages` port lands"), while every claude row
+    /// in this deploy is served on `/v1/messages`. A tuple assembled from the slug therefore
+    /// keys a `/messages` cell with the ChatCompletions backend, and the discovery ladder
+    /// answers D3 Demote where it should answer D2 Materialise.
+    ///
+    /// What makes this a KILLER rather than a restatement is that the row is handed over as a
+    /// `SamplerConfig` and `target_route_from_row` does the deriving: the fixture sets
+    /// `api_backend: Messages` on a slug whose `infer_api_backend` answer is `ChatCompletions`, so
+    /// MUT-R1 — substituting `infer_api_backend(cfg.model)` for `cfg.api_backend` inside that
+    /// function — lands on the first assertion. It is not pinned anywhere downstream: the
+    /// projector consumes only `route.boundary()` and `TargetRoute::backend()` has no production
+    /// reader until the apex-waj.2 arms land, so a test that passed the backend in as an argument
+    /// would leave that substitution invisible tree-wide.
+    #[test]
+    fn switch_route_takes_its_backend_from_the_row_not_the_slug() {
+        use xai_grok_sampling_types::ApiBackend;
+        let claude_row = "claude-opus-5";
+        let route = target_route_from_row(
+            &row_config(claude_row, ApiBackend::Messages),
+            /* row_supports_search_tool */ true,
+            &one_declared_tool(),
+        );
+        assert_eq!(
+            route.backend(),
+            ApiBackend::Messages,
+            "a claude switch must not demote its ApiBackend"
+        );
+        assert_eq!(
+            xai_grok_sampling_types::catalog_wire::infer_api_backend(claude_row),
+            ApiBackend::ChatCompletions,
+            "the slug answer really is the wrong one — if this flips, the test above \
+             has stopped distinguishing the two sources"
+        );
+        assert_eq!(
+            route.boundary(),
+            xai_grok_sampling_types::conversation::projection::Boundary::Vertex,
+            "the same row is a Vertex boundary: both axes of the tuple come from one row"
+        );
+    }
+
+    /// The admission half of the tuple, from the row flag and the declared surface — the
+    /// two signals ruling D1 folds. Dropping either from the tuple the shell builds (brief
+    /// mutant 1) cannot pass this: an admission that is always closed makes every admitted
+    /// row look like the XT-11 row that declines the declaration.
+    ///
+    /// Every cell reads BOTH FIELDS BACK rather than only `admitted()`. `admitted()` folds them
+    /// with a symmetric `&&`, so it answers the same for a pair and its mirror image; the two
+    /// asymmetric cells (`row_declines`, `nothing_to_find`) are what pin which signal the shell's
+    /// construction path put into which field.
+    #[test]
+    fn switch_route_carries_the_rows_admission() {
+        use xai_grok_sampling_types::{ApiBackend, SearchAdmission};
+        let row = || row_config("claude-opus-5", ApiBackend::Messages);
+        let declared = one_declared_tool();
+        let admitted =
+            target_route_from_row(&row(), /* row_supports_search_tool */ true, &declared);
+        assert!(
+            admitted.admission().admitted(),
+            "flag + non-empty declared surface ⇒ the route is admitted"
+        );
+        assert_eq!(
+            admitted.admission(),
+            SearchAdmission {
+                supports_search_tool: true,
+                has_searchable_tools: true,
+            },
+            "both signals name the row fact they carry"
+        );
+
+        let row_declines =
+            target_route_from_row(&row(), /* row_supports_search_tool */ false, &declared);
+        assert!(
+            !row_declines.admission().admitted(),
+            "the row's supports_search_tool=false must close the gate on its own"
+        );
+        assert_eq!(
+            row_declines.admission(),
+            SearchAdmission {
+                supports_search_tool: false,
+                has_searchable_tools: true,
+            },
+            "the row's flag must land in `supports_search_tool`, the surface in the other field — \
+             a swapped pair closes this row for the wrong reason and opens an empty one"
+        );
+
+        let nothing_declared: Vec<xai_grok_tools::types::definition::ToolDefinition> = vec![];
+        let nothing_to_find = target_route_from_row(
+            &row(),
+            /* row_supports_search_tool */ true,
+            &nothing_declared,
+        );
+        assert!(
+            !nothing_to_find.admission().admitted(),
+            "an empty declared surface must close the gate on its own"
+        );
+        assert_eq!(
+            nothing_to_find.admission(),
+            SearchAdmission {
+                supports_search_tool: true,
+                has_searchable_tools: false,
+            },
+            "the other asymmetric cell: the row's flag is unchanged by an empty surface"
+        );
+    }
+
+    /// The switch handler, driven for real: the config `handle_set_session_model` installs carries
+    /// the flag it read off the target row (`model_switch.rs:71-73`, written into the config at
+    /// :101), so that one message moves the row and its admission together — no second publication
+    /// and no ordering rule to get wrong.
+    ///
+    /// Stage 1 re-asserts the id the actor already holds (the resume / named-row boot shape, which
+    /// the projection gate skips); stage 2 switches to a row the operator left off; stage 3 makes
+    /// the same switch to another flagged row WITH a turn in flight, the case a publication racing
+    /// the turn would get wrong — admission needs no such gate because the flag arrives inside the
+    /// config rather than alongside it, so nothing can be published out of order with the row.
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_set_session_model_moves_the_row_and_its_admission_together() {
+        const ADMITTING: &str = "flagged-row-a";
+        const ALSO_FLAGGED: &str = "flagged-row-b";
+        const DECLINING: &str = "unflagged-row";
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (manager, _tmp) = manager_with_entries();
+                manager.insert_test_entry(
+                    ADMITTING,
+                    entry_with_search_flag(ADMITTING, /* supports_search_tool */ true),
+                );
+                manager.insert_test_entry(
+                    ALSO_FLAGGED,
+                    entry_with_search_flag(ALSO_FLAGGED, /* supports_search_tool */ true),
+                );
+                manager.insert_test_entry(
+                    DECLINING,
+                    entry_with_search_flag(DECLINING, /* supports_search_tool */ false),
+                );
+                let actor = actor_on_row(ADMITTING, manager).await;
+
+                // Stage 1: the boot shape — same id, no turn, no projection.
+                actor
+                    .handle_set_session_model(
+                        row_config(ADMITTING, xai_grok_sampling_types::ApiBackend::Responses),
+                        /* use_concise */ false,
+                        /* is_family_switch */ false,
+                        /* apply_prompt_override */ false,
+                        /* skip_prompt_rewrite */ false,
+                        85,
+                    )
+                    .await
+                    .expect("re-asserting the session's row must succeed");
+                let request = turn_request(&actor).await;
+                assert_eq!(
+                    request.search_admission,
+                    Some(xai_grok_sampling_types::SearchAdmission {
+                        supports_search_tool: true,
+                        has_searchable_tools: true,
+                    }),
+                    "the config the shell installs carries the flag it read off the catalog row, \
+                     and that alone admits the next request"
+                );
+
+                // Stage 2: the operator flag is off on this row, so the config carries `false`.
+                actor
+                    .handle_set_session_model(
+                        row_config(DECLINING, xai_grok_sampling_types::ApiBackend::Responses),
+                        /* use_concise */ false,
+                        /* is_family_switch */ false,
+                        /* apply_prompt_override */ false,
+                        /* skip_prompt_rewrite */ false,
+                        85,
+                    )
+                    .await
+                    .expect("switching to the declining row must succeed");
+                let request = turn_request(&actor).await;
+                assert_eq!(
+                    request.search_admission.map(|a| a.supports_search_tool),
+                    Some(false),
+                    "a row the operator left off must publish its own `false`, not stay on the \
+                     previous row's flag: {:?}",
+                    request.search_admission
+                );
+                assert!(
+                    !request.search_admission.is_some_and(|a| a.admitted()),
+                    "and the next request must ride the un-admitted route"
+                );
+
+                // Stage 3: a switch taken while a turn is in flight — the case the projection
+                // gate at `model_switch.rs:201` skips, and the case admission deliberately
+                // does not gate. This row IS flagged and a turn is in flight, and the row and
+                // its flag arrive in one message: the next request is admitted, not `None`.
+                {
+                    let mut state = actor.state.lock().await;
+                    state.running_task = Some(super::super::support::running_task_stub("running"));
+                }
+                actor
+                    .handle_set_session_model(
+                        row_config(ALSO_FLAGGED, xai_grok_sampling_types::ApiBackend::Responses),
+                        /* use_concise */ false,
+                        /* is_family_switch */ false,
+                        /* apply_prompt_override */ false,
+                        /* skip_prompt_rewrite */ false,
+                        85,
+                    )
+                    .await
+                    .expect("switching with a turn in flight must still switch the row");
+                let request = turn_request(&actor).await;
+                assert_eq!(
+                    request.search_admission,
+                    Some(xai_grok_sampling_types::SearchAdmission {
+                        supports_search_tool: true,
+                        has_searchable_tools: true,
+                    }),
+                    "a mid-turn switch must not leave the session on a stale or missing flag: \
+                     the row it moved to is flagged: {:?}",
+                    request.search_admission
+                );
+            })
+            .await;
+    }
+
+    /// The second writer that moves `sampling_config.model`: `/effort` on a row that spells the
+    /// effort into the id. Because the config carries the row's flag, a writer that rewrites
+    /// `model` must re-read the flag with it — and the routed id resolves back through
+    /// `resolve_catalog_key` to the same catalog entry, so the answer is the same one the
+    /// session booted with. Delete the re-read in `handle_set_reasoning_effort` and the config
+    /// keeps the value the session booted with; this fixture's two ids resolve to that same
+    /// entry, so NO assertion here catches that deletion (coverage owed). Elsewhere — a row
+    /// whose flag differs between those two ids, or after a preceding invalidation — one
+    /// /effort change would take the declaration off an admitting row for the rest of the
+    /// session.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_effort_reroute_keeps_the_rows_flag() {
+        const ROW: &str = "flagged-row";
+        const ROUTED: &str = "flagged-row-max";
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (manager, _tmp) = manager_with_entries();
+                let mut entry = entry_with_menu(
+                    ROW,
+                    /* supports */ true,
+                    &[
+                        (ReasoningEffort::Ultra, false),
+                        (ReasoningEffort::Low, true),
+                    ],
+                );
+                entry.info.supports_search_tool = true;
+                entry.info.variants = vec![crate::agent::config::ModelVariant {
+                    effort: ReasoningEffort::Ultra,
+                    model_id: ROUTED.to_owned(),
+                }];
+                manager.insert_test_entry(ROW, entry);
+                let actor = actor_on_row(ROW, manager).await;
+                assert!(
+                    turn_request(&actor)
+                        .await
+                        .search_admission
+                        .is_some_and(|a| a.admitted()),
+                    "stage 1: the row admits before the effort change, off its own config"
+                );
+
+                let routed = actor
+                    .handle_set_reasoning_effort(ReasoningEffort::Ultra)
+                    .await
+                    .expect("the menu offers ultra");
+                assert_eq!(
+                    routed.0.as_ref(),
+                    ROUTED,
+                    "anti-vacuity: this row must actually re-route to a different id, or the test \
+                     pins nothing"
+                );
+                let request = turn_request(&actor).await;
+                assert_eq!(
+                    request.search_admission,
+                    Some(xai_grok_sampling_types::SearchAdmission {
+                        supports_search_tool: true,
+                        has_searchable_tools: true,
+                    }),
+                    "a re-route within the same catalog row must keep the declaration: the flag \
+                     describes the row, and the routed id resolves back to it"
+                );
+            })
+            .await;
     }
 }

@@ -15,9 +15,17 @@ pub mod tool_search;
 pub use chat_completions::{conversation_item_to_chat_message, conversation_to_chat_messages};
 pub use messages::build_messages_request;
 pub use responses::{
-    extra_tool_entries, patch_reasoning_empty_ids, patch_reasoning_text_types,
+    DeclaredToolSurface, SearchAdmission, TOOL_SEARCH_DECLARATION_TYPE, extra_tool_entries,
+    extra_tool_entries_for_route, patch_reasoning_empty_ids, patch_reasoning_text_types,
     response_to_conversation_items,
 };
+// Not in the crate's public API: nothing outside this crate calls it (AGENTS §7, keep crate
+// API surfaces small). The surface half of an admission is meant to come from
+// `SearchAdmission::for_row`, not from a hand-computed call, so the only reader left is
+// `projection`'s test module — hence `#[cfg(test)]`, which keeps a re-export nothing in `src/`
+// consumes from warning `unused_imports` in every production build of this crate.
+#[cfg(test)]
+pub(crate) use responses::has_searchable_tools;
 pub use tool_name::{
     FLAT_TOOL_NAME_DELIMITER, MCP_NAMESPACE_PREFIX, NameResolutionError, Resolution, ToolName,
     ToolResolutionMap, WireToolName, flat_tool_name, parse_flat_tool_name,
@@ -1051,6 +1059,51 @@ pub struct ConversationRequest {
     /// Backend-hosted tools (sent as native Responses API tool types).
     /// These are executed server-side by the agentic sampler during inference.
     pub hosted_tools: Vec<HostedTool>,
+    /// The search admission of the route this request is being sent on
+    /// (bead apex-waj.35, requirement 4; rulings D1 and D5 in
+    /// `map/RULINGS-o1o5.md`). `None` (default) = no admitted route has been
+    /// taken, so the request is on the un-admitted route and carries no hosted
+    /// `tool_search` declaration — byte-identical to the pre-apex-waj.35 body.
+    ///
+    /// This is per-REQUEST and must stay so. `ClientDefaults` is assembled once
+    /// from `SamplerConfig`, while the row changes mid-session through
+    /// `update_sampling_config`, so a boolean carried on the client would go
+    /// stale at the first row switch; the admission therefore travels beside the
+    /// `hosted_tools` it governs and is read by the three Responses-wire
+    /// `extra_tool_entries_for_route` call sites in `xai-grok-sampler/src/client.rs`.
+    ///
+    /// Two production writers, one per request family. Each pairs its two signals through
+    /// `SearchAdmission::for_row`, so `has_searchable_tools` stays the sole producer of the surface
+    /// half (ruling D1) whichever door a request came through:
+    ///
+    /// - the turn: `xai-chat-state`'s `build_conversation_request`
+    ///   (`xai-chat-state/src/actor/request_builder.rs:88`), whose row half is the flag of the
+    ///   `SamplingConfig` naming this request's row (`request_builder.rs:89`) — it rides the row, so
+    ///   boot, resume and switch all refresh it in one message (ruling "O3, run 5");
+    /// - the cache-aligned auxiliary call: `xai-grok-shell`'s `parent_cached_request`
+    ///   (`xai-grok-shell/src/session/acp_session_impl/side_call.rs:139`, fn at `side_call.rs:108`),
+    ///   whose row half comes off the live CATALOG (`side_call.rs:140` `model_supports_search_tool`)
+    ///   rather than off a config, so it equals the flag those writes installed (bring-up
+    ///   `acp_session_impl/spawn.rs:114`, switch `acp_session_impl/model_switch.rs:73`) at install
+    ///   time only — a catalog refresh moves the row with no write; window owed on apex-waj.35.
+    ///
+    /// Both take the surface half from the tools THAT request declares — not from the switch-time
+    /// tool-bridge snapshot the route tuple was assembled from. Recomputing it per request is also
+    /// what keeps a tool-less auxiliary request un-admitted even on an admitting row, so that
+    /// request's prompt-cache prefix does not move: `acp_session_impl/title_refresh.rs:134` passes
+    /// `tools: Vec::new()` and stays un-admitted, therefore byte-identical. Requests hand-built
+    /// outside either writer take `None` from this type's `Default` (`conversation.rs:1053`), and a
+    /// cache-aligned door that attaches the main turn's tools has to derive this field itself or its
+    /// `tools` array diverges from the turn's — the prefix shift the door exists to avoid. Two such
+    /// doors still take `Default` and are owed on apex-waj.35: the Responses arm of
+    /// `helpers/session_compact.rs:630`, because `generate_session_compact` is handed the sampler's
+    /// `SamplerConfig`, which carries no row flag, so closing it needs the admission threaded from
+    /// its two production callers (`session/compaction.rs:273`,
+    /// `session/helpers/full_replace_compaction.rs:133`); and the Codex remote-compaction request
+    /// built at `session/compaction.rs:1039-1042`, which attaches `hosted_tools` and leaves this
+    /// field alone on a path `prompt_cache_key` makes cache-aligned (`session/compaction.rs:1045-1046`)
+    /// and whose body builder already reads it (`xai-grok-sampler/src/client.rs:2736`).
+    pub search_admission: Option<SearchAdmission>,
     /// Config-selected server-tool union members (canonical dated type
     /// strings, validated at the config layer; "mcp_toolset" requires
     /// `mcp_toolset_server`) (MSGW F1, apex-ayl.115).
@@ -2646,7 +2699,7 @@ impl ConversationRequest {
                     ResponsesReplayDialect::Codex => Some(discovery.raw().clone()),
                     // No captured grok row models either item type; splicing an
                     // un-modelled input type is a hard 400 (the `compaction`
-                    // precedent, `xai-grok-sampler/src/client.rs:2726-2733`), so keep
+                    // precedent, `xai-grok-sampler/src/client.rs:2812-2820`), so keep
                     // the bounded placeholder the flattener emitted. Wire evidence
                     // per row class is what would change this arm (invariant C4).
                     ResponsesReplayDialect::Xai => None,

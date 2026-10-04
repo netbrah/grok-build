@@ -194,6 +194,10 @@ pub(crate) struct ChatState {
     /// Uploaded as sibling `turn_{N}` artifacts so orchestrators can discover harness subagents.
     /// Drained by `TakeHarnessTraceTurns` at the end of the user-facing turn.
     pub(super) harness_trace_turns: Vec<Vec<ConversationItem>>,
+    // No search-admission state lives here: the row's `supports_search_tool` flag is read straight
+    // off `sampling_config` when a request is built (`actor/request_builder.rs`), so the config that
+    // names the row is its only carrier and there is no second copy to go stale against
+    // (bead apex-waj.35, ruling `map/RULINGS-o1o5.md` §"O3, run 5").
 }
 
 /// Tracks which conversation items belong to the current turn without cloning each push.
@@ -294,6 +298,7 @@ mod tests {
             stop_sequences: None,
             disable_parallel_tool_use: None,
             tool_cache_breakpoint: None,
+            supports_search_tool: false,
             server_tools: None,
             mcp_servers: None,
             mcp_toolset_server: None,

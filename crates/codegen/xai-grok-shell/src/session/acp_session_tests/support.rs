@@ -315,6 +315,7 @@ async fn create_test_actor_inner(
             stop_sequences: None,
             disable_parallel_tool_use: None,
             tool_cache_breakpoint: None,
+            supports_search_tool: false,
             server_tools: None,
             mcp_servers: None,
             mcp_toolset_server: None,
@@ -1250,4 +1251,108 @@ pub(crate) fn with_run_loop(mut actor: SessionActor) -> (Arc<SessionActor>, Star
         actor
     });
     (actor, startup_tasks)
+}
+/// A `ModelsManager` carrying no rows, plus the tempdir handed to its `AuthManager` as `grok_home`
+/// (`xai-grok-login/src/manager.rs:258`). The caller binds the dir for as long as it uses the
+/// manager — `acp_session_impl/model_switch.rs` and `acp_session_impl/side_call.rs` both do.
+pub(crate) fn manager_with_entries() -> (
+    crate::agent::remote_config::ModelsManager,
+    tempfile::TempDir,
+) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let auth = std::sync::Arc::new(xai_grok_login::AuthManager::new(
+        tmp.path(),
+        xai_grok_login::GrokComConfig::default(),
+    ));
+    let manager = crate::agent::remote_config::ModelsManager::new(
+        None,
+        indexmap::IndexMap::new(),
+        acp::ModelId::new("default"),
+        auth,
+        crate::agent::config::Config::default(),
+    );
+    (manager, tmp)
+}
+/// A catalog row carrying the operator's `supports_search_tool` flag — the tri-state
+/// `agent/config.rs` resolves into `ModelInfo`, which is what
+/// `ModelsManager::model_supports_search_tool` (`agent/remote_config/manager/mod.rs:559`) reads back
+/// through the catalog key.
+pub(crate) fn entry_with_search_flag(
+    id: &str,
+    supports_search_tool: bool,
+) -> crate::agent::config::ModelEntry {
+    let mut info = crate::agent::config::ModelInfo::fallback(id);
+    info.supports_search_tool = supports_search_tool;
+    crate::agent::config::ModelEntry {
+        info,
+        mtls_cert_dir: None,
+        api_key: None,
+        env_key: None,
+        auth_provider: None,
+        api_base_url: None,
+    }
+}
+/// One declared client tool — the minimal surface that makes ruling D1's `has_searchable_tools`
+/// half true.
+pub(crate) fn declared_tool_spec(name: &str) -> xai_grok_sampling_types::ToolSpec {
+    xai_grok_sampling_types::ToolSpec {
+        name: name.to_owned(),
+        description: Some("a tool".to_owned()),
+        parameters: serde_json::json!({ "type": "object" }),
+        exposure: xai_grok_sampling_types::ToolExposure::default(),
+    }
+}
+/// The next turn's request over `tools` — the object `build_conversation_request` stamps the
+/// admission onto (`xai-chat-state/src/actor/request_builder.rs:88`), which is what the sampler's
+/// three `extra_tool_entries_for_route` call sites then read.
+pub(crate) async fn turn_request_over(
+    actor: &SessionActor,
+    tools: Vec<xai_grok_sampling_types::ToolSpec>,
+) -> xai_grok_sampling_types::ConversationRequest {
+    actor
+        .chat_state_handle
+        .build_request(
+            tools,
+            /* memory_reminder */ None,
+            /* persist_memory_reminder */ false,
+            /* trace */ None,
+            /* conv_id */ "c".into(),
+            /* req_id */ "r".into(),
+        )
+        .await
+        .expect("the actor answers BuildConversationRequest")
+}
+/// [`turn_request_over`] over the one declared tool that makes the surface half true.
+pub(crate) async fn turn_request(
+    actor: &SessionActor,
+) -> xai_grok_sampling_types::ConversationRequest {
+    turn_request_over(actor, vec![declared_tool_spec("read_file")]).await
+}
+/// Boot a test actor already holding `model` in its sampling config and hand back the Arc the
+/// handler needs. The row's `supports_search_tool` flag is read off the catalog exactly the way
+/// bring-up reads it (`acp_session_impl/spawn.rs:114`, inside `chat_state_sampling_config` at
+/// `spawn.rs:84`), because a config that names a row without carrying that row's flag is not a
+/// config production can build.
+pub(crate) async fn actor_on_row(
+    model: &str,
+    manager: crate::agent::remote_config::ModelsManager,
+) -> Arc<SessionActor> {
+    let (gateway_tx, _gateway_rx) =
+        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+    let (persistence_tx, _persistence_rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::session::persistence::PersistenceMsg>();
+    let (mut actor, _event_rx) =
+        create_test_actor_ex(0, 256_000, 85, gateway_tx, persistence_tx).await;
+    actor.models_manager = manager;
+    let mut cfg = actor
+        .chat_state_handle
+        .get_sampling_config()
+        .await
+        .expect("the test actor carries a sampling config");
+    cfg.model = model.to_owned();
+    cfg.supports_search_tool = actor
+        .models_manager
+        .model_supports_search_tool(cfg.model.as_str());
+    actor.chat_state_handle.update_sampling_config(cfg);
+    Arc::new(actor)
 }

@@ -68,6 +68,57 @@ fn subagent_sampler_rate_limit_threshold(is_subagent: bool, pacer_max_attempts: 
         xai_grok_sampler::RATE_LIMIT_RETRY_THRESHOLD
     }
 }
+/// The actor's `SamplingConfig` for a session being brought up — new, resumed, forked, or a
+/// subagent child: every one of them reaches `spawn_session_actor` holding an already-resolved
+/// sampler config.
+///
+/// apex-waj.35 (ruling `map/RULINGS-o1o5.md` §"O3, run 5"): `supports_search_tool` is read off
+/// the catalog row this config names, never written as a literal here. That is what closes the
+/// boot gap structurally instead of by adding a call: bring-up is the one site every
+/// session's first row passes through, and the turn's request reads that row's flag
+/// back off the config it is handed (`actor/request_builder.rs:88-91`). A plain `/new`
+/// default row (`RANGE.md` §1's operator shape) never sends `SetSessionModel`: the only
+/// production sender is `agent/handlers/model_switch.rs:229`, and `/new` reaches it only through
+/// the `if let Some(model_id) = resolved_custom_model` gate at
+/// `agent/mvp_agent/session_setup.rs:639` that guards the `apply` call at `:645`.
+pub(crate) fn chat_state_sampling_config(
+    sampling_config: &SamplingConfig,
+    resolved_max_retries: u32,
+    context_window: std::num::NonZeroU64,
+    models_manager: &crate::agent::remote_config::ModelsManager,
+) -> xai_grok_sampling_types::SamplingConfig {
+    xai_grok_sampling_types::SamplingConfig {
+        base_url: sampling_config.base_url.clone(),
+        mtls_cert_dir: sampling_config.mtls_cert_dir.clone(),
+        model: sampling_config.model.clone(),
+        max_completion_tokens: sampling_config.max_completion_tokens,
+        temperature: sampling_config.temperature,
+        top_p: sampling_config.top_p,
+        max_retries: Some(resolved_max_retries),
+        rate_limit_retry_threshold: sampling_config.rate_limit_retry_threshold,
+        api_backend: sampling_config.api_backend.clone(),
+        extra_headers: sampling_config.extra_headers.clone(),
+        conversation_group_id: sampling_config.conversation_group_id.clone(),
+        query_params: sampling_config.query_params.clone(),
+        env_http_headers: sampling_config.env_http_headers.clone(),
+        context_window,
+        reasoning_effort: sampling_config.reasoning_effort,
+        ultra_wire_effort: sampling_config.ultra_wire_effort,
+        stream_tool_calls: Some(sampling_config.stream_tool_calls),
+        cache_ttl: sampling_config.cache_ttl.clone(),
+        thinking_replay: sampling_config.thinking_replay.clone(),
+        top_k: sampling_config.top_k,
+        stop_sequences: sampling_config.stop_sequences.clone(),
+        disable_parallel_tool_use: sampling_config.disable_parallel_tool_use,
+        tool_cache_breakpoint: sampling_config.tool_cache_breakpoint,
+        supports_search_tool: models_manager.model_supports_search_tool(&sampling_config.model),
+        // MGW F1 (apex-ayl.115): the config-selected server-tool surface
+        // rides the sampler carrier (F2 carrier precedent).
+        server_tools: sampling_config.server_tools.clone(),
+        mcp_servers: sampling_config.mcp_servers.clone(),
+        mcp_toolset_server: sampling_config.mcp_toolset_server.clone(),
+    }
+}
 /// Prefer the model-resolved config; the separate argument remains for legacy spawn call sites.
 fn session_max_retries_source(
     sampling_config_max_retries: Option<u32>,
@@ -555,36 +606,12 @@ pub(crate) async fn spawn_session_actor(
     ));
     let chat_state_span = tracing::info_span!("spawn.chat_state_init");
     let chat_state_guard = chat_state_span.enter();
-    let chat_state_sampling_config = xai_grok_sampling_types::SamplingConfig {
-        base_url: sampling_config.base_url.clone(),
-        mtls_cert_dir: sampling_config.mtls_cert_dir.clone(),
-        model: sampling_config.model.clone(),
-        max_completion_tokens: sampling_config.max_completion_tokens,
-        temperature: sampling_config.temperature,
-        top_p: sampling_config.top_p,
-        max_retries: Some(resolved_max_retries),
-        rate_limit_retry_threshold: sampling_config.rate_limit_retry_threshold,
-        api_backend: sampling_config.api_backend.clone(),
-        extra_headers: sampling_config.extra_headers.clone(),
-        conversation_group_id: sampling_config.conversation_group_id.clone(),
-        query_params: sampling_config.query_params.clone(),
-        env_http_headers: sampling_config.env_http_headers.clone(),
-        context_window: context_window_override.unwrap_or(baseline_context_window),
-        reasoning_effort: sampling_config.reasoning_effort,
-        ultra_wire_effort: sampling_config.ultra_wire_effort,
-        stream_tool_calls: Some(sampling_config.stream_tool_calls),
-        cache_ttl: sampling_config.cache_ttl.clone(),
-        thinking_replay: sampling_config.thinking_replay.clone(),
-        top_k: sampling_config.top_k,
-        stop_sequences: sampling_config.stop_sequences.clone(),
-        disable_parallel_tool_use: sampling_config.disable_parallel_tool_use,
-        tool_cache_breakpoint: sampling_config.tool_cache_breakpoint,
-        // MGW F1 (apex-ayl.115): the config-selected server-tool surface
-        // rides the sampler carrier (F2 carrier precedent).
-        server_tools: sampling_config.server_tools.clone(),
-        mcp_servers: sampling_config.mcp_servers.clone(),
-        mcp_toolset_server: sampling_config.mcp_toolset_server.clone(),
-    };
+    let chat_state_sampling_config = chat_state_sampling_config(
+        &sampling_config,
+        resolved_max_retries,
+        context_window_override.unwrap_or(baseline_context_window),
+        &models_manager,
+    );
     let actor_pruning_config = xai_chat_state::PruningConfig {
         enabled: session_pruning_config.enabled,
         keep_last_n_turns: session_pruning_config.keep_last_n_turns,
@@ -2980,5 +3007,197 @@ mod terminal_backend_select_tests {
             select_terminal_backend_kind(false, false, false, false, false),
             TerminalBackendKind::LocalNonPersistent
         );
+    }
+}
+#[cfg(test)]
+mod boot_search_admission_tests {
+    use super::chat_state_sampling_config;
+    use crate::agent::config::{Config, ModelEntry, ModelInfo};
+    use crate::agent::remote_config::ModelsManager;
+    use agent_client_protocol as acp;
+    use std::num::NonZeroU64;
+    use xai_grok_sampling_types::{ConversationItem, ToolSpec};
+
+    const FLAGGED_ROW: &str = "flagged-row";
+    const DECLINING_ROW: &str = "unflagged-row";
+
+    fn entry_with_search_flag(id: &str, supports_search_tool: bool) -> ModelEntry {
+        let mut info = ModelInfo::fallback(id);
+        info.supports_search_tool = supports_search_tool;
+        ModelEntry {
+            info,
+            mtls_cert_dir: None,
+            api_key: None,
+            env_key: None,
+            auth_provider: None,
+            api_base_url: None,
+        }
+    }
+
+    fn manager_with_rows() -> (ModelsManager, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let auth = std::sync::Arc::new(xai_grok_login::AuthManager::new(
+            tmp.path(),
+            xai_grok_login::GrokComConfig::default(),
+        ));
+        let manager = ModelsManager::new(
+            None,
+            indexmap::IndexMap::new(),
+            acp::ModelId::new("default"),
+            auth,
+            Config::default(),
+        );
+        manager.insert_test_entry(
+            FLAGGED_ROW,
+            entry_with_search_flag(FLAGGED_ROW, /* supports_search_tool */ true),
+        );
+        manager.insert_test_entry(
+            DECLINING_ROW,
+            entry_with_search_flag(DECLINING_ROW, /* supports_search_tool */ false),
+        );
+        (manager, tmp)
+    }
+
+    /// The sampler config bring-up is handed for one of those rows. `SamplerConfig` has no
+    /// `supports_search_tool` field, which is why the boot site reads the catalog rather than
+    /// copying a flag off its input.
+    fn sampler_config_on(model: &str) -> crate::sampling::SamplerConfig {
+        crate::sampling::SamplerConfig {
+            model: model.to_owned(),
+            base_url: "https://example.test/v1".to_owned(),
+            ..Default::default()
+        }
+    }
+
+    fn one_tool() -> Vec<ToolSpec> {
+        vec![ToolSpec {
+            name: "read_file".to_owned(),
+            description: Some("a tool".to_owned()),
+            parameters: serde_json::json!({ "type": "object" }),
+            exposure: xai_grok_sampling_types::ToolExposure::default(),
+        }]
+    }
+
+    /// RANGE.md §1's operator shape at the bring-up seam: the config `spawn_session_actor` hands
+    /// the actor when the client named no model id, so no `SetSessionModel` ever arrives
+    /// (`agent/mvp_agent/session_setup.rs:639` gates the only `/new` path to
+    /// `handlers::model_switch::apply`). The flag must come from the row through
+    /// [`chat_state_sampling_config`], because nothing else can put it there.
+    #[tokio::test]
+    async fn booting_on_a_flagged_row_admits_the_first_request() {
+        let (manager, _tmp) = manager_with_rows();
+        let config = chat_state_sampling_config(
+            &sampler_config_on(FLAGGED_ROW),
+            xai_grok_sampler::RATE_LIMIT_RETRY_THRESHOLD,
+            NonZeroU64::new(256_000).expect("test window"),
+            &manager,
+        );
+        assert!(
+            config.supports_search_tool,
+            "bring-up reads the flag off the row it is installing"
+        );
+
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = xai_chat_state::ChatStateActor::spawn(
+            vec![ConversationItem::user("a resumed turn")],
+            config,
+            Box::new(xai_chat_state::NullChatPersistence),
+            event_tx,
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let request = handle
+            .build_request(
+                one_tool(),
+                /* memory_reminder */ None,
+                /* persist_memory_reminder */ false,
+                /* trace */ None,
+                /* conv_id */ "c".into(),
+                /* req_id */ "r".into(),
+            )
+            .await
+            .expect("the booted actor answers BuildConversationRequest");
+        let entries = xai_grok_sampling_types::extra_tool_entries_for_route(
+            &request.hosted_tools,
+            request.search_admission,
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| e["type"].as_str().unwrap_or_default())
+                .collect::<Vec<_>>(),
+            ["tool_search"],
+            "the very first request of a session that booted on the flagged row carries the \
+             declaration, with no model command in its history"
+        );
+        assert_eq!(
+            entries[0]["execution"],
+            serde_json::json!("client"),
+            "ruling D5: `server` paired with the description/parameters this producer always \
+             emits 400s the strict row: {:?}",
+            entries[0]
+        );
+    }
+
+    /// The same bring-up for a row the operator left off, and for an id that is not a catalog row
+    /// at all: both must produce the un-admitted route, and neither may be decided by a literal —
+    /// the answer comes from reading the row.
+    #[tokio::test]
+    async fn booting_on_an_unflagged_or_unknown_row_stays_unadmitted() {
+        let (manager, _tmp) = manager_with_rows();
+        for model in [DECLINING_ROW, "row-that-is-not-in-the-catalog"] {
+            let config = chat_state_sampling_config(
+                &sampler_config_on(model),
+                xai_grok_sampler::RATE_LIMIT_RETRY_THRESHOLD,
+                NonZeroU64::new(256_000).expect("test window"),
+                &manager,
+            );
+            assert_eq!(
+                config.model, model,
+                "anti-vacuity: the config names the row the flag was read for"
+            );
+            assert!(
+                !config.supports_search_tool,
+                "{model} must not be admitted by the bring-up read"
+            );
+
+            let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+            let handle = xai_chat_state::ChatStateActor::spawn(
+                vec![],
+                config,
+                Box::new(xai_chat_state::NullChatPersistence),
+                event_tx,
+                tokio_util::sync::CancellationToken::new(),
+            );
+            let request = handle
+                .build_request(
+                    one_tool(),
+                    /* memory_reminder */ None,
+                    /* persist_memory_reminder */ false,
+                    /* trace */ None,
+                    /* conv_id */ "c".into(),
+                    /* req_id */ "r".into(),
+                )
+                .await
+                .expect("the booted actor answers BuildConversationRequest");
+            let channel =
+                serde_json::to_string(&xai_grok_sampling_types::extra_tool_entries_for_route(
+                    &request.hosted_tools,
+                    request.search_admission,
+                ))
+                .expect("entries serialize");
+            assert!(
+                !channel.contains("tool_search"),
+                "{model} rides the un-admitted route: {channel}"
+            );
+            assert_eq!(
+                channel,
+                serde_json::to_string(&xai_grok_sampling_types::extra_tool_entries(
+                    &request.hosted_tools,
+                ))
+                .expect("entries serialize"),
+                "and its channel is byte-identical to the pre-item form, because an un-admitted \
+                 route is exactly the body this field did not exist for: {channel}"
+            );
+        }
     }
 }

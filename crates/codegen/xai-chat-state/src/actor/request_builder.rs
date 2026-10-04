@@ -74,10 +74,26 @@ impl ChatStateActor {
         items = crate::compaction_utils::ModelRequestHistory::from_raw(items).into_items();
 
         // Step 4: Assemble request
+        // apex-waj.35 requirement 4: the admission rides the REQUEST. The row half is
+        // `sampling_config.supports_search_tool` — the flag of the config that names this request's
+        // row, read off that config instead of a copy of it, because the config is what boot, resume
+        // and switch all move in one message (ruling `map/RULINGS-o1o5.md` §"O3, run 5"): a session
+        // that BOOTS on a flagged row is therefore admitted on its very first request, with no
+        // `SetSessionModel` and no second, racy admission message behind it. The surface half is
+        // computed here over the tools this request actually declares, because a tool-bridge
+        // snapshot taken at any earlier point goes stale against an MCP connect/disconnect or
+        // a preset change. That is also what makes a tool-less auxiliary request un-admitted
+        // on its own: the producer, not a hand-set literal, closes the surface half. Rebuilding
+        // through `for_row` keeps `has_searchable_tools` the single producer ruling D1 requires.
+        let search_admission = Some(xai_grok_sampling_types::SearchAdmission::for_row(
+            self.state.sampling_config.supports_search_tool,
+            &tool_definitions,
+        ));
         ConversationRequest {
             items,
             tools: tool_definitions,
             hosted_tools: vec![],
+            search_admission,
             tool_choice: None,
             // MGW F5 (apex-ayl.114): row-resolved tool control threads onto
             // the request; the producer nests dptu into tool_choice and

@@ -2363,6 +2363,7 @@ async fn retry_after_lost_ack_converges_memory_and_disk_to_authoritative_item() 
             stop_sequences: None,
             disable_parallel_tool_use: None,
             tool_cache_breakpoint: None,
+            supports_search_tool: false,
             server_tools: None,
             mcp_servers: None,
             mcp_toolset_server: None,

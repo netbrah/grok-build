@@ -115,11 +115,37 @@ impl SessionActor {
         } else {
             session_id.clone()
         };
+        // apex-waj.35 F7: this door exists to share the turn's prompt-cache prefix, and on an
+        // admitted row the turn's body carries the `tool_search` declaration at `tools[0]`
+        // (`xai-grok-sampler/src/client.rs:952` `splice_extra_tool_entries`). Leaving the
+        // admission to `ConversationRequest::default()` would send this call a `tools`
+        // array the turn does not send. Its row half comes off the live catalog through
+        // `agent/remote_config/manager/mod.rs:559`, the resolver each site that DERIVES a row's
+        // flag calls: bring-up `acp_session_impl/spawn.rs:114` (`chat_state_sampling_config`,
+        // `acp_session_impl/spawn.rs:84`), switch `acp_session_impl/model_switch.rs:73`
+        // (into the config at `acp_session_impl/model_switch.rs:101`), the /effort
+        // re-route `acp_session_impl/model_switch.rs:273`, the model override
+        // `acp_session_impl/run_loop.rs:996-998`, and the no-config fallback in
+        // `reconstruct_full_config` (`acp_session_impl/sampler_turn.rs:664`). The turn reads
+        // the INSTALLED flag instead (`xai-chat-state/src/actor/request_builder.rs:89`),
+        // so the two agree at install time and can still part: a response etag runs
+        // `refresh_if_new_etag` (`acp_session_impl/session_setup.rs:530-531`), which starts a fetch
+        // (`agent/remote_config/manager/mod.rs:746` `spawn_fetch`) whose result replaces the rows
+        // under the lock (`agent/remote_config/manager/mod.rs:1265`), no config write; inside that
+        // window this door and the turn can admit in opposite directions. Reading the installed
+        // flag would close it, but this fn is sync (`side_call.rs:108`) and that flag sits behind
+        // `get_sampling_config().await` (read at `side_call.rs:173`): owed, unruled on apex-waj.35.
+        // `for_row` rules both halves: tool-less `title_refresh.rs:134` stays un-admitted.
+        let search_admission = Some(xai_grok_sampling_types::SearchAdmission::for_row(
+            self.models_manager.model_supports_search_tool(&call.model),
+            &call.tools,
+        ));
         ConversationRequest {
             items: xai_chat_state::compaction_utils::ModelRequestHistory::from_raw(call.items)
                 .into_items(),
             tools: call.tools,
             hosted_tools: call.hosted_tools,
+            search_admission,
             model: Some(call.model),
             temperature: None,
             // Effort changes the prompt ahead of the conversation history, so dropping it here would share no prefix with the main turn.
@@ -205,7 +231,8 @@ impl SessionActor {
 
 #[cfg(test)]
 mod tests {
-    use super::PromptCacheUsage;
+    use super::super::support;
+    use super::{AuxCall, PromptCacheUsage};
     use xai_grok_sampling_types::TokenUsage;
 
     #[test]
@@ -246,5 +273,97 @@ mod tests {
         assert_eq!(usage.uncached_prompt_tokens, 0);
         assert_eq!(usage.cache_read_rate, 0.0);
         assert_eq!(usage.cache_write_rate, 0.0);
+    }
+
+    /// An actor booted on a row the operator flagged, built from the scaffolding shared with
+    /// `acp_session_impl/model_switch.rs` (`acp_session_tests/support.rs`) so the two modules cannot
+    /// drift apart. The tempdir handed to the manager's `AuthManager` as its `grok_home` comes back
+    /// with the actor and the caller binds it, so it outlives every use of that manager.
+    async fn actor_on_flagged_row(
+        model: &str,
+    ) -> (
+        std::sync::Arc<super::super::SessionActor>,
+        tempfile::TempDir,
+    ) {
+        let (manager, tmp) = support::manager_with_entries();
+        manager.insert_test_entry(
+            model,
+            support::entry_with_search_flag(model, /* supports_search_tool */ true),
+        );
+        let actor = support::actor_on_row(model, manager).await;
+        (actor, tmp)
+    }
+
+    fn aux_call(model: &str, tools: Vec<xai_grok_sampling_types::ToolSpec>) -> AuxCall {
+        AuxCall {
+            items: Vec::new(),
+            tools,
+            hosted_tools: Vec::new(),
+            model: model.to_owned(),
+            reasoning_effort: None,
+            ultra_wire_effort: None,
+            backend: crate::sampling::ApiBackend::Responses,
+            conv_id: "aux-conv".to_owned(),
+            req_id: "aux-req".to_owned(),
+        }
+    }
+
+    /// apex-waj.35 F7: two of this door's three production callers hand it the turn's BASE
+    /// tool surface — `recap.rs:176` and `side_call.rs:204` both build it with
+    /// `turn_base_tool_specs` (`sampler_turn.rs:346`), the fn the non-forked turn calls
+    /// at `turn.rs:2797`. `title_refresh.rs:134` passes none, and the door itself only
+    /// forwards `call.tools` (`side_call.rs:146`). Three turn-side transforms are not reproduced:
+    /// the forked override (`turn.rs:2784`), the subagent rewrap (`turn.rs:2798`), the
+    /// structured-output append (`turn.rs:2810`). On an admitted row the turn's body
+    /// carries the `tool_search` declaration at `tools[0]`
+    /// (`xai-grok-sampler/src/client.rs:952`), so leaving the admission to this type's
+    /// `Default` sends a `tools` array the turn does not send.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_side_call_on_an_admitted_row_carries_the_turns_admission() {
+        const ROW: &str = "flagged-aux-row";
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (actor, _tmp) = actor_on_flagged_row(ROW).await;
+                let turn = support::turn_request(&actor).await;
+                let aux = actor.parent_cached_request(aux_call(ROW, turn.tools.clone()));
+
+                assert!(
+                    turn.search_admission.is_some_and(|a| a.admitted()),
+                    "anti-vacuity: the row this session booted on admits the turn: {:?}",
+                    turn.search_admission
+                );
+                assert_eq!(
+                    aux.search_admission, turn.search_admission,
+                    "an aux call that replays the turn's tool surface must carry the turn's \
+                     admission, or its `tools` array shifts the prefix it shares with the turn"
+                );
+            })
+            .await;
+    }
+
+    /// The other half of the same door: a DELIBERATELY tool-less call (`title_refresh.rs:134` passes
+    /// `tools: Vec::new()`) on the same admitting row stays un-admitted, because it is
+    /// `SearchAdmission::for_row`'s surface half that closes it and not a literal set here. Its
+    /// entries stay byte-identical, which is what `extra_tool_entries_for_route` answers for any
+    /// admission whose `admitted()` is false.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_tool_less_side_call_on_an_admitting_row_stays_unadmitted() {
+        const ROW: &str = "flagged-aux-row";
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let (actor, _tmp) = actor_on_flagged_row(ROW).await;
+                let aux = actor.parent_cached_request(aux_call(ROW, Vec::new()));
+                assert_eq!(
+                    aux.search_admission,
+                    Some(xai_grok_sampling_types::SearchAdmission {
+                        supports_search_tool: true,
+                        has_searchable_tools: false,
+                    }),
+                    "the row admits and the surface does not: the surface half must close the gate"
+                );
+            })
+            .await;
     }
 }

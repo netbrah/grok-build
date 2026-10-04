@@ -551,6 +551,16 @@ impl ModelsManager {
             .unwrap_or(false)
     }
 
+    /// The operator's `supports_search_tool` flag for `model_id`'s catalog row (apex-waj.35) —
+    /// the tri-state already resolved into `ModelInfo::supports_search_tool`, read as a plain
+    /// bool. A row that is not in the catalog answers `false`, which is the un-admitted route:
+    /// the flag is never guessed from the slug. `model_id` may be an effort-routed id;
+    /// `with_catalog_entry` resolves it back to the row that owns the flag.
+    pub(crate) fn model_supports_search_tool(&self, model_id: &str) -> bool {
+        self.with_catalog_entry(model_id, |e| e.info().supports_search_tool)
+            .unwrap_or(false)
+    }
+
     /// Looks `model_id` up in the catalog, then returns the id that model sends at this effort.
     pub(crate) fn model_for_effort(
         &self,

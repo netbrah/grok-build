@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use tokio::sync::oneshot;
 use xai_grok_sampling_types::{
     ConversationItem, ConversationRequest, DanglingToolCallReason, SamplingConfig, TokenUsage,
-    ToolSpec, TraceContext,
+    ToolSpec, TraceContext, conversation::projection::TargetRoute,
 };
 
 use crate::types::{
@@ -134,6 +134,14 @@ pub enum ChatStateCommand {
     IncrementPromptIndex,
 
     /// Update the sampling config (e.g., model switch).
+    ///
+    /// This is the message that moves a live session's row: the config carries the new row's
+    /// `supports_search_tool` flag with it (`SamplingConfig::supports_search_tool`), so the
+    /// hosted-`tool_search` admission refreshes atomically with the row it describes — switch,
+    /// effort re-route and model override all arrive here, and boot/resume get the same flag
+    /// from `ChatState::new` (`actor/state.rs:221`) holding the config the actor is spawned
+    /// with. There is no second publication to send (bead apex-waj.35, ruling
+    /// `map/RULINGS-o1o5.md` §"O3, run 5").
     UpdateSamplingConfig { config: Box<SamplingConfig> },
 
     /// Track that the agent edited a file path.
@@ -187,9 +195,18 @@ pub enum ChatStateCommand {
     /// `x-litellm-tags` pin (`None` = untagged) — feeds the switch-time gate
     /// on the AZ->AZ row (the ciphertext is retained in the store only when
     /// the mint tag is compatible with the target pin).
+    ///
+    /// `route` (apex-waj.35): the target row's route tuple — its API backend, its
+    /// boundary regime, and its search admission. The actor projects off
+    /// `route.boundary()` and does NOT re-derive a boundary from `target_model`: the
+    /// slug cannot answer this (SPEC-W2 §3.1 — `model_boundary_class` and
+    /// `infer_api_backend` disagree about the same Anthropic slug), and the whole point of
+    /// the tuple is that backend and boundary reach the projector from one row. The caller
+    /// builds it at the shell's switch site via `TargetRoute::new`.
     ProjectSwitchHistory {
         target_model: String,
         target_pin: Option<String>,
+        route: TargetRoute,
         reply: tokio::sync::oneshot::Sender<crate::StripOutcome>,
     },
 
@@ -476,6 +493,7 @@ mod tests {
                 stop_sequences: None,
                 disable_parallel_tool_use: None,
                 tool_cache_breakpoint: None,
+                supports_search_tool: false,
                 server_tools: None,
                 mcp_servers: None,
                 mcp_toolset_server: None,

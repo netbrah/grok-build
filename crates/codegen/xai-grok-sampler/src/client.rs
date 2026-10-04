@@ -940,6 +940,15 @@ fn extract_context_total(value: &serde_json::Value) -> Option<u32> {
 /// Splice the raw-JSON hosted-tool entries for `web_search` and `x_search` into a serialized Responses request body's `tools` array.
 /// `x_search` has no `rs::Tool` variant, and `web_search`'s typed filters cannot carry `excluded_domains`, so both travel as raw JSON.
 /// Neither may also be emitted as a typed `rs::Tool`; the API rejects the duplicate.
+///
+/// A `tool_search` DECLARATION among the entries is hoisted to index 0 of the final array,
+/// ahead of the typed `tools` the serialized body already carries; every other entry appends
+/// behind them.
+///
+/// Entries with no declaration — a closed route (`search_admission` `None` or
+/// `!SearchAdmission::admitted()`), which `extra_tool_entries_for_route` answers with the
+/// pre-apex-waj.35 entries — keep exactly the bytes they had, as
+/// `unadmitted_route_splices_the_same_bytes_as_today` pins.
 fn splice_extra_tool_entries(
     request_body: &mut serde_json::Value,
     entries: Vec<serde_json::Value>,
@@ -947,10 +956,19 @@ fn splice_extra_tool_entries(
     if entries.is_empty() {
         return;
     }
-    if let Some(tools) = request_body.get_mut("tools").and_then(|v| v.as_array_mut()) {
-        tools.extend(entries);
-    } else {
-        request_body["tools"] = serde_json::Value::Array(entries);
+    let (declarations, hosted): (Vec<_>, Vec<_>) = entries.into_iter().partition(|entry| {
+        entry.get("type").and_then(serde_json::Value::as_str)
+            == Some(xai_grok_sampling_types::TOOL_SEARCH_DECLARATION_TYPE)
+    });
+    match request_body.get_mut("tools").and_then(|v| v.as_array_mut()) {
+        Some(tools) => {
+            tools.splice(0..0, declarations);
+            tools.extend(hosted);
+        }
+        None => {
+            request_body["tools"] =
+                serde_json::Value::Array(declarations.into_iter().chain(hosted).collect());
+        }
     }
 }
 
@@ -2713,7 +2731,10 @@ impl SamplingClient {
         include_compaction_trigger: bool,
         d_anchor: &mut DAnchorState,
     ) -> Result<serde_json::Value> {
-        let extra_tool_entries = xai_grok_sampling_types::extra_tool_entries(&request.hosted_tools);
+        let extra_tool_entries = xai_grok_sampling_types::extra_tool_entries_for_route(
+            &request.hosted_tools,
+            request.search_admission,
+        );
         let raw_input_replacements = request.raw_responses_input_replacements(
             xai_grok_sampling_types::ResponsesReplayDialect::Codex,
         );
@@ -3476,7 +3497,10 @@ impl SamplingClient {
         }
 
         // The hosted tools travel as raw JSON, spliced in after serialization by `splice_extra_tool_entries`, whose doc explains why each one does
-        let extra_tools = xai_grok_sampling_types::extra_tool_entries(&request.hosted_tools);
+        let extra_tools = xai_grok_sampling_types::extra_tool_entries_for_route(
+            &request.hosted_tools,
+            request.search_admission,
+        );
 
         // Codex compaction carriers splice their opaque provider items back in
         // back in per wire dialect (apex-ayl.76): Codex restores the opaque
@@ -3570,7 +3594,10 @@ impl SamplingClient {
         }
 
         // The hosted tools travel as raw JSON, spliced in by `create_response` via `splice_extra_tool_entries`, whose doc explains why
-        let extra_tools = xai_grok_sampling_types::extra_tool_entries(&request.hosted_tools);
+        let extra_tools = xai_grok_sampling_types::extra_tool_entries_for_route(
+            &request.hosted_tools,
+            request.search_admission,
+        );
 
         // Codex compaction carriers splice their opaque provider items back in
         // back in per wire dialect (apex-ayl.76): Codex restores the opaque
@@ -3861,6 +3888,351 @@ mod tests {
         let mut body = serde_json::json!({ "tools": [{ "type": "function" }] });
         splice_extra_tool_entries(&mut body, vec![]);
         assert_eq!(body["tools"], serde_json::json!([{ "type": "function" }]));
+    }
+
+    #[test]
+    fn admitted_route_declaration_leads_the_typed_tools_array() {
+        let hosted = [
+            xai_grok_sampling_types::HostedTool::WebSearch { options: None },
+            xai_grok_sampling_types::HostedTool::XSearch { options: None },
+        ];
+        let admitted_route = xai_grok_sampling_types::SearchAdmission {
+            supports_search_tool: true,
+            has_searchable_tools: true,
+        };
+        let entries =
+            xai_grok_sampling_types::extra_tool_entries_for_route(&hosted, Some(admitted_route));
+        let tool_types = |body: &serde_json::Value| {
+            body["tools"]
+                .as_array()
+                .map(|tools| {
+                    tools
+                        .iter()
+                        .map(|t| t["type"].as_str().unwrap_or_default().to_owned())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+
+        // The serialized body carries no typed `tools`: the splice creates the array, and the
+        // declaration leads the top-level array outright.
+        let mut untyped = serde_json::json!({ "model": "gpt-5.6-sol" });
+        splice_extra_tool_entries(&mut untyped, entries.clone());
+        assert_eq!(
+            tool_types(&untyped),
+            ["tool_search", "web_search", "x_search"],
+            "with no typed tools the declaration is tools[0]"
+        );
+
+        // The serialized body carries typed function tools: the declaration is hoisted ahead of
+        // every one of them, and the hosted entries still append behind it in the request's order.
+        let mut typed = serde_json::json!({ "tools": [{ "type": "function" }] });
+        splice_extra_tool_entries(&mut typed, entries);
+        assert_eq!(
+            tool_types(&typed),
+            ["tool_search", "function", "web_search", "x_search"],
+            "the declaration is tools[0] even where the typed body already declared a tool"
+        );
+    }
+
+    /// The blast-radius twin, at the body level: every un-admitted route must splice exactly what
+    /// [`xai_grok_sampling_types::extra_tool_entries`] splices today, byte for byte, and a route
+    /// with nothing to splice must leave the body's key set untouched (no empty `tools` array).
+    #[test]
+    fn unadmitted_route_splices_the_same_bytes_as_today() {
+        let hosted = [
+            xai_grok_sampling_types::HostedTool::WebSearch { options: None },
+            xai_grok_sampling_types::HostedTool::XSearch { options: None },
+        ];
+        let typed_body = || serde_json::json!({ "tools": [{ "type": "function" }] });
+        let today = xai_grok_sampling_types::extra_tool_entries(&hosted);
+        for decline in [
+            None,
+            Some(xai_grok_sampling_types::SearchAdmission {
+                supports_search_tool: false,
+                has_searchable_tools: false,
+            }),
+            Some(xai_grok_sampling_types::SearchAdmission {
+                supports_search_tool: true,
+                has_searchable_tools: false,
+            }),
+            Some(xai_grok_sampling_types::SearchAdmission {
+                supports_search_tool: false,
+                has_searchable_tools: true,
+            }),
+        ] {
+            let mut routed = typed_body();
+            splice_extra_tool_entries(
+                &mut routed,
+                xai_grok_sampling_types::extra_tool_entries_for_route(&hosted, decline),
+            );
+            let mut current = typed_body();
+            splice_extra_tool_entries(&mut current, today.clone());
+            assert_eq!(
+                serde_json::to_string(&routed).expect("body serializes"),
+                serde_json::to_string(&current).expect("body serializes"),
+                "an un-admitted route must not move one byte of the body: {decline:?}"
+            );
+        }
+
+        let mut no_additions = serde_json::json!({ "model": "gpt-5.6-sol" });
+        splice_extra_tool_entries(
+            &mut no_additions,
+            xai_grok_sampling_types::extra_tool_entries_for_route(&[], None),
+        );
+        assert!(
+            no_additions.get("tools").is_none(),
+            "nothing to splice must not create a tools array"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // apex-waj.35 requirement 4 — the admission rides the REQUEST.
+    //
+    // The two tests above pin the producer and the splice. They cannot see what
+    // these tests were written for: a request whose `search_admission` says
+    // "admitted" still went out with no declaration, because all three
+    // Responses-wire body sites in this file called the admission-less
+    // `extra_tool_entries`. So every assertion below starts from a
+    // `ConversationRequest` and ends at the serialized body, one per site:
+    // `codex_compaction_request_body`, `conversation_responses` and
+    // `conversation_stream_responses` (the last two through a real axum
+    // listener, so the assertion is on the bytes that leave the crate).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// A request that declares a function tool, carries a hosted tool, and rides
+    /// an admitted route — the shape a live `supports_search_tool` row produces.
+    fn route_request(
+        admission: Option<xai_grok_sampling_types::SearchAdmission>,
+    ) -> ConversationRequest {
+        ConversationRequest {
+            items: vec![xai_grok_sampling_types::ConversationItem::user("hi")],
+            tools: vec![xai_grok_sampling_types::ToolSpec {
+                name: "read_file".to_owned(),
+                description: Some("Read a file".to_owned()),
+                parameters: serde_json::json!({"type": "object"}),
+                exposure: xai_grok_sampling_types::ToolExposure::default(),
+            }],
+            hosted_tools: vec![xai_grok_sampling_types::HostedTool::WebSearch { options: None }],
+            search_admission: admission,
+            model: Some("gpt-5.6-sol".to_owned()),
+            ..Default::default()
+        }
+    }
+
+    const ADMITTED: xai_grok_sampling_types::SearchAdmission =
+        xai_grok_sampling_types::SearchAdmission {
+            supports_search_tool: true,
+            has_searchable_tools: true,
+        };
+
+    /// The declaration types in the final top-level `tools` array, in wire order.
+    fn wire_tool_types(body: &serde_json::Value) -> Vec<String> {
+        body["tools"]
+            .as_array()
+            .map(|tools| {
+                tools
+                    .iter()
+                    .map(|t| t["type"].as_str().unwrap_or_default().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Site 1 of 3: `codex_compaction_request_body`.
+    #[test]
+    fn admitted_route_sends_the_declaration_on_the_codex_compaction_body() {
+        let client = codex_compaction_body_test_client();
+        let body = client
+            .codex_compaction_request_body(
+                &route_request(Some(ADMITTED)),
+                "",
+                /* include_compaction_trigger */ true,
+                &mut DAnchorState::default(),
+            )
+            .expect("compaction body builds");
+        assert_eq!(
+            wire_tool_types(&body),
+            ["tool_search", "function", "web_search"],
+            "the admitted route must lead the top-level tools array with the declaration"
+        );
+        assert_eq!(
+            body["tools"][0]["execution"],
+            serde_json::json!("client"),
+            "ruling D5: the execution value that reaches the wire is `client`"
+        );
+    }
+
+    /// A `SamplingClient` on a local listener that answers one responses request
+    /// and hands back the body it received.
+    async fn spawn_capture_client(
+        streaming: bool,
+    ) -> (
+        SamplingClient,
+        oneshot::Receiver<Bytes>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (body_tx, body_rx) = oneshot::channel();
+        let body_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(body_tx)));
+        let app = Router::new().route(
+            "/v1/responses",
+            post(move |body: Bytes| {
+                let body_tx = body_tx.clone();
+                async move {
+                    let _ = body_tx.lock().unwrap().take().unwrap().send(body);
+                    if streaming {
+                        axum::response::Response::builder()
+                            .header("content-type", "text/event-stream")
+                            .body(axum::body::Body::from("data: [DONE]\n\n"))
+                            .unwrap()
+                    } else {
+                        axum::response::Response::builder()
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(r#"{"id":"resp","object":"response","created_at":0,"model":"test-model","status":"completed","output":[],"usage":{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":0}}"#))
+                            .unwrap()
+                    }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let client = SamplingClient::new(SamplerConfig {
+            base_url: format!("http://{addr}/v1"),
+            api_backend: ApiBackend::Responses,
+            ..minimal_config()
+        })
+        .unwrap();
+        (client, body_rx, server)
+    }
+
+    fn captured_body(raw: &[u8]) -> serde_json::Value {
+        serde_json::from_slice(raw).expect("the captured request is JSON")
+    }
+
+    /// Sites 2 and 3 of 3: `conversation_responses` and `conversation_stream_responses`,
+    /// asserted on the bytes that actually leave the crate.
+    #[tokio::test]
+    async fn admitted_route_sends_the_declaration_on_both_responses_send_paths() {
+        for streaming in [false, true] {
+            let (client, body_rx, server) = spawn_capture_client(streaming).await;
+            let mut anchor = None;
+            if streaming {
+                let (mut stream, ..) = client
+                    .conversation_stream_responses(route_request(Some(ADMITTED)), &mut anchor)
+                    .await
+                    .expect("streaming send starts");
+                while stream.next().await.is_some() {}
+            } else {
+                client
+                    .conversation_responses(route_request(Some(ADMITTED)), &mut anchor)
+                    .await
+                    .expect("unary send completes");
+            }
+            let body = captured_body(&body_rx.await.unwrap());
+            server.abort();
+            assert_eq!(
+                wire_tool_types(&body),
+                ["tool_search", "function", "web_search"],
+                "the admitted route must lead tools[] on the {side} wire",
+                side = if streaming { "streaming" } else { "unary" }
+            );
+        }
+    }
+
+    /// The blast-radius guarantee at the request level, one row per site: an
+    /// un-admitted request must keep today's `tools` bytes and carry no declaration.
+    /// Site 1 compares the whole body; sites 2 and 3 compare `tools` alone.
+    #[tokio::test]
+    async fn unadmitted_route_sends_the_same_bytes_as_the_admission_less_call() {
+        for decline in [
+            None,
+            Some(xai_grok_sampling_types::SearchAdmission {
+                supports_search_tool: false,
+                has_searchable_tools: true,
+            }),
+            Some(xai_grok_sampling_types::SearchAdmission {
+                supports_search_tool: true,
+                has_searchable_tools: false,
+            }),
+        ] {
+            // Site 1: the Codex compaction body.
+            let client = codex_compaction_body_test_client();
+            let routed = client
+                .codex_compaction_request_body(
+                    &route_request(decline),
+                    "",
+                    /* include_compaction_trigger */ true,
+                    &mut DAnchorState::default(),
+                )
+                .expect("compaction body builds");
+            let mut today = route_request(decline);
+            today.search_admission = None;
+            let today = client
+                .codex_compaction_request_body(
+                    &today,
+                    "",
+                    /* include_compaction_trigger */ true,
+                    &mut DAnchorState::default(),
+                )
+                .expect("compaction body builds");
+            assert_eq!(
+                serde_json::to_string(&routed).expect("serializes"),
+                serde_json::to_string(&today).expect("serializes"),
+                "an un-admitted compaction body must not move one byte: {decline:?}"
+            );
+
+            // Sites 2 and 3: the two send paths, against the same body with the
+            // field forced to None (what the admission-less call emits today).
+            for streaming in [false, true] {
+                let (client, body_rx, server) = spawn_capture_client(streaming).await;
+                let mut anchor = None;
+                if streaming {
+                    let (mut stream, ..) = client
+                        .conversation_stream_responses(route_request(decline), &mut anchor)
+                        .await
+                        .expect("streaming send starts");
+                    while stream.next().await.is_some() {}
+                } else {
+                    client
+                        .conversation_responses(route_request(decline), &mut anchor)
+                        .await
+                        .expect("unary send completes");
+                }
+                let routed = captured_body(&body_rx.await.unwrap());
+                server.abort();
+
+                let (client, body_rx, server) = spawn_capture_client(streaming).await;
+                let mut anchor = None;
+                if streaming {
+                    let (mut stream, ..) = client
+                        .conversation_stream_responses(route_request(None), &mut anchor)
+                        .await
+                        .expect("streaming send starts");
+                    while stream.next().await.is_some() {}
+                } else {
+                    client
+                        .conversation_responses(route_request(None), &mut anchor)
+                        .await
+                        .expect("unary send completes");
+                }
+                let today = captured_body(&body_rx.await.unwrap());
+                server.abort();
+
+                assert_eq!(
+                    routed.get("tools"),
+                    today.get("tools"),
+                    "an un-admitted {side} wire must splice exactly today's entries: {decline:?}",
+                    side = if streaming { "streaming" } else { "unary" }
+                );
+                assert!(
+                    !wire_tool_types(&routed).contains(&"tool_search".to_owned()),
+                    "no declaration may reach an un-admitted route: {decline:?}"
+                );
+            }
+        }
     }
 
     #[test]

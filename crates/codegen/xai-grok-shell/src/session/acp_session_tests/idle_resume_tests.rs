@@ -126,6 +126,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                     stop_sequences: None,
                     disable_parallel_tool_use: None,
                     tool_cache_breakpoint: None,
+                    supports_search_tool: false,
                     server_tools: None,
                     mcp_servers: None,
                     mcp_toolset_server: None,

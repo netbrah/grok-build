@@ -2901,6 +2901,7 @@ fn test_sampling_config(model_slug: &str) -> xai_grok_sampling_types::SamplingCo
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tool_cache_breakpoint: None,
+        supports_search_tool: false,
         server_tools: None,
         mcp_servers: None,
         mcp_toolset_server: None,

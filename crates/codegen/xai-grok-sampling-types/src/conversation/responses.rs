@@ -574,8 +574,83 @@ fn build_responses_tools(req: &ConversationRequest) -> Vec<rs::Tool> {
 /// Every hosted tool as a raw JSON entry, which the sampler client splices into the serialized `tools` array.
 /// `web_search` rides it because async_openai's `rs::WebSearchToolFilters` models only `allowed_domains` and cannot carry `excluded_domains`.
 /// Emitting either as a typed `rs::Tool` as well would send it twice, which the API rejects as a duplicate.
+///
+/// Not the production route entry point: every Responses body site goes through
+/// [`extra_tool_entries_for_route`], which is what decides whether the `tool_search`
+/// declaration rides along. This variant is the declaration-less half of that pair and its
+/// consumers are the un-admitted-route byte-parity pins (in-crate `responses_tests`, the
+/// actor's parity test in `xai-chat-state`, the sampler/shell boot parity assertions) plus one
+/// backend-search test in `acp_session_tests` — wiring a new body site through it would
+/// silently bypass admission (apex-waj.35).
 pub fn extra_tool_entries(hosted_tools: &[HostedTool]) -> Vec<serde_json::Value> {
     extra_tool_entries_with_declaration(hosted_tools, None)
+}
+
+/// The top-level `tools[]` entries a request carries, given the admission of the route sending
+/// it: the hosted entries, preceded by the hosted `tool_search` declaration when the route is
+/// admitted. `None` and every `admitted() == false` admission return exactly
+/// [`extra_tool_entries`], so the un-admitted route stays byte-identical to the route that existed
+/// before this function did — the blast-radius guarantee bead apex-waj.35 asks for, pinned by
+/// `responses_tests::unadmitted_route_entries_stay_byte_identical`.
+///
+/// This is the one place the declaration is assembled for a route, which is why ruling
+/// `map/RULINGS-o1o5.md` §D5 puts the `execution` choice here. It is
+/// `ToolSearchExecution::Client` and it must stay so: the live strict row `gpt-5.6-sol` (Azure
+/// through the proxy) answers `execution: "server"` with **400** whenever the entry carries a
+/// `description` or `parameters`, and `tool_search_declaration_entry` emits both, so an
+/// `execution: Server` pairing below would 400 every request on that row, and no type prevents
+/// building that pair. `client` + `description` + `parameters` is the donor form: it returns 200 on
+/// that row and mints a `tool_search_call` whose answer is ours to produce. Producing that answer is
+/// NOT this tree's capability yet — the ingest arm in [`response_to_conversation_items`] refuses a
+/// `tool_search_call`/`tool_search_output` item because the pair-atomic decode is owed by
+/// apex-waj.21/.5, and `xai-grok-sampler`'s streaming path turns that refusal into a FAILED turn,
+/// not a silent drop. Emitting this entry therefore arms a route the harness can only lose on until
+/// that lands; the entry stays because ruling D5 rules the *shape*, and the ordering of the two hops
+/// is the coordinator's call. The emitted value is pinned by
+/// `responses_tests::admitted_route_declaration_is_client_executed`.
+///
+/// The declaration advertises no sources. `ToolSearchSourceListing::Omit` is the honest interim:
+/// there is no `DiscoveryManifest` to list (ruling D1 names the manifest as the future body of
+/// [`has_searchable_tools`], not of this list), and the donor renders "None currently enabled." for
+/// an empty set anyway (`tool_search_spec.rs:48-49`). It also keeps the entry byte-stable across
+/// requests, which is what the cache-cost note on `extra_tool_entries_with_declaration` demands
+/// of a model-visible fragment; a real source list becomes correct when the manifest lands.
+///
+/// Called by all three Responses-wire body sites in `xai-grok-sampler/src/client.rs`
+/// (`codex_compaction_request_body`, `conversation_stream_responses` and
+/// `conversation_responses`), each passing `ConversationRequest::search_admission` — the
+/// admission carried WITH the request, never one held on the client, because
+/// `ClientDefaults` is built once from `SamplerConfig` while the row changes mid-session
+/// through `update_sampling_config`. The request-side writers are two: `xai-chat-state`'s
+/// `build_conversation_request` (`xai-chat-state/src/actor/request_builder.rs:88`) for the turn,
+/// and `xai-grok-shell`'s `parent_cached_request`
+/// (`xai-grok-shell/src/session/acp_session_impl/side_call.rs:139`) for a cache-aligned auxiliary
+/// call; each passes the surface THAT request is about to send (ruling D1's authoritative surface)
+/// rather than the switch-time snapshot the projector carries. One of the three sites still has a
+/// consumer with no production producer: `codex_compaction_request_body` is reached in src only by
+/// `xai-grok-shell`'s Codex remote-compaction request (`session/compaction.rs:1039-1042`, sent at
+/// `session/compaction.rs:1051`), which leaves `search_admission` at `Default`, so that body emits
+/// the un-admitted entries — owed on apex-waj.35 beside the `helpers/session_compact.rs:630` door.
+/// Pinned at the body level by
+/// `client::tests::admitted_route_sends_the_declaration_on_the_codex_compaction_body`,
+/// `client::tests::admitted_route_sends_the_declaration_on_both_responses_send_paths` and
+/// `client::tests::unadmitted_route_sends_the_same_bytes_as_the_admission_less_call`.
+pub fn extra_tool_entries_for_route(
+    hosted_tools: &[HostedTool],
+    admission: Option<SearchAdmission>,
+) -> Vec<serde_json::Value> {
+    if !admission.is_some_and(SearchAdmission::admitted) {
+        return extra_tool_entries_with_declaration(hosted_tools, None);
+    }
+    extra_tool_entries_with_declaration(
+        hosted_tools,
+        Some(tool_search_declaration_entry(
+            ToolSearchExecution::Client,
+            &[],
+            ToolSearchSourceListing::Omit,
+            TOOL_SEARCH_DEFAULT_LIMIT,
+        )),
+    )
 }
 
 // ─── Hosted `tool_search` declaration ───────────────────────────────────────
@@ -595,16 +670,40 @@ pub fn extra_tool_entries(hosted_tools: &[HostedTool]) -> Vec<serde_json::Value>
 /// `type` tag of the declaration entry, shared by the entry, its description and the call the
 /// model makes with it. The discovery *item* tags live in `conversation::tool_search`
 /// (`TOOL_SEARCH_CALL_ITEM_TYPE` / `TOOL_SEARCH_OUTPUT_ITEM_TYPE`); this names the declaration.
-const TOOL_SEARCH_DECLARATION_TYPE: &str = "tool_search";
+///
+/// Public because the top-level placement rule lives in the consumer: the serialized body already
+/// carries typed `tools` for any request that declares a function tool, and only the sampler's
+/// splice sees both that array and this channel, so it is what has to recognise this tag to hoist
+/// the declaration to `tools[0]` (`xai-grok-sampler/src/client.rs::splice_extra_tool_entries`).
+/// A duplicated literal there could drift from the emitted entry in silence.
+pub const TOOL_SEARCH_DECLARATION_TYPE: &str = "tool_search";
 
 /// Cap on the whole rendered source list, shared by every source's description.
 /// Donor parity: `core/src/tools/handlers/tool_search_spec.rs:8`.
 pub(super) const MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES: usize = 512 * 1024;
 
+/// The `limit` the declaration documents as its default. Donor parity, openai/codex@af1fc2db:
+/// `TOOL_SEARCH_DEFAULT_LIMIT` (`tools/src/tool_discovery.rs:7`) is what the donor passes to
+/// `create_tool_search_tool` (`core/src/tools/handlers/tool_search.rs:148`), and its `handle_call`
+/// falls back to that const when the model omits `limit` (`:212`). It is only interpolated into
+/// the `limit` description (see `tool_search_declaration_limit_description_tracks_default_limit`),
+/// never into the prose, so it is a wire-visible constant rather than a knob.
+///
+/// Visible to the crate's tests so they can pin the PRODUCTION declaration against it
+/// (`responses_tests::admitted_route_declaration_is_client_executed`): the donor capture says
+/// "Defaults to 8.", so a const that moved without the capture being re-baked must redden.
+pub(super) const TOOL_SEARCH_DEFAULT_LIMIT: usize = 8;
+
 /// Who executes a `tool_search` call. These are the only values the wire accepts, so the
 /// donor's `sync` — which the API 400s — has no variant here rather than a runtime check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ToolSearchExecution {
+    // Constructed only by `responses_tests::tool_search_declaration_execution_is_total`, which
+    // exists precisely to pin the bytes ruling D5 rejects. Nothing may construct it in the lib:
+    // the live strict row 400s `server` paired with a description/parameters, which
+    // `tool_search_declaration_entry` always emits — hence the two named landmines in D5 are the
+    // pair, not the variant.
+    #[allow(dead_code)]
     Server,
     Client,
 }
@@ -629,6 +728,11 @@ pub(super) struct ToolSearchSource<'a> {
 /// Whether the declaration lists the enabled sources itself or leaves them to another surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ToolSearchSourceListing {
+    // Constructed only by `responses_tests`, which exercises the rendered source block and its
+    // byte budget. The production route keys off `Omit`: there is no `DiscoveryManifest` to list
+    // yet, so advertising sources here would name tools the request does not carry. It becomes a
+    // production value when the manifest lands — see `extra_tool_entries_for_route`.
+    #[allow(dead_code)]
     Include,
     Omit,
 }
@@ -748,26 +852,115 @@ fn render_tool_search_sources(sources: &[ToolSearchSource<'_>]) -> String {
 }
 
 /// Whether a route may advertise the hosted `tool_search` declaration.
-/// Both signals must hold, so they travel as named fields rather than positional booleans a
-/// callsite could swap.
+/// Both signals must hold. They are exposed as named fields so a callsite can say which is which,
+/// and so a fixture can name the pair it wants: `SearchAdmission { supports_search_tool: row_flag,
+/// has_searchable_tools: surface_non_empty }` is the swap-proof literal. Production does not write
+/// it by hand — it calls [`Self::for_row`], which takes the surface signal only through
+/// [`has_searchable_tools`].
+///
+/// Public with all three of its parts (type, fields, [`Self::admitted`]) plus [`Self::for_row`] as
+/// the construction path, because the route tuple's caller chain lives in another crate
+/// (`xai-chat-state` -> `project_switch_history`, bead apex-waj.35, SPEC-W2 PA-3). Half a widening
+/// would be invisible here: `private_interfaces` is a rustc WARN and the workspace declares only
+/// `[workspace.lints.clippy]`, so a nameable-but-unbuildable type silences the lint and breaks the
+/// consumer quietly. See also [`crate::conversation::projection::TargetRoute`], which this rides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct SearchAdmission {
-    /// The selected model row accepts the hosted `tool_search` declaration.
-    pub(super) supports_search_tool: bool,
-    /// At least one deferred tool exists to be found; supplied by the discovery manifest once it
-    /// lands. Deliberately not derived from the `sources` handed to
+pub struct SearchAdmission {
+    /// The selected model row accepts the hosted `tool_search` declaration. Production writer:
+    /// the operator's per-row `supports_search_tool` tri-state, resolved in
+    /// `xai-grok-shell/src/agent/config.rs` and read off the target row at the switch site.
+    pub supports_search_tool: bool,
+    /// At least one deferred tool exists to be found. Written by exactly one function,
+    /// [`has_searchable_tools`], whose interim body is the declared tool surface — see ruling D1
+    /// there for why that body is not the discovery manifest yet and why the manifest, when it
+    /// lands, replaces that body and nothing else here.
+    ///
+    /// Deliberately not derived from the `sources` handed to
     /// [`tool_search_declaration_entry`]: that advertised list may legitimately be empty or
     /// omitted and the donor still emits a declaration then
     /// (`core/src/tools/handlers/tool_search_spec.rs:48-49` renders "None currently enabled.").
-    pub(super) has_searchable_tools: bool,
+    pub has_searchable_tools: bool,
 }
 
 impl SearchAdmission {
+    /// The construction path for anything assembling an admission for a real route (SPEC-W2 PA-3
+    /// requires the type be buildable from another crate): the row's own `supports_search_tool` flag
+    /// plus the tool surface that route declares, with the second signal taken ONLY through
+    /// [`has_searchable_tools`]. A caller cannot pre-fold or bypass the producer through this
+    /// constructor, which is what keeps ruling D1's "one producer" a property of the type and not a
+    /// convention — the manifest, when it lands, replaces that function's body and every route
+    /// follows it.
+    ///
+    /// Before this constructor the `pub(super)` struct literal was the ONLY construction
+    /// path, and a positional alternative would have been unsound rather than merely
+    /// awkward: `new(a, b)` and `new(b, a)` both compile and [`Self::admitted`] folds them
+    /// with a symmetric `&&`, so a swap would be invisible through the whole path (AGENTS §7
+    /// bans exactly this callsite shape). A test that needs a pair the producer cannot emit —
+    /// the asymmetric cells that pin which field carries which signal — uses the field-named
+    /// literal, which cannot be swapped by accident.
+    ///
+    /// Freshness is still the caller's obligation (see [`has_searchable_tools`]): pass the surface the
+    /// route is about to send, not a stale snapshot.
+    pub fn for_row(
+        supports_search_tool: bool,
+        declared_tools: &[impl DeclaredToolSurface],
+    ) -> Self {
+        Self {
+            supports_search_tool,
+            has_searchable_tools: has_searchable_tools(declared_tools),
+        }
+    }
+
     /// A route is admitted only when both signals hold. A discovery manifest, once it exists,
     /// maps onto `has_searchable_tools` with no change here.
-    pub(super) fn admitted(self) -> bool {
+    ///
+    /// The fold is symmetric, so it cannot reveal a swapped pair — only the named fields can, which
+    /// is why the tests that build the tuple read the fields back.
+    pub fn admitted(self) -> bool {
         self.supports_search_tool && self.has_searchable_tools
     }
+}
+
+mod sealed {
+    /// Seals [`super::DeclaredToolSurface`] so only this crate can name an implementor: an
+    /// unbounded type parameter would let `has_searchable_tools(&[1u8, 2])` open the admission
+    /// gate, which is the failure ruling D1 exists to prevent.
+    pub trait DeclaredToolSurfaceSealed {}
+}
+
+/// A tool-declaration surface [`has_searchable_tools`] may be asked about — the two shapes the
+/// harness actually declares tools with: [`crate::conversation::ToolSpec`] (the request's own
+/// `tools`) and [`crate::types::ToolDefinition`] (the shell's tool-bridge surface, which is
+/// `xai_tool_types`' type re-exported by `xai-grok-tools`, so one impl covers both spellings).
+/// Sealed: a third shape must be ruled into D1 here, not passed by a caller.
+pub trait DeclaredToolSurface: sealed::DeclaredToolSurfaceSealed {}
+impl sealed::DeclaredToolSurfaceSealed for super::ToolSpec {}
+impl sealed::DeclaredToolSurfaceSealed for crate::types::ToolDefinition {}
+impl DeclaredToolSurface for super::ToolSpec {}
+impl DeclaredToolSurface for crate::types::ToolDefinition {}
+
+/// The single producer of [`SearchAdmission::has_searchable_tools`] (bead apex-waj.35, ruling
+/// `map/RULINGS-o1o5.md` §D1). Every writer of that signal goes through this function, so the
+/// manifest is a body change rather than a scatter of call-site edits: when `DiscoveryManifest`
+/// lands it replaces the body below and [`SearchAdmission::admitted`] does not move.
+///
+/// Interim body, as ruled: a route whose declared tool surface is non-empty is searchable. The
+/// argument is the surface the route actually declares, bounded to [`DeclaredToolSurface`] so the
+/// ruled input is the only input that compiles.
+///
+/// Freshness is the caller's obligation, not this function's: the surface must be the one the
+/// route is about to send. A switch-time snapshot (the shell's tool-bridge definitions) is valid
+/// only for the projector, which does not read the admission yet; the request-side producer —
+/// `xai-chat-state`'s `build_conversation_request` — passes `ConversationRequest::tools`, because
+/// a session whose tools changed after the switch (MCP connect/disconnect, preset change) has a
+/// stale snapshot.
+///
+/// Two derivations the ruling rejects, recorded here so they are not re-derived: the `sources` list
+/// rendered into the declaration description (see [`SearchAdmission::has_searchable_tools`]), and
+/// "a deferred tool exists" keyed on `ToolExposure::Deferred`, which has no production writer at
+/// this head and would therefore keep `admitted()` false in every live session.
+pub fn has_searchable_tools<T: DeclaredToolSurface>(declared_tools: &[T]) -> bool {
+    !declared_tools.is_empty()
 }
 
 /// [`extra_tool_entries`] with the `tool_search` declaration placed first, ahead of the hosted
@@ -780,17 +973,16 @@ impl SearchAdmission {
 /// it: the live probe R4 dropped a declaration sent through that container, so it would never
 /// reach the model.
 ///
-/// The sampler appends these entries to the serialized body's top-level `tools`, creating the array
-/// when the serialized body carries no typed `tools` key — absent, or present but not an array
-/// (`client.rs:886-889` `splice_extra_tool_entries`). A body that does carry one — the typed
+/// The sampler splices these entries into the serialized body's top-level `tools`, creating the
+/// array when the serialized body carries no typed `tools` key — absent, or present but not an array
+/// (`client.rs` `splice_extra_tool_entries`). A body that does carry one — the typed
 /// `rs::Tool::Function` entries `build_responses_tools` emits for the request's client-declared
 /// `ToolSpec`s, which is where a function tool and any MCP tool the harness declares both ride — is
-/// extended in place instead. Hosted `web_search`/`x_search` never ride that typed channel: each
+/// extended in place, with this declaration hoisted to `tools[0]` of the final array: the producer
+/// puts it first here and the splice is what keeps it first in front of the typed entries. Hosted
+/// `web_search`/`x_search` never ride that typed channel: each
 /// travels only as a raw-JSON entry (see [`extra_tool_entries`]; `client.rs:877-878`), because
-/// emitting either as a typed `rs::Tool` as well is rejected as a duplicate. The declaration
-/// therefore leads the hosted entries because this function pushes it first; the hosted entries then
-/// follow the caller's `hosted_tools` slice order, so
-/// `functions…, tool_search, web_search, x_search` is that slice's order, not a rule placed here.
+/// emitting either as a typed `rs::Tool` as well is rejected as a duplicate.
 ///
 /// Cache cost: the declaration is model-visible and can carry up to
 /// `MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES` of source text into that request-level `tools[]`.

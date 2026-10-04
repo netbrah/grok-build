@@ -117,9 +117,9 @@ pub enum DropReason {
 impl DropReason {
     /// Stable label for a telemetry drop report. Nothing renders it yet: there
     /// are TWO switch-time log records and neither can see `drops` —
-    /// `xai-chat-state/src/actor/mutations.rs:296-300` (`tracing::info!`, fired
+    /// `xai-chat-state/src/actor/mutations.rs:318-324` (`tracing::info!`, fired
     /// only when `changed > 0`, fields `target_model` + `changed`) and
-    /// `xai-grok-shell/src/session/acp_session_impl/switch_projection.rs:39-47`
+    /// `xai-grok-shell/src/session/acp_session_impl/switch_projection.rs:50-58`
     /// (`unified_log::warn("shell.turn.switch_projection_persisted", …)`, fired
     /// unconditionally with `{"model_id", "outcome", "changed"}`). The accounting
     /// field the two share is `changed`. Surfacing this ledger next to it is bead
@@ -135,9 +135,9 @@ impl DropReason {
 /// One recorded removal: the removed item's SOURCE index plus the reason
 /// (§4.2 rule 13 by extension). A switch that deleted items would be
 /// distinguishable from one that only re-keyed reasoning items ONCE the actor
-/// surfaces this ledger: today `xai-chat-state/src/actor/mutations.rs:286-293`
+/// surfaces this ledger: today `xai-chat-state/src/actor/mutations.rs:306-324`
 /// keeps only `.items` and logs `changed`, which `projection_changed_count`
-/// (`:66-81`) collapses to `stored.len().max(projected.len())` on a length
+/// (`:67-86`) collapses to `stored.len().max(projected.len())` on a length
 /// mismatch. Enabled, not delivered — bead apex-waj.37.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionDrop {
@@ -174,11 +174,31 @@ pub struct ProjectedHistory {
 /// `x-litellm-tags` pin (`None` = untagged, an empty-string pin normalized
 /// at the call site): it feeds the switch-time gate on the one no-re-key
 /// AZ -> AZ row (design §3.4) and is inert everywhere else.
+///
+/// `_route` (apex-waj.35, SPEC-W2 PA-1) is the target row's route tuple: which API the
+/// switch lands on, which boundary regime that row is, and whether its admission gate
+/// serves native discovery. It is RECEIVED here and not yet READ: the four `DiscoveryTier`
+/// arms that consume it are apex-waj.2, and `boundary` deliberately stays a separate
+/// argument rather than folding into `route.boundary`, because it is load-bearing for the
+/// three shipped T1/T3 arms (`discovery_tier` reads the tuple, these arms read the
+/// argument) and re-deriving it here would change three shipped behaviours in one edit.
+/// PA-2's fail-closed on a `boundary != route.boundary()` tuple is owed to the same arms:
+/// a demotion is not expressible in this seam yet (`DropReason` has no discovery variant,
+/// so a recorded drop here could not be accounted), and a `debug_assert!` would not satisfy
+/// PA-2 anyway — release builds skip it, which is exactly the hole its text warns about.
+/// Its test, `an_inconsistent_route_tuple_demotes_and_records` (SPEC-W2 §4.1 T-2 / MUT-R2),
+/// therefore belongs with the arms on **apex-waj.2**, together with PA-29's `DropReason`
+/// variant; it is named here so the MUST is tracked rather than dropped between the two beads.
+/// The `boundary` argument could fold into the tuple once that guard exists, and not before.
+/// The underscore is therefore "unconsumed as of this cut", not "ignored by design"; the
+/// value itself reaches here from the target row through `xai-chat-state`
+/// (`TargetRoute::new` names the one production caller).
 pub fn project_switch_history(
     items: &[ConversationItem],
     target_model_id: &str,
     boundary: Boundary,
     target_pin: Option<&str>,
+    _route: &TargetRoute,
 ) -> ProjectedHistory {
     // Vertex targets only, and ONE direction of the /messages build's D5 pairing
     // (`clean_orphaned_items`, conversation/messages.rs): a `tool_result` reaches
@@ -211,7 +231,7 @@ pub fn project_switch_history(
     //      no fixture that can express it (every assistant call in
     //      `fixtures/projection_x71/` pairs with a result), no corpus material, and
     //      no reader of this ledger until apex-waj.37 surfaces it — the only
-    //      non-test call site (`xai-chat-state/src/actor/mutations.rs:286-291`)
+    //      non-test call site (`xai-chat-state/src/actor/mutations.rs:306-316`)
     //      keeps `.items` and discards `drops`.
     // Owner of the owed half, and of the rewrite-accounting design it needs first:
     // the follow-on bead filed from the px29 F-2 handoff (apex-waj family). The
@@ -285,6 +305,34 @@ pub fn project_switch_history(
         items: projected,
         drops,
     }
+}
+
+/// A route for the tests whose subject is a shipped arm keyed on `boundary` — the T1/T3
+/// reasoning and backend-call arms, and the id-grammar goldens — none of which reads the
+/// tuple yet. What such a fixture owes is only a tuple a real row could produce, with an
+/// admission that is CLOSED, so no test that is not about admission can be accused of quietly
+/// taking an admitted route. Tests that ARE about the ladder build the tuple themselves through
+/// [`TargetRoute::new`].
+///
+/// The backend pairing is arbitrary on purpose, not a ruled wire fact: no production code reads
+/// [`TargetRoute::backend`] until the apex-waj.2 arms land, so this only has to be a value some row
+/// could have produced. PA-6 rules the opposite direction from what is written here — that
+/// `Messages` x non-`Vertex` stays constructible and total — and does NOT say a `Vertex` boundary
+/// implies a `Messages` backend, so do not read these three arms as an estate claim about which wire
+/// serves which boundary.
+#[cfg(test)]
+pub(crate) fn inert_route(boundary: Boundary) -> TargetRoute {
+    TargetRoute::new(
+        match boundary {
+            Boundary::Vertex => ApiBackend::Messages,
+            Boundary::AzStrict | Boundary::VLLenient => ApiBackend::Responses,
+        },
+        boundary,
+        SearchAdmission {
+            supports_search_tool: false,
+            has_searchable_tools: false,
+        },
+    )
 }
 
 /// Forward attribution (sdd-71 §2.3): the owning model of a reasoning item
@@ -674,7 +722,7 @@ fn hex_digest(bytes: &[u8]) -> String {
 /// projector arm that acts on it is pending beads apex-waj.21 / apex-waj.5 /
 /// apex-waj.11.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // pending apex-waj.21 / .5 / .11; the caller lands with the route tuple (apex-waj.35)
+#[allow(dead_code)] // pending apex-waj.2 (the projector arms that read the tuple) + .21 / .5 / .11; the route tuple itself landed with apex-waj.35
 pub(super) enum DiscoveryTier {
     /// D0 — same mint domain, same row, same boundary: the record rides on
     /// verbatim, `wire_ids` included.
@@ -732,50 +780,103 @@ pub(super) enum DiscoveryTier {
 /// `admission` is [`SearchAdmission`], not a bare bool: rule 3 folds two
 /// signals — the target row's `flags.supports_search_tool` and a non-empty
 /// discovery manifest (`has_searchable_tools`) — through
-/// `SearchAdmission::admitted()` (`responses.rs:679-700`). A bool would let a
+/// [`SearchAdmission::admitted`] (defined in `conversation::responses`). A bool would let a
 /// caller pass `supports_search_tool` alone and take a D0 KEEP on a route that
 /// cannot serve the loaded set, with no compile error to catch it.
 ///
 /// Both fields come from ONE target row, so `Messages` with a non-`Vertex`
 /// boundary is a route the CALLER MUST NOT build: a `/messages` row IS a Vertex
 /// row. Calling that input "impossible" would overstate the type — nothing in the
-/// signatures stops a caller assembling the pair, and the derivation that would
-/// make the two fields consistent does not exist yet (apex-waj.35): `Boundary` is
-/// derived from the model slug (`model_boundary_class`, this file) while
-/// `ApiBackend` rides `SamplingConfig` (`types.rs:1118`), and `infer_api_backend`
-/// sends an Anthropic slug to `ChatCompletions`, not `Messages`
-/// (`catalog_wire.rs:82-93`). So the obligation is a requirement on the caller,
-/// stated as one, and the decision stays total over the pair rather than rejecting
-/// it — total without inventing a fourth family vocabulary (§9 item 6).
+/// signatures stops a caller assembling the pair. The derivation that keeps the two
+/// fields consistent now exists at exactly one production call site (apex-waj.35:
+/// `xai-grok-shell/src/session/acp_session_impl/model_switch.rs` builds both off the
+/// target row — `ApiBackend` from the row's own backend, `Boundary` from
+/// [`model_boundary_class`] of the same row), because it cannot live in the type:
+/// `Boundary` keys on the model slug while `ApiBackend` rides `SamplingConfig`
+/// (`xai-grok-sampling-types/src/types.rs:1138`), and `infer_api_backend` sends an Anthropic slug to
+/// `ChatCompletions`, not `Messages` (`catalog_wire.rs:82-93`). So the obligation stays
+/// a requirement on the caller, stated as one, and the decision stays total over the
+/// pair rather than rejecting it — total without inventing a fourth family vocabulary
+/// (§9 item 6).
 /// `messages_target_on_a_non_vertex_boundary_still_materialises` pins what
 /// totality answers there.
+///
+/// Public, built only through [`TargetRoute::new`] (SPEC-W2 PA-4): a caller that could
+/// re-assign one axis after construction re-creates exactly the inconsistency the
+/// constructor exists to make hard, and PA-2's release-visible fail-closed on that tuple
+/// is owed by the arms (apex-waj.2), so nothing else catches it. The three-part widening
+/// PA-3 demands for [`SearchAdmission`] (type, fields + `admitted()`, and the
+/// `pub use responses::{…}` list in `conversation.rs`) landed in the same change as this
+/// one, for the reason stated there: `private_interfaces` is a rustc WARN and the
+/// workspace declares only `[workspace.lints.clippy]`, so half a widening breaks the
+/// consumer quietly instead of failing the build.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // pending apex-waj.21 / .5 / .11; the caller lands with the route tuple (apex-waj.35)
-pub(super) struct TargetRoute {
-    pub backend: ApiBackend,
-    pub boundary: Boundary,
-    /// §4.2 rule 3's gate, carried as the two signals it folds rather than as
-    /// a bool a caller could pre-fold wrong. Widening `TargetRoute` to `pub` for
-    /// the `xai-chat-state` caller (apex-waj.35) is THREE changes, not one:
-    /// `SearchAdmission` is `pub(super)`, with `pub(super)` fields and a
-    /// `pub(super)` `admitted()` (`responses.rs:683-700`), inside a private
-    /// `mod responses` (`conversation.rs:10`). So the type must be widened, it
-    /// must be added to the `pub use responses::{…}` list
-    /// (`conversation.rs:17-20`), and it needs a construction path an external
-    /// caller can reach (its struct literal is `pub(super)` today). Making the
-    /// type `pub` alone silences the lint and still leaves the type unnameable
-    /// and unbuildable outside this crate. And the lint is `private_interfaces`,
-    /// a rustc WARN that nothing here raises to an error (the workspace declares
-    /// `[workspace.lints.clippy]` only) — a half-done widening breaks the
-    /// consumer quietly rather than failing the build.
-    pub admission: SearchAdmission,
+pub struct TargetRoute {
+    backend: ApiBackend,
+    boundary: Boundary,
+    admission: SearchAdmission,
+}
+
+impl TargetRoute {
+    /// Assemble the tuple from ONE target row (apex-waj.35). Every argument must come from
+    /// the same row: `backend` is that row's own API backend and MUST NOT be
+    /// [`crate::catalog_wire::infer_api_backend`], which answers `ChatCompletions` for an
+    /// Anthropic slug a `/messages` row is served on and would silently demote the D2 cell
+    /// to D3; `boundary` is [`model_boundary_class`] of that same row; `admission` is that
+    /// row's flag folded with its declared surface by [`SearchAdmission::for_row`] — the only
+    /// producer of the surface half. `xai-grok-shell`'s switch site is the one production
+    /// caller.
+    pub fn new(backend: ApiBackend, boundary: Boundary, admission: SearchAdmission) -> Self {
+        Self {
+            backend,
+            boundary,
+            admission,
+        }
+    }
+
+    /// The API the switch lands on — authoritative for the D2-vs-D0/D1 choice.
+    pub fn backend(&self) -> ApiBackend {
+        self.backend.clone()
+    }
+
+    /// The boundary regime the target row is.
+    pub fn boundary(&self) -> Boundary {
+        self.boundary
+    }
+
+    /// §4.2 rule 3's gate, carried as the two signals it folds rather than as a bool a
+    /// caller could pre-fold wrong.
+    ///
+    /// STALE BY CONSTRUCTION, and the arms must read it that way: the tuple is assembled once, at
+    /// the switch, so `has_searchable_tools` here is the session's declared surface AT THAT MOMENT
+    /// (the shell's tool-bridge snapshot). An MCP server that connects or disconnects later, or a
+    /// tool-preset change, leaves this value pointing at the old surface — nothing recomputes it, and
+    /// the tuple has no request-scoped twin. The D0/D3 arms on apex-waj.2 may therefore use it only
+    /// as a statement about the route the switch took, never as "this request can find a tool"; the
+    /// request-side producer recomputes it from `ConversationRequest::tools` through
+    /// [`SearchAdmission::for_row`], whose freshness clause names the same split.
+    ///
+    /// One systematic value that is NOT a statement about the session's tools either: on a row whose
+    /// `supports_search_tool` is `false` the shell passes [`SearchAdmission::for_row`] an empty
+    /// surface by design — the tool-bridge clone it would need cannot change `admitted()`, which
+    /// ANDs the flag anyway — so `has_searchable_tools` on a declining row is a cost-avoidance
+    /// placeholder, always `false`, whatever that session had declared. The binding that makes it
+    /// so is `declared_tools` in `xai-grok-shell`'s `handle_set_session_model`, which is empty
+    /// unless the row admits; `target_route_from_row` itself does no such filtering, which is why
+    /// its own test (`switch_route_carries_the_rows_admission`) reads `has_searchable_tools == true`
+    /// for a declining row over a non-empty surface. A tier arm may therefore key on this field
+    /// only together with `supports_search_tool`; on its own it answers "was the row admitted at
+    /// the switch", never "does this session have something to find".
+    pub fn admission(&self) -> SearchAdmission {
+        self.admission
+    }
 }
 
 /// Where the discovery record came from: the boundary that minted it, and the
 /// row that owns it. `owner_model_id` is `None` when attribution is
 /// unresolvable (mirrors [`forward_owner_model`]); that is never a KEEP.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // pending apex-waj.21 / .5 / .11; the caller lands with the route tuple (apex-waj.35)
+#[allow(dead_code)] // pending apex-waj.2 (the projector arms that read the tuple) + .21 / .5 / .11; the route tuple itself landed with apex-waj.35
 pub(super) struct DiscoveryOrigin {
     pub boundary: Boundary,
     pub owner_model_id: Option<String>,
@@ -875,7 +976,7 @@ pub(super) struct DiscoveryOrigin {
 /// The keying reads `backend`, `boundary` and `admission` only. It never
 /// consults `is_family_switch` (§9 item 3 — too narrow, it is false for
 /// family-unset rows), and there is no parameter through which it could.
-#[allow(dead_code)] // pending apex-waj.21 / .5 / .11; the caller lands with the route tuple (apex-waj.35)
+#[allow(dead_code)] // pending apex-waj.2 (the projector arms that read the tuple) + .21 / .5 / .11; the route tuple itself landed with apex-waj.35
 pub(super) fn discovery_tier(
     target_model_id: &str,
     target: &TargetRoute,
@@ -906,6 +1007,7 @@ pub(super) fn discovery_tier(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conversation::has_searchable_tools;
 
     /// Storage-form history exercising both Vertex drop arms: index 1 is a
     /// non-carrier backend call (T3 drop), index 2 its result (pair-atomic
@@ -926,7 +1028,7 @@ mod tests {
 
     /// Synthetic x71 Table-2 case-1 shape (4 records: user, non-carrier
     /// `x_search` backend call, its result, assistant) — owned by bead
-    /// **apex-ayl.71**, same directory `projection_tests.rs:36` includes from.
+    /// **apex-ayl.71**, same directory `projection_tests.rs:38` includes from.
     /// `fixtures/projection_x71/PROVENANCE.md:49` records this file as
     /// "synthetic — Table 2 case 1" and `:52` says "**NOT a corpus mirror**";
     /// `:60` records that `fc_x` is a synthetic id with no wire material, and
@@ -939,7 +1041,7 @@ mod tests {
     /// identity: key order, number formatting and string escaping are invisible
     /// here. That is the standard that file states for itself — "this is the
     /// corpus's own stated verification standard (“parsed-equal”), not a byte
-    /// comparison" (`projection_tests.rs:381-382`; `as_value` at `projection_tests.rs:545`).
+    /// comparison" (`projection_tests.rs:403-404`; `as_value` at `projection_tests.rs:582`).
     fn item_values(items: &[ConversationItem]) -> serde_json::Value {
         serde_json::to_value(items).expect("ConversationItem must serialize")
     }
@@ -968,7 +1070,13 @@ mod tests {
     #[test]
     fn vertex_target_records_both_drop_reasons() {
         let items = drop_shape();
-        let projected = project_switch_history(&items, "claude-sonnet-5", Boundary::Vertex, None);
+        let projected = project_switch_history(
+            &items,
+            "claude-sonnet-5",
+            Boundary::Vertex,
+            None,
+            &inert_route(Boundary::Vertex),
+        );
         assert_eq!(
             projected.drops,
             vec![
@@ -1030,7 +1138,13 @@ mod tests {
     #[test]
     fn vertex_target_drops_a_web_search_call_and_records_it() {
         let items = items_from(WEB_SEARCH_SHAPE);
-        let projected = project_switch_history(&items, "claude-sonnet-5", Boundary::Vertex, None);
+        let projected = project_switch_history(
+            &items,
+            "claude-sonnet-5",
+            Boundary::Vertex,
+            None,
+            &inert_route(Boundary::Vertex),
+        );
         assert_eq!(
             projected.drops,
             vec![ProjectionDrop {
@@ -1059,7 +1173,13 @@ mod tests {
         // nothing is recorded, so the Vertex asserts above cannot be satisfied
         // by a projector that strips backend calls on every boundary.
         for boundary in [Boundary::AzStrict, Boundary::VLLenient] {
-            let kept = project_switch_history(&items, "gpt-5.6-terra", boundary, None);
+            let kept = project_switch_history(
+                &items,
+                "gpt-5.6-terra",
+                boundary,
+                None,
+                &inert_route(boundary),
+            );
             assert_eq!(
                 kept.drops,
                 Vec::new(),
@@ -1094,7 +1214,13 @@ mod tests {
     #[test]
     fn drop_ledger_records_source_order_not_reason_order() {
         let items = items_from(OUT_OF_REASON_ORDER_SHAPE);
-        let projected = project_switch_history(&items, "claude-sonnet-5", Boundary::Vertex, None);
+        let projected = project_switch_history(
+            &items,
+            "claude-sonnet-5",
+            Boundary::Vertex,
+            None,
+            &inert_route(Boundary::Vertex),
+        );
         assert_eq!(
             projected.drops,
             vec![
@@ -1130,7 +1256,13 @@ mod tests {
     fn responses_targets_record_no_drops() {
         let items = drop_shape();
         for boundary in [Boundary::AzStrict, Boundary::VLLenient] {
-            let projected = project_switch_history(&items, "gpt-5.6-terra", boundary, None);
+            let projected = project_switch_history(
+                &items,
+                "gpt-5.6-terra",
+                boundary,
+                None,
+                &inert_route(boundary),
+            );
             assert_eq!(
                 projected.drops,
                 Vec::new(),
@@ -1145,10 +1277,20 @@ mod tests {
     /// changes no item.
     #[test]
     fn vertex_projection_records_no_further_drops() {
-        let first =
-            project_switch_history(&drop_shape(), "claude-sonnet-5", Boundary::Vertex, None);
-        let second =
-            project_switch_history(&first.items, "claude-sonnet-5", Boundary::Vertex, None);
+        let first = project_switch_history(
+            &drop_shape(),
+            "claude-sonnet-5",
+            Boundary::Vertex,
+            None,
+            &inert_route(Boundary::Vertex),
+        );
+        let second = project_switch_history(
+            &first.items,
+            "claude-sonnet-5",
+            Boundary::Vertex,
+            None,
+            &inert_route(Boundary::Vertex),
+        );
         assert_eq!(second.drops, Vec::new());
         assert_eq!(item_values(&second.items), item_values(&first.items));
     }
@@ -1176,7 +1318,13 @@ mod tests {
     #[test]
     fn vertex_drops_over_the_x71_case1_shape() {
         let items = items_from(ORPHAN_SHAPE);
-        let projected = project_switch_history(&items, "claude-sonnet-5", Boundary::Vertex, None);
+        let projected = project_switch_history(
+            &items,
+            "claude-sonnet-5",
+            Boundary::Vertex,
+            None,
+            &inert_route(Boundary::Vertex),
+        );
         assert_eq!(
             projected.drops,
             vec![
@@ -1231,7 +1379,13 @@ mod tests {
     #[test]
     fn vertex_ledger_of_four_removals_is_complete_ordered_and_typed() {
         let items = items_from(FOUR_DROP_SHAPE);
-        let projected = project_switch_history(&items, "claude-sonnet-5", Boundary::Vertex, None);
+        let projected = project_switch_history(
+            &items,
+            "claude-sonnet-5",
+            Boundary::Vertex,
+            None,
+            &inert_route(Boundary::Vertex),
+        );
         assert_eq!(
             projected.drops,
             vec![
@@ -1314,7 +1468,13 @@ mod tests {
             (TWO_CALLS_FIRST_RESULT_ONLY, "first result stored only"),
         ] {
             let items = items_from(shape);
-            let projected = project_switch_history(&items, "gpt-5.6-sol", Boundary::Vertex, None);
+            let projected = project_switch_history(
+                &items,
+                "gpt-5.6-sol",
+                Boundary::Vertex,
+                None,
+                &inert_route(Boundary::Vertex),
+            );
             assert_eq!(
                 projected.drops,
                 Vec::new(),
@@ -1354,7 +1514,13 @@ mod tests {
         ] {
             let items = items_from(shape);
             for boundary in [Boundary::AzStrict, Boundary::VLLenient] {
-                let projected = project_switch_history(&items, "gpt-5.6-terra", boundary, None);
+                let projected = project_switch_history(
+                    &items,
+                    "gpt-5.6-terra",
+                    boundary,
+                    None,
+                    &inert_route(boundary),
+                );
                 assert_eq!(
                     projected.drops,
                     Vec::new(),
@@ -1402,11 +1568,7 @@ mod tests {
     };
 
     fn route(backend: ApiBackend, boundary: Boundary, admission: SearchAdmission) -> TargetRoute {
-        TargetRoute {
-            backend,
-            boundary,
-            admission,
-        }
+        TargetRoute::new(backend, boundary, admission)
     }
 
     fn origin(boundary: Boundary, owner_model_id: Option<&str>) -> DiscoveryOrigin {
@@ -1414,6 +1576,64 @@ mod tests {
             boundary,
             owner_model_id: owner_model_id.map(str::to_owned),
         }
+    }
+
+    /// The route tuple built the way the production caller builds it (apex-waj.35): the row's
+    /// `supports_search_tool`, the second signal from the ONE producer ruling D1 names, folded by
+    /// [`SearchAdmission::admitted()`] inside the tier ladder. It is the ladder that proves the
+    /// tuple is wired — an admission that never opened would make every Responses target a D3 and
+    /// no test below would notice, because D3 is also the correct answer for three other cells.
+    ///
+    /// The pair of assertions is the whole point: the SAME row, boundary and origin, flipped only
+    /// by the row's flag, moves KEEP -> DEMOTE.
+    #[test]
+    fn the_admission_producer_opens_the_admitted_tier_on_an_admitting_row() {
+        let declared_tools = [crate::conversation::ToolSpec {
+            name: "read_file".to_string(),
+            description: None,
+            parameters: serde_json::json!({"type": "object"}),
+            exposure: crate::conversation::ToolExposure::default(),
+        }];
+        let owner_row = "gpt-5.6-terra";
+        let from = origin(Boundary::AzStrict, Some(owner_row));
+
+        // An operator-admitted row over a non-empty declared surface takes D0, not the D3 floor.
+        let admitted =
+            SearchAdmission::for_row(/* supports_search_tool */ true, &declared_tools);
+        let route = TargetRoute::new(ApiBackend::Responses, Boundary::AzStrict, admitted);
+        assert!(
+            admitted.admitted(),
+            "a non-empty declared surface is searchable, so the row's flag decides here"
+        );
+        assert_eq!(
+            discovery_tier(owner_row, &route, &from),
+            DiscoveryTier::Keep,
+            "the admitted route must reach D0"
+        );
+
+        // The same row with the operator's flag off is the fail-closed cell: nothing but the flag
+        // differs, so a producer or a tuple that ignores it cannot pass.
+        let unadmitted =
+            SearchAdmission::for_row(/* supports_search_tool */ false, &declared_tools);
+        let route = TargetRoute::new(ApiBackend::Responses, Boundary::AzStrict, unadmitted);
+        assert_eq!(
+            discovery_tier(owner_row, &route, &from),
+            DiscoveryTier::Demote,
+            "the row's flag alone must be able to close the route"
+        );
+
+        // The producer's other half: a request that declares no tool has nothing to search, so the
+        // flag alone never opens the route. This one cell calls the producer directly rather than
+        // going through `for_row`, because the producer's BODY is the subject here.
+        let no_tools: [crate::conversation::ToolSpec; 0] = [];
+        assert!(
+            !SearchAdmission {
+                supports_search_tool: true,
+                has_searchable_tools: has_searchable_tools(&no_tools),
+            }
+            .admitted(),
+            "a route with no declared tool surface is not searchable"
+        );
     }
 
     /// D3: the Chat Completions wire has neither a typed discovery item nor a
@@ -1739,7 +1959,8 @@ mod tests {
     ///   `supports_search_tool` instead of `admitted()`) and M14 (read
     ///   `has_searchable_tools`) both die here;
     /// - folding the signals by EQUALITY instead of conjunction. `admitted()` is
-    ///   `supports_search_tool && has_searchable_tools` (`responses.rs:697-699`);
+    ///   `supports_search_tool && has_searchable_tools` (`SearchAdmission::admitted`,
+    ///   `conversation::responses`);
     ///   a fold written `supports == has` reproduces the shipped verdict of
     ///   every row except [`NEITHER_SIGNAL`] and differs from `&&` exactly there,
     ///   where it KEEPs a loaded set on a route that has neither the declaration
@@ -1863,7 +2084,7 @@ mod tests {
     /// rule 7 is what cites the `P2-missing` oracle below), while the
     /// harness-side admission gate decides whether
     /// the hosted `tool_search` declaration is ADVERTISED at all
-    /// (`responses.rs:679-700`) — a different decision, taken on a different
+    /// (`SearchAdmission::admitted`, `conversation::responses`) — a different decision, taken on a different
     /// surface. The oracle evidences the narrower claim, and only that:
     /// `FIX/grok-probe/P2-declaration-necessity/three-arm.json` — `P2-missing`
     /// (loaded name absent from `tools[]`) is 400, while `P2-plain` (no
@@ -1931,9 +2152,9 @@ mod tests {
     /// items it excludes precisely the class this projector rewrites, so the
     /// reasoning-bearing case is NOT owned here — it is pinned over the
     /// provenance-mirrored corpus (bead **apex-ayl.71**, the owner of
-    /// `fixtures/projection_x71/`) by `projection_tests.rs:392`
+    /// `fixtures/projection_x71/`) by `projection_tests.rs:414`
     /// (`xw_proj_value_identity_nonprojected`, whose comparison is `as_value`, the
-    /// same value-identity standard as here) and `projection_tests.rs:426`
+    /// same value-identity standard as here) and `projection_tests.rs:449`
     /// (`xw_proj_idempotence`), and duplicating it here would step on that
     /// owner; (b) §5.3's named donor load is CX3 `request.json`, which lives in
     /// the campaign fixtures dir outside this repo and is still owed — this
@@ -1942,7 +2163,13 @@ mod tests {
     fn xt12_history_with_no_discovery_item_projects_value_identical() {
         let items = items_from(NO_DISCOVERY_SHAPE);
         for boundary in [Boundary::AzStrict, Boundary::VLLenient, Boundary::Vertex] {
-            let first = project_switch_history(&items, "gpt-5.6-sol", boundary, None);
+            let first = project_switch_history(
+                &items,
+                "gpt-5.6-sol",
+                boundary,
+                None,
+                &inert_route(boundary),
+            );
             assert!(
                 first.drops.is_empty(),
                 "{boundary:?} removed items from a discovery-free history: {:?}",
@@ -1953,7 +2180,13 @@ mod tests {
                 item_values(&items),
                 "{boundary:?} rewrote a non-projected item"
             );
-            let second = project_switch_history(&first.items, "gpt-5.6-sol", boundary, None);
+            let second = project_switch_history(
+                &first.items,
+                "gpt-5.6-sol",
+                boundary,
+                None,
+                &inert_route(boundary),
+            );
             assert_eq!(
                 item_values(&second.items),
                 item_values(&first.items),
@@ -1982,7 +2215,13 @@ mod tests {
     fn legacy_search_tool_discovery_round_survives_every_boundary() {
         let items = items_from(LEGACY_SEARCH_ROUND);
         for boundary in [Boundary::AzStrict, Boundary::VLLenient, Boundary::Vertex] {
-            let projected = project_switch_history(&items, "gpt-5.6-sol", boundary, None);
+            let projected = project_switch_history(
+                &items,
+                "gpt-5.6-sol",
+                boundary,
+                None,
+                &inert_route(boundary),
+            );
             assert!(
                 projected.drops.is_empty(),
                 "{boundary:?} must record no drop for a paired search round: {:?}",

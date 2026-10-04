@@ -986,6 +986,16 @@ pub(super) async fn run_session(
                                 // set_primary_model also adds to models_used.
                                 session.signals_handle().set_primary_model(&model_name);
                                 cfg.model = model_name.clone();
+                                // apex-waj.35 (ruling `map/RULINGS-o1o5.md` §"O3, run 5"): this
+                                // is a writer that moves the row on a config it read back from
+                                // the actor, so the row's `supports_search_tool` flag is
+                                // re-read against the new id — the config is the one message
+                                // that carries both, and a stale `true` copied from the previous
+                                // row would advertise the declaration on a row the operator left
+                                // off.
+                                cfg.supports_search_tool = session
+                                    .models_manager
+                                    .model_supports_search_tool(model_name.as_str());
                                 cfg.extra_headers.extend(extra_headers);
                                 if let Some(cw) = context_window
                                     && session.compaction.context_window_override.is_none()

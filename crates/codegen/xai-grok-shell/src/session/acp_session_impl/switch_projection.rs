@@ -13,6 +13,7 @@
 //!   already shows the model line change.
 
 use xai_chat_state::StripOutcome;
+use xai_grok_sampling_types::conversation::projection::TargetRoute;
 
 use crate::session::acp_session::SessionActor;
 
@@ -25,10 +26,20 @@ impl SessionActor {
     /// `x-litellm-tags` pin (`None` = untagged, empty-string normalized) —
     /// the switch-time gate on the AZ->AZ row consults it against each
     /// item's mint tag to decide store retention of the ciphertext.
-    pub(crate) async fn apply_switch_projection(&self, target_model: &str, target_pin: Option<&str>) {
+    ///
+    /// `route` (apex-waj.35): the target row's route tuple, built by the caller from the
+    /// row the switch lands on (`model_switch.rs::target_route_from_row`). It rides unchanged to the
+    /// projector; this seam must not re-derive anything from `target_model`, which is why it
+    /// takes the tuple rather than the flags separately.
+    pub(crate) async fn apply_switch_projection(
+        &self,
+        target_model: &str,
+        target_pin: Option<&str>,
+        route: &TargetRoute,
+    ) {
         let outcome = self
             .chat_state_handle
-            .project_switch_history(target_model, target_pin)
+            .project_switch_history(target_model, target_pin, route)
             .await;
         let (outcome_label, changed) = match outcome {
             StripOutcome::Applied { stripped } => ("applied", stripped),

@@ -80,6 +80,7 @@ async fn create_test_actor(
             stop_sequences: None,
             disable_parallel_tool_use: None,
             tool_cache_breakpoint: None,
+            supports_search_tool: false,
             server_tools: None,
             mcp_servers: None,
             mcp_toolset_server: None,
@@ -942,7 +943,7 @@ async fn family_switch_responses_target_skips_compact_and_preserves_history() {
 #[tokio::test(flavor = "current_thread")]
 async fn family_switch_responses_target_preserves_reasoning_for_projection() {
     use xai_grok_sampling_types::conversation::projection::{
-        model_boundary_class, project_switch_history,
+        TargetRoute, model_boundary_class, project_switch_history,
     };
     let local = tokio::task::LocalSet::new();
     local
@@ -963,7 +964,7 @@ async fn family_switch_responses_target_preserves_reasoning_for_projection() {
                     )],
                     // The tagged `ReasoningItemContent` is 0.42.1's shape and the only faithful
                     // port, but the `xw_` re-key hashes exactly these bytes
-                    // (`projection.rs:633-641`), so the wrap moves the minted id. The only pin
+                    // (`projection.rs:487-500`), so the wrap moves the minted id. The only pin
                     // on that id is the `xw_` prefix check below — a known-answer golden is owed
                     // on apex-99sf, so this suite being green is NOT evidence of `xw_` stability.
                     content: Some(vec![
@@ -1049,11 +1050,23 @@ async fn family_switch_responses_target_preserves_reasoning_for_projection() {
             }
             // (b) the .71 projection must have re-keyed the items exactly as
             // the pub ST oracle computes (the actor calls the same function).
+            // apex-waj.35 (PA-1) added the route as the 5th argument; this row is a
+            // /v1/responses target and the case pins the T1 reasoning re-key only, so
+            // the tuple carries the row's backend with an inert (un-admitted) route —
+            // exactly what the actor would assemble for a row without the flag.
             let oracle = project_switch_history(
                 &pre_switch,
                 "gpt-5.6-sol",
                 model_boundary_class("gpt-5.6-sol"),
                 None,
+                &TargetRoute::new(
+                    xai_grok_sampling_types::ApiBackend::Responses,
+                    model_boundary_class("gpt-5.6-sol"),
+                    xai_grok_sampling_types::SearchAdmission {
+                        supports_search_tool: false,
+                        has_searchable_tools: false,
+                    },
+                ),
             )
             .items;
             let pre_reasoning: Vec<_> = pre_switch

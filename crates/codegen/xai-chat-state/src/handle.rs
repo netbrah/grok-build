@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use tokio::sync::{mpsc, oneshot};
 use xai_grok_sampling_types::{
     ConversationItem, ConversationRequest, DanglingToolCallReason, SamplingConfig, TokenUsage,
-    ToolSpec, TraceContext,
+    ToolSpec, TraceContext, conversation::projection::TargetRoute,
 };
 
 use crate::commands::{ChatStateCommand, RepairHistoryBlocked, StrictAppendAck, StrictAppendError};
@@ -225,7 +225,12 @@ impl ChatStateHandle {
         let _ = self.cmd_tx.send(ChatStateCommand::IncrementPromptIndex);
     }
 
-    /// Update the sampling config (e.g., model switch).
+    /// Update the sampling config (e.g., model switch). Fire-and-forget.
+    ///
+    /// The row's `supports_search_tool` flag rides the config
+    /// (`SamplingConfig::supports_search_tool`), so a caller that changes `config.model` here
+    /// must re-derive that flag from the new row in the same config — there is no separate
+    /// publication to send afterwards (bead apex-waj.35).
     pub fn update_sampling_config(&self, config: SamplingConfig) {
         let _ = self.cmd_tx.send(ChatStateCommand::UpdateSamplingConfig {
             config: Box::new(config),
@@ -306,12 +311,15 @@ impl ChatStateHandle {
         &self,
         target_model: &str,
         target_pin: Option<&str>,
+        route: &TargetRoute,
     ) -> crate::StripOutcome {
         let target_model = target_model.to_owned();
+        let route = route.clone();
         self.query("ProjectSwitchHistory", |reply| {
             ChatStateCommand::ProjectSwitchHistory {
                 target_model,
                 target_pin: target_pin.map(str::to_owned),
+                route,
                 reply,
             }
         })

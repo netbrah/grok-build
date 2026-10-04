@@ -225,6 +225,16 @@ impl ChatStateActor {
                 self.increment_prompt_index();
             }
             ChatStateCommand::UpdateSamplingConfig { config } => {
+                // apex-waj.35 (ruling `map/RULINGS-o1o5.md` §"O3, run 5"): the row's
+                // `supports_search_tool` flag rides the config that names the row, so moving the
+                // row and refreshing its admission is ONE message. There is nothing to invalidate
+                // and nothing to race: whichever production caller reaches this command —
+                // `handle_set_session_model`, `handle_set_reasoning_effort`,
+                // `SessionCommand::OverrideModelName`, a response-metadata refresh — the flag it
+                // ends up with is the one that came with the row now installed, and a caller that
+                // rewrites `model` on a config it read back must re-derive the flag with it (the
+                // shell's two such sites: `acp_session_impl/model_switch.rs`'s effort router and
+                // `acp_session_impl/run_loop.rs`'s `OverrideModelName`).
                 self.state.sampling_config = *config;
             }
             ChatStateCommand::RecordAgentEditedPath { path } => {
@@ -303,9 +313,10 @@ impl ChatStateActor {
             ChatStateCommand::ProjectSwitchHistory {
                 target_model,
                 target_pin,
+                route,
                 reply,
             } => {
-                match self.project_switch_history(&target_model, target_pin.as_deref()) {
+                match self.project_switch_history(&target_model, target_pin.as_deref(), &route) {
                     None => {
                         let _ = reply.send(crate::StripOutcome::NoMatch);
                     }

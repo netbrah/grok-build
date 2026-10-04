@@ -4,7 +4,10 @@ use std::num::NonZeroU64;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
-use xai_grok_sampling_types::{ConversationItem, SamplingConfig};
+use xai_grok_sampling_types::{
+    ConversationItem, SamplingConfig,
+    conversation::projection::{Boundary, TargetRoute},
+};
 
 use crate::StrictAppendAck;
 use crate::actor::ChatStateActor;
@@ -42,6 +45,7 @@ fn test_config_with_window(context_window: u64) -> SamplingConfig {
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tool_cache_breakpoint: None,
+        supports_search_tool: false,
         server_tools: None,
         mcp_servers: None,
         mcp_toolset_server: None,
@@ -1496,6 +1500,7 @@ async fn update_sampling_config_is_queryable() {
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tool_cache_breakpoint: None,
+        supports_search_tool: false,
         server_tools: None,
         mcp_servers: None,
         mcp_toolset_server: None,
@@ -1928,6 +1933,7 @@ async fn build_request_uses_sampling_config() {
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tool_cache_breakpoint: None,
+        supports_search_tool: false,
         server_tools: None,
         mcp_servers: None,
         mcp_toolset_server: None,
@@ -4477,6 +4483,7 @@ async fn sampling_config_survives_compaction_replacement() {
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tool_cache_breakpoint: None,
+        supports_search_tool: false,
         server_tools: None,
         mcp_servers: None,
         mcp_toolset_server: None,
@@ -4577,6 +4584,7 @@ async fn model_metadata_lost_after_compaction_then_recovered_on_next_turn() {
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tool_cache_breakpoint: None,
+        supports_search_tool: false,
         server_tools: None,
         mcp_servers: None,
         mcp_toolset_server: None,
@@ -4670,6 +4678,7 @@ async fn context_window_downgrade_triggers_auto_compact() {
         stop_sequences: None,
         disable_parallel_tool_use: None,
         tool_cache_breakpoint: None,
+        supports_search_tool: false,
         server_tools: None,
         mcp_servers: None,
         mcp_toolset_server: None,
@@ -5867,7 +5876,10 @@ async fn project_switch_history_reports_no_change_for_a_discovery_pair_only_hist
         discovery_output_item(),
         ConversationItem::assistant("a"),
     ]);
-    let outcome = h.handle.project_switch_history("gpt-5.5", None).await;
+    let outcome = h
+        .handle
+        .project_switch_history("gpt-5.5", None, &az_strict_responses_route())
+        .await;
     assert_eq!(
         outcome,
         crate::StripOutcome::NoMatch,
@@ -5886,6 +5898,93 @@ async fn project_switch_history_reports_no_change_for_a_discovery_pair_only_hist
         "the provider bytes are the ones that went in"
     );
     assert!(h.drain_persistence().is_empty(), "no change means no rewrite");
+}
+
+/// The route for the switch-projection test whose subject is the shipped AzStrict arms:
+/// a `/v1/responses` row on an AZ-strict boundary, admission closed. Built through
+/// [`TargetRoute::new`] because that is the only construction path (SPEC-W2 PA-4); named
+/// rather than inline so the boundary it pins is readable at the call site.
+fn az_strict_responses_route() -> TargetRoute {
+    TargetRoute::new(
+        xai_grok_sampling_types::ApiBackend::Responses,
+        Boundary::AzStrict,
+        xai_grok_sampling_types::SearchAdmission {
+            supports_search_tool: false,
+            has_searchable_tools: false,
+        },
+    )
+}
+
+/// apex-waj.35 (SPEC-W2 T-1, with T-3 folded in): the switch projection takes the ROUTE,
+/// not the slug. `mutations.rs` used to call `model_boundary_class(target_model)` itself;
+/// with the tuple threaded from the target row it must read `route.boundary()`, so a route
+/// that disagrees with the slug is answered by the route.
+///
+/// `glm-5.2` is deliberately a VL-lenient slug — that class drops nothing here — so a
+/// mutation site still keying on the slug reports `NoMatch` and this test fails. The Vertex
+/// arm is the observable: a non-carrier backend call is pair-atomically removed on a Vertex
+/// target and on no other. It stands in for T-1's stated observable ("sees D3 instead of
+/// D2") because the tier arms are apex-waj.2's, not this bead's — the boundary is the one
+/// axis of the tuple the projector consumes at this head.
+///
+/// Building `SearchAdmission` and `TargetRoute` from this crate is the T-3 proof: PA-3's
+/// widening is three changes (the type, the fields plus `admitted()`, and a construction
+/// path), and a half-done one does not even warn here.
+#[tokio::test]
+async fn route_tuple_reaches_the_projector_from_the_actor() {
+    let web_search: xai_grok_sampling_types::rs::WebSearchToolCall =
+        serde_json::from_value(serde_json::json!({
+            "action": {"type": "search", "query": "vertex-only drop"},
+            "id": "fc_route_tuple",
+            "status": "completed"
+        }))
+        .expect("valid web search fixture");
+    let h = TestHarness::with_conversation(vec![
+        ConversationItem::user("q1"),
+        ConversationItem::BackendToolCall(xai_grok_sampling_types::BackendToolCallItem {
+            kind: xai_grok_sampling_types::BackendToolKind::WebSearch(web_search),
+        }),
+        ConversationItem::assistant("a1"),
+    ]);
+    let admission = xai_grok_sampling_types::SearchAdmission {
+        supports_search_tool: true,
+        has_searchable_tools: true,
+    };
+    assert!(
+        admission.admitted(),
+        "admitted() is reachable and is the conjunction of both signals"
+    );
+    let route = TargetRoute::new(
+        xai_grok_sampling_types::ApiBackend::Responses,
+        Boundary::Vertex,
+        admission,
+    );
+    assert_eq!(
+        route.boundary(),
+        Boundary::Vertex,
+        "the tuple carries the boundary it was built with"
+    );
+
+    let outcome = h
+        .handle
+        .project_switch_history("glm-5.2", None, &route)
+        .await;
+    assert!(
+        matches!(outcome, crate::StripOutcome::Applied { .. }),
+        "a Vertex ROUTE must drive the Vertex arms even though the slug class is VL-lenient: {outcome:?}"
+    );
+    let conv = h.handle.get_conversation().await;
+    assert!(
+        !conv
+            .iter()
+            .any(|item| matches!(item, ConversationItem::BackendToolCall(_))),
+        "the non-carrier backend call goes with the Vertex target: {conv:?}"
+    );
+    assert_eq!(
+        conv.len(),
+        2,
+        "only the portable user + assistant items remain"
+    );
 }
 
 /// M-D17a2: a rewind to a turn boundary keeps the pair. `truncate_to_prompt_index`
@@ -6057,5 +6156,592 @@ async fn get_trailing_assistant_report_seeks_past_a_trailing_discovery_pair() {
         h.handle.get_trailing_assistant_report().await.as_deref(),
         Some("the report"),
         "a trailing pair neither hides the report nor truncates the walk"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// apex-waj.35 requirement 4 — the row admission persists at the switch and rides
+// every later request. These two tests are the `xai-chat-state` half of the fix:
+// `ConversationRequest::search_admission` has exactly two production writers — this
+// producer (`actor/request_builder.rs:88`) and `xai-grok-shell`'s cache-aligned aux door
+// (`acp_session_impl/side_call.rs:139`) — so if the producer here is wrong the
+// declaration never reaches the wire no matter what the sampler's three call sites do.
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn one_tool(name: &str) -> Vec<xai_grok_sampling_types::ToolSpec> {
+    vec![xai_grok_sampling_types::ToolSpec {
+        name: name.to_owned(),
+        description: Some("a tool".to_owned()),
+        parameters: serde_json::json!({"type": "object"}),
+        exposure: xai_grok_sampling_types::ToolExposure::default(),
+    }]
+}
+
+/// The request the turn would actually send: one declared tool, no memory reminder.
+async fn build_turn_request(h: &TestHarness) -> xai_grok_sampling_types::ConversationRequest {
+    h.handle
+        .build_request(
+            one_tool("read_file"),
+            /* memory_reminder */ None,
+            /* persist_memory_reminder */ false,
+            /* trace */ None,
+            "c".into(),
+            "r".into(),
+        )
+        .await
+        .expect("actor answers BuildConversationRequest")
+}
+
+/// The request a TOOL-LESS call would send: no declared tool, no memory reminder, no trace.
+/// The labels are AGENTS §7 and mirror `build_turn_request` above; the callee is `build_request`
+/// (`handle.rs:453`), whose labelled params are `memory_reminder`, `persist_memory_reminder`
+/// and `trace`.
+async fn build_tool_less_request(h: &TestHarness) -> xai_grok_sampling_types::ConversationRequest {
+    h.handle
+        .build_request(
+            vec![],
+            /* memory_reminder */ None,
+            /* persist_memory_reminder */ false,
+            /* trace */ None,
+            "c".into(),
+            "r".into(),
+        )
+        .await
+        .expect("actor answers BuildConversationRequest")
+}
+
+/// A sampling config for one row, i.e. what the actor is spawned holding at boot. The operator
+/// has left this row's `supports_search_tool` flag off.
+fn row_config(model: &str) -> SamplingConfig {
+    let mut config = test_config();
+    config.model = model.to_owned();
+    config
+}
+
+/// The same row with the operator's flag on: the config `xai-grok-shell`'s
+/// `acp_session_impl/spawn.rs::chat_state_sampling_config` builds when the catalog row carries
+/// the flag, and the one `handle_set_session_model` installs when the session switches onto it
+/// (bead apex-waj.35).
+fn flagged_row_config(model: &str) -> SamplingConfig {
+    SamplingConfig {
+        supports_search_tool: true,
+        ..row_config(model)
+    }
+}
+
+/// The declaration channel the sampler would splice for THIS request, as serialized
+/// bytes — serde_json's object compare is order-blind, so byte equality is the
+/// assertion that survives an inserted or re-keyed entry. Only non-trivial over a
+/// populated hosted surface, so pair it with [`with_hosted_tools`]; the serialized BODY
+/// is owned one altitude up, by `xai-grok-sampler`'s
+/// `client::tests::unadmitted_route_sends_the_same_bytes_as_the_admission_less_call`
+/// and `xai-grok-sampling-types`'s
+/// `conversation::responses_tests::unadmitted_route_entries_stay_byte_identical`.
+fn declaration_channel(request: &xai_grok_sampling_types::ConversationRequest) -> String {
+    serde_json::to_string(&xai_grok_sampling_types::extra_tool_entries_for_route(
+        &request.hosted_tools,
+        request.search_admission,
+    ))
+    .expect("entries serialize")
+}
+
+/// The channel the pre-item producer (`extra_tool_entries`) emits for the same
+/// request — the byte-identical form every non-admitted route must keep.
+fn pre_item_channel(request: &xai_grok_sampling_types::ConversationRequest) -> String {
+    serde_json::to_string(&xai_grok_sampling_types::extra_tool_entries(
+        &request.hosted_tools,
+    ))
+    .expect("entries serialize")
+}
+
+/// Give an actor-built request the hosted surface a row with `web_search`/`x_search` seeded
+/// would carry, so comparing [`declaration_channel`] against [`pre_item_channel`] over it is a
+/// real channel rather than `[] == []`.
+///
+/// `build_conversation_request` always assembles `hosted_tools: vec![]` — it is that struct
+/// field's only PRODUCTION writer in this crate (`request_builder.rs:95`) — so a byte-identity
+/// assertion straight off the actor's request compares empty arrays and cannot see a declaration
+/// among hosted entries. Same surface the producer-level pin uses
+/// (`responses_tests::unadmitted_route_entries_stay_byte_identical`), so the two altitudes are
+/// comparing the same bytes. The admission under test still comes from the actor, unchanged.
+fn with_hosted_tools(request: &mut xai_grok_sampling_types::ConversationRequest) {
+    request.hosted_tools = vec![
+        xai_grok_sampling_types::HostedTool::WebSearch { options: None },
+        xai_grok_sampling_types::HostedTool::XSearch { options: None },
+    ];
+}
+
+/// The producer's three states: a row the operator left off, an admitted row with a non-empty
+/// declared surface, and the same row after the surface went empty. The row half comes from the
+/// config that names the row; the surface half is recomputed per request (ruling D1).
+#[tokio::test]
+async fn build_request_carries_the_row_flag_over_its_own_tool_surface() {
+    let h = TestHarness::with_conversation(vec![ConversationItem::user("q")]);
+
+    let request = build_turn_request(&h).await;
+    assert_eq!(
+        request.search_admission,
+        Some(xai_grok_sampling_types::SearchAdmission {
+            supports_search_tool: false,
+            has_searchable_tools: true,
+        }),
+        "an unflagged row still reports the surface it declares, and `admitted()` is what keeps \
+         it off the wire"
+    );
+    assert!(
+        !request.search_admission.is_some_and(|a| a.admitted()),
+        "the flag is off, so this request rides the un-admitted route"
+    );
+
+    h.handle
+        .update_sampling_config(flagged_row_config("gpt-5.6-sol"));
+
+    let request = build_turn_request(&h).await;
+    assert_eq!(
+        request.search_admission,
+        Some(xai_grok_sampling_types::SearchAdmission {
+            supports_search_tool: true,
+            has_searchable_tools: true,
+        }),
+        "an admitted row plus a declared tool must put an admitted admission on the request"
+    );
+    assert!(
+        request.search_admission.is_some_and(|a| a.admitted()),
+        "and the request must therefore be admitted"
+    );
+
+    let request = build_tool_less_request(&h).await;
+    assert_eq!(
+        request.search_admission,
+        Some(xai_grok_sampling_types::SearchAdmission {
+            supports_search_tool: true,
+            has_searchable_tools: false,
+        }),
+        "the surface half is this request's own: declaring nothing closes the gate even though \
+         the row's flag is still on"
+    );
+}
+
+/// The asymmetry that proves WHICH half moves. The row flag is constant across the two requests
+/// and only the declared surface changes: a producer that folded the pair once and cached it
+/// fails the second assertion, and one that derived the row half from the surface fails the third.
+#[tokio::test]
+async fn build_request_recomputes_the_surface_half_per_request() {
+    let h = TestHarness::with_conversation(vec![ConversationItem::user("q")]);
+    h.handle
+        .update_sampling_config(flagged_row_config("gpt-5.6-sol"));
+
+    let with_tools = build_turn_request(&h).await;
+    assert!(
+        with_tools
+            .search_admission
+            .is_some_and(|a| a.has_searchable_tools),
+        "an MCP connect after the row was installed must not leave the request on a stale \
+        empty surface"
+    );
+
+    let without_tools = build_tool_less_request(&h).await;
+    assert!(
+        !without_tools.search_admission.is_some_and(|a| a.admitted()),
+        "and an empty declared surface must close the gate on its own"
+    );
+
+    assert_eq!(
+        with_tools.search_admission.map(|a| a.supports_search_tool),
+        without_tools
+            .search_admission
+            .map(|a| a.supports_search_tool),
+        "the row half is the config's own on both requests"
+    );
+}
+
+/// RANGE.md §1's operator shape, at the actor seam: the session is SPAWNED already holding a
+/// row whose operator flag is on, and nothing else ever happens — no `SetSessionModel`, no
+/// `UpdateSamplingConfig`, no switch projection. The row the actor was spawned holding IS the
+/// row the first request goes to (`actor/request_builder.rs` stamps `model` from
+/// `state.sampling_config`), so that config's own flag must already be in force at boot.
+/// Ruling D5 pins the `execution` value on the same entry, because `server` paired with the
+/// description/parameters this producer always emits 400s `gpt-5.6-sol`.
+#[tokio::test]
+async fn the_row_flag_on_the_boot_config_admits_the_first_request() {
+    let h = TestHarness::with_config(
+        vec![ConversationItem::user("q")],
+        flagged_row_config("gpt-5.6-sol"),
+    );
+
+    let request = build_turn_request(&h).await;
+    assert!(
+        request.search_admission.is_some_and(|a| a.admitted()),
+        "a session that boots on an admitting row must be admitted on its very first request: \
+         {:?}",
+        request.search_admission
+    );
+    let entries = xai_grok_sampling_types::extra_tool_entries_for_route(
+        &request.hosted_tools,
+        request.search_admission,
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| e["type"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        ["tool_search"],
+        "so the first request of the session carries the declaration"
+    );
+    assert_eq!(
+        entries[0]["execution"],
+        serde_json::json!("client"),
+        "ruling D5: `server` paired with the description/parameters this producer always emits \
+         400s the strict row: {:?}",
+        entries[0]
+    );
+}
+
+/// A session that boots onto a row whose flag is off stays on the un-admitted route, and an
+/// explicit off must be indistinguishable on the wire from the feature not existing at all.
+#[tokio::test]
+async fn a_boot_config_that_declines_the_declaration_stays_unadmitted() {
+    let h = TestHarness::with_config(vec![ConversationItem::user("q")], row_config("grok-4"));
+
+    let mut request = build_turn_request(&h).await;
+    with_hosted_tools(&mut request);
+    assert_eq!(
+        request.search_admission.map(|a| a.admitted()),
+        Some(false),
+        "the row declines, so the declared surface cannot open the gate on its own"
+    );
+    assert_eq!(
+        declaration_channel(&request),
+        pre_item_channel(&request),
+        "and the channel is the pre-item channel, byte for byte, hosted entries included"
+    );
+}
+
+/// Hazard (b): a RESUME of the same session. Bring-up rebuilds the actor from the restored
+/// transcript plus the resolved row — the same `ChatState::new` path (`actor/state.rs:221`) a
+/// new session takes — and the resume-time refresh in `xai-grok-shell`'s
+/// `acp_session_impl/session_setup.rs:389` clones the config (`:496`) and re-sends it with only
+/// the caps changed (`:505`, `:516`, installed at `:519-521`), so the row flag rides untouched. The
+/// declaration must survive the refresh without any second message.
+#[tokio::test]
+async fn resuming_onto_an_admitting_row_keeps_the_declaration() {
+    const ADMITTING_ROW: &str = "gpt-5.6-sol";
+    let restored = vec![
+        ConversationItem::system("restored system"),
+        ConversationItem::user("a turn from before the restart"),
+        ConversationItem::assistant("and its reply"),
+    ];
+    let h = TestHarness::with_config(restored, flagged_row_config(ADMITTING_ROW));
+
+    let mut first = build_turn_request(&h).await;
+    with_hosted_tools(&mut first);
+    assert!(
+        declaration_channel(&first).contains("tool_search"),
+        "stage 1: the resumed transcript is admitted straight away"
+    );
+
+    let refreshed = xai_grok_sampling_types::SamplingConfig {
+        context_window: NonZeroU64::new(256_000).expect("test window"),
+        ..flagged_row_config(ADMITTING_ROW)
+    };
+    h.handle.update_sampling_config(refreshed);
+
+    let mut request = build_turn_request(&h).await;
+    with_hosted_tools(&mut request);
+    assert_eq!(
+        request.search_admission,
+        Some(xai_grok_sampling_types::SearchAdmission {
+            supports_search_tool: true,
+            has_searchable_tools: true,
+        }),
+        "a refresh that leaves the row in place must not cost the session its declaration"
+    );
+    assert!(declaration_channel(&request).contains("tool_search"));
+}
+
+/// The third writer of the installed config, and the only one that can move the row BACKWARD:
+/// `ChatStateActor::restore_snapshot` (`actor/mutations.rs:707`) replaces `sampling_config`
+/// wholesale (`:713`) on a rewind to a snapshot taken before a switch. Reached through the
+/// handle's own snapshot/restore pair (`handle.rs:595` / `handle.rs:382`), because a rewind is
+/// a command, not a field write.
+#[tokio::test]
+async fn restoring_a_snapshot_whose_row_admits_re_admits_the_declaration() {
+    let h = TestHarness::with_config(vec![ConversationItem::user("q")], row_config("grok-4.5"));
+    let unadmitted = build_turn_request(&h).await;
+    assert!(
+        !unadmitted.search_admission.is_some_and(|a| a.admitted()),
+        "stage 1: the session starts on a row whose flag is off"
+    );
+
+    let mut snapshot = h
+        .handle
+        .snapshot()
+        .await
+        .expect("the actor answers the Snapshot query");
+    snapshot.sampling_config = flagged_row_config("gpt-5.6-sol");
+    h.handle.restore_snapshot(snapshot);
+
+    let mut request = build_turn_request(&h).await;
+    with_hosted_tools(&mut request);
+    assert_eq!(
+        request.search_admission.map(|a| a.supports_search_tool),
+        Some(true),
+        "the restored row's flag must be the one in force, not the flag the live session had"
+    );
+    assert!(
+        declaration_channel(&request).contains("tool_search"),
+        "so the declaration rides the very next request built off the restored state"
+    );
+}
+
+/// Hazard (e): a TOOL-LESS auxiliary request on an admitting row must emit NO declaration. Nothing
+/// sets a flag to get this answer: `build_conversation_request` computes the surface half from
+/// the tools THIS request declares, so an empty surface closes ruling D1's gate by itself — which
+/// is why no production `SamplingConfig` literal is allowed to hand-set the row flag here. The
+/// tool-less doors in `xai-grok-shell` declare no tools and are correct to stay un-admitted —
+/// eleven of them, and they get there two ways. Ten hand-build the request and leave this field
+/// to `Default`, so they carry `None` rather than a computed denial:
+/// `acp_session_impl/recap.rs:521` and `:666`, `acp_session_impl/laziness.rs:428`,
+/// `session/goal_evaluator.rs:180`, `acp_session_impl/memory_dream.rs:487`/`:605` (no `tools:`
+/// field) and `:854` (`tools: vec![]`), `acp_session_impl/sampler_turn.rs:938`, and the two
+/// `from_items` chains `agent/subagent/mod.rs:1411` (sent at `:1424`) and
+/// `session/image_describe.rs:367` (sent at `:372`) — neither chain calls `.with_tools(..)`,
+/// and `from_items` fills the rest from `Default` (`conversation.rs:2630-2633`). The eleventh,
+/// `acp_session_impl/title_refresh.rs:136`, is the only door a producer computes the answer
+/// for: its `AuxCall` hands `tools: Vec::new()` to `parent_cached_request`
+/// (`acp_session_impl/side_call.rs:108`), which rules it at
+/// `acp_session_impl/side_call.rs:139`. The two routes are wire-identical —
+/// `extra_tool_entries_for_route` denies the declaration to `None` and to an un-admitted pair at
+/// one branch (`xai-grok-sampling-types/src/conversation/responses.rs:642`), so this test's ruling
+/// covers all eleven. (`session/compaction.rs:1413` builds a tool-less
+/// `ConversationRequest` too, but only to check item caps locally — it is not a request door.)
+///
+/// The CACHE-ALIGNED doors, which attach the main turn's tool surface instead of none, do not come
+/// through this fn's `Default`: `parent_cached_request` (`acp_session_impl/side_call.rs:108`)
+/// derives the admission over the tools that call declares — pinned shell-side by
+/// `side_call::tests::a_side_call_on_an_admitted_row_carries_the_turns_admission` and its tool-less
+/// sibling, not by this test. Two cache-aligned doors are still open at this revision, and they are
+/// owed as one apex-waj.35 follow-up: the Responses arm of `generate_session_compact`
+/// (`helpers/session_compact.rs:630`, fed from `session/compaction.rs:273` and
+/// `session/helpers/full_replace_compaction.rs:133`) leaves the field to `Default` because the fn is
+/// handed the sampler's `SamplerConfig`, which carries no row flag, so closing it needs the
+/// admission threaded from those callers; and the Codex remote-compaction request
+/// (`session/compaction.rs:1039-1042`, sent at `session/compaction.rs:1051`) attaches `hosted_tools`
+/// and leaves the field to `Default` on a path whose body builder already reads it
+/// (`xai-grok-sampler/src/client.rs:2736`). Until both close, those bodies' `tools` arrays diverge
+/// from the turn's on an admitted row (apex-waj.35, owed).
+#[tokio::test]
+async fn a_tool_less_request_on_an_admitting_row_emits_no_declaration() {
+    let h = TestHarness::with_config(
+        vec![ConversationItem::user("q")],
+        flagged_row_config("gpt-5.6-sol"),
+    );
+
+    let mut request = build_tool_less_request(&h).await;
+    with_hosted_tools(&mut request);
+
+    assert!(
+        !request.search_admission.is_some_and(|a| a.admitted()),
+        "the row admits, but this request declares no tool at all: {:?}",
+        request.search_admission
+    );
+    let channel = declaration_channel(&request);
+    assert!(
+        !channel.contains("tool_search"),
+        "so no declaration may move into the aux prefix: {channel}"
+    );
+    assert_eq!(
+        channel,
+        pre_item_channel(&request),
+        "and the hosted entries themselves must not shift one byte"
+    );
+
+    let mut turn = build_turn_request(&h).await;
+    with_hosted_tools(&mut turn);
+    assert!(
+        declaration_channel(&turn).contains("tool_search"),
+        "anti-vacuity: the same actor on the same row admits a request that DOES declare a tool"
+    );
+}
+
+/// The config that moves the row IS the message that carries its admission, so every
+/// `update_sampling_config` caller gets the right answer with no second publication and no
+/// ordering rule: a same-row refresh keeps the admission, and a config naming a declining row
+/// takes it off again. Inside this actor the flag changes only with the config that carries it; the
+/// live catalog row can still move without such a message (`side_call.rs:131-135`).
+#[tokio::test]
+async fn the_config_that_moves_the_row_carries_its_own_flag() {
+    const ADMITTING_ROW: &str = "gpt-5.6-sol";
+    const DECLINING_ROW: &str = "grok-4";
+    let h = TestHarness::with_config(
+        vec![ConversationItem::user("q")],
+        flagged_row_config(ADMITTING_ROW),
+    );
+    let baseline = build_turn_request(&h).await;
+    assert!(
+        baseline.search_admission.is_some_and(|a| a.admitted()),
+        "stage 0: the booted row admits"
+    );
+
+    // Same row, different non-row settings: the shape of every
+    // `handle_model_metadata_update` / resume-refresh caller. Not a row change, so the
+    // admission survives.
+    let mut same_row = flagged_row_config(ADMITTING_ROW);
+    same_row.context_window = NonZeroU64::new(200_000).expect("test window");
+    h.handle.update_sampling_config(same_row);
+    let request = build_turn_request(&h).await;
+    assert_eq!(
+        request.search_admission.map(|a| a.supports_search_tool),
+        Some(true),
+        "a config update that leaves the row in place must not clear the row's admission"
+    );
+
+    // A declining row, installed with no projection and no publication of any kind.
+    h.handle.update_sampling_config(row_config(DECLINING_ROW));
+    let request = build_turn_request(&h).await;
+    assert_eq!(
+        request.search_admission.map(|a| a.supports_search_tool),
+        Some(false),
+        "the flag now describes the row that is installed, not the one that was here before"
+    );
+    assert!(
+        !request.search_admission.is_some_and(|a| a.admitted()),
+        "and the next request rides the un-admitted route"
+    );
+}
+
+/// Hazard (c): switching from an admitting row to a non-admitting one must take the declaration
+/// off the channel AND leave the serialized channel byte-identical to the pre-item form.
+/// The stage-1 assertion is what makes stage 2 non-vacuous: the same actor, one step
+/// earlier, really was carrying the declaration.
+#[tokio::test]
+async fn switching_to_a_declining_row_takes_the_declaration_off_a_byte_identical_channel() {
+    const ADMITTING_ROW: &str = "gpt-5.6-sol";
+    const DECLINING_ROW: &str = "grok-4";
+    let h = TestHarness::with_config(
+        vec![ConversationItem::user("q")],
+        flagged_row_config(ADMITTING_ROW),
+    );
+    let mut admitted = build_turn_request(&h).await;
+    with_hosted_tools(&mut admitted);
+    assert_eq!(
+        serde_json::from_str::<Vec<serde_json::Value>>(&declaration_channel(&admitted))
+            .expect("channel parses")
+            .iter()
+            .map(|e| e["type"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        ["tool_search", "web_search", "x_search"],
+        "stage 1: the admitting row leads the hosted entries with the declaration and displaces \
+         neither of them"
+    );
+
+    h.handle.update_sampling_config(row_config(DECLINING_ROW));
+
+    let mut request = build_turn_request(&h).await;
+    with_hosted_tools(&mut request);
+    assert_eq!(
+        request.search_admission.map(|a| a.admitted()),
+        Some(false),
+        "the declining row's own config says `false`, so the surface cannot open the gate alone"
+    );
+    let channel = declaration_channel(&request);
+    assert!(
+        !channel.contains("tool_search"),
+        "the declaration must be gone from the channel: {channel}"
+    );
+    assert_eq!(
+        channel,
+        pre_item_channel(&request),
+        "and the rest of the channel must not move one byte, hosted entries included"
+    );
+}
+
+/// The other switch door: `project_switch_history` carries a route tuple built from the target
+/// row, and it deliberately does NOT write the row flag (ruling §"O3, run 5" — a second writer
+/// would be a second, independent answer to which row the session is on). So a projection handed
+/// an admitting route must not be able to re-admit a session whose installed config declines:
+/// if that write ever comes back, this reddens.
+#[tokio::test]
+async fn a_switch_projection_cannot_re_admit_a_row_the_installed_config_declines() {
+    const ADMITTING_ROW: &str = "gpt-5.6-sol";
+    const DECLINING_ROW: &str = "grok-4";
+    let h = TestHarness::with_config(
+        vec![ConversationItem::user("q")],
+        flagged_row_config(ADMITTING_ROW),
+    );
+    assert!(
+        declaration_channel(&build_turn_request(&h).await).contains("tool_search"),
+        "stage 1: the admitting row is carrying the declaration"
+    );
+
+    h.handle.update_sampling_config(row_config(DECLINING_ROW));
+    let route = TargetRoute::new(
+        xai_grok_sampling_types::ApiBackend::Responses,
+        Boundary::AzStrict,
+        xai_grok_sampling_types::SearchAdmission {
+            supports_search_tool: true,
+            has_searchable_tools: true,
+        },
+    );
+    h.handle
+        .project_switch_history(DECLINING_ROW, None, &route)
+        .await;
+
+    let mut request = build_turn_request(&h).await;
+    with_hosted_tools(&mut request);
+    assert!(
+        !request.search_admission.is_some_and(|a| a.admitted()),
+        "the installed config is the only writer of the row flag, so an admitting route cannot \
+         override it: {:?}",
+        request.search_admission
+    );
+    assert_eq!(
+        declaration_channel(&request),
+        pre_item_channel(&request),
+        "the channel of a declining row is the pre-item channel, byte for byte, hosted entries \
+         included"
+    );
+}
+
+/// Hazard (d): a row switch taken WHILE a turn is in flight. The shell gates its
+/// switch-time projection on `!turn_in_flight` (`acp_session_impl/model_switch.rs:201`);
+/// admission is not — it rides the config, so the switch moves the row and its flag
+/// together mid-turn, and the previous row's flag has no separate life to leak from.
+/// The in-flight turn capture is the anti-vacuity: this really is the racing shape.
+#[tokio::test]
+async fn a_row_switch_with_a_turn_in_flight_moves_the_admission_with_the_row() {
+    const ADMITTING_ROW: &str = "gpt-5.6-sol";
+    const DECLINING_ROW: &str = "grok-4";
+    let h = TestHarness::with_config(
+        vec![ConversationItem::user("q")],
+        flagged_row_config(ADMITTING_ROW),
+    );
+    assert!(
+        declaration_channel(&build_turn_request(&h).await).contains("tool_search"),
+        "stage 1: the booted row admits"
+    );
+
+    h.handle.begin_turn_capture();
+    h.handle.push_user_message(ConversationItem::user("go"));
+    h.handle.update_sampling_config(row_config(DECLINING_ROW));
+
+    let mut request = build_turn_request(&h).await;
+    with_hosted_tools(&mut request);
+    assert_eq!(
+        request.search_admission.map(|a| a.supports_search_tool),
+        Some(false),
+        "the config that moved the row is the same message that moved its flag, so no admission \
+         from {ADMITTING_ROW} can survive onto {DECLINING_ROW}: {:?}",
+        request.search_admission
+    );
+    assert_eq!(
+        declaration_channel(&request),
+        pre_item_channel(&request),
+        "so the in-flight switch sends exactly the pre-item channel, hosted entries included"
+    );
+
+    assert!(
+        h.handle.take_turn_messages().await.is_some(),
+        "anti-vacuity: a turn really was captured, so this is the in-flight shape"
     );
 }

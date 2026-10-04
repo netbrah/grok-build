@@ -1551,7 +1551,7 @@ async fn messages_side_calls_preserve_completed_reasoning() {
 
             let reasoning = |turn: usize| {
                 ConversationItem::Reasoning(rs::ReasoningItem {
-                    // `Some("")` matches what the persist seam stores (`conversation.rs:2346-2350`);
+                    // `Some("")` matches what the persist seam stores (`conversation.rs:2399-2403`);
                     // `None` would serialize `"id": null` where the fork wrote `"id": ""`.
                     id: Some(String::new()),
                     summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {

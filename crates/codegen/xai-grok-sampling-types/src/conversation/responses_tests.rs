@@ -1,7 +1,7 @@
 use super::responses::{
-    MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES, SearchAdmission, ToolSearchExecution,
-    ToolSearchSource, ToolSearchSourceListing, extra_tool_entries_with_declaration,
-    tool_search_declaration_entry, tool_search_description,
+    MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES, SearchAdmission, TOOL_SEARCH_DEFAULT_LIMIT,
+    ToolSearchExecution, ToolSearchSource, ToolSearchSourceListing,
+    extra_tool_entries_with_declaration, tool_search_declaration_entry, tool_search_description,
 };
 use super::test_support::*;
 use super::*;
@@ -582,7 +582,7 @@ fn tool_search_source_listing_first_description_wins_among_duplicates() {
 /// — this crate's `truncate_bytes` call against `take_bytes_at_char_boundary` (`:78-79`) — and that
 /// call's wrapped second line is why the donor's clause runs to `:81`; this crate's is one line.
 /// The helpers agree byte for byte: whole value if it fits, else back off to a char boundary
-/// (`conversation.rs:33-42` against `codex-rs/utils/string/src/lib.rs:13-26`). So the bytes the
+/// (`conversation.rs:41-50` against `codex-rs/utils/string/src/lib.rs:13-26`). So the bytes the
 /// donor would produce for an empty description are citable and would agree, but the donor never
 /// exercises one — its three tests pass `Some(..)`/`None` only (`:122`, `:129`, `:133`, `:164`,
 /// `:183`) — so no donor expectation backs
@@ -997,10 +997,9 @@ fn tool_search_source_listing_accounts_name_bytes_not_char_count() {
 
 /// D3-A placement, as far as this crate can see it: an admitted route leads the raw-JSON channel
 /// this crate returns with the declaration, so the entries handed to the sampler are
-/// `tool_search, web_search, x_search` — that slice's own order, not a rule placed here, exactly as
-/// `extra_tool_entries_with_declaration`'s own doc has it. The splice of those entries into the
+/// `tool_search, web_search, x_search`. The splice of those entries into the
 /// serialized body's top-level `tools` array is the sampler's
-/// (`xai-grok-sampler/src/client.rs:879`, `splice_extra_tool_entries`), and a wire-order
+/// (`xai-grok-sampler/src/client.rs:952`, `splice_extra_tool_entries`), and a wire-order
 /// assertion for it belongs there.
 ///
 /// What the entry compare here pins is order and count only: its expected declaration is built by
@@ -1011,12 +1010,12 @@ fn tool_search_source_listing_accounts_name_bytes_not_char_count() {
 /// emitted, not the value handed to it, so a re-key or a normalisation inside
 /// `extra_tool_entries_with_declaration` cannot hide behind `serde_json`'s order-blind equality.
 ///
-/// No production caller passes a declaration yet: `extra_tool_entries`
-/// passes `declaration: None` and all three sampler call sites (`client.rs:2652`, `client.rs:3415`,
-/// `client.rs:3509`) call exactly that, so no route can put this entry on the wire and this test
-/// cannot fail on that account. The top-level splice is the sampler's own
-/// (`client.rs:879` `splice_extra_tool_entries`; its tests at `client.rs:3779-3800` splice hosted
-/// entries only, never a declaration). The end-to-end proof is owed by apex-waj.9 (wiring) and
+/// Production passes a declaration only on an admitted route: the three Responses body sites
+/// call `extra_tool_entries_for_route` (`client.rs:2734`, `client.rs:3500`, `client.rs:3597`),
+/// which forwards one only when `SearchAdmission::admitted()`; `extra_tool_entries` itself stays
+/// declaration-less (`responses.rs:585-586`). Those bodies are pinned in the sampler, and this
+/// test pins the raw-JSON channel the declaration travels on, so it holds whichever way the
+/// wiring goes. The top-level splice is the sampler's own (`client.rs:952`).
 /// apex-waj.20 (live arm).
 #[test]
 fn declaration_leads_the_raw_json_channel_when_admitted() {
@@ -1085,12 +1084,12 @@ fn declaration_leads_the_raw_json_channel_when_admitted() {
 /// [`declaration_leads_the_raw_json_channel_when_admitted`]. The admission-to-manifest wiring is
 /// owned by apex-waj.9 and the live arm by apex-waj.20.
 ///
-/// No production caller passes a declaration yet: `extra_tool_entries` passes
-/// `declaration: None` and all three sampler call sites (`client.rs:2652`, `client.rs:3415`,
-/// `client.rs:3509`) call exactly that, so this declaration cannot reach the wire and this test
-/// cannot fail on that account. The top-level splice is the sampler's own (`client.rs:879`
-/// `splice_extra_tool_entries`; its tests at `client.rs:3779-3800` splice hosted entries only,
-/// never a declaration). The end-to-end proof is owed by apex-waj.9 and apex-waj.20.
+/// Production passes a declaration only on an admitted route: `extra_tool_entries` passes
+/// `declaration: None` (`responses.rs:585-586`), and the three Responses body sites call
+/// `extra_tool_entries_for_route` (`client.rs:2734`, `client.rs:3500`, `client.rs:3597`), which
+/// forwards one only when `SearchAdmission::admitted()`. This test pins the raw-JSON channel
+/// itself, so it holds whichever way the wiring goes. The top-level splice is the sampler's own
+/// (`client.rs:952`). The end-to-end proof is owed by apex-waj.9 and apex-waj.20.
 #[test]
 fn admitted_route_with_no_advertised_sources_still_declares_search() {
     let declaration = || {
@@ -1139,11 +1138,11 @@ fn admitted_route_with_no_advertised_sources_still_declares_search() {
 /// [`directly_constructed_web_search_options_pin_both_filter_keys`]. Nothing at all stays an empty
 /// vec (which the splice short-circuits, leaving `tools` untouched).
 ///
-/// No production caller passes a declaration yet: `extra_tool_entries` passes
-/// `declaration: None`, which is exactly the branch under test, so this is the only path any route
-/// takes today; the admitted branch is inert until apex-waj.9 (wiring) lands and apex-waj.20 (live
-/// arm) proves it. The top-level splice a declaration would ride is the sampler's own
-/// (`client.rs:879` `splice_extra_tool_entries`).
+/// `extra_tool_entries` passes `declaration: None`, which is the branch this test
+/// pins; the admitted branch is reached through `extra_tool_entries_for_route`
+/// (`client.rs:2734`, `client.rs:3500`, `client.rs:3597`) and is pinned in the sampler, so
+/// nothing here depends on that wiring. The top-level splice a declaration would ride is the
+/// sampler's own (`client.rs:952` `splice_extra_tool_entries`); the live arm is apex-waj.20.
 #[test]
 fn non_admitted_routes_emit_no_declaration() {
     let hosted = [
@@ -3154,4 +3153,159 @@ fn decode_seam_refuses_discovery_items_without_a_carrier() {
             "{label}: fail-closed message drifted: {msg}"
         );
     }
+}
+
+// ─── ITEM O3 / bead apex-waj.35: the route-keyed entry point ───────────────
+
+/// The admitted half of [`extra_tool_entries_for_route`]: a route whose admission holds leads the
+/// raw-JSON channel with the `tool_search` declaration, ahead of every hosted entry. Placement is
+/// the whole contract this crate can see — the top-level splice into the serialized body's `tools`
+/// array is the sampler's (`client.rs` `splice_extra_tool_entries`), and its own tests pin that the
+/// declaration reaches `tools[0]` even when the body already carried typed function tools, while the
+/// hosted entries go on the end.
+///
+/// This is the seam the item exists to open: `extra_tool_entries` passes `declaration: None`, so an
+/// un-admitted route gets the declaration-less channel.
+/// An admitted route for the channel tests below, spelled as named fields. These tests are about
+/// the bytes this module emits, not about how either signal is computed: the fixture spells the
+/// pair directly. [`SearchAdmission::for_row`] is the construction path production uses.
+const ADMITTED_ROUTE: SearchAdmission = SearchAdmission {
+    supports_search_tool: true,
+    has_searchable_tools: true,
+};
+/// The three ways a route is NOT admitted. Named as field-named
+/// literals rather than through a positional constructor: `SearchAdmission::admitted()`
+/// folds the two signals with a symmetric `&&`, so `new(a, b)` and `new(b, a)` would both
+/// compile and a swap would be invisible here — the literal names which signal is closing
+/// the route. No `new(bool, bool)` exists and none was added for that reason; the one
+/// positional constructor this head does have, [`SearchAdmission::for_row`], takes the second
+/// signal as a typed tool surface rather than a bool, which is what makes its argument order
+/// unswappable.
+const NOTHING_SEARCHABLE: SearchAdmission = SearchAdmission {
+    supports_search_tool: true,
+    has_searchable_tools: false,
+};
+const ROW_DECLINES: SearchAdmission = SearchAdmission {
+    supports_search_tool: false,
+    has_searchable_tools: true,
+};
+const NEITHER_SIGNAL: SearchAdmission = SearchAdmission {
+    supports_search_tool: false,
+    has_searchable_tools: false,
+};
+
+#[test]
+fn admitted_route_leads_the_channel_with_the_declaration() {
+    let hosted = [
+        HostedTool::WebSearch { options: None },
+        HostedTool::XSearch { options: None },
+    ];
+    let entries = extra_tool_entries_for_route(&hosted, Some(ADMITTED_ROUTE));
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| e["type"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        ["tool_search", "web_search", "x_search"],
+        "the declaration leads, then the hosted tools in the request's own order"
+    );
+
+    // A route with no hosted tools still gets the declaration: the typed body carries no `tools`
+    // key in that shape, so the raw-JSON channel is its only way onto the wire.
+    let alone = extra_tool_entries_for_route(&[], Some(ADMITTED_ROUTE));
+    assert_eq!(
+        alone.len(),
+        1,
+        "the declaration alone is a one-entry channel"
+    );
+    assert_eq!(alone[0]["type"], serde_json::json!("tool_search"));
+}
+
+/// The un-admitted half, and the blast-radius guarantee: every route that is not admitted — no
+/// admission at all (`ConversationRequest::search_admission` is `None`, which only a request
+/// hand-built outside either writer takes — both writers install `Some(..)`), a row that does
+/// not advertise the contract, or a row that advertises it with nothing searchable — must
+/// produce the bytes `extra_tool_entries` produces today, in the same order, with no
+/// declaration anywhere in the slice. Compared as serialized bytes rather than `Value` equality
+/// so an inserted or re-keyed entry cannot cancel itself out under serde_json's order-blind
+/// object compare.
+#[test]
+fn unadmitted_route_entries_stay_byte_identical() {
+    let hosted = [
+        HostedTool::WebSearch { options: None },
+        HostedTool::XSearch { options: None },
+    ];
+    let today = serde_json::to_string(&extra_tool_entries(&hosted)).expect("entries serialize");
+    for decline in [
+        None,
+        Some(NEITHER_SIGNAL),
+        Some(NOTHING_SEARCHABLE),
+        Some(ROW_DECLINES),
+    ] {
+        let got = extra_tool_entries_for_route(&hosted, decline);
+        assert_eq!(
+            serde_json::to_string(&got).expect("entries serialize"),
+            today,
+            "a route that is not admitted must not change one byte of the channel: {decline:?}"
+        );
+        assert!(
+            !got.iter()
+                .any(|e| e["type"].as_str() == Some("tool_search")),
+            "an un-admitted route must not advertise the declaration: {decline:?}"
+        );
+    }
+    assert!(
+        extra_tool_entries_for_route(&[], None).is_empty(),
+        "no hosted tools and no admission must stay an empty channel, so the sampler's splice \
+         remains a no-op and the body grows no `tools` key"
+    );
+}
+
+/// Ruling `map/RULINGS-o1o5.md` §D5, pinned on the emitted bytes. The live strict row
+/// `gpt-5.6-sol` (Azure via the proxy) 400s `execution: "server"` whenever the declaration carries
+/// a `description` or `parameters`, and `tool_search_declaration_entry` emits both
+/// unconditionally, so `Server` here would 400 every request on that row. `Client` + both fields
+/// is the donor form that returns 200 and mints a `tool_search_call`. Nothing in the types
+/// prevents assembling the 400ing pair, which is exactly why this assertion reads the entry the
+/// function emitted.
+///
+/// The determinism half is the cache-cost clause of the item: the declaration is model-visible
+/// inside the request-level `tools[]`, so it must not churn per request.
+#[test]
+fn admitted_route_declaration_is_client_executed() {
+    let entries = extra_tool_entries_for_route(&[], Some(ADMITTED_ROUTE));
+    let declaration = &entries[0];
+    assert_eq!(
+        declaration["execution"],
+        serde_json::json!("client"),
+        "ruling D5: an admitted route sends client execution, or the strict row 400s every request"
+    );
+    assert!(
+        declaration["description"].is_string() && declaration["parameters"].is_object(),
+        "the donor form that the live row accepts carries both fields: {declaration:?}"
+    );
+    assert_eq!(
+        json_keys(declaration),
+        ["type", "execution", "description", "parameters"],
+        "the declaration keeps the donor key order on its way to the wire"
+    );
+    assert_declaration_fixed_half_is_donor_exact(declaration);
+    // The production path's `limit`, tied to the constant the producer passes. The donor bytes are
+    // already pinned at 8 by `assert_declaration_fixed_half_is_donor_exact` above, so a constant
+    // that moved reddens there; this assertion names the constant in the failure instead of
+    // leaving the next seat to find it from a description-text diff.
+    let limit_description = declaration["parameters"]["properties"]["limit"]["description"]
+        .as_str()
+        .expect("the limit description is a string");
+    assert_eq!(
+        limit_description,
+        format!("Maximum number of tools to return. Defaults to {TOOL_SEARCH_DEFAULT_LIMIT}."),
+        "the declaration the route emits documents the constant, not a literal"
+    );
+    assert_eq!(
+        serde_json::to_string(&entries).expect("entries serialize"),
+        serde_json::to_string(&extra_tool_entries_for_route(&[], Some(ADMITTED_ROUTE)))
+            .expect("entries serialize"),
+        "the declaration is byte-stable across producer calls — not churn the cached prefix"
+    );
 }

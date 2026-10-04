@@ -1096,6 +1096,26 @@ pub struct SamplingConfig {
     /// Resolved here to `Option<ToolCacheBreakpoint>` (`off`/absent ⇒ None).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_cache_breakpoint: Option<crate::conversation::ToolCacheBreakpoint>,
+    /// The operator's per-row `supports_search_tool` flag, read off the catalog row named by
+    /// this config's own `model` (bead apex-waj.35, ruling `map/RULINGS-o1o5.md` §"O3, run 5").
+    ///
+    /// A property OF THE ROW, never a per-request choice: it changes and moves exactly when the row
+    /// does, and it rides the config object itself rather than a copy of it — `ChatState` keeps no
+    /// mirror, so installing a config installs its flag: `xai-chat-state`'s `ChatState::new`
+    /// (`actor/state.rs:221`, boot and resume), its `UpdateSamplingConfig` handler
+    /// (`actor/mod.rs:238`, switch / effort re-route / model override), and `restore_snapshot`
+    /// (`actor/mutations.rs:713`). There is no separate publication to send and therefore nothing to
+    /// race. Producers read it from the row
+    /// (`xai-grok-shell`'s `crate::agent::remote_config::ModelsManager::model_supports_search_tool`)
+    /// and re-derive it wherever they rewrite `model`; nothing may hard-code either polarity
+    /// here, because a literal is a flag that outlives the row it was copied from.
+    ///
+    /// `false` (also the serde default, so a pre-existing persisted config decodes unchanged)
+    /// is the un-admitted route: `xai-chat-state`'s `actor/request_builder.rs:88` turns this flag
+    /// plus the request's own declared tool surface into `ConversationRequest::search_admission`,
+    /// and an un-admitted route emits byte-identically to the pre-field body.
+    #[serde(default)]
+    pub supports_search_tool: bool,
     /// Config-selected server-tool union members (canonical dated type
     /// strings; the shell row key is the comma-separated STRING
     /// `server_tools`, resolved at config resolution) (MSGW F1, apex-ayl.115).

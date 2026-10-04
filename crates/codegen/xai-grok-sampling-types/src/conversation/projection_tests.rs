@@ -21,7 +21,9 @@
 //! field are the §9-faithful minimal choices — `proj_items` is the single
 //! choke point if the GREEN cut names them differently.
 
-use super::projection::{model_boundary_class, project_switch_history, Boundary, ProjectedHistory};
+use super::projection::{
+    Boundary, ProjectedHistory, inert_route, model_boundary_class, project_switch_history,
+};
 use super::*;
 
 /// The T2 co-projection placeholder — the pairing-integrity remedy (sdd-71 §4
@@ -75,6 +77,7 @@ fn xw_proj_orphaned_result_direction() {
         "claude-sonnet-5",
         Boundary::Vertex,
         None,
+        &inert_route(Boundary::Vertex),
     );
     let out = proj_items(&history);
     let orphaned = out.iter().any(|item| {
@@ -132,7 +135,13 @@ fn xw_proj_carrier_survival() {
         ("qwen3.8-27b", Boundary::VLLenient),
         ("claude-sonnet-5", Boundary::Vertex),
     ] {
-        let history = project_switch_history(&items, target_model_id, boundary, None);
+        let history = project_switch_history(
+            &items,
+            target_model_id,
+            boundary,
+            None,
+            &inert_route(boundary),
+        );
         let out = proj_items(&history);
         assert!(
             history.drops.is_empty(),
@@ -197,6 +206,7 @@ fn xw_proj_boundary_decision_table() {
             "gpt-5.6-sol",
             Boundary::AzStrict,
             None,
+            &inert_route(Boundary::AzStrict),
         );
         let out = proj_items(&history);
         assert_eq!(out.len(), 3, "sol→sol: projected record count changed");
@@ -214,6 +224,7 @@ fn xw_proj_boundary_decision_table() {
             "qwen3.8-27b",
             Boundary::VLLenient,
             None,
+            &inert_route(Boundary::VLLenient),
         );
         let out = proj_items(&history);
         let ConversationItem::Reasoning(r) = &out[1] else {
@@ -245,6 +256,7 @@ fn xw_proj_boundary_decision_table() {
             "gpt-5.6-terra",
             Boundary::AzStrict,
             None,
+            &inert_route(Boundary::AzStrict),
         );
         let out = proj_items(&history);
         let ConversationItem::Reasoning(r) = &out[1] else {
@@ -267,7 +279,13 @@ fn xw_proj_boundary_decision_table() {
     // qwen↔glm are distinct vLLM deployments, matrix C4: never lump).
     {
         let (items, _) = boundary_row("qwen3.8-27b", "rs_qwen_1", "enc_qwen");
-        let history = project_switch_history(&items, "glm-5.2", Boundary::VLLenient, None);
+        let history = project_switch_history(
+            &items,
+            "glm-5.2",
+            Boundary::VLLenient,
+            None,
+            &inert_route(Boundary::VLLenient),
+        );
         let out = proj_items(&history);
         let ConversationItem::Reasoning(r) = &out[1] else {
             panic!("qwen→glm: reasoning slot lost");
@@ -291,6 +309,7 @@ fn xw_proj_boundary_decision_table() {
             "claude-sonnet-5",
             Boundary::Vertex,
             None,
+            &inert_route(Boundary::Vertex),
         );
         let out = proj_items(&history);
         assert_eq!(
@@ -309,6 +328,7 @@ fn xw_proj_boundary_decision_table() {
             "qwen3.8-27b",
             Boundary::VLLenient,
             None,
+            &inert_route(Boundary::VLLenient),
         );
         let out = proj_items(&history);
         let ConversationItem::Reasoning(r) = &out[1] else {
@@ -348,6 +368,7 @@ fn xw_proj_id_grammar_canonical() {
         "vxm-az",
         Boundary::AzStrict,
         None,
+        &inert_route(Boundary::AzStrict),
     );
     let out = proj_items(&history);
     assert_eq!(
@@ -362,6 +383,7 @@ fn xw_proj_id_grammar_canonical() {
         "az-vlq",
         Boundary::VLLenient,
         None,
+        &inert_route(Boundary::VLLenient),
     );
     let out = proj_items(&history);
     assert_eq!(
@@ -397,7 +419,8 @@ fn xw_proj_value_identity_nonprojected() {
         let (items, pre_values) = items_from_fixture(pre_json);
         let expected: Vec<serde_json::Value> =
             serde_json::from_str(exp_json).expect("expected mirror must be valid JSON");
-        let history = project_switch_history(&items, target, boundary, None);
+        let history =
+            project_switch_history(&items, target, boundary, None, &inert_route(boundary));
         let out = proj_items(&history);
         assert_eq!(
             out.len(),
@@ -425,10 +448,16 @@ fn xw_proj_value_identity_nonprojected() {
 #[test]
 fn xw_proj_idempotence() {
     for (items, target, boundary) in all_table2_shapes() {
-        let first = project_switch_history(&items, &target, boundary, None);
+        let first = project_switch_history(&items, &target, boundary, None, &inert_route(boundary));
         let first_values: Vec<serde_json::Value> =
             proj_items(&first).iter().map(as_value).collect();
-        let second = project_switch_history(proj_items(&first), &target, boundary, None);
+        let second = project_switch_history(
+            proj_items(&first),
+            &target,
+            boundary,
+            None,
+            &inert_route(boundary),
+        );
         let second_values: Vec<serde_json::Value> =
             proj_items(&second).iter().map(as_value).collect();
         assert_eq!(
@@ -451,7 +480,14 @@ fn xw_proj_idempotence() {
 #[test]
 fn xw_proj_no_empty_id_no_foreign_encrypted() {
     for (items, target, boundary) in all_table2_shapes() {
-        let out = proj_items(&project_switch_history(&items, &target, boundary, None)).to_vec();
+        let out = proj_items(&project_switch_history(
+            &items,
+            &target,
+            boundary,
+            None,
+            &inert_route(boundary),
+        ))
+        .to_vec();
         for (i, item) in out.iter().enumerate() {
             let ConversationItem::Reasoning(r) = item else {
                 continue;
@@ -500,6 +536,7 @@ fn xw_proj_surviving_call_keeps_result() {
         "qwen3.8-27b",
         Boundary::VLLenient,
         None,
+        &inert_route(Boundary::VLLenient),
     );
     let out = proj_items(&history);
     assert_eq!(
@@ -745,6 +782,7 @@ fn mf6_u5_az_az_pin_match_retains_ciphertext() {
         "gpt-5.6-terra",
         Boundary::AzStrict,
         Some("East US 2"),
+        &inert_route(Boundary::AzStrict),
     );
     let out = proj_items(&history);
     let r = first_reasoning(out);
@@ -782,6 +820,7 @@ fn mf6_u5_az_az_pin_mismatch_strips_ciphertext() {
         "gpt-5.6-terra",
         Boundary::AzStrict,
         Some("East US 2"),
+        &inert_route(Boundary::AzStrict),
     );
     let out = proj_items(&history);
     let r = first_reasoning(out);
@@ -808,6 +847,7 @@ fn mf6_u5_az_az_pin_mint_absent_strips() {
         "gpt-5.6-terra",
         Boundary::AzStrict,
         Some("East US 2"),
+        &inert_route(Boundary::AzStrict),
     );
     let out = proj_items(&history);
     let r = first_reasoning(out);
@@ -823,9 +863,19 @@ fn mf6_u5_az_az_pin_mint_absent_strips() {
 /// time; the reactive strip-fallback covers a wrong bet.
 #[test]
 fn mf6_u5_az_az_unpinned_untagged_retains_optimistic() {
-    let items =
-        az_az_pinned_row("gpt-5.6-sol", "encitem_mf6_unpin", "litellm_enc:ZXlJbGVI;u5-unpin", None);
-    let history = project_switch_history(&items, "gpt-5.6-terra", Boundary::AzStrict, None);
+    let items = az_az_pinned_row(
+        "gpt-5.6-sol",
+        "encitem_mf6_unpin",
+        "litellm_enc:ZXlJbGVI;u5-unpin",
+        None,
+    );
+    let history = project_switch_history(
+        &items,
+        "gpt-5.6-terra",
+        Boundary::AzStrict,
+        None,
+        &inert_route(Boundary::AzStrict),
+    );
     let out = proj_items(&history);
     let r = first_reasoning(out);
     assert_eq!(
@@ -847,7 +897,13 @@ fn mf6_u5_az_az_unpinned_minted_strips() {
         "litellm_enc:ZXlJbGVI;u5-unpinned-mint",
         Some("East US 2"),
     );
-    let history = project_switch_history(&items, "gpt-5.6-terra", Boundary::AzStrict, None);
+    let history = project_switch_history(
+        &items,
+        "gpt-5.6-terra",
+        Boundary::AzStrict,
+        None,
+        &inert_route(Boundary::AzStrict),
+    );
     let out = proj_items(&history);
     let r = first_reasoning(out);
     assert!(
@@ -877,6 +933,7 @@ fn mf6_u5_t0_same_model_is_gate_inert() {
         "gpt-5.6-terra",
         Boundary::AzStrict,
         Some("East US 2"),
+        &inert_route(Boundary::AzStrict),
     );
     let out = proj_items(&history);
     let r = first_reasoning(out);
@@ -909,6 +966,7 @@ fn mf6_u5_foreign_t1_row_strips_regardless_of_pin() {
         "qwen3.8-27b",
         Boundary::VLLenient,
         Some("East US 2"),
+        &inert_route(Boundary::VLLenient),
     );
     let out = proj_items(&history);
     let r = first_reasoning(out);
@@ -970,7 +1028,13 @@ fn vertex_ledger_explains_every_change_to_a_record_it_keeps() {
     ];
     for shape in shapes {
         let (items, _) = items_from(shape);
-        let history = project_switch_history(&items, "claude-sonnet-5", Boundary::Vertex, None);
+        let history = project_switch_history(
+            &items,
+            "claude-sonnet-5",
+            Boundary::Vertex,
+            None,
+            &inert_route(Boundary::Vertex),
+        );
         let dropped: Vec<usize> = history.drops.iter().map(|drop| drop.index).collect();
         let kept: Vec<serde_json::Value> = items
             .iter()
