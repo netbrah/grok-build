@@ -34,17 +34,17 @@
 //! MUST be recorded, never silent.") — written for D3 — extended to the two
 //! existing Vertex drop arms: the T3 non-carrier drop and its pair-atomic
 //! co-drop. It is
-//! NOT XD-1 SURVIVAL: XD-1's subject is a `Discovery` item's presence in the
-//! projected history (§4.3), `ConversationItem` has no such variant until
-//! apex-waj.21 lands, and no test here can fail for what XD-1 forbids. Reach
-//! against XD-1..XD-6, stated rather than implied: this ledger pins XD-2 PAIR
+//! NOT XD-1 SURVIVAL: XD-1's subject is a `Discovery` item's presence in the projected
+//! history (§4.3). The variant exists (`conversation.rs:318`) and the decode seam produces
+//! it (`conversation/responses.rs:141-164`); `projection.rs:295`'s catch-all clones it here.
+//! Reach against the XD invariants this seam has a subject for, stated rather than implied: this ledger pins XD-2 PAIR
 //! ATOMICITY's DROP direction for the one pair class that exists here —
 //! `vertex_target_records_both_drop_reasons` records the non-carrier call
 //! together with the result co-dropped with it — and
 //! `legacy_search_tool_discovery_round_survives_every_boundary` pins XD-2's KEEP
 //! direction for the live discovery round, the `search_tool` pair surviving every
-//! boundary. XD-6 (idempotence) is also partially pinned. XD-1, XD-3, XD-4 and
-//! XD-5 have no discovery subject at this seam until apex-waj.21 lands.
+//! boundary. XD-6 (idempotence) is also partially pinned. No arm or test in this module reads a `ConversationItem::Discovery` item,
+//! so XD-1 is guarded outside it: a dropped pair reddens `tool_search.rs:6618`, `xai-chat-state/src/actor/tests.rs:5872`. XD-3 is unasserted here: no other test drives a `Discovery` item through this projector, and those two compare `raw()` bytes, never a loaded set. XD-4 has no subject: `project_switch_history` takes `&[ConversationItem]` and returns `ProjectedHistory { items, drops }` (:152-162), so no `tools[]` crosses the seam. XD-5 is pinned for reasoning items only: `projection_tests.rs:364` `xw_proj_id_grammar_canonical` (`reasoning_ids`, :606) and `:481` `xw_proj_no_empty_id_no_foreign_encrypted` (non-`Reasoning` items skipped at :492).
 //!
 //! Discovery tier decision (xwire-boundary-map.md §4.1): [`discovery_tier`]
 //! decides which of the D0/D1/D2/D3 tiers a discovery record takes on a target
@@ -53,8 +53,8 @@
 //! while the admission gate is item 3's third key ("keyed on `Boundary` plus
 //! `ApiBackend`, and on the TARGET row's admission gate"), not a fourth name for
 //! a family.
-//! The projector arm itself is NOT here: it is pending beads apex-waj.21 /
-//! apex-waj.5 / apex-waj.11, and this function has no production caller yet.
+//! The projector arm itself is NOT here: `project_switch_history` (:196) is production code
+//! (`xai-chat-state/src/actor/mutations.rs:309`) with no `Discovery` arm — bead apex-waj.2.
 //!
 //! Dependency note (sdd-71 §9 step 7, the named G3 item): the T1 id grammar
 //! needs SHA-256. `sha2` is a workspace dependency but NOT a direct
@@ -100,8 +100,8 @@ pub enum Boundary {
 /// the existing Vertex arms: a removal must be visible in the projection
 /// result, never a silent skip. One variant per existing Vertex drop arm.
 /// XD-1 SURVIVAL (§4.3) is a different subject — the `Discovery` item's own
-/// presence — and is pending apex-waj.21. Surfacing this type outside the
-/// crate is bead apex-waj.37.
+/// presence — and no arm here reads one yet; that arm is bead apex-waj.2.
+/// Surfacing this type outside the crate is bead apex-waj.37.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropReason {
     /// The T3 arm: a non-carrier backend tool call on a Vertex target —
@@ -207,17 +207,17 @@ pub fn project_switch_history(
     // here as well as at build time.
     //
     // The other direction is deliberately NOT mirrored, and nothing here keeps the
-    // storage form equal to what the target wire can represent. `messages.rs:109`
-    // filters an assistant's `tool_calls` down to the paired set (a rewrite of a
-    // stored record) and `messages.rs:115-118` deletes the assistant outright when
-    // that leaves no call and no content; assistant items take the passthrough arm
-    // below and are cloned verbatim. Why this seam stops at the result direction:
+    // storage form equal to what the target wire can represent. In `conversation/messages.rs`
+    // the `paired` set (`:112`) drives the `kept_calls` filter (`:118-123`) that rewrites
+    // a stored assistant, and `:124-127` deletes that assistant outright when it leaves
+    // no call and no content; assistant items here take the passthrough arm below and
+    // are cloned verbatim. Why this seam stops at the result direction:
     //   1. it owes pair-atomicity only for the pairs it breaks itself. The T3 arm
     //      removes a backend call, so that call's result goes with it (xwfix
     //      invariant 3 / sdd-71 §4 invariant 1). An assistant call whose result was
     //      never stored is not such a pair, and the build's own D5 pass — plus the
-    //      adjacency re-check at `messages.rs:136` — strips it on every `/messages`
-    //      build, so it never reaches the target whether or not the store was
+    //      adjacency re-check at `conversation/messages.rs:159` — strips it on every
+    //      `/messages` build, so it never reaches the target whether or not the store was
     //      pre-cleaned;
     //   2. a rewrite has no accounting surface here. `ProjectionDrop` is
     //      `{ index, reason }`: it names a removal. Filtering a `tool_calls` list
@@ -719,10 +719,10 @@ fn hex_digest(bytes: &[u8]) -> String {
 
 /// Which discovery-fidelity tier a discovery record takes on a target route
 /// (xwire-boundary-map.md §4.1 ladder). Decided by [`discovery_tier`]; the
-/// projector arm that acts on it is pending beads apex-waj.21 / apex-waj.5 /
-/// apex-waj.11.
+/// projector arm that acts on it is not written: `project_switch_history` (:196) has no
+/// `Discovery` arm, so a tier is read only by this module's tests (bead apex-waj.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // pending apex-waj.2 (the projector arms that read the tuple) + .21 / .5 / .11; the route tuple itself landed with apex-waj.35
+#[allow(dead_code)] // pending apex-waj.2 (the projector arms that read the tuple; D0..D3 ladder apex-waj.29, in flight); the route tuple itself landed with apex-waj.35
 pub(super) enum DiscoveryTier {
     /// D0 — same mint domain, same row, same boundary: the record rides on
     /// verbatim, `wire_ids` included.
@@ -735,7 +735,7 @@ pub(super) enum DiscoveryTier {
     ///   retries. That mint is REQUIRED AND NOT YET IMPLEMENTED: rule 4 calls
     ///   the v5 suffix helper "existing" and it is not —
     ///   `SYNTHETIC_OUTPUT_ID_NAMESPACE` and `with_suffix("tso", …)` are PLAN
-    ///   names (PLAN:23; `tool_search.rs:100` and `:1236` give the mint to
+    ///   names (PLAN:23; `tool_search.rs:108-110` and `:1266` give the mint to
     ///   T15/Tasks), and this crate does not depend on `uuid` at all. The only
     ///   id grammar present in this file today is `xw_` + SHA-256
     ///   (`xw_reasoning_id`, `xw_reasoning_id_values`).
@@ -747,18 +747,18 @@ pub(super) enum DiscoveryTier {
     ///   and probe P4 is outstanding. Pre-emptively stripping the id is
     ///   FORBIDDEN for no evidenced gain (it also breaks survival, §4.2 rule 1)
     ///   — §4.2 rule 5, `UNDECIDED`.
-    ///   The clause apex-waj.21's seat needs: that designated remedy is currently
-    ///   BLIND to this class. `ConversationRequest::strip_model_bound_state`
-    ///   (`conversation.rs:1102`) delegates to `drop_model_bound_items`
-    ///   (`conversation.rs:1297-1325`), which drops only `Reasoning` +
-    ///   `BackendToolCall` plus the results paired with those calls and KEEPS
-    ///   everything else — a 7th `Discovery` variant lands in its `_ => true` arm
-    ///   and survives the strip untouched, `tsc_` id included. The recovery is a
-    ///   strict one-retry, and on a history whose only model-bound state is the
-    ///   discovery pair the strip returns `0`, so the request task fails closed
-    ///   there (`retry.rs:135-136`). Teaching the net this class is part of what
-    ///   apex-waj.21 owes; until then "designated owner" names a policy, not a
-    ///   mechanism that can act on it.
+    ///   The clause the D1 arm needs: that designated remedy is currently BLIND to
+    ///   this class. `ConversationRequest::strip_model_bound_state` (`conversation.rs:1227`)
+    ///   delegates to `drop_model_bound_items` (`conversation.rs:1422`), whose `retain`
+    ///   (`conversation.rs:1450-1469`) drops only `Reasoning` + `BackendToolCall` plus
+    ///   the results paired with those calls and keeps everything else on a NAMED arm:
+    ///   the pair takes `ConversationItem::Discovery { .. } => true` (`conversation.rs:1465`,
+    ///   under "A-26, named rather than inherited from the old wildcard" at `:1455`) and
+    ///   survives the strip untouched, `tsc_` id included. The recovery is a strict
+    ///   one-retry, and on a history whose only model-bound state is the discovery pair
+    ///   the strip returns `0`, so the request task fails closed (`retry.rs:135-136`).
+    ///   Teaching the net this class is open work gated on per-row wire evidence (C4),
+    ///   so "designated owner" names a policy, not a mechanism that can act on it yet.
     ReKey,
     /// D2 — the `/messages` wire has no typed discovery item but a MANDATORY
     /// declaration surface, so the record is emitted as the transcript form AND
@@ -876,7 +876,7 @@ impl TargetRoute {
 /// row that owns it. `owner_model_id` is `None` when attribution is
 /// unresolvable (mirrors [`forward_owner_model`]); that is never a KEEP.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // pending apex-waj.2 (the projector arms that read the tuple) + .21 / .5 / .11; the route tuple itself landed with apex-waj.35
+#[allow(dead_code)] // pending apex-waj.2 (the projector arms that read the tuple; D0..D3 ladder apex-waj.29, in flight); the route tuple itself landed with apex-waj.35
 pub(super) struct DiscoveryOrigin {
     pub boundary: Boundary,
     pub owner_model_id: Option<String>,
@@ -976,7 +976,7 @@ pub(super) struct DiscoveryOrigin {
 /// The keying reads `backend`, `boundary` and `admission` only. It never
 /// consults `is_family_switch` (§9 item 3 — too narrow, it is false for
 /// family-unset rows), and there is no parameter through which it could.
-#[allow(dead_code)] // pending apex-waj.2 (the projector arms that read the tuple) + .21 / .5 / .11; the route tuple itself landed with apex-waj.35
+#[allow(dead_code)] // pending apex-waj.2 (the projector arms that read the tuple; D0..D3 ladder apex-waj.29, in flight); the route tuple itself landed with apex-waj.35
 pub(super) fn discovery_tier(
     target_model_id: &str,
     target: &TargetRoute,
@@ -1132,9 +1132,9 @@ mod tests {
     /// deleted its ledger record, and all 792 library tests stayed green in
     /// both profiles. This is the other side of the F-1 guard: the arm that
     /// spares a carrier must strip and account for everything else, and the
-    /// exemption set is a real assertion, not a default — whatever class
-    /// apex-waj.21 eventually lands discovery as, changing it is a decision a
-    /// test has to be edited for.
+    /// exemption set is a real assertion, not a default. `ConversationItem::Discovery`
+    /// (`conversation.rs:318`) is the class discovery landed as, and the projector has no
+    /// arm for it yet; widening this exemption must stay a decision a test is edited for.
     #[test]
     fn vertex_target_drops_a_web_search_call_and_records_it() {
         let items = items_from(WEB_SEARCH_SHAPE);

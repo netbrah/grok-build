@@ -59,12 +59,21 @@
 //!
 //! # Shape: verbatim `raw` is the contract, typed views are derived
 //!
-//! `async-openai` 0.33.1 (`crate::rs`) does not model either item — the fork
-//! at `4d72e1d` has zero `tool_search` item types — so no typed vendor struct
-//! can carry these across the store. The house answer for a provider-native
-//! Responses item the dependency does not know yet is
-//! [`crate::CodexRawInputItem`]: persist the exact provider JSON and derive
-//! every decision from it. Same discipline here:
+//! This module was drafted against `async-openai` 0.33.1, which modelled neither
+//! item. `crate::rs` is 0.42.1 now (`Cargo.lock:524-526`) and it DOES model both
+//! (`async-openai-0.42.1/src/types/responses/response.rs:3259`, `:3261`), but the
+//! shape below still holds for a reason that survived the re-pin: each typed struct
+//! is CLOSED — no `#[serde(flatten)]` escape hatch — so a provider key the dependency
+//! has never heard of is gone before this crate ever sees the item. The key sets and
+//! the SDK lines that pin them belong to the field doc below, not to this section, so
+//! a re-pin of async-openai has one paragraph to reconcile.
+//! The decode seam's own battery shows the loss happening
+//! (`responses_tests::decoded_carriers_copy_provider_handles_and_attach_no_foreign_encrypted_content`).
+//! The house answer for a provider-native Responses item the dependency cannot
+//! carry whole is [`crate::CodexRawInputItem`]: persist the provider JSON and
+//! derive every decision from it. Same discipline here; where the decode seam's
+//! bytes come from, and which keys they have already lost, is stated once, on
+//! [`ToolSearchItem::raw`]:
 //!
 //! * [`ToolSearchItem::raw`] is the single source of truth for what the harness
 //!   stores and the only thing a replay path starts from. Nothing here mutates
@@ -449,6 +458,14 @@ pub struct ToolSearchItem {
     /// [`Self::from_wire`] — the only constructor anywhere outside this module.
     kind: ToolSearchKind,
     /// Exact provider item, as received. This is what the STORE keeps.
+    /// A caller that has the frame bytes must pass those to [`Self::from_wire`]; this type
+    /// neither reorders nor augments them. This paragraph is the one home for what that
+    /// costs: `responses::discovery_carrier` hands over a RE-SERIALIZATION of the SDK's
+    /// typed item, and both structs are CLOSED with no `#[serde(flatten)]` hatch
+    /// (`async-openai-0.42.1/src/types/responses/response.rs:147-161` = `ToolSearchCall`'s
+    /// six keys, `:185-199` = `ToolSearchOutput`'s six), so a key the SDK never modelled
+    /// (`encrypted_content`) is gone before those bytes land here, and a modelled optional
+    /// the provider sent null (`created_by`, nested `output_schema`) re-emits absent.
     ///
     /// It is **not** automatically what goes back on the wire: the echoed
     /// `tool_search_call` carries `created_by`, and replaying it verbatim returns
@@ -563,9 +580,20 @@ impl ToolSearchItem {
     /// The join key between a call and its output, `None` when absent or empty.
     ///
     /// Optional by donor contract (`call_id` is `Option<String>` on both
-    /// halves, PLAN:1248). An item without one is retained but **cannot pair**,
-    /// so [`partner_indices`] refuses to match two such items against each
-    /// other rather than treating two absences as an agreement.
+    /// halves, PLAN:1248). An item without one is retained but pairs with nothing
+    /// THROUGH THIS KEY, so [`partner_indices`] refuses to match two such items
+    /// against each other rather than treating two absences as an agreement.
+    ///
+    /// "No key" is not "unpairable", and the two readings must not be confused: the
+    /// unkeyed quadrant IS grouped, by document order, in [`discovery_groups`] —
+    /// "a null-key call groups with the NEXT null-key output anywhere later in the
+    /// history, not only with a physically adjacent one"
+    /// (`conversation/tool_search.rs:2206`) — and that grouping is what
+    /// [`unpaired_discovery_indices`] answers from
+    /// (`conversation/tool_search.rs:2348`), including in the decode seam's pair law
+    /// (`conversation/responses.rs`, `enforce_discovery_pair_law`). So this
+    /// accessor's `None` means "join on order, not on key", never "this item is
+    /// alone".
     pub fn call_id(&self) -> Option<&str> {
         self.raw
             .get("call_id")

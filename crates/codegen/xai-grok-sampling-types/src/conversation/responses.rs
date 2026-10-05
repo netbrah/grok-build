@@ -26,8 +26,8 @@ pub(super) const PROVIDER_NATIVE_SEARCH_REPLAY_SUMMARY: &str =
 /// Flatten `response.output` into `ConversationItem`s, preserving emission order.
 /// Replaying that order byte for byte on the next turn is what keeps the server-side prefix cache hot.
 ///
-/// Fails closed (`Err`) instead of silently dropping an item this tree has no IR
-/// carrier for — see the `ToolSearchCall`/`ToolSearchOutput` arm. Callers map the
+/// Fails closed (`Err`) rather than commit a discovery item whose counterpart half
+/// is missing — see [`enforce_discovery_pair_law`]. Callers map the
 /// `Err` to a failed turn (the pre-re-pin deserializer fatal), never to a silent
 /// history loss (U16, round-3 R-3).
 pub fn response_to_conversation_items(
@@ -133,22 +133,41 @@ pub fn response_to_conversation_items(
             rs::OutputItem::McpCall(_) => {
                 backend_tool_count += 1;
             }
-            // Fail-closed decode seam (U16, round-3 R-3): async-openai 0.42.1 models
-            // `tool_search_call` and `tool_search_output`, but this tree has no IR
-            // carrier for them yet (the `Discovery` variant lands with the pair-atomic
-            // cut, apex-waj.21). Dropping them here would turn a fatal decode into a
-            // silent history loss for items the proxy actually sends, so the projection
-            // refuses and the turn is not committed — reproducing the fail-closed
-            // turn-kill this seam had before the re-pin, when the SDK rejected these
-            // items in the deserializer.
-            rs::OutputItem::ToolSearchCall(_) | rs::OutputItem::ToolSearchOutput(_) => {
-                return Err(crate::SamplingError::serialization_message(
-                    "decode seam: a `tool_search_call`/`tool_search_output` item has no IR carrier in this tree; the turn was not committed (the carrier lands with the Discovery variant, apex-waj.21)",
-                ));
+            // Native tool discovery (A-24, decode mapping per apex-mrmq): each half
+            // of the pair rides the IR as its own `Discovery` carrier
+            // (`conversation.rs:318`), holding the item's own JSON. The pair law is
+            // enforced once over the whole `output` array before anything is
+            // committed — see [`enforce_discovery_pair_law`].
+            discovery @ (rs::OutputItem::ToolSearchCall(_)
+            | rs::OutputItem::ToolSearchOutput(_)) => {
+                let carrier = discovery_carrier(&discovery)?;
+                // `backend_tool_count` is deliberately NOT touched here. It counts
+                // `ConversationItem::BackendToolCall` siblings — incremented only in
+                // that kind's arms, at `:104`, `:116`, `:122`, `:128`, `:134` — and a
+                // discovery pair is two carriers of ONE provider-side search, so no
+                // per-item increment is honest to it. Its only consumer in the tree is
+                // the `tracing::info!` at `:173-176`;
+                // `ConversationRequest::backend_tool_items()` recomputes from `items`
+                // (`conversation.rs:1818-1822`) and reads neither this counter nor a
+                // `Discovery` carrier.
+                //
+                // The event side does not cover a provider-run search either, which is
+                // why this carrier is its only record. All five cites in the next four
+                // lines are in `xai-grok-sampler/src/stream/responses.rs`, which owns that
+                // behaviour: `discovery_call_id` (:148) maps `rs::ToolSearchExecutionType::Server`
+                // to `None` (:154), both discovery arms yield only inside `if let Some(call_id)`
+                // (:686-690, :713-717), and `server_executed_discovery_frames_emit_no_discovery_event`
+                // (:2291) pins that a server-executed pair emits no discovery event at all.
+                //
+                // Widening the counter, or logging the pair from here, is a separate
+                // change with its own consumer review; this mapping item does not do it.
+                items.push(ConversationItem::Discovery { item: carrier });
             }
             _ => {}
         }
     }
+
+    enforce_discovery_pair_law(&items)?;
 
     if backend_tool_count > 0 {
         tracing::info!(
@@ -167,6 +186,216 @@ pub fn response_to_conversation_items(
     }));
 
     Ok(items)
+}
+
+/// The `Discovery` carrier for one vendor discovery item.
+///
+/// `rs::OutputItem` is internally tagged on `type`
+/// (`async-openai-0.42.1/src/types/responses/response.rs:3226-3228`), so serializing
+/// the ENUM — never the inner `ToolSearchCall` / `ToolSearchOutput` struct — is
+/// what emits the `tool_search_call` / `tool_search_output` tag that
+/// [`tool_search::ToolSearchItem::from_wire`] reads back
+/// (`conversation/tool_search.rs:516-522`).
+///
+/// FIDELITY LIMIT: this seam runs after the SDK has already parsed the body into
+/// typed structs, so the bytes stored here are a RE-SERIALIZATION of the typed item,
+/// not the provider's, and a key those closed structs never modelled is gone before
+/// this function is ever called (`encrypted_content` is the case that matters). One
+/// owner states that analysis — which keys the round trip loses, and why the carrier
+/// can still be the store's source of truth — at
+/// [`tool_search::ToolSearchItem`]'s `raw` field (`conversation/tool_search.rs:460-477`);
+/// `responses_tests::decoded_carriers_copy_provider_handles_and_attach_no_foreign_encrypted_content`
+/// pins its observable half.
+///
+/// One key IS normalised here: a `call_id` the provider sent as null is dropped, so
+/// both provider shapes on file store the same key set. They differ — the banked live
+/// SSE frames omit the key on both halves
+/// (`xai-grok-sampler/src/stream/responses.rs:2146`, `:2149` — a
+/// `response.output_item.done` call at `output_index` 1 and its output at 2), while
+/// every response-body capture sends it explicitly as null: 8 of 8 discovery items
+/// across the four hosted-search files in
+/// `plans/harness/hosted-tool-search/captures/2026-09-25-wire-grounding/` carry
+/// `"call_id":null`, which is the shape [`tool_search::SERVER_EXECUTION`] documents at
+/// `conversation/tool_search.rs:165-176`. The SDK cannot tell the two apart on the way
+/// out — `ToolSearchCall::call_id` `async-openai-0.42.1/src/types/responses/response.rs:151`
+/// and `ToolSearchOutput::call_id` `:189` have no `skip_serializing_if`, so both shapes
+/// come back as present-null — so this seam resolves both to ABSENT deliberately.
+/// In-tree that is inert: every reader of the key already reads null and absent alike
+/// ([`tool_search::ToolSearchItem::call_id`] `conversation/tool_search.rs:597-602`,
+/// `conversation/outbound_lint.rs:347`, `:359`, `:436`). The cost lands only on the
+/// Codex splice, which sends a key the response-body provider did send:
+/// `responses_tests::the_codex_splice_replays_the_provider_item_key_set` pins the
+/// null-bearing shape as a named drop for exactly that reason.
+///
+/// Those bytes are model-visible, not inert storage: all three rows the bake
+/// advertises on are `model_family: "codex"`
+/// (`xai-grok-models/default_models.json:365`, `:420`, `:528`), and the Codex replay
+/// arm splices `raw()` verbatim into every later request (`conversation.rs:2699`).
+/// `responses_tests::the_codex_splice_replays_the_provider_item_key_set` therefore
+/// diffs the spliced key set against the provider's own item on every pass; what a
+/// diff cannot prove is acceptance — this lane made no provider call, so replaying a
+/// server-executed pair per row class stays UNVERIFIED (§6.8; ruling D10 still on).
+///
+/// Nothing here touches an id: `tsc_*` / `tso_*` and the `call_id` join key are copied
+/// verbatim, never rewritten and never minted (wire invariant 6 as restated on the
+/// variant itself, `conversation.rs:316-317`).
+fn discovery_carrier(
+    item: &rs::OutputItem,
+) -> std::result::Result<tool_search::ToolSearchItem, crate::SamplingError> {
+    let mut raw = serde_json::to_value(item).map_err(|error| {
+        crate::SamplingError::serialization_message(format_args!(
+            "decode seam: a discovery output item could not be re-serialized to the JSON its \
+             `Discovery` carrier stores: {error}"
+        ))
+    })?;
+    if let Some(fields) = raw.as_object_mut()
+        && fields.get("call_id") == Some(&serde_json::Value::Null)
+    {
+        fields.remove("call_id");
+    }
+    tool_search::ToolSearchItem::from_wire(raw).map_err(|error| {
+        crate::SamplingError::serialization_message(format_args!(
+            "decode seam: an output item was rejected as a discovery carrier ({error}), so the \
+             turn was not committed"
+        ))
+    })
+}
+
+/// PLAN:946's keep-or-drop-together law, enforced where it can still say no.
+///
+/// A response that carried one half of a discovery pair is refused rather than
+/// committed. Writing the half alone is what PLAN:946 forbids ("both kept or both
+/// dropped; carriers byte-identical"); dropping the half that DID arrive to keep
+/// the transcript even is the A-26 silent history loss the `Discovery` variant
+/// exists to prevent (`conversation.rs:302-305`). Between those two, the answer
+/// this seam has always had is the one it takes: fail the turn, commit nothing
+/// (U16). The caller's `Err` arm is
+/// `xai-grok-sampler/src/stream/responses.rs:823-829`.
+///
+/// The join is not a second rule written here. It is the module that owns discovery
+/// pairing: [`tool_search::unpaired_discovery_indices`]
+/// (`conversation/tool_search.rs:2348`) groups through `discovery_groups`
+/// (`conversation/tool_search.rs:2215`), and a half is whole exactly when its group
+/// is closed — holds at least one `tool_search_call` AND one `tool_search_output`
+/// (`group_is_closed`, `conversation/tool_search.rs:2271`):
+///
+/// * **Keyed** halves group on the exact `call_id`, order-blind and state-blind, the
+///   way [`tool_search::call_id_groups`] does
+///   (`conversation/tool_search.rs:1850`: "the group is defined by the KEY").
+/// * **Keyless** halves — the provider-minted hosted-search shape, which puts
+///   `"call_id": null` on both items and therefore forms no key group at all
+///   ([`tool_search::ToolSearchPairing::Unkeyed`]'s "server-executed (the observed
+///   case)" bullet, `conversation/tool_search.rs:1350-1356`) — group FIFO over
+///   document order: a null-key call groups with the NEXT null-key output anywhere
+///   later, not only with a physically adjacent one
+///   (`conversation/tool_search.rs:2206`, the FIFO itself at
+///   `conversation/tool_search.rs:2239-2256`).
+///
+/// Delegating is the point. This is the same grouping
+/// `snap_index_over_discovery_pairs` (`conversation/tool_search.rs:2417`) uses to
+/// keep a pair atomic across every history cut, so the decode seam and the cut
+/// funnel cannot disagree about what a pair is: a keyless
+/// `call, call, output, output` batch is two closed pairs to both, not a refused
+/// turn here and a valid history there.
+///
+/// Scope is honoured the way that helper's own warning requires
+/// (`conversation/tool_search.rs:2339-2347`): the argument here is the WHOLE
+/// `items` vector of one response, never a window, so "no partner" is certified
+/// against every discovery half the response carried.
+///
+/// Status is deliberately not consulted: a `status` this build cannot name, or an
+/// `in_progress` copy, changes which REPAIR a projector owes (`pairing_of`'s
+/// `Incomplete` guard, `conversation/tool_search.rs:1952-1954`) but not whether
+/// both halves are present, and this law is a membership test. For the same reason
+/// an item whose `id` is empty is kept rather than refused: §6.5's "no empty item
+/// ids" is discharged here by minting nothing (see [`discovery_carrier`]'s
+/// fidelity note), so an empty id can only have come from the provider, and this
+/// seam's only two alternatives are to rewrite those bytes (wire invariant 6
+/// forbids it) or to fail the turn for a value that has never been observed. The
+/// house answer to a lost half is the encode-time repair pass (PLAN:946/T15) and
+/// PLAN:947's removal set, neither of which lives here.
+///
+/// One consequence to keep in view: a client-executed `tool_search_call` arrives
+/// alone, because the answer is the harness's to author and nothing in this tree
+/// authors one yet. The only two call sites of
+/// [`tool_search::ToolSearchItem::from_wire`] outside a `#[cfg(test)]` module or a
+/// `*_tests.rs` file are this file's carrier wrapper and the store's `Deserialize`
+/// impl, which re-runs it on bytes a carrier already holds
+/// (`conversation/tool_search.rs:487-492`, spelled `Self::from_wire` — the reason a
+/// grep on the type name undercounts rather than overcounts). Both construct from
+/// bytes that already exist; neither joins a call to an answer. So no production path turns a lone call
+/// into a pair, and the admitted route declares `execution: "client"`
+/// (`conversation/responses.rs:884`, ruling D5, [`extra_tool_entries_for_route`]), which
+/// means that route still loses the turn until the answer arm lands (apex-waj.57). This
+/// mapping makes a response carrying the pair work; it cannot fix one carrying half.
+///
+/// Every refusal here costs the whole response — this runs at
+/// `conversation/responses.rs:170`, before the trailing `Assistant` is pushed at
+/// `:180`, and the caller maps the `Err` to
+/// `SamplingEvent::Failed` (`xai-grok-sampler/src/stream/responses.rs:823-829`) —
+/// and each shape is pinned rather than incidental:
+///
+/// * A **half**: a lone call, a lone output, or a keyed half whose opposite carries
+///   a different key or no key. Some of these are stricter than PLAN:946's stated
+///   remedy ("restore the pair from the durable record, or drop both"): counted,
+///   each is two halves and the plan would drop both, but the repair pass that could
+///   restore one is T15's (`conversation/tool_search.rs:471-477`,
+///   `CALL_REPLAYABLE_KEYS`) and does not live in this crate, so the join is all
+///   this seam can see and it says no.
+/// * A keyless batch with more calls than answers (`call, call, output`): the FIFO
+///   answers the first call and leaves the surplus call with no open output. A
+///   batch that balances (`call, call, output, output`) is two closed groups and
+///   maps — see the delegation above.
+/// * The keyless rule is **ordered**: `output, call` is refused, because the FIFO
+///   only looks forward for an answer — the same direction
+///   [`tool_search::trailing_discovery_is_unpaired`]
+///   (`conversation/tool_search.rs:2303`) reads the wire in. That asymmetry is
+///   a reading of the one shape on disk — the live server frames banked at
+///   `xai-grok-sampler/src/stream/responses.rs:2146` / `:2149`, a call at
+///   `output_index` 1 and its output at 2 — and NOT wire evidence that the inverted
+///   order never occurs. The pin is marked CONDITIONAL there.
+/// * The **keyed** rule is order-blind, and that is a known disagreement with the
+///   outbound lint rather than an accident: `check_h8`
+///   (`conversation/outbound_lint.rs:339`) requires a PRECEDING call for a
+///   client-executed output (`:374`) and flags a repeated answer (`:382`), and
+///   `SamplingClient::outbound_lint_gate` (`xai-grok-sampler/src/client.rs:1845`)
+///   turns any violation into a `panic!` under `cfg!(debug_assertions)`
+///   (`:1865-1870`). So a keyed pair this
+///   law certifies in the inverted order, or with two answered halves, is refused
+///   at send time by a later request rather than here. Server-executed output is
+///   out of H-8's scope outright (`conversation/outbound_lint.rs:355`), and the
+///   corpus holds no answered client pair, so nothing reachable today reaches it;
+///   `responses_tests::discovery_halves_only_pair_with_the_same_join_key` pins the
+///   order-blindness this note describes. Making the keyed branch agree with H-8 is
+///   a stricter rule than PLAN:946 states; the reconcile is bead apex-302w's.
+fn enforce_discovery_pair_law(
+    items: &[ConversationItem],
+) -> std::result::Result<(), crate::SamplingError> {
+    let unpaired = tool_search::unpaired_discovery_indices(items);
+    // Reported half: the earliest one the owner's grouping could not close, in the
+    // response's own item order.
+    let Some(half) = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| Some((index, item.discovery()?)))
+        .find(|(index, _)| unpaired.contains(index))
+        .map(|(_, half)| half)
+    else {
+        return Ok(());
+    };
+    let required = match half.kind() {
+        tool_search::ToolSearchKind::Call => tool_search::ToolSearchKind::Output,
+        tool_search::ToolSearchKind::Output => tool_search::ToolSearchKind::Call,
+    };
+    Err(crate::SamplingError::serialization_message(format_args!(
+        "decode seam: a `{}` item arrived without its `{}` half in the same response, so the \
+         discovery pair was not committed — one half in the transcript is what PLAN:946 forbids \
+         and dropping the half that arrived is the A-26 history loss (join key: {})",
+        half.kind().item_type(),
+        required.item_type(),
+        half.call_id()
+            .unwrap_or("<none: the keyless quadrant joins on order>"),
+    )))
 }
 
 impl From<&ConversationRequest> for rs::CreateResponse {
@@ -481,11 +710,15 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                 }
             }]
         }
-        // Native tool-discovery item. async-openai 0.33.1 models no
-        // `tool_search_call` / `tool_search_output` input item
-        // (`async-openai-rs/.../responses/tool_search.rs:62-66` in the vendored
-        // dependency), so the item can only reach the wire by splice — exactly the
-        // `CodexRawInput` / `XSearch` precedent this arm copies.
+        // Native tool-discovery item. `rs::InputItem` carries no direct
+        // `tool_search_call` / `tool_search_output` arm at 0.42.1: the two shapes exist
+        // only on the discriminated union `rs::Item`
+        // (`async-openai-0.42.1/src/types/responses/response.rs:295`, `:298`), reachable
+        // from `InputItem` solely as `InputItem::Item(..)` (same file, `:400`). This arm
+        // builds neither, so the item's own bytes can reach the wire only by splice —
+        // exactly the `CodexRawInput` / `XSearch` precedent this arm copies. Which
+        // dialects may splice is decided by the replay arm (`conversation.rs:2683-2705`,
+        // ruling U17), not here.
         //
         // INVARIANT (one placeholder per registered splice):
         // `ConversationRequest::raw_responses_input_replacements` computes its
@@ -600,13 +833,16 @@ pub fn extra_tool_entries(hosted_tools: &[HostedTool]) -> Vec<serde_json::Value>
 /// `description` or `parameters`, and `tool_search_declaration_entry` emits both, so an
 /// `execution: Server` pairing below would 400 every request on that row, and no type prevents
 /// building that pair. `client` + `description` + `parameters` is the donor form: it returns 200 on
-/// that row and mints a `tool_search_call` whose answer is ours to produce. Producing that answer is
-/// NOT this tree's capability yet — the ingest arm in [`response_to_conversation_items`] refuses a
-/// `tool_search_call`/`tool_search_output` item because the pair-atomic decode is owed by
-/// apex-waj.21/.5, and `xai-grok-sampler`'s streaming path turns that refusal into a FAILED turn,
-/// not a silent drop. Emitting this entry therefore arms a route the harness can only lose on until
-/// that lands; the entry stays because ruling D5 rules the *shape*, and the ordering of the two hops
-/// is the coordinator's call. The emitted value is pinned by
+/// that row and mints a `tool_search_call` whose answer is ours to produce. Producing that answer
+/// is NOT this tree's capability yet: no production code builds a `tool_search_output` (apex-waj.57
+/// owes it). The ingest arm itself no longer refuses the item — [`response_to_conversation_items`]
+/// maps each half onto `ConversationItem::Discovery` and refuses only a response that carried one
+/// half ([`enforce_discovery_pair_law`]) — so an admitted route whose call goes unanswered still
+/// ends as a FAILED turn, via the `Err` arm at
+/// `xai-grok-sampler/src/stream/responses.rs:823-829`, not as a silent drop. Emitting this entry
+/// therefore arms a route the harness loses whenever the provider takes the search up; the entry
+/// stays because ruling D5 rules the *shape*, and the ordering of the two hops is the coordinator's
+/// call. The emitted value is pinned by
 /// `responses_tests::admitted_route_declaration_is_client_executed`.
 ///
 /// The declaration advertises no sources. `ToolSearchSourceListing::Omit` is the honest interim:

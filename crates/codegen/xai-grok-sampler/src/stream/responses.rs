@@ -50,9 +50,9 @@ const INCOMPLETE_REASON_MAX_TIME_LIMIT: &str = "max_time_limit";
 
 /// Applied to a `tool_search_call` whose `arguments` omits `limit`. The authoritative value
 /// is `TOOL_SEARCH_DEFAULT_LIMIT` at
-/// `xai-grok-sampling-types/src/conversation/responses.rs:695`: the admitted route passes it to
-/// `tool_search_declaration_entry` at :651 and that function interpolates it into the
-/// declaration's `limit` description at :773-774. It is `pub(super)`, so this crate cannot
+/// `xai-grok-sampling-types/src/conversation/responses.rs:931`: the admitted route passes it
+/// to `tool_search_declaration_entry` at :887 and that function interpolates it into the
+/// declaration's `limit` description at :1009-1010. It is `pub(super)`, so this crate cannot
 /// import it — `the_declaration_documents_the_sampler_default_limit` pins this copy against the
 /// declaration text the model is sent.
 const TOOL_SEARCH_DEFAULT_LIMIT: u64 = 8;
@@ -707,9 +707,9 @@ where
                         // The search ANSWER, decoded. `result_count` is the length of the item's
                         // own `tools` array; `status` is the item's own state, not a constant.
                         // The definitions themselves stop at this arm: the event has no field for
-                        // them and `response_to_conversation_items` refuses an
-                        // `rs::OutputItem::ToolSearchOutput` outright
-                        // (`xai-grok-sampling-types/src/conversation/responses.rs:144-147`).
+                        // them. `response_to_conversation_items` maps this item onto its own
+                        // `ConversationItem::Discovery` carrier rather than refusing it
+                        // (`xai-grok-sampling-types/src/conversation/responses.rs:141-164`).
                         rs::OutputItem::ToolSearchOutput(tso) => {
                             if let Some(call_id) =
                                 discovery_call_id(tso.execution, tso.call_id.as_deref())
@@ -2330,8 +2330,8 @@ mod tests {
     /// The answer item's decoded `tools` set the reported count, its `call_id` keys the
     /// event, and its wire status is the event's status. Only the COUNT leaves the arm — the
     /// T13 payload has no field for the definitions themselves, and
-    /// `response_to_conversation_items` refuses an `rs::OutputItem::ToolSearchOutput` outright
-    /// (`xai-grok-sampling-types/src/conversation/responses.rs:144-147`, `apex-waj.34`'s `R-3`).
+    /// `response_to_conversation_items` maps this item onto its own `Discovery` carrier
+    /// (`xai-grok-sampling-types/src/conversation/responses.rs:141-164`).
     #[tokio::test]
     async fn a_client_search_output_frame_emits_completed_with_its_decoded_tool_count() {
         let frame = client_search_output_frame("completed", &duplicated_banked_tool_definitions());
@@ -2399,8 +2399,8 @@ mod tests {
     /// The declaration an admitted route emits documents this exact number, so the limit the
     /// event falls back to cannot desync from the limit the model was told about. The IR's own
     /// `TOOL_SEARCH_DEFAULT_LIMIT` is `pub(super)`
-    /// (`xai-grok-sampling-types/src/conversation/responses.rs:695`), so the binding runs
-    /// through the declaration text that file interpolates at its :773-774.
+    /// (`xai-grok-sampling-types/src/conversation/responses.rs:931`), so the binding runs
+    /// through the declaration text that file interpolates at its :1009-1010.
     #[test]
     fn the_declaration_documents_the_sampler_default_limit() {
         let entries = xai_grok_sampling_types::extra_tool_entries_for_route(
@@ -2467,10 +2467,10 @@ mod tests {
         }
     }
 
-    /// The live turn, end to end: the call event is emitted from the frames the provider
-    /// sent, and the turn still ends at `Failed` because `response_to_conversation_items`
-    /// returns `Err` on `rs::OutputItem::ToolSearchCall` at
-    /// `xai-grok-sampling-types/src/conversation/responses.rs:144-147` (`apex-waj.34`'s `R-3`).
+    /// The live turn, end to end: the call event comes from the provider's frames, and the
+    /// turn still ends at `Failed`. Not because the arm refuses the item —
+    /// `response_to_conversation_items` maps it onto a `Discovery` carrier — but because a lone
+    /// half fails `enforce_discovery_pair_law` (`xai-grok-sampling-types/src/conversation/responses.rs:170`).
     #[tokio::test]
     async fn the_live_client_search_turn_emits_the_call_before_the_ir_seam_ends_it() {
         let mut response = empty_completed_response();

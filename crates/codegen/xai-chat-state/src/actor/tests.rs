@@ -6512,7 +6512,7 @@ async fn restoring_a_snapshot_whose_row_admits_re_admits_the_declaration() {
 /// (`acp_session_impl/side_call.rs:108`), which rules it at
 /// `acp_session_impl/side_call.rs:139`. The two routes are wire-identical —
 /// `extra_tool_entries_for_route` denies the declaration to `None` and to an un-admitted pair at
-/// one branch (`xai-grok-sampling-types/src/conversation/responses.rs:642`), so this test's ruling
+/// one branch (`xai-grok-sampling-types/src/conversation/responses.rs:878-879`), so this test's ruling
 /// covers all eleven. (`session/compaction.rs:1413` builds a tool-less
 /// `ConversationRequest` too, but only to check item caps locally — it is not a request door.)
 ///

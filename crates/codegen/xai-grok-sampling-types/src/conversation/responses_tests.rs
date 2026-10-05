@@ -1013,7 +1013,7 @@ fn tool_search_source_listing_accounts_name_bytes_not_char_count() {
 /// Production passes a declaration only on an admitted route: the three Responses body sites
 /// call `extra_tool_entries_for_route` (`client.rs:2734`, `client.rs:3500`, `client.rs:3597`),
 /// which forwards one only when `SearchAdmission::admitted()`; `extra_tool_entries` itself stays
-/// declaration-less (`responses.rs:585-586`). Those bodies are pinned in the sampler, and this
+/// declaration-less (`responses.rs:818`). Those bodies are pinned in the sampler, and this
 /// test pins the raw-JSON channel the declaration travels on, so it holds whichever way the
 /// wiring goes. The top-level splice is the sampler's own (`client.rs:952`).
 /// apex-waj.20 (live arm).
@@ -1085,7 +1085,7 @@ fn declaration_leads_the_raw_json_channel_when_admitted() {
 /// owned by apex-waj.9 and the live arm by apex-waj.20.
 ///
 /// Production passes a declaration only on an admitted route: `extra_tool_entries` passes
-/// `declaration: None` (`responses.rs:585-586`), and the three Responses body sites call
+/// `declaration: None` (`responses.rs:819`), and the three Responses body sites call
 /// `extra_tool_entries_for_route` (`client.rs:2734`, `client.rs:3500`, `client.rs:3597`), which
 /// forwards one only when `SearchAdmission::admitted()`. This test pins the raw-JSON channel
 /// itself, so it holds whichever way the wiring goes. The top-level splice is the sampler's own
@@ -3107,53 +3107,11 @@ fn emptyid_patch_preserves_nonempty_ids_and_is_idempotent() {
     assert_eq!(body, first_pass, "second patch pass must be a byte no-op");
 }
 
-/// U16 fail-closed decode-seam pin (0.42.1 re-pin): a response whose output
-/// carries a `tool_search_call` or `tool_search_output` item has no IR carrier
-/// in this tree (the `Discovery` variant lands with the pair-atomic cut,
-/// apex-waj.21). The projection must REFUSE — `Err`, never a silent drop —
-/// reproducing HEAD's fail-closed turn-kill at the typed seam. Hermetic: the
-/// items are built from the wire shapes the proxy actually sends (ratchet-live
-/// captures), no network, no fixtures.
-#[test]
-fn decode_seam_refuses_discovery_items_without_a_carrier() {
-    let items = [
-        ("tool_search_call", serde_json::json!({
-            "type": "tool_search_call",
-            "id": "tsc_u16",
-            "call_id": "call_u16",
-            "execution": "client",
-            "arguments": { "query": "fixture" },
-            "status": "completed"
-        })),
-        ("tool_search_output", serde_json::json!({
-            "type": "tool_search_output",
-            "id": "tso_u16",
-            "call_id": "call_u16",
-            "execution": "client",
-            "tools": [{ "type": "function", "name": "u16_fixture_tool_00" }],
-            "status": "completed"
-        })),
-    ];
-    for (label, item) in items {
-        let wire = serde_json::json!({
-            "id": "resp_u16",
-            "object": "response",
-            "created_at": 0u64,
-            "status": "completed",
-            "model": "gpt-5.5",
-            "output": [item],
-        });
-        let response: rs::Response =
-            serde_json::from_value(wire).expect("0.42.1 models this response shape");
-        let err = response_to_conversation_items(response)
-            .expect_err("the projection must refuse a carrier-less discovery item");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("no IR carrier"),
-            "{label}: fail-closed message drifted: {msg}"
-        );
-    }
-}
+// The discovery-item arms of this seam are owned by the
+// `HTS-DECODE-CARRIER (apex-mrmq)` section at the end of this file: the seam
+// maps a complete `tool_search_call` + `tool_search_output` pair onto
+// `ConversationItem::Discovery` and refuses only the classes that genuinely
+// cannot be represented.
 
 // ─── ITEM O3 / bead apex-waj.35: the route-keyed entry point ───────────────
 
@@ -3308,4 +3266,967 @@ fn admitted_route_declaration_is_client_executed() {
             .expect("entries serialize"),
         "the declaration is byte-stable across producer calls — not churn the cached prefix"
     );
+}
+
+// ─── HTS-DECODE-CARRIER / bead apex-mrmq: the discovery decode seam ────────
+//
+// Provider-shaped discovery item bytes, driven through the real
+// [`response_to_conversation_items`]. The four base fixtures are the item objects
+// the sampler's stream tests bank from live SSE captures —
+// `xai-grok-sampler/src/stream/responses.rs:2143` (client `tool_search_call`
+// done copy), `:2146` (server `tool_search_call`), `:2149` (server
+// `tool_search_output`) and `:2152` (the terminal client call) at this head —
+// with the client answer item written in the same shape (the live corpus holds
+// no client-executed answer: `ratchet-capture/_recon-fixtures.md` §6b). Both
+// join shapes the module recognises are therefore covered: the keyed client
+// pair (`call_id` on both halves) and the keyless server pair (`call_id`
+// absent on both halves, adjacent in `output`).
+//
+// The two `_BODY` fixtures below add the third observed shape: the same hosted
+// pair as it arrives in a RESPONSE BODY, where the provider sends `call_id`,
+// `created_by` and two `tools[]` keys explicitly as null.
+
+/// A server-executed `tool_search_call`: no `call_id` key at all.
+const HOSTED_CALL_ITEM: &str = r#"{"id":"tsc_0c1a30c585eeaaf9016ac01db8650081949aff9bff5698a20a","type":"tool_search_call","status":"completed","arguments":{"paths":["lookup_shipping_eta"]},"execution":"server"}"#;
+
+/// The server-executed answer to [`HOSTED_CALL_ITEM`], its `tools` entry in
+/// the captured shape (`defer_loading`, `output_schema` and `strict` included).
+const HOSTED_OUTPUT_ITEM: &str = r#"{"id":"tso_0c1a30c585eeaaf9016ac01db86afc81949af526e214666b827","type":"tool_search_output","status":"completed","execution":"server","tools":[{"type":"function","defer_loading":true,"description":"Look up the shipping ETA for an order ID by order ID.","name":"lookup_shipping_eta","output_schema":null,"parameters":{"type":"object","properties":{"order_id":{"type":"string"}},"required":["order_id"],"additionalProperties":false},"strict":true}]}"#;
+
+/// The [`HOSTED_CALL_ITEM`] pair as a RESPONSE BODY delivers it, not an SSE frame:
+/// every optional key is present with value null. Verbatim from
+/// `plans/harness/hosted-tool-search/captures/2026-09-25-wire-grounding/wire_resp_20260925T062640Z_R1_SOL_HOSTED.json`
+/// (`output[1]`), the shape 8 of 8 discovery items in that corpus's four
+/// hosted-search files actually take.
+const HOSTED_CALL_ITEM_BODY: &str = r#"{"id":"tsc_0ce980d5c6afd41f016ab61423e6ec81908939d7d041618fb1","arguments":{"paths":["lookup_shipping_eta"]},"call_id":null,"execution":"server","status":"completed","type":"tool_search_call","created_by":null}"#;
+
+/// The answer half for [`HOSTED_CALL_ITEM_BODY`], same capture (`output[2]`).
+const HOSTED_OUTPUT_ITEM_BODY: &str = r#"{"id":"tso_0ce980d5c6afd41f016ab61424031481908982e2c788dcc429","call_id":null,"execution":"server","status":"completed","tools":[{"name":"lookup_shipping_eta","parameters":{"type":"object","properties":{"order_id":{"type":"string"}},"required":["order_id"],"additionalProperties":false},"strict":true,"type":"function","allowed_callers":null,"defer_loading":true,"description":"Look up the shipping ETA for an order ID.","output_schema":null}],"type":"tool_search_output","created_by":null}"#;
+
+/// A client-executed `tool_search_call` whose answer the harness owns.
+const CLIENT_CALL_ITEM: &str = r#"{"id":"tsc_08f7abc693f02e74016ac02242e2fc8190b1842f1acf6b72fc","arguments":{"query":"shipping ETA lookup by order ID","limit":5},"call_id":"call_KGrhHQ8F7MeagVDbKnGlq6vv","execution":"client","status":"completed","type":"tool_search_call"}"#;
+
+/// The client-executed answer to [`CLIENT_CALL_ITEM`], joined by `call_id`.
+const CLIENT_OUTPUT_ITEM: &str = r#"{"id":"tso_08f7abc693f02e74016ac02242e2fc8190b1842f1acf6b72fd","type":"tool_search_output","status":"completed","execution":"client","call_id":"call_KGrhHQ8F7MeagVDbKnGlq6vv","tools":[{"type":"function","name":"lookup_shipping_eta","parameters":{"type":"object","properties":{"order_id":{"type":"string"}},"required":["order_id"]}}]}"#;
+
+/// A completed response envelope carrying raw item JSON in `output`.
+fn response_of(output: &[&str]) -> rs::Response {
+    let output: Vec<serde_json::Value> = output
+        .iter()
+        .map(|raw| serde_json::from_str(raw).expect("fixture item is valid JSON"))
+        .collect();
+    let wire = serde_json::json!({
+        "id": "resp_mrmq",
+        "object": "response",
+        "created_at": 0u64,
+        "status": "completed",
+        "model": "gpt-5.6-sol",
+        "output": output,
+    });
+    serde_json::from_value(wire).expect("0.42.1 models this response shape")
+}
+
+/// The discovery carriers a decode produced, in item order.
+fn discovery_carriers(items: &[ConversationItem]) -> Vec<&tool_search::ToolSearchItem> {
+    items
+        .iter()
+        .filter_map(ConversationItem::discovery)
+        .collect()
+}
+
+/// The pair law is what this seam now enforces, so a complete pair must decode
+/// onto two `Discovery` items — the server-executed (keyless, adjacent) shape
+/// the hosted-search captures hold. Emission order is asserted against a
+/// `Reasoning` sibling because the flattened order is what the next turn replays
+/// byte for byte.
+#[test]
+fn a_hosted_discovery_pair_decodes_onto_discovery_items_in_emission_order() {
+    let reasoning = r#"{"type":"reasoning","id":"rs_mrmq_1","summary":[]}"#;
+    let items = response_to_conversation_items(response_of(&[
+        reasoning,
+        HOSTED_CALL_ITEM,
+        HOSTED_OUTPUT_ITEM,
+    ]))
+    .expect("a complete discovery pair is not a refusal condition");
+
+    let carriers = discovery_carriers(&items);
+    assert_eq!(
+        carriers.len(),
+        2,
+        "one carrier per discovery item, no duplicate: {items:?}"
+    );
+    assert_eq!(
+        carriers
+            .iter()
+            .map(|c| c.kind())
+            .collect::<Vec<tool_search::ToolSearchKind>>(),
+        [
+            tool_search::ToolSearchKind::Call,
+            tool_search::ToolSearchKind::Output,
+        ],
+        "the pair lands in emission order"
+    );
+    assert_eq!(
+        items
+            .iter()
+            .position(|i| matches!(i, ConversationItem::Reasoning(_))),
+        Some(0),
+        "the reasoning sibling keeps its slot ahead of the pair"
+    );
+    assert!(
+        matches!(items.last(), Some(ConversationItem::Assistant(_))),
+        "the trailing Assistant is still last: {items:?}"
+    );
+    let order = items
+        .iter()
+        .map(|i| match i {
+            ConversationItem::Reasoning(_) => "reasoning",
+            ConversationItem::Discovery { item } => match item.kind() {
+                tool_search::ToolSearchKind::Call => "call",
+                tool_search::ToolSearchKind::Output => "output",
+            },
+            ConversationItem::Assistant(_) => "assistant",
+            _ => "other",
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        order,
+        ["reasoning", "call", "output", "assistant"],
+        "flattening must preserve emission order, not group the pair"
+    );
+}
+
+/// The keyed client shape pairs on `call_id`, not on adjacency.
+#[test]
+fn a_keyed_client_discovery_pair_decodes_onto_discovery_items() {
+    let items =
+        response_to_conversation_items(response_of(&[CLIENT_CALL_ITEM, CLIENT_OUTPUT_ITEM]))
+            .expect("a keyed pair is a representable item");
+    let carriers = discovery_carriers(&items);
+    assert_eq!(carriers.len(), 2, "one carrier per half: {items:?}");
+    for carrier in &carriers {
+        assert_eq!(
+            carrier.call_id(),
+            Some("call_KGrhHQ8F7MeagVDbKnGlq6vv"),
+            "the join key is copied, never rewritten"
+        );
+    }
+    assert_eq!(
+        carriers[0].query(),
+        Some("shipping ETA lookup by order ID"),
+        "the call's query survives the typed round-trip"
+    );
+    assert_eq!(
+        carriers[1].tools().len(),
+        1,
+        "the loaded definition survives the typed round-trip"
+    );
+    assert_eq!(
+        carriers[1].text_summary(),
+        "[tool_search results] 1 tool",
+        "the bounded summary form of the answer"
+    );
+}
+
+/// Two provider-minted pairs in one response. Every half is keyless, so order is the
+/// only join available, and the module that owns discovery pairing reads this shape
+/// as TWO closed groups — `discovery_groups`' unkeyed FIFO
+/// (`conversation/tool_search.rs:2239-2256`) — which is also the reading
+/// `snap_index_over_discovery_pairs` (`conversation/tool_search.rs:2417`) uses to
+/// keep both pairs atomic across every history cut. Refusing it here while the cut
+/// funnel called it two pairs would cost a whole turn (the caller maps the `Err` to
+/// `SamplingEvent::Failed`, `xai-grok-sampler/src/stream/responses.rs:823-829`) over
+/// a shape the transcript is ready to hold, so both provider orderings are pinned as
+/// decodes. A batch that does NOT balance stays refused —
+/// `a_discovery_half_pair_is_refused_and_names_the_missing_half` pins `call, call,
+/// output`.
+#[test]
+fn a_keyless_discovery_batch_decodes_every_closed_pair() {
+    let second_call = HOSTED_CALL_ITEM.replace(
+        "tsc_0c1a30c585eeaaf9016ac01db8650081949aff9bff5698a20a",
+        "tsc_mrmq_second_call",
+    );
+    let second_output = HOSTED_OUTPUT_ITEM.replace(
+        "tso_0c1a30c585eeaaf9016ac01db86afc81949af526e214666b827",
+        "tso_mrmq_second_output",
+    );
+    for (label, order) in [
+        (
+            "call, call, output, output",
+            [
+                HOSTED_CALL_ITEM,
+                second_call.as_str(),
+                HOSTED_OUTPUT_ITEM,
+                second_output.as_str(),
+            ],
+        ),
+        (
+            "call, output, call, output",
+            [
+                HOSTED_CALL_ITEM,
+                HOSTED_OUTPUT_ITEM,
+                second_call.as_str(),
+                second_output.as_str(),
+            ],
+        ),
+    ] {
+        let items = response_to_conversation_items(response_of(&order))
+            .unwrap_or_else(|error| panic!("{label}: two closed keyless pairs must map: {error}"));
+        let carriers = discovery_carriers(&items);
+        assert_eq!(
+            carriers.len(),
+            4,
+            "one carrier per half, {label}: {items:?}"
+        );
+        assert_eq!(
+            carriers
+                .iter()
+                .map(|c| c.kind().item_type())
+                .collect::<Vec<&str>>(),
+            order
+                .iter()
+                .map(|raw| if raw.contains(r#""type":"tool_search_call""#) {
+                    "tool_search_call"
+                } else {
+                    "tool_search_output"
+                })
+                .collect::<Vec<&str>>(),
+            "{label}: every half must keep its own slot, not be re-grouped into pairs"
+        );
+        let mut ids = carriers
+            .iter()
+            .map(|c| c.id().expect("fixture ids are non-empty"))
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(
+            ids.len(),
+            4,
+            "four different provider items, not one pair mapped twice: {ids:?}"
+        );
+    }
+}
+
+/// The keyless join runs over the response's discovery halves, not over its raw
+/// `output` array: a `reasoning` row between the two halves — the shape the SDK
+/// itself emits, since reasoning items land wherever the provider put them — must
+/// not separate a complete pair. Pinned as a decode rather than argued in the law's
+/// doc, because a grouping that walked the whole `items` vector looking for a
+/// neighbour would pass every physically adjacent fixture in this file and still
+/// split a real response.
+#[test]
+fn a_non_discovery_item_between_the_halves_does_not_split_the_keyless_pair() {
+    let reasoning = r#"{"type":"reasoning","id":"rs_mrmq_between","summary":[]}"#;
+    let items = response_to_conversation_items(response_of(&[
+        HOSTED_CALL_ITEM,
+        reasoning,
+        HOSTED_OUTPUT_ITEM,
+    ]))
+    .expect("a non-discovery row between the halves does not separate the pair");
+    assert_eq!(
+        discovery_carriers(&items).len(),
+        2,
+        "both halves of the separated pair are in the IR: {items:?}"
+    );
+    assert_eq!(
+        items
+            .iter()
+            .filter(|i| matches!(i, ConversationItem::Reasoning(_)))
+            .count(),
+        1,
+        "the row between them survives too — the pair was joined around it, not by dropping it"
+    );
+
+    // Control: the same three items with the row outside the pair, which every other
+    // fixture here already assumes.
+    let control = response_to_conversation_items(response_of(&[
+        reasoning,
+        HOSTED_CALL_ITEM,
+        HOSTED_OUTPUT_ITEM,
+    ]))
+    .expect("the unseparated pair decodes");
+    assert_eq!(
+        discovery_carriers(&control).len(),
+        2,
+        "the control shape is unaffected: {control:?}"
+    );
+}
+
+/// The shape set this seam denies, pinned case by case. Dropping one half silently
+/// is the A-26 loss the carrier variant exists to prevent and committing one half
+/// alone is what PLAN:946's keep-or-drop-together law forbids, so the answer is a
+/// refusal that names the missing half.
+///
+/// The last two rows are COMPLETE pairs by count, and they are refused on purpose:
+/// a key disagreement is not a pair (`call_KGrh…` and a keyless output answer two
+/// different searches as far as this seam can tell), and a keyless batch with more
+/// calls than answers leaves the owner's FIFO (`conversation/tool_search.rs:2239-2256`)
+/// holding a call that nothing can close. PLAN:946's remedy for both is
+/// the repair pass (T15) or its removal set, neither of which lives in this crate —
+/// `enforce_discovery_pair_law`'s doc names the cost, which is the whole response.
+#[test]
+fn a_discovery_half_pair_is_refused_and_names_the_missing_half() {
+    for (label, items, expected) in [
+        ("call alone", &[HOSTED_CALL_ITEM][..], "tool_search_output"),
+        (
+            "output alone",
+            &[HOSTED_OUTPUT_ITEM][..],
+            "tool_search_call",
+        ),
+        (
+            "keyed call alone",
+            &[CLIENT_CALL_ITEM][..],
+            "tool_search_output",
+        ),
+        (
+            "keyed call answered by a keyless output",
+            &[CLIENT_CALL_ITEM, HOSTED_OUTPUT_ITEM][..],
+            "tool_search_output",
+        ),
+        (
+            "keyless batch: call, call, output",
+            &[HOSTED_CALL_ITEM, HOSTED_CALL_ITEM, HOSTED_OUTPUT_ITEM][..],
+            "tool_search_output",
+        ),
+    ] {
+        let err = response_to_conversation_items(response_of(items))
+            .err()
+            .unwrap_or_else(|| panic!("{label}: a pair this seam cannot join must not commit"));
+        let msg = err.to_string();
+        assert!(
+            msg.contains(expected),
+            "{label}: the refusal must name the missing {expected}: {msg}"
+        );
+    }
+}
+
+/// The keyed join is a KEY test, not "an opposite kind exists somewhere in the
+/// response": a call and an output carrying different `call_id` values answer two
+/// different searches, and reading them as one pair is not what PLAN:946's law
+/// says. A keyless half may not adopt a keyed opposite either — the unkeyed FIFO
+/// skips items that carry a key (`conversation/tool_search.rs:2243-2244`), so the
+/// hosted pair and the client pair do not merge into one. Both halves of the positive case are
+/// pinned too: the keyed join is order-blind, which is the property the doc on
+/// [`enforce_discovery_pair_law`] claims when it says it takes the KEY as the unit.
+#[test]
+fn discovery_halves_only_pair_with_the_same_join_key() {
+    let foreign_key_output = CLIENT_OUTPUT_ITEM.replace(
+        "call_KGrhHQ8F7MeagVDbKnGlq6vv",
+        "call_MISMATCHED00000000000000000",
+    );
+    let err = response_to_conversation_items(response_of(&[CLIENT_CALL_ITEM, &foreign_key_output]))
+        .expect_err("two halves under different call_id are not a pair");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("call_KGrhHQ8F7MeagVDbKnGlq6vv"),
+        "the refusal must name the key it could not answer: {msg}"
+    );
+
+    let err = response_to_conversation_items(response_of(&[HOSTED_CALL_ITEM, CLIENT_OUTPUT_ITEM]))
+        .expect_err("a keyless call must not adopt a keyed output as its answer");
+    assert!(
+        err.to_string()
+            .contains("<none: the keyless quadrant joins on order>"),
+        "the refusal must say the half was keyless: {err}"
+    );
+
+    let items =
+        response_to_conversation_items(response_of(&[CLIENT_OUTPUT_ITEM, CLIENT_CALL_ITEM]))
+            .expect("a keyed pair pairs in either emission order");
+    assert_eq!(
+        discovery_carriers(&items).len(),
+        2,
+        "order is not a pairing condition for a keyed pair: {items:?}"
+    );
+
+    // CONDITIONAL PIN — re-open this the moment a hosted-dialect capture lands.
+    // The keyless join IS ordered: with no key there is nothing to identify the
+    // pair except PLAN:946's "must follow" placement, so an output that runs ahead
+    // of its call is not an answer to it. The rule is the owner's unkeyed FIFO
+    // (`conversation/tool_search.rs`, `discovery_groups`'s
+    // "the NEXT null-key output" pass), so ORDER is required and adjacency is not —
+    // `a_non_discovery_item_between_the_halves_does_not_split_the_keyless_pair`
+    // pins the difference. The ORDER itself is a reading of the two
+    // banked live frames (`xai-grok-sampler/src/stream/responses.rs:2146` carries
+    // `output_index: 1`, its output at `:2149` carries 2), not wire evidence that
+    // the inverted order never happens. Two consequences are recorded here because
+    // both are this test's doing, not the plan's: a complete-but-inverted pair
+    // loses the WHOLE turn including the assistant text, which is stricter than
+    // PLAN:946's remedy ("restore from the durable record, or drop both" — T12/T15
+    // own those), and relaxing this arm to drop-both would need that repair pass to
+    // exist first. If a capture ever shows a keyless pair in the other order, the
+    // rule, this pin and the deviation note in `enforce_discovery_pair_law` all
+    // change together.
+    let err = response_to_conversation_items(response_of(&[HOSTED_OUTPUT_ITEM, HOSTED_CALL_ITEM]))
+        .expect_err("a keyless output is not answered by a call that comes after it");
+    assert!(
+        err.to_string().contains("tool_search_call"),
+        "the inverted keyless pair must be refused as a missing call: {err}"
+    );
+}
+
+/// Idempotence and carrier survival: the same response decoded twice produces the
+/// same items, and the pair round-trips through the store form (`Serialize` /
+/// `Deserialize` over `raw`) without a second copy or a synthesised id.
+#[test]
+fn decoding_the_same_response_twice_yields_identical_carriers_with_no_synthesised_ids() {
+    let response = response_of(&[HOSTED_CALL_ITEM, HOSTED_OUTPUT_ITEM]);
+    let first = response_to_conversation_items(response.clone())
+        .expect("the pair decodes")
+        .into_iter()
+        .map(|item| serde_json::to_string(&item).expect("item serialises"))
+        .collect::<Vec<_>>();
+    let second = response_to_conversation_items(response)
+        .expect("the pair decodes again")
+        .into_iter()
+        .map(|item| serde_json::to_string(&item).expect("item serialises"))
+        .collect::<Vec<_>>();
+    assert_eq!(first, second, "decode is idempotent across passes");
+    assert_eq!(
+        first
+            .iter()
+            .filter(|line| line.contains("\"tool_search_output\""))
+            .count(),
+        1,
+        "no duplicate output carrier: {first:?}"
+    );
+
+    // Store round-trip: `chat_history.jsonl` re-enters through `Deserialize`,
+    // which re-runs `ToolSearchItem::from_wire` on the same bytes.
+    let items =
+        response_to_conversation_items(response_of(&[HOSTED_CALL_ITEM, HOSTED_OUTPUT_ITEM]))
+            .expect("the pair decodes");
+    for item in items.iter().filter(|i| i.discovery().is_some()) {
+        let json = serde_json::to_string(item).expect("carrier serialises");
+        let back: ConversationItem = serde_json::from_str(&json).expect("carrier re-enters");
+        let raw_out = item.discovery().expect("item is a carrier").raw();
+        let raw_back = back
+            .discovery()
+            .expect("round-tripped item is a carrier")
+            .raw();
+        assert_eq!(raw_out, raw_back, "store round-trip is a byte round-trip");
+        assert!(
+            !json.contains("tsc_synthetic") && !json.contains("tso_synthetic"),
+            "the decode mints nothing: {json}"
+        );
+    }
+}
+
+/// Opaque artifacts are handles, not content (wire invariant 6). At this seam that
+/// is three checkable things: the `tsc_*` / `tso_*` ids ride through verbatim; the
+/// decode ATTACHES nothing — no key on a carrier carries a non-null value the
+/// provider item did not already carry under that key, so one half can never
+/// inherit the other's handle; and the normalisations the typed round trip does
+/// make are pinned as bytes instead of believed.
+///
+/// The normalisations are the SDK's, not this seam's, and one of them is a real loss: an
+/// `encrypted_content` sent on a discovery item is dropped by the deserializer before
+/// [`response_to_conversation_items`] is ever reached, so on this path the carrier keeps the
+/// SDK's typed projection rather than the provider's bytes. `ToolSearchItem`'s `raw` field
+/// doc owns that analysis (`conversation/tool_search.rs:460-477`); it is not restated here.
+/// Recovering the frame bytes belongs to the sampler's stream layer, outside this cut, so the
+/// loss is ASSERTED here rather than fixed — when a raw-frame path lands, this assertion
+/// reddens and the carrier's claim becomes true again.
+#[test]
+fn decoded_carriers_copy_provider_handles_and_attach_no_foreign_encrypted_content() {
+    let call_with_carrier = HOSTED_CALL_ITEM.replace(
+        ",\"execution\":\"server\"}",
+        ",\"execution\":\"server\",\"encrypted_content\":\"litellm_enc:mrmq\"}",
+    );
+    let items =
+        response_to_conversation_items(response_of(&[&call_with_carrier, HOSTED_OUTPUT_ITEM]))
+            .expect("the pair decodes");
+    let carriers = discovery_carriers(&items);
+    assert_eq!(carriers.len(), 2, "one carrier per half: {items:?}");
+    let sent: Vec<serde_json::Value> = [&call_with_carrier, HOSTED_OUTPUT_ITEM]
+        .into_iter()
+        .map(|raw| serde_json::from_str(raw).expect("fixture is valid JSON"))
+        .collect();
+
+    assert_eq!(
+        carriers[0].id(),
+        Some("tsc_0c1a30c585eeaaf9016ac01db8650081949aff9bff5698a20a"),
+        "the call's item id is copied verbatim"
+    );
+    assert_eq!(
+        carriers[1].id(),
+        Some("tso_0c1a30c585eeaaf9016ac01db86afc81949af526e214666b827"),
+        "the output's item id is copied verbatim"
+    );
+    // No half gains a value the other carried: compare each carrier's scalar keys
+    // against the item it was built from. Nested values normalise internally (the
+    // `output_schema` case below) and are pinned separately.
+    for (carrier, sent) in carriers.iter().zip(sent.iter()) {
+        let sent = sent.as_object().expect("fixture is an object");
+        let stored = carrier.raw().as_object().expect("carrier is an object");
+        for (key, value) in stored {
+            if value.is_object() || value.is_array() {
+                continue;
+            }
+            match sent.get(key) {
+                Some(was) if !was.is_object() && !was.is_array() => {
+                    assert_eq!(was, value, "`{key}` was rewritten between wire and carrier")
+                }
+                // A key the provider item did not carry may not appear at all: the
+                // SDK's one addition on this shape (an explicit null `call_id`) is
+                // undone inside `discovery_carrier`, and the nested key set is held
+                // to the provider's by
+                // `the_codex_splice_replays_the_provider_item_key_set`.
+                None => panic!(
+                    "the decode added a key `{key}` that no provider item carried: {}",
+                    carrier.raw()
+                ),
+                Some(_) => {}
+            }
+        }
+    }
+    assert_eq!(
+        carriers[1].raw().get("encrypted_content"),
+        None,
+        "the output half must not inherit the call half's handle"
+    );
+    assert_eq!(
+        carriers[0].raw().get("encrypted_content"),
+        None,
+        "FIDELITY LOSS, pinned: the SDK models no `encrypted_content` on a discovery item, so \
+         the provider's value never reaches the carrier (see this test's doc)"
+    );
+    assert!(
+        !items
+            .last()
+            .expect("assistant")
+            .text_content()
+            .contains("litellm_enc:"),
+        "the assistant text must not carry the opaque field"
+    );
+    assert_eq!(
+        carriers[0].raw().get("call_id"),
+        None,
+        "the fixture omits `call_id`; the typed round trip would re-emit it as null \
+         (async-openai-0.42.1 response.rs:151 has no skip_serializing_if) and \
+         `discovery_carrier` drops that key so the stored bytes keep the provider's key set"
+    );
+    assert_eq!(
+        carriers[1].raw().get("call_id"),
+        None,
+        "the output half is normalised identically (async-openai-0.42.1 response.rs:189)"
+    );
+    assert_eq!(
+        carriers[1].raw()["tools"][0].get("output_schema"),
+        None,
+        "the provider wrote `\"output_schema\":null` at this index; the typed round trip drops \
+         it (async-openai-0.42.1 response.rs:1386-1387 is skip_serializing_if)"
+    );
+    assert_eq!(
+        carriers[1].call_id(),
+        None,
+        "a re-emitted null still reads as no key"
+    );
+}
+
+/// §6.7: the model-visible fragment this decode can author is the bounded
+/// summary, never the payload. The payload's own size is the provider's (a
+/// `tool_search_output` carries whole tool definitions) and the seam neither
+/// truncates it nor claims it is bounded.
+#[test]
+fn the_bounded_summary_form_stays_bounded_however_large_the_mapped_payload_is() {
+    let wide_output = format!(
+        r#"{{"id":"tso_wide_1","type":"tool_search_output","status":"completed","execution":"server","tools":[{}]}}"#,
+        (0..40)
+            .map(|i| format!(
+                r#"{{"type":"function","name":"mrmq_tool_{i}","description":"{}","parameters":{{"type":"object"}}}}"#,
+                "a description long enough to matter for the cached prefix. ".repeat(3)
+            ))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    let wide_call = HOSTED_CALL_ITEM.replace("lookup_shipping_eta", &"path_".repeat(400));
+    let items = response_to_conversation_items(response_of(&[&wide_call, &wide_output]))
+        .expect("a wide pair is still a complete pair");
+    let carriers = discovery_carriers(&items);
+    let payload_len: usize = carriers
+        .iter()
+        .map(|c| c.estimated_model_visible_len())
+        .sum();
+    let summary_len: usize = carriers.iter().map(|c| c.text_summary().len()).sum();
+    assert!(
+        payload_len > 4_000,
+        "fixture must actually be wide to mean anything: {payload_len}"
+    );
+    assert!(
+        summary_len < 1_000,
+        "the summary form this seam can author is bounded; got {summary_len} bytes over a \
+         {payload_len}-byte payload"
+    );
+}
+
+/// §6.5's "no empty item ids" as a checked property of this arm rather than an
+/// argued one. The decision itself is `enforce_discovery_pair_law`'s doc: an `id`
+/// the provider wrote as `""` is that provider's byte, and this seam's only two
+/// alternatives are to rewrite it (wire invariant 6 forbids) or to fail the turn for
+/// a value the corpus does not contain — the sweep at
+/// `conversation/tool_search.rs:566` measures 0 instances of `"id": ""` across
+/// `captures/` and `ratchet-capture/fixtures/`. So the byte is KEPT and the handle is
+/// not advertised. The Compaction arm earlier in the same loop writes its `id` key only
+/// when non-empty (`conversation/responses.rs:98-100`) because that arm assembles its
+/// raw from typed fields and therefore owns those bytes; this arm does not own them.
+///
+/// What this pin does NOT certify is wire ACCEPTANCE, and the next lane must not
+/// read it as that. The kept byte is model-visible on the admitting rows: the Codex
+/// replay arm splices `raw()` verbatim into every later request
+/// (`conversation.rs:2699`) and all three rows the bake ships ON are
+/// `model_family: "codex"` (`xai-grok-models/default_models.json:365`, `:420`,
+/// `:528`). No capture in this estate carries a discovery item with an empty `id`
+/// and this lane made no provider call, so whether any boundary accepts `"id": ""`
+/// on a `tool_search_call`/`tool_search_output` is UNVERIFIED (§6.8; ruling D10
+/// still in force). The house remedy for an empty id on the other carrier is the
+/// send-time patch pass (`patch_reasoning_empty_ids`, `conversation/responses.rs`),
+/// which has no discovery arm — adding one would rewrite a provider byte with no
+/// wire evidence either way, so it stays unverified and recorded rather than fixed
+/// blind.
+#[test]
+fn an_empty_provider_item_id_is_kept_in_the_bytes_and_never_advertised_as_a_handle() {
+    let empty_id_call = HOSTED_CALL_ITEM.replace(
+        "\"id\":\"tsc_0c1a30c585eeaaf9016ac01db8650081949aff9bff5698a20a\"",
+        "\"id\":\"\"",
+    );
+    let empty_id_output = HOSTED_OUTPUT_ITEM.replace(
+        "\"id\":\"tso_0c1a30c585eeaaf9016ac01db86afc81949af526e214666b827\"",
+        "\"id\":\"\"",
+    );
+    let items = response_to_conversation_items(response_of(&[&empty_id_call, &empty_id_output]))
+        .expect("an empty id is the provider's own byte, not a refusal condition");
+    let carriers = discovery_carriers(&items);
+    assert_eq!(carriers.len(), 2, "both halves still map: {items:?}");
+    for carrier in &carriers {
+        assert_eq!(
+            carrier.id(),
+            None,
+            "an empty id identifies nothing, so it must not be handed out as a handle: {}",
+            carrier.raw()
+        );
+        assert_eq!(
+            carrier.raw().get("id"),
+            Some(&serde_json::Value::String(String::new())),
+            "the byte is retained — the store keeps it and the Codex arm splices it; nothing \
+             was minted in its place: {}",
+            carrier.raw()
+        );
+    }
+}
+
+/// Key paths present in the provider's item but absent from the spliced one, and the
+/// reverse, walking objects and arrays. Value equality is deliberately not compared:
+/// the question this pin answers is which KEYS the provider sees again.
+fn key_path_diff(
+    provider: &serde_json::Value,
+    spliced: &serde_json::Value,
+    path: &str,
+    dropped: &mut Vec<String>,
+    added: &mut Vec<String>,
+) {
+    match (provider, spliced) {
+        (serde_json::Value::Object(provider), serde_json::Value::Object(spliced)) => {
+            for (key, value) in provider {
+                let here = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                match spliced.get(key) {
+                    Some(inner) => key_path_diff(value, inner, &here, dropped, added),
+                    None => dropped.push(here),
+                }
+            }
+            for key in spliced.keys() {
+                if !provider.contains_key(key) {
+                    added.push(if path.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{path}.{key}")
+                    });
+                }
+            }
+        }
+        (serde_json::Value::Array(provider), serde_json::Value::Array(spliced)) => {
+            for (index, (p, s)) in provider.iter().zip(spliced.iter()).enumerate() {
+                key_path_diff(p, s, &format!("{path}[{index}]"), dropped, added);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The carrier's bytes are model-visible, not inert storage: `conversation.rs:2699`
+/// splices `Discovery`'s `raw()` verbatim into the next request on the Codex dialect,
+/// and all three rows the bake advertises on are `model_family: "codex"`
+/// (`xai-grok-models/default_models.json:365`, `:420`, `:528`). The decode builds
+/// those bytes by re-serializing the SDK's closed structs, so this drives the banked
+/// hosted pair through the seam and diffs what the next turn would send against the
+/// provider's OWN item JSON, at every depth.
+///
+/// Two rules follow from that diff and both are asserted per half: the splice adds NO
+/// key the provider never sent — the case this pin exists for is `"call_id": null`,
+/// which `ToolSearchCall::call_id` (`async-openai-0.42.1/src/types/responses/response.rs:151`)
+/// and `ToolSearchOutput::call_id` (`:189`) re-emit for an omitted key and which
+/// `discovery_carrier` removes — and every key it DROPS is named below. A third
+/// normalization, in either direction, on either half, reddens this test instead of
+/// reaching a wire nobody captured.
+///
+/// Both observed provider shapes run through it. The banked SSE frames omit every
+/// optional key; the banked response bodies send them explicitly as null, so the two
+/// cases lose DIFFERENT keys and each list is named. Key-set equality is what the
+/// response-body case can prove; resolving present-null to absent is a deliberate
+/// choice whose whole cost is the `call_id` line in its drop list.
+///
+/// What it cannot show is ACCEPTANCE. Key-set equality with the provider's own item is
+/// a necessary condition, not a captured 200: this lane made no provider call, so
+/// replaying a server-executed pair on the Codex dialect stays UNVERIFIED per row class
+/// and §6.8 / ruling D10 stay open.
+#[test]
+fn the_codex_splice_replays_the_provider_item_key_set() {
+    // `tools[0].output_schema` is the provider's `"output_schema": null` eaten by
+    // `FunctionTool::output_schema`'s `skip_serializing_if` (same SDK file,
+    // :1386-1387), `tools[0].allowed_callers` the same for `allowed_callers`
+    // (`:1390`), `created_by` the same for `created_by` (`:159-160`, `:197-198`);
+    // none can be restored here without inventing a key the provider may not have
+    // sent, so each is named as a loss rather than silently shipped. `call_id` is
+    // the one this crate removes by hand (`conversation/responses.rs:251-255`).
+    // One case: the shape's label, its two provider item fixtures, and the key paths
+    // the Codex splice loses from each half, in the provider's own key order.
+    type SpliceCase = (
+        &'static str,
+        [&'static str; 2],
+        [&'static [&'static str]; 2],
+    );
+    let cases: [SpliceCase; 2] = [
+        (
+            "stream frame",
+            [HOSTED_CALL_ITEM, HOSTED_OUTPUT_ITEM],
+            [&[], &["tools[0].output_schema"]],
+        ),
+        (
+            "response body",
+            [HOSTED_CALL_ITEM_BODY, HOSTED_OUTPUT_ITEM_BODY],
+            [
+                &["call_id", "created_by"],
+                &[
+                    "call_id",
+                    "tools[0].allowed_callers",
+                    "tools[0].output_schema",
+                    "created_by",
+                ],
+            ],
+        ),
+    ];
+    for (shape, fixtures, expected_drops) in cases {
+        let provider_items: Vec<serde_json::Value> = fixtures
+            .iter()
+            .map(|raw| serde_json::from_str(raw).expect("fixture is the provider's own item JSON"))
+            .collect();
+        let items = response_to_conversation_items(response_of(&fixtures))
+            .expect("the banked hosted pair decodes");
+        let splices = ConversationRequest::from_items(items)
+            .raw_responses_input_replacements(ResponsesReplayDialect::Codex);
+        assert_eq!(
+            splices.len(),
+            provider_items.len(),
+            "{shape}: one Codex splice per discovery half, and nothing else: {splices:?}"
+        );
+
+        for ((provider, splice), drops) in provider_items
+            .iter()
+            .zip(splices.iter())
+            .zip(expected_drops)
+        {
+            let (mut missing, mut added) = (Vec::new(), Vec::new());
+            key_path_diff(provider, &splice.value, "", &mut missing, &mut added);
+            assert!(
+                added.is_empty(),
+                "the Codex splice would send keys the provider never sent for this {shape} item: \
+                 {added:?} (provider item: {provider}; spliced: {})",
+                splice.value
+            );
+            assert_eq!(
+                missing, drops,
+                "the Codex splice's dropped-key set moved for {shape} {} (spliced: {}); a new \
+                 loss needs a ruling, not a widened list here",
+                provider["type"], splice.value
+            );
+        }
+    }
+}
+
+/// Ruling `map/RULINGS-o1o5.md` §D10 R4 (bead `apex-mrmq`, deliverable 3), held where
+/// the campaign's test authority can actually see it: this file runs under
+/// `cargo test --release -p xai-grok-sampling-types --lib`, which the §5 GATE does
+/// execute, while `xai-grok-models` is not one of its eight packages — a bake check
+/// the pre-commit authority never runs is prose. `xai-grok-models` carries the
+/// companion pin (`no_baked_admitting_row_outlives_the_decode_seam`,
+/// `xai-grok-models/src/lib.rs`) which reads the same invariant through the
+/// `include_str!`-baked `DEFAULT_MODELS_JSON` const; the two are the same law read at
+/// the two ends of the dependency edge. The row SET stays owned by
+/// `catalog_flags_parse_and_default_off` (`xai-grok-models/src/lib.rs:178-180`); this
+/// test owns only the coupling between that set and the decode seam.
+///
+/// It reads the rows from the same `default_models.json` the bake embeds via
+/// `include_str!` (read from disk rather than through that crate because
+/// `xai-grok-models` depends on this one, so the edge cannot run the other way),
+/// reads the `execution` the admitted route ACTUALLY declares off
+/// [`extra_tool_entries_for_route`] rather than assuming one, and drives both provider
+/// answer shapes through the real [`response_to_conversation_items`]:
+///
+/// * UNCONDITIONALLY (whenever the admitting set is non-empty) the complete
+///   server-executed pair. This is the mandated positive assertion — the items must
+///   LAND — and it cannot be gated on what this head declares, because the decode seam
+///   does not branch on the route: the pair shape is already live on these rows. The
+///   banked live frames are a `"execution":"server"` `tool_search_call` at
+///   `output_index` 1 and its `tool_search_output` at 2, from `"model":"gpt-5.6-sol"`
+///   (`xai-grok-sampler/src/stream/responses.rs:2146`, `:2149`), and gpt-5.6-sol is one
+///   of the three ON rows. A refusal that merely changed its text would pass a
+///   probe this route's declaration gated.
+/// * A `client`-declared route — what this head emits, ruling D5
+///   (`admitted_route_declaration_is_client_executed`) — additionally gets a lone
+///   call, because the answer half is the harness's to author and apex-waj.57 has not
+///   landed. The seam refuses that, and that IS the D10 hazard, so each row carrying
+///   it is named below with the bead that owes the fix. A new ON row that is not
+///   named reddens this test: the curate breaks, not a user's turn. When the answer
+///   arm lands the lone call starts mapping and the stale-pin branch reddens until the
+///   list is emptied. This is a second, separately-attributed check, not an
+///   alternative to the first.
+#[test]
+fn no_baked_admitting_row_drives_a_shape_the_decode_seam_refuses() {
+    /// Rows that advertise hosted search while the harness cannot answer the call it
+    /// invites. The second field is the bead that owes the answer half.
+    const ROWS_ADMITTING_WITH_NO_ANSWER_HALF: &[(&str, &str)] = &[
+        ("gpt-5.6-luna", "apex-waj.57"),
+        ("gpt-5.6-sol", "apex-waj.57"),
+        ("gpt-5.6-terra", "apex-waj.57"),
+    ];
+    /// The catalog source the bake embeds through
+    /// `pub const DEFAULT_MODELS_JSON: &str = include_str!("../default_models.json")`
+    /// (`xai-grok-models/src/lib.rs:20`); `build.rs` only declares the
+    /// `cargo:rerun-if-changed=default_models.json` trigger (`build.rs:62`) and runs
+    /// the unrelated param gate — it does not write the catalog. A sibling path, not a
+    /// dependency: `xai-grok-models` depends on this crate
+    /// (`xai-grok-models/Cargo.toml`), so no edge back exists.
+    const BAKED_ROWS: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../xai-grok-models/default_models.json"
+    );
+
+    let bake = std::fs::read_to_string(BAKED_ROWS).unwrap_or_else(|error| {
+        panic!("{BAKED_ROWS} is the catalog source the bake ships: {error}")
+    });
+    let read: serde_json::Value =
+        serde_json::from_str(&bake).expect("the baked catalog source parses");
+    let admitting: Vec<&str> = read["models"]
+        .as_array()
+        .expect("the catalog source has a models array")
+        .iter()
+        .filter(|row| row["supports_search_tool"] == serde_json::json!(true))
+        // id-less rows fall back to the wire slug, as the models crate's own pin does,
+        // so no row can leave the counted set uncounted.
+        .map(|row| {
+            row["id"]
+                .as_str()
+                .or_else(|| row["model"].as_str())
+                .expect("a catalog row carries an id or a model slug")
+        })
+        .collect();
+
+    // The positive assertion deliverable 3 mandates, run whenever there is a row to
+    // protect — NOT gated on the route's declared `execution`. The seam maps this pair
+    // for every row regardless of the declaration, so gating it on the declaration
+    // would leave the arm that proves the item LANDS unreachable at this head, and a
+    // decode reverted to any refusal would stay green while every ON row died
+    // mid-search.
+    if !admitting.is_empty() {
+        let items = response_to_conversation_items(response_of(&[
+            HOSTED_CALL_ITEM,
+            HOSTED_OUTPUT_ITEM,
+        ]))
+        .unwrap_or_else(|error| {
+            panic!(
+                "the bake carries supports_search_tool: true on {admitting:?}, but the decode \
+                 seam refused the discovery pair that shape answers with: {error}. Land the \
+                 mapping, or apply D10 R3 and curate those rows off."
+            )
+        });
+        let kinds: Vec<&str> = discovery_carriers(&items)
+            .iter()
+            .map(|carrier| carrier.kind().item_type())
+            .collect();
+        assert_eq!(
+            kinds,
+            ["tool_search_call", "tool_search_output"],
+            "an admitting row must get both halves into the IR, or the turn dies \
+             mid-search on {admitting:?}"
+        );
+    }
+
+    let declaration = extra_tool_entries_for_route(&[], Some(ADMITTED_ROUTE))
+        .first()
+        .cloned()
+        .expect("the admitted route leads the channel with the tool_search declaration");
+    let declared = declaration["execution"]
+        .as_str()
+        .expect("the declaration names its execution")
+        .to_string();
+
+    // The second, separately-attributed check: the shape THIS route's declaration
+    // actually invites. The seam does not branch on the slug, so one probe answers for
+    // the whole set and the rows are enumerated only to attribute the pin.
+    match declared.as_str() {
+        // Nothing further to check: the provider mints both halves and the
+        // unconditional probe above already proved they land.
+        "server" => {}
+        // The harness owes the answer, so the provider's answer is a lone call.
+        "client" => {
+            let probe = response_to_conversation_items(response_of(&[CLIENT_CALL_ITEM]));
+            for row in admitting.iter().copied() {
+                let error = match &probe {
+                    Ok(_) => panic!(
+                        "stale pin: the seam now maps the lone client-executed call that \
+                         {row:?}'s route invites, so its entry in \
+                         ROWS_ADMITTING_WITH_NO_ANSWER_HALF is false — remove it, and re-check \
+                         whether ruling D10 can be re-ruled."
+                    ),
+                    Err(error) => error,
+                };
+                let msg = error.to_string();
+                let owner = ROWS_ADMITTING_WITH_NO_ANSWER_HALF
+                    .iter()
+                    .find(|(pinned, _)| *pinned == row)
+                    .map(|(_, owner)| *owner)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{row} advertises hosted search on a client-executed route and the \
+                             decode seam refuses the answer that route returns ({msg}). D10 R4 \
+                             makes that a user's turn, not a test failure: land the answer arm, \
+                             or apply D10 R3 and curate the row off. Adding the row to \
+                             ROWS_ADMITTING_WITH_NO_ANSWER_HALF is not a fix — that list records \
+                             hazards the coordinator has already ruled on."
+                        )
+                    });
+                assert!(
+                    msg.contains("tool_search_output"),
+                    "{row} (answer owed by {owner}): the refusal must name the missing half: {msg}"
+                );
+            }
+        }
+        other => panic!(
+            "the admitted route declares execution {other:?}, which this test has no provider \
+             answer shape for; add that shape deliberately rather than falling through"
+        ),
+    }
+
+    for (pinned, owner) in ROWS_ADMITTING_WITH_NO_ANSWER_HALF {
+        assert!(
+            admitting.contains(pinned),
+            "stale pin: {pinned:?} (answer owed by {owner}) is listed as an admitting row with \
+             no answer half, but the bake no longer carries it ON — delete the entry so the list \
+             keeps meaning what it says"
+        );
+    }
 }
