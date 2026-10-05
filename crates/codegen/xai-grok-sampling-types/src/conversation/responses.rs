@@ -773,7 +773,17 @@ fn content_parts_to_easy_input_content(parts: &[ContentPart]) -> rs::EasyInputCo
 /// The request's client function tools.
 /// A function tool whose name collides with a backend-hosted tool is dropped: sending both is rejected as a duplicate, so the hosted tool wins.
 /// Both ride the raw-JSON [`extra_tool_entries`] channel instead.
+///
+/// Deferred-aware (plan Task 7, bead apex-waj.85): a tool whose `exposure` is
+/// [`ToolExposure::Deferred`] rides the wire with `defer_loading: true` ONLY on an
+/// admitted route — the withheld declaration is the deviation under which the
+/// provider fires the hosted search (capture 2026-10-02T210154Z). The tool stays in
+/// the array; the lowering withholds, it does not drop. Every other cell — un-admitted
+/// route, or an admitted route with no deferred tool — emits `defer_loading: None`,
+/// which serializes to no key, so those routes stay byte-identical to the
+/// pre-lowering output (plan scope rule).
 fn build_responses_tools(req: &ConversationRequest) -> Vec<rs::Tool> {
+    let admitted = req.search_admission.is_some_and(SearchAdmission::admitted);
     let tools: Vec<rs::Tool> = req
         .tools
         .iter()
@@ -793,7 +803,7 @@ fn build_responses_tools(req: &ConversationRequest) -> Vec<rs::Tool> {
                 description: t.description.clone(),
                 parameters: Some(t.parameters.clone()),
                 strict: None,
-                defer_loading: None,
+                defer_loading: (admitted && t.exposure == ToolExposure::Deferred).then_some(true),
                 r#async: None,
                 output_schema: None,
                 allowed_callers: None,
@@ -1106,10 +1116,16 @@ pub struct SearchAdmission {
     /// the operator's per-row `supports_search_tool` tri-state, resolved in
     /// `xai-grok-shell/src/agent/config.rs` and read off the target row at the switch site.
     pub supports_search_tool: bool,
-    /// At least one deferred tool exists to be found. Written by exactly one function,
-    /// [`has_searchable_tools`], whose interim body is the declared tool surface — see ruling D1
-    /// there for why that body is not the discovery manifest yet and why the manifest, when it
-    /// lands, replaces that body and nothing else here.
+    /// The route's declared tool surface is non-empty — the D1 interim body of
+    /// [`has_searchable_tools`], which the ruling replaces with the manifest's
+    /// "at least one deferred tool exists to be found" when the manifest lands.
+    /// Written by exactly one function, [`has_searchable_tools`] — see ruling D1
+    /// there for why the interim is the declared surface and why the manifest, when
+    /// it lands, replaces that body and nothing else here. Bead apex-waj.85
+    /// re-ruled the deferred-keyed body out in place (2026-10-05): no production
+    /// writer of `ToolExposure::Deferred` exists at this head, the projection
+    /// tier's producer test pins the interim, and the switch-time
+    /// `ToolDefinition` surface carries no exposure at all.
     ///
     /// Deliberately not derived from the `sources` handed to
     /// [`tool_search_declaration_entry`]: that advertised list may legitimately be empty or
@@ -1194,7 +1210,10 @@ impl DeclaredToolSurface for crate::types::ToolDefinition {}
 /// Two derivations the ruling rejects, recorded here so they are not re-derived: the `sources` list
 /// rendered into the declaration description (see [`SearchAdmission::has_searchable_tools`]), and
 /// "a deferred tool exists" keyed on `ToolExposure::Deferred`, which has no production writer at
-/// this head and would therefore keep `admitted()` false in every live session.
+/// this head and would therefore keep `admitted()` false in every live session. The second
+/// rejection was re-ruled in place by bead apex-waj.85 (gate-(b), 2026-10-05), which found it
+/// additionally pinned against by the projection tier's producer test and unrepresentable on the
+/// switch-time `ToolDefinition` surface; the manifest-era body still lands here per D1.
 pub fn has_searchable_tools<T: DeclaredToolSurface>(declared_tools: &[T]) -> bool {
     !declared_tools.is_empty()
 }

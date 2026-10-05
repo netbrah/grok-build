@@ -4230,3 +4230,105 @@ fn no_baked_admitting_row_drives_a_shape_the_decode_seam_refuses() {
         );
     }
 }
+
+// ─── HTS-DEFERRED-LOWER / bead apex-waj.85: deferred-aware lowering ────────
+//
+// Plan Task 7 (`docs/superpowers/plans/2026-09-25-s3a-responses-native-tool-search.md`):
+// on the admitted route, a tool whose `exposure` is `Deferred` rides the wire with
+// `defer_loading: true` — the deviation the 2026-10-02T210154Z capture pinned as the
+// one that makes the provider fire the search — and every other cell stays
+// byte-identical to the pre-lowering output (plan scope rule: the un-admitted route
+// does not learn that a tool was withheld).
+
+/// One Immediate and one Deferred tool, with the route's admission set per cell.
+fn deferred_lowering_request(admission: Option<SearchAdmission>) -> ConversationRequest {
+    let mut req =
+        ConversationRequest::from_items(vec![ConversationItem::user("hi")]).with_tools(vec![
+            ToolSpec {
+                name: "read_file".to_string(),
+                description: None,
+                parameters: serde_json::json!({"type": "object"}),
+                exposure: ToolExposure::Immediate,
+            },
+            ToolSpec {
+                name: "server__deploy".to_string(),
+                description: Some("Deploy the server".to_string()),
+                parameters: serde_json::json!({"type": "object"}),
+                exposure: ToolExposure::Deferred,
+            },
+        ]);
+    req.search_admission = admission;
+    req
+}
+
+/// Acceptance 1, firing cell: a deferred tool on the admitted route rides the wire
+/// WITHHELD — `defer_loading: true` on the entry itself, which the capture shows is
+/// the deviation under which the provider mints the `tool_search_call`. The tool
+/// stays in the array: the lowering withholds, it does not drop.
+#[test]
+fn admitted_route_deferred_tool_rides_defer_loading_true() {
+    let req = deferred_lowering_request(Some(ADMITTED_ROUTE));
+    let body: rs::CreateResponse = (&req).into();
+    let wire = serde_json::to_value(&body.tools).expect("tools serialize");
+    assert_eq!(wire[0]["name"], serde_json::json!("read_file"));
+    assert_eq!(wire[1]["name"], serde_json::json!("server__deploy"));
+    assert_eq!(
+        wire[1]["defer_loading"],
+        serde_json::json!(true),
+        "a deferred tool on the admitted route must ride withheld: {wire:?}"
+    );
+    assert_eq!(
+        json_keys(&wire[1]),
+        ["type", "name", "parameters", "description", "defer_loading"],
+        "the withheld entry keeps the function-tool key order with defer_loading last"
+    );
+}
+
+/// Acceptance 1, non-firing cell: the Immediate tool beside a withheld one carries
+/// no `defer_loading` key at all — `None` skips the key, so its bytes do not move.
+#[test]
+fn admitted_route_immediate_tool_carries_no_defer_loading() {
+    let req = deferred_lowering_request(Some(ADMITTED_ROUTE));
+    let body: rs::CreateResponse = (&req).into();
+    let wire = serde_json::to_value(&body.tools).expect("tools serialize");
+    assert!(
+        wire[0].get("defer_loading").is_none(),
+        "the Immediate tool is not withheld: {wire:?}"
+    );
+}
+
+/// Plan scope rule: an un-admitted route does not act on `exposure`, so its lowered
+/// tools are byte-identical to the pre-lowering output — the Deferred tool included.
+#[test]
+fn unadmitted_route_lowering_stays_byte_identical_to_today() {
+    let req = deferred_lowering_request(None);
+    let body: rs::CreateResponse = (&req).into();
+    let wire = serde_json::to_string(&body.tools).expect("tools serialize");
+    assert_eq!(
+        wire,
+        r#"[{"type":"function","name":"read_file","parameters":{"type":"object"}},{"type":"function","name":"server__deploy","parameters":{"type":"object"},"description":"Deploy the server"}]"#,
+        "no admission: the withheld tool is only a concept the admitted route acts on"
+    );
+}
+
+/// Admitted, but nothing is deferred: the route admits yet withholds nothing, so the
+/// array is byte-identical to the same surface on the un-admitted route.
+#[test]
+fn admitted_route_without_deferred_tools_moves_no_byte() {
+    let mut req =
+        ConversationRequest::from_items(vec![ConversationItem::user("hi")]).with_tools(vec![
+            ToolSpec {
+                name: "read_file".to_string(),
+                description: None,
+                parameters: serde_json::json!({"type": "object"}),
+                exposure: ToolExposure::default(),
+            },
+        ]);
+    req.search_admission = Some(ADMITTED_ROUTE);
+    let body: rs::CreateResponse = (&req).into();
+    let wire = serde_json::to_string(&body.tools).expect("tools serialize");
+    assert_eq!(
+        wire, r#"[{"type":"function","name":"read_file","parameters":{"type":"object"}}]"#,
+        "admission withholds nothing: an Immediate-only array must not move a byte"
+    );
+}
