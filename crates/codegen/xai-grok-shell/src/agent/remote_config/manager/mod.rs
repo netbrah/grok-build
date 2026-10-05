@@ -561,6 +561,17 @@ impl ModelsManager {
             .unwrap_or(false)
     }
 
+    /// The operator's `deferred_tools` list for `model_id`'s catalog row
+    /// (apex-waj.86) — the tool NAMES to withhold (`defer_loading`) on the
+    /// admitted route, resolved from the comma-separated `[model.<id>]` value
+    /// into `ModelInfo::deferred_tools`. A row absent from the catalog, or an
+    /// unmarked row, answers empty: withholds nothing. `model_id` may be an
+    /// effort-routed id; `with_catalog_entry` resolves it to the owning row.
+    pub(crate) fn model_deferred_tools(&self, model_id: &str) -> Vec<String> {
+        self.with_catalog_entry(model_id, |e| e.info().deferred_tools.clone())
+            .unwrap_or_default()
+    }
+
     /// Looks `model_id` up in the catalog, then returns the id that model sends at this effort.
     pub(crate) fn model_for_effort(
         &self,

@@ -665,6 +665,7 @@ mod tests {
     fn fully_populated_override() -> ConfigModelOverride {
         ConfigModelOverride {
             supports_search_tool: None,
+            deferred_tools: None,
             use_responses_lite: false,
             multi_agent_v2: None,
             model: Some("m".into()),

@@ -2610,6 +2610,7 @@ fn test_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
     crate::agent::config::ModelEntry {
         info: crate::agent::config::ModelInfo {
             supports_search_tool: false,
+            deferred_tools: Vec::new(),
             use_responses_lite: false,
             multi_agent_v2: None,
             user_selectable: true,

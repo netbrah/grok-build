@@ -44,7 +44,7 @@ fn selftest_happy_path_passes() {
     assert!(report.required_fields.contains(&"reasoning_efforts".to_string()));
     assert!(!report.required_fields.contains(&"model".to_string()));
     assert!(!report.required_fields.contains(&"context_window".to_string()));
-    assert_eq!(report.schema_properties.len(), 50); // S3a T2: + supports_search_tool / use_responses_lite
+    assert_eq!(report.schema_properties.len(), 51); // S3a T2 +1 deferred_tools (apex-waj.86, config-only)
     assert!(report.schema_properties.contains(&"api_backend".to_string()));
     assert!(report.schema_properties.contains(&"temperature".to_string()));
     assert_eq!(report.struct_fields.len(), 24); // S3a T2: + supports_search_tool / use_responses_lite

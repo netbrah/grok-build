@@ -502,6 +502,13 @@
             "null"
           ]
         },
+        "deferred_tools": {
+          "description": "Native hosted tool discovery (S3a): the operator's per-row list of tool\nNAMES to withhold on the admitted route, comma-separated. Absent leaves\nthe row's list untouched (inherit); a present value replaces it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "description": {
           "type": [
             "string",

@@ -1,5 +1,9 @@
-use xai_grok_sampling_types::{SearchDateBound, ToolOverrides, WebSearchOptions, XSearchOptions};
+use xai_grok_sampling_types::{
+    SearchDateBound, ToolExposure, ToolOverrides, WebSearchOptions, XSearchOptions,
+};
+use xai_tool_types::definition::ToolDefinition;
 
+use super::super::support;
 use super::{
     CLASSIFIER_REQUEST_TOKEN_RESERVE, LengthSalvageAction, LengthSalvageStreak,
     MAX_OUTPUT_TOKEN_LIMIT_RETRIES, classifier_request_fits_context, resolve_configured_cutoff,
@@ -285,4 +289,137 @@ mod subagent_sampling_gate_tests {
             })
             .await;
     }
+}
+
+/// apex-waj.86 acceptance 1 (firing cell): a row that marks one tool deferred
+/// resolves it onto the surface, and the admitted route lowers it to
+/// `defer_loading: true` on the wire — the end-to-end path the 9be727ac
+/// lowering tests pin in isolation.
+#[tokio::test(flavor = "current_thread")]
+async fn a_row_marking_a_tool_deferred_withholds_it_on_the_admitted_route() {
+    const ROW: &str = "deferred-row";
+    const MARKED: &str = "lookup_weather";
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (manager, _tmp) = support::manager_with_entries();
+            manager.insert_test_entry(
+                ROW,
+                support::entry_with_deferred_tools(
+                    ROW,
+                    /* supports_search_tool */ true,
+                    &[MARKED],
+                ),
+            );
+            let actor = support::actor_on_row(ROW, manager).await;
+            // The mark resolves off the current row; point the manager at it — the
+            // steady-state invariant the switch site maintains.
+            actor
+                .models_manager
+                .set_current_model_id(agent_client_protocol::ModelId::new(ROW));
+            let defs = vec![
+                ToolDefinition::function(
+                    MARKED,
+                    None::<&str>,
+                    serde_json::json!({ "type": "object" }),
+                ),
+                ToolDefinition::function(
+                    "read_file",
+                    None::<&str>,
+                    serde_json::json!({ "type": "object" }),
+                ),
+            ];
+            // The surface: the operator-marked tool rides withheld; the unmarked stays Immediate.
+            let specs = actor.turn_base_tool_specs(&defs);
+            let marked = specs
+                .iter()
+                .find(|s| s.name == MARKED)
+                .expect("the marked tool is in the surface");
+            assert_eq!(
+                marked.exposure,
+                ToolExposure::Deferred,
+                "the operator-marked tool must ride withheld"
+            );
+            let unmarked = specs
+                .iter()
+                .find(|s| s.name == "read_file")
+                .expect("the unmarked tool is in the surface");
+            assert_eq!(
+                unmarked.exposure,
+                ToolExposure::Immediate,
+                "an unmarked tool stays Immediate"
+            );
+            // The admitted route lowers the withheld tool to defer_loading: true.
+            let req = support::turn_request_over(&actor, specs).await;
+            assert!(
+                req.search_admission.is_some_and(|a| a.admitted()),
+                "anti-vacuity: the row admits: {:?}",
+                req.search_admission
+            );
+            let body: xai_grok_sampling_types::rs::CreateResponse = (&req).into();
+            let wire = serde_json::to_value(&body.tools).expect("tools serialize");
+            let tools = wire.as_array().expect("tools lower to an array");
+            let marked_wire = tools
+                .iter()
+                .find(|t| t["name"].as_str() == Some(MARKED))
+                .expect("the marked tool is on the wire");
+            assert_eq!(
+                marked_wire["defer_loading"],
+                serde_json::json!(true),
+                "withheld on the admitted route: {wire:?}"
+            );
+        })
+        .await;
+}
+
+/// apex-waj.86 acceptance 1 (no-marks cell, hard acceptance b): a row that
+/// admits but withholds nothing rides no `defer_loading` byte — the admitted
+/// array is byte-identical to the 9be727ac wire.
+#[tokio::test(flavor = "current_thread")]
+async fn an_admitted_row_that_withholds_nothing_moves_no_defer_loading_byte() {
+    const ROW: &str = "unmarked-row";
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (manager, _tmp) = support::manager_with_entries();
+            manager.insert_test_entry(ROW, support::entry_with_deferred_tools(ROW, true, &[]));
+            let actor = support::actor_on_row(ROW, manager).await;
+            actor
+                .models_manager
+                .set_current_model_id(agent_client_protocol::ModelId::new(ROW));
+            let defs = vec![
+                ToolDefinition::function(
+                    "lookup_weather",
+                    None::<&str>,
+                    serde_json::json!({ "type": "object" }),
+                ),
+                ToolDefinition::function(
+                    "read_file",
+                    None::<&str>,
+                    serde_json::json!({ "type": "object" }),
+                ),
+            ];
+            // Nothing is marked: the surface withholds nothing.
+            let specs = actor.turn_base_tool_specs(&defs);
+            for spec in &specs {
+                assert_eq!(
+                    spec.exposure,
+                    ToolExposure::Immediate,
+                    "an unmarked row withholds nothing: {spec:?}"
+                );
+            }
+            let req = support::turn_request_over(&actor, specs).await;
+            assert!(
+                req.search_admission.is_some_and(|a| a.admitted()),
+                "anti-vacuity: the row admits: {:?}",
+                req.search_admission
+            );
+            let body: xai_grok_sampling_types::rs::CreateResponse = (&req).into();
+            let wire = serde_json::to_string(&body.tools).expect("tools serialize");
+            assert!(
+                !wire.contains("defer_loading"),
+                "no marks, no bytes: the admitted array must not move a byte: {wire}"
+            );
+        })
+        .await;
 }

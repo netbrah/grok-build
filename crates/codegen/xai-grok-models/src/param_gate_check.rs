@@ -70,6 +70,12 @@ pub const SCHEMA_ONLY_ALLOWED: &[&str] = &[
     "mcp_servers",
     "mcp_toolset_server",
     "server_tools",
+    // Hosted tool search deferral (apex-waj.86, S3a) — the operator's per-row
+    // list of tool NAMES to withhold (`defer_loading`) on the admitted route.
+    // Probe-evidence driven: no model ships with tools pre-withheld, so it is
+    // never a baked catalog parameter (the `ModelInfo` default is empty and is
+    // `skip_serializing_if = is_empty`). Config-only, like the sampling knobs.
+    "deferred_tools",
 ];
 
 /// `struct ∩ schema` members excluded from the curation-required set:

@@ -345,10 +345,23 @@ impl SessionActor {
     /// Shared with `SnapshotToolDefinitions` so verbatim mirrors preserve the parent schema.
     pub(crate) fn turn_base_tool_specs(&self, defs: &[ToolDefinition]) -> Vec<ToolSpec> {
         let backend_search_active = self.backend_search_active();
+        // apex-waj.86: the operator's per-row withheld names, resolved off the
+        // current row. Route-neutral by construction: the admitted-route
+        // lowering (responses.rs) is the only consumer of `exposure`, so an
+        // un-admitted route stays byte-identical and an unmarked row withholds
+        // nothing.
+        let deferred = self
+            .models_manager
+            .model_deferred_tools(self.models_manager.current_model_id().0.as_ref());
         defs.iter()
             .filter(|td| !backend_search_active || td.function.name != "web_search")
-            .cloned()
-            .map(ToolSpec::from)
+            .map(|td| {
+                let mut spec = ToolSpec::from(td.clone());
+                if deferred.contains(&td.function.name) {
+                    spec.exposure = xai_grok_sampling_types::ToolExposure::Deferred;
+                }
+                spec
+            })
             .collect()
     }
 

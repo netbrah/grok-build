@@ -1062,6 +1062,7 @@ fn test_model_entry(
     ModelEntry {
         info: ModelInfo {
             supports_search_tool: false,
+            deferred_tools: Vec::new(),
             use_responses_lite: false,
             multi_agent_v2: None,
             user_selectable: true,
@@ -7588,6 +7589,7 @@ fn prefetch_model_entry(slug: &str, context_window: u64, api_backend: ApiBackend
     ModelEntry {
         info: ModelInfo {
             supports_search_tool: false,
+            deferred_tools: Vec::new(),
             use_responses_lite: false,
             multi_agent_v2: None,
             user_selectable: true,

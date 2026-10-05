@@ -1292,6 +1292,27 @@ pub(crate) fn entry_with_search_flag(
         api_base_url: None,
     }
 }
+/// A catalog row carrying the operator's `supports_search_tool` flag AND the
+/// `deferred_tools` withheld list (apex-waj.86) — both are what
+/// `agent/config.rs` resolves into `ModelInfo`, which `ModelsManager` reads back
+/// through the catalog key (`model_supports_search_tool` / `model_deferred_tools`).
+pub(crate) fn entry_with_deferred_tools(
+    id: &str,
+    supports_search_tool: bool,
+    deferred_tools: &[&str],
+) -> crate::agent::config::ModelEntry {
+    let mut info = crate::agent::config::ModelInfo::fallback(id);
+    info.supports_search_tool = supports_search_tool;
+    info.deferred_tools = deferred_tools.iter().map(|s| (*s).to_string()).collect();
+    crate::agent::config::ModelEntry {
+        info,
+        mtls_cert_dir: None,
+        api_key: None,
+        env_key: None,
+        auth_provider: None,
+        api_base_url: None,
+    }
+}
 /// One declared client tool — the minimal surface that makes ruling D1's `has_searchable_tools`
 /// half true.
 pub(crate) fn declared_tool_spec(name: &str) -> xai_grok_sampling_types::ToolSpec {

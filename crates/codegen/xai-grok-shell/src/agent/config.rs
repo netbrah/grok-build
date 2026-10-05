@@ -5235,6 +5235,10 @@ pub struct ConfigModelOverride {
     /// on the same binary.
     #[serde(default)]
     pub supports_search_tool: Option<bool>,
+    /// Native hosted tool discovery (S3a): the operator's per-row list of tool
+    /// NAMES to withhold on the admitted route, comma-separated. Absent leaves
+    /// the row's list untouched (inherit); a present value replaces it.
+    pub deferred_tools: Option<String>,
     /// Responses-lite declaration placement (S3a). As of this commit no
     /// code in the tree reads the flag: placement is top-level `tools`
     /// per A-25 / D3-A (probe R4 dropped a declaration sent through a
@@ -5376,6 +5380,13 @@ impl ConfigModelOverride {
         }
         if let Some(v) = self.supports_search_tool {
             entry.info.supports_search_tool = v;
+        }
+        if let Some(ref v) = self.deferred_tools {
+            entry.info.deferred_tools = v
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
         }
         if self.use_responses_lite {
             entry.info.use_responses_lite = true;
@@ -5548,6 +5559,13 @@ pub struct ModelInfo {
     /// this through the existing config plumbing. Default false (off).
     #[serde(default)]
     pub supports_search_tool: bool,
+    /// Native hosted tool discovery (S3a): the operator's per-row list of tool
+    /// NAMES to withhold (`defer_loading: true`) on the admitted route. Empty
+    /// withholds nothing, so an unmarked row stays byte-identical to the
+    /// pre-surface wire. Only a `[model.<id>]` override sets it; baked rows
+    /// ship empty (deferral is probe-evidence driven, never a bundled default).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deferred_tools: Vec<String>,
     /// Responses-lite declaration placement (S3a): tools ride a leading
     /// `additional_tools` input item, not top-level `tools` (T6 reads this
     /// through the existing config plumbing). Default false (off).
@@ -5690,6 +5708,7 @@ impl ModelInfo {
             multi_agent_v2: None,
             strict_responses_input: false,
             supports_search_tool: false,
+            deferred_tools: Vec::new(),
             use_responses_lite: false,
             base_url: String::new(),
             name: None,
@@ -5746,6 +5765,7 @@ impl ModelInfo {
             multi_agent_v2: entry.multi_agent_v2.clone(),
             strict_responses_input: entry.strict_responses_input,
             supports_search_tool: entry.supports_search_tool,
+            deferred_tools: Vec::new(),
             use_responses_lite: entry.use_responses_lite,
             base_url: entry.base_url.clone(),
             name: entry.name.clone(),
@@ -6519,6 +6539,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 multi_agent_v2: None,
                 strict_responses_input: false,
                 supports_search_tool: false,
+                deferred_tools: Vec::new(),
                 use_responses_lite: false,
                 model: catalog_entry
                     .map(|e| e.info.model)
@@ -6985,6 +7006,7 @@ fn resolve_hidden_default_web_search_sampling_config(
             multi_agent_v2: None,
             strict_responses_input: false,
             supports_search_tool: false,
+            deferred_tools: Vec::new(),
             use_responses_lite: false,
             model: model_id.to_owned(),
             base_url: endpoints.resolve_inference_base_url(),
