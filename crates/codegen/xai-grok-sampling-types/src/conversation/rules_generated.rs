@@ -17,7 +17,7 @@
 /// allowed so the non-test lib build stays warning-free.
 #[allow(dead_code)]
 pub const HARD_RULES_CHECKSUM: &str =
-    "0f31bf0e8e99db51b01501bdc5069adc21e11a0aa2aa372be65e1a4f36d2b0ff";
+    "e95e0e92b0a3cc4d7c59438e2b020194c9a937716b819aa92f6d02a612210d9a";
 
 /// One hard-rule row — a verbatim mirror of an `invariant_rules.json` row
 /// with `severity == "hard"` (campaign order).
@@ -115,5 +115,13 @@ pub const HARD_RULES: &[HardRule] = &[
         ev: &["EV-18"],
         check: "tool_reference_declared",
         description: "on the messages wire, every tool_reference.tool_name in a tool_result content block resolves to the name of a top-level tools[] definition; defer_loading is optional",
+    },
+    HardRule {
+        id: "H-12",
+        class: "all-messages",
+        severity: "hard",
+        ev: &[],
+        check: "at_least_one_non_deferred_tool",
+        description: "on the messages wire, tools[] must contain at least one tool with defer_loading=false (an absent key counts as non-deferred) — all tools cannot be deferred; provider (G-18): 'At least one tool must have defer_loading=false. All tools cannot be deferred.'",
     },
 ];

@@ -7076,28 +7076,65 @@ mod tests {
         );
     }
 
-    /// M-D16: the /messages wire has no typed discovery item either. It renders
-    /// as bounded assistant text — and explicitly NOT as a `tool_reference`
-    /// block: H-11 (declared-name lint) fires for an undeclared tool name, and
-    /// A-24.2's `tools[]` materialisation is a send-time encoder job (later bead).
+    /// M-D16, SUPERSEDED in part by apex-waj.36 cut 1: the /messages wire has
+    /// no typed discovery item. Pre-cut it rendered as bounded assistant text
+    /// — and explicitly NOT as a `tool_reference` block (H-11 fires for an
+    /// undeclared tool name) — with the loaded definitions kept OUT of
+    /// `tools[]` because A-24.2's materialisation was ruled "a send-time
+    /// encoder decision (later bead)". That later bead is apex-waj.36: the
+    /// loaded set now RIDES into `tools[]` (A-15/A-23 — the Messages arm
+    /// materialises declarations), and the pair replays as
+    /// tool_use/tool_result — ONLY as far as the request can back it. This
+    /// request declares no tools at all, so there is no `ToolSearch` carrier
+    /// to name on the call half and no tool_use for the answer half to pair
+    /// against: both halves degrade to the bounded text summary (no
+    /// undeclared `tool_use` name, no orphan `tool_result`), while `tools[]`
+    /// carries the materialised loaded set regardless.
     #[test]
-    fn messages_wire_renders_one_bounded_text_block_per_discovery_item() {
+    fn messages_wire_materialises_the_loaded_set_and_degrades_the_pair_without_a_carrier() {
         let request = ConversationRequest::from_items(history_with_discovery_pair())
             .with_model("messages-compatible-model");
         let body =
             serde_json::to_value(crate::conversation::build_messages_request(&request)).unwrap();
         let rendered = body.to_string();
+        // The degraded halves keep the bounded text summary (M-D16's original
+        // pin, now the no-carrier fallback).
         assert!(rendered.contains("[tool_search] \\\"crm order management\\\""));
         assert!(
             !rendered.contains("tool_reference")
                 && !rendered.contains("tool_use")
                 && !rendered.contains("tool_result"),
-            "no block type the target wire would reject: {rendered}"
+            "no undeclared-carrier pair may reach the transcript: {rendered}"
         );
-        assert!(
-            !rendered.contains("crm_fixture_tool_00"),
-            "the loaded definitions must not ride into the /messages request"
-        );
+        // A-15/A-23 (apex-waj.36 cut 1): the loaded set NOW rides into the
+        // /messages request — declared in tools[] under the FLAT names
+        // (A-16) with defer_loading:true as a class marker.
+        let tools = body
+            .pointer("/tools")
+            .and_then(serde_json::Value::as_array)
+            .expect("tools[] is projected");
+        for flat in [
+            "mcp__ratchet_fixture__crm_fixture_tool_00",
+            "mcp__ratchet_fixture__crm_fixture_tool_06",
+            "mcp__ratchet_fixture__crm_fixture_tool_09",
+        ] {
+            let entry = tools
+                .iter()
+                .find(|t| t.get("name").and_then(serde_json::Value::as_str) == Some(flat))
+                .unwrap_or_else(|| panic!("the materialised {flat} must ride into tools[]: {body:#}"));
+            assert_eq!(
+                entry.get("defer_loading"),
+                Some(&serde_json::json!(true)),
+                "the materialised entry marks defer_loading:true: {entry:#}"
+            );
+            assert!(
+                entry
+                    .get("input_schema")
+                    .and_then(serde_json::Value::as_object)
+                    .is_some_and(|s| s.get("properties").is_some()),
+                "the materialised entry carries the full stored schema, not a stub: {entry:#}"
+            );
+        }
         // D5 orphan cleanup must never eat a discovery item: it only pair-checks
         // Assistant <-> ToolResult.
         let cleaned = crate::conversation::messages::clean_orphaned_items(&request.items);

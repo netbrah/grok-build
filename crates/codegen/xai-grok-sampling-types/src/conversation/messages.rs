@@ -675,6 +675,70 @@ fn image_source_or_fallback(url: &str) -> Result<crate::messages::ImageSource, S
     Err(format!("[invalid image: {url}]"))
 }
 
+/// The Messages-wire client carrier for native discovery: the donor's CC1/CC2
+/// conversations replay the client-executed search as a `tool_use` naming
+/// exactly this, and a row admitting client-side discovery declares it in
+/// `tools[]` (G-19). The encoder replays the carrier name ONLY when this
+/// request declares it — an undeclared `tool_use` name is a 400, so an
+/// absent carrier degrades the half to the text summary instead.
+const TOOL_SEARCH_CARRIER_NAME: &str = "ToolSearch";
+
+/// The tool_reference names a discovery ANSWER half carries, FLAT (A-16 —
+/// never the child short name), in select-list order, deduped by distinct
+/// name. `tool_search_output` names come from the stored definitions (a
+/// namespace group flattens to `<ns>__<name>`); `tool_search_tool_result`
+/// names come verbatim from the provider's `content.tool_references`
+/// (already FLAT). Call halves contribute nothing.
+fn d2_answer_reference_names(item: &tool_search::ToolSearchItem) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    match item.kind() {
+        tool_search::ToolSearchKind::Output => {
+            for tool in item.tools() {
+                let namespace = match tool.kind() {
+                    tool_search::DiscoveredToolKind::Namespace => tool.name(),
+                    _ => None,
+                };
+                for definition in tool.callable_definitions() {
+                    let Some(name) = definition
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|n| !n.is_empty())
+                    else {
+                        continue;
+                    };
+                    let flat = tool_name::flat_tool_name(name, namespace).into_string();
+                    if seen.insert(flat.clone()) {
+                        names.push(flat);
+                    }
+                }
+            }
+        }
+        tool_search::ToolSearchKind::ToolSearchToolResult => {
+            for reference in item
+                .raw()
+                .pointer("/content/tool_references")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let Some(name) = reference
+                    .get("tool_name")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|n| !n.is_empty())
+                else {
+                    continue;
+                };
+                if seen.insert(name.to_owned()) {
+                    names.push(name.to_owned());
+                }
+            }
+        }
+        _ => {}
+    }
+    names
+}
+
 pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::MessagesRequest {
     use crate::messages::{
         ContentBlock, Message, MessageContent, MessageRole, MessagesRequest,
@@ -685,6 +749,52 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
 
     // D5 stage 1: item-level orphan cleanup, before translation.
     let items = clean_orphaned_items(&req.items);
+
+    // D2 Materialise (apex-waj.36 cut 1; SPEC-W2 R-0/R-1/R-5): the /messages
+    // wire has no typed discovery item, so the loaded set is replayed as a
+    // tool_use/tool_result pair with a tool_reference list AND declared in
+    // tools[] (A-15/A-23: the Messages arm materialises, the Responses arm
+    // must not). The tier decision (`projection::discovery_tier`:
+    // Messages => Materialise) is EXECUTED here, not re-derived (R-0): this
+    // encoder carries no tier conditional.
+    //
+    // `d2_materialised`: one (FLAT name, stored definition) per distinct
+    // FLAT name the conversation has loaded — the append-only region of
+    // tools[] (R-1.3, ASCII by flat name; the donor's ASCII interleave is
+    // deliberately NOT copied, G-4). `d2_declared`: static ∪ materialised
+    // names — the backing set the transcript reference list is gated on
+    // (an undeclared reference is the proven G-16 400; H-11 fails closed on
+    // it locally, so an unbacked half degrades to text with a loud warn).
+    //
+    // // R-0.2: the `mid-conversation-tool-changes-2026-07-01` beta is a
+    // // catalog fact (catalog_overlay.json, applied at the sampler HTTP
+    // // layer) — NOT visible on ConversationRequest at this seam, so it
+    // // cannot be fail-closed-checked here. Cut 2 replaces the warn below
+    // // with the real check; until then it fires whenever materialisation
+    // // actually appends.
+    let (d2_materialised, d2_declared) = {
+        let discovery = tool_search::discovery_items(&items);
+        let loaded = tool_search::loaded_tool_set(discovery.iter().map(|(_, item)| *item));
+        let mut declared: Vec<String> = req.tools.iter().map(|t| t.name.clone()).collect();
+        let mut seen: std::collections::BTreeSet<String> = declared.iter().cloned().collect();
+        let mut entries: Vec<(String, &serde_json::Value)> = Vec::new();
+        for definition in loaded {
+            let Some(name) = definition.name() else {
+                continue;
+            };
+            let flat = tool_name::flat_tool_name(name, definition.namespace()).into_string();
+            // R-1.4: dedup by DISTINCT FLAT name, not occurrence count —
+            // first-seen wins (a reloaded schema does not re-declare), and a
+            // name the static region already holds keeps its BASE entry
+            // unchanged (G-4).
+            if seen.insert(flat.clone()) {
+                declared.push(flat.clone());
+                entries.push((flat, definition.definition()));
+            }
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        (entries, declared)
+    };
 
     let mut system_blocks: Vec<TextBlock> = Vec::new();
     let mut messages: Vec<Message> = Vec::new();
@@ -901,22 +1011,144 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                     cache_control: None,
                 });
             }
-            // Same treatment for a discovery item: the /messages wire has no typed
-            // discovery item, so ONE bounded assistant text block per half keeps the
-            // state model-visible without inventing any id.
-            // Deliberately NOT a `tool_reference` block: H-11
-            // (`rules_generated.rs:116`) rejects a reference to a name the request
-            // never declared, and A-24.2's `tools[]` materialisation of the loaded
-            // set is a send-time encoder decision (later bead) — the tier ladder's D2
-            // arm, not this projector's (ruling apex-waj.18, consequence 4).
+            // D2 Materialise (apex-waj.36 cut 1; SPEC-W2 R-5): the /messages
+            // wire has no typed discovery item, so each half replays as the
+            // discovery PAIR — the assistant tool_use naming the discovery
+            // tool (id echoed byte-for-byte, R-5.4) and, adjacent, the user
+            // tool_result whose content is the tool_reference list (FLAT
+            // names, A-16 — never the child short name) in select-list order
+            // (R-5.1). The halves are pushed through the pending buffers in
+            // item order, so the pair lands INSIDE
+            // clean_orphaned_blocks_by_adjacency (R-5.3): a pair split across
+            // a message boundary is silently stripped and 400s one turn later
+            // (G-20). The reference list is gated on `d2_declared` (static ∪
+            // materialised): a reference this request cannot declare is the
+            // proven G-16 400, so an unbacked or unpairable half degrades to
+            // the bounded text summary with a loud warn — never a stub
+            // declaration, never an invented id.
             ConversationItem::Discovery { item } => {
                 flush_user(&mut pending_user, &mut messages);
                 pending_user_cm = false;
                 pending_user_class = None;
-                pending_assistant.push(ContentBlock::Text {
-                    text: item.text_summary(),
-                    cache_control: None,
-                });
+                match item.kind() {
+                    tool_search::ToolSearchKind::ServerToolUse
+                    | tool_search::ToolSearchKind::Call => {
+                        // CALL half: the tool_use naming the discovery tool.
+                        let name = match item.kind() {
+                            tool_search::ToolSearchKind::ServerToolUse => item
+                                .raw()
+                                .get("name")
+                                .and_then(serde_json::Value::as_str)
+                                .filter(|n| !n.is_empty())
+                                .map(str::to_owned),
+                            // The Responses-family call carries no tool name;
+                            // the donor's Messages-wire carrier is the row's
+                            // declared "ToolSearch" tool (G-19; CC1/CC2).
+                            // Replay it only when THIS request declares it.
+                            _ => req
+                                .tools
+                                .iter()
+                                .find(|t| t.name == TOOL_SEARCH_CARRIER_NAME)
+                                .map(|_| TOOL_SEARCH_CARRIER_NAME.to_owned()),
+                        };
+                        let id = item
+                            .call_id()
+                            .or_else(|| item.id())
+                            .map(str::to_owned);
+                        match (name, id) {
+                            (Some(name), Some(id)) => pending_assistant.push(
+                                ContentBlock::ToolUse {
+                                    id,
+                                    name,
+                                    // The search payload verbatim (R-5.1):
+                                    // `arguments` on the Responses family,
+                                    // `input` on the Messages family —
+                                    // `arguments()` covers both.
+                                    input: item
+                                        .arguments()
+                                        .cloned()
+                                        .unwrap_or_default()
+                                        .into(),
+                                    cache_control: None,
+                                },
+                            ),
+                            _ => {
+                                tracing::warn!(
+                                    "D2 discovery call half degraded to the \
+                                     text summary: no recoverable name or id"
+                                );
+                                pending_assistant.push(ContentBlock::Text {
+                                    text: item.text_summary(),
+                                    cache_control: None,
+                                });
+                            }
+                        }
+                    }
+                    tool_search::ToolSearchKind::Output
+                    | tool_search::ToolSearchKind::ToolSearchToolResult => {
+                        // ANSWER half: the tool_result with the
+                        // tool_reference list.
+                        let names = d2_answer_reference_names(item);
+                        let backed =
+                            !names.is_empty() && names.iter().all(|n| d2_declared.contains(n));
+                        let paired_id = (backed)
+                            .then(|| item.call_id().map(str::to_owned))
+                            .flatten()
+                            .filter(|id| {
+                                // The call half must have emitted the
+                                // matching tool_use into the CURRENT
+                                // assistant buffer — otherwise the
+                                // tool_result is an orphan the adjacency
+                                // pass strips (G-20), so degrade instead.
+                                pending_assistant
+                                    .iter()
+                                    .any(|b| {
+                                        matches!(
+                                            b,
+                                            ContentBlock::ToolUse {
+                                                id: emitted, ..
+                                            } if emitted == id
+                                        )
+                                    })
+                            });
+                        match paired_id {
+                            Some(tool_use_id) => {
+                                // Close the assistant message carrying the
+                                // tool_use BEFORE the tool_result opens, so
+                                // the pair is adjacent whatever item follows
+                                // (G-20).
+                                flush_assistant(&mut pending_assistant, &mut messages);
+                                pending_user.push(ContentBlock::ToolResult {
+                                    tool_use_id,
+                                    content: ToolResultContent::Blocks(
+                                        names
+                                            .into_iter()
+                                            .map(|tool_name| ContentBlock::ToolReference {
+                                                tool_name,
+                                            })
+                                            .collect(),
+                                    ),
+                                    is_error: false,
+                                    cache_control: None,
+                                });
+                            }
+                            _ => {
+                                tracing::warn!(
+                                    n_refs = names.len(),
+                                    "D2 discovery answer half degraded to \
+                                     the text summary: the reference list is \
+                                     unbacked, unkeyed, or unpaired (G-16 \
+                                     400 guard — no stub declaration, no \
+                                     invented id)"
+                                );
+                                pending_assistant.push(ContentBlock::Text {
+                                    text: item.text_summary(),
+                                    cache_control: None,
+                                });
+                            }
+                        }
+                    }
+                }
             }
             // `tco_*` blobs carry only `signature`; real reasoning sets `thinking`
             ConversationItem::Reasoning(r) => {
@@ -1042,6 +1274,15 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         // member (which carries no cc by config).
         if req.tool_cache_breakpoint == Some(ToolCacheBreakpoint::Last) && !mapped.is_empty() {
             let last = mapped.len() - 1;
+            // R-6 (apex-waj.36 cut 1): the marker is PINNED to the last
+            // STATIC client tool — this block runs BEFORE the placeholder
+            // and materialised appends below, so `last` (and the bytes of
+            // tools[0..=last]) are promotion-invariant. Marking the
+            // pre-cut `mapped[len-1]` after the appends would move the
+            // marker onto a materialised entry on every promotion (the R-6
+            // money mutant: a silent, billed per-promotion cache write of
+            // the whole tools block). Off/None = zero cache_control under
+            // tools[].
             // The scrutinee is `&mut mapped[last]`: the field binds by
             // implicit `&mut` (an explicit `ref mut` is illegal here).
             if let ToolParam::Custom(crate::messages::ToolCustom { cache_control, .. }) =
@@ -1049,6 +1290,72 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             {
                 *cache_control = Some(crate::messages::CacheControl::ephemeral());
             }
+        }
+        // D2 Materialise (apex-waj.36 cut 1; SPEC-W2 R-7): the
+        // DeferredToolPlaceholder takes a FIXED index — the first slot
+        // after the static region — when the row admits native discovery.
+        // Emitted verbatim (the sha256[:12]=c1b7a0ad4cfe byte pin is N-1's
+        // CC5 gate, not this cut's). It is donor parity, NOT a provider
+        // requirement (R-7.4): never dispatched, and it counts as deferred
+        // for H-12 (a `[placeholder]`-only tools[] trips it by design).
+        // // CUT-2: the advertisement (R-2) and the max_results/select:
+        // // ToolSearch schema (R-3/R-4) join this region then.
+        if req.search_admission.is_some_and(|admission| admission.admitted()) {
+            mapped.push(ToolParam::Custom(crate::messages::ToolCustom {
+                name: "DeferredToolPlaceholder".to_owned(),
+                description: Some(
+                    "Reserved placeholder that keeps deferred tool loading \
+                     active; never call this tool."
+                        .to_owned(),
+                ),
+                input_schema: serde_json::json!({"type": "object", "properties": {}}),
+                cache_control: None,
+                defer_loading: Some(true),
+            }));
+        }
+        // R-1 (apex-waj.36 cut 1): the materialised region — one entry per
+        // distinct FLAT name the conversation has loaded, appended AFTER
+        // the static region (and the placeholder), ASCII by flat name
+        // (R-1.3). Full schema from the stored definition (R-1.5 — never a
+        // {name}-only stub), defer_loading: Some(true) as a class marker,
+        // never a load-state flag (R-1.6).
+        for (flat, definition) in &d2_materialised {
+            let description = definition
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            let input_schema = definition
+                .get("parameters")
+                .cloned()
+                .filter(|schema| schema.is_object())
+                .unwrap_or_else(|| {
+                    tracing::warn!(
+                        tool = flat.as_str(),
+                        "D2 materialised definition carries no object \
+                         `parameters`; declaring a minimal schema"
+                    );
+                    serde_json::json!({"type": "object"})
+                });
+            mapped.push(ToolParam::Custom(crate::messages::ToolCustom {
+                name: flat.clone(),
+                description,
+                input_schema,
+                cache_control: None,
+                defer_loading: Some(true),
+            }));
+        }
+        if !d2_materialised.is_empty() {
+            // // R-0.2: the `mid-conversation-tool-changes-2026-07-01`
+            // // beta cannot be verified at this seam (catalog fact,
+            // // sampler HTTP layer); Cut 2 replaces this warn with the
+            // // real check.
+            tracing::warn!(
+                n = d2_materialised.len(),
+                "D2 materialise: {} tool(s) declared from the loaded \
+                 discovery set; the mid-conversation-tool-changes beta is \
+                 a catalog fact not visible at the encoder seam (R-0.2)",
+                d2_materialised.len()
+            );
         }
         // Canonical dated type strings (the config layer resolved family
         // names + soft-refused unknown slugs).

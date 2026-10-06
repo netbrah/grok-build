@@ -97,6 +97,7 @@ fn dispatch_body_rule(rule: &HardRule, boundary: Boundary, body: &Value) -> Vec<
         "search_arguments_object" => check_h9(body),
         "search_execution_agreement" => check_h10(body),
         "tool_reference_declared" => check_h11(body),
+        "at_least_one_non_deferred_tool" => check_h12(body),
         check => vec![LintViolation {
             rule: rule.id,
             path: "rule_registry".into(),
@@ -512,6 +513,36 @@ fn check_h11(body: &Value) -> Vec<LintViolation> {
         }
     }
     out
+}
+
+/// H-12 (apex-waj.36 cut 1; SPEC-W2 R-1.8 / rule 9, G-18; messages wire
+/// only — the class `all-messages` scopes it to the Vertex boundary): a
+/// body whose `tools[]` are ALL `defer_loading: true` — the
+/// DeferredToolPlaceholder included, R-7 — is the provider's all-deferred
+/// 400. The observed text is the provider's, verbatim (G-18,
+/// `wire_raw_20260925T062640Z_A2_OPUS_ALL_DEFERRED.json`). An empty or
+/// absent `tools[]` is clean (nothing deferred), and ONE non-deferred tool
+/// (an absent `defer_loading` key counts as non-deferred) clears the rule.
+fn check_h12(body: &Value) -> Vec<LintViolation> {
+    let Some(tools) = body.get("tools").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    if tools.is_empty() {
+        return Vec::new();
+    }
+    let all_deferred = tools
+        .iter()
+        .all(|tool| tool.get("defer_loading") == Some(&Value::Bool(true)));
+    if !all_deferred {
+        return Vec::new();
+    }
+    vec![LintViolation {
+        rule: "H-12",
+        path: "tools[]".into(),
+        observed: "At least one tool must have defer_loading=false. \
+                   All tools cannot be deferred."
+            .to_owned(),
+    }]
 }
 
 /// A1 truncation for ids: `vid[:24] + "..."` beyond 24 chars.
@@ -1226,6 +1257,7 @@ mod tests {
             "search_arguments_object",
             "search_execution_agreement",
             "tool_reference_declared",
+            "at_least_one_non_deferred_tool",
         ];
         let table: Vec<&str> = HARD_RULES.iter().map(|r| r.check).collect();
         for check in DISPATCHED {
@@ -1387,5 +1419,83 @@ mod tests {
             h[7] = h[7].wrapping_add(hh);
         }
         h.iter().map(|w| format!("{w:08x}")).collect()
+    }
+
+    // -- H-12 (apex-waj.36 cut 1; SPEC-W2 R-1.8 / rule 9, G-18) ------------
+
+    /// H-12 REJECT (T-1.7): a messages-wire body whose `tools[]` are ALL
+    /// `defer_loading: true` — the DeferredToolPlaceholder included — is the
+    /// provider's all-deferred 400; the observed text is the provider's,
+    /// verbatim. The clean arm (T-1.8): one non-deferred tool → no H-12.
+    /// (H-11 is rule 7 and already exists — C-10: it is untouched here.)
+    #[test]
+    fn h12_all_deferred_refused() {
+        let all_deferred = json!({
+            "model": "claude-test",
+            "messages": [],
+            "tools": [
+                { "name": "DeferredToolPlaceholder",
+                  "description": "Reserved placeholder that keeps deferred tool loading active; never call this tool.",
+                  "input_schema": { "type": "object", "properties": {} },
+                  "defer_loading": true },
+                { "name": "promo_a", "input_schema": { "type": "object" }, "defer_loading": true },
+                { "name": "promo_b", "input_schema": { "type": "object" }, "defer_loading": true }
+            ]
+        });
+        let v = lint_outbound_request(Boundary::Vertex, &all_deferred);
+        let h12: Vec<&LintViolation> = v.iter().filter(|x| x.rule == "H-12").collect();
+        assert_eq!(
+            h12.len(),
+            1,
+            "an all-deferred tools[] is exactly one H-12 violation: {v:?}"
+        );
+        assert_eq!(
+            h12[0].observed,
+            "At least one tool must have defer_loading=false. \
+             All tools cannot be deferred.",
+            "the observed text is the provider's, verbatim (G-18): {v:?}"
+        );
+
+        // T-1.8: one non-deferred tool → H-12-clean.
+        let mixed = json!({
+            "model": "claude-test",
+            "messages": [],
+            "tools": [
+                { "name": "DeferredToolPlaceholder",
+                  "description": "Reserved placeholder that keeps deferred tool loading active; never call this tool.",
+                  "input_schema": { "type": "object", "properties": {} },
+                  "defer_loading": true },
+                { "name": "carrier", "input_schema": { "type": "object" } }
+            ]
+        });
+        assert!(
+            lint_outbound_request(Boundary::Vertex, &mixed)
+                .iter()
+                .all(|x| x.rule != "H-12"),
+            "a body with one non-deferred tool is H-12-clean"
+        );
+    }
+
+    /// H-12 (T-7.4): the placeholder COUNTS as deferred — a `tools[]` of
+    /// exactly `[placeholder]` trips the rule by design (the placeholder is
+    /// never dispatched, but on the wire it is still a deferred tool).
+    #[test]
+    fn placeholder_counts_as_deferred_for_h12() {
+        let body = json!({
+            "model": "claude-test",
+            "messages": [],
+            "tools": [
+                { "name": "DeferredToolPlaceholder",
+                  "description": "Reserved placeholder that keeps deferred tool loading active; never call this tool.",
+                  "input_schema": { "type": "object", "properties": {} },
+                  "defer_loading": true }
+            ]
+        });
+        let v = lint_outbound_request(Boundary::Vertex, &body);
+        assert_eq!(
+            v.iter().filter(|x| x.rule == "H-12").count(),
+            1,
+            "a [placeholder]-only tools[] trips H-12 by design: {v:?}"
+        );
     }
 }

@@ -108,6 +108,14 @@
       ],
       "check": "tool_reference_declared",
       "description": "on the messages wire, every tool_reference.tool_name in a tool_result content block resolves to the name of a top-level tools[] definition; defer_loading is optional"
+    },
+    {
+      "id": "H-12",
+      "class": "all-messages",
+      "severity": "hard",
+      "ev": [],
+      "check": "at_least_one_non_deferred_tool",
+      "description": "on the messages wire, tools[] must contain at least one tool with defer_loading=false (an absent key counts as non-deferred) — all tools cannot be deferred; provider (G-18): 'At least one tool must have defer_loading=false. All tools cannot be deferred.'"
     }
   ]
 }

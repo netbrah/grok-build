@@ -4118,3 +4118,560 @@ fn mgw_f1_u_parity_3_marker_budget_with_server_members() {
         .validate()
         .expect("gate must pass: tool + server-member markers invisible to the gate");
 }
+
+// ============================================================================
+// apex-waj.36 cut 1 — D2 Materialise core (SPEC-W2 R-0/R-1/R-5/R-6/R-7).
+// Synthetic tests only (hand-built items, inline schemas): the byte-exact
+// CC5 gate (13/17/20, the sha256 pins) is N-1's separate bead — no CC5
+// filesystem path is hardcoded here.
+// ============================================================================
+
+use crate::conversation::tool_search::ToolSearchItem;
+
+/// The row's declared client-carrier for native discovery (G-19; the donor's
+/// CC1/CC2 `tool_use` names it exactly). A BASE tool in the D2 test rows.
+const D2_CARRIER: &str = "ToolSearch";
+
+fn d2_tool(name: &str) -> ToolSpec {
+    ToolSpec {
+        name: name.to_owned(),
+        description: Some(format!("the {name} tool")),
+        parameters: serde_json::json!({"type": "object", "properties": {}}),
+        exposure: ToolExposure::default(),
+    }
+}
+
+/// A client-executed discovery pair (Responses family): a `tool_search_call`
+/// joined to a completed `tool_search_output` by `call_id`, the answer
+/// carrying the full definitions (the only quadrant that stores schemas).
+fn d2_client_pair(call_id: &str, tools: Vec<serde_json::Value>) -> (ToolSearchItem, ToolSearchItem) {
+    let call = tool_search::ToolSearchItem::from_wire(serde_json::json!({
+        "id": format!("tsc_{call_id}"),
+        "type": "tool_search_call",
+        "call_id": call_id,
+        "execution": "client",
+        "status": "completed",
+        "arguments": { "query": "shipping ETA by order ID", "limit": 5 }
+    }))
+    .expect("the client call decodes");
+    let answer = tool_search::ToolSearchItem::client_answer(call_id, tools);
+    (call, answer)
+}
+
+fn d2_def(name: &str, params: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "type": "function",
+        "name": name,
+        "description": format!("look things up with {name}"),
+        "parameters": params
+    })
+}
+
+/// The top-level `tools[]` names of an encoded request, in wire order.
+fn d2_tool_names(msgs: &crate::messages::MessagesRequest) -> Vec<String> {
+    serde_json::to_value(msgs)
+        .unwrap()
+        .pointer("/tools")
+        .and_then(serde_json::Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| t.get("name").and_then(serde_json::Value::as_str))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn materialise_tools_equals_base_union_references() {
+    // T-1.1: under D2, tools[] = BASE ∪ PROMOTED — one entry per distinct
+    // FLAT name promoted by the discovery answers (A-15/A-23).
+    let (call, answer) = d2_client_pair(
+        "call_m1",
+        vec![
+            d2_def("lookup_shipping_eta", serde_json::json!({"type": "object"})),
+            serde_json::json!({
+                "type": "namespace",
+                "name": "mcp__codegraph",
+                "tools": [
+                    d2_def("codegraph_status", serde_json::json!({"type": "object"})),
+                    d2_def("codegraph_explore", serde_json::json!({"type": "object"}))
+                ]
+            }),
+        ],
+    );
+    let items = vec![
+        ConversationItem::user("hi"),
+        ConversationItem::assistant("on it"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+        ConversationItem::user("next"),
+    ];
+    let req = ConversationRequest::from_items(items)
+        .with_model("test-model")
+        .with_tools(vec![d2_tool(D2_CARRIER), d2_tool("base_alpha"), d2_tool("base_beta")]);
+    let msgs = build_messages_request(&req);
+    let mut names = d2_tool_names(&msgs);
+    names.sort();
+    let mut expected = vec![
+        "ToolSearch",
+        "base_alpha",
+        "base_beta",
+        "lookup_shipping_eta",
+        "mcp__codegraph__codegraph_explore",
+        "mcp__codegraph__codegraph_status",
+    ];
+    expected.sort();
+    assert_eq!(names, expected, "tools[] must be BASE ∪ PROMOTED: {names:?}");
+}
+
+#[test]
+fn materialise_dedups_by_distinct_name() {
+    // T-1.2: two discovery answers promoting one name (two tool_reference
+    // blocks across the conversation) → exactly ONE declared entry.
+    let (c1, a1) = d2_client_pair("call_d1", vec![d2_def("dup_tool", serde_json::json!({"type": "object", "properties": {"a": {"type": "string"}}}))]);
+    let (c2, a2) = d2_client_pair("call_d2", vec![d2_def("dup_tool", serde_json::json!({"type": "object", "properties": {"b": {"type": "string"}}}))]);
+    let items = vec![
+        ConversationItem::user("hi"),
+        ConversationItem::Discovery { item: c1 },
+        ConversationItem::Discovery { item: a1 },
+        ConversationItem::Discovery { item: c2 },
+        ConversationItem::Discovery { item: a2 },
+        ConversationItem::user("next"),
+    ];
+    let req = ConversationRequest::from_items(items)
+        .with_model("test-model")
+        .with_tools(vec![d2_tool(D2_CARRIER), d2_tool("base_a")]);
+    let msgs = build_messages_request(&req);
+    let names = d2_tool_names(&msgs);
+    let dup_count = names.iter().filter(|n| n.as_str() == "dup_tool").count();
+    assert_eq!(
+        dup_count, 1,
+        "the distinct FLAT name is declared exactly once (first-seen wins): {names:?}"
+    );
+    assert_eq!(names.len(), 3, "BASE(2) + 1 promoted: {names:?}");
+}
+
+#[test]
+fn promotion_is_append_only() {
+    // T-1.4: static tools keep their indices byte-for-byte; the materialised
+    // entries sit AFTER the static region (append-only, R-1.3 — the donor's
+    // ASCII interleave is deliberately not copied, G-4).
+    let (call, answer) = d2_client_pair(
+        "call_p1",
+        vec![
+            d2_def("zz_promo", serde_json::json!({"type": "object"})),
+            d2_def("aa_promo", serde_json::json!({"type": "object"})),
+        ],
+    );
+    let items = vec![
+        ConversationItem::user("hi"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+        ConversationItem::user("next"),
+    ];
+    let req = ConversationRequest::from_items(items)
+        .with_model("test-model")
+        .with_tools(vec![d2_tool("t0"), d2_tool("t1"), d2_tool("t2")]);
+    let msgs = build_messages_request(&req);
+    let names = d2_tool_names(&msgs);
+    assert_eq!(
+        &names[0..3],
+        &["t0", "t1", "t2"],
+        "the static region is unchanged and in place: {names:?}"
+    );
+    assert_eq!(
+        &names[3..],
+        &["aa_promo", "zz_promo"],
+        "materialised entries are appended after the static region, ASCII by flat name: {names:?}"
+    );
+}
+
+#[test]
+fn materialised_entry_carries_full_schema() {
+    // T-1.5: every materialised entry carries the FULL schema (non-empty,
+    // exactly the stored definition) — never a {name}-only stub (R-1.5).
+    let full = serde_json::json!({
+        "type": "object",
+        "properties": { "order_id": { "type": "string" } },
+        "required": ["order_id"]
+    });
+    let (call, answer) = d2_client_pair("call_s1", vec![d2_def("lookup_shipping_eta", full.clone())]);
+    let items = vec![
+        ConversationItem::user("hi"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+        ConversationItem::user("next"),
+    ];
+    let req = ConversationRequest::from_items(items)
+        .with_model("test-model")
+        .with_tools(vec![d2_tool(D2_CARRIER)]);
+    let msgs = build_messages_request(&req);
+    let json = serde_json::to_value(&msgs).unwrap();
+    let entry = json
+        .pointer("/tools")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|t| t.iter().find(|e| e.get("name").and_then(serde_json::Value::as_str) == Some("lookup_shipping_eta")))
+        .expect("the promoted tool is declared: {json:#}");
+    assert_eq!(
+        entry.get("input_schema"),
+        Some(&full),
+        "the materialised entry must carry the full stored schema, not a stub: {entry:#}"
+    );
+}
+
+#[test]
+fn materialised_entry_is_defer_loading_true() {
+    // T-1.6: materialised entries mark defer_loading: true (a class marker,
+    // never a load-state flag); static entries emit NO such key (N-4).
+    let (call, answer) = d2_client_pair("call_dl1", vec![d2_def("promo", serde_json::json!({"type": "object"}))]);
+    let items = vec![
+        ConversationItem::user("hi"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+        ConversationItem::user("next"),
+    ];
+    let req = ConversationRequest::from_items(items)
+        .with_model("test-model")
+        .with_tools(vec![d2_tool(D2_CARRIER), d2_tool("static_tool")]);
+    let msgs = build_messages_request(&req);
+    let json = serde_json::to_value(&msgs).unwrap();
+    let tools = json.pointer("/tools").and_then(serde_json::Value::as_array).expect("tools[]");
+    for (i, entry) in tools.iter().enumerate() {
+        match entry.get("name").and_then(serde_json::Value::as_str) {
+            Some("promo") => assert_eq!(
+                entry.get("defer_loading"),
+                Some(&serde_json::json!(true)),
+                "materialised tools[{i}] must carry defer_loading:true: {entry:#}"
+            ),
+            Some(_) => assert_eq!(
+                entry.get("defer_loading"),
+                None,
+                "static tools[{i}] must emit no defer_loading key: {entry:#}"
+            ),
+            None => panic!("tools[{i}] has no name: {entry:#}"),
+        }
+    }
+}
+
+#[test]
+fn pair_survives_adjacency_pass() {
+    // T-5.3: the discovery PAIR — assistant tool_use (id echoed) + the
+    // adjacent user tool_result whose content is a tool_reference list in
+    // select-list order — lands INSIDE clean_orphaned_blocks_by_adjacency
+    // and both halves survive it (R-5.1; G-20: a pair split across a message
+    // boundary is silently stripped and 400s one turn later).
+    let (call, answer) = d2_client_pair(
+        "call_x53",
+        vec![
+            d2_def("lookup_shipping_eta", serde_json::json!({"type": "object"})),
+            d2_def("track_parcel", serde_json::json!({"type": "object"})),
+        ],
+    );
+    let items = vec![
+        ConversationItem::user("q"),
+        ConversationItem::assistant("searching"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+    ];
+    let req = ConversationRequest::from_items(items)
+        .with_model("test-model")
+        .with_tools(vec![d2_tool(D2_CARRIER)]);
+    let msgs = build_messages_request(&req);
+    let json = serde_json::to_value(&msgs).unwrap();
+    let messages = json
+        .pointer("/messages")
+        .and_then(serde_json::Value::as_array)
+        .expect("messages[]");
+    // Locate the tool_use half: an assistant message carrying it.
+    let (use_idx, use_block) = messages
+        .iter()
+        .enumerate()
+        .find_map(|(i, m)| {
+            if m.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
+                return None;
+            }
+            let blocks = m.get("content").and_then(serde_json::Value::as_array)?;
+            let b = blocks
+                .iter()
+                .find(|b| b.get("type").and_then(serde_json::Value::as_str) == Some("tool_use"))?;
+            Some((i, b))
+        })
+        .expect("the call half must reach the wire as a tool_use block: {json:#}");
+    assert_eq!(
+        use_block.get("name").and_then(serde_json::Value::as_str),
+        Some(D2_CARRIER),
+        "the tool_use names the declared discovery carrier: {use_block:#}"
+    );
+    // The tool_result half: the NEXT message, a user role, tool_use_id
+    // echoed, content a tool_reference list in select-list order.
+    let result_message = messages
+        .get(use_idx + 1)
+        .filter(|m| m.get("role").and_then(serde_json::Value::as_str) == Some("user"))
+        .expect("the answer half must be the adjacent user message: {json:#}");
+    let blocks = result_message
+        .get("content")
+        .and_then(serde_json::Value::as_array)
+        .expect("block content");
+    let result_block = blocks
+        .iter()
+        .find(|b| b.get("type").and_then(serde_json::Value::as_str) == Some("tool_result"))
+        .expect("the tool_result survives the adjacency pass: {result_message:#}");
+    let refs = result_block
+        .get("content")
+        .and_then(serde_json::Value::as_array)
+        .expect("tool_result content is a block array");
+    let names: Vec<&str> = refs
+        .iter()
+        .filter(|b| b.get("type").and_then(serde_json::Value::as_str) == Some("tool_reference"))
+        .filter_map(|b| b.get("tool_name").and_then(serde_json::Value::as_str))
+        .collect();
+    assert_eq!(
+        names,
+        vec!["lookup_shipping_eta", "track_parcel"],
+        "the reference list is FLAT, in select-list order (A-16): {result_block:#}"
+    );
+}
+
+#[test]
+fn tool_use_id_echoed_exactly() {
+    // T-5.4: the answer half's tool_use_id equals the call half's id,
+    // byte-for-byte (`call_*` on the Responses family, `srvtoolu_*` on the
+    // Messages family) — the adjacency pass matches on exactly this.
+    let (call, answer) = d2_client_pair(
+        "call_echo_9x",
+        vec![d2_def("lookup_shipping_eta", serde_json::json!({"type": "object"}))],
+    );
+    let items = vec![
+        ConversationItem::user("q"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+    ];
+    let req = ConversationRequest::from_items(items)
+        .with_model("test-model")
+        .with_tools(vec![d2_tool(D2_CARRIER)]);
+    let msgs = build_messages_request(&req);
+    let json = serde_json::to_value(&msgs).unwrap();
+    let messages = json.pointer("/messages").and_then(serde_json::Value::as_array).unwrap();
+    let use_id = messages
+        .iter()
+        .find_map(|m| {
+            if m.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
+                return None;
+            }
+            m.get("content")
+                .and_then(serde_json::Value::as_array)?
+                .iter()
+                .find(|b| b.get("type").and_then(serde_json::Value::as_str) == Some("tool_use"))?
+                .get("id")
+                .cloned()
+        })
+        .expect("the tool_use id: {json:#}");
+    let result_id = messages
+        .iter()
+        .find_map(|m| {
+            if m.get("role").and_then(serde_json::Value::as_str) != Some("user") {
+                return None;
+            }
+            m.get("content")
+                .and_then(serde_json::Value::as_array)?
+                .iter()
+                .find(|b| b.get("type").and_then(serde_json::Value::as_str) == Some("tool_result"))?
+                .get("tool_use_id")
+                .cloned()
+        })
+        .expect("the tool_result tool_use_id: {json:#}");
+    assert_eq!(
+        use_id, result_id,
+        "the id echo must be byte-for-byte: use={use_id:?} result={result_id:?}"
+    );
+    assert_eq!(use_id, serde_json::json!("call_echo_9x"), "the echoed id is the pair's join key: {use_id:?}");
+}
+
+#[test]
+fn no_cache_control_under_tools() {
+    // T-6.1: the knob Off (and None) ⇒ ZERO cache_control under tools[] —
+    // the materialised entries included (R-6: budget ≤ 4 total, ≤ 3 when
+    // off; the tool marker spends the free 4th slot only when Last).
+    for bp in [Some(ToolCacheBreakpoint::Off), None] {
+        let (call, answer) =
+            d2_client_pair("call_cc1", vec![d2_def("promo", serde_json::json!({"type": "object"}))]);
+        let items = vec![
+            ConversationItem::user("hi"),
+            ConversationItem::Discovery { item: call },
+            ConversationItem::Discovery { item: answer },
+            ConversationItem::user("next"),
+        ];
+        let mut req = ConversationRequest::from_items(items)
+            .with_model("test-model")
+            .with_tools(vec![d2_tool(D2_CARRIER), d2_tool("static_tool")]);
+        req.tool_cache_breakpoint = bp;
+        let msgs = build_messages_request(&req);
+        let json = serde_json::to_value(&msgs).unwrap();
+        let tools = json.pointer("/tools").and_then(serde_json::Value::as_array).expect("tools[]");
+        assert!(!tools.is_empty(), "tools[] projected: {json:#}");
+        for (i, entry) in tools.iter().enumerate() {
+            assert_eq!(
+                entry.get("cache_control"),
+                None,
+                "bp={bp:?}: tools[{i}] must carry no cache_control: {entry:#}"
+            );
+        }
+    }
+}
+
+#[test]
+fn tools_breakpoint_index_is_promotion_invariant() {
+    // T-6.2: with Last + Materialise, the marked index and the bytes of
+    // tools[0..=marked] are IDENTICAL before and after a promotion (R-6.2
+    // pin preferred over refuse). The money mutant — marking mapped[len-1]
+    // AFTER the materialised append — moves the marker onto a materialised
+    // entry on every promotion (a silent, billed cache write of the whole
+    // tools block) and fails this test.
+    let static_tools = vec![d2_tool("t0"), d2_tool("t1"), d2_tool("t2")];
+
+    let before: serde_json::Value = {
+        let mut req = ConversationRequest::from_items(vec![ConversationItem::user("hi")])
+            .with_model("test-model")
+            .with_tools(static_tools.clone());
+        req.tool_cache_breakpoint = Some(ToolCacheBreakpoint::Last);
+        serde_json::to_value(&build_messages_request(&req)).unwrap()
+    };
+    let (call, answer) = d2_client_pair(
+        "call_bp1",
+        vec![
+            d2_def("promo_a", serde_json::json!({"type": "object"})),
+            d2_def("promo_b", serde_json::json!({"type": "object"})),
+        ],
+    );
+    let items = vec![
+        ConversationItem::user("hi"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+        ConversationItem::user("next"),
+    ];
+    let mut req = ConversationRequest::from_items(items)
+        .with_model("test-model")
+        .with_tools(static_tools);
+    req.tool_cache_breakpoint = Some(ToolCacheBreakpoint::Last);
+    let after = serde_json::to_value(&build_messages_request(&req)).unwrap();
+
+    let tools_of = |v: &serde_json::Value| -> Vec<serde_json::Value> {
+        v.pointer("/tools")
+            .and_then(serde_json::Value::as_array)
+            .expect("tools[]")
+            .clone()
+    };
+    let (before_tools, after_tools) = (tools_of(&before), tools_of(&after));
+    let marked_of = |tools: &[serde_json::Value]| {
+        tools
+            .iter()
+            .position(|t| t.get("cache_control").is_some())
+            .expect("exactly one marked tool: {tools:#?}")
+    };
+    let (marked_before, marked_after) = (marked_of(&before_tools), marked_of(&after_tools));
+    assert_eq!(
+        marked_before, marked_after,
+        "the marked index must not move on a promotion: before={marked_before} after={marked_after} \
+         (before: {before_tools:#?} after: {after_tools:#?})"
+    );
+    assert_eq!(
+        marked_before, 2,
+        "the marker stays on the LAST STATIC client tool: {after_tools:#?}"
+    );
+    assert_eq!(
+        &before_tools[0..=marked_before],
+        &after_tools[0..=marked_after],
+        "the cached prefix tools[0..=marked] must be byte-identical across a promotion"
+    );
+    assert_eq!(
+        after_tools.len(),
+        before_tools.len() + 2,
+        "the promotion appends exactly the promoted entries: {after_tools:#?}"
+    );
+}
+
+#[test]
+fn placeholder_index_stable() {
+    // T-7.2: the DeferredToolPlaceholder sits at a FIXED index — the first
+    // slot after the static region — identical before and after a promotion
+    // (R-7.2; the mutant is the donor's floating len-2 rule, which moves it).
+    // Emitted verbatim: donor parity, NOT a provider requirement (R-7.4).
+    let static_tools = vec![d2_tool("t0"), d2_tool("t1"), d2_tool("t2")];
+    let expected_placeholder = serde_json::json!({
+        "name": "DeferredToolPlaceholder",
+        "description": "Reserved placeholder that keeps deferred tool loading active; never call this tool.",
+        "input_schema": { "type": "object", "properties": {} },
+        "defer_loading": true
+    });
+
+    let armed = |items: Vec<ConversationItem>, tools: Vec<ToolSpec>| {
+        let mut req = ConversationRequest::from_items(items)
+            .with_model("test-model")
+            .with_tools(tools);
+        req.search_admission = Some(SearchAdmission::for_row(true, &req.tools));
+        req
+    };
+
+    let before_tools: Vec<serde_json::Value> = {
+        let req = armed(vec![ConversationItem::user("hi")], static_tools.clone());
+        let json = serde_json::to_value(&build_messages_request(&req)).unwrap();
+        json.pointer("/tools").and_then(serde_json::Value::as_array).unwrap().clone()
+    };
+    let (call, answer) = d2_client_pair("call_ph1", vec![d2_def("promo", serde_json::json!({"type": "object"}))]);
+    let items = vec![
+        ConversationItem::user("hi"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+        ConversationItem::user("next"),
+    ];
+    let req = armed(items, static_tools);
+    let json = serde_json::to_value(&build_messages_request(&req)).unwrap();
+    let after_tools: Vec<serde_json::Value> =
+        json.pointer("/tools").and_then(serde_json::Value::as_array).unwrap().clone();
+
+    // Unarmed control: no placeholder at all.
+    let unarmed = ConversationRequest::from_items(vec![ConversationItem::user("hi")])
+        .with_model("test-model")
+        .with_tools(vec![d2_tool("t0")]);
+    let unarmed_json = serde_json::to_value(&build_messages_request(&unarmed)).unwrap();
+    let unarmed_tools = unarmed_json
+        .pointer("/tools")
+        .and_then(serde_json::Value::as_array)
+        .unwrap();
+    assert!(
+        unarmed_tools
+            .iter()
+            .all(|t| t.get("name").and_then(serde_json::Value::as_str) != Some("DeferredToolPlaceholder")),
+        "no placeholder on an unadmitted row: {unarmed_json:#}"
+    );
+
+    let index_of = |tools: &[serde_json::Value]| {
+        tools
+            .iter()
+            .position(|t| t.get("name").and_then(serde_json::Value::as_str) == Some("DeferredToolPlaceholder"))
+            .expect("the admitted row carries the placeholder: {tools:#?}")
+    };
+    let (before_idx, after_idx) = (index_of(&before_tools), index_of(&after_tools));
+    assert_eq!(
+        before_idx, after_idx,
+        "the placeholder index must be promotion-invariant (the donor len-2 rule moves it): \
+         before={before_idx} after={after_idx}"
+    );
+    assert_eq!(before_idx, 3, "the fixed index is the first slot after the static region: {before_tools:#?}");
+    assert_eq!(
+        before_tools[before_idx], expected_placeholder,
+        "the placeholder is emitted verbatim: {:#}",
+        before_tools[before_idx]
+    );
+    assert_eq!(
+        after_tools[after_idx], expected_placeholder,
+        "the placeholder is emitted verbatim after a promotion: {:#}",
+        after_tools[after_idx]
+    );
+    assert_eq!(
+        after_tools.len(),
+        before_tools.len() + 1,
+        "the promotion appends exactly one materialised entry after the placeholder: {after_tools:#?}"
+    );
+}
