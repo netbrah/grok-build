@@ -1,0 +1,45 @@
+# AGENTS.md — /Users/palanisd/Projects/upstream/wt/apex-ayl-hosted-tool-search
+
+Generated router block only. Hand-written guidance may be
+added above or below the markers; the generator never
+touches anything outside them.
+
+<!-- BEGIN GENERATED apex-estate-router v1 (apex-s44) — generated file block, do not edit by hand -->
+<!--
+  generator:    /Users/palanisd/Projects/upstream/grok/plans/harness/hosted-tool-search/packets/estate_router.py v1 (bead apex-s44)
+  generated-at: 2026-09-30 16:12:05 EDT (2026-09-30T20:12:05Z)
+  inputs:       sha256:12=a55ced4d8d38 over REFERENCE-ESTATE.md:c10dfa7db171, reference-estate.tsv:20e21591e1f9, where_is.py:4b3612bcdeeb, estate_router.py:72472314b64e
+  content:      sha256:12=281fcf822337
+  status:       FRESH
+  contract:     APPEND-ONLY. Nothing outside these markers is touched.
+                Regenerated on SessionEnd + throttled Stop (HK-3/4/5 hooks).
+-->
+## APEX ESTATE ROUTER — where you are and where prior art lives
+
+YOU ARE      /Users/palanisd/Projects/upstream/wt/apex-ayl-hosted-tool-search
+             THE LIVE CAMPAIGN WORKTREE for hosted-tool-search
+             registry: apex-ayl-hosted-tool-search [CAMPAIGN-WORKTREE · branch apex-ayl-hosted-tool-search · dirty 70 · last 2026-09-29 · +235/-3 vs origin/main · cited 2026x]
+             origin: https://github.com/xai-org/grok-build.git (push)
+
+ESTATE INDEX /Users/palanisd/Projects/upstream/grok/plans/harness/hosted-tool-search/packets/REFERENCE-ESTATE.md
+             every git checkout on this Mac, classified, with drift and
+             citation evidence — 894 entries in reference-estate.tsv.
+LOOK IT UP   python3 /Users/palanisd/Projects/upstream/grok/plans/harness/hosted-tool-search/packets/where_is.py <name|url|branch|path-fragment>
+             exit 0 = found (prints path, class, origin, state, who cites it);
+             exit 1 = NOT in the estate — if a live doc cites it, that is a
+             BROKEN PRIOR-ART LINK: see REFERENCE-ESTATE.md §1.
+PRIOR ART    /Users/palanisd/Projects/upstream/grok/plans — the plans SOT (local-only git repo,
+             root of the citation graph). Live campaign and its reports:
+             /Users/palanisd/Projects/upstream/grok/plans/harness/hosted-tool-search/packets/
+             Start at packets/FORM-INDEX.md, then BEAD-ORIENTATION.md.
+DISCIPLINE   /Users/palanisd/Projects/upstream/grok/AGENTS.md (campaign home: TDD,
+             evidence, false-green rules) · packets/FOOTGUNS.md
+TASK STATE   bd -C /Users/palanisd/Projects/bitbucket/apex_tracking ready
+             board: /Users/palanisd/Projects/bitbucket/apex_tracking/BOARD.md
+
+FRESHNESS    This block is generated. If the `inputs:` hash in the provenance
+             header disagrees with the estate on disk, the facts above are
+             STALE and the `status:` line says so. Verify or heal:
+               python3 /Users/palanisd/Projects/upstream/grok/plans/harness/hosted-tool-search/packets/estate_router.py --check
+               python3 /Users/palanisd/Projects/upstream/grok/plans/harness/hosted-tool-search/packets/estate_router.py --write
+<!-- END GENERATED apex-estate-router v1 -->

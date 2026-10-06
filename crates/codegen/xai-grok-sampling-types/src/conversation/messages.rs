@@ -522,6 +522,7 @@ fn mark_message_cache_breakpoint_with(
                     | ContentBlock::ToolUse { cache_control, .. } => cache_control,
                     ContentBlock::Thinking { .. }
                     | ContentBlock::RedactedThinking { .. }
+                    | ContentBlock::ToolReference { .. }
                     | ContentBlock::Unknown { .. } => {
                         continue;
                     }
@@ -1015,12 +1016,15 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         let mut mapped: Vec<ToolParam> = req
             .tools
             .iter()
-            .map(|t| ToolParam::Custom(crate::messages::ToolCustom {
-                name: t.name.clone(),
-                description: t.description.clone(),
-                input_schema: t.parameters.clone(),
-                cache_control: None,
-            }))
+            .map(|t| {
+                ToolParam::Custom(crate::messages::ToolCustom {
+                    name: t.name.clone(),
+                    description: t.description.clone(),
+                    input_schema: t.parameters.clone(),
+                    cache_control: None,
+                    defer_loading: None,
+                })
+            })
             .collect();
         // F5 per-tool breakpoint: the marker spends the free 4th marker
         // slot on the LAST CLIENT tool. Union-forced re-wrap (MSGW F1):

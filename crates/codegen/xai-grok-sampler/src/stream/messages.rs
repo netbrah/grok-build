@@ -399,6 +399,7 @@ pub fn stream_messages<'a>(
                         ContentBlock::RedactedThinking { .. }
                         | ContentBlock::Image { .. }
                         | ContentBlock::ToolResult { .. }
+                        | ContentBlock::ToolReference { .. }
                         | ContentBlock::Unknown { .. } => {
                             let block_type = match content_block {
                                 ContentBlock::Unknown { .. } => BlockType::Unknown,
