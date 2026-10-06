@@ -767,7 +767,7 @@
           ]
         },
         "use_responses_lite": {
-          "description": "Responses-lite declaration placement (S3a). As of this commit no\ncode in the tree reads the flag: placement is top-level `tools`\nper A-25 / D3-A (probe R4 dropped a declaration sent through a\nleading `additional_tools` input item, so it never reaches the\nmodel), and the merge below is a one-way latch — `true` sets the\nresolved row, absent or `false` cannot clear a bundled row that\nships it enabled. Absent = false.",
+          "description": "Responses-lite declaration placement (S3a): tools ride a leading\n`additional_tools` input item, not top-level `tools`. Absent = false.",
           "type": "boolean"
         }
       },

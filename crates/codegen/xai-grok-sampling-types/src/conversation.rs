@@ -2619,26 +2619,23 @@ impl ConversationRequest {
                     // conversation variant — the outer `match item` names all seven.
                     _ => None,
                 },
-                // Native tool-discovery replay (apex-waj.21; U17-adjudicated form).
-                // async-openai 0.42.1 models both `tool_search_call` and
-                // `tool_search_output` (the 0.33.1 claim in `conversation/responses.rs`'s
-                // `Discovery` arm is false since seq 1), so the flattened typed item is
-                // a bounded placeholder; verbatim `raw()` bytes are spliced only where
-                // the row and the pair share a mint domain (Codex arm below). NO strip
-                // here — the `created_by` replay hazard and its allow-list belong to T15
-                // (`tool_search.rs` CALL_REPLAYABLE_KEYS, PLAN:1421).
+                // Native tool-discovery replay (apex-waj.21). The item is a
+                // Responses-wire item: async-openai 0.33.1 models neither
+                // `tool_search_call` nor `tool_search_output`
+                // (`conversation/responses.rs`'s `Discovery` arm), so the flattened
+                // typed item is a bounded placeholder and the real bytes can only
+                // arrive by this splice — the `CodexRawInput`/`XSearch` precedent.
+                // Verbatim `raw()`: no re-serialisation, no re-wrapped `arguments`,
+                // and NO strip here — the `created_by` replay hazard and its
+                // allow-list belong to T15 (`tool_search.rs` CALL_REPLAYABLE_KEYS,
+                // PLAN:1421), and inventing a second strip-list is the forbidden move.
                 ConversationItem::Discovery { item: discovery } => match dialect {
-                    // U17 (coordinator ruling, ADJUDICATION round 3, 2026-10-01T19:55Z; bead apex-lkqs 2026-10-01T21:05Z): the
-                    // splice as written (`Some(discovery.raw().clone())`) is REFUSED
-                    // for this arm — it put provider-minted `tsc_`/`tso_` bytes on
-                    // the row class this arm serves (the Strict family / `model_family
-                    // ∉ {codex, xai}`), and the only banked pair (`wire2-live3/req-004.json`)
-                    // is a Codex-dialect request: its headers (`originator: codex_exec`,
-                    // `x-codex-beta-features`) prove the Codex arm, not this one.
-                    // Fail-closed until a per-row-class replay decision lands. The gate
-                    // row pinned to `gemini-3.8-flash` is CONDITIONAL on that row
-                    // declaring `supports_search_tool` (an unowned config change, N2).
-                    ResponsesReplayDialect::Other => None,
+                    // Proven on live bytes: `wire2-live3/req-004.json` (gpt-5.5 via
+                    // the deployed proxy) sent `tool_search_call` at `input[11]` and
+                    // `tool_search_output` at `input[12]` and the response opened;
+                    // that same capture measured A-26 (12 sent / 14 echoed), i.e. the
+                    // row READS them back out of history.
+                    ResponsesReplayDialect::Other => Some(discovery.raw().clone()),
                     // Donor parity: codex replays its own pairs on this wire
                     // (`fixtures/codex/CX1-toolsearch-mcp-dryrun/next-turn.json`
                     // `input[3]`/`input[4]`, `CX3-toolsearch-5.5-LIVE/next-turn.json`
@@ -5902,7 +5899,7 @@ mod tests {
             moderation: None,
         };
 
-        let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
+        let items = response_to_conversation_items(response);
 
         // Five reasoning siblings: 2 real `rs_*` and 3 encrypted `tco_*`
         let reasoning_ids: Vec<&str> = items
@@ -6458,7 +6455,7 @@ mod tests {
             moderation: None,
         };
 
-        let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
+        let items = response_to_conversation_items(response);
         let ConversationItem::BackendToolCall(compaction) = &items[0] else {
             panic!("compaction output must remain a raw provider item");
         };

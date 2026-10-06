@@ -6336,7 +6336,7 @@ mod tests {
             "pre-splice the slot holds the bounded placeholder, never the provider payload"
         );
 
-        let replacements = request.raw_responses_input_replacements(ResponsesReplayDialect::Codex);
+        let replacements = request.raw_responses_input_replacements(ResponsesReplayDialect::Other);
         assert_eq!(replacements.len(), 2, "both halves splice");
         let expected_indices: Vec<usize> = replacements
             .iter()
@@ -6366,24 +6366,13 @@ mod tests {
 
     /// M-D7: replay is a per-row-class wire decision (wire invariant C4). The
     /// evidence, per dialect:
-    /// - `Other` (the Strict family): NO wire evidence — FAIL-CLOSED. The
-    ///   req-004 capture named under `Codex` is a Codex-dialect request (headers
-    ///   `originator: codex_exec`, `x-codex-beta-features`), so it evidences the
-    ///   Codex arm, not the Strict family; U17 (coordinator ruling,
-    ///   2026-10-01T19:55Z ADJUDICATION round 3, bead apex-lkqs 2026-10-01T21:05Z)
-    ///   refused the byte splice on this arm on exactly that misattribution
-    ///   (§6.6: no byte path across a mint domain). The arm restores nothing and
-    ///   stays fail-closed on the bounded placeholder pending a row declaring
-    ///   `supports_search_tool` (N2 — a config change the adjudication does not
-    ///   authorise).
-    /// - `Codex`: PROVEN on live bytes —
+    /// - `Other` (the Strict family): PROVEN on live bytes —
     ///   `ratchet-capture/captures/2026-09-25-ratchet-live/wire2-live3/req-004.json`
-    ///   (gpt-5.5 through the deployed proxy, `store=false`; request headers
-    ///   `originator: codex_exec` / `x-codex-beta-features` mark it a Codex-dialect
-    ///   request) sent `tool_search_call` at `input[11]` and `tool_search_output`
-    ///   at `input[12]`, same `call_id`, and `resp-004.sse` opened a response —
-    ///   the very capture that measured A-26 (12 tools sent, 14 echoed); and the
-    ///   donor replays its own pairs
+    ///   (gpt-5.5 through the deployed proxy, `store=false`) sent
+    ///   `tool_search_call` at `input[11]` and `tool_search_output` at
+    ///   `input[12]`, same `call_id`, and `resp-004.sse` opened a response — the
+    ///   very capture that measured A-26 (12 tools sent, 14 echoed).
+    /// - `Codex`: the donor replays its own pairs
     ///   (`ratchet-capture/fixtures/codex/CX1-toolsearch-mcp-dryrun/next-turn.json`
     ///   `input[3]`/`input[4]`, `CX3-toolsearch-5.5-LIVE/next-turn.json`
     ///   `input[11]`/`input[12]`).
@@ -6393,28 +6382,20 @@ mod tests {
     #[test]
     fn discovery_replay_is_per_row_class_and_fail_closed_without_wire_evidence() {
         let request = ConversationRequest::from_items(history_with_discovery_pair());
+        for dialect in [
+            ResponsesReplayDialect::Other,
+            ResponsesReplayDialect::Codex,
+        ] {
+            let replacements = request.raw_responses_input_replacements(dialect);
+            assert_eq!(
+                replacements.len(),
+                2,
+                "{dialect:?} is evidenced to read the pair from history"
+            );
+            assert_eq!(replacements[0].value, cx3_call());
+            assert_eq!(replacements[1].value, paired_output_raw());
+        }
 
-        // Codex: evidenced — the donor replays its own pair verbatim.
-        let replacements = request.raw_responses_input_replacements(ResponsesReplayDialect::Codex);
-        assert_eq!(
-            replacements.len(),
-            2,
-            "Codex is evidenced to read the pair from history"
-        );
-        assert_eq!(replacements[0].value, cx3_call());
-        assert_eq!(replacements[1].value, paired_output_raw());
-
-        // Other (the Strict family): fail-closed — no wire evidence in the family
-        // (U17, 2026-10-01T19:55Z ADJUDICATION round 3, bead apex-lkqs: req-004 is
-        // a Codex-dialect request and does not evidence the Strict family).
-        assert!(
-            request
-                .raw_responses_input_replacements(ResponsesReplayDialect::Other)
-                .is_empty(),
-            "Other has no wire evidence in the Strict family — splice nothing (N2)"
-        );
-
-        // Xai: unchanged fail-closed tail.
         assert!(
             request
                 .raw_responses_input_replacements(ResponsesReplayDialect::Xai)
@@ -6444,7 +6425,7 @@ mod tests {
         // H-4 is the sampler's own send-time contract (`store = Some(false)`,
         // client.rs) — the typed body built here has not passed through it yet.
         body["store"] = json!(false);
-        for replacement in request.raw_responses_input_replacements(ResponsesReplayDialect::Codex) {
+        for replacement in request.raw_responses_input_replacements(ResponsesReplayDialect::Other) {
             body["input"][replacement.input_item_index] = replacement.value.clone();
         }
 

@@ -5235,13 +5235,8 @@ pub struct ConfigModelOverride {
     /// on the same binary.
     #[serde(default)]
     pub supports_search_tool: Option<bool>,
-    /// Responses-lite declaration placement (S3a). As of this commit no
-    /// code in the tree reads the flag: placement is top-level `tools`
-    /// per A-25 / D3-A (probe R4 dropped a declaration sent through a
-    /// leading `additional_tools` input item, so it never reaches the
-    /// model), and the merge below is a one-way latch — `true` sets the
-    /// resolved row, absent or `false` cannot clear a bundled row that
-    /// ships it enabled. Absent = false.
+    /// Responses-lite declaration placement (S3a): tools ride a leading
+    /// `additional_tools` input item, not top-level `tools`. Absent = false.
     #[serde(default)]
     pub use_responses_lite: bool,
     pub base_url: Option<String>,

@@ -45,7 +45,7 @@ footer { max-width:1200px; margin:0 auto; padding:12px 32px 32px; color:var(--mu
 <header>
 <h1>config.toml reference</h1>
 <p class="sub">xai-grok-shell · agent <code>Config</code> surface + <code>[model.&lt;id&gt;]</code> override rows · JSON Schema draft-07, rendered from the live types</p>
-<p class="ver">content hash <code>fnv1a-64 83554a9160616c52</code> · 49 root properties · 50 model-row fields · 12 enum definitions · 30 endpoint fields · 103 definitions</p>
+<p class="ver">content hash <code>fnv1a-64 67d9a1a25e590e4e</code> · 49 root properties · 50 model-row fields · 12 enum definitions · 30 endpoint fields · 103 definitions</p>
 <p class="regen">regenerate: <code>cargo run -p xai-grok-shell --bin config-schema-write -- --html</code></p>
 <p class="prov">provenance: bead <code>apex-33z</code> CONFIG-REFERENCE-HTML-1 · donor pattern: codex config-schema golden via apex-hw0 (<code>config_schema.rs</code>)</p>
 </header>
@@ -162,7 +162,7 @@ footer { max-width:1200px; margin:0 auto; padding:12px 32px 32px; color:var(--mu
 <tr class="f" data-name="top_k"><th><code>top_k</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">integer</span> <code>uint32</code> <span class="t">min 0</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc">Top-k sampling (docs GA L3060). Absent = inherit.</td></tr>
 <tr class="f" data-name="top_p"><th><code>top_p</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">number</span> <code>float</code><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
 <tr class="f" data-name="use_concise"><th><code>use_concise</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">boolean</span><span class="optmark" title="nullable (Option)">?</span></td><td class="desc"><span class="dash">—</span></td></tr>
-<tr class="f" data-name="use_responses_lite"><th><code>use_responses_lite</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">boolean</span></td><td class="desc">Responses-lite declaration placement (S3a). As of this commit no<br>code in the tree reads the flag: placement is top-level `tools`<br>per A-25 / D3-A (probe R4 dropped a declaration sent through a<br>leading `additional_tools` input item, so it never reaches the<br>model), and the merge below is a one-way latch — `true` sets the<br>resolved row, absent or `false` cannot clear a bundled row that<br>ships it enabled. Absent = false.</td></tr>
+<tr class="f" data-name="use_responses_lite"><th><code>use_responses_lite</code></th><td><span class="opt">optional</span></td><td class="type"><span class="t">boolean</span></td><td class="desc">Responses-lite declaration placement (S3a): tools ride a leading<br>`additional_tools` input item, not top-level `tools`. Absent = false.</td></tr>
 </tbody></table></section>
 <section id="enums"><h2>enum appendix (12)</h2>
 <h3>string enums</h3>
@@ -320,7 +320,7 @@ footer { max-width:1200px; margin:0 auto; padding:12px 32px 32px; color:var(--mu
 </tbody></table></section>
 
 </main>
-<footer>Rendered deterministically from the live schema: sorted traversal, no timestamps, std-only, self-contained (no external assets). Self-identifies via fnv1a-64 content hash <code>83554a9160616c52</code> over the canonicalized, default-stripped schema JSON. Guarded by the golden <code>agent::config_schema_tests::config_reference_html_matches</code>.</footer>
+<footer>Rendered deterministically from the live schema: sorted traversal, no timestamps, std-only, self-contained (no external assets). Self-identifies via fnv1a-64 content hash <code>67d9a1a25e590e4e</code> over the canonicalized, default-stripped schema JSON. Guarded by the golden <code>agent::config_schema_tests::config_reference_html_matches</code>.</footer>
 <script>
 (function () {
   var box = document.getElementById('q');

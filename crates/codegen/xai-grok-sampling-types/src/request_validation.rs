@@ -431,7 +431,17 @@ fn image_stats_in_blocks(blocks: &[ContentBlock]) -> (u64, u64) {
                     image_count += nested_count;
                 }
             }
-            _ => {}
+            // Closed set: no other block kind carries a Base64 payload.
+            // `ToolReference` is a request-side tool handle with no content at
+            // all (CC5 deferred-tool lifecycle), so it prices as zero bytes and
+            // zero image parts — named rather than wildcarded so a new kind is a
+            // build break here (TDD-messages.md §1 step 4).
+            ContentBlock::Text { .. }
+            | ContentBlock::ToolUse { .. }
+            | ContentBlock::Thinking { .. }
+            | ContentBlock::RedactedThinking { .. }
+            | ContentBlock::ToolReference { .. }
+            | ContentBlock::Unknown { .. } => {}
         }
     }
     (payload_bytes, image_count)
@@ -707,12 +717,14 @@ mod tests {
                         "properties": { "key": { "type": "integer" } }
                     }),
                     cache_control: None,
+                    defer_loading: None,
                 }),
                 ToolParam::Custom(crate::messages::ToolCustom {
                     name: "plain".to_string(),
                     description: None,
                     input_schema: serde_json::json!({ "type": "object" }),
                     cache_control: None,
+                    defer_loading: None,
                 }),
             ]),
             tool_choice: Some(ToolChoiceParam::Tool {
@@ -1117,6 +1129,7 @@ mod tests {
             description: Some(String::new()),
             input_schema: schema.clone(),
             cache_control: None,
+            defer_loading: None,
         });
         let base_len = serde_json::to_vec(&base).unwrap().len() as u64;
         let over = ToolParam::Custom(crate::messages::ToolCustom {
@@ -1124,6 +1137,7 @@ mod tests {
             description: Some("a".repeat(((MAX_MODEL_CONTEXT_ITEM_TOKENS + 1) * 4 - base_len) as usize)),
             input_schema: schema.clone(),
             cache_control: None,
+            defer_loading: None,
         });
         let estimated = est(&serde_json::to_vec(&over).unwrap());
         assert_eq!(estimated, MAX_MODEL_CONTEXT_ITEM_TOKENS + 1);
@@ -1145,6 +1159,7 @@ mod tests {
             description: Some("a small tool".to_string()),
             input_schema: schema,
             cache_control: None,
+            defer_loading: None,
         });
         let request =
             request_with_tools(vec![text_message(MessageRole::User, "hi")], vec![under]);
@@ -1523,5 +1538,73 @@ mod tests {
                 estimated_tokens: MAX_MODEL_CONTEXT_ITEM_TOKENS + 1
             }
         );
+    }
+
+    /// The `.38` fail-loud rule applied to the N3 pricing walk
+    /// (TDD-messages.md §1 step 4, :313-315): `image_stats_in_blocks` must CLOSE
+    /// its `ContentBlock` match — every variant named, no wildcard arm — so a new
+    /// block kind is an `E0004` build break rather than a silently unpriced
+    /// payload. `request_builder.rs::closed_feature_set_exhaustive` audits only
+    /// its own `include_str!`ed source, so this file needs its own pin; same
+    /// (a2)/(a3) mechanics: the variant set is derived from the enum declaration,
+    /// which a hand-listed token list cannot be quietly trimmed from.
+    #[test]
+    fn image_stats_block_walk_closes_the_content_block_match() {
+        let source = include_str!("request_validation.rs");
+        let non_test = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("test module marker");
+        let walk_at = non_test
+            .find("fn image_stats_in_blocks")
+            .expect("the pricing walk is in the non-test source");
+        let walk_src = &non_test[walk_at..];
+        let walk_src = &walk_src[..walk_src
+            .find("\n}")
+            .expect("the pricing walk's closing brace")];
+
+        assert!(
+            walk_src.contains("ContentBlock::ToolReference"),
+            "a tool_reference block is absorbed by a wildcard arm instead of being \
+             named as the payload-free request-side construct it is"
+        );
+
+        let messages_src = include_str!("messages.rs");
+        let enum_at = messages_src
+            .find("pub enum ContentBlock {")
+            .expect("ContentBlock declaration present");
+        let enum_src = &messages_src[enum_at..];
+        let enum_src = &enum_src[..enum_src.find("\n}").expect("ContentBlock declaration end")];
+        let block_variants: Vec<String> = enum_src
+            .lines()
+            .filter_map(|line| {
+                let name = line
+                    .strip_prefix("    ")?
+                    .split([' ', '{', '('])
+                    .next()
+                    .unwrap_or_default();
+                name.starts_with(|c: char| c.is_ascii_uppercase())
+                    .then(|| format!("ContentBlock::{name}"))
+            })
+            .collect();
+        assert!(
+            block_variants
+                .iter()
+                .any(|token| token == "ContentBlock::ToolReference"),
+            "derived block-variant set is off: {block_variants:?}"
+        );
+        for variant in &block_variants {
+            assert!(
+                walk_src.contains(variant.as_str()),
+                "the pricing walk closes the block match but never names {variant}"
+            );
+        }
+        for line in walk_src.lines() {
+            let trimmed = line.trim_start();
+            assert!(
+                !trimmed.starts_with('_') && !trimmed.contains("| _"),
+                "wildcard arm absorbs a block variant in the pricing walk: {line}"
+            );
+        }
     }
 }

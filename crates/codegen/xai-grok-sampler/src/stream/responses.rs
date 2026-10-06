@@ -132,6 +132,9 @@ pub(crate) fn responses_event_may_have_output(event: &rs::ResponseStreamEvent) -
     !matches!(event, rs::ResponseStreamEvent::ResponseError(_))
         && responses_event_has_meaningful_content(event)
 }
+
+/// Copy everything the Doom-loop capture needs out of a frame.
+/// Any frame that names tool activity or compaction state vetoes the replay, since reasoning must never be retried without the item it is bound to.
 /// Whether a completed response leaves a pending CLIENT tool call behind.
 ///
 /// Extracted from the completion handler so the seventh variant is pinned by a test:
@@ -152,8 +155,6 @@ fn response_has_pending_tool_calls(items: &[ConversationItem]) -> bool {
     })
 }
 
-/// Copy everything the Doom-loop capture needs out of a frame.
-/// Any frame that names tool activity or compaction state vetoes the replay, since reasoning must never be retried without the item it is bound to.
 fn observe_for_recovery(capture: &FailedResponseCapture, event: &rs::ResponseStreamEvent) {
     use rs::ResponseStreamEvent as Event;
     if !capture.is_armed() {
@@ -626,6 +627,20 @@ where
                                 result,
                             };
                         }
+                        // Tool discovery: `tool_search_call` was added to `OutputItem` after the
+                        // pinned 0.33.x fork, so before this arm the item rode `_ => {}` and a real
+                        // captured frame left no observable at all.
+                        // The id is the item's own, matching the three arms above; the client-executed
+                        // card keyed on the wire `call_id` is apex-waj.5's derivation, not this event.
+                        rs::OutputItem::ToolSearchCall(tool_search_call) => {
+                            let result = serde_json::to_value(tool_search_call).ok();
+                            yield SamplingEvent::BackendToolCallCompleted {
+                                request_id: request_id.clone(),
+                                call_id: tool_search_call.id.clone(),
+                                name: "tool_search".to_string(),
+                                result,
+                            };
+                        }
                         _ => {}
                     }
                 }
@@ -719,19 +734,7 @@ where
         // Convert to ConversationItem(s); patch in accumulated reasoning text as a fallback when the final response lacks `content` or `summary`
         // The streaming deltas may have arrived out of band
         // Splice policy lives in `inject_streaming_reasoning_fallback`.
-        // Fail-closed decode seam (U16): a projection refusal fails the TURN —
-        // same shape as the no-response-completed block above — it never
-        // silently drops history.
-        let mut items = match xai_grok_sampling_types::response_to_conversation_items(response) {
-            Ok(items) => items,
-            Err(error) => {
-                yield SamplingEvent::Failed {
-                    request_id: request_id.clone(),
-                    error: SamplingErrorInfo::from(&error),
-                };
-                return;
-            }
-        };
+        let mut items = xai_grok_sampling_types::response_to_conversation_items(response);
         xai_grok_sampling_types::inject_streaming_reasoning_fallback(&mut items, reasoning_acc);
 
         let has_tool_calls = response_has_pending_tool_calls(&items);
@@ -1981,6 +1984,71 @@ mod tests {
             }
             other => panic!("expected Completed, got {other:?}"),
         }
+    }
+
+    /// apex-6c6 — a real `tool_search_call` frame must not kill the turn.
+    ///
+    /// T1: the frames the proxy actually put on the wire for discovery item
+    /// `tsc_02005a…` must deserialise into the same `rs::ResponseStreamEvent` the live
+    /// stream loop decodes into. The async-openai `OutputItem` is internally tagged on
+    /// `type` with no catch-all, so an unrecognised item type is a hard deserialise
+    /// error; the stream loop turns a decode error into `SamplingEvent::Failed`, which
+    /// ends the turn before any harness-side arm can see the item.
+    /// T2: once it deserialises the item must surface as an observable, not as silence —
+    /// the `OutputItem` catch-all in the `ResponseOutputItemDone` arm makes a dropped
+    /// item indistinguishable from a clean turn.
+    ///
+    /// Bytes are the verbatim lines 5-6 of capture
+    /// `ratchet-capture/captures/2026-09-25-ratchet-live/wire2-live3/resp-003.sse`,
+    /// banked as tracked fixtures because that capture dir is gitignored. The `data:`
+    /// prefix is stripped as the transport strips it. The terminal frame is the module's
+    /// own `completed_event()`, so T2's no-fatal-error clause is about the item only.
+    #[tokio::test]
+    async fn tool_search_call_frame_survives_the_stream_deserialiser() {
+        let wire_frames = [
+            include_str!("../../tests/fixtures/tool_search_call_added.sse"),
+            include_str!("../../tests/fixtures/tool_search_call_done.sse"),
+        ];
+        let mut frames: Vec<Result<rs::ResponseStreamEvent, SamplingError>> = Vec::new();
+        for wire in wire_frames {
+            let data = wire
+                .trim()
+                .strip_prefix("data:")
+                .expect("banked fixture keeps the wire `data:` prefix")
+                .trim();
+            let ev: Result<rs::ResponseStreamEvent, _> = serde_json::from_str(data);
+            assert!(
+                ev.is_ok(),
+                "real tool_search_call frame must deserialise, got: {}",
+                ev.unwrap_err()
+            );
+            frames.push(Ok(ev.expect("T1 asserts this frame is Ok")));
+        }
+        frames.push(Ok(completed_event()));
+
+        let raw = stream::iter(frames).boxed();
+        let events =
+            collect(stream_responses(raw, None, rid(), Duration::from_secs(60), None)).await;
+
+        if let Some(event) = events.iter().find(|event| matches!(event, SamplingEvent::Failed { .. }))
+        {
+            panic!("tool_search_call frame killed the turn: {event:?}");
+        }
+        let names: Vec<&str> = events
+            .iter()
+            .filter_map(|event| {
+                if let SamplingEvent::BackendToolCallCompleted { name, .. } = event {
+                    Some(name.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            names.contains(&"tool_search"),
+            "discovery item must surface as BackendToolCallCompleted with name \
+             \"tool_search\", got {names:?}"
+        );
     }
 
     /// W21R1-10: the stop-path predicate must read a discovery pair as completed

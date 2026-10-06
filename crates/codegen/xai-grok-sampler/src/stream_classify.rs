@@ -152,6 +152,7 @@ fn message_event_has_content(event: &messages::MessageStreamEvent) -> bool {
             ContentBlock::Image { .. }
             | ContentBlock::ToolResult { .. }
             | ContentBlock::RedactedThinking { .. }
+            | ContentBlock::ToolReference { .. }
             | ContentBlock::Unknown { .. } => false,
         },
         MessageStreamEvent::MessageStart { .. }

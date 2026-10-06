@@ -1300,7 +1300,7 @@ fn test_responses_api_response_to_conversation_item() {
         moderation: None,
     };
 
-    let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
+    let items = response_to_conversation_items(response);
     let item = items
         .into_iter()
         .next_back()
@@ -1362,7 +1362,7 @@ fn test_responses_api_response_to_conversation_item() {
         moderation: None,
     };
 
-    let items = response_to_conversation_items(response_with_fc).expect("the projection succeeds for this response");
+    let items = response_to_conversation_items(response_with_fc);
     let item = items
         .into_iter()
         .next_back()
@@ -1421,7 +1421,7 @@ fn test_response_reasoning_effort_stamped_on_assistant() {
         moderation: None,
     };
 
-    let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
+    let items = response_to_conversation_items(response);
     let ConversationItem::Assistant(a) = items.last().expect("trailing Assistant") else {
         panic!("Expected Assistant item");
     };
@@ -1612,7 +1612,7 @@ fn test_responses_api_with_encrypted_reasoning() {
     };
 
     // Exercise the flat-list path: reasoning lives as a sibling
-    let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
+    let items = response_to_conversation_items(response);
     let assistant_idx = items
         .iter()
         .position(|i| matches!(i, ConversationItem::Assistant(_)))
@@ -1703,7 +1703,7 @@ fn test_responses_api_with_only_encrypted_reasoning() {
     };
 
     // Flat-list path: reasoning sibling carries the encrypted blob, empty summary maps to an empty `Vec<SummaryPart>`
-    let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
+    let items = response_to_conversation_items(response);
     let reasoning_sibling = items
         .iter()
         .find_map(|i| match i {
@@ -2426,7 +2426,7 @@ fn responses_api_conversion_preserves_model_fingerprint() {
         moderation: None,
     };
 
-    let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
+    let items = response_to_conversation_items(response);
     let item = items
         .into_iter()
         .next_back()
@@ -3106,52 +3106,4 @@ fn emptyid_patch_preserves_nonempty_ids_and_is_idempotent() {
     let first_pass = body.clone();
     patch_reasoning_empty_ids(&mut body, "vxm-az");
     assert_eq!(body, first_pass, "second patch pass must be a byte no-op");
-}
-
-/// U16 fail-closed decode-seam pin (0.42.1 re-pin): a response whose output
-/// carries a `tool_search_call` or `tool_search_output` item has no IR carrier
-/// in this tree (the `Discovery` variant lands with the pair-atomic cut,
-/// apex-waj.21). The projection must REFUSE — `Err`, never a silent drop —
-/// reproducing HEAD's fail-closed turn-kill at the typed seam. Hermetic: the
-/// items are built from the wire shapes the proxy actually sends (ratchet-live
-/// captures), no network, no fixtures.
-#[test]
-fn decode_seam_refuses_discovery_items_without_a_carrier() {
-    let items = [
-        ("tool_search_call", serde_json::json!({
-            "type": "tool_search_call",
-            "id": "tsc_u16",
-            "call_id": "call_u16",
-            "execution": "client",
-            "arguments": { "query": "fixture" },
-            "status": "completed"
-        })),
-        ("tool_search_output", serde_json::json!({
-            "type": "tool_search_output",
-            "id": "tso_u16",
-            "call_id": "call_u16",
-            "execution": "client",
-            "tools": [{ "type": "function", "name": "u16_fixture_tool_00" }],
-            "status": "completed"
-        })),
-    ];
-    for (label, item) in items {
-        let wire = serde_json::json!({
-            "id": "resp_u16",
-            "object": "response",
-            "created_at": 0u64,
-            "status": "completed",
-            "model": "gpt-5.5",
-            "output": [item],
-        });
-        let response: rs::Response =
-            serde_json::from_value(wire).expect("0.42.1 models this response shape");
-        let err = response_to_conversation_items(response)
-            .expect_err("the projection must refuse a carrier-less discovery item");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("no IR carrier"),
-            "{label}: fail-closed message drifted: {msg}"
-        );
-    }
 }

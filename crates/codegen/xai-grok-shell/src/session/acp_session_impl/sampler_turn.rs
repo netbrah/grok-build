@@ -2241,8 +2241,29 @@ impl SessionActor {
                 ConversationItem::Assistant(_) => {
                     self.record_assistant_response(item, usage_reported).await;
                 }
-                _ if usage_reported => self.chat_state_handle.push_model_output(item),
-                _ => self.chat_state_handle.push_tool_result(item),
+                // Every non-assistant sibling of the turn is persisted as-is; the only
+                // choice is whether the provider's usage total already covers it. A
+                // discovery pair rides this arm deliberately: it is model-side output
+                // state that MUST reach `chat_history.jsonl` in authoring order, and a
+                // sibling dropped here is a half-pair on disk (A-26).
+                ConversationItem::Discovery { .. }
+                | ConversationItem::User(_)
+                | ConversationItem::ToolResult(_)
+                | ConversationItem::BackendToolCall(_)
+                | ConversationItem::Reasoning(_)
+                | ConversationItem::System(_)
+                    if usage_reported =>
+                {
+                    self.chat_state_handle.push_model_output(item)
+                }
+                ConversationItem::Discovery { .. }
+                | ConversationItem::User(_)
+                | ConversationItem::ToolResult(_)
+                | ConversationItem::BackendToolCall(_)
+                | ConversationItem::Reasoning(_)
+                | ConversationItem::System(_) => {
+                    self.chat_state_handle.push_tool_result(item)
+                }
             }
         }
     }

@@ -353,6 +353,10 @@ pub enum ContentBlock {
     /// Encrypted reasoning the model chose to redact: an opaque `data` blob, never plaintext.
     /// Parsed so a stream carrying one deserializes instead of failing the whole event parse; request-building and the sampler never construct one.
     RedactedThinking { data: String },
+    /// A tool handle the vendor names inside a `tool_result` select-list without
+    /// advertising it in `tools[]` (CC5 deferred-tool lifecycle). Carries the
+    /// handle only, never content; `tool_name` is the verbatim wire key.
+    ToolReference { tool_name: String },
     /// A content block kind this build does not model (R1 forward-compat).
     /// Stream-decode ONLY: the `MessageStreamEvent` parse site maps an unknown
     /// `content_block` kind to this variant so the stream transform opens a
@@ -361,12 +365,12 @@ pub enum ContentBlock {
     /// classes (spec G3). `kind` carries the verbatim wire `type` string for
     /// logging. Never constructed on the request side or by the non-stream
     /// `MessagesResponse` parse (its `Deserialize` impl stays strict over the
-    /// six known kinds above), and never produced on a serialization path.
+    /// seven known kinds above), and never produced on a serialization path.
     Unknown { kind: String },
 }
 
 impl<'de> Deserialize<'de> for ContentBlock {
-    /// Strict over the six known kinds: the `Unknown` variant is a
+    /// Strict over the seven known kinds: the `Unknown` variant is a
     /// stream-decode-only construct (see its doc), so neither the non-stream
     /// response parse nor any request-side parse may produce it. An unknown
     /// `type` or a known kind missing a required field is a fatal
@@ -408,6 +412,9 @@ impl<'de> Deserialize<'de> for ContentBlock {
             },
             RedactedThinking {
                 data: String,
+            },
+            ToolReference {
+                tool_name: String,
             },
         }
         let block = StrictBlock::deserialize(deserializer)?;
@@ -456,6 +463,7 @@ impl<'de> Deserialize<'de> for ContentBlock {
                 signature,
             },
             StrictBlock::RedactedThinking { data } => ContentBlock::RedactedThinking { data },
+            StrictBlock::ToolReference { tool_name } => ContentBlock::ToolReference { tool_name },
         })
     }
 }
@@ -487,7 +495,7 @@ pub enum ToolParam {
 }
 
 /// The pre-cut flat custom tool, renamed (fields unchanged, incl. F5's tail
-/// `cache_control`).
+/// `cache_control`; apex-pwr appends `defer_loading` after it).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCustom {
     pub name: String,
@@ -499,6 +507,12 @@ pub struct ToolCustom {
     /// opts in via `tools_cache_breakpoint = "last"` (§3.5) — spends the free 4th marker slot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<CacheControl>,
+    /// Deferred-tool class marker (CC5 `tools[].defer_loading`): `Some(true)` on a tool the
+    /// vendor holds back until a `tool_reference` promotes it (a promoted entry keeps the
+    /// flag). A class marker, not a per-tool boolean — a static tool omits the key, so this
+    /// must never serialize `false`/`null`. Last field: existing key order is byte-untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defer_loading: Option<bool>,
 }
 
 /// Dated server-tool members (docs GA create.md L1442–3044 + BETA
@@ -1321,6 +1335,19 @@ const KNOWN_EVENT_TAGS: &[&str] = &[
 /// renames of the `ContentBlock` variants). An unknown kind keeps the
 /// `content_block_start` event and maps the block to the phantom
 /// `ContentBlock::Unknown` variant (R1/D3).
+///
+/// This is the *stream* kind mirror and it is deliberately narrower than
+/// `ContentBlock`: `tool_reference` (the seventh modelled kind) is a
+/// request-side block — CC5 carries it in `req-*.json` (10/10 turns) and in 0 of
+/// the 10 `resp-*.sse` — so a stream that names it phantom-opens rather than
+/// models it. Consequence: the sampler's `ContentBlock::ToolReference` stream
+/// arms (`stream/messages.rs:402`, `stream_classify.rs:155`) are compile-only
+/// exhaustivity while this list excludes the kind (the phantom `Unknown` and a
+/// known-inert block converge downstream). Listing the kind here would also put
+/// it on the strict path, where a malformed frame is fatal, so it must not join
+/// without a response-side wire capture and flips
+/// `streamed_tool_reference_block_phantom_opens_as_unknown_today` in that same
+/// commit.
 const KNOWN_BLOCK_KINDS: &[&str] = &[
     "text",
     "image",
@@ -1918,6 +1945,44 @@ mod tests {
         }
     }
 
+    /// Provenance: apex-pwr review R1 (vacuity seat) — `KNOWN_BLOCK_KINDS` is a
+    /// second block-kind mirror and `ContentBlock::ToolReference` deliberately
+    /// does not join it.
+    /// `tool_reference` is modelled on the transcript side only: across the CC5
+    /// lifecycle it appears in `req-*.json` (10/10 turns) and in 0 of the 10
+    /// `resp-*.sse`, so the stream parse must keep treating it as an unknown
+    /// kind and phantom-open it. That is what makes the sampler's
+    /// `ContentBlock::ToolReference` stream arms (stream/messages.rs:402,
+    /// stream_classify.rs:155) compile-only exhaustivity: the phantom
+    /// `Unknown` and a known-inert kind converge at stream/messages.rs:460,621.
+    /// Listing the kind here would put a streamed `tool_reference` on the strict
+    /// path (a malformed frame becomes fatal) and would make those arms live —
+    /// do it only with a response-side wire capture, flipping this pin in the
+    /// same commit.
+    #[test]
+    fn streamed_tool_reference_block_phantom_opens_as_unknown_today() {
+        let event: MessageStreamEvent = serde_json::from_str(
+            r#"{"type":"content_block_start","index":2,"content_block":{"type":"tool_reference","tool_name":"mcp__sem__sem_callers"}}"#,
+        )
+        .expect("a streamed tool_reference must not fail the frame parse");
+        match event {
+            MessageStreamEvent::ContentBlockStart {
+                index,
+                content_block,
+            } => {
+                assert_eq!(index, 2, "the index must survive for the phantom-open");
+                match content_block {
+                    ContentBlock::Unknown { kind } => assert_eq!(kind, "tool_reference"),
+                    other => panic!(
+                        "tool_reference is not a known stream kind, so it must phantom-open as \
+                         Unknown, got {other:?}"
+                    ),
+                }
+            }
+            other => panic!("expected ContentBlockStart, got {other:?}"),
+        }
+    }
+
     /// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/client.rs :: decode_messages_sse_frame_skips_unknown_content_block_kinds (re-expressed, delta half; HY asserts Ping for an unknown delta subtype — same mapping on this wire)
     /// An unknown delta subtype in `content_block_delta` maps the whole event
     /// to `Ping` (liveness): the delta is dropped, never fatal.
@@ -2043,5 +2108,140 @@ mod tests {
             event.is_err(),
             "non-stream block-kind leniency would be an unscoped behavior change"
         );
+    }
+
+    // ---- apex-pwr: Messages transcript IR shapes (RED first, design-pwr §4) ----
+
+    /// R1 — the transcript half of a CC5 turn: a `tool_result` whose nested
+    /// `content[]` is a select-list of `tool_reference` blocks. The non-stream
+    /// parse goes through the hand-written `Deserialize` over `StrictBlock`, so
+    /// the enum variant alone is not enough — that is the invariant under test.
+    #[test]
+    fn tool_reference_block_round_trips_cc5_bytes() {
+        // CC5 req-002 $.messages[3].content[0], verbatim (P1's answering tool_result).
+        const CC5_TOOL_RESULT: &str = r#"{"type":"tool_result","tool_use_id":"toolu_vrtx_01LF8PjSdXuFPg3KNCgnxbqd","content":[{"type":"tool_reference","tool_name":"mcp__sem__sem_callers"},{"type":"tool_reference","tool_name":"mcp__sem__sem_impact"},{"type":"tool_reference","tool_name":"mcp__sem__sem_context"},{"type":"tool_reference","tool_name":"mcp__code-graph__get_call_graph"}]}"#;
+
+        // (a) it must DESERIALIZE (this is the half the manual impl breaks).
+        let block: ContentBlock = serde_json::from_str(CC5_TOOL_RESULT)
+            .expect("CC5 tool_result with tool_reference blocks must parse");
+
+        // (b) the nested list must be four ToolReference blocks in SELECT-LIST order.
+        let ContentBlock::ToolResult {
+            content,
+            tool_use_id,
+            is_error,
+            ..
+        } = &block
+        else {
+            panic!("expected ToolResult, got {block:?}");
+        };
+        assert_eq!(tool_use_id, "toolu_vrtx_01LF8PjSdXuFPg3KNCgnxbqd");
+        assert!(!is_error);
+        let ToolResultContent::Blocks(inner) = content else {
+            panic!("tool_result content must parse as Blocks, got {content:?}");
+        };
+        let names: Vec<&str> = inner
+            .iter()
+            .map(|b| match b {
+                ContentBlock::ToolReference { tool_name } => tool_name.as_str(),
+                other => panic!("expected ToolReference, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "mcp__sem__sem_callers",
+                "mcp__sem__sem_impact",
+                "mcp__sem__sem_context",
+                "mcp__code-graph__get_call_graph"
+            ],
+            "select-list order is the wire order (CC5 P1)"
+        );
+
+        // (c) it must RE-SERIALIZE to the same JSON value (key order is irrelevant, shape is not).
+        let round: serde_json::Value = serde_json::to_value(&block).unwrap();
+        let original: serde_json::Value = serde_json::from_str(CC5_TOOL_RESULT).unwrap();
+        assert_eq!(round, original, "round-trip must be lossless");
+    }
+
+    /// R2 — `defer_loading` is a class marker, not a per-tool boolean: a static
+    /// tool must emit NO key at all (an explicit `false`/`null` is off-donor on
+    /// every request), and only a deferred tool emits `true`.
+    #[test]
+    fn tool_custom_defer_loading_is_omitted_unless_set() {
+        let plain = ToolCustom {
+            name: "Bash".into(),
+            description: None,
+            input_schema: serde_json::json!({"type": "object"}),
+            cache_control: None,
+            defer_loading: None,
+        };
+        let v = serde_json::to_value(&plain).unwrap();
+        assert!(v.get("defer_loading").is_none(), "absent, not false: {v}");
+
+        let deferred = ToolCustom {
+            defer_loading: Some(true),
+            ..plain.clone()
+        };
+        assert_eq!(
+            serde_json::to_value(&deferred)
+                .unwrap()
+                .get("defer_loading"),
+            Some(&serde_json::json!(true))
+        );
+
+        // Donor bytes: CC5 req-001 $.tools[11] (DeferredToolPlaceholder).
+        let donor: ToolCustom = serde_json::from_str(
+            r#"{"name":"DeferredToolPlaceholder","description":"Reserved placeholder that keeps deferred tool loading active; never call this tool.","input_schema":{"type":"object","properties":{}},"defer_loading":true}"#,
+        )
+        .expect("donor placeholder must parse");
+        assert_eq!(donor.defer_loading, Some(true));
+    }
+
+    /// R3 — every donor `tools[]` entry observed across all 10 CC5 turns carries
+    /// exactly one of two key sets (`{name,description,input_schema}` or the same
+    /// plus `defer_loading`) in that order, so byte-equality after a round-trip is
+    /// the right assertion and is not vacuous. It is taken on the rendered string,
+    /// never on `serde_json::Value`: with Cargo.toml's `preserve_order` a Map is an
+    /// IndexMap whose `PartialEq` is per-key, so Value equality cannot see a reordered
+    /// field and `defer_loading` could silently stop serialising last.
+    /// Bytes inlined from the fixtures
+    /// (req-001 `$.tools[0]`/`$.tools[11]`, req-010 `$.tools[11]` promoted).
+    #[test]
+    fn cc5_donor_tool_entries_round_trip_losslessly() {
+        const DONOR_TOOL_PLAIN: &str = r#"{"name":"Agent","description":"Launch a new agent to handle complex, multi-step tasks. Each agent type has specific capabilities and tools available to it.\n\nAvailable agent types are listed in <system-reminder> messages in the conversation.\n\nWhen using the Agent tool, specify a subagent_type parameter to select which agent type to use. If omitted, the general-purpose agent is used.\n\n## When to use\n\nReach for this when the task matches an available agent type, when you have independent work to run in parallel, or when answering would mean reading across several files — delegate it and you keep the conclusion, not the file dumps. For a single-fact lookup where you already know the file, symbol, or value, search directly. Once you've delegated a search, don't also run it yourself — wait for the result.\n\n- The agent's final report is not shown to the user — relay what matters.\n- Use SendMessage with the agent's ID or name to continue a previously spawned agent with its context intact; a new Agent call starts fresh.\n- Each agent type's model, reasoning effort, and tools come from its definition (`.claude/agents/*.md` frontmatter or SDK `agents`).\n- `isolation: \"worktree\"` gives the agent its own git worktree (auto-cleaned if unchanged).\n- Subagents run in the background by default; you'll be notified when one completes. Pass `run_in_background: false` only when your very next action depends on the result and nothing else could usefully happen while it runs — otherwise background it so the user can interject. Never fabricate or predict a pending agent's results — the notification is never something you write yourself; if the user asks before it arrives, say it's still running.","input_schema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"description":{"description":"A short (3-5 word) description of the task","type":"string"},"prompt":{"description":"The task for the agent to perform","type":"string"},"subagent_type":{"description":"The type of specialized agent to use for this task","type":"string"},"model":{"description":"Optional model override for this agent. Takes precedence over the agent definition's model frontmatter and the configured default subagent model. If omitted, uses the agent definition's model, else the default (inherits from the parent unless a default subagent model is configured). Ignored for subagent_type: \"fork\" — forks always inherit the parent model.","type":"string","enum":["sonnet","opus","haiku","fable"]},"run_in_background":{"description":"Agents run in the background by default; you will be notified when one completes. Set to false only when your very next action depends on this agent's result and nothing else could usefully happen while it runs — otherwise leave it in the background so the user can hand you other work.","type":"boolean"},"isolation":{"description":"Isolation mode. \"worktree\" creates a temporary git worktree so the agent works on an isolated copy of the repo. \"remote\" launches the agent in a remote cloud environment (always runs in background; availability is gated).","type":"string","enum":["worktree","remote"]}},"required":["description","prompt"],"additionalProperties":false}}"#;
+        const DONOR_TOOL_PLACEHOLDER: &str = r#"{"name":"DeferredToolPlaceholder","description":"Reserved placeholder that keeps deferred tool loading active; never call this tool.","input_schema":{"type":"object","properties":{}},"defer_loading":true}"#;
+        const DONOR_TOOL_PROMOTED: &str = r#"{"name":"mcp__code-graph__get_call_graph","description":"Multi-hop call chain. Replaces N rounds of `grep \"X(\"` + Read. Pass route_path='GET /api/x' to trace HTTP handler → downstream (folds the old trace_http_chain).","input_schema":{"type":"object","properties":{"compact":{"description":"Compact mode: name+file+depth only (saves tokens)","type":"boolean"},"depth":{"description":"Max depth (default 3)","type":"number"},"direction":{"description":"Direction (default 'both'); ignored when route_path is set (always 'callees')","enum":["callers","callees","both"],"type":"string"},"file_path":{"description":"Disambiguate same-name functions","type":"string"},"include_middleware":{"description":"For route_path mode: include downstream middleware/calls (default true)","type":"boolean"},"include_tests":{"description":"Include test callers (default false)","type":"boolean"},"project":{"description":"Project alias (from CODE_GRAPH_PROJECTS). Omit for default project.","type":"string"},"route_path":{"description":"HTTP route like 'GET /api/users' — traces from matched route handler(s) down. Mutually exclusive with symbol_name.","type":"string"},"symbol_name":{"description":"Function/method name (mutually exclusive with route_path)","type":"string"}}},"defer_loading":true}"#;
+
+        for donor in [
+            DONOR_TOOL_PLAIN,
+            DONOR_TOOL_PLACEHOLDER,
+            DONOR_TOOL_PROMOTED,
+        ] {
+            let entry: ToolCustom = serde_json::from_str(donor).unwrap();
+            assert_eq!(
+                serde_json::to_string(&entry).unwrap(),
+                donor,
+                "donor tools[] bytes, key order included, must round-trip: {donor}"
+            );
+        }
+
+        let entry: ToolCustom = serde_json::from_str(DONOR_TOOL_PLAIN).unwrap();
+        assert!(
+            serde_json::to_value(&entry)
+                .unwrap()
+                .get("defer_loading")
+                .is_none(),
+            "a static donor tool must not grow a defer_loading key: {DONOR_TOOL_PLAIN}"
+        );
+
+        for donor in [DONOR_TOOL_PLACEHOLDER, DONOR_TOOL_PROMOTED] {
+            let entry: ToolCustom = serde_json::from_str(donor).unwrap();
+            assert_eq!(
+                serde_json::to_value(&entry).unwrap().get("defer_loading"),
+                Some(&serde_json::json!(true)),
+                "a deferred donor tool keeps defer_loading true, promoted or not: {donor}"
+            );
+        }
     }
 }

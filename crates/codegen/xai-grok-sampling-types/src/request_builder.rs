@@ -329,6 +329,7 @@ impl MessagesRequestBuilder {
             description,
             input_schema: input_schema.into_value(),
             cache_control: None,
+            defer_loading: None,
         }));
         this
     }
@@ -591,6 +592,9 @@ fn check_block_list(
             }
             ContentBlock::RedactedThinking { data } => {
                 let _ = data;
+            }
+            ContentBlock::ToolReference { tool_name } => {
+                let _ = tool_name;
             }
             ContentBlock::Unknown { kind } => {
                 let _ = kind;
@@ -1673,13 +1677,17 @@ pub fn f() {
     /// ToolResultContent / ThinkingConfig / ToolChoiceParam / OutputFormat.
     /// A synthetic new variant breaks the build (structural); (a) audits the
     /// source for the full variant-token set and the absence of wildcard
-    /// arms in the validator body, (b) runtime-probes every variant through
+    /// arms in the validator body, (a2)/(a3) re-derive the block variants from
+    /// the `ContentBlock` declaration and audit every non-test fn that closes
+    /// the block match, (b) runtime-probes every variant through
     /// a validating request.
     #[test]
     fn closed_feature_set_exhaustive() {
-        // (a) source audit: all 22 variant tokens (2+2+7+2+2+3+3+1) appear
+        // (a) source audit: all 23 variant tokens (2+2+8+2+2+3+3+1) appear
         // in the non-test source, and the validator body carries no
-        // wildcard binding (`_`-leading line or `| _` arm).
+        // wildcard binding (`_`-leading line or `| _` arm). The list alone only
+        // proves a token occurs somewhere in the file; (a2)/(a3) are what give
+        // it teeth at the match site.
         let source = include_str!("request_builder.rs");
         let non_test = source
             .split("#[cfg(test)]")
@@ -1696,6 +1704,7 @@ pub fn f() {
             "ContentBlock::ToolResult",
             "ContentBlock::Thinking",
             "ContentBlock::RedactedThinking",
+            "ContentBlock::ToolReference",
             "ContentBlock::Unknown",
             "SystemParam::Text",
             "SystemParam::Blocks",
@@ -1732,6 +1741,95 @@ pub fn f() {
             );
         }
 
+        // (a2) the variant set is derived from the enum itself: a hand-listed
+        // token can be quietly trimmed, the declaration cannot.
+        let messages_src = include_str!("messages.rs");
+        let enum_at = messages_src
+            .find("pub enum ContentBlock {")
+            .expect("T15: ContentBlock declaration present");
+        let enum_src = &messages_src[enum_at..];
+        let enum_end = enum_src
+            .find("\n}")
+            .expect("T15: ContentBlock declaration end");
+        let enum_src = &enum_src[..enum_end];
+        let block_variants: Vec<String> = enum_src
+            .lines()
+            .filter_map(|line| {
+                let name = line
+                    .strip_prefix("    ")?
+                    .split([' ', '{', '('])
+                    .next()
+                    .unwrap_or_default();
+                name.starts_with(|c: char| c.is_ascii_uppercase())
+                    .then(|| format!("ContentBlock::{name}"))
+            })
+            .collect();
+        assert!(
+            block_variants
+                .iter()
+                .any(|token| token == "ContentBlock::ToolReference"),
+            "T15: derived block-variant set is off: {block_variants:?}"
+        );
+
+        // (a3) the match an omitted variant actually breaks is the one that
+        // closes over the block list — `check_block_list`, which the validator
+        // delegates to — not the validator body alone. Audit every non-test fn
+        // that carries the `ContentBlock::Unknown` arm (a partial match, such as
+        // the pairing tracker, names no `Unknown` arm and is not in this set):
+        // it must name EVERY derived variant and carry no wildcard arm, or a new
+        // block kind is absorbed in silence instead of raising `E0004`.
+        let non_test_lines: Vec<&str> = non_test.lines().collect();
+        let fn_starts: Vec<usize> = non_test_lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| {
+                let trimmed = line.trim_start();
+                [
+                    "fn ",
+                    "pub fn ",
+                    "pub(crate) fn ",
+                    "pub(super) fn ",
+                    "async fn ",
+                ]
+                .iter()
+                .any(|prefix| trimmed.starts_with(prefix))
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let mut closed_matches = 0;
+        for (position, start) in fn_starts.iter().enumerate() {
+            let end = fn_starts
+                .get(position + 1)
+                .copied()
+                .unwrap_or(non_test_lines.len());
+            let chunk = &non_test_lines[*start..end];
+            if !chunk
+                .iter()
+                .any(|line| line.contains("ContentBlock::Unknown"))
+            {
+                continue;
+            }
+            closed_matches += 1;
+            let head = chunk[0].trim();
+            for variant in &block_variants {
+                assert!(
+                    chunk.iter().any(|line| line.contains(variant)),
+                    "T15: {head} closes the block match but never names {variant}"
+                );
+            }
+            for line in chunk {
+                let trimmed = line.trim_start();
+                assert!(
+                    !trimmed.starts_with('_') && !trimmed.contains("| _"),
+                    "T15: wildcard arm absorbs a block variant in {head}: {line}"
+                );
+            }
+        }
+        assert!(
+            closed_matches > 0,
+            "T15: no closed block match found in the non-test source"
+        );
+
         // (b) runtime probe: one request exercising EVERY variant of every
         // enum validates Ok (the matches are semantically live, not just
         // compile-time exhaustive).
@@ -1767,17 +1865,20 @@ pub fn f() {
             },
         ]))
         .expect("assistant push");
-        seq.push_message(user_blocks(vec![
-            ContentBlock::ToolResult {
-                tool_use_id: "c1".to_string(),
-                content: ToolResultContent::Blocks(vec![ContentBlock::Text {
+        seq.push_message(user_blocks(vec![ContentBlock::ToolResult {
+            tool_use_id: "c1".to_string(),
+            content: ToolResultContent::Blocks(vec![
+                ContentBlock::Text {
                     text: "ok".to_string(),
                     cache_control: None,
-                }]),
-                is_error: false,
-                cache_control: None,
-            },
-        ]))
+                },
+                ContentBlock::ToolReference {
+                    tool_name: "probe_tool".to_string(),
+                },
+            ]),
+            is_error: false,
+            cache_control: None,
+        }]))
         .expect("tool_result push");
         let request = MessagesRequestBuilder::new()
             .model("m".to_string())

@@ -25,14 +25,7 @@ pub(super) const PROVIDER_NATIVE_SEARCH_REPLAY_SUMMARY: &str =
 
 /// Flatten `response.output` into `ConversationItem`s, preserving emission order.
 /// Replaying that order byte for byte on the next turn is what keeps the server-side prefix cache hot.
-///
-/// Fails closed (`Err`) instead of silently dropping an item this tree has no IR
-/// carrier for — see the `ToolSearchCall`/`ToolSearchOutput` arm. Callers map the
-/// `Err` to a failed turn (the pre-re-pin deserializer fatal), never to a silent
-/// history loss (U16, round-3 R-3).
-pub fn response_to_conversation_items(
-    response: rs::Response,
-) -> std::result::Result<Vec<ConversationItem>, crate::SamplingError> {
+pub fn response_to_conversation_items(response: rs::Response) -> Vec<ConversationItem> {
     let model_id = response.model.clone();
     let model_fingerprint = response
         .metadata
@@ -133,19 +126,21 @@ pub fn response_to_conversation_items(
             rs::OutputItem::McpCall(_) => {
                 backend_tool_count += 1;
             }
-            // Fail-closed decode seam (U16, round-3 R-3): async-openai 0.42.1 models
-            // `tool_search_call` and `tool_search_output`, but this tree has no IR
-            // carrier for them yet (the `Discovery` variant lands with the pair-atomic
-            // cut, apex-waj.21). Dropping them here would turn a fatal decode into a
-            // silent history loss for items the proxy actually sends, so the projection
-            // refuses and the turn is not committed — reproducing the fail-closed
-            // turn-kill this seam had before the re-pin, when the SDK rejected these
-            // items in the deserializer.
-            rs::OutputItem::ToolSearchCall(_) | rs::OutputItem::ToolSearchOutput(_) => {
-                return Err(crate::SamplingError::serialization_message(
-                    "decode seam: a `tool_search_call`/`tool_search_output` item has no IR carrier in this tree; the turn was not committed (the carrier lands with the Discovery variant, apex-waj.21)",
-                ));
-            }
+            // BLOCKED, deliberately silent (apex-waj.21 cut review F-7). async-openai
+            // 0.33.1 models NEITHER `tool_search_call` NOR `tool_search_output`, so the
+            // provider->IR decode seam for the pair cannot be written on this arm: there
+            // is no typed variant to match and no raw escape hatch here (the `Compaction`
+            // precedent above needed a typed one). Consequence, stated rather than
+            // implied: every `Discovery` arm in this cut — all 98 of them, and every A-26
+            // claim built on them — is verified COMPILE-TIME plus hand-built fixtures.
+            // Nothing in the tree decodes a provider row into `ConversationItem::Discovery`,
+            // so no live capture has ever exercised the pair riding a second turn. The
+            // ingest seam is apex-waj.5's (`stream/responses.rs` owes the derivation, see
+            // `events.rs`'s ToolSearchCallReceived note); a wire capture through the real
+            // pipeline, stamped with the binary sha256:12, must land with it before this
+            // cut's A-26 conformance is called verified. A log line in this arm is not a
+            // substitute: it is unobservable to the battery and the arm is not reachable
+            // for these two item types today.
             _ => {}
         }
     }
@@ -166,7 +161,7 @@ pub fn response_to_conversation_items(
         reasoning_effort,
     }));
 
-    Ok(items)
+    items
 }
 
 impl From<&ConversationRequest> for rs::CreateResponse {

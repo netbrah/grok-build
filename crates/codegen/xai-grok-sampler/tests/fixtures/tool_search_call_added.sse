@@ -1,0 +1,1 @@
+data: {"type":"response.output_item.added","output_index":1,"item":{"id":"tsc_02005a6c7856d15c016ab6aa70e9208194bc939a9b4707c556","type":"tool_search_call","status":"in_progress","arguments":{},"call_id":"call_AOphypzlL1KKckJugyBS2PYn","execution":"client"},"sequence_number":4,"model":"gpt-5.5"}
