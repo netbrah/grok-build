@@ -1823,9 +1823,22 @@ impl ConversationResponse {
 
     /// Classify why the response is empty, if it is.
     ///
-    /// Returns `Some(reason)` when the response has no visible content and no tool calls (the conditions that trigger resampling).
+    /// Returns `Some(reason)` when the response has no visible content and no tool calls (the
+    /// conditions that trigger resampling). A client-executed discovery call is meaningful
+    /// content — a lone in-flight client call admitted by the decode seam (the D19 R1
+    /// carve-out) returns `None` so it reaches the turn loop for the answer arm instead of
+    /// being resampled as empty.
     pub fn empty_reason(&self) -> Option<crate::error::EmptyReason> {
         use crate::error::EmptyReason;
+        // A client-executed discovery call is meaningful content (the model is requesting a
+        // tool search), so the response is not empty: the lone in-flight client call admitted
+        // by the decode seam (the D19 R1 carve-out) must reach the turn loop for the answer
+        // arm to fire, not be resampled as empty.
+        if self.discovery_items().any(|item| {
+            item.kind() == tool_search::ToolSearchKind::Call && item.is_client_executed()
+        }) {
+            return None;
+        }
         let Some(a) = self.assistant() else {
             return Some(EmptyReason::NoVisibleContent);
         };
@@ -1842,7 +1855,8 @@ impl ConversationResponse {
         }
     }
 
-    /// Check if the response is effectively empty (no content, no tool calls).
+    /// Check if the response is effectively empty (no content, no tool calls — a
+    /// client-executed discovery call counts as content; see [`Self::empty_reason`]).
     ///
     /// Reasoning-only responses are considered empty so the retry logic resamples.
     pub fn is_empty(&self) -> bool {
@@ -5727,6 +5741,34 @@ mod tests {
             resp.empty_reason(),
             Some(crate::error::EmptyReason::NoVisibleContent)
         );
+    }
+
+    /// A lone client-executed discovery call is meaningful content, so `empty_reason()`
+    /// returns `None` (not empty) — the D19 R1 carve-out case that keeps the answer arm
+    /// reachable: the call must reach the turn loop, not be resampled as empty.
+    #[test]
+    fn empty_reason_none_when_has_client_executed_discovery_call() {
+        let wire = serde_json::json!({
+            "id": "tsc_call_regression",
+            "arguments": { "query": "shipping ETA lookup by order ID", "limit": 5 },
+            "call_id": "call_regression",
+            "execution": "client",
+            "status": "completed",
+            "type": "tool_search_call"
+        });
+        let lone_item =
+            tool_search::ToolSearchItem::from_wire(wire.clone()).expect("client call parses");
+        let lone = make_response(ConversationItem::Discovery { item: lone_item });
+        assert!(lone.empty_reason().is_none());
+        assert!(!lone.is_empty());
+        // The same call beside an empty assistant: still not empty.
+        let paired_item = tool_search::ToolSearchItem::from_wire(wire).expect("client call parses");
+        let mut mixed = make_response(ConversationItem::assistant(""));
+        mixed
+            .items
+            .insert(0, ConversationItem::Discovery { item: paired_item });
+        assert!(mixed.empty_reason().is_none());
+        assert!(!mixed.is_empty());
     }
 
     /// `LengthPolicy::verdict` is the single fail-vs-salvage gate shared by the actor and direct-collect paths; pin every cell.

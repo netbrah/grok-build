@@ -3453,6 +3453,107 @@ fn compaction_tail_window_drops_a_lone_discovery_half_rather_than_stub_it() {
     );
 }
 
+/// R2 (apex-waj.57): the pair the answer arm builds — a client-executed call
+/// plus the harness-authored answer that echoes its `call_id` — is an ordinary
+/// closed keyed group, so the tail windows keep BOTH halves verbatim exactly as
+/// they keep a provider-minted pair. The in-flight window (call without its
+/// answer yet) is a transient of one turn-loop iteration: the arm lands the
+/// answer in the same iteration, before the next loop-head compaction point
+/// can observe the transcript, so a compaction that ever sees this history
+/// sees the closed pair, not a hole.
+#[test]
+fn compaction_tail_window_keeps_the_answered_client_pair_verbatim() {
+    let call_raw = serde_json::json!({
+        "type": "tool_search_call",
+        "id": "tsc_waj57_r2",
+        "call_id": "call_WAJ57_R2",
+        "execution": "client",
+        "status": "completed",
+        "arguments": { "query": "shipping ETA lookup by order ID", "limit": 5 }
+    });
+    let call = xai_grok_sampling_types::conversation::tool_search::ToolSearchItem::from_wire(
+        call_raw.clone(),
+    )
+    .expect("the client call validates");
+    let answer = xai_grok_sampling_types::conversation::tool_search::ToolSearchItem::client_answer(
+        "call_WAJ57_R2",
+        vec![serde_json::json!({
+            "type": "function",
+            "name": "lookup_shipping_eta",
+            "parameters": { "type": "object", "properties": {
+                "order_id": { "type": "string" } }, "required": ["order_id"] }
+        })],
+    );
+    let answer_raw = answer.raw().clone();
+    let history = vec![
+        ConversationItem::user("find the eta tool"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+        ConversationItem::assistant("found them"),
+    ];
+    for window in [
+        extract_messages_since_last_user(&history),
+        extract_messages_since_last_real_user(&history),
+        extract_messages_since_last_compaction_anchor(&history),
+    ] {
+        let kept = discovery_of(&window);
+        assert_eq!(
+            kept.len(),
+            2,
+            "both halves of the answered client pair ride the tail window: {window:?}"
+        );
+        assert_eq!(
+            kept.iter()
+                .map(|item| item.discovery().unwrap().raw().clone())
+                .collect::<Vec<_>>(),
+            vec![call_raw.clone(), answer_raw.clone()],
+            "verbatim bytes, call first — a rewritten or stubbed half is the A-26 strip"
+        );
+    }
+}
+
+/// R2 (apex-waj.57), the documented residual: if the turn ENDS with a client
+/// call the answer arm never answered (per-turn budget exhausted, or a keyless
+/// call the arm cannot pair on), the call is certifiably lone against the FULL
+/// history and the tail window drops it — the same orphan policy a partnerless
+/// half already gets: the drop path is kind-blind (`discovery_for_window`,
+/// `compaction_utils.rs:530`), and its pinned proof runs through the output
+/// half (`compaction_tail_window_drops_a_lone_discovery_half_rather_than_stub_it`).
+/// The client still holds the call: the stream decoder emitted
+/// `ToolSearchCallReceived` at decode time, and it may still answer — the
+/// budget only bounds harness answers, and a client answer would close the
+/// group before any window runs.
+#[test]
+fn compaction_tail_window_drops_an_unanswered_in_flight_call_as_certifiably_lone() {
+    let call = xai_grok_sampling_types::conversation::tool_search::ToolSearchItem::from_wire(
+        serde_json::json!({
+            "type": "tool_search_call",
+            "id": "tsc_waj57_r2_residue",
+            "call_id": "call_WAJ57_RESIDUE",
+            "execution": "client",
+            "status": "completed",
+            "arguments": { "query": "shipping ETA lookup by order ID", "limit": 5 }
+        }),
+    )
+    .expect("the client call validates");
+    let history = vec![
+        ConversationItem::user("find the eta tool"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::assistant("found them"),
+    ];
+    for window in [
+        extract_messages_since_last_user(&history),
+        extract_messages_since_last_real_user(&history),
+        extract_messages_since_last_compaction_anchor(&history),
+    ] {
+        assert!(
+            discovery_of(&window).is_empty(),
+            "the unanswered in-flight call is certifiably lone against the full \
+             history and drops with the orphan policy: {window:?}"
+        );
+    }
+}
+
 /// M-D10: `validate_compacted_history` must stay silent about discovery items. Its
 /// verdict is load-bearing — a non-empty one makes the shell throw away
 /// `recent_messages` entirely, i.e. destroy the very content A-26 protects.

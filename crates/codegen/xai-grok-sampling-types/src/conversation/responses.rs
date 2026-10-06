@@ -221,7 +221,7 @@ pub fn response_to_conversation_items(
 /// and `ToolSearchOutput::call_id` `:189` have no `skip_serializing_if`, so both shapes
 /// come back as present-null — so this seam resolves both to ABSENT deliberately.
 /// In-tree that is inert: every reader of the key already reads null and absent alike
-/// ([`tool_search::ToolSearchItem::call_id`] `conversation/tool_search.rs:597-602`,
+/// ([`tool_search::ToolSearchItem::call_id`] `conversation/tool_search.rs:669-674`,
 /// `conversation/outbound_lint.rs:347`, `:359`, `:436`). The cost lands only on the
 /// Codex splice, which sends a key the response-body provider did send:
 /// `responses_tests::the_codex_splice_replays_the_provider_item_key_set` pins the
@@ -230,7 +230,7 @@ pub fn response_to_conversation_items(
 /// Those bytes are model-visible, not inert storage: all three rows the bake
 /// advertises on are `model_family: "codex"`
 /// (`xai-grok-models/default_models.json:365`, `:420`, `:528`), and the Codex replay
-/// arm splices `raw()` verbatim into every later request (`conversation.rs:2699`).
+/// arm splices `raw()` verbatim into every later request (`conversation.rs:2713`).
 /// `responses_tests::the_codex_splice_replays_the_provider_item_key_set` therefore
 /// diffs the spliced key set against the provider's own item on every pass; what a
 /// diff cannot prove is acceptance — this lane made no provider call, so replaying a
@@ -274,38 +274,38 @@ fn discovery_carrier(
 ///
 /// The join is not a second rule written here. It is the module that owns discovery
 /// pairing: [`tool_search::unpaired_discovery_indices`]
-/// (`conversation/tool_search.rs:2348`) groups through `discovery_groups`
-/// (`conversation/tool_search.rs:2215`), and a half is whole exactly when its group
+/// (`conversation/tool_search.rs:2420`) groups through `discovery_groups`
+/// (`conversation/tool_search.rs:2287`), and a half is whole exactly when its group
 /// is closed — holds at least one `tool_search_call` AND one `tool_search_output`
-/// (`group_is_closed`, `conversation/tool_search.rs:2271`):
+/// (`group_is_closed`, `conversation/tool_search.rs:2343`):
 ///
 /// * **Keyed** halves group on the exact `call_id`, order-blind and state-blind, the
 ///   way [`tool_search::call_id_groups`] does
-///   (`conversation/tool_search.rs:1850`: "the group is defined by the KEY").
+///   (`conversation/tool_search.rs:1922`: "the group is defined by the KEY").
 /// * **Keyless** halves — the provider-minted hosted-search shape, which puts
 ///   `"call_id": null` on both items and therefore forms no key group at all
 ///   ([`tool_search::ToolSearchPairing::Unkeyed`]'s "server-executed (the observed
-///   case)" bullet, `conversation/tool_search.rs:1350-1356`) — group FIFO over
+///   case)" bullet, `conversation/tool_search.rs:1379`) — group FIFO over
 ///   document order: a null-key call groups with the NEXT null-key output anywhere
 ///   later, not only with a physically adjacent one
-///   (`conversation/tool_search.rs:2206`, the FIFO itself at
-///   `conversation/tool_search.rs:2239-2256`).
+///   (`conversation/tool_search.rs:2278`, the FIFO itself at
+///   `conversation/tool_search.rs:2311-2328`).
 ///
 /// Delegating is the point. This is the same grouping
-/// `snap_index_over_discovery_pairs` (`conversation/tool_search.rs:2417`) uses to
+/// `snap_index_over_discovery_pairs` (`conversation/tool_search.rs:2489`) uses to
 /// keep a pair atomic across every history cut, so the decode seam and the cut
 /// funnel cannot disagree about what a pair is: a keyless
 /// `call, call, output, output` batch is two closed pairs to both, not a refused
 /// turn here and a valid history there.
 ///
 /// Scope is honoured the way that helper's own warning requires
-/// (`conversation/tool_search.rs:2339-2347`): the argument here is the WHOLE
+/// (`conversation/tool_search.rs:2411-2418`): the argument here is the WHOLE
 /// `items` vector of one response, never a window, so "no partner" is certified
 /// against every discovery half the response carried.
 ///
 /// Status is deliberately not consulted: a `status` this build cannot name, or an
 /// `in_progress` copy, changes which REPAIR a projector owes (`pairing_of`'s
-/// `Incomplete` guard, `conversation/tool_search.rs:1952-1954`) but not whether
+/// `Incomplete` guard, `conversation/tool_search.rs:2024-2026`) but not whether
 /// both halves are present, and this law is a membership test. For the same reason
 /// an item whose `id` is empty is kept rather than refused: §6.5's "no empty item
 /// ids" is discharged here by minting nothing (see [`discovery_carrier`]'s
@@ -315,19 +315,25 @@ fn discovery_carrier(
 /// house answer to a lost half is the encode-time repair pass (PLAN:946/T15) and
 /// PLAN:947's removal set, neither of which lives here.
 ///
-/// One consequence to keep in view: a client-executed `tool_search_call` arrives
-/// alone, because the answer is the harness's to author and nothing in this tree
-/// authors one yet. The only two call sites of
-/// [`tool_search::ToolSearchItem::from_wire`] outside a `#[cfg(test)]` module or a
-/// `*_tests.rs` file are this file's carrier wrapper and the store's `Deserialize`
-/// impl, which re-runs it on bytes a carrier already holds
-/// (`conversation/tool_search.rs:487-492`, spelled `Self::from_wire` — the reason a
-/// grep on the type name undercounts rather than overcounts). Both construct from
-/// bytes that already exist; neither joins a call to an answer. So no production path turns a lone call
-/// into a pair, and the admitted route declares `execution: "client"`
-/// (`conversation/responses.rs:884`, ruling D5, [`extra_tool_entries_for_route`]), which
-/// means that route still loses the turn until the answer arm lands (apex-waj.57). This
-/// mapping makes a response carrying the pair work; it cannot fix one carrying half.
+/// One consequence to keep in view: a client-executed `tool_search_call`
+/// arrives ALONE — the answer is the harness's to author. The admitted route
+/// declares `execution: "client"` (`conversation/responses.rs:913`, ruling D5,
+/// [`extra_tool_entries_for_route`]), and the turn-loop answer arm (apex-waj.57)
+/// authors the answer in the same iteration it sees the call, so this seam
+/// admits the lone client-executed call as IN-FLIGHT rather than refusing the
+/// response (the carve-out in [`enforce_discovery_pair_law`]): the item maps
+/// onto a `Discovery` call carrier, the pair law closes the group when the
+/// answer lands, and a history cut sees a singleton group it cannot split
+/// until then. The other two production call sites of
+/// [`tool_search::ToolSearchItem::from_wire`] do not pair at decode time
+/// either: the store's `Deserialize` impl re-runs it on bytes a carrier
+/// already holds (`conversation/tool_search.rs:487-492`, spelled
+/// `Self::from_wire` — the reason a grep on the type name undercounts rather
+/// than overcounts), and `client_answer`
+/// (`conversation/tool_search.rs:559`) is the harness's answer constructor —
+/// the answer arm's, called from the turn loop, never from this seam. What
+/// the seam still cannot fix is the opposite half: a response carrying a
+/// lone output, or a lone SERVER-executed call, refuses as before.
 ///
 /// Every refusal here costs the whole response — this runs at
 /// `conversation/responses.rs:170`, before the trailing `Assistant` is pushed at
@@ -335,13 +341,15 @@ fn discovery_carrier(
 /// `SamplingEvent::Failed` (`xai-grok-sampler/src/stream/responses.rs:823-829`) —
 /// and each shape is pinned rather than incidental:
 ///
-/// * A **half**: a lone call, a lone output, or a keyed half whose opposite carries
-///   a different key or no key. Some of these are stricter than PLAN:946's stated
-///   remedy ("restore the pair from the durable record, or drop both"): counted,
-///   each is two halves and the plan would drop both, but the repair pass that could
-///   restore one is T15's (`conversation/tool_search.rs:471-477`,
-///   `CALL_REPLAYABLE_KEYS`) and does not live in this crate, so the join is all
-///   this seam can see and it says no.
+/// * A **half**: a lone SERVER-executed call, a lone output (client or server),
+///   or a keyed half whose opposite carries a different key or no key. (A lone
+///   client-executed call is NOT a half here — the carve-out above: its answer
+///   is the harness's to author, and refusing it is what lost the turn.) Some of
+///   these are stricter than PLAN:946's stated remedy ("restore the pair from
+///   the durable record, or drop both"): counted, each is two halves and the
+///   plan would drop both, but the repair pass that could restore one is T15's
+///   (`conversation/tool_search.rs:216`, `CALL_REPLAYABLE_KEYS`) and does not
+///   live in this crate, so the join is all this seam can see and it says no.
 /// * A keyless batch with more calls than answers (`call, call, output`): the FIFO
 ///   answers the first call and leaves the surplus call with no open output. A
 ///   batch that balances (`call, call, output, output`) is two closed groups and
@@ -349,7 +357,7 @@ fn discovery_carrier(
 /// * The keyless rule is **ordered**: `output, call` is refused, because the FIFO
 ///   only looks forward for an answer — the same direction
 ///   [`tool_search::trailing_discovery_is_unpaired`]
-///   (`conversation/tool_search.rs:2303`) reads the wire in. That asymmetry is
+///   (`conversation/tool_search.rs:2375`) reads the wire in. That asymmetry is
 ///   a reading of the one shape on disk — the live server frames banked at
 ///   `xai-grok-sampler/src/stream/responses.rs:2146` / `:2149`, a call at
 ///   `output_index` 1 and its output at 2 — and NOT wire evidence that the inverted
@@ -373,11 +381,22 @@ fn enforce_discovery_pair_law(
 ) -> std::result::Result<(), crate::SamplingError> {
     let unpaired = tool_search::unpaired_discovery_indices(items);
     // Reported half: the earliest one the owner's grouping could not close, in the
-    // response's own item order.
+    // response's own item order — EXCEPT the D19 R1 carve-out: a
+    // client-executed `tool_search_call` whose answer is missing is IN-FLIGHT,
+    // not a half. The provider mints the call and stops; the answer is the
+    // harness's to author (the turn-loop answer arm), and refusing the
+    // response here is what lost the turn before that arm could ever run.
+    // The carve-out keys on `execution` alone: a server-executed call still
+    // owes the provider the output, and ANY output (client or server) with no
+    // call in the same response is still a half — the provider or a prior turn
+    // owes that call, and no in-tree path will mint it after the fact.
     let Some(half) = items
         .iter()
         .enumerate()
         .filter_map(|(index, item)| Some((index, item.discovery()?)))
+        .filter(|(_, half)| {
+            !matches!(half.kind(), tool_search::ToolSearchKind::Call) || !half.is_client_executed()
+        })
         .find(|(index, _)| unpaired.contains(index))
         .map(|(_, half)| half)
     else {
@@ -635,9 +654,9 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
                     // wire: the harness gives a tool result one textual part — its result text,
                     // leading the array. The sibling dialects drop it the same way, their loop
                     // arm matching only `ContentPart::Image` with no text arm at all
-                    // (conversation/messages.rs:836, conversation/chat_completions.rs:144, each
-                    // behind an `images.is_empty()` branch at :828 / :137); the one textual part
-                    // they do emit is the result text, pushed separately at :831 / :140.
+                    // (conversation/messages.rs:853, conversation/chat_completions.rs:144, each
+                    // behind an `images.is_empty()` branch at :845 / :137); the one textual part
+                    // they do emit is the result text, pushed separately at :848 / :140.
                     ContentPart::Text { .. } => None,
                 })
                 .collect();
@@ -717,13 +736,13 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
         // from `InputItem` solely as `InputItem::Item(..)` (same file, `:400`). This arm
         // builds neither, so the item's own bytes can reach the wire only by splice —
         // exactly the `CodexRawInput` / `XSearch` precedent this arm copies. Which
-        // dialects may splice is decided by the replay arm (`conversation.rs:2683-2705`,
+        // dialects may splice is decided by the replay arm (`conversation.rs:2697-2719`,
         // ruling U17), not here.
         //
         // INVARIANT (one placeholder per registered splice):
         // `ConversationRequest::raw_responses_input_replacements` computes its
         // splice indices as the prefix sums of THIS function's output length, and
-        // `patch_raw_input_replacements` (`xai-grok-sampler/src/client.rs:740`)
+        // `patch_raw_input_replacements` (`xai-grok-sampler/src/client.rs:804`)
         // overwrites `input[index]` wholesale. Emit exactly ONE slot here, or the
         // splice lands on the neighbour item. Pinned by
         // `tool_search::tests::discovery_encoder_flattens_one_slot_per_item_and_the_splice_lands_in_that_slot`.
@@ -1236,7 +1255,7 @@ pub fn has_searchable_tools<T: DeclaredToolSurface>(declared_tools: &[T]) -> boo
 /// extended in place, with this declaration hoisted to `tools[0]` of the final array: the producer
 /// puts it first here and the splice is what keeps it first in front of the typed entries. Hosted
 /// `web_search`/`x_search` never ride that typed channel: each
-/// travels only as a raw-JSON entry (see [`extra_tool_entries`]; `client.rs:877-878`), because
+/// travels only as a raw-JSON entry (see [`extra_tool_entries`]; `client.rs:940-942`), because
 /// emitting either as a typed `rs::Tool` as well is rejected as a duplicate.
 ///
 /// Cache cost: the declaration is model-visible and can carry up to

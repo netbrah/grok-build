@@ -491,6 +491,20 @@ impl<'de> Deserialize<'de> for ToolSearchItem {
     }
 }
 
+/// D22 — "M1 mandated a byte cap that does not exist in any tree, so its
+/// evidence arm could not be written red": the upper bound on a
+/// client-authored answer's payload, measured the way the wire serializes
+/// it (the splice replays the item's raw value). Derived from the only
+/// measurement the campaign has: the largest answer the current registry's
+/// `min(limit, 8)` hand-off can produce is 27 660 bytes of definitions
+/// (the 8 largest of the 27 tool definitions in `hts-o-durable/captures/
+/// 2026-10-05T204207Z/wire_raw_1791232932041.json`, row `gpt-5.6-terra`,
+/// M1), which [`ToolSearchItem::client_answer`] serializes to a 27 775-byte
+/// answer. The cap sits above that measured worst case, so breaching it is a
+/// registry-growth event — a tool description large enough to push the
+/// answer past the cap — not a routine path.
+pub const MAX_DISCOVERY_ANSWER_BYTES: usize = 32_768;
+
 impl ToolSearchItem {
     /// Validate and wrap a provider/stream item.
     ///
@@ -524,6 +538,64 @@ impl ToolSearchItem {
             });
         };
         Ok(Self { kind, raw })
+    }
+
+    /// R2/R6: the one constructor for a CLIENT-AUTHORED answer to a client-executed
+    /// `tool_search_call` — the harness is the only producer of this shape (the provider
+    /// mints `tool_search_output` on the server-executed quadrant), so the item is built
+    /// here rather than assembled field-by-field at each call site. It echoes the call's
+    /// `call_id` verbatim (a `call_*`, never a `tsc_*`/`tso_*` item id), carries the
+    /// terminal `status: "completed"`, sets `execution: "client"`, and OMITS `id` — our
+    /// own probe omits the field on an output it authors (`R6-client-loop/next-turn.json`
+    /// `input[2]`, policy 3 on [`Self::id`]).
+    ///
+    /// TWO bounds apply to `tools`, and the split is deliberate: the `min(limit, 8)`
+    /// COUNT bound is the executor's job (R4), while the `MAX_DISCOVERY_ANSWER_BYTES`
+    /// BYTE bound is this constructor's — on overflow the answer keeps WHOLE entries in
+    /// the handed (score) order and drops the remainder (no partial JSON object may
+    /// reach the model), recording the dropped count as `tools_dropped` so it is
+    /// transcript-visible rather than silently absent. The input is always well-formed
+    /// (we build it), so the `expect` is safe.
+    pub fn client_answer(call_id: &str, tools: Vec<Value>) -> Self {
+        // Largest prefix of the handed (score-ordered) entries whose answer
+        // fits `MAX_DISCOVERY_ANSWER_BYTES`, serialized the way the wire
+        // serializes it. `k = 0` always fits (it serializes only the
+        // envelope), so the scan always lands a usable answer even if a
+        // single entry exceeded the cap on its own.
+        let mut keep = 0;
+        for k in (0..=tools.len()).rev() {
+            let dropped = tools.len() - k;
+            let mut candidate = serde_json::json!({
+                "type": TOOL_SEARCH_OUTPUT_ITEM_TYPE,
+                "call_id": call_id,
+                "status": STATUS_COMPLETED,
+                "execution": CLIENT_EXECUTION,
+                "tools": &tools[..k],
+            });
+            if dropped > 0 {
+                candidate["tools_dropped"] = serde_json::json!(dropped);
+            }
+            if serde_json::to_string(&candidate)
+                .expect("a JSON object serializes")
+                .len()
+                <= MAX_DISCOVERY_ANSWER_BYTES
+            {
+                keep = k;
+                break;
+            }
+        }
+        let dropped = tools.len() - keep;
+        let mut raw = serde_json::json!({
+            "type": TOOL_SEARCH_OUTPUT_ITEM_TYPE,
+            "call_id": call_id,
+            "status": STATUS_COMPLETED,
+            "execution": CLIENT_EXECUTION,
+            "tools": &tools[..keep],
+        });
+        if dropped > 0 {
+            raw["tools_dropped"] = serde_json::json!(dropped);
+        }
+        Self::from_wire(raw).expect("client_answer builds a well-formed tool_search_output")
     }
 
     /// Which half of the pair this is, as read from `raw`'s `type` tag.
@@ -588,9 +660,9 @@ impl ToolSearchItem {
     /// unkeyed quadrant IS grouped, by document order, in [`discovery_groups`] —
     /// "a null-key call groups with the NEXT null-key output anywhere later in the
     /// history, not only with a physically adjacent one"
-    /// (`conversation/tool_search.rs:2206`) — and that grouping is what
+    /// (`conversation/tool_search.rs:2278`) — and that grouping is what
     /// [`unpaired_discovery_indices`] answers from
-    /// (`conversation/tool_search.rs:2348`), including in the decode seam's pair law
+    /// (`conversation/tool_search.rs:2420`), including in the decode seam's pair law
     /// (`conversation/responses.rs`, `enforce_discovery_pair_law`). So this
     /// accessor's `None` means "join on order, not on key", never "this item is
     /// alone".
@@ -2669,6 +2741,201 @@ mod tests {
     /// the field.
     fn keyed_output(call_id: &str, status: Option<&str>) -> ToolSearchItem {
         item(output_raw(call_id, status.map(|status| json!(status))))
+    }
+
+    /// R2/R6: the client-authored answer to a client-executed call. The pairing key
+    /// is the call's `call_id` echoed verbatim (a `call_*`, never a `tsc_*`/`tso_*`
+    /// item id); the answer carries a readable terminal `status` (an output may not
+    /// omit it), marks `execution: "client"`, and OMITS `id` — our own probe omits
+    /// the field on an output it authors (`R6-client-loop/next-turn.json` `input[2]`,
+    /// policy 3 on [`ToolSearchItem::id`]). Placed after its call, the pair-ordered
+    /// predicates must hold.
+    #[test]
+    fn client_answer_echoes_call_id_omits_id_and_pairs_with_its_call() {
+        let call = item(cx3_call()); // call_id = call_AOphypzlL1KKckJugyBS2PYn
+        let answer = ToolSearchItem::client_answer(
+            "call_AOphypzlL1KKckJugyBS2PYn",
+            vec![json!({
+                "type": "function",
+                "name": "lookup_shipping_eta",
+                "description": "Look up the shipping ETA for an order ID.",
+                "parameters": { "type": "object", "properties": {
+                    "order_id": { "type": "string" } },
+                    "required": ["order_id"], "additionalProperties": false }
+            })],
+        );
+        assert_eq!(answer.kind(), ToolSearchKind::Output);
+        assert_eq!(answer.call_id(), Some("call_AOphypzlL1KKckJugyBS2PYn"));
+        assert_eq!(answer.status(), ToolSearchStatus::Completed);
+        assert!(answer.is_client_executed());
+        assert!(
+            answer.id().is_none(),
+            "a client-authored answer omits `id` (policy 3)"
+        );
+        assert_eq!(answer.tools().len(), 1);
+
+        // The pairing law the transcript already trusts: the answer follows its call.
+        let items = vec![call, answer];
+        assert!(call_precedes_output(&items, 1));
+        assert!(output_follows_call(&items, 0));
+    }
+
+    /// R4: the answer is bounded — the caller caps `tools` at `min(limit, 8)`, and
+    /// `client_answer` faithfully carries whatever entries it is handed under the
+    /// byte cap (the COUNT cap is the executor's job; the byte cap is the
+    /// constructor's — see its doc). Two entries in, two entries out.
+    #[test]
+    fn client_answer_carries_exactly_the_tools_it_is_handed() {
+        let answer = ToolSearchItem::client_answer(
+            "call_AOphypzlL1KKckJugyBS2PYn",
+            vec![
+                json!({ "type": "function", "name": "a",
+                        "description": "", "parameters": { "type": "object" } }),
+                json!({ "type": "function", "name": "b",
+                        "description": "", "parameters": { "type": "object" } }),
+            ],
+        );
+        assert_eq!(answer.tools().len(), 2);
+        assert_eq!(
+            answer
+                .raw()
+                .get("tools")
+                .and_then(Value::as_array)
+                .map(|tools| tools.len()),
+            Some(2)
+        );
+    }
+
+    /// D22 — "M1 mandated a byte cap that does not exist in any tree, so its
+    /// evidence arm could not be written red": the answer's payload is bounded
+    /// by `MAX_DISCOVERY_ANSWER_BYTES`, and this test is the evidence arm. The
+    /// fixture is the only measured answer in the campaign: the 8 largest of
+    /// the 27 tool definitions in the banked live request
+    /// (`hts-o-durable/captures/2026-10-05T204207Z/wire_raw_1791232932041.json`,
+    /// row `gpt-5.6-terra`), in score order — 27 660 bytes of definitions, the
+    /// largest the current registry's `min(limit, 8)` hand-off can produce.
+    ///
+    /// Phase 1 — the live worst case FITS the cap: all 8 definitions ride
+    /// whole, nothing is dropped, and the serialized answer (measured the way
+    /// the wire serializes it: the splice replays the item's raw value) is at
+    /// most `MAX_DISCOVERY_ANSWER_BYTES`.
+    ///
+    /// Phase 2 — the truncation semantics that ship with the cap: an
+    /// overflowing hand-off keeps WHOLE definitions in score order and drops
+    /// the remainder (no partial JSON object may reach the model), and the
+    /// dropped count is recorded on the answer (`tools_dropped`) so it is
+    /// transcript-visible rather than silently absent.
+    #[test]
+    fn discovery_answer_payload_stays_under_the_byte_cap() {
+        // The 8 largest tool definitions from the capture named above, in
+        // score order, byte-exact as the wire serialized them.
+        const TERA_TOP8: [&str; 8] = [
+            r##"{"type":"function","name":"spawn_subagent","parameters":{"$schema":"http://json-schema.org/draft-07/schema#","required":["prompt","description"],"properties":{"prompt":{"description":"The full task prompt for the subagent to execute.","type":"string"},"description":{"description":"Short description of the task (3-5 words).","type":"string"},"subagent_type":{"description":"Name of the subagent type to launch. Built-in types: \"general-purpose\", \"explore\", \"plan\". Additional user-defined types may also be available.","type":"string","default":"general-purpose"},"background":{"description":"Returns immediately with a subagent_id. Use the task output tool to retrieve results. This is set to true by default.","type":"boolean","default":true},"isolation":{"description":"Isolation mode: \"none\" (default, shared workspace) or \"worktree\" (isolated git worktree). Worktree mode prevents the child's edits from affecting the parent workspace until explicitly merged.","type":["string","null"],"enum":["none","worktree",null]},"resume_from":{"description":"Resume from a previously completed subagent's conversation. Pass the subagent_id returned by a prior task call. The new subagent continues the previous one's raw transcript with the new task prompt appended. The source must be completed (not running), belong to the current session, and use the same subagent_type.","type":["string","null"]},"cwd":{"description":"Explicit working directory for the subagent. The path must exist and be a directory. Mutually exclusive with isolation=\"worktree\". Ignored when resume_from is set (the resumed child inherits its source's cwd/worktree).","type":["string","null"]},"model":{"description":"Optional model slug for this agent. If provided, it must resolve to one of the available model slugs. If omitted, the subagent uses the same model as the parent agent. Do not pass if resume_from is set (prior model will be used). Only choose an explicit model when the user directly requests it.","type":["string","null"]},"effort":{"description":"Optional reasoning effort for this agent (e.g. \"low\", \"medium\", \"high\"). Must be a value the agent's model supports; it is rejected for models without a reasoning-effort menu (e.g. claude). If omitted, the agent inherits the parent session's reasoning effort.","type":["string","null"]}},"type":"object"},"description":"Start a subagent that works on a task independently and reports back.\n\nAgent types:\n\n- **general-purpose**: General purpose agent for multi-step tasks. Has access to: run_terminal_command, read_file, search_replace, list_dir, grep, web_search, and todo_write.\n- **explore**: Fast, read-only agent specialized for codebase exploration. Read-only \u2014 has access to: read_file, list_dir, grep.\n- **plan**: Software architect for planning implementation strategies. Read-only \u2014 has access to: read_file, list_dir, grep, web_search, and todo_write. File editing and command execution are not available.\n- **codebase-memory-auditor**: Bounded-scope graph audit with check_index_coverage and source read/grep fallback.\n- **codebase-memory**: Default task-directed graph verification with check_index_coverage and source read/grep fallback.\n- **codebase-memory-scout**: Fast positive, provisional graph lookup with check_index_coverage and source read/grep fallback.\n- **codex-sol**: GPT-5.6 Sol on the /responses wire (Codex dialect, encrypted reasoning via East US 2).\n- **grok**: Grok-4.6 on the /responses wire (xAI native dialect).\n- **cognee-memory:cognee-recall**: Searches Cognee memory (session cache and permanent knowledge graph) to retrieve relevant context. Can filter by data category (user, project, agent). Session memory is auto-searched on every prompt; use this agent for deeper or cross-session searches.\n\n## Usage notes\n- When the agent is done, it returns a single message with its agent ID. Use that ID to resume the agent later for follow-up work.\n- background: Returns immediately with a subagent_id. Use get_command_or_subagent_output to retrieve results. This is set to true by default.\n- Subagents receive a compacted version of project instructions (AGENTS.md). If the task requires detailed conventions (e.g., build rules, testing patterns), include the relevant rules directly in the prompt.\n- When using the spawn_subagent tool, you must specify a subagent_type parameter to select which agent type to use.\n- When launching independent subagents, you MUST incorporate the results into the task based on requirements BEFORE concluding.\n\nResuming a previous agent (resume_from):\n- Use resume_from to continue a previously completed subagent's conversation. Pass the subagent_id returned by a prior spawn_subagent call. A resumed agent keeps its full transcript and tool state, so you only need to describe what changed since the last run \u2014 don't re-explain the original task.\n- The resumed agent must use the same subagent_type as the source.\n\nIsolation mode:\n- Use isolation to control the child's execution environment. With \"worktree\", the child runs in an isolated git worktree whose edits don't affect the parent workspace; the worktree is preserved after completion and its path is returned in the output.\n\nIf the user explicitly asks for the model of a subagent/task, you may ONLY use model slugs from this list:\n- claude-opus-5\n- claude-opus-5-1m\n- claude-sonnet-5\n- claude-sonnet-5-1m\n- gemini-3.1-pro-preview\n- gemini-3.8-flash\n- gpt-5.6-luna\n- gpt-5.6-sol\n- gpt-5.6-sol-1m\n- gpt-5.6-terra\n- gpt-5.6-terra-1m\n- grok-4.6\n\nIf the user does not explicitly request a model, omit `model` to inherit the parent model."}"##,
+            r##"{"type":"function","name":"workflow","parameters":{"$schema":"http://json-schema.org/draft-07/schema#","required":["source"],"type":"object","properties":{"source":{"description":"Exactly one workflow source. The `type` tag selects a registered name, inline script, script path, same-process resume, or a pause/stop of a run this session launched.","oneOf":[{"type":"object","properties":{"name":{"description":"Name of a registered workflow (built-in, or discovered from the project `.grok/workflows/` or user `~/.grok/workflows/`).","type":"string"},"type":{"type":"string","const":"name"}},"additionalProperties":false,"required":["type","name"]},{"type":"object","properties":{"script":{"description":"Inline Rhai workflow script. It must start with a pure-literal `let meta = #{ name: ..., description: ... };` map. Before authoring, read the `create-workflow` skill's SKILL.md. Run the path-specific `validate_only` smoke check with representative args.","type":"string"},"type":{"type":"string","const":"script"}},"additionalProperties":false,"required":["type","script"]},{"type":"object","properties":{"script_path":{"description":"Path to a .rhai workflow script on disk.","type":"string"},"type":{"type":"string","const":"script_path"}},"additionalProperties":false,"required":["type","script_path"]},{"type":"object","properties":{"resume_from_run_id":{"description":"Resume a same-process paused run, continuing its original immutable source and args. A budget-limited run resumes only when `agent_budget` is passed with a higher cap. Process-restart interruptions are terminal.","type":"string"},"type":{"type":"string","const":"resume"}},"additionalProperties":false,"required":["type","resume_from_run_id"]},{"type":"object","properties":{"run_id":{"description":"Pause an active run this session launched, by its `run_id` or display name. Its child agents are cancelled and the run is marked paused; continue it with the `resume` source.","type":"string"},"type":{"type":"string","const":"pause"}},"additionalProperties":false,"required":["type","run_id"]},{"type":"object","properties":{"run_id":{"description":"Stop a run this session launched, by its `run_id` or display name. Its child agents are cancelled and the run is marked cancelled (finished). It keeps its journal, so `resume` can still continue it later.","type":"string"},"type":{"type":"string","const":"stop"}},"additionalProperties":false,"required":["type","run_id"]}]},"agent_budget":{"description":"Absolute cumulative cap on logical child-agent calls for this run. Every agent() and every parallel() item consumes one slot; schema retries do not. Defaults to 128 and may be set from 1 through 1,024. A panel that would exceed the remaining budget is rejected before any of its children launch.","type":["integer","null"],"format":"uint64","minimum":1,"maximum":1024,"default":null},"args":{"description":"JSON value bound to the script's `args` global. Use an object for named arguments.","default":null},"validate_only":{"description":"Run a path-specific smoke check without launching: validate metadata, compile the full script, and execute the single path selected by the supplied args and canned host results. It does not exercise every branch or prove live tools and agent outputs work.","type":"boolean","default":false}}},"description":"Launch or control a workflow: a Rhai script that orchestrates subagents as one background run. Provide exactly one `source`: a registered workflow `name`, an inline `script`, a `script_path`, a same-process `resume`, or a `pause` / `stop` of a run this session launched (by `run_id` or display name). Optionally pass `args` (bound to the script's `args`) and `agent_budget`, an absolute cap on cumulative child-agent calls: every agent() and parallel() item consumes one slot (schema retries do not); default 128. The host also caps live children per run (32 by default, host-configured) \u2014 larger parallel() panels are queued and still act as a barrier. The call returns immediately; progress appears in `/workflow runs` and completion is reported automatically \u2014 do not poll or sleep-wait.\n\nPrefer a registered workflow when one fits; author a script for bounded fan-out over a known work list, staged research and verification, or several independent perspectives. Before writing or editing a script, read the `create-workflow` skill's SKILL.md. `validate_only: true` runs a path-specific smoke check (metadata, compile, one canned-host path) \u2014 not proof that every branch or live tool works.\n\nA started run gets a session-unique display name (e.g. `review-changes`, `review-changes-2`) \u2014 the handle to show the user, who manages runs with `/workflow pause|resume|stop <name>`; keep run IDs internal. To stop or pause a run yourself, call this tool with `source: { type: \"stop\", run_id }` or `{ type: \"pause\", run_id }` (run id or display name); both cancel the run's child agents and keep its journal, so either can be continued later with `resume`. Pause only applies to an active run; stop applies to any run that has not finished or hit its agent budget (a budget-limited run is already stopped and needs `resume` with a higher `agent_budget`). Each launch persists an editable `script_path`; edit it and launch as a new run to iterate. Use the `resume` source only for a same-process paused run (process restarts are terminal); it reuses the run's original immutable source and args, and a budget-limited run resumes only with a higher `agent_budget`. Save reusable scripts to `.grok/workflows/<name>.rhai`."}"##,
+            r##"{"type":"function","name":"send_feedback","parameters":{"$schema":"http://json-schema.org/draft-07/schema#","required":["title","details","type"],"type":"object","properties":{"title":{"description":"Short summary for the draft.","type":"string"},"details":{"description":"Short labeled bullets in this order: What happened, What the user said, Repro, optional Evidence, then optional verified Cause. Keep each to 1\u20133 lines; do not use narrative paragraphs.","type":"string"},"area":{"description":"Optional product area; omit when unclear.","type":["string","null"]},"type":{"description":"Feedback classification.","type":"string","enum":["bug","idea","missing_capability"]},"task_category":{"description":"Optional task category; omit when unclear.","type":["string","null"],"enum":["code_edit","debug","explain","plan","shell","search","review","other",null]},"failure_mode":{"description":"Optional model-behavior failure mode; omit for a pure product or tool bug.","type":["string","null"],"enum":["overeager","stopped_early","unwanted_scope","didnt_ask_for_help","excessive_questions","subagent_overspawn","over_correction","ignored_instructions","hallucinated","sloppy_code","destructive","lost_context","stuck_in_a_loop","model_regression","disputed","wrong_tone","unclear_output","other",null]},"draft_id":{"description":"Existing local draft to update. When set, this call does not append a second draft.","type":["string","null"]}}},"description":"# Overview\n\nSave or update user feedback for later review. Feedback is stored as local drafts and is never sent without explicit approval through the `/feedback` modal. This tool opens no UI and does not stop the current turn.\n\n# Invocation\n\nWhen the user types `/feedback` bare into the prompt bar, the modal opens with the Write and Drafts tabs. The Write tab is only for the user to hand-write feedback.\nIf the user types `/feedback` with text inline, the system inserts it like a skill. Only when feedback is requested that way, or the user explicitly wants you to update an existing feedback draft, may you use the draft_id field.\nWhen draft_id is set, update that existing draft. Do not duplicate drafts. draft_id is only a tool argument. Never write it into title, details, or area.\n\nWhen the user wants to share feedback implicitly, draft it with this tool, whether it is a product or model-behavior issue.\n\n# Usage\n\nWrite details as short labeled bullets in this order: What happened, What the user said, Repro, optional Evidence, then optional verified Cause.\nSet failure_mode only for model-behavior feedback; omit it for a pure product or tool bug.\nIf mapping feedback is incredibly unclear, only then may you use ask_user_question to confirm ambiguity with the user. Use this sparingly.\n\n# Confirmation\n\nAfter drafting feedback and ending your turn, tell the user they can verify and send it to the team by typing `/feedback` to open the modal and going to the Drafts section.\n\n# Misc\nThis session's drafts file is /tmp/hts-o/w86home/sessions/%2Fprivate%2Ftmp%2Fhts-o%2Fw86home%2Fproj/01a10dcd-6cdf-79f3-b86c-6323c7bf5ef7/feedback_drafts.json.\nIf the user's feedback can be answered from the docs (for example UI element locations or setup), read the Grok Build docs locally or online and answer alongside the created draft.\n\nDoing the wrong amount of work\n- Overeager: Did more than asked, acted before being told, jumped in without enough info\n- Stopping early: Quit early, handed back work that could have been finished\n- Unwanted scope: Not stopping\n- Didn't ask for help: Didn't ask the user for help when stuck\n- Excessive questions: Asked clarifying questions when there was enough to proceed\n- Subagent overspawn: Launched more subagents than the task warranted\n- Over correction: Fixed feedback by swinging too far the other way\n\nWrong outputs\n- Instruction following: Ignored or missed explicit instructions or constraints\n- Overconfidence and hallucination: Stated something confidently that was wrong or fabricated\n- Code quality: Buggy, sloppy, or poorly structured code\n- Destructive actions: Did or risked something hard to reverse\n- Context and memory: Lost earlier context, forgot established facts, contradicted itself\n- Repetition and looping: Repeated output or retried the same failing action\n- Model regression: Behavior noticeably worse than a previous model version\n\nStyle\n- Dispute or decline: Refused or argued against a reasonable request\n- Tone or preachiness: Wrong tone \u2014 moralizing, condescending, sycophantic, verbose\n- Unclear output: Output was hard to read or interpret\n- Other: Model-behavior issue fitting none of the above"}"##,
+            r##"{"type":"function","name":"run_terminal_command","parameters":{"$schema":"http://json-schema.org/draft-07/schema#","required":["command","description"],"properties":{"command":{"description":"The bash command to run.","type":"string"},"timeout":{"description":"Optional timeout in milliseconds (max 36000000). Default: 120000. Kill deadline for a command that is still in the foreground. This does not extend how long the tool waits: a foreground command still running after about 15s is moved to the background and you receive a task id. Once backgrounded, the command is no longer bound by this value; it runs until it exits (background cap 10h). If you do not receive a task id, the command was killed at timeout instead.","type":["integer","null"],"format":"uint64","minimum":0,"default":120000,"maximum":36000000},"description":{"description":"One sentence explanation as to why this command needs to be run and how it contributes to the goal.","type":"string"},"background":{"description":"Set to true for long-running commands that should run in the background (e.g., dev servers, long builds). Returns a task id immediately while the command keeps running in the background; you are notified on completion, so do not poll or sleep-wait for it.","type":"boolean","default":false}},"type":"object"},"description":"Run a bash command and return its output.\n\nUsage notes:\n  - You can specify an optional timeout in milliseconds (up to 36000000ms). Foreground commands block this tool for at most about 15s. A command still running at that point is moved to the background \u2014 it is not killed and has not timed out \u2014 and you receive a task id; wait for it with get_command_or_subagent_output. If you do not receive a task id, the command was killed at timeout instead. timeout is a separate kill deadline that only applies while the command is still in the foreground; once backgrounded the command runs until it exits (background cap 10h). Setting timeout never makes this tool wait longer than about 15s. Commands launched with background: true are not bounded by the default: with timeout omitted or 0 they run until they exit or are killed; a positive timeout still applies.\n  - Timeout enforcement:when the timeout fires on an explicit `background: true` command, the wrapper kills the child process group (SIGTERM, escalated to SIGKILL after a ~1s grace period). Descendants that did not detach via `setsid` / `nohup` will also be killed. `timeout: 0` in `background: true` mode disables the wrapper timeout entirely; the child's lifetime is owned by the model via kill_command_or_subagent.\n  - If the output exceeds 40000 characters, the middle is truncated (you keep the beginning and end) and the result includes the path to a log file with the full output, which you can read or search.\n  - You can use the background parameter to run the command in the background (e.g., dev servers, long builds): it returns a task id immediately and keeps running in the background. You are notified on completion, so do not poll or sleep-wait for it. You do not need to use '&' at the end of the command when using this parameter."}"##,
+            r##"{"type":"function","name":"reference_to_video","parameters":{"$schema":"http://json-schema.org/draft-07/schema#","required":["prompt","aspect_ratio"],"type":"object","properties":{"prompt":{"description":"Prompt to guide the video generation model. Describe the desired video.","type":"string"},"images":{"description":"Reference images, up to 7 entries; the images are used as style/content references for the generated video (people, objects, clothing, settings). Each entry may be an absolute filesystem path, HTTPS URL, or `data:image/...;base64,...` URL. Reference them in the prompt as `<IMAGE_0>`, `<IMAGE_1>`, ... May be empty when `voices` is provided.","type":"array","items":{"type":"string"}},"voices":{"description":"Optional preset voices the subject(s) speak in, up to 3 entries, each a voice identifier from the built-in roster (e.g. \"ara\", \"eve\", \"leo\", \"rex\"; same voices as the xAI text-to-speech API; an unknown identifier fails with the list of available voices). Reference them in the prompt as `<AUDIO_0>`, `<AUDIO_1>`, `<AUDIO_2>`. Usable alongside `images` or on their own.","type":"array","items":{"type":"string"}},"aspect_ratio":{"description":"Aspect ratio of the generated video, decide it based on the user's request. 1:1 for square (icons, profiles), 16:9 for wide (landscapes, cinematic), 9:16 for tall (phone wallpapers, stories), 4:3 or 3:2 for horizontal photos, 3:4 or 2:3 for vertical (portraits, posters).","type":"string"},"duration":{"description":"Duration of the video in seconds, between 1 and 15. Defaults to 6.","type":["integer","null"],"format":"uint32","minimum":0},"resolution_name":{"description":"Resolution name of the video generation, only specify it when user asks for a specific resolution, either 480p or 720p. Defaults to 480p.","type":"string","default":"480p"}}},"description":"Generate a video from reference images and/or preset voices, guided by a required text prompt; returns the saved video's absolute path. When telling the user where it was saved, refer to it by its short session-relative path (e.g. `videos/1.mp4`) rather than the absolute path, so it renders as a clickable link that opens the video. Provide up to 7 `images` (style/content references: people, objects, clothing, settings) and/or up to 3 `voices` (preset voice identifiers the subjects speak in); at least one of either is required. Tag references in the prompt as `<IMAGE_0>`, `<IMAGE_1>`, ... and `<AUDIO_0>`, `<AUDIO_1>`, ... Use this tool when the user wants a video referencing existing images without locking the first frame, or wants a speaking subject with a specific voice. Example: reference_to_video(prompt=\"The person from <IMAGE_0> presents the product from <IMAGE_1>, speaking with the voice from <AUDIO_0>\", images=[\"/Users/me/host.jpg\", \"/Users/me/product.jpg\"], voices=[\"eve\"], aspect_ratio=\"16:9\", duration=10, resolution_name=\"480p\")"}"##,
+            r##"{"type":"function","name":"grep","parameters":{"$schema":"http://json-schema.org/draft-07/schema#","required":["pattern"],"type":"object","properties":{"pattern":{"description":"The regular expression pattern to search for in file contents (rg --regexp)","type":"string"},"path":{"description":"File or directory to search in (rg pattern -- PATH). Defaults to workspace path.","type":["string","null"]},"glob":{"description":"Glob pattern (rg --glob GLOB -- PATH) to filter files (e.g. \"*.js\", \"*.{ts,tsx}\").","type":["string","null"]},"-B":{"description":"Number of lines to show before each match (rg -B).","type":"integer"},"-A":{"description":"Number of lines to show after each match (rg -A).","type":"integer"},"-C":{"description":"Number of lines to show before and after each match (rg -C).","type":"integer"},"-i":{"description":"Case insensitive search (rg -i).","type":"boolean","default":false},"type":{"description":"File type to search (rg --type). Common types: js, py, rust, go, java, etc. More efficient than glob for standard file types.","type":["string","null"]},"head_limit":{"description":"Limit output to first N lines/entries, equivalent to \"| head -N\". Defaults to 200 lines or 500 entries.","type":"integer"},"multiline":{"description":"Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall).","type":"boolean","default":false}}},"description":"Search file contents with regular expressions (ripgrep).\n\n- Full regex syntax, so escape literal special characters: `functionCall\\(`, or `interface\\{\\}` to find interface{} in Go.\n- Pass pattern as a raw regex string \u2014 no surrounding quotes.\n- Respects .gitignore unless you pass a broad glob like '--glob *'.\n- Only filter by 'type' or 'glob' when you are sure of the file type; import paths may not match source file types (.js vs .ts).\n- Output is ripgrep-style: ':' marks match lines, '-' marks context lines, grouped by file. Large results are capped and report \"at least\" counts."}"##,
+            r##"{"type":"function","name":"scheduler_create","parameters":{"$schema":"http://json-schema.org/draft-07/schema#","properties":{"task_id":{"description":"Id of an existing task to update in place: provided fields replace old values, omitted ones are unchanged, the schedule keeps its phase, and an unknown id errors. Omit to create a task.","type":["string","null"],"default":null},"interval":{"description":"Interval between executions, e.g. \"5m\", \"2h\", \"1d\". Required to create; optional with task_id","type":["string","null"],"default":null},"prompt":{"description":"The prompt text to execute on each scheduled fire. Required to create; optional with task_id","type":["string","null"],"default":null},"durable":{"description":"Whether the task persists across sessions. Default: false. Create-only: ignored with task_id","type":["boolean","null"],"default":null},"fire_immediately":{"description":"Whether to fire immediately on creation (true) or wait for the first interval (false). Default: false. Create-only: ignored with task_id","type":"boolean","default":false}},"type":"object","required":[]},"description":"Create a scheduled task that runs a prompt on a recurring interval, or update an existing one in place.\n\nUse this tool when a user asks you to loop, repeat, or schedule a prompt or a task.\n\nSet fire_immediately: true to also fire once on creation; by default the first run waits for the interval.\n\nTo change an existing task, pass its task_id: provided fields replace old values, omitted ones are unchanged, and the schedule keeps its phase. An unknown id errors.\n\nUsage notes:\n- Interval format: \"5m\" (minutes), \"2h\" (hours), \"1d\" (days), \"60s\" (seconds, min 60)\n- Maximum 50 scheduled tasks at once\n- Tasks auto-expire after 7 days\n- For one-time delayed work, run a background terminal command (e.g. `sleep 1800 && <command>`) instead; its completion notifies you"}"##,
+            r##"{"type":"function","name":"read_file","parameters":{"$schema":"http://json-schema.org/draft-07/schema#","required":["target_file"],"type":"object","properties":{"target_file":{"description":"The path of the file to read. You can use either a relative path in the workspace or an absolute path. If an absolute path is provided, it will be preserved as is.","type":"string"},"offset":{"description":"The line number to start reading from. Only provide if the file is too large to read at once.","type":"integer","default":1},"limit":{"description":"The number of lines to read. Only provide if the file is too large to read at once.","type":"integer"},"pages":{"description":"Page range for PDF files (e.g. '1-5', '3', '10-'). Required for PDFs with more than 10 pages. Max 20 pages per call. Ignored for non-PDF files.","type":["string","null"]},"format":{"description":"Output format for PDF files. 'image' (default) renders pages as images. 'text' extracts text content. Ignored for non-PDF files.","type":["string","null"]}}},"description":"Read a file.\n\nUsage:\n- The target_file parameter can be a relative path in the workspace or an absolute path\n- By default, it reads up to 1000 lines starting from the beginning of the file\n- Line numbers (1-based) appear as anchors in the format LINE_NUMBER\u2192LINE_CONTENT on the first returned line and on every 10th line of the file; the lines in between show content only. Count from the nearest anchor when referring to a specific line\n- This tool can read PDF files (.pdf), PowerPoint files (.pptx), Jupyter notebooks (.ipynb files), and image files (e.g. PNG, JPG, etc).\n- When reading an image file the contents are presented visually as this tool uses multimodal LLMs.","defer_loading":true}"##,
+        ];
+        let defs: Vec<Value> = TERA_TOP8
+            .iter()
+            .map(|raw| serde_json::from_str(raw).expect("the fixture definition decodes"))
+            .collect();
+        let fixture_bytes: usize = defs
+            .iter()
+            .map(|def| {
+                serde_json::to_string(def)
+                    .expect("a fixture definition serializes")
+                    .len()
+            })
+            .sum();
+        assert_eq!(
+            fixture_bytes, 27_660,
+            "the fixture must stay the banked 8 largest definitions (27 660 B)"
+        );
+
+        // Phase 1 — the measured live worst case fits the cap.
+        let answer = ToolSearchItem::client_answer("call_WAJ57D22", defs.clone());
+        let wire = serde_json::to_string(answer.raw()).expect("the answer serializes");
+        assert!(
+            wire.len() <= MAX_DISCOVERY_ANSWER_BYTES,
+            "the answer payload is {len} bytes, over the {cap}-byte cap: the cap is \
+             an upper bound the registry's largest answer must fit",
+            len = wire.len(),
+            cap = MAX_DISCOVERY_ANSWER_BYTES
+        );
+        assert_eq!(
+            answer.tools().len(),
+            8,
+            "every definition rides whole when the answer fits"
+        );
+        assert!(
+            answer.raw().get("tools_dropped").is_none(),
+            "nothing was dropped, so the answer records nothing: {answer:?}"
+        );
+
+        // Phase 2 — an overflowing hand-off (the same 8 definitions twice).
+        let mut overflow = defs.clone();
+        overflow.extend_from_slice(&defs);
+        // The maximality candidate's tools, captured before the hand-off is
+        // moved into the constructor below.
+        let first_nine: Vec<Value> = overflow.iter().take(9).cloned().collect();
+        let capped = ToolSearchItem::client_answer("call_WAJ57D22CAPPED", overflow);
+        let capped_wire =
+            serde_json::to_string(capped.raw()).expect("the capped answer serializes");
+        assert!(
+            capped_wire.len() <= MAX_DISCOVERY_ANSWER_BYTES,
+            "truncation must land the capped answer under the cap, not over it: \
+             {} bytes",
+            capped_wire.len()
+        );
+        let kept = capped
+            .raw()
+            .get("tools")
+            .and_then(Value::as_array)
+            .expect("the capped answer carries its tools array");
+        let dropped = capped
+            .raw()
+            .get("tools_dropped")
+            .and_then(Value::as_u64)
+            .expect("the answer records how many definitions it dropped")
+            as usize;
+        assert_eq!(
+            kept.len() + dropped,
+            16,
+            "every input definition is either on the wire or counted as dropped"
+        );
+        assert_eq!(
+            kept,
+            &defs[..kept.len()],
+            "the kept set is a whole-definition prefix in score order, byte-identical"
+        );
+        assert_eq!(
+            (kept.len(), dropped),
+            (8, 8),
+            "the cap admits exactly the first 8 of the 16 — an answer that kept \
+             fewer or more would truncate too eagerly or too late: {capped:?}"
+        );
+        // Maximality — a 9th kept definition would breach the cap, so the 8 kept
+        // are as many as the cap allows, not a margin around them. The 9th
+        // entry of the hand-off is the first definition again (the doubled
+        // list), exactly as the production scan would measure it.
+        let ninth = serde_json::to_string(&json!({
+            "type": "tool_search_output",
+            "call_id": "call_WAJ57D22CAPPED",
+            "status": "completed",
+            "execution": "client",
+            "tools": first_nine,
+            "tools_dropped": 7
+        }))
+        .expect("the maximality candidate serializes");
+        assert!(
+            ninth.len() > MAX_DISCOVERY_ANSWER_BYTES,
+            "9 kept definitions must not fit under the cap: the cap admits exactly \
+             the first 8, not a margin around them"
+        );
     }
 
     /// One captured call read through the accessors that expose its fields, each one
@@ -6749,6 +7016,91 @@ mod tests {
         );
     }
 
+    /// R2 (apex-waj.57): the in-flight state the D19 R1 carve-out admits — a
+    /// client-executed call with no answer in history yet — is a SINGLETON
+    /// group. A singleton cannot be split, so no cut anywhere around it moves:
+    /// the call rides whole on whichever side the cut lands, and the snap never
+    /// drags the cut back to "protect" an answer the group does not hold. This
+    /// is why the in-flight call is a state the cuts see, not a hole in them.
+    #[test]
+    fn an_in_flight_lone_client_call_is_a_singleton_group_no_cut_splits() {
+        let items = vec![
+            ConversationItem::user("q"),
+            disc_item(keyed_call("call_WAJ57_R2", Some("completed"))),
+            ConversationItem::assistant("a"),
+        ];
+        for cut in 0..=items.len() {
+            assert_eq!(
+                snap_index_over_discovery_pairs(&items, cut),
+                cut,
+                "cut {cut} must not move: the lone in-flight call is a singleton group \
+                 and there is no partner to keep together"
+            );
+        }
+    }
+
+    /// R2 (apex-waj.57): the moment the answer arm appends its half, the pair is
+    /// an ordinary keyed group — the answer echoes the call's `call_id`, so the
+    /// group closes exactly like a provider-minted pair — and a cut between the
+    /// halves must snap DOWN to the call. The in-flight singleton is a transient
+    /// of one turn-loop iteration; the durable state every cut sees is the
+    /// closed pair, and this pin keeps the two from drifting apart.
+    #[test]
+    fn an_answered_client_pair_snaps_a_cut_between_its_halves_like_any_pair() {
+        let call = keyed_call("call_WAJ57_R2", Some("completed"));
+        let answer = ToolSearchItem::client_answer("call_WAJ57_R2", vec![]);
+        let items = vec![
+            ConversationItem::user("q"),
+            disc_item(call),
+            disc_item(answer),
+            ConversationItem::assistant("a"),
+        ];
+        assert_eq!(
+            snap_index_over_discovery_pairs(&items, 2),
+            1,
+            "cut 2 would retain the answer without its call; the snap must fall to \
+             the call, as it does for a provider-minted pair"
+        );
+        assert_eq!(
+            snap_index_over_discovery_pairs(&items, 1),
+            1,
+            "a cut before the pair splits nothing and must not move"
+        );
+        assert_eq!(
+            snap_index_over_discovery_pairs(&items, 3),
+            3,
+            "a cut past the whole pair splits nothing and must not move"
+        );
+    }
+
+    /// R2 (apex-waj.57): the summariser/recap prep question
+    /// ([`trailing_discovery_is_unpaired`]) answers the same before and after
+    /// the answer lands: an in-flight client call at the tail IS unpaired — the
+    /// summariser cannot summarise a half the harness has not finished — and
+    /// the arm's answer closes the tail. That transition is what makes
+    /// "compaction/summarisation cannot fire while a call is in flight" (the
+    /// R2 resolution) hold: the arm runs in the same turn-loop iteration,
+    /// before the next loop-head compaction point, and by then this reads
+    /// `false`.
+    #[test]
+    fn trailing_discovery_is_unpaired_flips_when_the_harness_answer_lands() {
+        let call = keyed_call("call_WAJ57_R2", Some("completed"));
+        let in_flight = vec![ConversationItem::user("q"), disc_item(call.clone())];
+        assert!(
+            trailing_discovery_is_unpaired(&in_flight),
+            "an in-flight call at the tail is unpaired until the answer lands"
+        );
+        let answered = vec![
+            ConversationItem::user("q"),
+            disc_item(call),
+            disc_item(ToolSearchItem::client_answer("call_WAJ57_R2", vec![])),
+        ];
+        assert!(
+            !trailing_discovery_is_unpaired(&answered),
+            "the harness's answer closes the tail pair; recap prep must keep it"
+        );
+    }
+
     /// M-D17: every window/cut decision in the compaction + rewind stack must be
     /// pair-atomic. The snap only ever moves DOWN, to the group's first item, so
     /// a cut can never land between a call and its output: rewind drops both
@@ -7059,10 +7411,7 @@ mod tests {
         // The unkeyed quadrant follows the same rule: an output with no open call is
         // its own group, however many outputs sit together.
         let server_pair = sol_hosted_server_pair();
-        let orphan_outputs = vec![
-            disc(server_pair[1].clone()),
-            disc(server_pair[1].clone()),
-        ];
+        let orphan_outputs = vec![disc(server_pair[1].clone()), disc(server_pair[1].clone())];
         assert_eq!(unpaired_discovery_indices(&orphan_outputs), vec![0, 1]);
     }
 }

@@ -292,5 +292,32 @@ mod tests {
              must reach the IR — a row that gets one half kills the turn at the decode seam \
              instead of this test"
         );
+
+        // D14 answer arm (apex-waj.57): an admitting row also invites a client-executed
+        // `tool_search_call` whose answer the HARNESS must author — the decode seam above
+        // only proves the provider's server half lands, not that we can build the client
+        // half. Refuse the row until production can build it: `ToolSearchItem::client_answer`
+        // is the one constructor for that shape (xai-grok-sampling-types
+        // `conversation/tool_search.rs:559`), and reverting it reddens this test by
+        // compile error, not assertion.
+        let answer =
+            xai_grok_sampling_types::conversation::tool_search::ToolSearchItem::client_answer(
+                "call_d14_answer_arm",
+                vec![serde_json::json!({
+                    "type": "function",
+                    "name": "lookup_shipping_eta",
+                    "description": "Look up the shipping ETA for an order ID.",
+                    "parameters": { "type": "object" },
+                })],
+            );
+        assert_eq!(
+            answer.kind().item_type(),
+            "tool_search_output",
+            "the answer arm must build a tool_search_output"
+        );
+        assert!(
+            answer.is_client_executed(),
+            "the answer arm builds the client-executed half (the provider mints the server half)"
+        );
     }
 }

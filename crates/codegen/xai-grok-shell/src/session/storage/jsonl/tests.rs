@@ -2675,6 +2675,30 @@ fn discovery_line(raw: serde_json::Value) -> ConversationItem {
     }
 }
 
+/// R2 (apex-waj.57): the rebuild's discovery-row count
+/// (`raw_line_is_discovery_row`, shared with `chat_rebuild::count_chat_rows`)
+/// is a byte-level type-tag check with NO pairing logic, so the in-flight
+/// client call row — the half the decode seam now admits without its answer —
+/// counts as a discovery row exactly like a pair member. A rebuild that would
+/// lose it is therefore refused exactly as one that would lose the pair is
+/// (apex-waj.75): the in-flight state is counted, not special-cased.
+#[test]
+fn an_in_flight_client_call_row_counts_as_a_discovery_row_for_the_rebuild() {
+    let row = discovery_line(serde_json::json!({
+        "type": "tool_search_call",
+        "id": "tsc_waj57_in_flight",
+        "call_id": "call_WAJ57_R2",
+        "execution": "client",
+        "status": "completed",
+        "arguments": { "query": "shipping ETA lookup by order ID", "limit": 5 }
+    }));
+    let line = serde_json::to_string(&row).expect("the row serialises");
+    assert!(
+        super::raw_line_is_discovery_row(line.as_bytes()),
+        "the in-flight call row carries the `discovery` head the rebuild counts: {line}"
+    );
+}
+
 /// A stored discovery pair must come back through the real loader as two items, in
 /// authoring order, byte-identical, with the join key intact.
 ///

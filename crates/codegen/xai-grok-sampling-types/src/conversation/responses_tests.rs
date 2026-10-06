@@ -1013,7 +1013,7 @@ fn tool_search_source_listing_accounts_name_bytes_not_char_count() {
 /// Production passes a declaration only on an admitted route: the three Responses body sites
 /// call `extra_tool_entries_for_route` (`client.rs:2734`, `client.rs:3500`, `client.rs:3597`),
 /// which forwards one only when `SearchAdmission::admitted()`; `extra_tool_entries` itself stays
-/// declaration-less (`responses.rs:818`). Those bodies are pinned in the sampler, and this
+/// declaration-less (`responses.rs:847`). Those bodies are pinned in the sampler, and this
 /// test pins the raw-JSON channel the declaration travels on, so it holds whichever way the
 /// wiring goes. The top-level splice is the sampler's own (`client.rs:952`).
 /// apex-waj.20 (live arm).
@@ -1085,7 +1085,7 @@ fn declaration_leads_the_raw_json_channel_when_admitted() {
 /// owned by apex-waj.9 and the live arm by apex-waj.20.
 ///
 /// Production passes a declaration only on an admitted route: `extra_tool_entries` passes
-/// `declaration: None` (`responses.rs:819`), and the three Responses body sites call
+/// `declaration: None` (`responses.rs:848`), and the three Responses body sites call
 /// `extra_tool_entries_for_route` (`client.rs:2734`, `client.rs:3500`, `client.rs:3597`), which
 /// forwards one only when `SearchAdmission::admitted()`. This test pins the raw-JSON channel
 /// itself, so it holds whichever way the wiring goes. The top-level splice is the sampler's own
@@ -3431,8 +3431,8 @@ fn a_keyed_client_discovery_pair_decodes_onto_discovery_items() {
 /// Two provider-minted pairs in one response. Every half is keyless, so order is the
 /// only join available, and the module that owns discovery pairing reads this shape
 /// as TWO closed groups — `discovery_groups`' unkeyed FIFO
-/// (`conversation/tool_search.rs:2239-2256`) — which is also the reading
-/// `snap_index_over_discovery_pairs` (`conversation/tool_search.rs:2417`) uses to
+/// (`conversation/tool_search.rs:2311-2328`) — which is also the reading
+/// `snap_index_over_discovery_pairs` (`conversation/tool_search.rs:2489`) uses to
 /// keep both pairs atomic across every history cut. Refusing it here while the cut
 /// funnel called it two pairs would cost a whole turn (the caller maps the `Err` to
 /// `SamplingEvent::Failed`, `xai-grok-sampler/src/stream/responses.rs:823-829`) over
@@ -3560,7 +3560,7 @@ fn a_non_discovery_item_between_the_halves_does_not_split_the_keyless_pair() {
 /// The last two rows are COMPLETE pairs by count, and they are refused on purpose:
 /// a key disagreement is not a pair (`call_KGrh…` and a keyless output answer two
 /// different searches as far as this seam can tell), and a keyless batch with more
-/// calls than answers leaves the owner's FIFO (`conversation/tool_search.rs:2239-2256`)
+/// calls than answers leaves the owner's FIFO (`conversation/tool_search.rs:2311-2328`)
 /// holding a call that nothing can close. PLAN:946's remedy for both is
 /// the repair pass (T15) or its removal set, neither of which lives in this crate —
 /// `enforce_discovery_pair_law`'s doc names the cost, which is the whole response.
@@ -3574,9 +3574,9 @@ fn a_discovery_half_pair_is_refused_and_names_the_missing_half() {
             "tool_search_call",
         ),
         (
-            "keyed call alone",
-            &[CLIENT_CALL_ITEM][..],
-            "tool_search_output",
+            "client output alone",
+            &[CLIENT_OUTPUT_ITEM][..],
+            "tool_search_call",
         ),
         (
             "keyed call answered by a keyless output",
@@ -3604,7 +3604,7 @@ fn a_discovery_half_pair_is_refused_and_names_the_missing_half() {
 /// response": a call and an output carrying different `call_id` values answer two
 /// different searches, and reading them as one pair is not what PLAN:946's law
 /// says. A keyless half may not adopt a keyed opposite either — the unkeyed FIFO
-/// skips items that carry a key (`conversation/tool_search.rs:2243-2244`), so the
+/// skips items that carry a key (`conversation/tool_search.rs:2315-2316`), so the
 /// hosted pair and the client pair do not merge into one. Both halves of the positive case are
 /// pinned too: the keyed join is order-blind, which is the property the doc on
 /// [`enforce_discovery_pair_law`] claims when it says it takes the KEY as the unit.
@@ -3618,8 +3618,10 @@ fn discovery_halves_only_pair_with_the_same_join_key() {
         .expect_err("two halves under different call_id are not a pair");
     let msg = err.to_string();
     assert!(
-        msg.contains("call_KGrhHQ8F7MeagVDbKnGlq6vv"),
-        "the refusal must name the key it could not answer: {msg}"
+        msg.contains("call_MISMATCHED00000000000000000"),
+        "the refusal must name the key the reported half carries — the orphan \
+         foreign-key output (the client call is tolerated in-flight by the \
+         carve-out, so it is not the half this seam reports): {msg}"
     );
 
     let err = response_to_conversation_items(response_of(&[HOSTED_CALL_ITEM, CLIENT_OUTPUT_ITEM]))
@@ -3865,7 +3867,7 @@ fn the_bounded_summary_form_stays_bounded_however_large_the_mapped_payload_is() 
 /// the provider wrote as `""` is that provider's byte, and this seam's only two
 /// alternatives are to rewrite it (wire invariant 6 forbids) or to fail the turn for
 /// a value the corpus does not contain — the sweep at
-/// `conversation/tool_search.rs:566` measures 0 instances of `"id": ""` across
+/// `conversation/tool_search.rs:638` measures 0 instances of `"id": ""` across
 /// `captures/` and `ratchet-capture/fixtures/`. So the byte is KEPT and the handle is
 /// not advertised. The Compaction arm earlier in the same loop writes its `id` key only
 /// when non-empty (`conversation/responses.rs:98-100`) because that arm assembles its
@@ -3874,7 +3876,7 @@ fn the_bounded_summary_form_stays_bounded_however_large_the_mapped_payload_is() 
 /// What this pin does NOT certify is wire ACCEPTANCE, and the next lane must not
 /// read it as that. The kept byte is model-visible on the admitting rows: the Codex
 /// replay arm splices `raw()` verbatim into every later request
-/// (`conversation.rs:2699`) and all three rows the bake ships ON are
+/// (`conversation.rs:2713`) and all three rows the bake ships ON are
 /// `model_family: "codex"` (`xai-grok-models/default_models.json:365`, `:420`,
 /// `:528`). No capture in this estate carries a discovery item with an empty `id`
 /// and this lane made no provider call, so whether any boundary accepts `"id": ""`
@@ -3957,7 +3959,7 @@ fn key_path_diff(
     }
 }
 
-/// The carrier's bytes are model-visible, not inert storage: `conversation.rs:2699`
+/// The carrier's bytes are model-visible, not inert storage: `conversation.rs:2713`
 /// splices `Discovery`'s `raw()` verbatim into the next request on the Codex dialect,
 /// and all three rows the bake advertises on are `model_family: "codex"`
 /// (`xai-grok-models/default_models.json:365`, `:420`, `:528`). The decode builds
@@ -4057,6 +4059,173 @@ fn the_codex_splice_replays_the_provider_item_key_set() {
     }
 }
 
+/// R5: the answer reaches the wire as the real item, on ONE dialect only. The Codex
+/// splice slot carries our client-authored `tool_search_output` verbatim — the banked
+/// call's `call_id` echoed, `execution: "client"`, a readable `status`, the tools we
+/// ran — with no invented `id` (policy 3 on [`tool_search::ToolSearchItem::id`]). The
+/// `Other` and `Xai` arms splice nothing (the fail-closed U17 gate at
+/// `conversation.rs:2697-2719`), so their typed placeholder stays byte-identical to
+/// before the answer arm.
+#[test]
+fn the_client_answer_splice_carries_the_real_output_on_codex_only() {
+    // A fresh pair per dialect: the banked client-executed call plus our answer.
+    let build_items = || {
+        let call = tool_search::ToolSearchItem::from_wire(
+            serde_json::from_str(CLIENT_CALL_ITEM).expect("the banked client call is valid JSON"),
+        )
+        .expect("the banked client call decodes");
+        let answer = tool_search::ToolSearchItem::client_answer(
+            "call_KGrhHQ8F7MeagVDbKnGlq6vv",
+            vec![serde_json::json!({
+                "type": "function",
+                "name": "lookup_shipping_eta",
+                "description": "Look up the shipping ETA for an order ID.",
+                "parameters": { "type": "object" },
+            })],
+        );
+        vec![
+            ConversationItem::Discovery { item: call },
+            ConversationItem::Discovery { item: answer },
+        ]
+    };
+
+    let codex = ConversationRequest::from_items(build_items())
+        .raw_responses_input_replacements(ResponsesReplayDialect::Codex);
+    assert_eq!(
+        codex.len(),
+        2,
+        "one Codex splice per discovery half (call then answer): {codex:?}"
+    );
+    let out = &codex[1].value;
+    assert_eq!(
+        codex[0].value["type"],
+        serde_json::json!("tool_search_call")
+    );
+    assert_eq!(out["type"], serde_json::json!("tool_search_output"));
+    assert_eq!(
+        out["call_id"],
+        serde_json::json!("call_KGrhHQ8F7MeagVDbKnGlq6vv")
+    );
+    assert_eq!(out["execution"], serde_json::json!("client"));
+    assert_eq!(out["status"], serde_json::json!("completed"));
+    assert_eq!(
+        out["tools"][0]["name"],
+        serde_json::json!("lookup_shipping_eta")
+    );
+    assert!(
+        out.get("id").is_none(),
+        "the client-authored answer splice must carry no id (policy 3): {out}"
+    );
+
+    // Other and Xai: fail-closed — a transcript with a discovery answer splices nothing,
+    // so the typed placeholder (and its bytes) are untouched.
+    for (dialect, name) in [
+        (ResponsesReplayDialect::Other, "Other"),
+        (ResponsesReplayDialect::Xai, "Xai"),
+    ] {
+        let splices = ConversationRequest::from_items(build_items())
+            .raw_responses_input_replacements(dialect);
+        assert!(
+            splices.is_empty(),
+            "{name} must splice no discovery item (U17 fail-closed): {splices:?}"
+        );
+    }
+}
+
+/// R7 arm (a) — Outbound: the real splice over a transcript built from the banked frame
+/// (`probe2-client-full.raw`, decoded as `CLIENT_CALL_ITEM`: a client-executed
+/// `tool_search_call`, `call_id` `call_KGrhHQ8F7MeagVDbKnGlq6vv`, where the provider
+/// mints no `tool_search_output`) plus our appended answer. The request bytes the Codex
+/// wire would carry hold BOTH halves of the pair: the banked call verbatim and our
+/// `tool_search_output`, echoing the banked call's `call_id`, with no invented id.
+/// (The live-wire form is off this item per ruling D16; this proves the request WOULD
+/// carry the answer, offline.)
+#[test]
+fn the_outbound_transcript_from_the_banked_call_carries_the_answer() {
+    let banked_call = tool_search::ToolSearchItem::from_wire(
+        serde_json::from_str(CLIENT_CALL_ITEM).expect("the banked client call is valid JSON"),
+    )
+    .expect("the banked client call decodes");
+    let answer = tool_search::ToolSearchItem::client_answer(
+        "call_KGrhHQ8F7MeagVDbKnGlq6vv",
+        vec![serde_json::json!({
+            "type": "function",
+            "name": "lookup_shipping_eta",
+            "description": "Look up the shipping ETA for an order ID.",
+            "parameters": { "type": "object" },
+        })],
+    );
+    let items = vec![
+        ConversationItem::Discovery { item: banked_call },
+        ConversationItem::Discovery { item: answer },
+    ];
+    let codex = ConversationRequest::from_items(items)
+        .raw_responses_input_replacements(ResponsesReplayDialect::Codex);
+    assert_eq!(
+        codex.len(),
+        2,
+        "both discovery halves splice on Codex: {codex:?}"
+    );
+    let (call, out) = (&codex[0].value, &codex[1].value);
+    assert_eq!(call["type"], serde_json::json!("tool_search_call"));
+    assert_eq!(
+        call["call_id"],
+        serde_json::json!("call_KGrhHQ8F7MeagVDbKnGlq6vv"),
+        "the splice replays the banked call's own call_id"
+    );
+    assert_eq!(out["type"], serde_json::json!("tool_search_output"));
+    assert_eq!(
+        out["call_id"],
+        serde_json::json!("call_KGrhHQ8F7MeagVDbKnGlq6vv"),
+        "the answer echoes the banked call's call_id verbatim (R2/R6)"
+    );
+    assert_eq!(out["execution"], serde_json::json!("client"));
+    assert_eq!(out["status"], serde_json::json!("completed"));
+    assert_eq!(
+        out["tools"][0]["name"],
+        serde_json::json!("lookup_shipping_eta")
+    );
+    assert!(
+        out.get("id").is_none(),
+        "the client-authored answer carries no invented id (policy 3): {out}"
+    );
+}
+
+/// The D19 R1 carve-out: a lone `execution: "client"` `tool_search_call` is
+/// IN-FLIGHT, not a half. Its answer is the harness's to author (the turn-loop
+/// answer arm), and refusing the call here is what lost the whole response before
+/// that arm ever ran — so the seam maps it onto a `Discovery` call item and the
+/// pair law closes the group when the answer lands. The refusal shapes survive:
+/// a lone SERVER-executed call and any lone output are still halves (pinned in
+/// `a_discovery_half_pair_is_refused_and_names_the_missing_half`), because the
+/// provider owes both those halves and no in-tree path will ever author them.
+#[test]
+fn a_lone_client_executed_call_maps_as_in_flight_not_a_refused_half() {
+    let items = response_to_conversation_items(response_of(&[CLIENT_CALL_ITEM]))
+        .expect("a lone client-executed call is in-flight: the harness owes the answer half");
+    let carriers = discovery_carriers(&items);
+    assert_eq!(
+        carriers.len(),
+        1,
+        "the call lands as one Discovery item, unpaired for now: {items:?}"
+    );
+    let call = carriers[0];
+    assert_eq!(
+        call.kind().item_type(),
+        "tool_search_call",
+        "the in-flight item is the call half: {items:?}"
+    );
+    assert!(
+        call.is_client_executed(),
+        "the carve-out keys on execution: client {items:?}"
+    );
+    assert_eq!(
+        call.call_id(),
+        Some("call_KGrhHQ8F7MeagVDbKnGlq6vv"),
+        "the join key must survive the decode or the answer arm cannot pair on it"
+    );
+}
+
 /// Ruling `map/RULINGS-o1o5.md` §D10 R4 (bead `apex-mrmq`, deliverable 3), held where
 /// the campaign's test authority can actually see it: this file runs under
 /// `cargo test --release -p xai-grok-sampling-types --lib`, which the §5 GATE does
@@ -4087,22 +4256,25 @@ fn the_codex_splice_replays_the_provider_item_key_set() {
 ///   probe this route's declaration gated.
 /// * A `client`-declared route — what this head emits, ruling D5
 ///   (`admitted_route_declaration_is_client_executed`) — additionally gets a lone
-///   call, because the answer half is the harness's to author and apex-waj.57 has not
-///   landed. The seam refuses that, and that IS the D10 hazard, so each row carrying
-///   it is named below with the bead that owes the fix. A new ON row that is not
-///   named reddens this test: the curate breaks, not a user's turn. When the answer
-///   arm lands the lone call starts mapping and the stale-pin branch reddens until the
-///   list is emptied. This is a second, separately-attributed check, not an
-///   alternative to the first.
+///   call, because the answer half is the harness's to author. The answer arm has
+///   landed (apex-waj.57): the carve-out maps the lone client-executed call as an
+///   in-flight Discovery item, so this arm is now the POSITIVE assertion that the
+///   shape the route invites lands. The refusal that made it the D10 hazard is
+///   gone, and `ROWS_ADMITTING_WITH_NO_ANSWER_HALF` is empty for that reason.
+///   Retained negative controls: a lone SERVER-executed call and a lone output are
+///   still refused — `a_discovery_half_pair_is_refused_and_names_the_missing_half`
+///   pins both. A new ON row no longer reddens this test: the seam does not
+///   branch on the slug, so the two probes answer for whatever row the curation
+///   adds. This is a second, separately-attributed check, not an alternative to
+///   the first.
 #[test]
 fn no_baked_admitting_row_drives_a_shape_the_decode_seam_refuses() {
     /// Rows that advertise hosted search while the harness cannot answer the call it
-    /// invites. The second field is the bead that owes the answer half.
-    const ROWS_ADMITTING_WITH_NO_ANSWER_HALF: &[(&str, &str)] = &[
-        ("gpt-5.6-luna", "apex-waj.57"),
-        ("gpt-5.6-sol", "apex-waj.57"),
-        ("gpt-5.6-terra", "apex-waj.57"),
-    ];
+    /// invites — EMPTY since the answer arm landed (apex-waj.57): the seam maps
+    /// the lone client-executed call as in-flight, so no row is owed an answer
+    /// half any longer. Re-add an entry (row, owning bead) if a shape this test
+    /// does not probe refuses again.
+    const ROWS_ADMITTING_WITH_NO_ANSWER_HALF: &[(&str, &str)] = &[];
     /// The catalog source the bake embeds through
     /// `pub const DEFAULT_MODELS_JSON: &str = include_str!("../default_models.json")`
     /// (`xai-grok-models/src/lib.rs:20`); `build.rs` only declares the
@@ -4181,39 +4353,40 @@ fn no_baked_admitting_row_drives_a_shape_the_decode_seam_refuses() {
         // Nothing further to check: the provider mints both halves and the
         // unconditional probe above already proved they land.
         "server" => {}
-        // The harness owes the answer, so the provider's answer is a lone call.
+        // The harness owes the answer, so the provider's answer is a lone call — and
+        // the answer arm has landed (apex-waj.57): the carve-out maps it as an
+        // in-flight Discovery item, so this arm asserts the mapping. The seam does
+        // not branch on the slug, so one probe answers for every admitting row.
         "client" => {
-            let probe = response_to_conversation_items(response_of(&[CLIENT_CALL_ITEM]));
-            for row in admitting.iter().copied() {
-                let error = match &probe {
-                    Ok(_) => panic!(
-                        "stale pin: the seam now maps the lone client-executed call that \
-                         {row:?}'s route invites, so its entry in \
-                         ROWS_ADMITTING_WITH_NO_ANSWER_HALF is false — remove it, and re-check \
-                         whether ruling D10 can be re-ruled."
-                    ),
-                    Err(error) => error,
-                };
-                let msg = error.to_string();
-                let owner = ROWS_ADMITTING_WITH_NO_ANSWER_HALF
-                    .iter()
-                    .find(|(pinned, _)| *pinned == row)
-                    .map(|(_, owner)| *owner)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "{row} advertises hosted search on a client-executed route and the \
-                             decode seam refuses the answer that route returns ({msg}). D10 R4 \
-                             makes that a user's turn, not a test failure: land the answer arm, \
-                             or apply D10 R3 and curate the row off. Adding the row to \
-                             ROWS_ADMITTING_WITH_NO_ANSWER_HALF is not a fix — that list records \
-                             hazards the coordinator has already ruled on."
-                        )
-                    });
-                assert!(
-                    msg.contains("tool_search_output"),
-                    "{row} (answer owed by {owner}): the refusal must name the missing half: {msg}"
-                );
-            }
+            let probe = response_to_conversation_items(response_of(&[CLIENT_CALL_ITEM]))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "the seam must map the lone client-executed call that the admitted \
+                         route invites (the answer arm owes the output half): {error}. On \
+                         {admitting:?} that refusal would kill the user's turn mid-search."
+                    )
+                });
+            let carriers = discovery_carriers(&probe);
+            assert_eq!(
+                carriers.len(),
+                1,
+                "one lone call maps to one in-flight Discovery item: {probe:?}"
+            );
+            assert_eq!(
+                carriers[0].kind().item_type(),
+                "tool_search_call",
+                "the in-flight item is the call half: {probe:?}"
+            );
+            assert!(
+                carriers[0].is_client_executed(),
+                "the carve-out keys on execution: client {probe:?}"
+            );
+            assert_eq!(
+                carriers[0].call_id(),
+                Some("call_KGrhHQ8F7MeagVDbKnGlq6vv"),
+                "the join key must survive the decode or the answer arm cannot pair \
+                 on it: {probe:?}"
+            );
         }
         other => panic!(
             "the admitted route declares execution {other:?}, which this test has no provider \

@@ -1459,6 +1459,21 @@ impl SessionActor {
         crate::session::tool_index::Bm25ToolSearchIndex::new(self.tool_metadata_snapshot.clone())
             .list_server_summaries()
     }
+    /// The session's tool-search results for a query, over the live tool-metadata snapshot.
+    /// H2 executor (apex-waj.57, D7): the answer corpus for a client-executed
+    /// `tool_search_call`. Sibling of [`Self::connected_server_summaries`], which reads
+    /// the same `tool_metadata_snapshot` clone. An empty snapshot yields an empty result
+    /// list (the honest zero R3 requires), not an error.
+    pub(crate) fn tool_search_results(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Vec<xai_grok_tools::types::tool_index::ToolSearchResult> {
+        use xai_grok_tools::types::tool_index::ToolSearchIndex;
+        crate::session::tool_index::Bm25ToolSearchIndex::new(self.tool_metadata_snapshot.clone())
+            .search_snapshot(query, limit)
+            .results
+    }
     /// Render the tool usage hint appended to every injected MCP reminder body, with the session's tool names substituted.
     /// Shared by the injector and the `/context` estimate.
     /// `None` when the template fails to render.

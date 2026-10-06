@@ -12,6 +12,16 @@ static TURNS_ACTIVE: xai_grok_telemetry::activity::ActivityGauge =
     xai_grok_telemetry::activity::ActivityGauge::work(
         xai_grok_telemetry::activity::TURNS_ACTIVE_KEY,
     );
+/// H2 answer arm (apex-waj.57, D17 R17-a): the per-turn cap on the answer-and-`continue`
+/// path. A discovery-only response carries no tool calls, so the stationarity guard at
+/// `turn.rs:2671` — which keys on *identical* tool calls observed at `turn.rs:3894` — can
+/// never fire on it; without this cap a provider that keeps minting client-executed
+/// `tool_search_call`s would loop the turn forever. Pinned by a test.
+pub(crate) const MAX_DISCOVERY_ANSWERS_PER_TURN: u32 = 4;
+/// H2 (apex-waj.57, R4): the hard ceiling on an answer's `tools` array — the search
+/// declaration's documented default `limit`. Both the call's own `limit` and this
+/// constant cap the number of tool definitions the answer carries.
+pub(crate) const DISCOVERY_ANSWER_TOOL_CEILING: u64 = 8;
 /// Synthetic tool for schema-constrained final answers on backends without native
 /// output constraints (Messages API); intercepted in the loop, never really executed.
 const STRUCTURED_OUTPUT_TOOL: &str = "StructuredOutput";
@@ -2603,6 +2613,19 @@ impl SessionActor {
         let mut loop_index: u32 = 0;
         let mut identical_tool_calls = IdenticalToolCallRun::default();
         let mut todo_gate_fires: u32 = 0;
+        // H2 answer arm (apex-waj.57, D17 R17-a): per-turn budget on the
+        // answer-and-`continue` path, capped at `MAX_DISCOVERY_ANSWERS_PER_TURN`.
+        let mut discovery_answers_this_turn: u32 = 0;
+        // R17-b: the call_ids already answered this turn; a re-delivered frame must
+        // not append a second output for one call. In a release build this set is
+        // the ONLY in-tree defence against a duplicate answer: `group_is_closed`
+        // (conversation/tool_search.rs:2343) is existential — a group holding two
+        // outputs still "closes" — and `SamplingClient::outbound_lint_gate`
+        // (xai-grok-sampler/src/client.rs:1845) panics only under
+        // `cfg!(debug_assertions)`, warning and sending the request in release.
+        // Pinned by `a_re_delivered_call_id_appends_no_second_output`.
+        let mut answered_discovery_call_ids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let mut length_salvage_streak = LengthSalvageStreak::default();
         let mut auth_retry_schedule = AuthRetrySchedule::new();
         let mut rate_limit_waits = self.rate_limit_wait_budget(
@@ -3445,6 +3468,50 @@ impl SessionActor {
             }
             let usage_reported = response.usage.is_some();
             let response_item_count = response.items.len() as i64;
+            // H2 (apex-waj.57, D17): capture the client-executed discovery calls this
+            // response appended with no matching output, BEFORE record_response_items
+            // moves response.items — D21 ("D17 step 1 named no readable input") rules
+            // this hoist load-bearing, not removable: the answer branch below runs
+            // after the move, so the pending calls are only readable here. The
+            // provider mints an execution=client call and stops — it never mints the
+            // output, that answer is ours (D7) — and the call contributes nothing to
+            // `tool_calls()` (conversation.rs:1867), so it is invisible to the
+            // empty-check below; the answer arm there must answer it before the turn
+            // ends.
+            let pending_discovery_calls: Vec<(String, String, u64)> = {
+                use xai_grok_sampling_types::conversation::tool_search::ToolSearchKind;
+                let answered_in_response: std::collections::HashSet<String> = response
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        ConversationItem::Discovery { item }
+                            if item.kind() == ToolSearchKind::Output
+                                && item.is_client_executed() =>
+                        {
+                            item.call_id().map(str::to_string)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                response
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        ConversationItem::Discovery { item }
+                            if item.kind() == ToolSearchKind::Call && item.is_client_executed() =>
+                        {
+                            let call_id = item.call_id()?.to_string();
+                            if answered_in_response.contains(&call_id) {
+                                return None;
+                            }
+                            let query = item.query().unwrap_or("").to_string();
+                            let limit = item.limit().unwrap_or(DISCOVERY_ANSWER_TOOL_CEILING);
+                            Some((call_id, query, limit))
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            };
             let record_response_span = xai_grok_telemetry::region::Region::from_span(
                 tracing::info_span!("turn.record_response", item_count = response_item_count),
             );
@@ -3562,6 +3629,95 @@ impl SessionActor {
                 }
             }
             if tool_calls.is_empty() {
+                // H2 (apex-waj.57, D17): answer the client-executed discovery call(s)
+                // this response appended. The call is already in the transcript
+                // (record_response_items above), so the pair law holds by construction
+                // (call precedes output) — but `tool_calls()` is blind to it, so without
+                // this the turn would end leaving the call unanswered. Search the
+                // session's MCP snapshot (D7), append the paired output, close the card
+                // with our own completion event (a client-executed search never produces
+                // a provider-minted ToolSearchCompleted, the arm at
+                // sampling_events.rs:632), and re-enter the model, copying the TodoGate
+                // nudge and drain_interjections precedents that `continue` here.
+                // Residual (follow-up bead for the coordinator to book): a MIXED
+                // response — model tool_calls plus a client discovery call — is
+                // not answered in-turn (this arm is inside
+                // `if tool_calls.is_empty()`, and the hoist above only sees the
+                // current response's calls); the lone call then rides the
+                // outbound splice (xai-grok-sampling-types/src/conversation.rs:2713)
+                // on the next in-turn request, and the kind-blind orphan policy
+                // (xai-chat-state/src/compaction_utils.rs:530) drops a
+                // certifiably-lone call at compaction, bounding the transcript
+                // pollution.
+                if !pending_discovery_calls.is_empty() {
+                    let mut answered_any = false;
+                    for (call_id, query, limit) in pending_discovery_calls.iter() {
+                        if discovery_answers_this_turn >= MAX_DISCOVERY_ANSWERS_PER_TURN {
+                            break;
+                        }
+                        if answered_discovery_call_ids.contains(call_id) {
+                            continue;
+                        }
+                        let capped = (*limit).min(DISCOVERY_ANSWER_TOOL_CEILING) as usize;
+                        let results = self.tool_search_results(query, capped);
+                        let tools: Vec<serde_json::Value> = results
+                            .iter()
+                            .map(|tool| {
+                                serde_json::json!({
+                                    "type": "function",
+                                    "name": tool.tool_name,
+                                    "description": tool.description,
+                                    "parameters": if tool.input_schema.is_object() {
+                                        tool.input_schema.clone()
+                                    } else {
+                                        serde_json::json!({"type": "object"})
+                                    },
+                                })
+                            })
+                            .collect();
+                        let result_count = tools.len();
+                        let answer = xai_grok_sampling_types::conversation::tool_search::ToolSearchItem::client_answer(
+                            call_id,
+                            tools,
+                        );
+                        // D18(a): the harness authored this half, so it is NOT in
+                        // the provider's usage total — the response's usage (if
+                        // any) was recorded before the answer was synthesised,
+                        // and `push_model_output`'s contract is "already
+                        // included in the provider's usage total"
+                        // (xai-chat-state/src/handle.rs:132). The unreported
+                        // variant (xai-chat-state/src/handle.rs:137) credits
+                        // `estimated_tokens_since_model` instead, so the next
+                        // loop-head auto-compact (D18(c)) sees the answer's
+                        // size.
+                        self.chat_state_handle.push_unreported_model_output(
+                            ConversationItem::Discovery { item: answer },
+                        );
+                        answered_discovery_call_ids.insert(call_id.clone());
+                        discovery_answers_this_turn += 1;
+                        answered_any = true;
+                        self.handle_sampling_event(
+                            xai_grok_sampler::SamplingEvent::ToolSearchCompleted {
+                                request_id: xai_grok_sampler::RequestId::from(req_id),
+                                call_id: call_id.clone(),
+                                result_count,
+                                status: xai_grok_sampling_types::conversation::tool_search::ToolSearchStatus::Completed,
+                            },
+                        )
+                        .await;
+                        tracing::info!(
+                            prompt_id = %req_id,
+                            call_id = %call_id,
+                            result_count,
+                            discovery_answers_this_turn,
+                            "tool_search answer arm: appended paired tool_search_output"
+                        );
+                    }
+                    if answered_any {
+                        salvage.step_boundary();
+                        continue;
+                    }
+                }
                 if !schema_ok
                     && !turn_refused
                     && !salvage.is_truncated()

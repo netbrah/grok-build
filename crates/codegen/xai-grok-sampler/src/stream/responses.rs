@@ -50,9 +50,9 @@ const INCOMPLETE_REASON_MAX_TIME_LIMIT: &str = "max_time_limit";
 
 /// Applied to a `tool_search_call` whose `arguments` omits `limit`. The authoritative value
 /// is `TOOL_SEARCH_DEFAULT_LIMIT` at
-/// `xai-grok-sampling-types/src/conversation/responses.rs:931`: the admitted route passes it
-/// to `tool_search_declaration_entry` at :887 and that function interpolates it into the
-/// declaration's `limit` description at :1009-1010. It is `pub(super)`, so this crate cannot
+/// `xai-grok-sampling-types/src/conversation/responses.rs:960`: the admitted route passes it
+/// to `tool_search_declaration_entry` at :916 and that function interpolates it into the
+/// declaration's `limit` description at :1038-1039. It is `pub(super)`, so this crate cannot
 /// import it — `the_declaration_documents_the_sampler_default_limit` pins this copy against the
 /// declaration text the model is sent.
 const TOOL_SEARCH_DEFAULT_LIMIT: u64 = 8;
@@ -2399,8 +2399,8 @@ mod tests {
     /// The declaration an admitted route emits documents this exact number, so the limit the
     /// event falls back to cannot desync from the limit the model was told about. The IR's own
     /// `TOOL_SEARCH_DEFAULT_LIMIT` is `pub(super)`
-    /// (`xai-grok-sampling-types/src/conversation/responses.rs:931`), so the binding runs
-    /// through the declaration text that file interpolates at its :1009-1010.
+    /// (`xai-grok-sampling-types/src/conversation/responses.rs:960`), so the binding runs
+    /// through the declaration text that file interpolates at its :1038-1039.
     #[test]
     fn the_declaration_documents_the_sampler_default_limit() {
         let entries = xai_grok_sampling_types::extra_tool_entries_for_route(
@@ -2467,12 +2467,19 @@ mod tests {
         }
     }
 
-    /// The live turn, end to end: the call event comes from the provider's frames, and the
-    /// turn still ends at `Failed`. Not because the arm refuses the item —
-    /// `response_to_conversation_items` maps it onto a `Discovery` carrier — but because a lone
-    /// half fails `enforce_discovery_pair_law` (`xai-grok-sampling-types/src/conversation/responses.rs:170`).
+    /// The live turn, end to end, flipped in place by the D19 R1 carve-out
+    /// (ruling D19 — "the decode seam's client carve-out is IN SCOPE on
+    /// apex-waj.57" — and D20 — "the live client search stream test flips in
+    /// place with the D19 R1 carve-out"): the call event still comes from the
+    /// provider's frames, and the turn no longer ends at `Failed`. A lone
+    /// `execution: "client"` call is IN-FLIGHT, not a half — its answer is the
+    /// harness's to author (the turn-loop answer arm) — so the seam maps it
+    /// onto a `Discovery` call carrier and the stream completes with that
+    /// carrier riding the response items. The refusal shapes still end at
+    /// `Failed`: the fail-closed arm stays pinned at its own level by
+    /// `a_lone_server_executed_call_still_ends_the_live_turn_at_failed`.
     #[tokio::test]
-    async fn the_live_client_search_turn_emits_the_call_before_the_ir_seam_ends_it() {
+    async fn the_live_client_search_turn_completes_with_the_call_in_flight() {
         let mut response = empty_completed_response();
         response.output = vec![
             serde_json::from_str::<rs::OutputItem>(LIVE_TERMINAL_CALL_ITEM)
@@ -2501,9 +2508,82 @@ mod tests {
             1,
             "the call event was not emitted: {events:?}"
         );
+        match events.last() {
+            Some(SamplingEvent::Completed { response, .. }) => {
+                let in_flight = response
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        ConversationItem::Discovery { item } => Some(item),
+                        _ => None,
+                    })
+                    .find(|item| {
+                        item.kind()
+                            == xai_grok_sampling_types::conversation::tool_search::ToolSearchKind::Call
+                            && item.is_client_executed()
+                            && item.call_id() == Some("call_KGrhHQ8F7MeagVDbKnGlq6vv")
+                    });
+                assert!(
+                    in_flight.is_some(),
+                    "the in-flight client call must ride the completed response's items: {response:?}"
+                );
+            }
+            other => panic!(
+                "the D19 R1 carve-out completes the turn; it must not end at Failed: {other:?}"
+            ),
+        }
+    }
+
+    /// D20 R3 — the fail-closed arm stays pinned at its own level: a lone
+    /// SERVER-executed call through the same production decoder still ends at
+    /// `SamplingEvent::Failed`. The frames are the banked client turn with a
+    /// minimal `execution` client→server byte flip (the constants stay the
+    /// banked bytes — `banked_discovery_frames_are_their_own_pinned_bytes`
+    /// pins them): the server flow is a provider-minted pair, and a lone
+    /// server call is the strict-backend-400 shape the pair law exists to
+    /// prevent (D19 R1). The call-event arm never sees a server-executed
+    /// call, so the whole stream is `StreamStarted, Failed` — and the refusal
+    /// names the missing half.
+    #[tokio::test]
+    async fn a_lone_server_executed_call_still_ends_the_live_turn_at_failed() {
+        let flip =
+            |frame: &str| frame.replace("\"execution\":\"client\"", "\"execution\":\"server\"");
+        let mut response = empty_completed_response();
+        response.output = vec![
+            serde_json::from_str::<rs::OutputItem>(&flip(LIVE_TERMINAL_CALL_ITEM))
+                .expect("the flipped terminal item decodes"),
+        ];
+        let items: Vec<Result<rs::ResponseStreamEvent, SamplingError>> = vec![
+            Ok(live_frame(&flip(LIVE_CALL_ADDED))),
+            Ok(live_frame(&flip(LIVE_CALL_DONE))),
+            Ok(rs::ResponseStreamEvent::ResponseCompleted(
+                rs_types::ResponseCompletedEvent {
+                    response,
+                    sequence_number: 4,
+                },
+            )),
+        ];
+        let events = collect(stream_responses(
+            stream::iter(items).boxed(),
+            None,
+            rid(),
+            Duration::from_secs(60),
+            None,
+        ))
+        .await;
         assert!(
-            matches!(events.last(), Some(SamplingEvent::Failed { .. })),
-            "the IR seam no longer ends the turn: {events:?}"
+            discovery_events(&events).is_empty(),
+            "a server-executed call emits no discovery event: {events:?}"
         );
+        match events.last() {
+            Some(SamplingEvent::Failed { error, .. }) => assert!(
+                error.message.contains("tool_search_output"),
+                "the refusal must name the missing half — the pair law is what ends \
+                 the turn, not the event arm: {error:?}"
+            ),
+            other => {
+                panic!("the fail-closed seam must end the server-lone turn at Failed: {other:?}")
+            }
+        }
     }
 }
