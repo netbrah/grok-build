@@ -8,12 +8,11 @@ fn summarization_prep_drops_backend_tool_calls() {
         ConversationItem::BackendToolCall(BackendToolCallItem {
             kind: BackendToolKind::WebSearch(rs::WebSearchToolCall {
                 id: "ws_res-uuid_call-uuid-1".to_string(),
-                status: rs::WebSearchCallStatus::Completed,
-                action: Some(rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
-                    query: Some("weather".to_string()),
-                    queries: None,
+                status: rs::WebSearchToolCallStatus::Completed,
+                action: rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
+                    query: "weather".to_string(),
                     sources: None,
-                })),
+                }),
             }),
         }),
         ConversationItem::assistant("done"),
@@ -2327,7 +2326,7 @@ fn conversation_item_preserves_reasoning_siblings() {
     let result = strip_tool_messages_for_conversation_item(vec![
         ConversationItem::system("system"),
         ConversationItem::Reasoning(rs::ReasoningItem {
-            id: Some("r_123".to_string()),
+            id: "r_123".to_string(),
             summary: vec![],
             content: None,
             encrypted_content: Some("encrypted_sig".to_string()),
@@ -2349,7 +2348,7 @@ fn strip_reasoning_blocks_drops_reasoning_siblings() {
     use xai_grok_sampling_types::{AssistantItem, rs};
     let result = strip_reasoning_blocks(vec![
         ConversationItem::Reasoning(rs::ReasoningItem {
-            id: Some("r_123".to_string()),
+            id: "r_123".to_string(),
             summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                 text: "thinking".to_string(),
             })],
@@ -2387,7 +2386,7 @@ fn prepare_for_summarization_drops_reasoning_sibling_on_mutated_assistant() {
     use xai_grok_sampling_types::{AssistantItem, ToolCall, rs};
     let mk_reasoning = || {
         ConversationItem::Reasoning(rs::ReasoningItem {
-            id: Some("r_123".to_string()),
+            id: "r_123".to_string(),
             summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                 text: "plan".to_string(),
             })],
@@ -2439,7 +2438,7 @@ fn prepare_for_summarization_drops_standalone_reasoning_sibling() {
     use xai_grok_sampling_types::{AssistantItem, rs};
     let result = prepare_conversation_for_summarization(vec![
         ConversationItem::Reasoning(rs::ReasoningItem {
-            id: Some("r_123".to_string()),
+            id: "r_123".to_string(),
             summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                 text: "thinking".to_string(),
             })],
@@ -2467,7 +2466,7 @@ fn prepare_for_summarization_handles_multi_assistant_mixed_conversation() {
     use xai_grok_sampling_types::{AssistantItem, ToolCall, rs};
     let mk_reasoning = || {
         ConversationItem::Reasoning(rs::ReasoningItem {
-            id: Some("r".to_string()),
+            id: "r".to_string(),
             summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                 text: "thinking".to_string(),
             })],
@@ -2557,7 +2556,7 @@ fn prepare_for_summarization_is_idempotent() {
         ConversationItem::system("system prompt"),
         ConversationItem::user("hello"),
         ConversationItem::Reasoning(rs::ReasoningItem {
-            id: Some("r1".to_string()),
+            id: "r1".to_string(),
             summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                 text: "thought".to_string(),
             })],
@@ -2724,7 +2723,7 @@ fn verbatim_reasoning_kept_unless_messages_backend() {
         vec![
             ConversationItem::system("sys"),
             ConversationItem::Reasoning(rs::ReasoningItem {
-                id: Some("r1".to_string()),
+                id: "r1".to_string(),
                 summary: vec![],
                 content: None,
                 encrypted_content: Some("sig".to_string()),
@@ -3130,7 +3129,7 @@ fn fit_counts_encrypted_reasoning_against_budget() {
     use xai_grok_sampling_types::rs;
     let big_enc = "Z".repeat(40_000);
     let reasoning = ConversationItem::Reasoning(rs::ReasoningItem {
-        id: Some("r1".to_string()),
+        id: "r1".to_string(),
         summary: vec![],
         content: None,
         encrypted_content: Some(big_enc),
@@ -3233,399 +3232,5 @@ async fn compactn3_pinned_producer_shape_red_edge() {
     assert!(
         gate.is_ok(),
         "post-cut: every pinned piece is sub-cap, so the full gate must be Ok; pre-cut this is the ItemTokenLimitExceeded brick"
-    );
-}
-
-// ---------- apex-waj.21: a discovery pair through every compaction path ----------
-//
-// The invariants these pin, in one line each (RULING-apex-waj-18, A-26):
-// the pair is the only record of the tool set the provider loaded, so no
-// compaction path may strip it, stub it, or split it.
-//
-// CS-M-Dn ids are THIS crate's; the sampling-types battery keeps ST-M-Dn ids for
-// different claims, and the two maps are deliberately namespaced apart (cut review
-// W21R1-14). The number in brackets is the harness mutant that breaks the arm —
-// /tmp/waj21-evidence/mutate.py, witness mutants/NN-red.log (cut review W21R1-05
-// demanded a mutant for each of these three; 33/34/35 are those).
-//
-// CS-M-D8  [10] tail windows keep the pair verbatim
-//          [32] ...and the pairing is certified against the FULL history, not the
-//                window (cut review F-1: the false-lone strip)
-// CS-M-D9  [06] a lone half is dropped, never stubbed; closedness = one Call + one Output
-// CS-M-D10 [33] validate_compacted_history never reports a discovery item
-// CS-M-D11 [11] sanitize keeps both halves
-// CS-M-D12 [12] strip_displaced_tool_results is transparent to the pair
-// CS-M-D13 [13] the pre-send shape guard pops an unpaired tail
-//          [34] ...and KEEPS an answered pair (the A-26 half of the shape guard)
-// CS-M-D14 [14] the budget cut never begins inside a pair
-// CS-M-D15 [15] the summariser view substitutes bounded text
-// CS-M-D16 [35] last-resort tail recovery loses a pair whole or not at all
-
-use xai_grok_sampling_types::conversation::tool_search::ToolSearchItem;
-
-/// The keyless-`call_id` question is answered elsewhere; here the pair is the common
-/// client-executed shape: completed call, completed namespaced output, one join key.
-const DISC_KEY: &str = "call_AOphypzlL1KKckJugyBS2PYn";
-
-fn disc_call_value() -> serde_json::Value {
-    serde_json::json!({
-        "type": "tool_search_call",
-        "id": "tsc_02005a6c7856d15c016ab6aa70e9208194bc939a9b4707c556",
-        "call_id": DISC_KEY,
-        "status": "completed",
-        "execution": "client",
-        "arguments": { "query": "crm order management", "limit": 8 }
-    })
-}
-
-fn disc_output_value() -> serde_json::Value {
-    serde_json::json!({
-        "type": "tool_search_output",
-        "id": "tso_01a0d978-6771-7420-8b21-567a1f96b61c",
-        "call_id": DISC_KEY,
-        "status": "completed",
-        "execution": "client",
-        "tools": [{
-            "type": "namespace",
-            "name": "mcp__ratchet_fixture",
-            "tools": [
-                { "type": "function", "name": "crm_fixture_tool_00" },
-                { "type": "function", "name": "crm_fixture_tool_06" }
-            ]
-        }]
-    })
-}
-
-fn disc(raw: serde_json::Value) -> ConversationItem {
-    ConversationItem::Discovery {
-        item: ToolSearchItem::from_wire(raw).expect("fixture is a tool_search item"),
-    }
-}
-
-/// The provider-minted (hosted) quadrant: `call_id: null` on BOTH halves, from
-/// `captures/2026-09-25-wire-grounding/wire_resp_20260925T062640Z_R1_SOL_HOSTED.json`
-/// `output[1]`/`output[2]`, reduced to the keys this crate's windows read. This is the
-/// quadrant with no join key, i.e. the one a window-local pairing rule cannot see.
-fn sol_hosted_call() -> serde_json::Value {
-    serde_json::json!({
-        "type": "tool_search_call",
-        "id": "tsc_0ce980d5c6afd41f016ab61423e6ec81908939d7d041618fb1",
-        "call_id": null,
-        "execution": "server",
-        "status": "completed",
-        "arguments": { "paths": ["lookup_shipping_eta"] }
-    })
-}
-
-fn sol_hosted_output() -> serde_json::Value {
-    serde_json::json!({
-        "type": "tool_search_output",
-        "id": "tso_0ce980d5c6afd41f016ab61424031481908982e2c788dcc429",
-        "call_id": null,
-        "execution": "server",
-        "status": "completed",
-        "tools": [{ "name": "lookup_shipping_eta", "type": "function" }]
-    })
-}
-
-fn disc_pair() -> Vec<ConversationItem> {
-    vec![disc(disc_call_value()), disc(disc_output_value())]
-}
-
-fn discovery_of(items: &[ConversationItem]) -> Vec<ConversationItem> {
-    items
-        .iter()
-        .filter(|item| item.discovery().is_some())
-        .cloned()
-        .collect()
-}
-
-/// M-D8: `recent_messages` is the only verbatim content a compacted history keeps,
-/// so the pair must ride it whole and unstubbed (XT-10: survive, not placeholder).
-#[test]
-fn compaction_tail_window_keeps_the_discovery_pair_verbatim() {
-    let mut history = vec![ConversationItem::user("find the crm tools")];
-    history.extend(disc_pair());
-    history.push(ConversationItem::assistant("found them"));
-
-    for window in [
-        extract_messages_since_last_user(&history),
-        extract_messages_since_last_real_user(&history),
-        extract_messages_since_last_compaction_anchor(&history),
-    ] {
-        let kept = discovery_of(&window);
-        assert_eq!(
-            kept.len(),
-            2,
-            "the tail window must keep both halves, got {window:?}"
-        );
-        assert_eq!(
-            kept.iter().map(|i| i.discovery().unwrap().raw()).collect::<Vec<_>>(),
-            vec![&disc_call_value(), &disc_output_value()],
-            "verbatim bytes — a rewritten or stubbed half is the A-26 strip"
-        );
-    }
-}
-
-/// M-D9 / cut review F-1: the cut must MOVE rather than strip. The provider mints its
-/// hosted pair with `call_id: null`, and a synthetic row can land between the halves,
-/// so a window that only looks inside itself reads that pair as two lone halves and
-/// deletes both — the A-26 strip, out of the only verbatim content a compacted history
-/// keeps. Pairing is therefore certified against the FULL conversation and the window
-/// start is widened over the pair.
-#[test]
-fn compaction_tail_window_keeps_a_keyless_non_adjacent_pair_whole() {
-    let history = vec![
-        ConversationItem::user("find the eta tool"),
-        disc(sol_hosted_call()),
-        ConversationItem::user("injected between the halves"),
-        disc(sol_hosted_output()),
-        ConversationItem::assistant("done"),
-    ];
-    for window in [
-        extract_messages_since_last_user(&history),
-        extract_messages_since_last_real_user(&history),
-        extract_messages_since_last_compaction_anchor(&history),
-    ] {
-        let kept = discovery_of(&window);
-        assert_eq!(
-            kept.iter()
-                .map(|item| item.discovery().unwrap().raw())
-                .collect::<Vec<_>>(),
-            vec![&sol_hosted_call(), &sol_hosted_output()],
-            "both halves of the keyless pair survive verbatim, call first: {window:?}"
-        );
-    }
-}
-
-/// The same shape with the pair's only join being its `call_id`: the window gains the
-/// call from before its own boundary instead of dropping the answer.
-#[test]
-fn compaction_tail_window_widens_the_cut_rather_than_strip_the_output_half() {
-    let history = vec![
-        disc(disc_call_value()),
-        ConversationItem::user("and now the answer"),
-        disc(disc_output_value()),
-        ConversationItem::assistant("done"),
-    ];
-    let window = extract_messages_since_last_real_user(&history);
-    assert_eq!(
-        discovery_of(&window)
-            .iter()
-            .map(|item| item.discovery().unwrap().raw())
-            .collect::<Vec<_>>(),
-        vec![&disc_call_value(), &disc_output_value()],
-        "the cut moves below the call; keeping the output alone is the provider desync \
-         and dropping it is the A-26 strip: {window:?}"
-    );
-}
-
-/// M-D9: a half the FULL history certifies as partnerless IS dropped — stubbing is
-/// refused for the same reason the pair is never stubbed, and half a pair is the
-/// provider-desync shape.
-#[test]
-fn compaction_tail_window_drops_a_lone_discovery_half_rather_than_stub_it() {
-    let mut orphan = disc_output_value();
-    orphan["call_id"] = serde_json::json!("call_never_minted_in_this_history");
-    let history = vec![
-        disc(disc_call_value()),
-        ConversationItem::user("and now the answer"),
-        disc(disc_output_value()),
-        disc(orphan.clone()),
-        ConversationItem::assistant("done"),
-    ];
-    let window = extract_messages_since_last_real_user(&history);
-    assert_eq!(
-        discovery_of(&window)
-            .iter()
-            .map(|item| item.discovery().unwrap().raw())
-            .collect::<Vec<_>>(),
-        vec![&disc_call_value(), &disc_output_value()],
-        "the answered pair is kept whole across the window boundary and the orphan \
-         output — the one row whose key the FULL history certifies as having no call \
-         — is dropped whole: {window:?}"
-    );
-    assert!(
-        !window
-            .iter()
-            .any(|item| item.text_content().contains("Tool call omitted")),
-        "a discovery half is never placeholder-replaced"
-    );
-}
-
-/// M-D10: `validate_compacted_history` must stay silent about discovery items. Its
-/// verdict is load-bearing — a non-empty one makes the shell throw away
-/// `recent_messages` entirely, i.e. destroy the very content A-26 protects.
-#[test]
-fn validate_compacted_history_never_reports_a_discovery_pair() {
-    let mut history = vec![ConversationItem::user("q")];
-    history.extend(disc_pair());
-    history.push(ConversationItem::assistant("a"));
-    assert!(
-        validate_compacted_history(&history).is_empty(),
-        "a discovery pair must not fail validation: the caller reacts by discarding \
-         the retained tail, which would be the A-26 strip by side effect"
-    );
-    // ... and the same pair, split from its own call, is still not this validator's
-    // vocabulary — the pairing check it owns is Assistant↔ToolResult only.
-    let lone = vec![disc(disc_output_value())];
-    assert!(validate_compacted_history(&lone).is_empty());
-}
-
-/// M-D11: sanitising never co-drops the pair. A `tool_search_output` has no assistant
-/// owner to be orphaned from, so keeping both halves unconditionally is the decision.
-#[test]
-fn sanitize_compacted_history_keeps_both_halves_of_a_discovery_pair() {
-    let mut history = vec![ConversationItem::user("q")];
-    history.extend(disc_pair());
-    let result = sanitize_compacted_history(history);
-    assert!(result.stripped_tool_call_ids.is_empty());
-    assert_eq!(discovery_of(&result.items).len(), 2);
-}
-
-/// M-D12: the repair pass that strips "displaced" tool results must run straight
-/// through a discovery pair. Clearing the run there would strip every legitimately
-/// paired result after a provider-minted call — a real history rewrite reported as
-/// `stripped_tool_result_ids`.
-#[test]
-fn strip_displaced_tool_results_runs_through_a_discovery_pair() {
-    let mut history = vec![
-        ConversationItem::user("q"),
-        ConversationItem::assistant_tool_calls(vec![xai_grok_sampling_types::ToolCall {
-            id: "call_1".into(),
-            name: "search".to_string(),
-            arguments: "{}".into(),
-        }]),
-        disc(disc_call_value()),
-        disc(disc_output_value()),
-        ConversationItem::tool_result("call_1", "hits"),
-    ];
-    let stripped = strip_displaced_tool_results(&mut history);
-    assert!(
-        stripped.is_empty(),
-        "the tool result is legitimately paired and must survive: {stripped:?}"
-    );
-    assert_eq!(discovery_of(&history).len(), 2);
-}
-
-/// M-D13a: an unanswered `tool_search_call` at the very tail is the strict-backend 400
-/// shape, so the pre-send guard pops it — and pops its partner with it, never leaving
-/// a half behind.
-#[test]
-fn pre_send_guard_pops_an_unanswered_trailing_discovery_call() {
-    let history = vec![
-        ConversationItem::user("q"),
-        disc(disc_output_value()),
-        disc(disc_call_value()),
-    ];
-    let guarded = truncate_trailing_incomplete_tool_call(history);
-    assert!(
-        discovery_of(&guarded).is_empty(),
-        "the call goes, and the output whose owner just left goes with it: {guarded:?}"
-    );
-}
-
-/// M-D13b: an answered pair at the tail is the provider's own record of the loaded
-/// set. It is KEPT — this is the A-26 arm of the same function.
-#[test]
-fn pre_send_guard_keeps_an_answered_trailing_discovery_pair() {
-    let history = vec![ConversationItem::user("q"), disc(disc_call_value()), disc(disc_output_value())];
-    let guarded = truncate_trailing_incomplete_tool_call(history);
-    assert_eq!(
-        discovery_of(&guarded).len(),
-        2,
-        "a completed pair is never stripped by the shape guard"
-    );
-}
-
-/// M-D14: the retained budget window may not begin between the two halves.
-#[test]
-fn fit_conversation_to_budget_never_splits_a_discovery_pair() {
-    let mut history = vec![ConversationItem::user("q")];
-    for i in 0..6 {
-        history.push(ConversationItem::assistant(format!("filler {i}")));
-    }
-    history.extend(disc_pair());
-    // A budget that fits the output alone: the cut lands inside the pair unless the
-    // snap moves it down over the call.
-    let output_cost = xai_grok_sampling_types::conversation::tool_search::discovery_items(
-        &[disc(disc_output_value())],
-    )
-    .len();
-    assert_eq!(output_cost, 1, "fixture sanity");
-    let tight = estimate_item_tokens(&disc(disc_output_value())) + 1;
-    let kept = fit_conversation_to_tokens(&history, tight);
-    let discoveries = discovery_of(&kept);
-    assert!(
-        discoveries.len() != 1,
-        "the window kept exactly one half of the pair: {kept:?}"
-    );
-    // Snapping is not "drop the pair to stay in budget" — A-26 wants the loaded set
-    // kept, so the retained window holds BOTH halves, call first, even though that
-    // overshoots the budget by the call's own cost.
-    assert_eq!(
-        discoveries
-            .iter()
-            .map(|item| item.discovery().expect("discovery arm").kind().item_type())
-            .collect::<Vec<_>>(),
-        vec!["tool_search_call", "tool_search_output"],
-        "the budget cut must move below the call and keep the pair, not fall back to \
-         the last-resort recovery that drops it whole: {kept:?}"
-    );
-}
-
-/// Helper so the test above does not depend on the pub wrapper's signature drift.
-fn fit_conversation_to_tokens(body: &[ConversationItem], budget: u64) -> Vec<ConversationItem> {
-    fit_conversation_to_budget(body.to_vec(), budget)
-}
-
-/// M-D15: the summariser view substitutes bounded text for the payload — the loaded
-/// set must still be visible to the summariser, but its `tools[]` bytes never ride
-/// into a summarisation prompt (§6.7 bounded model-visible fragments).
-#[test]
-fn summariser_view_substitutes_bounded_text_for_the_discovery_payload() {
-    let mut history = vec![ConversationItem::user("find the crm tools")];
-    history.extend(disc_pair());
-    let view = strip_tool_messages_for_conversation_item(history);
-    let substituted: Vec<String> = view
-        .iter()
-        .filter(|item| !matches!(item, ConversationItem::Discovery { .. }))
-        .map(|item| item.text_content())
-        .collect();
-    assert!(
-        substituted.iter().any(|text| text.contains("crm order management")),
-        "the summariser still sees that a search ran and with which query: {substituted:?}"
-    );
-    assert!(
-        !view
-            .iter()
-            .any(|item| item.text_content().contains("crm_fixture_tool_00")),
-        "the loaded definitions must not be pasted into the summariser prompt"
-    );
-    assert!(
-        view.iter().all(|item| item.discovery().is_none()),
-        "no raw discovery payload leaves the substituter"
-    );
-}
-
-/// M-D16: when the budget cannot retain anything, the last-resort tail unit may only
-/// lose a pair whole — never hand back a bare `tool_search_output`.
-#[test]
-fn last_resort_tail_recovery_never_returns_a_bare_discovery_half() {
-    let mut history = vec![ConversationItem::user("q")];
-    history.push(ConversationItem::assistant_tool_calls(vec![
-        xai_grok_sampling_types::ToolCall {
-            id: "call_1".into(),
-            name: "search".to_string(),
-            arguments: "{}".into(),
-        },
-    ]));
-    history.push(ConversationItem::tool_result("call_1", "hits"));
-    history.extend(disc_pair());
-    let kept = fit_conversation_to_tokens(&history, 1);
-    let discoveries = discovery_of(&kept);
-    assert!(
-        discoveries.len() != 1,
-        "recovery returned half a pair: {kept:?}"
     );
 }

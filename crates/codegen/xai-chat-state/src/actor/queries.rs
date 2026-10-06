@@ -55,16 +55,6 @@ impl ChatStateActor {
             }
         }
 
-        // Pair-atomic rewind (apex-waj.21): a User boundary can land BETWEEN a
-        // `tool_search_call` and the `tool_search_output` that answers it, which
-        // persists half a pair — the R5-class provider 400 / silent desync this
-        // campaign keeps hitting. Snap the cut down to the group's first item so the
-        // rewind drops both halves or neither.
-        let truncate_at = xai_grok_sampling_types::conversation::tool_search::snap_index_over_discovery_pairs(
-            &self.state.conversation,
-            truncate_at,
-        );
-
         self.state.conversation.truncate(truncate_at);
         self.state.prompt_texts.truncate(target_prompt_index);
         self.state.prompt_index = target_prompt_index;
@@ -170,16 +160,7 @@ impl ChatStateActor {
                 {
                     return None;
                 }
-                // Not report content and not a turn boundary: keep walking. A
-                // discovery item is transparent here, mirroring `BackendToolCall` —
-                // the backwards seek is looking for the last assistant TEXT.
-                xai_grok_sampling_types::ConversationItem::Discovery { .. }
-                | xai_grok_sampling_types::ConversationItem::System(_)
-                | xai_grok_sampling_types::ConversationItem::Assistant(_)
-                | xai_grok_sampling_types::ConversationItem::ToolResult(_)
-                | xai_grok_sampling_types::ConversationItem::BackendToolCall(_)
-                | xai_grok_sampling_types::ConversationItem::Reasoning(_)
-                | xai_grok_sampling_types::ConversationItem::User(_) => {}
+                _ => {}
             }
         }
         // Join earlier salvage segments. The reminder is injected only on the first continue,
@@ -206,14 +187,7 @@ impl ChatStateActor {
                         == Some(xai_grok_sampling_types::SyntheticReason::LengthContinue) => {}
                 // Boundary — deliberately including `BackendToolCall`: a
                 // hosted-tool step between segments is a real step boundary.
-                // `Discovery` joins it for the same reason: a provider-executed
-                // tool search between two assistant texts is a real step, so the
-                // salvage report stops rather than joining across it.
-                xai_grok_sampling_types::ConversationItem::Discovery { .. }
-                | xai_grok_sampling_types::ConversationItem::System(_)
-                | xai_grok_sampling_types::ConversationItem::ToolResult(_)
-                | xai_grok_sampling_types::ConversationItem::BackendToolCall(_)
-                | xai_grok_sampling_types::ConversationItem::User(_) => break,
+                _ => break,
             }
         }
         if segments.is_empty() {
@@ -242,15 +216,7 @@ impl ChatStateActor {
                 {
                     break;
                 }
-                // Everything else is mid-turn noise the walk passes through, a
-                // discovery pair included (mirrors the salvage seek above).
-                xai_grok_sampling_types::ConversationItem::Discovery { .. }
-                | xai_grok_sampling_types::ConversationItem::System(_)
-                | xai_grok_sampling_types::ConversationItem::Assistant(_)
-                | xai_grok_sampling_types::ConversationItem::ToolResult(_)
-                | xai_grok_sampling_types::ConversationItem::BackendToolCall(_)
-                | xai_grok_sampling_types::ConversationItem::Reasoning(_)
-                | xai_grok_sampling_types::ConversationItem::User(_) => {}
+                _ => {}
             }
         }
         texts.reverse();
@@ -327,12 +293,6 @@ impl ChatStateActor {
                 xai_grok_sampling_types::ConversationItem::System(_) => {}
                 xai_grok_sampling_types::ConversationItem::BackendToolCall(_) => {}
                 xai_grok_sampling_types::ConversationItem::Reasoning(_) => {}
-                // Counted, unlike the three above: see `ConversationCounts::discovery`.
-                // Each half counts once, so a desync that lost one half of a pair is
-                // visible as an odd count in `/session-info`.
-                xai_grok_sampling_types::ConversationItem::Discovery { .. } => {
-                    counts.discovery += 1;
-                }
             }
         }
         counts

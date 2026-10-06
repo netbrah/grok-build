@@ -2490,8 +2490,6 @@ fn make_entry_config_with_id(
     name: Option<&str>,
 ) -> config::ModelEntryConfig {
     config::ModelEntryConfig {
-        supports_search_tool: false,
-        use_responses_lite: false,
         multi_agent_v2: None,
         id: id.map(|s| s.to_owned()),
         model_family: None,

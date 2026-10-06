@@ -600,7 +600,7 @@ fn upgrade_legacy_reasoning_singular_anthropic_no_id() {
     let ConversationItem::Reasoning(r) = &siblings[0] else {
         panic!("expected Reasoning sibling");
     };
-    assert_eq!(r.id.as_deref(), Some(""));
+    assert_eq!(r.id, "");
     assert_eq!(r.encrypted_content.as_deref(), Some("signature-bytes-here"));
 }
 
@@ -1348,7 +1348,7 @@ fn test_single_assistant_message_thinking_preserved() {
 fn test_opus47_empty_thinking_with_signature_dropped() {
     let req = ConversationRequest::from_items(vec![
         ConversationItem::Reasoning(crate::rs::ReasoningItem {
-            id: Some(String::new()),
+            id: String::new(),
             summary: Vec::new(),
             content: None,
             encrypted_content: Some("Er4CCmUIDhACGAIqQMQHBF5Vrealsig==".to_string()),

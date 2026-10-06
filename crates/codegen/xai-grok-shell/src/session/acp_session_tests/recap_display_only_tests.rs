@@ -881,7 +881,7 @@ fn over_budget_recap_serializes_to_well_formed_messages_request() {
 
     let mk_reasoning = |id: &str| {
         ConversationItem::Reasoning(rs::ReasoningItem {
-            id: Some(id.to_string()),
+            id: id.to_string(),
             summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                 text: format!("secret thinking {id}"),
             })],
@@ -1551,9 +1551,7 @@ async fn messages_side_calls_preserve_completed_reasoning() {
 
             let reasoning = |turn: usize| {
                 ConversationItem::Reasoning(rs::ReasoningItem {
-                    // `Some("")` matches what the persist seam stores (`conversation.rs:2346-2350`);
-                    // `None` would serialize `"id": null` where the fork wrote `"id": ""`.
-                    id: Some(String::new()),
+                    id: String::new(),
                     summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                         text: format!("thinking for turn {turn}"),
                     })],

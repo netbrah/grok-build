@@ -147,42 +147,7 @@ pub(crate) fn pop_trailing_tool_run(items: &mut Vec<ConversationItem>) {
             ConversationItem::ToolResult(_) | ConversationItem::Reasoning(_) => {
                 items.pop();
             }
-            // A trailing discovery item goes with the run ONLY when the pair is
-            // incomplete (cut review F-6 / W21R1-02). The guard is the same
-            // `trailing_discovery_is_unpaired` the summariser/recap prep guard uses (it
-            // is NOT a pre-send guard — see tool_search.rs): a
-            // completed `[call, output]` tail BREAKS the loop and rides the recap
-            // request, because the result of this function IS the request that goes
-            // out (`build_instruction_items` / `budget_recap_items` push the
-            // instruction and send it), and dropping the provider's loaded-tool-set
-            // record from a request is the A-26 strip itself — "the caller handed me
-            // a private clone" is not a licence for it.
-            //
-            // When the tail IS incomplete it goes pair-ATOMIC: the partner is
-            // removed wherever it sits, so the summariser never sees half a pair
-            // (ruling apex-waj.18).
-            ConversationItem::Discovery { item } => {
-                if !xai_grok_sampling_types::conversation::tool_search::trailing_discovery_is_unpaired(
-                    items,
-                ) {
-                    break;
-                }
-                let key = item.call_id().map(str::to_owned);
-                items.pop();
-                if let Some(key) = key {
-                    items.retain(|other| {
-                        other
-                            .discovery()
-                            .is_none_or(|discovery| discovery.call_id() != Some(key.as_str()))
-                    });
-                }
-            }
-            // A plain assistant turn, a user turn, a system prompt or a backend tool
-            // call is a complete boundary — the instruction can follow it directly.
-            ConversationItem::Assistant(_)
-            | ConversationItem::User(_)
-            | ConversationItem::System(_)
-            | ConversationItem::BackendToolCall(_) => break,
+            _ => break,
         }
     }
 }
@@ -588,7 +553,7 @@ mod tests {
     fn mk_reasoning(id: &str) -> ConversationItem {
         use crate::sampling::rs;
         ConversationItem::Reasoning(rs::ReasoningItem {
-            id: Some(id.to_string()),
+            id: id.to_string(),
             summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
                 text: format!("secret thinking {id}"),
             })],
@@ -815,93 +780,6 @@ mod tests {
         ];
         pop_trailing_tool_run(&mut clean);
         assert_eq!(clean.len(), 2, "a clean (non-tool) tail is left untouched");
-    }
-
-    /// The provider-minted pair, in the shape the shell stores it: one join key on
-    /// both halves.
-    fn mk_discovery(kind: &str, call_id: &str) -> ConversationItem {
-        let raw = if kind == "call" {
-            serde_json::json!({
-                "type": "tool_search_call",
-                "id": format!("tsc_{call_id}"),
-                "call_id": call_id,
-                "status": "completed",
-                "execution": "client",
-                "arguments": { "query": "crm", "limit": 1 }
-            })
-        } else {
-            serde_json::json!({
-                "type": "tool_search_output",
-                "id": format!("tso_{call_id}"),
-                "call_id": call_id,
-                "status": "completed",
-                "execution": "client",
-                "tools": [{ "type": "function", "name": "crm_fixture_tool_00" }]
-            })
-        };
-        ConversationItem::Discovery {
-            item: xai_grok_sampling_types::conversation::tool_search::ToolSearchItem::from_wire(raw)
-                .expect("fixture is a tool_search item"),
-        }
-    }
-
-    fn discovery_count(items: &[ConversationItem]) -> usize {
-        items.iter().filter(|item| item.discovery().is_some()).count()
-    }
-
-    /// apex-waj.21 review F-6: the recap result IS the request that goes to the
-    /// summariser, so popping an ANSWERED pair here is the A-26 strip, not a private
-    /// clone detail. A completed `[call, output]` tail is kept, exactly as the chat-state
-    /// summariser-prep guard keeps it.
-    #[test]
-    fn pop_trailing_keeps_an_answered_discovery_pair() {
-        let mut items = vec![
-            ConversationItem::user("find the crm tools"),
-            mk_discovery("call", "call_recap_1"),
-            mk_discovery("output", "call_recap_1"),
-        ];
-        pop_trailing_tool_run(&mut items);
-        assert_eq!(
-            discovery_count(&items),
-            2,
-            "an answered pair rides the recap request (A-26): {items:?}"
-        );
-        assert_eq!(items.len(), 3);
-    }
-
-    /// W21R1-02: an unanswered trailing `tool_search_call` is the incomplete shape this
-    /// function exists to remove, and the pop is pair-atomic — the same-key partner goes
-    /// with it wherever it sits.
-    #[test]
-    fn pop_trailing_removes_an_unanswered_discovery_call_and_its_partner() {
-        let mut items = vec![
-            ConversationItem::user("find the crm tools"),
-            mk_discovery("output", "call_recap_2"),
-            mk_discovery("call", "call_recap_2"),
-        ];
-        pop_trailing_tool_run(&mut items);
-        assert_eq!(
-            discovery_count(&items),
-            0,
-            "the call goes, and the output whose owner just left goes with it: {items:?}"
-        );
-        assert_eq!(items.len(), 1);
-
-        // The partner need not be adjacent: the removal is by join key, not by position.
-        let mut spread = vec![
-            ConversationItem::user("q"),
-            mk_discovery("output", "call_recap_3"),
-            ConversationItem::assistant("a first answer"),
-            mk_discovery("call", "call_recap_3"),
-        ];
-        pop_trailing_tool_run(&mut spread);
-        assert_eq!(
-            discovery_count(&spread),
-            0,
-            "a non-adjacent partner is removed too, or the request carries half a pair: \
-             {spread:?}"
-        );
-        assert_eq!(spread.len(), 2, "the user turn and the assistant text survive");
     }
 
     #[test]

@@ -74,20 +74,6 @@ pub(crate) fn responses_event_has_meaningful_content(event: &rs::ResponseStreamE
         ResponseStreamEvent::ResponseCodeInterpreterCallCodeDone(event) => !event.code.is_empty(),
         ResponseStreamEvent::ResponseCustomToolCallInputDelta(event) => !event.delta.is_empty(),
         ResponseStreamEvent::ResponseCustomToolCallInputDone(event) => !event.input.is_empty(),
-        // async-openai 0.42.1 added the audio and shell-call stream events; they carry model
-        // content, so they are meaningful progress exactly like the other delta/done events.
-        ResponseStreamEvent::ResponseAudioDelta(event) => !event.delta.is_empty(),
-        ResponseStreamEvent::ResponseAudioTranscriptDelta(event) => !event.delta.is_empty(),
-        ResponseStreamEvent::ResponseShellCallCommandDelta(event) => !event.delta.is_empty(),
-        ResponseStreamEvent::ResponseShellCallOutputContentDelta(event) => {
-            event.delta.stdout.as_deref().is_some_and(|s| !s.is_empty())
-                || event.delta.stderr.as_deref().is_some_and(|s| !s.is_empty())
-        }
-        ResponseStreamEvent::ResponseAudioDone(_)
-        | ResponseStreamEvent::ResponseAudioTranscriptDone(_)
-        | ResponseStreamEvent::ResponseShellCallCommandAdded(_)
-        | ResponseStreamEvent::ResponseShellCallCommandDone(_)
-        | ResponseStreamEvent::ResponseShellCallOutputContentDone(_) => true,
         ResponseStreamEvent::ResponseFailed(event) => {
             !event.response.output.is_empty()
                 || event
@@ -131,25 +117,6 @@ pub(crate) fn responses_event_has_meaningful_content(event: &rs::ResponseStreamE
 pub(crate) fn responses_event_may_have_output(event: &rs::ResponseStreamEvent) -> bool {
     !matches!(event, rs::ResponseStreamEvent::ResponseError(_))
         && responses_event_has_meaningful_content(event)
-}
-/// Whether a completed response leaves a pending CLIENT tool call behind.
-///
-/// Extracted from the completion handler so the seventh variant is pinned by a test:
-/// a `tool_search_call` is answered by the `tool_search_output` the provider mints,
-/// never by a `function_call_output` from us, so a discovery item must NOT trip the
-/// tool-call stop path (it would report a stop reason that promises a result the client
-/// is never asked to send). Cut review W21R1-10 asked for this arm to be witnessed
-/// rather than asserted in a comment.
-fn response_has_pending_tool_calls(items: &[ConversationItem]) -> bool {
-    items.iter().any(|i| match i {
-        ConversationItem::Assistant(a) => !a.tool_calls.is_empty(),
-        ConversationItem::Discovery { .. }
-        | ConversationItem::System(_)
-        | ConversationItem::User(_)
-        | ConversationItem::ToolResult(_)
-        | ConversationItem::BackendToolCall(_)
-        | ConversationItem::Reasoning(_) => false,
-    })
 }
 
 /// Copy everything the Doom-loop capture needs out of a frame.
@@ -501,31 +468,21 @@ where
 
                 ResponseStreamEvent::ResponseFailed(failed_event) => {
                     let response = failed_event.response;
-                    // async-openai 0.42.1 types `ResponseError.code` as `ResponseErrorCode`
-                    // (the fork carried a bare string). Its serialized form is the wire spelling
-                    // (`server_error`, or the untagged `Other` string) — what the message and the
-                    // `ApiErrorCode` classification always consumed.
-                    let error_code_str = response
+                    let error_message = response
                         .error
                         .as_ref()
-                        .and_then(|e| {
-                            serde_json::to_value(&e.code)
-                                .ok()
-                                .and_then(|v| v.as_str().map(str::to_owned))
-                        });
-                    let error_message = match (&response.error, &error_code_str) {
-                        (Some(e), Some(code)) => format!("{code}: {}", e.message),
-                        _ => "Response failed with unknown error".to_string(),
-                    };
+                        .map(|e| format!("{}: {}", e.code, e.message))
+                        .unwrap_or_else(|| "Response failed with unknown error".to_string());
                     let err = SamplingError::Api {
                         status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
                         message: error_message,
                         model_metadata: None,
                         retry_after_secs: None,
                         should_retry: None,
-                        error_code: error_code_str
-                            .as_deref()
-                            .map(xai_grok_sampling_types::ApiErrorCode::parse),
+                        error_code: response
+                            .error
+                            .as_ref()
+                            .map(|e| xai_grok_sampling_types::ApiErrorCode::parse(&e.code)),
                     };
                     yield SamplingEvent::Failed {
                         request_id: request_id.clone(),
@@ -719,22 +676,13 @@ where
         // Convert to ConversationItem(s); patch in accumulated reasoning text as a fallback when the final response lacks `content` or `summary`
         // The streaming deltas may have arrived out of band
         // Splice policy lives in `inject_streaming_reasoning_fallback`.
-        // Fail-closed decode seam (U16): a projection refusal fails the TURN —
-        // same shape as the no-response-completed block above — it never
-        // silently drops history.
-        let mut items = match xai_grok_sampling_types::response_to_conversation_items(response) {
-            Ok(items) => items,
-            Err(error) => {
-                yield SamplingEvent::Failed {
-                    request_id: request_id.clone(),
-                    error: SamplingErrorInfo::from(&error),
-                };
-                return;
-            }
-        };
+        let mut items = xai_grok_sampling_types::response_to_conversation_items(response);
         xai_grok_sampling_types::inject_streaming_reasoning_fallback(&mut items, reasoning_acc);
 
-        let has_tool_calls = response_has_pending_tool_calls(&items);
+        let has_tool_calls = items.iter().any(|i| match i {
+            ConversationItem::Assistant(a) => !a.tool_calls.is_empty(),
+            _ => false,
+        });
 
         // The single classification of an Incomplete response: the collapsed [`StopReason`] plus the typed raw reason carried to consumers
         // The Responses wire strings never leave this module; the raw reason reuses the Messages wire strings so the shell speaks one vocabulary
@@ -911,9 +859,6 @@ mod tests {
             top_p: None,
             truncation: None,
             usage: None,
-            prompt_cache_options: None,
-            prompt_cache_diagnostics: None,
-            moderation: None,
         }
     }
 
@@ -923,10 +868,9 @@ mod tests {
 
     fn failed_response_with_error(message: &str) -> rs_types::Response {
         let mut r = build_response(rs_types::Status::Failed);
-        r.error = Some(rs_types::ResponseError {
-            code: rs_types::ResponseErrorCode::ServerError,
+        r.error = Some(rs_types::ErrorObject {
+            code: "server_error".into(),
             message: message.into(),
-            misalignment: None,
         });
         r
     }
@@ -1161,9 +1105,6 @@ mod tests {
                 name: "do_thing".into(),
                 id: None,
                 status: None,
-                namespace: None,
-                caller: None,
-                r#async: None,
             },
         )];
         let event =
@@ -1210,9 +1151,6 @@ mod tests {
                 name: "do_thing".into(),
                 id: None,
                 status: None,
-                namespace: None,
-                caller: None,
-                r#async: None,
             },
         )];
         let event =
@@ -1673,9 +1611,6 @@ mod tests {
                 name: name.into(),
                 id: None,
                 status: None,
-                namespace: None,
-                caller: None,
-                r#async: None,
             }),
         })
     }
@@ -1981,53 +1916,5 @@ mod tests {
             }
             other => panic!("expected Completed, got {other:?}"),
         }
-    }
-
-    /// W21R1-10: the stop-path predicate must read a discovery pair as completed
-    /// provider state, not as a pending client call. Tripping it would report a stop
-    /// reason that promises a `function_call_output` the client is never asked for.
-    #[test]
-    fn response_has_pending_tool_calls_ignores_a_discovery_pair() {
-        let discovery = |raw: serde_json::Value| ConversationItem::Discovery {
-            item: xai_grok_sampling_types::conversation::tool_search::ToolSearchItem::from_wire(
-                raw,
-            )
-            .expect("fixture is a tool_search item"),
-        };
-        let pair = vec![
-            discovery(serde_json::json!({
-                "type": "tool_search_call",
-                "id": "tsc_stream_1",
-                "call_id": "call_stream_1",
-                "status": "completed",
-                "execution": "client",
-                "arguments": { "query": "crm" }
-            })),
-            discovery(serde_json::json!({
-                "type": "tool_search_output",
-                "id": "tso_stream_1",
-                "call_id": "call_stream_1",
-                "status": "completed",
-                "execution": "client",
-                "tools": [{ "type": "function", "name": "crm_fixture_tool_00" }]
-            })),
-        ];
-        assert!(
-            !response_has_pending_tool_calls(&pair),
-            "a provider-executed search is not a pending client call"
-        );
-
-        let mut with_real_call = pair.clone();
-        with_real_call.push(ConversationItem::assistant_tool_calls(vec![
-            xai_grok_sampling_types::ToolCall {
-                id: "call_real".into(),
-                name: "read_file".to_string(),
-                arguments: "{}".into(),
-            },
-        ]));
-        assert!(
-            response_has_pending_tool_calls(&with_real_call),
-            "the real shape still trips the stop path"
-        );
     }
 }

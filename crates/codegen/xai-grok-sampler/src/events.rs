@@ -29,21 +29,6 @@ pub enum StripReason {
     /// The failure may be transient and blames no particular image.
     PayloadHeuristic,
 }
-
-/// Terminal state of the client's answer to a hosted `tool_search_call`, and the source of the word
-/// the shell writes into `raw_output.status` for the three modelled terminals (`in_progress`,
-/// `completed`, `error`); an unmodelled one gets no word and the key is omitted. The IR's own type
-/// rather than a sampler-local duplicate: the discovery item's status vocabulary lives in
-/// `xai-grok-sampling-types`. An earlier, SUPERSEDED revision of this cut did declare a second enum
-/// here, and that design would have handed the card a terminal word (`"failed"`) no captured
-/// `tool_search_*` item carries; no such enum exists anywhere in this tree now, so do not go looking
-/// for it. The count is the IR's own — 235 parsed documents from 76 JSON-bearing files of `captures/`
-/// + `ratchet-capture/fixtures/`, per the no-`Serialize` corpus measurement block in
-/// `ToolSearchStatus`'s doc, at
-/// `xai-grok-sampling-types/src/conversation/tool_search.rs` — and `"failed"` is a word this build has
-/// no evidence for, so it is not the card's to write.
-pub use xai_grok_sampling_types::conversation::tool_search::ToolSearchStatus;
-
 /// Events emitted by the sampler for a single in-flight request.
 /// Events are sent on the shared event channel that callers subscribe to.
 /// The session translates these into ACP notifications.
@@ -175,32 +160,6 @@ pub enum SamplingEvent {
         /// For web search: `{"query": "...", "sources": [{"url": "..."}, ...]}`
         result: Option<serde_json::Value>,
     },
-
-    /// The model asked for tool discovery and the CLIENT executes it.
-    /// Field semantics are settled by the IR corpus, not by any emitter: NO in-tree code emits this
-    /// variant (nor [`Self::ToolSearchCompleted`]) yet — `stream/responses.rs` (apex-waj.5) owes the
-    /// derivation — so the emission rule below is CONDITIONAL and the condition sits on that lane. It
-    /// holds only if apex-waj.5 derives this event from the client-executed item, whose `call_id` is
-    /// non-null there: emitted only for a client-executed item with a non-null `call_id`, while
-    /// server-executed discovery items have no client to run the search and stay event-silent. No
-    /// in-tree code enforces that derivation.
-    ToolSearchCallReceived {
-        request_id: RequestId,
-        call_id: String,
-        query: String,
-        limit: u64,
-    },
-
-    /// The client's answer to a [`Self::ToolSearchCallReceived`] for that stream.
-    /// `result_count` is how many tool definitions the search loaded. `status` is the item's own
-    /// state, so a stream that only ever delivered the skeleton leaves the card in progress rather
-    /// than claiming a terminal the wire never sent.
-    ToolSearchCompleted {
-        request_id: RequestId,
-        call_id: String,
-        result_count: usize,
-        status: ToolSearchStatus,
-    },
 }
 
 impl SamplingEvent {
@@ -221,9 +180,7 @@ impl SamplingEvent {
             | Self::Failed { request_id, .. }
             | Self::ModelMetadata { request_id, .. }
             | Self::BackendToolCallStarted { request_id, .. }
-            | Self::BackendToolCallCompleted { request_id, .. }
-            | Self::ToolSearchCallReceived { request_id, .. }
-            | Self::ToolSearchCompleted { request_id, .. } => request_id,
+            | Self::BackendToolCallCompleted { request_id, .. } => request_id,
         }
     }
 }
@@ -628,28 +585,5 @@ mod tests {
             "nope".parse::<SamplingErrorKind>(),
             Err(UnknownSamplingErrorKind)
         );
-    }
-
-    /// The shell's ownership gate admits or drops an event purely by `request_id()`; a search
-    /// event carrying the wrong id would open or close a card on the wrong turn. The two events
-    /// carry different ids so neither arm can borrow the other's.
-    #[test]
-    fn tool_search_events_report_their_own_request_id() {
-        let call_request = RequestId::from("search-call-request");
-        let completion_request = RequestId::from("search-completion-request");
-        let call = SamplingEvent::ToolSearchCallReceived {
-            request_id: call_request.clone(),
-            call_id: "call_1".to_string(),
-            query: "deploy the canary".to_string(),
-            limit: 5,
-        };
-        let completion = SamplingEvent::ToolSearchCompleted {
-            request_id: completion_request.clone(),
-            call_id: "call_1".to_string(),
-            result_count: 2,
-            status: ToolSearchStatus::Completed,
-        };
-        assert_eq!(call.request_id(), &call_request);
-        assert_eq!(completion.request_id(), &completion_request);
     }
 }

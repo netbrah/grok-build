@@ -1061,8 +1061,6 @@ fn test_model_entry(
 ) -> ModelEntry {
     ModelEntry {
         info: ModelInfo {
-            supports_search_tool: false,
-            use_responses_lite: false,
             multi_agent_v2: None,
             user_selectable: true,
             id: None,
@@ -2234,8 +2232,6 @@ fn model_use_concise_defaults_to_false() {
 #[test]
 fn model_info_from_config_propagates_use_concise() {
     let entry = ModelEntryConfig {
-        supports_search_tool: false,
-        use_responses_lite: false,
         multi_agent_v2: None,
         id: None,
         model_family: None,
@@ -2413,8 +2409,6 @@ fn model_agent_type_defaults_to_grok_build() {
 #[test]
 fn model_info_from_config_propagates_agent_type() {
     let entry = ModelEntryConfig {
-        supports_search_tool: false,
-        use_responses_lite: false,
         multi_agent_v2: None,
         id: None,
         model_family: None,
@@ -2884,8 +2878,6 @@ fn inference_idle_timeout_secs_absent_defaults_to_none() {
 #[test]
 fn inference_idle_timeout_propagates_to_model_info() {
     let entry = ModelEntryConfig {
-        supports_search_tool: false,
-        use_responses_lite: false,
         multi_agent_v2: None,
         id: None,
         model_family: None,
@@ -7587,8 +7579,6 @@ fn slug_propagation_noop_when_no_donor() {
 fn prefetch_model_entry(slug: &str, context_window: u64, api_backend: ApiBackend) -> ModelEntry {
     ModelEntry {
         info: ModelInfo {
-            supports_search_tool: false,
-            use_responses_lite: false,
             multi_agent_v2: None,
             user_selectable: true,
             id: None,
@@ -10594,30 +10584,4 @@ mod zc_apex_feature {
             "no built-in rows may leak into custom endpoint mode"
         );
     }
-}
-
-/// S3a A/B blocker: `supports_search_tool` on a model OVERRIDE is tri-state.
-/// It was a plain `bool` merged with `if self.x { entry.x = true }` -- a one-way
-/// latch. An operator could enable native tool search but never DISABLE it on a
-/// bundled row that ships it enabled, so the legacy-path A/B arm could not be
-/// expressed on the same binary at all.
-#[test]
-fn model_row_supports_search_tool_serde_states() {
-    let on: ConfigModelOverride =
-        toml::from_str("supports_search_tool = true").expect("explicit true");
-    assert_eq!(on.supports_search_tool, Some(true));
-
-    let off: ConfigModelOverride =
-        toml::from_str("supports_search_tool = false").expect("explicit false");
-    assert_eq!(
-        off.supports_search_tool,
-        Some(false),
-        "explicit false must survive as Some(false), not collapse to the default"
-    );
-
-    let absent: ConfigModelOverride = toml::from_str("").expect("absent row");
-    assert_eq!(
-        absent.supports_search_tool, None,
-        "absent must stay None so the bundled row is left untouched"
-    );
 }

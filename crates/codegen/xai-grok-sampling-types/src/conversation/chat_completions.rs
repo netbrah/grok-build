@@ -174,23 +174,6 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
             model_id: None,
             reasoning_content: None,
         },
-        // A discovery item has no Chat Completions equivalent either (the wire has
-        // no typed discovery message and no declaration seam a persisted pair could
-        // use). Emit the same synthetic assistant text stub as a backend tool call:
-        // history stays model-visible, no `tool_calls` / `tool_call_id` is invented,
-        // and the message sequence stays legal. It must NOT join the `unreachable!`
-        // below — a persisted pair reaches every ChatCompletions row, and a panic is
-        // not a safe stub. A-24.2's `tools[]` materialisation is a send-time encoder
-        // decision (later bead), not this arm's.
-        ConversationItem::Discovery { item } => ChatRequestMessage {
-            role: Role::Assistant,
-            content: MessageContent::Text(item.text_summary()),
-            name: None,
-            tool_calls: Vec::new(),
-            tool_call_id: None,
-            model_id: None,
-            reasoning_content: None,
-        },
         // The only caller folds `Reasoning` into the following assistant.
         ConversationItem::Reasoning(_) => unreachable!(
             "conversation_to_chat_messages folds Reasoning siblings; \
@@ -200,7 +183,7 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
 }
 
 /// The canonical conversion: each run of `Reasoning` siblings folds into the `reasoning_content` of the following `Assistant`.
-/// A `BackendToolCall` or a `Discovery` item in between does not break the fold, any other item clears it, and reasoning with no following assistant is dropped.
+/// A `BackendToolCall` in between does not break the fold, any other item clears it, and reasoning with no following assistant is dropped.
 pub fn conversation_to_chat_messages(items: Vec<ConversationItem>) -> Vec<ChatRequestMessage> {
     let mut out: Vec<ChatRequestMessage> = Vec::with_capacity(items.len());
     let mut pending_reasoning: Vec<String> = Vec::new();
@@ -225,19 +208,9 @@ pub fn conversation_to_chat_messages(items: Vec<ConversationItem>) -> Vec<ChatRe
                 // Keep `pending_reasoning` so it still folds onto the following assistant, as the Responses path does
                 out.push(conversation_item_to_chat_message(item));
             }
-            ConversationItem::Discovery { .. } => {
-                // Same rule as `BackendToolCall`: a persisted discovery pair sits
-                // between the reasoning sibling and its assistant, so ending the run
-                // here would silently clear the fold and rewrite the
-                // reasoning→`reasoning_content` mapping — a model-visible history
-                // change with no wire reason for it.
-                out.push(conversation_item_to_chat_message(item));
-            }
-            ConversationItem::System(_)
-            | ConversationItem::User(_)
-            | ConversationItem::ToolResult(_) => {
+            other => {
                 pending_reasoning.clear();
-                out.push(conversation_item_to_chat_message(item));
+                out.push(conversation_item_to_chat_message(other));
             }
         }
     }
@@ -303,7 +276,7 @@ impl From<ConversationRequest> for ChatCompletionRequest {
                 json_schema: rs::ResponseFormatJsonSchema {
                     description: None,
                     name: STRUCTURED_OUTPUT_SCHEMA_NAME.to_string(),
-                    schema: schema,
+                    schema: Some(schema),
                     strict: Some(true),
                 },
             });

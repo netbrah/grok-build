@@ -156,7 +156,7 @@ fn xw_proj_carrier_survival() {
             panic!("carrier shape at {boundary:?}: reasoning slot lost in projection");
         };
         assert!(
-            r.id.as_deref().is_some_and(|s| s.starts_with("xw_")),
+            r.id.starts_with("xw_"),
             "foreign reasoning beside the carrier must be projected per floor (T1 re-key), got {:?}",
             r.id
         );
@@ -220,11 +220,11 @@ fn xw_proj_boundary_decision_table() {
             panic!("sol→qwen: reasoning slot lost");
         };
         assert!(
-            r.id.as_deref().is_some_and(|s| s.starts_with("xw_")),
+            r.id.starts_with("xw_"),
             "sol→qwen: T1 must re-key to an xw_ id, got {:?}",
             r.id
         );
-        assert_ne!(r.id.as_deref(), Some("encitem_foreign"));
+        assert_ne!(r.id, "encitem_foreign");
         assert!(
             r.encrypted_content.is_none(),
             "sol→qwen: foreign encrypted_content must be stripped"
@@ -251,7 +251,7 @@ fn xw_proj_boundary_decision_table() {
             panic!("sol→terra: reasoning slot lost");
         };
         assert_eq!(
-            r.id.as_deref(), Some("encitem_foreign"),
+            r.id, "encitem_foreign",
             "sol→terra: strict target must NOT re-key (schema form IS the strip), got {:?}",
             r.id
         );
@@ -273,7 +273,7 @@ fn xw_proj_boundary_decision_table() {
             panic!("qwen→glm: reasoning slot lost");
         };
         assert!(
-            r.id.as_deref().is_some_and(|s| s.starts_with("xw_")),
+            r.id.starts_with("xw_"),
             "qwen→glm: foreign (cross-deployment) reasoning must be T1 re-keyed, got {:?}",
             r.id
         );
@@ -315,11 +315,11 @@ fn xw_proj_boundary_decision_table() {
             panic!("sonnet→qwen: reasoning slot lost");
         };
         assert!(
-            r.id.as_deref().is_some_and(|s| !s.is_empty()),
+            !r.id.is_empty(),
             "sonnet→qwen: empty-id mint must never survive projection (invariant 4)"
         );
         assert!(
-            r.id.as_deref().is_some_and(|s| s.starts_with("xw_")),
+            r.id.starts_with("xw_"),
             "sonnet→qwen: T1 must re-key the empty id to an xw_ id"
         );
         assert!(
@@ -457,7 +457,7 @@ fn xw_proj_no_empty_id_no_foreign_encrypted() {
                 continue;
             };
             assert!(
-                r.id.as_deref().is_some_and(|s| !s.is_empty()),
+                !r.id.is_empty(),
                 "invariant 4 ({target}): empty reasoning id at projected index {i} (the .69 class)"
             );
             if r.encrypted_content.is_some() {
@@ -521,7 +521,7 @@ fn xw_proj_surviving_call_keeps_result() {
         panic!("surviving pair: reasoning slot lost");
     };
     assert!(
-        r.id.as_deref().is_some_and(|s| s.starts_with("xw_")),
+        r.id.starts_with("xw_"),
         "foreign reasoning beside the surviving pair must still be projected, got {:?}",
         r.id
     );
@@ -569,7 +569,7 @@ fn items_from_fixture(json: &str) -> (Vec<ConversationItem>, Vec<serde_json::Val
 fn reasoning_ids(out: &[ConversationItem]) -> Vec<&str> {
     out.iter()
         .filter_map(|item| match item {
-            ConversationItem::Reasoning(r) => r.id.as_deref(),
+            ConversationItem::Reasoning(r) => Some(r.id.as_str()),
             _ => None,
         })
         .collect()
@@ -753,7 +753,7 @@ fn mf6_u5_az_az_pin_match_retains_ciphertext() {
         Some("litellm_enc:ZXlJbGVI;u5-match"),
         "pin == mint (exact string): the AZ->AZ row must RETAIN the ciphertext"
     );
-    assert_eq!(r.id.as_deref(), Some("encitem_mf6_match"), "AZ->AZ keeps the original id (no re-key)");
+    assert_eq!(r.id, "encitem_mf6_match", "AZ->AZ keeps the original id (no re-key)");
     assert_eq!(
         r.mint_tag.as_deref(),
         Some("East US 2"),
@@ -794,7 +794,7 @@ fn mf6_u5_az_az_pin_mismatch_strips_ciphertext() {
         Some("Sweden Central"),
         "mint_tag is preserved even on the strip arm (provenance stays)"
     );
-    assert_eq!(r.id.as_deref(), Some("encitem_mf6_mismatch"), "AZ->AZ keeps the original id on strip too");
+    assert_eq!(r.id, "encitem_mf6_mismatch", "AZ->AZ keeps the original id on strip too");
 }
 
 /// U5 arm 3 — pin present, mint ABSENT: an untagged mint under a known pin
@@ -885,7 +885,7 @@ fn mf6_u5_t0_same_model_is_gate_inert() {
         Some("litellm_enc:ZXlJbGVI;u5-t0"),
         "T0 is a verbatim clone — the gate is never consulted for same-model items"
     );
-    assert_eq!(r.id.as_deref(), Some("encitem_mf6_t0"), "T0 keeps the id verbatim");
+    assert_eq!(r.id, "encitem_mf6_t0", "T0 keeps the id verbatim");
     assert_eq!(
         r.mint_tag.as_deref(),
         Some("Sweden Central"),
@@ -916,7 +916,7 @@ fn mf6_u5_foreign_t1_row_strips_regardless_of_pin() {
         r.item.encrypted_content.is_none(),
         "foreign T1 row: the ciphertext is stripped regardless of pin/mint"
     );
-    assert!(r.id.as_deref().is_some_and(|s| s.starts_with("xw_")), "foreign T1 row keeps the re-key");
+    assert!(r.id.starts_with("xw_"), "foreign T1 row keeps the re-key");
     assert_eq!(
         r.mint_tag.as_deref(),
         Some("East US 2"),

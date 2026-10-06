@@ -92,17 +92,11 @@ pub(crate) fn count_complete_turns(items: &[&ConversationItem]) -> Vec<usize> {
         while i < items.len() && matches!(items[i], ConversationItem::User(_)) {
             i += 1;
         }
-        // Skip Reasoning / BackendToolCall / Discovery siblings that precede the
-        // Assistant. A discovery pair is provider state interleaved INSIDE the turn,
-        // so it must not end the run here — the same reason it is transparent to
-        // `fork_filter_chat` (xai-grok-shell/src/sampling/conversation.rs), whose
-        // comment requires the two scanners to move together.
+        // Skip Reasoning / BackendToolCall siblings that precede the Assistant.
         while i < items.len()
             && matches!(
                 items[i],
-                ConversationItem::Reasoning(_)
-                    | ConversationItem::BackendToolCall(_)
-                    | ConversationItem::Discovery { .. }
+                ConversationItem::Reasoning(_) | ConversationItem::BackendToolCall(_)
             )
         {
             i += 1;
@@ -112,18 +106,13 @@ pub(crate) fn count_complete_turns(items: &[&ConversationItem]) -> Vec<usize> {
             break;
         }
         i += 1; // skip past Assistant
-        // Consume the post-assistant run: ToolResults plus interleaved Reasoning /
-        // BackendToolCall / Discovery siblings, until the next User/Assistant. A
-        // persisted discovery pair sits in exactly this run, and stopping here would
-        // make a completed turn look unfinished — the walk then breaks and a long
-        // forked history never summarizes (its own comment above this function).
+        // Consume the post-assistant run: ToolResults plus interleaved Reasoning / BackendToolCall siblings, until the next User/Assistant
         while i < items.len()
             && matches!(
                 items[i],
                 ConversationItem::ToolResult(_)
                     | ConversationItem::Reasoning(_)
                     | ConversationItem::BackendToolCall(_)
-                    | ConversationItem::Discovery { .. }
             )
         {
             i += 1;
@@ -296,12 +285,6 @@ fn render_item_to_background(out: &mut String, item: &ConversationItem) {
         ConversationItem::BackendToolCall(b) => {
             let _ = writeln!(out, "[Backend Tool]: {}", b.text_summary());
         }
-        // Bounded one-liner (query, or the discovered-tool count) so a forked child's
-        // background transcript records that tools were loaded; the raw provider
-        // payload never enters this text.
-        ConversationItem::Discovery { item } => {
-            let _ = writeln!(out, "[Tool Search]: {}", item.text_summary());
-        }
         // Reasoning siblings do not enter the background text; they render inline with the surrounding assistant turn elsewhere, when needed
         ConversationItem::Reasoning(_) => {}
     }
@@ -322,16 +305,7 @@ pub(crate) fn render_summary(out: &mut String, items: &[&ConversationItem]) {
                     tools_used.insert(tc.name.clone());
                 }
             }
-            // `tools_used` counts tools the CHILD invoked. A discovery item lists tools
-            // the provider LOADED, which the child may never have called — folding them
-            // in would invent usage the transcript does not show. The pair still renders
-            // verbatim in `render_item_to_background`, so the loaded set is not hidden
-            // from the fork (A-26), it is just not counted as activity here.
-            ConversationItem::Discovery { .. }
-            | ConversationItem::System(_)
-            | ConversationItem::ToolResult(_)
-            | ConversationItem::BackendToolCall(_)
-            | ConversationItem::Reasoning(_) => {}
+            _ => {}
         }
     }
 
@@ -397,9 +371,7 @@ mod tests {
     }
 
     fn reasoning_item(text: &str) -> ConversationItem {
-        ConversationItem::Reasoning(
-            xai_grok_sampling_types::synthesized_reasoning_item(text).into(),
-        )
+        ConversationItem::Reasoning(xai_grok_sampling_types::synthesized_reasoning_item(text))
     }
 
     fn extract_background_text(item: &ConversationItem) -> String {
@@ -740,111 +712,6 @@ mod tests {
         assert_eq!(turns.len(), 2);
         assert_eq!(turns[0], 3); // after reasoning and A1
         assert_eq!(turns[1], 6); // after reasoning and A2
-    }
-
-    /// The pair the fork inherits: a client-executed `tool_search_call` and the
-    /// `tool_search_output` that answers it, in the shapes the captures recorded.
-    fn discovery_item(raw: serde_json::Value) -> ConversationItem {
-        ConversationItem::Discovery {
-            item: xai_grok_sampling_types::conversation::tool_search::ToolSearchItem::from_wire(
-                raw,
-            )
-            .expect("fixture is a tool_search item"),
-        }
-    }
-
-    fn discovery_call() -> ConversationItem {
-        discovery_item(serde_json::json!({
-            "type": "tool_search_call",
-            "id": "tsc_fork_call",
-            "call_id": "call_fork",
-            "status": "completed",
-            "execution": "client",
-            "arguments": { "query": "crm order management" }
-        }))
-    }
-
-    fn discovery_output() -> ConversationItem {
-        discovery_item(serde_json::json!({
-            "type": "tool_search_output",
-            "id": "tso_fork_output",
-            "call_id": "call_fork",
-            "status": "completed",
-            "execution": "client",
-            "tools": [{
-                "type": "namespace",
-                "name": "mcp__ratchet_fixture",
-                "tools": [{ "type": "function", "name": "crm_fixture_tool_00" }]
-            }]
-        }))
-    }
-
-    /// apex-waj.21 / cut review W21R1-09: a discovery pair is provider state interleaved
-    /// INSIDE a turn, on both sides of the assistant message (provider-authored hosted
-    /// items precede the answer; a client-executed pair follows it). The scanner must see
-    /// through it — this is the same transparency `fork_filter_chat` requires — because a
-    /// walk that stops at the pair reads a completed turn as unfinished and a long forked
-    /// history then never summarises.
-    #[test]
-    fn count_complete_turns_sees_through_a_discovery_pair() {
-        let items = [
-            user_item("U1"),
-            discovery_call(),
-            discovery_output(),
-            assistant_item("A1"),
-            user_item("U2"),
-            assistant_item("A2"),
-            discovery_call(),
-            discovery_output(),
-        ];
-        let refs: Vec<&ConversationItem> = items.iter().collect();
-        assert_eq!(
-            count_complete_turns(&refs),
-            vec![4, 8],
-            "the turn ends past the pair on both sides of the assistant"
-        );
-    }
-
-    /// The fork's background text renders the pair as a bounded one-liner each: the
-    /// child must learn that tools were loaded (A-26: rendered, not skipped), without
-    /// the raw provider payload entering a model-visible fragment.
-    #[test]
-    fn render_item_to_background_renders_both_discovery_halves() {
-        let mut out = String::new();
-        render_item_to_background(&mut out, &discovery_call());
-        render_item_to_background(&mut out, &discovery_output());
-        assert_eq!(
-            out.matches("[Tool Search]: ").count(),
-            2,
-            "both halves render: {out}"
-        );
-        assert!(out.contains("crm order management"), "the query survives: {out}");
-        assert!(out.contains("1 tool in 1 namespace"), "the count survives: {out}");
-        assert!(
-            !out.contains("\"type\"") && !out.contains("mcp__ratchet_fixture"),
-            "the raw provider payload never enters the fork text: {out}"
-        );
-    }
-
-    /// The loaded tool set is not tool activity: the summary counts what the child
-    /// invoked, and a discovery row must not invent usage the transcript does not show.
-    #[test]
-    fn render_summary_does_not_count_loaded_tools_as_used() {
-        let items = [
-            user_item("U1"),
-            assistant_with_tool_calls("A1", &["grep"]),
-            discovery_call(),
-            discovery_output(),
-        ];
-        let refs: Vec<&ConversationItem> = items.iter().collect();
-        let mut out = String::new();
-        render_summary(&mut out, &refs);
-        assert!(out.contains("Tools used: grep"), "{out}");
-        assert!(
-            !out.contains("crm_fixture_tool_00") && !out.contains("tool_search"),
-            "a loaded tool is not a used tool: {out}"
-        );
-        assert!(out.contains("1 user, 1 assistant"), "{out}");
     }
 
     #[test]

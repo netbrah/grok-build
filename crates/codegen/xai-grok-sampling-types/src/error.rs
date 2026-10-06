@@ -2265,7 +2265,7 @@ mod tests {
         );
         let marker = &reasoning_items[0];
         assert!(
-            marker.id.as_deref().is_some_and(|s| s.starts_with("encitem_")),
+            marker.id.starts_with("encitem_"),
             "KEEP pin: the id marker survives the typed round trip (got {:?})",
             marker.id
         );
@@ -2280,8 +2280,7 @@ mod tests {
         let reserialized =
             serde_json::to_value(marker).expect("marker must re-serialize");
         assert_eq!(
-            reserialized["id"].as_str(),
-            marker.id.as_deref(),
+            reserialized["id"], marker.id,
             "re-serialized id is byte-identical (KEEP)"
         );
         assert_eq!(

@@ -131,10 +131,6 @@ pub(crate) fn bounded_goal_transcript(items: &[ConversationItem]) -> String {
             ConversationItem::Assistant(_) => ("assistant", None),
             ConversationItem::ToolResult(_) => ("tool", None),
             ConversationItem::BackendToolCall(_) | ConversationItem::Reasoning(_) => continue,
-            // Skipped like a backend tool call: the bounded one-line summary says a
-            // search happened, not anything a goal verdict can use, and the loaded tool
-            // set is provider state rather than progress toward the goal.
-            ConversationItem::Discovery { .. } => continue,
         };
         let text = item.text_content();
         let text = if let Some(warning) = warning {

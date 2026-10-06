@@ -29,20 +29,7 @@ pub fn replace_or_insert_system_head(
             sys.content = Arc::from(prompt);
             true
         }
-        // No usable head: prepend, which leaves every existing row where it is.
-        // Named per variant rather than wildcarded (apex-waj.21): a leading
-        // `Discovery` row must fall here too — inserting a System head in front of
-        // it keeps both halves of the pair intact (ruling apex-waj.18 A-26) and
-        // cannot be read as "the head already matches".
-        Some(
-            ConversationItem::User(_)
-            | ConversationItem::Assistant(_)
-            | ConversationItem::ToolResult(_)
-            | ConversationItem::BackendToolCall(_)
-            | ConversationItem::Reasoning(_)
-            | ConversationItem::Discovery { .. },
-        )
-        | None => {
+        _ => {
             conversation.insert(0, ConversationItem::system(prompt));
             true
         }

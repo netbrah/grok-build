@@ -737,19 +737,6 @@ pub(crate) fn parse_remote_model_value(
         .or_else(|| obj.get("strict_responses_input"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    // S3a (apex-ayl.142): the proxy catalog carries no capability field
-    // today; the parse seams mirror `strict_responses_input` (absent =
-    // false — the gate stays closed on live rows).
-    let supports_search_tool = obj
-        .get("supportsSearchTool")
-        .or_else(|| obj.get("supports_search_tool"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let use_responses_lite = obj
-        .get("useResponsesLite")
-        .or_else(|| obj.get("use_responses_lite"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     let base_url = get_string(obj, "baseUrl")
         .or_else(|| get_string(obj, "base_url"))
         .unwrap_or_else(|| default_base_url.to_owned());
@@ -817,8 +804,6 @@ pub(crate) fn parse_remote_model_value(
         model_family,
         multi_agent_v2,
         strict_responses_input,
-        supports_search_tool,
-        use_responses_lite,
         normalize_content_types: false,
         base_url,
         name,

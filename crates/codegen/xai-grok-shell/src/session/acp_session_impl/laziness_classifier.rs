@@ -292,13 +292,6 @@ pub(crate) fn flatten_transcript_for_classifier(
             ConversationItem::BackendToolCall(btc) => {
                 let _ = writeln!(out, "[backend_tool_call] {}", btc.text_summary());
             }
-            // Rendered, not skipped: "the provider loaded tools" is a real step in the
-            // trace and hiding it is the same silent-loss class as stripping the item.
-            // The bounded `text_summary()` is all of it that reaches the transcript —
-            // never `raw()` (opaque provider bytes, wire invariant 6).
-            ConversationItem::Discovery { item } => {
-                let _ = writeln!(out, "[tool_search] {}", truncate(&item.text_summary()));
-            }
             ConversationItem::Reasoning(r) => {
                 if include_reasoning {
                     let text = xai_grok_sampling_types::reasoning_item_text(r);
@@ -419,15 +412,7 @@ pub(crate) fn build_classifier_turns(
                     turns.push(ClassifierTurn::AssistantToolUse { tool, args });
                 }
             }
-            // Named, with the decision recorded: `ClassifierTurn` is the auto-mode
-            // classifier's feature set — trusted user intent and assistant tool calls —
-            // and a discovery item is neither. It contributes no feature by choice, not
-            // by inheriting a wildcard (a future variant must land here deliberately).
-            ConversationItem::Discovery { .. }
-            | ConversationItem::System(_)
-            | ConversationItem::ToolResult(_)
-            | ConversationItem::BackendToolCall(_)
-            | ConversationItem::Reasoning(_) => {}
+            _ => {}
         }
     }
     turns
@@ -492,16 +477,7 @@ pub(crate) fn laziness_window_start(
                     nth_assistant_idx = Some(idx);
                 }
             }
-            // Counts neither a user nor an assistant turn: a discovery item is
-            // provider-side state inside the assistant's turn, so it must not shift the
-            // window that the laziness classifier reads.
-            ConversationItem::Discovery { .. }
-            | ConversationItem::System(_)
-            | ConversationItem::User(_)
-            | ConversationItem::Assistant(_)
-            | ConversationItem::ToolResult(_)
-            | ConversationItem::BackendToolCall(_)
-            | ConversationItem::Reasoning(_) => {}
+            _ => {}
         }
         if (min_user_turns == 0 || nth_user_idx.is_some())
             && (min_assistant_turns == 0 || nth_assistant_idx.is_some())

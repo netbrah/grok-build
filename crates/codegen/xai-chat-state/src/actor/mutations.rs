@@ -20,11 +20,6 @@ fn item_kind_str(item: &ConversationItem) -> &'static str {
         ConversationItem::ToolResult(_) => "tool_result",
         ConversationItem::BackendToolCall(_) => "backend_tool_call",
         ConversationItem::Reasoning(_) => "reasoning",
-        // The serde tag spelled exactly as `chat_history.jsonl` writes it, so a log
-        // line and the on-disk row agree. This is the only operator-visible trace of
-        // the strip / repair / projection rewrites, so a kept or stripped pair must
-        // be attributable here (A-26).
-        ConversationItem::Discovery { .. } => "discovery",
     }
 }
 
@@ -500,42 +495,27 @@ impl ChatStateActor {
         self.state
             .conversation
             .iter()
-            .map(item_content_bytes)
+            .map(|item| match item {
+                ConversationItem::System(s) => s.content.len(),
+                ConversationItem::User(u) => u
+                    .content
+                    .iter()
+                    .map(|p| match p {
+                        ContentPart::Text { text } => text.len(),
+                        ContentPart::Image { url } => url.len(),
+                    })
+                    .sum::<usize>(),
+                ConversationItem::Assistant(a) => a.content.len(),
+                ConversationItem::ToolResult(tr) => tr.content.len(),
+                ConversationItem::BackendToolCall(b) => b.text_summary().len(),
+                ConversationItem::Reasoning(r) => {
+                    xai_grok_sampling_types::reasoning_item_text(r).len()
+                        + r.encrypted_content.as_deref().map(str::len).unwrap_or(0)
+                }
+            })
             .sum()
     }
-}
 
-/// One item's byte footprint for `ChatStateActor::conversation_content_bytes`, split out
-/// so the per-variant accounting — which is a decision, not arithmetic — is testable
-/// without driving the actor (cut review R2L2-10).
-fn item_content_bytes(item: &ConversationItem) -> usize {
-    match item {
-        ConversationItem::System(s) => s.content.len(),
-        ConversationItem::User(u) => u
-            .content
-            .iter()
-            .map(|p| match p {
-                ContentPart::Text { text } => text.len(),
-                ContentPart::Image { url } => url.len(),
-            })
-            .sum::<usize>(),
-        ConversationItem::Assistant(a) => a.content.len(),
-        ConversationItem::ToolResult(tr) => tr.content.len(),
-        ConversationItem::BackendToolCall(b) => b.text_summary().len(),
-        ConversationItem::Reasoning(r) => {
-            xai_grok_sampling_types::reasoning_item_text(r).len()
-                + r.encrypted_content.as_deref().map(str::len).unwrap_or(0)
-        }
-        // The whole payload, not the ~30-byte summary: this number is the
-        // before/after signal for the retained-prune pass, and a
-        // `tool_search_output` carries the loaded tool definitions — charging
-        // it at its summary would report a multi-KB retained item as noise and
-        // hide exactly the weight the prune is measured against.
-        ConversationItem::Discovery { item } => item.estimated_model_visible_len(),
-    }
-}
-
-impl ChatStateActor {
     /// Record accumulated token usage and emit an event.
     pub(super) fn record_token_usage(&mut self, total_tokens: u64) {
         self.state.estimated_tokens_since_model = 0;
@@ -750,62 +730,5 @@ impl ChatStateActor {
             );
             &[]
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::item_content_bytes;
-    use xai_grok_sampling_types::ConversationItem;
-
-    /// A realistic loaded-tool set: the payload a `tool_search_output` carries back
-    /// after the provider answers a search.
-    fn loaded_set_output() -> ConversationItem {
-        use xai_grok_sampling_types::conversation::tool_search::ToolSearchItem;
-        let tools: Vec<serde_json::Value> = (0..40)
-            .map(|i| {
-                serde_json::json!({
-                    "type": "function",
-                    "name": format!("crm_prune_fixture_tool_{i:02}"),
-                    "parameters": { "type": "object", "properties": {
-                        "customer_id": { "type": "string" } } }
-                })
-            })
-            .collect();
-        ConversationItem::Discovery {
-            item: ToolSearchItem::from_wire(serde_json::json!({
-                "type": "tool_search_output",
-                "id": "tso_prune_fixture",
-                "call_id": "call_prune_fixture",
-                "status": "completed",
-                "execution": "client",
-                "tools": tools
-            }))
-            .expect("fixture is a tool_search item"),
-        }
-    }
-
-    /// The retained-prune before/after signal must charge a discovery row at its whole
-    /// payload. Charging it at the bounded summary reports a multi-KB retained item as
-    /// noise and hides exactly the weight the prune is measured against (cut review
-    /// R2L2-10: this arm was booked as "no behavioural claim" with no test).
-    #[test]
-    fn the_prune_charge_of_a_discovery_row_is_its_payload_not_its_summary() {
-        let item = loaded_set_output();
-        let payload = item
-            .discovery()
-            .expect("fixture is a discovery row")
-            .estimated_model_visible_len();
-        assert!(
-            payload > 4_000,
-            "fixture must be a realistically large loaded set, got {payload} bytes"
-        );
-        assert_eq!(item_content_bytes(&item), payload, "the payload is the charge");
-        assert!(
-            item_content_bytes(&item) > item.text_content().len(),
-            "the summary must never be the charge: summary {} bytes vs charge {}",
-            item.text_content().len(),
-            payload
-        );
     }
 }

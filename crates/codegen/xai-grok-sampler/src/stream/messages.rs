@@ -593,9 +593,7 @@ pub fn stream_messages<'a>(
                                         Some(state.signature)
                                     };
                                     assistant_reasoning = Some(rs::ReasoningItem {
-                                        // 0.42.1 widened `id` to `Option<String>`; keep the synthesized
-                                        // empty id as `Some("")` so replayed bytes are unchanged.
-                                        id: Some(String::new()),
+                                        id: String::new(),
                                         summary,
                                         content: None,
                                         encrypted_content,

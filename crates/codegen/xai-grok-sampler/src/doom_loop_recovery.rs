@@ -426,12 +426,7 @@ impl FailedResponseCapture {
             match item {
                 CapturedItem::Reasoning(reasoning) => {
                     let mut reasoning = *reasoning;
-                    // async-openai 0.42.1 widened `ReasoningItem.id` to `Option<String>`;
-                    // an absent id simply has no streamed-delta entry to match.
-                    let streamed_text = reasoning
-                        .id
-                        .as_deref()
-                        .and_then(|id| take_streamed(&mut streamed, id));
+                    let streamed_text = take_streamed(&mut streamed, &reasoning.id);
                     fit_reasoning(&mut reasoning, streamed_text, &mut reasoning_budget);
                     if reasoning_has_text(&reasoning) || reasoning.encrypted_content.is_some() {
                         items.push(ConversationItem::Reasoning(reasoning.into()));
@@ -458,11 +453,9 @@ impl FailedResponseCapture {
                 continue;
             }
             items.push(ConversationItem::Reasoning(rs::ReasoningItem {
-                id: Some(item_id),
+                id: item_id,
                 summary: Vec::new(),
-                content: Some(vec![rs::ReasoningItemContent::ReasoningText(rs::ReasoningTextContent {
-                    text,
-                })]),
+                content: Some(vec![rs::ReasoningTextContent { text }]),
                 encrypted_content: None,
                 status: None,
             }.into()));
@@ -507,9 +500,7 @@ fn fit_reasoning(
         .take()
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|part| match part {
-            rs::ReasoningItemContent::ReasoningText(t) => Some(t.text),
-        })
+        .map(|part| part.text)
         .filter(|text| !text.is_empty())
         .collect();
     let content = if typed_content.is_empty() {
@@ -517,16 +508,12 @@ fn fit_reasoning(
     } else {
         typed_content
     };
-    let content: Vec<rs::ReasoningItemContent> = content
+    let content: Vec<rs::ReasoningTextContent> = content
         .into_iter()
-        .map(|text| {
-            rs::ReasoningItemContent::ReasoningText(rs::ReasoningTextContent {
-                text: budget.fit(&text),
-            })
+        .map(|text| rs::ReasoningTextContent {
+            text: budget.fit(&text),
         })
-        .filter(|part| {
-            matches!(part, rs::ReasoningItemContent::ReasoningText(t) if !t.text.is_empty())
-        })
+        .filter(|part| !part.text.is_empty())
         .collect();
     reasoning.content = (!content.is_empty()).then_some(content);
 
@@ -549,11 +536,7 @@ fn reasoning_has_text(reasoning: &rs::ReasoningItem) -> bool {
     reasoning
         .content
         .as_ref()
-        .is_some_and(|parts| {
-            parts.iter().any(|part| {
-                matches!(part, rs::ReasoningItemContent::ReasoningText(t) if !t.text.is_empty())
-            })
-        })
+        .is_some_and(|parts| parts.iter().any(|part| !part.text.is_empty()))
         || !reasoning.summary.is_empty()
 }
 

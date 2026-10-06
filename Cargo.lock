@@ -522,11 +522,11 @@ dependencies = [
 
 [[package]]
 name = "async-openai"
-version = "0.42.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63077bf55857e6963effefb5f28134c40cc2ee68bc176cc601bbdeb070017fba"
+version = "0.33.1"
+source = "git+https://github.com/netbrah/async-openai.git?rev=4d72e1d16920834f64843764f9f5f53131f26ddf#4d72e1d16920834f64843764f9f5f53131f26ddf"
 dependencies = [
  "async-openai-macros",
+ "backoff",
  "base64 0.22.1",
  "bytes",
  "derive_builder",
@@ -534,7 +534,8 @@ dependencies = [
  "futures",
  "getrandom 0.3.4",
  "rand 0.9.5",
- "reqwest 0.13.4",
+ "reqwest 0.12.24",
+ "reqwest-eventsource",
  "secrecy",
  "serde",
  "serde_json",
@@ -543,16 +544,14 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
- "tower",
  "tracing",
  "url",
 ]
 
 [[package]]
 name = "async-openai-macros"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "492a944774207eed3acf425214eadbd6ce84a2b89331164ff1c11bae92b26302"
+version = "0.1.1"
+source = "git+https://github.com/netbrah/async-openai.git?rev=4d72e1d16920834f64843764f9f5f53131f26ddf#4d72e1d16920834f64843764f9f5f53131f26ddf"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1209,6 +1208,20 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
+]
+
+[[package]]
+name = "backoff"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b62ddb9cb1ec0a098ad4bbf9344d0713fa193ae1a80af55febcff2627b6a00c1"
+dependencies = [
+ "futures-core",
+ "getrandom 0.2.16",
+ "instant",
+ "pin-project-lite",
+ "rand 0.8.5",
+ "tokio",
 ]
 
 [[package]]
@@ -3690,6 +3703,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393"
 
 [[package]]
+name = "futures-timer"
+version = "3.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af43fadb8a98512d547e37b4e92e0ced13e205c061b87b4623eff01d918d6968"
+
+[[package]]
 name = "futures-util"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5540,6 +5559,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "instant"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0242819d153cba4b4b05a5a8f2a7e9bbf97b6055b2a002b395c96b5ff3c0222"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]
@@ -8854,6 +8882,22 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams 0.5.0",
  "web-sys",
+]
+
+[[package]]
+name = "reqwest-eventsource"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "632c55746dbb44275691640e7b40c907c16a2dc1a5842aa98aaec90da6ec6bde"
+dependencies = [
+ "eventsource-stream",
+ "futures-core",
+ "futures-timer",
+ "mime",
+ "nom 7.1.3",
+ "pin-project-lite",
+ "reqwest 0.12.24",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

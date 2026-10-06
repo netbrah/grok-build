@@ -123,20 +123,7 @@ impl SessionActor {
         // Presence in `turn_stream_drained` means the turn still owns every FIFO event for this request.
         // `None` only means the ordering waiter timed out; queued chunks stay valid until the terminal event or a turn boundary removes the entry.
         // A pending image strip admits only its own strip and terminal events.
-        // `BackendToolCallCompleted` and `ToolSearchCompleted` are the two exempt variants, and they
-        // are admitted unowned UNCONDITIONALLY. The predicate is
-        // a plain `matches!` on the event shape — there is no card-registry lookup anywhere in
-        // `handle_sampling_event` — so a completion from a request this turn never owned is admitted
-        // exactly like one from a request it did own. That is inherited verbatim from the pre-existing
-        // `BackendToolCallCompleted` exemption, whose own precedent test
-        // (`unowned_backend_tool_completion_closes_visible_card`) drives a completion with no prior
-        // start at all: the pager's failure mode is asymmetric, since a dropped close leaves a visible
-        // card spinning forever while a close for a card nobody opened updates an unknown id.
-        let closes_visible_card = matches!(
-            event,
-            SamplingEvent::BackendToolCallCompleted { .. }
-                | SamplingEvent::ToolSearchCompleted { .. }
-        );
+        let closes_backend_tool = matches!(event, SamplingEvent::BackendToolCallCompleted { .. });
         let resolves_pending_strip = match &event {
             SamplingEvent::ImagesStripped {
                 stripped_urls,
@@ -159,7 +146,7 @@ impl SessionActor {
         ) {
             self.close_stream_apply_span(event.request_id());
         }
-        if !request_owned && !closes_visible_card && !resolves_pending_strip {
+        if !request_owned && !closes_backend_tool && !resolves_pending_strip {
             return;
         }
 
@@ -590,68 +577,6 @@ impl SessionActor {
                             .status(Some(status))
                             .title(Some(title))
                             .raw_output(result),
-                    )),
-                    None,
-                )
-                .await;
-            }
-            // ── Client-executed tool discovery ─────────────────────
-            // The model asked for tool definitions and the client runs the search, so the call is
-            // real output on this stream; it opens a card exactly where a backend call start would.
-            SamplingEvent::ToolSearchCallReceived {
-                request_id,
-                call_id,
-                query,
-                limit,
-            } => {
-                self.record_turn_first_token(Some(&request_id));
-                let (title, kind, raw_input) = tool_search_display(&query, limit);
-                let meta = serde_json::json!({"tool_search": true})
-                    .as_object()
-                    .cloned();
-                self.send_update(
-                    acp::SessionUpdate::ToolCall(
-                        acp::ToolCall::new(
-                            acp::ToolCallId::new(Arc::from(call_id.as_str())),
-                            title,
-                        )
-                        .kind(kind)
-                        .status(acp::ToolCallStatus::InProgress)
-                        .content(vec![])
-                        .locations(vec![])
-                        .raw_input(Some(raw_input))
-                        .meta(meta),
-                    ),
-                    None,
-                )
-                .await;
-            }
-            // Closes the card the search call opened, keyed on the same `call_id`. It rides the
-            // unconditional `closes_visible_card` exemption above rather than the ownership gate,
-            // because a dropped close leaves a visible card spinning forever in the pager.
-            SamplingEvent::ToolSearchCompleted {
-                call_id,
-                result_count,
-                status: search_status,
-                ..
-            } => {
-                let status = tool_search_call_status(search_status);
-                // A terminal the IR cannot name gets no `status` key at all. The claim is scoped to
-                // the corpus the IR measured (235 parsed documents): no captured `tool_search_*` item
-                // there carries a `status` the IR cannot name, and `"status": null` measures at 0
-                // occurrences, so the key is omitted rather than nulled or invented. `result_count`
-                // rides either way; the ACP status carries the decision. See
-                // `tool_search_status_word` for the full verdict.
-                let raw_output = match tool_search_status_word(search_status) {
-                    Some(word) => serde_json::json!({"result_count": result_count, "status": word}),
-                    None => serde_json::json!({"result_count": result_count}),
-                };
-                self.send_update(
-                    acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
-                        acp::ToolCallId::new(Arc::from(call_id.as_str())),
-                        acp::ToolCallUpdateFields::new()
-                            .status(Some(status))
-                            .raw_output(Some(raw_output)),
                     )),
                     None,
                 )

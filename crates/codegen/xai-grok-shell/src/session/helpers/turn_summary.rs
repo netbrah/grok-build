@@ -23,15 +23,7 @@ pub(crate) fn last_user_anchor(conversation: &[ConversationItem]) -> Option<Stri
             let text = item.text_content();
             (!text.trim().is_empty()).then_some(text)
         }
-        // `find_map` keeps searching on `None`; nothing here is a human anchor, and a
-        // discovery item is least of all (its summary is provider state, not a request).
-        ConversationItem::Discovery { .. }
-        | ConversationItem::System(_)
-        | ConversationItem::Assistant(_)
-        | ConversationItem::ToolResult(_)
-        | ConversationItem::BackendToolCall(_)
-        | ConversationItem::Reasoning(_)
-        | ConversationItem::User(_) => None,
+        _ => None,
     })?;
     let mut anchor: String = text
         .split_whitespace()

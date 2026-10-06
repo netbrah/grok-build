@@ -97,16 +97,7 @@ pub(crate) fn clean_orphaned_items(items: &[ConversationItem]) -> Vec<Conversati
             ConversationItem::ToolResult(t) => {
                 result_ids.insert(&t.tool_call_id);
             }
-            // A discovery pair is NOT part of this pairing vocabulary: a
-            // `tool_search_call` is answered by a `tool_search_output`, which the
-            // /messages wire has no typed item for. Naming the arm so it can never
-            // satisfy or defeat an owner pairing by falling through. (`Assistant`
-            // and `ToolResult` are bound by their own arms above.)
-            ConversationItem::Discovery { .. }
-            | ConversationItem::System(_)
-            | ConversationItem::User(_)
-            | ConversationItem::BackendToolCall(_)
-            | ConversationItem::Reasoning(_) => {}
+            _ => {}
         }
     }
     let paired: HashSet<&str> = call_ids.intersection(&result_ids).map(|id| *id).collect();
@@ -135,15 +126,7 @@ pub(crate) fn clean_orphaned_items(items: &[ConversationItem]) -> Vec<Conversati
             ConversationItem::ToolResult(t) => paired
                 .contains(t.tool_call_id.as_str())
                 .then(|| item.clone()),
-            // Every remaining item type is kept verbatim. A discovery pair is kept
-            // unconditionally: its own pairing (`call_id` → `tool_search_output`) is
-            // outside this Assistant↔ToolResult vocabulary, and dropping a half of it
-            // is the A-26 desync this pass must never cause.
-            ConversationItem::Discovery { .. }
-            | ConversationItem::System(_)
-            | ConversationItem::User(_)
-            | ConversationItem::BackendToolCall(_)
-            | ConversationItem::Reasoning(_) => Some(item.clone()),
+            other => Some(other.clone()),
         })
         .collect()
 }
@@ -889,23 +872,6 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 pending_user_class = None;
                 pending_assistant.push(ContentBlock::Text {
                     text: b.text_summary(),
-                    cache_control: None,
-                });
-            }
-            // Same treatment for a discovery item: the /messages wire has no typed
-            // discovery item, so ONE bounded assistant text block per half keeps the
-            // state model-visible without inventing any id.
-            // Deliberately NOT a `tool_reference` block: H-11
-            // (`rules_generated.rs:116`) rejects a reference to a name the request
-            // never declared, and A-24.2's `tools[]` materialisation of the loaded
-            // set is a send-time encoder decision (later bead) — the tier ladder's D2
-            // arm, not this projector's (ruling apex-waj.18, consequence 4).
-            ConversationItem::Discovery { item } => {
-                flush_user(&mut pending_user, &mut messages);
-                pending_user_cm = false;
-                pending_user_class = None;
-                pending_assistant.push(ContentBlock::Text {
-                    text: item.text_summary(),
                     cache_control: None,
                 });
             }

@@ -878,7 +878,7 @@ async fn family_switch_responses_target_skips_compact_and_preserves_history() {
                 ConversationItem::system("sys"),
                 ConversationItem::user("hello"),
                 ConversationItem::Reasoning(xai_grok_sampling_types::rs::ReasoningItem {
-                    id: Some("tco_res-uuid_call-uuid-0".to_string()),
+                    id: "tco_res-uuid_call-uuid-0".to_string(),
                     summary: vec![],
                     content: None,
                     encrypted_content: Some("tco_SEALEDCIPHERTEXT".to_string()),
@@ -955,45 +955,30 @@ async fn family_switch_responses_target_preserves_reasoning_for_projection() {
                 ConversationItem::system("sys"),
                 ConversationItem::user("solve 17*23"),
                 ConversationItem::Reasoning(xai_grok_sampling_types::rs::ReasoningItem {
-                    id: Some("rs_qwen_res-0".to_string()),
+                    id: "rs_qwen_res-0".to_string(),
                     summary: vec![xai_grok_sampling_types::rs::SummaryPart::SummaryText(
                         xai_grok_sampling_types::rs::SummaryTextContent {
                             text: "Let me multiply 17 and 23.".to_string(),
                         },
                     )],
-                    // The tagged `ReasoningItemContent` is 0.42.1's shape and the only faithful
-                    // port, but the `xw_` re-key hashes exactly these bytes
-                    // (`projection.rs:633-641`), so the wrap moves the minted id. The only pin
-                    // on that id is the `xw_` prefix check below — a known-answer golden is owed
-                    // on apex-99sf, so this suite being green is NOT evidence of `xw_` stability.
-                    content: Some(vec![
-                        xai_grok_sampling_types::rs::ReasoningItemContent::ReasoningText(
-                            xai_grok_sampling_types::rs::ReasoningTextContent {
-                                text: "17*23 = 17*20 + 17*3 = 340 + 51 = 391.".to_string(),
-                            },
-                        ),
-                    ]),
+                    content: Some(vec![xai_grok_sampling_types::rs::ReasoningTextContent {
+                        text: "17*23 = 17*20 + 17*3 = 340 + 51 = 391.".to_string(),
+                    }]),
                     encrypted_content: None,
                     status: None,
                 }.into()),
                 assistant_with_model("The answer is 391.", "qwen3.8-27b"),
                 ConversationItem::user("now divide by 4"),
                 ConversationItem::Reasoning(xai_grok_sampling_types::rs::ReasoningItem {
-                    id: Some("rs_qwen_res-1".to_string()),
+                    id: "rs_qwen_res-1".to_string(),
                     summary: vec![xai_grok_sampling_types::rs::SummaryPart::SummaryText(
                         xai_grok_sampling_types::rs::SummaryTextContent {
                             text: "Divide 391 by 4.".to_string(),
                         },
                     )],
-                    // Tagged 0.42.1 shape — it moves the `xw_` preimage; see the note on the
-                    // first reasoning item of this history.
-                    content: Some(vec![
-                        xai_grok_sampling_types::rs::ReasoningItemContent::ReasoningText(
-                            xai_grok_sampling_types::rs::ReasoningTextContent {
-                                text: "391/4 = 97.75.".to_string(),
-                            },
-                        ),
-                    ]),
+                    content: Some(vec![xai_grok_sampling_types::rs::ReasoningTextContent {
+                        text: "391/4 = 97.75.".to_string(),
+                    }]),
                     encrypted_content: None,
                     status: None,
                 }.into()),
@@ -1087,7 +1072,7 @@ async fn family_switch_responses_target_preserves_reasoning_for_projection() {
                 let pre = pre_reasoning[idx];
                 let want = oracle_reasoning[idx];
                 assert!(
-                    got.id.as_deref().is_some_and(|id| id.starts_with("xw_")),
+                    got.id.starts_with("xw_"),
                     "the T1 re-key must mint an xw_ id, got {:?}",
                     got.id
                 );
@@ -1128,7 +1113,7 @@ async fn family_switch_messages_target_still_compacts_guard() {
                 ConversationItem::system("sys"),
                 ConversationItem::user("hello"),
                 ConversationItem::Reasoning(xai_grok_sampling_types::rs::ReasoningItem {
-                    id: Some("tco_res-uuid_call-uuid-0".to_string()),
+                    id: "tco_res-uuid_call-uuid-0".to_string(),
                     summary: vec![],
                     content: None,
                     encrypted_content: Some("tco_SEALEDCIPHERTEXT".to_string()),
@@ -2262,7 +2247,7 @@ async fn xw_orphan_compact_model_bound_400_arms_strip_retry() {
                 ConversationItem::system("sys"),
                 ConversationItem::user("hello"),
                 ConversationItem::Reasoning(xai_grok_sampling_types::rs::ReasoningItem {
-                    id: Some("tco_xw_orphan_0".to_string()),
+                    id: "tco_xw_orphan_0".to_string(),
                     summary: vec![xai_grok_sampling_types::rs::SummaryPart::SummaryText(
                         xai_grok_sampling_types::rs::SummaryTextContent {
                             text: "xw_orphan_model_bound_reasoning".to_string(),

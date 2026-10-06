@@ -23,7 +23,7 @@ use crate::sampling::error::map_sampling_err_to_acp;
 use crate::sampling::types::{ToolCallResponse, ToolDefinition};
 use crate::sampling::{
     ContentPart, ConversationItem, ConversationRequest, ConversationResponse, SamplingError,
-    SyntheticReason, ToolSpec,
+    SyntheticReason, ToolSpec, conversation_truncate_for_prompt,
 };
 use crate::session::ClientFsConfig;
 use crate::session::feedback_manager::{FeedbackManager, FeedbackManagerConfig};

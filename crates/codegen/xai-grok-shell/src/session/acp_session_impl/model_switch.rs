@@ -430,19 +430,6 @@ impl SessionActor {
                     xai_grok_sampling_types::ConversationItem::Assistant(_)
                         | xai_grok_sampling_types::ConversationItem::Reasoning(_)
                         | xai_grok_sampling_types::ConversationItem::BackendToolCall(_)
-                        // A discovery row is NOT model-minted state in this predicate's
-                        // sense (the client authors the `tool_search_output` in the
-                        // client-executed quadrant, and the cut's F-12 adjudication says so
-                        // — the two readings must not diverge, cut review WAJ21R2-07). It is
-                        // named here because it never travels alone: a history carrying a
-                        // pair always carries the Assistant turn that called the search, so
-                        // this arm cannot change a real decision either way. What it does
-                        // buy is visibility — left out, it would ride a `matches!` that E0004
-                        // cannot see, and the next reader would have to re-derive the answer.
-                        // Declared UN-PINNED: the predicate is an async read off the chat-state
-                        // handle inside a live session, so pinning the family-switch decision
-                        // for a discovery-only history needs a session fixture, not a unit test.
-                        | xai_grok_sampling_types::ConversationItem::Discovery { .. }
                 )
             })
     }

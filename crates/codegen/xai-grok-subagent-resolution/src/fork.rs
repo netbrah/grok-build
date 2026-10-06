@@ -66,15 +66,7 @@ pub fn fork_crosses_model(
             Some(source) => source != child_model_id && source != child_wire_model,
             None => false,
         },
-        // No model provenance to disagree with, a discovery item included — its
-        // provider-minted bytes belong to whichever row minted them, but the fork
-        // decision here reads only `Assistant.model_id`.
-        ConversationItem::Discovery { .. }
-        | ConversationItem::System(_)
-        | ConversationItem::User(_)
-        | ConversationItem::ToolResult(_)
-        | ConversationItem::BackendToolCall(_)
-        | ConversationItem::Reasoning(_) => false,
+        _ => false,
     })
 }
 
@@ -221,7 +213,6 @@ mod tests {
                     id: "raw-1".to_string(),
                     raw: serde_json::json!({"type": "compaction"}),
                     cross_provider_fallback: None,
-                    mint_tag: None,
                 }),
             }),
             ConversationItem::assistant_with_model("b", "model-a"),

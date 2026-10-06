@@ -92,12 +92,8 @@ pub(crate) mod hydrate {
 
         if let Some(ref messages) = loaded.messages {
             write_updates(dir, messages)?;
-            // `.items` is the count of the cache that ends up on disk: a rebuild refused
-            // by the A-26 discovery guard (apex-waj.21 WAJ21R2-01) leaves the previous
-            // cache standing and says so on its own `tracing::error!` line.
             num_chat_messages = crate::session::storage::chat_rebuild::rebuild_chat_history(dir)
-                .map_err(|e| io_err(dir, e))?
-                .items;
+                .map_err(|e| io_err(dir, e))?;
         }
 
         write_summary(dir, &info, remote, num_messages, num_chat_messages)?;

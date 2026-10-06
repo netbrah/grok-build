@@ -45,16 +45,6 @@ fn responses_event_has_content(event: &rs::ResponseStreamEvent) -> bool {
         Event::ResponseCustomToolCallInputDelta(event) => !event.delta.is_empty(),
         Event::ResponseMCPCallArgumentsDelta(event) => !event.delta.is_empty(),
         Event::ResponseCodeInterpreterCallCodeDelta(event) => !event.delta.is_empty(),
-        // async-openai 0.42.1 audio / shell-call deltas are first-content events like the
-        // other deltas; their Added/Done markers are status transitions like the existing
-        // marker group below.
-        Event::ResponseAudioDelta(event) => !event.delta.is_empty(),
-        Event::ResponseAudioTranscriptDelta(event) => !event.delta.is_empty(),
-        Event::ResponseShellCallCommandDelta(event) => !event.delta.is_empty(),
-        Event::ResponseShellCallOutputContentDelta(event) => {
-            event.delta.stdout.as_deref().is_some_and(|s| !s.is_empty())
-                || event.delta.stderr.as_deref().is_some_and(|s| !s.is_empty())
-        }
         Event::ResponseOutputItemAdded(event) => output_item_is_tool_call(&event.item),
         Event::ResponseImageGenerationCallPartialImage(_)
         | Event::ResponseImageGenerationCallCompleted(_) => true,
@@ -95,11 +85,6 @@ fn responses_event_has_content(event: &rs::ResponseStreamEvent) -> bool {
         | Event::ResponseCodeInterpreterCallInterpreting(_)
         | Event::ResponseCodeInterpreterCallCompleted(_)
         | Event::ResponseOutputTextAnnotationAdded(_)
-        | Event::ResponseAudioDone(_)
-        | Event::ResponseAudioTranscriptDone(_)
-        | Event::ResponseShellCallCommandAdded(_)
-        | Event::ResponseShellCallCommandDone(_)
-        | Event::ResponseShellCallOutputContentDone(_)
         | Event::ResponseError(_) => false,
     }
 }
@@ -117,22 +102,14 @@ fn output_item_is_tool_call(item: &rs::OutputItem) -> bool {
         | OutputItem::LocalShellCall(_)
         | OutputItem::ShellCall(_)
         | OutputItem::ApplyPatchCall(_)
-        | OutputItem::McpCall(_)
-        | OutputItem::Program(_)
-        | OutputItem::ToolSearchCall(_) => true,
+        | OutputItem::McpCall(_) => true,
         OutputItem::Message(_)
         | OutputItem::Reasoning(_)
         | OutputItem::Compaction(_)
         | OutputItem::McpListTools(_)
         | OutputItem::McpApprovalRequest(_)
         | OutputItem::ShellCallOutput(_)
-        | OutputItem::ApplyPatchCallOutput(_)
-        | OutputItem::FunctionCallOutput(_)
-        | OutputItem::ComputerCallOutput(_)
-        | OutputItem::CustomToolCallOutput(_)
-        | OutputItem::ProgramOutput(_)
-        | OutputItem::ToolSearchOutput(_)
-        | OutputItem::AdditionalTools(_) => false,
+        | OutputItem::ApplyPatchCallOutput(_) => false,
     }
 }
 
