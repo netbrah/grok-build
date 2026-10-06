@@ -405,6 +405,15 @@ fn enforce_discovery_pair_law(
     let required = match half.kind() {
         tool_search::ToolSearchKind::Call => tool_search::ToolSearchKind::Output,
         tool_search::ToolSearchKind::Output => tool_search::ToolSearchKind::Call,
+        // apex-xk51: the Messages family joins family-internal — the
+        // `server_tool_use` CALL owes its `tool_search_tool_result` ANSWER and
+        // vice versa (the `srvtoolu_` handle, wire invariant 6).
+        tool_search::ToolSearchKind::ServerToolUse => {
+            tool_search::ToolSearchKind::ToolSearchToolResult
+        }
+        tool_search::ToolSearchKind::ToolSearchToolResult => {
+            tool_search::ToolSearchKind::ServerToolUse
+        }
     };
     Err(crate::SamplingError::serialization_message(format_args!(
         "decode seam: a `{}` item arrived without its `{}` half in the same response, so the \

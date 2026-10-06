@@ -522,6 +522,11 @@ fn mark_message_cache_breakpoint_with(
                     | ContentBlock::ToolUse { cache_control, .. } => cache_control,
                     ContentBlock::Thinking { .. }
                     | ContentBlock::RedactedThinking { .. }
+                    // apex-xk51: discovery blocks carry no `cache_control`
+                    // field by construction — same as Thinking/Unknown, so a
+                    // breakpoint scans past them.
+                    | ContentBlock::ServerToolUse { .. }
+                    | ContentBlock::ToolSearchToolResult { .. }
                     | ContentBlock::Unknown { .. } => {
                         continue;
                     }

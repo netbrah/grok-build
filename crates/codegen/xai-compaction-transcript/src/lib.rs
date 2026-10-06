@@ -95,7 +95,7 @@ fn discovery_turn_text(item: &xai_grok_sampling_types::conversation::tool_search
         DiscoveredToolKind, ToolSearchKind, invocable_names,
     };
     match item.kind() {
-        ToolSearchKind::Call => item.text_summary(),
+        ToolSearchKind::Call | ToolSearchKind::ServerToolUse => item.text_summary(),
         ToolSearchKind::Output => {
             let names = invocable_names(std::iter::once(item));
             let total = names.len();
@@ -134,6 +134,10 @@ fn discovery_turn_text(item: &xai_grok_sampling_types::conversation::tool_search
             }
             line
         }
+        // The Messages answer carries its loaded tools in content.tool_references
+        // (an object, not a tools array), so the Output names logic above cannot
+        // render it; fall back to the bounded count summary (apex-xk51).
+        ToolSearchKind::ToolSearchToolResult => item.text_summary(),
     }
 }
 

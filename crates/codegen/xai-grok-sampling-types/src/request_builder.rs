@@ -595,6 +595,22 @@ fn check_block_list(
             ContentBlock::Unknown { kind } => {
                 let _ = kind;
             }
+            // apex-xk51 (D27): a discovery block is a KNOWN FUTURE OUTBOUND
+            // path — O1 pause-turn continuation ECHOES the paused assistant
+            // turn back outbound, and the req-003 live capture shows the
+            // provider accepted our own server blocks replayed UNCHANGED and
+            // ended end_turn. So `check_block_list` PERMITS it (inert no-op),
+            // not rejects it. No `cache_control` field by construction (same
+            // as Unknown/Thinking), so no marker; no pairing; no `last_markable`.
+            ContentBlock::ServerToolUse { id, name, input } => {
+                let _ = (id, name, input);
+            }
+            ContentBlock::ToolSearchToolResult {
+                tool_use_id,
+                content,
+            } => {
+                let _ = (tool_use_id, content);
+            }
         }
     }
     if let (Some(marker_index), Some(last)) = (list_marker, last_markable) {

@@ -19,33 +19,81 @@ pub struct MessagesRequest {
     model: String,
     messages: Vec<Message>,
     max_tokens: u32,
-    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::rejecting_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     system: Option<SystemParam>,
-    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::rejecting_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     tools: Option<Vec<ToolParam>>,
-    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::rejecting_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     tool_choice: Option<ToolChoiceParam>,
-    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::rejecting_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     temperature: Option<f32>,
-    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::rejecting_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     top_p: Option<f32>,
-    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::rejecting_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     top_k: Option<u32>,
-    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::rejecting_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     stream: Option<bool>,
-    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::rejecting_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     stop_sequences: Option<Vec<String>>,
-    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::rejecting_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     thinking: Option<ThinkingConfig>,
-    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::rejecting_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     output_config: Option<OutputConfig>,
-    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::rejecting_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     metadata: Option<Metadata>,
     /// BETA `mcp_servers[]` (MSGW F1, apex-ayl.115): config-declared remote
     /// MCP servers, mapped from the pre-wire `McpServerDecl` form by the
     /// producer (`r#type: "url"`). Absent (None) on every row that does not
     /// declare one — byte-identical pre-cut bodies.
-    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::rejecting_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     mcp_servers: Option<Vec<McpServerParam>>,
 }
 
@@ -258,7 +306,11 @@ pub struct TextBlock {
     #[serde(rename = "type")]
     pub r#type: String, // always "text"
     pub text: String,
-    #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::rejecting_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cache_control: Option<CacheControl>,
 }
 
@@ -353,6 +405,27 @@ pub enum ContentBlock {
     /// Encrypted reasoning the model chose to redact: an opaque `data` blob, never plaintext.
     /// Parsed so a stream carrying one deserializes instead of failing the whole event parse; request-building and the sampler never construct one.
     RedactedThinking { data: String },
+    /// The provider's own hosted-tool-search CALL (Messages wire, apex-xk51):
+    /// `server_tool_use`. `id` is the provider-minted `srvtoolu_` handle (wire
+    /// invariant 6 — echo verbatim, never rekey), `name` the server tool, and
+    /// `input` the search parameters the model supplied. Parsed so a stream (and
+    /// a non-stream response) carrying it deserializes instead of losing it; the
+    /// stream transform decodes it onto the Discovery carrier, and request-building
+    /// never constructs one.
+    ServerToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    /// The provider's hosted-tool-search ANSWER (Messages wire, apex-xk51):
+    /// `tool_search_tool_result`. `tool_use_id` pairs it to `server_tool_use.id`
+    /// (the same `srvtoolu_` handle). `content` is the
+    /// `tool_search_tool_search_result` OBJECT — NOT the block array
+    /// [`ToolResultContent`] models — so it is kept as a raw value, not re-typed.
+    ToolSearchToolResult {
+        tool_use_id: String,
+        content: serde_json::Value,
+    },
     /// A content block kind this build does not model (R1 forward-compat).
     /// Stream-decode ONLY: the `MessageStreamEvent` parse site maps an unknown
     /// `content_block` kind to this variant so the stream transform opens a
@@ -361,12 +434,12 @@ pub enum ContentBlock {
     /// classes (spec G3). `kind` carries the verbatim wire `type` string for
     /// logging. Never constructed on the request side or by the non-stream
     /// `MessagesResponse` parse (its `Deserialize` impl stays strict over the
-    /// six known kinds above), and never produced on a serialization path.
+    /// eight known kinds above), and never produced on a serialization path.
     Unknown { kind: String },
 }
 
 impl<'de> Deserialize<'de> for ContentBlock {
-    /// Strict over the six known kinds: the `Unknown` variant is a
+    /// Strict over the eight known kinds: the `Unknown` variant is a
     /// stream-decode-only construct (see its doc), so neither the non-stream
     /// response parse nor any request-side parse may produce it. An unknown
     /// `type` or a known kind missing a required field is a fatal
@@ -408,6 +481,18 @@ impl<'de> Deserialize<'de> for ContentBlock {
             },
             RedactedThinking {
                 data: String,
+            },
+            // The two Messages-wire discovery kinds (apex-xk51) join the strict
+            // set, so BOTH the non-stream response parse and the stream start
+            // parse produce the typed variants instead of the phantom.
+            ServerToolUse {
+                id: String,
+                name: String,
+                input: serde_json::Value,
+            },
+            ToolSearchToolResult {
+                tool_use_id: String,
+                content: serde_json::Value,
             },
         }
         let block = StrictBlock::deserialize(deserializer)?;
@@ -456,6 +541,16 @@ impl<'de> Deserialize<'de> for ContentBlock {
                 signature,
             },
             StrictBlock::RedactedThinking { data } => ContentBlock::RedactedThinking { data },
+            StrictBlock::ServerToolUse { id, name, input } => {
+                ContentBlock::ServerToolUse { id, name, input }
+            }
+            StrictBlock::ToolSearchToolResult {
+                tool_use_id,
+                content,
+            } => ContentBlock::ToolSearchToolResult {
+                tool_use_id,
+                content,
+            },
         })
     }
 }
@@ -1156,7 +1251,11 @@ pub enum ThinkingConfig {
     Adaptive {
         // Newer thinking-capable models omit thinking content unless display = "summarized".
         // Older models ignore this field; skipping `None` keeps the old wire shape
-        #[serde(default, deserialize_with = "crate::serde_helpers::rejecting_null", skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            deserialize_with = "crate::serde_helpers::rejecting_null",
+            skip_serializing_if = "Option::is_none"
+        )]
         display: Option<ThinkingDisplay>,
     },
     Disabled,
@@ -1320,7 +1419,10 @@ const KNOWN_EVENT_TAGS: &[&str] = &[
 /// Wire tag strings of the known `content_block` kinds (serde `snake_case`
 /// renames of the `ContentBlock` variants). An unknown kind keeps the
 /// `content_block_start` event and maps the block to the phantom
-/// `ContentBlock::Unknown` variant (R1/D3).
+/// `ContentBlock::Unknown` variant (R1/D3). The two Messages-wire discovery
+/// kinds are KNOWN (apex-xk51): they strict-parse to their typed variants so
+/// the stream transform can decode them onto the Discovery carrier rather than
+/// opening-and-swallowing a phantom.
 const KNOWN_BLOCK_KINDS: &[&str] = &[
     "text",
     "image",
@@ -1328,6 +1430,8 @@ const KNOWN_BLOCK_KINDS: &[&str] = &[
     "tool_result",
     "thinking",
     "redacted_thinking",
+    "server_tool_use",
+    "tool_search_tool_result",
 ];
 
 /// Wire tag strings of the known `StreamDelta` subtypes (serde `snake_case`
@@ -1644,7 +1748,10 @@ mod tests {
         match event {
             MessageStreamEvent::MessageDelta { delta, usage } => {
                 assert!(matches!(delta.stop_reason, Some(StopReason::Refusal)));
-                assert!(delta.stop_details.is_missing(), "no stop_details on the wire");
+                assert!(
+                    delta.stop_details.is_missing(),
+                    "no stop_details on the wire"
+                );
                 assert_eq!(usage.output_tokens, 5);
             }
             other => panic!("expected MessageDelta, got {other:?}"),
@@ -1663,7 +1770,10 @@ mod tests {
         match event {
             MessageStreamEvent::MessageDelta { delta, .. } => {
                 assert!(matches!(delta.stop_reason, Some(StopReason::Refusal)));
-                let details = delta.stop_details.as_ref().expect("stop_details must be captured");
+                let details = delta
+                    .stop_details
+                    .as_ref()
+                    .expect("stop_details must be captured");
                 assert_eq!(details.r#type.as_deref(), Some("refusal"));
                 assert_eq!(details.category.as_deref(), Some("frontier_llm"));
                 assert_eq!(
@@ -1744,7 +1854,10 @@ mod tests {
             format: RequestPresence::value(fmt),
         };
         let json = serde_json::to_value(&config).unwrap();
-        assert!(json.get("effort").is_none(), "effort Omitted state emits no member");
+        assert!(
+            json.get("effort").is_none(),
+            "effort Omitted state emits no member"
+        );
         assert_eq!(json["format"]["type"], "json_schema");
     }
     // ========================================================================
@@ -2043,5 +2156,51 @@ mod tests {
             event.is_err(),
             "non-stream block-kind leniency would be an unscoped behavior change"
         );
+    }
+
+    /// R3 (apex-xk51): the non-streaming `MessagesResponse` STRICT parse gains
+    /// the two provider-minted discovery kinds — it does NOT route them to the
+    /// stream-decode-only `Unknown` phantom (that variant's doc forbids phantom
+    /// here). A response carrying a `server_tool_use` and a
+    /// `tool_search_tool_result` block parses into the TYPED variants instead
+    /// of fataling.
+    #[test]
+    fn non_stream_response_decodes_discovery_block_kinds_typed() {
+        let resp = serde_json::from_str::<MessagesResponse>(
+            r#"{
+                "type":"message","role":"assistant",
+                "content":[
+                    {"type":"text","text":"searching"},
+                    {"type":"server_tool_use","id":"srvtoolu_r3","name":"tool_search_tool_bm25","input":{"query":"shipping eta"}},
+                    {"type":"tool_search_tool_result","tool_use_id":"srvtoolu_r3","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"lookup_shipping_eta"}]}}
+                ],
+                "model":"claude-sonnet-5","stop_reason":"tool_use",
+                "usage":{"input_tokens":1,"output_tokens":1}
+            }"#,
+        )
+        .expect("the strict non-stream parse must accept the two discovery kinds (R3)");
+
+        assert_eq!(resp.content.len(), 3);
+        match &resp.content[1] {
+            ContentBlock::ServerToolUse { id, name, input } => {
+                assert_eq!(id.as_str(), "srvtoolu_r3");
+                assert_eq!(name.as_str(), "tool_search_tool_bm25");
+                assert_eq!(*input, serde_json::json!({"query":"shipping eta"}));
+            }
+            other => panic!("expected ServerToolUse, got {other:?}"),
+        }
+        match &resp.content[2] {
+            ContentBlock::ToolSearchToolResult {
+                tool_use_id,
+                content,
+            } => {
+                assert_eq!(tool_use_id.as_str(), "srvtoolu_r3");
+                assert_eq!(
+                    content.get("type").and_then(serde_json::Value::as_str),
+                    Some("tool_search_tool_search_result")
+                );
+            }
+            other => panic!("expected ToolSearchToolResult, got {other:?}"),
+        }
     }
 }

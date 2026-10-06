@@ -11,6 +11,7 @@ use futures_util::stream::{BoxStream, Stream};
 
 use xai_grok_sampling_types::messages::{self, MessageStreamEvent, StopDetails};
 use xai_grok_sampling_types::presence::WirePresence;
+use xai_grok_sampling_types::tool_search::ToolSearchItem;
 use xai_grok_sampling_types::{
     AssistantItem, ConversationItem, ConversationResponse, ResponseModelMetadata, SamplingError,
     StopReason, TokenUsage, ToolCall, rs,
@@ -62,6 +63,11 @@ struct BlockState {
     /// A `signature_delta` already arrived for this block (R2
     /// `DuplicateSignatureDelta` guard input; xli `signature_seen`).
     signature_seen: bool,
+    /// apex-xk51 (R1): the discovery block's start-frame fields, kept so
+    /// `ContentBlockStop` can reconstruct the EXACT provider block (with the
+    /// accumulated `input` for `server_tool_use`) and hand it to
+    /// `ToolSearchItem::from_wire`. `None` for every non-discovery block.
+    discovery_raw: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +85,13 @@ enum BlockType {
     /// not misclassified as the fatal never-started-index class, but inert
     /// otherwise (deltas swallowed, stop no-op — pre-MW-3 observable behavior).
     Inert,
+    /// apex-xk51 (R1): a provider-minted hosted-tool-search block —
+    /// `server_tool_use` (the CALL) or `tool_search_tool_result` (the
+    /// ANSWER). The start registers the index (R2: its later
+    /// `input_json_delta` / `content_block_stop` must not trip the fatal
+    /// unopened-index class); the deltas accumulate the `input`; the stop
+    /// decodes the reconstructed block onto the Discovery carrier.
+    Discovery,
 }
 
 /// Transform a raw Anthropic Messages API stream into a stream of [`SamplingEvent`]s.
@@ -154,6 +167,9 @@ pub fn stream_messages<'a>(
         let mut assistant_text = String::new();
         let mut assistant_tool_calls: Vec<ToolCall> = Vec::new();
         let mut assistant_reasoning: Option<rs::ReasoningItem> = None;
+        // apex-xk51 (R1): discovery blocks decoded off the stream, appended in
+        // stream order before the trailing Assistant item.
+        let mut discovery_items: Vec<ConversationItem> = Vec::new();
 
         // Index counters
         let mut chunk_index: u64 = 0;
@@ -320,6 +336,7 @@ pub fn stream_messages<'a>(
                                 thinking_acc: thinking.clone(),
                                 signature: signature.clone(),
                                 signature_seen: !signature.is_empty(),
+                                discovery_raw: None,
                             },
                         );
                         if !first_token_emitted {
@@ -342,6 +359,7 @@ pub fn stream_messages<'a>(
                                 thinking_acc: String::new(),
                                 signature: String::new(),
                                 signature_seen: false,
+                                discovery_raw: None,
                             },
                         );
                         if !first_token_emitted {
@@ -380,6 +398,7 @@ pub fn stream_messages<'a>(
                                 thinking_acc: String::new(),
                                 signature: String::new(),
                                 signature_seen: false,
+                                discovery_raw: None,
                             },
                         );
 
@@ -391,6 +410,83 @@ pub fn stream_messages<'a>(
                             name: Some(name),
                             arguments_delta: None,
                         };
+                    }
+                    ContentBlock::ServerToolUse { id, name, input, .. } => {
+                        // apex-xk51 (R1/R2): the provider's hosted-tool-search
+                        // CALL. Register the index (R2: its later
+                        // `input_json_delta` / `content_block_stop` must not
+                        // trip the fatal unopened-index class) and keep the
+                        // start raw so the stop reconstructs the exact block
+                        // with the accumulated `input`.
+                        let authoritative = if input.is_object()
+                            && !input.as_object().unwrap().is_empty()
+                        {
+                            // A non-empty start `input` is the authoritative
+                            // search payload (wins over the streamed deltas),
+                            // mirroring the ToolUse R7 rule.
+                            Some(input.to_string())
+                        } else {
+                            None
+                        };
+                        let raw = serde_json::json!({
+                            "type": "server_tool_use",
+                            "id": id,
+                            "name": name,
+                            "input": input,
+                        });
+                        blocks.insert(
+                            index,
+                            BlockState {
+                                block_type: BlockType::Discovery,
+                                text_acc: String::new(),
+                                tool_name: String::new(),
+                                tool_id: String::new(),
+                                args_acc: String::new(),
+                                authoritative_args: authoritative,
+                                thinking_acc: String::new(),
+                                signature: String::new(),
+                                signature_seen: false,
+                                discovery_raw: Some(raw),
+                            },
+                        );
+                        // The model's search request is real model progress.
+                        if !first_token_emitted {
+                            first_token_emitted = true;
+                            yield SamplingEvent::FirstToken {
+                                request_id: request_id.clone(),
+                            };
+                        }
+                    }
+                    ContentBlock::ToolSearchToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } => {
+                        // apex-xk51 (R1/R2): the provider's hosted-tool-search
+                        // ANSWER. `content` is complete at start (no deltas
+                        // follow), so the raw is the whole block. Register the
+                        // index (R2) so its stop is not fatal. No FirstToken:
+                        // the answer is tool data, not model generation.
+                        let raw = serde_json::json!({
+                            "type": "tool_search_tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": content,
+                        });
+                        blocks.insert(
+                            index,
+                            BlockState {
+                                block_type: BlockType::Discovery,
+                                text_acc: String::new(),
+                                tool_name: String::new(),
+                                tool_id: String::new(),
+                                args_acc: String::new(),
+                                authoritative_args: None,
+                                thinking_acc: String::new(),
+                                signature: String::new(),
+                                signature_seen: false,
+                                discovery_raw: Some(raw),
+                            },
+                        );
                     }
                         // Encrypted reasoning the model chose to redact; not
                         // forwarded (no consumer claims redacted_thinking
@@ -416,6 +512,7 @@ pub fn stream_messages<'a>(
                                     thinking_acc: String::new(),
                                     signature: String::new(),
                                     signature_seen: false,
+                                    discovery_raw: None,
                                 },
                             );
                         }
@@ -615,6 +712,42 @@ pub fn stream_messages<'a>(
                                             .unwrap_or_else(|| state.args_acc),
                                     ),
                                 });
+                            }
+                            // apex-xk51 (R1): reconstruct the exact provider
+                            // block and decode it onto the Discovery carrier.
+                            // For `server_tool_use` the `input` is rebuilt
+                            // from the authoritative start (if any) or the
+                            // accumulated `input_json_delta`;
+                            // `tool_search_tool_result` carries its full
+                            // `content` from start (no deltas). The arm never
+                            // fatals (brief §0): a reconstruction that does not
+                            // parse is dropped, not an error.
+                            BlockType::Discovery => {
+                                let raw = state.discovery_raw;
+                                let authoritative_args = state.authoritative_args;
+                                let args_acc = state.args_acc;
+                                if let Some(mut raw) = raw {
+                                    if raw
+                                        .get("type")
+                                        .and_then(serde_json::Value::as_str)
+                                        == Some("server_tool_use")
+                                    {
+                                        let input_str =
+                                            authoritative_args.unwrap_or(args_acc);
+                                        if !input_str.is_empty() {
+                                            if let Ok(v) =
+                                                serde_json::from_str::<serde_json::Value>(
+                                                    &input_str,
+                                                )
+                                            {
+                                                raw["input"] = v;
+                                            }
+                                        }
+                                    }
+                                    if let Ok(item) = ToolSearchItem::from_wire(raw) {
+                                        discovery_items.push(ConversationItem::Discovery { item });
+                                    }
+                                }
                             }
                             // D3 phantom / inert: the stop is a no-op.
                             BlockType::Unknown | BlockType::Inert => {}
@@ -962,6 +1095,10 @@ pub fn stream_messages<'a>(
         if let Some(r) = assistant_reasoning {
             items.push(ConversationItem::Reasoning(r.into()));
         }
+        // apex-xk51 (R1): the decoded discovery blocks, in stream order, go
+        // before the trailing Assistant item (which carries the flattened
+        // text + tool_calls).
+        items.append(&mut discovery_items);
         items.push(assistant_item);
 
         let stream_end = Instant::now();

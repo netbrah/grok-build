@@ -147,9 +147,16 @@ fn message_event_has_content(event: &messages::MessageStreamEvent) -> bool {
         },
         MessageStreamEvent::ContentBlockStart { content_block, .. } => match content_block {
             ContentBlock::ToolUse { .. } => true,
+            // apex-xk51 (R4): the provider's hosted-tool-search CALL is model
+            // progress — parity with the Responses wire's `ToolSearchCall` arm.
+            ContentBlock::ServerToolUse { .. } => true,
             ContentBlock::Text { text, .. } => !text.is_empty(),
             ContentBlock::Thinking { thinking, .. } => !thinking.is_empty(),
-            ContentBlock::Image { .. }
+            // apex-xk51 (R4): the hosted-tool-search ANSWER is tool data, not
+            // model generation — parity with the Responses wire's
+            // `ToolSearchOutput` arm.
+            ContentBlock::ToolSearchToolResult { .. }
+            | ContentBlock::Image { .. }
             | ContentBlock::ToolResult { .. }
             | ContentBlock::RedactedThinking { .. }
             | ContentBlock::Unknown { .. } => false,

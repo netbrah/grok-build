@@ -6,8 +6,7 @@ use futures_util::stream;
 use std::pin::pin;
 use xai_grok_sampling_types::messages::{
     CacheCreation, ContentBlock, MessageDeltaBody, MessageDeltaUsage, MessagesResponse,
-    MessagesUsage,
-    OutputTokensDetails, StopDetails, StreamDelta, StreamError,
+    MessagesUsage, OutputTokensDetails, StopDetails, StreamDelta, StreamError,
 };
 use xai_grok_sampling_types::presence::WirePresence;
 
@@ -59,9 +58,7 @@ fn refusal_stop_details(explanation: &str) -> StopDetails {
 }
 
 /// 46c helper: base start event with the `stop_details` carrier varied; all other carriers missing.
-fn message_start_with_stop_details(
-    stop_details: WirePresence<StopDetails>,
-) -> MessageStreamEvent {
+fn message_start_with_stop_details(stop_details: WirePresence<StopDetails>) -> MessageStreamEvent {
     MessageStreamEvent::MessageStart {
         message: MessagesResponse {
             id: "msg_46c".into(),
@@ -85,9 +82,7 @@ fn message_start_with_stop_details(
 }
 
 /// 46c helper: base terminal delta with the `stop_details` carrier varied; all other carriers missing.
-fn message_delta_with_stop_details(
-    stop_details: WirePresence<StopDetails>,
-) -> MessageStreamEvent {
+fn message_delta_with_stop_details(stop_details: WirePresence<StopDetails>) -> MessageStreamEvent {
     MessageStreamEvent::MessageDelta {
         delta: MessageDeltaBody {
             stop_reason: Some(messages::StopReason::EndTurn),
@@ -106,9 +101,7 @@ fn message_delta_with_stop_details(
 }
 
 /// 46c helper: base start event with the `container` carrier varied; all other carriers missing.
-fn message_start_with_container(
-    container: WirePresence<serde_json::Value>,
-) -> MessageStreamEvent {
+fn message_start_with_container(container: WirePresence<serde_json::Value>) -> MessageStreamEvent {
     MessageStreamEvent::MessageStart {
         message: MessagesResponse {
             id: "msg_46c".into(),
@@ -132,9 +125,7 @@ fn message_start_with_container(
 }
 
 /// 46c helper: base terminal delta with the `container` carrier varied; all other carriers missing.
-fn message_delta_with_container(
-    container: WirePresence<serde_json::Value>,
-) -> MessageStreamEvent {
+fn message_delta_with_container(container: WirePresence<serde_json::Value>) -> MessageStreamEvent {
     MessageStreamEvent::MessageDelta {
         delta: MessageDeltaBody {
             stop_reason: Some(messages::StopReason::EndTurn),
@@ -586,7 +577,8 @@ async fn pause_turn_terminal_fails_with_dedicated_error() {
         other => panic!("expected Failed(UnsupportedStopControl), got {other:?}"),
     }
     assert!(
-        !evs.iter().any(|e| matches!(e, SamplingEvent::Completed { .. })),
+        !evs.iter()
+            .any(|e| matches!(e, SamplingEvent::Completed { .. })),
         "a pause_turn turn must never yield a Completed outcome"
     );
 }
@@ -601,7 +593,7 @@ async fn unknown_stop_reason_terminal_is_stream_protocol_error() {
         Ok(text_delta(0, "partial answer")),
         Ok(block_stop(0)),
         Ok(message_delta_with_stop(messages::StopReason::Unknown(
-            "mystery_reason".to_string()
+            "mystery_reason".to_string(),
         ))),
         Ok(MessageStreamEvent::MessageStop),
     ];
@@ -867,7 +859,11 @@ async fn context_full_with_completed_tools_keeps_context_full_terminal() {
                 Some(StopReason::ContextWindowExceeded),
                 "context-full keeps its typed terminal (not Length, not ToolCalls)"
             );
-            assert_eq!(response.tool_calls().len(), 1, "the tool call stays on the item");
+            assert_eq!(
+                response.tool_calls().len(),
+                1,
+                "the tool call stays on the item"
+            );
         }
         other => panic!("expected Completed(ContextWindowExceeded), got {other:?}"),
     }
@@ -926,7 +922,11 @@ async fn max_tokens_with_open_final_tool_block_completes() {
                 Some(StopReason::Length),
                 "the pinned exception shape completes as Length"
             );
-            assert_eq!(response.tool_calls().len(), 1, "the open tool block is carried");
+            assert_eq!(
+                response.tool_calls().len(),
+                1,
+                "the open tool block is carried"
+            );
             assert_eq!(
                 response.tool_calls()[0].arguments.as_ref(),
                 r#"{"x": "trunc"#,
@@ -1220,9 +1220,7 @@ fn message_start_with_thinking(input: u32, thinking_tokens: u32) -> MessageStrea
                 output_tokens: 0,
                 cache_creation_input_tokens: WirePresence::missing(),
                 cache_read_input_tokens: WirePresence::missing(),
-                output_tokens_details: WirePresence::value(OutputTokensDetails {
-                    thinking_tokens,
-                }),
+                output_tokens_details: WirePresence::value(OutputTokensDetails { thinking_tokens }),
                 cache_creation: WirePresence::missing(),
             },
             container: WirePresence::missing(),
@@ -1291,7 +1289,9 @@ async fn thinking_tokens_delta_overrides_message_start() {
         block_stop(0),
         message_delta_with_thinking(
             7,
-            WirePresence::value(OutputTokensDetails { thinking_tokens: 40 }),
+            WirePresence::value(OutputTokensDetails {
+                thinking_tokens: 40,
+            }),
         ),
         MessageStreamEvent::MessageStop,
     ])
@@ -2220,9 +2220,9 @@ async fn container_start_crossed_with_missing_null_value_deltas() {
                 SamplingEvent::Failed { error, .. } => panic!(
                     "start {start:?} x delta {delta:?}: the stream must complete, got Failed({error:?})"
                 ),
-                other => panic!(
-                    "start {start:?} x delta {delta:?}: expected Completed, got {other:?}"
-                ),
+                other => {
+                    panic!("start {start:?} x delta {delta:?}: expected Completed, got {other:?}")
+                }
             }
         }
     }
@@ -2313,7 +2313,9 @@ async fn usage_overlay_output_tokens_details_missing_null_value() {
         ("null", WirePresence::null(), 40),
         (
             "value",
-            WirePresence::value(OutputTokensDetails { thinking_tokens: 44 }),
+            WirePresence::value(OutputTokensDetails {
+                thinking_tokens: 44,
+            }),
             44,
         ),
     ];
@@ -2455,7 +2457,11 @@ async fn absent_cache_creation_reports_zero_ttl_split_end_to_end() {
     ])
     .await;
 
-    assert_eq!(usage.prompt_tokens, 100 + 500 + 200, "full prompt sum unchanged");
+    assert_eq!(
+        usage.prompt_tokens,
+        100 + 500 + 200,
+        "full prompt sum unchanged"
+    );
     assert_eq!(usage.cached_prompt_tokens, 500, "cache-read sum unchanged");
     assert_eq!(
         usage.cache_creation_prompt_tokens, 200,
@@ -2469,4 +2475,294 @@ async fn absent_cache_creation_reports_zero_ttl_split_end_to_end() {
         usage.cache_creation_1h_input_tokens, 0,
         "no split reported ⇒ 1h is 0"
     );
+}
+
+// ========================================================================
+// apex-xk51 (HTS-MSG-DECODE-1) R1: the streaming Messages arm decodes the
+// provider's hosted-tool-search pair onto the Discovery carrier.
+//
+// RED-first over the banked VERBATIM provider capture resp-001.raw — real
+// bytes through the REAL production parse site (serde_json::from_str::<
+// MessageStreamEvent>, client.rs:3354) and the real stream transform. A
+// hand-built frame is NOT the fixture of record here. Pre-cut the arm SILENTLY
+// drops both provider-minted kinds (they open as `Unknown` phantoms and are
+// swallowed at `ContentBlockStop`), so this fails BY SILENCE — zero discovery
+// items — NOT by a stream error (brief §0: the arm must stay non-fatal).
+// ========================================================================
+#[tokio::test]
+async fn resp001_raw_decodes_server_tool_use_and_result_to_discovery() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/resp-001.raw");
+    let sse = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("resp-001.raw missing at {path}: {e}"));
+    let mut events: Vec<Result<MessageStreamEvent, SamplingError>> = Vec::new();
+    for line in sse.lines() {
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data == "[DONE]" {
+            continue;
+        }
+        events.push(
+            serde_json::from_str::<MessageStreamEvent>(data).map_err(SamplingError::Serialization),
+        );
+    }
+    assert!(!events.is_empty(), "fixture produced no parseable events");
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            let discovery: Vec<_> = response
+                .items
+                .iter()
+                .filter_map(|item| item.discovery())
+                .collect();
+            assert_eq!(
+                discovery.len(),
+                2,
+                "both provider-minted discovery blocks must decode onto the carrier \
+                 (silence, not error); got {}",
+                discovery.len()
+            );
+            // CALL half precedes the ANSWER half; both carry the same provider-minted
+            // `srvtoolu_` join key (wire invariant 6).
+            assert_eq!(discovery[0].kind().item_type(), "server_tool_use");
+            assert_eq!(discovery[1].kind().item_type(), "tool_search_tool_result");
+            assert_eq!(
+                discovery[0].call_id(),
+                discovery[1].call_id(),
+                "the pair must join on the provider-minted handle"
+            );
+        }
+        other => panic!("stream did not complete (RED must be by silence, not error): {other:?}"),
+    }
+}
+
+// ========================================================================
+// apex-xk51 (HTS-MSG-DECODE-1) R2 + R5.
+//
+// R2 — index bookkeeping survives the new provider-minted block types: every
+//   start registers its index, so neither `content_block_delta`
+//   (input_json_delta) nor `content_block_stop` on a discovery index trips the
+//   fatal `unopened_index` arm. BOTH transitions are pinned (the delta on the
+//   CALL, which streams its `input`; the stop on the ANSWER, complete at start).
+// R5 — mutants, each killed by its own test:
+//   - re-fataling either variant (a start that yields `Failed`) kills the
+//     "would_fail_stream" test (it asserts the terminal is `Completed`);
+//   - re-swallowing each at `ContentBlockStop` (a stop that drops the item)
+//     kills the "drops_" test (it asserts exactly one discovery item).
+// ========================================================================
+
+fn server_tool_use_start(index: u32) -> MessageStreamEvent {
+    MessageStreamEvent::ContentBlockStart {
+        index,
+        content_block: ContentBlock::ServerToolUse {
+            id: "srvtoolu_test_01".into(),
+            name: "tool_search_tool_bm25".into(),
+            input: serde_json::json!({}),
+        },
+    }
+}
+
+fn tool_search_tool_result_start(index: u32) -> MessageStreamEvent {
+    MessageStreamEvent::ContentBlockStart {
+        index,
+        content_block: ContentBlock::ToolSearchToolResult {
+            tool_use_id: "srvtoolu_test_01".into(),
+            content: serde_json::json!({
+                "type": "tool_search_tool_search_result",
+                "tool_references": [
+                    {"type": "tool_reference", "tool_name": "lookup_shipping_eta"}
+                ]
+            }),
+        },
+    }
+}
+
+/// The discovery items decoded off a completed response, in order.
+fn decoded_discovery(
+    response: &xai_grok_sampling_types::ConversationResponse,
+) -> Vec<&xai_grok_sampling_types::tool_search::ToolSearchItem> {
+    response
+        .items
+        .iter()
+        .filter_map(|item| item.discovery())
+        .collect()
+}
+
+/// R2 (delta transition): an `input_json_delta` on a discovery
+/// (`server_tool_use`) index must not trip the fatal `unopened_index` arm — the
+/// start registered the index. The stream completes, decodes the CALL, and the
+/// streamed `input` is reconstructed onto the carrier.
+#[tokio::test]
+async fn r2_input_json_delta_on_discovery_index_does_not_fatal() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(server_tool_use_start(0)),
+        Ok(MessageStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: StreamDelta::InputJsonDelta {
+                partial_json: "{\"query\": \"wea".into(),
+            },
+        }),
+        Ok(MessageStreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: StreamDelta::InputJsonDelta {
+                partial_json: "ther\"}".into(),
+            },
+        }),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            let discovery = decoded_discovery(response);
+            assert_eq!(discovery.len(), 1, "the CALL must decode (R2 stop)");
+            assert_eq!(discovery[0].kind().item_type(), "server_tool_use");
+            assert_eq!(
+                discovery[0].query(),
+                Some("weather"),
+                "the streamed `input` must be reconstructed onto the carrier (R2 delta)"
+            );
+        }
+        other => {
+            panic!("input_json_delta / stop on a discovery index fataled (R2 violated): {other:?}")
+        }
+    }
+}
+
+/// R2 (stop transition): a `content_block_stop` on a discovery
+/// (`tool_search_tool_result`) index must not trip the fatal `unopened_index`
+/// arm — the start registered the index. The ANSWER is complete at start (no
+/// deltas), so the stop is the transition under test.
+#[tokio::test]
+async fn r2_content_block_stop_on_discovery_index_does_not_fatal() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(tool_search_tool_result_start(0)),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            let discovery = decoded_discovery(response);
+            assert_eq!(discovery.len(), 1, "the ANSWER must decode (R2 stop)");
+            assert_eq!(discovery[0].kind().item_type(), "tool_search_tool_result");
+        }
+        other => panic!("content_block_stop on a discovery index fataled (R2 violated): {other:?}"),
+    }
+}
+
+/// R5 (re-fatal `server_tool_use`): if the start arm yielded `Failed`, the
+/// terminal would be a failure — this asserts it is `Completed`.
+#[tokio::test]
+async fn r5_re_fatal_server_tool_use_start_would_fail_stream() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(server_tool_use_start(0)),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { .. } => {}
+        SamplingEvent::Failed { error, .. } => {
+            panic!(
+                "a re-fatal `server_tool_use` start yielded Failed (R5): kind={:?}",
+                error.kind
+            )
+        }
+        other => panic!("unexpected terminal: {other:?}"),
+    }
+}
+
+/// R5 (re-fatal `tool_search_tool_result`): if the start arm yielded `Failed`,
+/// the terminal would be a failure — this asserts it is `Completed`.
+#[tokio::test]
+async fn r5_re_fatal_tool_search_tool_result_start_would_fail_stream() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(tool_search_tool_result_start(0)),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { .. } => {}
+        SamplingEvent::Failed { error, .. } => {
+            panic!(
+                "a re-fatal `tool_search_tool_result` start yielded Failed (R5): kind={:?}",
+                error.kind
+            )
+        }
+        other => panic!("unexpected terminal: {other:?}"),
+    }
+}
+
+/// R5 (re-swallow `server_tool_use` at stop): if the stop arm were a no-op, the
+/// CALL would be lost — this asserts exactly one discovery item of the CALL kind.
+#[tokio::test]
+async fn r5_re_swallow_server_tool_use_at_stop_drops_call() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(server_tool_use_start(0)),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            let discovery = decoded_discovery(response);
+            assert_eq!(
+                discovery.len(),
+                1,
+                "a re-swallow stop would drop the CALL (R5); got {} discovery items",
+                discovery.len()
+            );
+            assert_eq!(discovery[0].kind().item_type(), "server_tool_use");
+        }
+        other => panic!("expected Completed, got {other:?}"),
+    }
+}
+
+/// R5 (re-swallow `tool_search_tool_result` at stop): if the stop arm were a
+/// no-op, the ANSWER would be lost — this asserts exactly one discovery item of
+/// the ANSWER kind.
+#[tokio::test]
+async fn r5_re_swallow_tool_search_tool_result_at_stop_drops_answer() {
+    let events: Vec<Result<MessageStreamEvent, SamplingError>> = vec![
+        Ok(message_start()),
+        Ok(tool_search_tool_result_start(0)),
+        Ok(block_stop(0)),
+        Ok(message_delta_with_stop(messages::StopReason::EndTurn)),
+        Ok(MessageStreamEvent::MessageStop),
+    ];
+    let raw = stream::iter(events).boxed();
+    let evs = collect(stream_messages(raw, None, rid(), Duration::from_secs(60))).await;
+    match evs.last().unwrap() {
+        SamplingEvent::Completed { response, .. } => {
+            let discovery = decoded_discovery(response);
+            assert_eq!(
+                discovery.len(),
+                1,
+                "a re-swallow stop would drop the ANSWER (R5); got {} discovery items",
+                discovery.len()
+            );
+            assert_eq!(discovery[0].kind().item_type(), "tool_search_tool_result");
+        }
+        other => panic!("expected Completed, got {other:?}"),
+    }
 }

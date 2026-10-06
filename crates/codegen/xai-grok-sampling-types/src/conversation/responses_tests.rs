@@ -1299,7 +1299,8 @@ fn test_responses_api_response_to_conversation_item() {
         moderation: None,
     };
 
-    let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
+    let items = response_to_conversation_items(response)
+        .expect("the projection succeeds for this response");
     let item = items
         .into_iter()
         .next_back()
@@ -1361,7 +1362,8 @@ fn test_responses_api_response_to_conversation_item() {
         moderation: None,
     };
 
-    let items = response_to_conversation_items(response_with_fc).expect("the projection succeeds for this response");
+    let items = response_to_conversation_items(response_with_fc)
+        .expect("the projection succeeds for this response");
     let item = items
         .into_iter()
         .next_back()
@@ -1420,7 +1422,8 @@ fn test_response_reasoning_effort_stamped_on_assistant() {
         moderation: None,
     };
 
-    let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
+    let items = response_to_conversation_items(response)
+        .expect("the projection succeeds for this response");
     let ConversationItem::Assistant(a) = items.last().expect("trailing Assistant") else {
         panic!("Expected Assistant item");
     };
@@ -1611,7 +1614,8 @@ fn test_responses_api_with_encrypted_reasoning() {
     };
 
     // Exercise the flat-list path: reasoning lives as a sibling
-    let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
+    let items = response_to_conversation_items(response)
+        .expect("the projection succeeds for this response");
     let assistant_idx = items
         .iter()
         .position(|i| matches!(i, ConversationItem::Assistant(_)))
@@ -1702,7 +1706,8 @@ fn test_responses_api_with_only_encrypted_reasoning() {
     };
 
     // Flat-list path: reasoning sibling carries the encrypted blob, empty summary maps to an empty `Vec<SummaryPart>`
-    let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
+    let items = response_to_conversation_items(response)
+        .expect("the projection succeeds for this response");
     let reasoning_sibling = items
         .iter()
         .find_map(|i| match i {
@@ -1724,15 +1729,18 @@ fn test_encrypted_reasoning_included_in_responses_api_request() {
         ConversationItem::system("You are helpful"),
         ConversationItem::user("What is 2+2?"),
         // Previous reasoning and assistant: reasoning is a sibling
-        ConversationItem::Reasoning(rs::ReasoningItem {
-            id: Some("r1".to_string()),
-            summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
-                text: "Let me calculate 2+2...".to_string(),
-            })],
-            content: None,
-            encrypted_content: Some("enc_secret_reasoning_chain".to_string()),
-            status: None,
-        }.into()),
+        ConversationItem::Reasoning(
+            rs::ReasoningItem {
+                id: Some("r1".to_string()),
+                summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
+                    text: "Let me calculate 2+2...".to_string(),
+                })],
+                content: None,
+                encrypted_content: Some("enc_secret_reasoning_chain".to_string()),
+                status: None,
+            }
+            .into(),
+        ),
         ConversationItem::Assistant(AssistantItem {
             content: "The answer is 4.".into(),
             tool_calls: vec![],
@@ -1781,13 +1789,16 @@ fn test_encrypted_reasoning_included_in_responses_api_request() {
 fn test_only_encrypted_reasoning_included_in_request() {
     let req = ConversationRequest::from_items(vec![
         ConversationItem::user("Hello"),
-        ConversationItem::Reasoning(rs::ReasoningItem {
-            id: Some(String::new()),
-            summary: vec![],
-            content: None,
-            encrypted_content: Some("enc_hidden_thoughts".to_string()),
-            status: None,
-        }.into()),
+        ConversationItem::Reasoning(
+            rs::ReasoningItem {
+                id: Some(String::new()),
+                summary: vec![],
+                content: None,
+                encrypted_content: Some("enc_hidden_thoughts".to_string()),
+                status: None,
+            }
+            .into(),
+        ),
         ConversationItem::Assistant(AssistantItem {
             content: "Hi!".into(),
             tool_calls: vec![],
@@ -2045,15 +2056,18 @@ fn test_transform_cwd_rewrites_reasoning_sibling() {
     let root = "/workspace/project";
 
     let mut items = vec![
-        ConversationItem::Reasoning(rs::ReasoningItem {
-            id: Some("rs_1".to_string()),
-            summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
-                text: format!("thinking about {worktree}"),
-            })],
-            content: None,
-            encrypted_content: None,
-            status: None,
-        }.into()),
+        ConversationItem::Reasoning(
+            rs::ReasoningItem {
+                id: Some("rs_1".to_string()),
+                summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
+                    text: format!("thinking about {worktree}"),
+                })],
+                content: None,
+                encrypted_content: None,
+                status: None,
+            }
+            .into(),
+        ),
         ConversationItem::Assistant(AssistantItem {
             content: format!("I edited {worktree}/src/main.rs").into(),
             tool_calls: vec![],
@@ -2425,7 +2439,8 @@ fn responses_api_conversion_preserves_model_fingerprint() {
         moderation: None,
     };
 
-    let items = response_to_conversation_items(response).expect("the projection succeeds for this response");
+    let items = response_to_conversation_items(response)
+        .expect("the projection succeeds for this response");
     let item = items
         .into_iter()
         .next_back()
@@ -2442,15 +2457,18 @@ fn empty_reason_reasoning_only() {
     // A response with a Reasoning sibling but empty Assistant content is classified as ReasoningOnly so the retry logic resamples
     let response = ConversationResponse {
         items: vec![
-            ConversationItem::Reasoning(rs::ReasoningItem {
-                id: Some("r1".to_string()),
-                summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
-                    text: "thinking but no text output".to_string(),
-                })],
-                content: None,
-                encrypted_content: None,
-                status: None,
-            }.into()),
+            ConversationItem::Reasoning(
+                rs::ReasoningItem {
+                    id: Some("r1".to_string()),
+                    summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
+                        text: "thinking but no text output".to_string(),
+                    })],
+                    content: None,
+                    encrypted_content: None,
+                    status: None,
+                }
+                .into(),
+            ),
             ConversationItem::Assistant(AssistantItem {
                 content: String::new().into(),
                 tool_calls: Vec::new(),
@@ -2482,15 +2500,18 @@ fn build_responses_input_preserves_multi_turn_ordering() {
     // The wire-level item order must be
     // [Sys, U1, U2, U3, U4, U5, R, A1, R, A2, ...] which would shift the cache prefix every turn.
     fn r(text: &str) -> ConversationItem {
-        ConversationItem::Reasoning(rs::ReasoningItem {
-            id: Some(text.to_string()),
-            summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
-                text: text.to_string(),
-            })],
-            content: None,
-            encrypted_content: Some(format!("enc_{text}")),
-            status: None,
-        }.into())
+        ConversationItem::Reasoning(
+            rs::ReasoningItem {
+                id: Some(text.to_string()),
+                summary: vec![rs::SummaryPart::SummaryText(rs::SummaryTextContent {
+                    text: text.to_string(),
+                })],
+                content: None,
+                encrypted_content: Some(format!("enc_{text}")),
+                status: None,
+            }
+            .into(),
+        )
     }
     let items: Vec<ConversationItem> = vec![
         ConversationItem::system("you are helpful"),
@@ -2780,22 +2801,26 @@ fn backend_tool_call_position_stable() {
         kind: BackendToolKind::WebSearch(rs::WebSearchToolCall {
             id: "ws_a".to_string(),
             status: rs::WebSearchCallStatus::Completed,
-            action: Some(rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
-                query: Some("alpha".to_string()),
-                queries: None,
-                sources: Some(vec![]),
-            })),
+            action: Some(rs::WebSearchToolCallAction::Search(
+                rs::WebSearchActionSearch {
+                    query: Some("alpha".to_string()),
+                    queries: None,
+                    sources: Some(vec![]),
+                },
+            )),
         }),
     });
     let ws_b = ConversationItem::BackendToolCall(BackendToolCallItem {
         kind: BackendToolKind::WebSearch(rs::WebSearchToolCall {
             id: "ws_b".to_string(),
             status: rs::WebSearchCallStatus::Completed,
-            action: Some(rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
-                query: Some("beta".to_string()),
-                queries: None,
-                sources: Some(vec![]),
-            })),
+            action: Some(rs::WebSearchToolCallAction::Search(
+                rs::WebSearchActionSearch {
+                    query: Some("beta".to_string()),
+                    queries: None,
+                    sources: Some(vec![]),
+                },
+            )),
         }),
     });
 
@@ -3384,6 +3409,8 @@ fn a_hosted_discovery_pair_decodes_onto_discovery_items_in_emission_order() {
             ConversationItem::Discovery { item } => match item.kind() {
                 tool_search::ToolSearchKind::Call => "call",
                 tool_search::ToolSearchKind::Output => "output",
+                tool_search::ToolSearchKind::ServerToolUse => "server_tool_use",
+                tool_search::ToolSearchKind::ToolSearchToolResult => "tool_search_tool_result",
             },
             ConversationItem::Assistant(_) => "assistant",
             _ => "other",

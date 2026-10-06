@@ -145,6 +145,20 @@ pub const TOOL_SEARCH_CALL_ITEM_TYPE: &str = "tool_search_call";
 /// [`ToolSearchItem::execution`].
 pub const TOOL_SEARCH_OUTPUT_ITEM_TYPE: &str = "tool_search_output";
 
+/// Wire `type` tag of the Messages-wire discovery CALL half (apex-xk51): the
+/// provider records the model's hosted-tool-search request. Its `id` is the
+/// provider-minted `srvtoolu_` handle (wire invariant 6 — echo verbatim, never
+/// rekey) and its `input` the search parameters. The Messages family's twin of
+/// `tool_search_call`.
+pub const SERVER_TOOL_USE_ITEM_TYPE: &str = "server_tool_use";
+
+/// Wire `type` tag of the Messages-wire discovery RESULT half (apex-xk51): the
+/// provider's search answer. Its `tool_use_id` pairs it to `server_tool_use.id`
+/// (§6.5: keep both or drop both) and its `content` is the
+/// `tool_search_tool_search_result` object. The Messages family's twin of
+/// `tool_search_output`.
+pub const TOOL_SEARCH_TOOL_RESULT_ITEM_TYPE: &str = "tool_search_tool_result";
+
 /// `execution` value of the CLIENT-executed quadrant: the harness runs the
 /// search and authors the `tool_search_output` in the FOLLOWING request.
 /// Observed on both halves of all three client-quadrant fixtures
@@ -241,6 +255,16 @@ pub enum ToolSearchKind {
     Call,
     /// `tool_search_output` — the definitions the harness loaded.
     Output,
+    /// `server_tool_use` — the Messages-wire CALL half: the provider records the
+    /// model's hosted-tool-search request. `id` is the provider-minted `srvtoolu_`
+    /// handle (wire invariant 6), `input` the search parameters. The Responses
+    /// family has no twin for this tag.
+    ServerToolUse,
+    /// `tool_search_tool_result` — the Messages-wire RESULT half: the provider's
+    /// search answer. `tool_use_id` pairs it to `server_tool_use.id` (§6.5) and
+    /// `content` is the `tool_search_tool_search_result` object. The Messages
+    /// twin of `tool_search_output`.
+    ToolSearchToolResult,
 }
 
 impl ToolSearchKind {
@@ -249,6 +273,8 @@ impl ToolSearchKind {
         match self {
             Self::Call => TOOL_SEARCH_CALL_ITEM_TYPE,
             Self::Output => TOOL_SEARCH_OUTPUT_ITEM_TYPE,
+            Self::ServerToolUse => SERVER_TOOL_USE_ITEM_TYPE,
+            Self::ToolSearchToolResult => TOOL_SEARCH_TOOL_RESULT_ITEM_TYPE,
         }
     }
 
@@ -257,9 +283,28 @@ impl ToolSearchKind {
         match item_type {
             TOOL_SEARCH_CALL_ITEM_TYPE => Some(Self::Call),
             TOOL_SEARCH_OUTPUT_ITEM_TYPE => Some(Self::Output),
+            SERVER_TOOL_USE_ITEM_TYPE => Some(Self::ServerToolUse),
+            TOOL_SEARCH_TOOL_RESULT_ITEM_TYPE => Some(Self::ToolSearchToolResult),
             _ => None,
         }
     }
+}
+
+/// Whether a kind is the CALL half of a discovery pair, on any wire family.
+/// The Responses family is [`ToolSearchKind::Call`]; the Messages family
+/// (apex-xk51) is [`ToolSearchKind::ServerToolUse`].
+fn is_call_half(kind: ToolSearchKind) -> bool {
+    matches!(kind, ToolSearchKind::Call | ToolSearchKind::ServerToolUse)
+}
+
+/// Whether a kind is the OUTPUT half of a discovery pair, on any wire family.
+/// The Responses family is [`ToolSearchKind::Output`]; the Messages family
+/// (apex-xk51) is [`ToolSearchKind::ToolSearchToolResult`].
+fn is_output_half(kind: ToolSearchKind) -> bool {
+    matches!(
+        kind,
+        ToolSearchKind::Output | ToolSearchKind::ToolSearchToolResult
+    )
 }
 
 /// The three `status` spellings this module's PAIRING vocabulary names.
@@ -667,10 +712,18 @@ impl ToolSearchItem {
     /// accessor's `None` means "join on order, not on key", never "this item is
     /// alone".
     pub fn call_id(&self) -> Option<&str> {
-        self.raw
-            .get("call_id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
+        // The join key is family-dependent (apex-xk51): the Responses family
+        // reads the `call_id` field, while the Messages family joins
+        // `server_tool_use.id` to `tool_search_tool_result.tool_use_id` (§6.5) —
+        // both halves carry the provider-minted `srvtoolu_` handle verbatim
+        // (wire invariant 6), so the pair groups keyed, not by order alone.
+        match self.kind {
+            ToolSearchKind::ServerToolUse => self.raw.get("id"),
+            ToolSearchKind::ToolSearchToolResult => self.raw.get("tool_use_id"),
+            _ => self.raw.get("call_id"),
+        }
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
     }
 
     /// The `status` field as the closed [`ToolSearchStatus`] view. Lossy in one
@@ -771,6 +824,11 @@ impl ToolSearchItem {
                 )
             }
             ToolSearchKind::Call => self.raw_status() != Some(STATUS_IN_PROGRESS),
+            // The Messages-wire halves carry no `status` field and no stream
+            // skeleton: a `server_tool_use` / `tool_search_tool_result` block is
+            // complete the moment its `content_block_stop` closes it, so both are
+            // pairable on arrival (apex-xk51).
+            ToolSearchKind::ServerToolUse | ToolSearchKind::ToolSearchToolResult => true,
         }
     }
 
@@ -965,10 +1023,21 @@ impl ToolSearchItem {
     /// `None` for an output item (which has no `arguments`), for a call that
     /// omits the field, and for a call whose `arguments` is not an object.
     pub fn arguments(&self) -> Option<&serde_json::Map<String, Value>> {
-        if self.kind != ToolSearchKind::Call {
+        // The search payload lives in `arguments` on the Responses family and in
+        // `input` on the Messages family (`server_tool_use`); both are the model's
+        // search parameters, so one accessor covers both (apex-xk51).
+        if !matches!(
+            self.kind,
+            ToolSearchKind::Call | ToolSearchKind::ServerToolUse
+        ) {
             return None;
         }
-        self.raw.get("arguments").and_then(Value::as_object)
+        self.raw
+            .get(match self.kind {
+                ToolSearchKind::ServerToolUse => "input",
+                _ => "arguments",
+            })
+            .and_then(Value::as_object)
     }
 
     /// The `query` of a call, if present.
@@ -1042,7 +1111,9 @@ impl ToolSearchItem {
     /// stays intact for replay regardless of what this returns.
     pub fn text_summary(&self) -> String {
         match self.kind {
-            ToolSearchKind::Call => match self.query() {
+            // Same call shape, both families: the echoed query is the whole
+            // summary (apex-xk51).
+            ToolSearchKind::Call | ToolSearchKind::ServerToolUse => match self.query() {
                 Some(query) if query.len() > MAX_SUMMARY_QUERY_BYTES => format!(
                     "[tool_search] {:?}…",
                     super::truncate_bytes(query, MAX_SUMMARY_QUERY_BYTES)
@@ -1069,6 +1140,19 @@ impl ToolSearchItem {
                 } else {
                     format!("[tool_search results] {callables} {noun}")
                 }
+            }
+            // The Messages family names the loaded tools in `content.tool_references`
+            // (an object, not a block array — the §1 trap), so the summary counts
+            // the references there (apex-xk51).
+            ToolSearchKind::ToolSearchToolResult => {
+                let count = self
+                    .raw
+                    .pointer("/content/tool_references")
+                    .and_then(Value::as_array)
+                    .map(|references| references.len())
+                    .unwrap_or(0);
+                let noun = if count == 1 { "tool" } else { "tools" };
+                format!("[tool_search results] {count} {noun}")
             }
         }
     }
@@ -1693,17 +1777,18 @@ pub fn keyless_client_answer_present(items: &[ToolSearchItem]) -> bool {
 pub fn partner_indices(items: &[ToolSearchItem]) -> Vec<Option<usize>> {
     let mut partners = vec![None; items.len()];
     for (i, call) in items.iter().enumerate() {
-        // The left half of a pair is always the CALL — the ordering note above.
-        // `partners[i]` cannot already be set here: only an OUTPUT is ever
+        // The left half of a pair is always the CALL half — the ordering note
+        // above (both families: `tool_search_call` / `server_tool_use`).
+        // `partners[i]` cannot already be set here: only an OUTPUT half is ever
         // written as a right half, so a call's slot is filled by its own pass.
-        let (Some(call_id), ToolSearchKind::Call) = (call.call_id(), call.kind) else {
+        let Some(call_id) = call.call_id() else {
             continue;
         };
-        if !call.is_pairable() {
+        if !is_call_half(call.kind) || !call.is_pairable() {
             continue;
         }
         for (j, output) in items.iter().enumerate().skip(i + 1) {
-            if output.kind != ToolSearchKind::Output
+            if !is_output_half(output.kind)
                 || partners[j].is_some()
                 || output.call_id() != Some(call_id)
                 || !output.is_pairable()
@@ -1770,7 +1855,9 @@ pub fn partner_indices(items: &[ToolSearchItem]) -> Vec<Option<usize>> {
 /// wording is [`ToolSearchPairing::OrphanOutput`], and even that one needs
 /// [`ToolSearchItem::is_client_executed`] before anything is removed.
 ///
-/// **Domain: `output_index` must be the index of a `tool_search_output`.** The
+/// **Domain: `output_index` must be the index of an output half** — a
+/// `tool_search_output` (Responses) or a `tool_search_tool_result` (Messages;
+/// apex-xk51). The
 /// symmetric function [`output_follows_call`] takes a call's index, and the two are
 /// the two halves of PLAN:946's law asked from the two different items. Asking about
 /// the wrong kind is a caller bug: the existential below still answers its literal
@@ -1811,17 +1898,16 @@ pub fn partner_indices(items: &[ToolSearchItem]) -> Vec<Option<usize>> {
 /// history before anything destructive.
 pub fn call_precedes_output(items: &[ToolSearchItem], output_index: usize) -> bool {
     if let Some(at) = items.get(output_index) {
-        debug_assert_eq!(
-            at.kind,
-            ToolSearchKind::Output,
-            "call_precedes_output takes the index of a tool_search_output"
+        debug_assert!(
+            is_output_half(at.kind),
+            "call_precedes_output takes the index of an output half (tool_search_output / tool_search_tool_result)"
         );
     }
     let Some(key) = items.get(output_index).and_then(ToolSearchItem::call_id) else {
         return false;
     };
     items.iter().take(output_index).any(|other| {
-        other.kind == ToolSearchKind::Call && other.is_pairable() && other.call_id() == Some(key)
+        is_call_half(other.kind) && other.is_pairable() && other.call_id() == Some(key)
     })
 }
 
@@ -1863,7 +1949,8 @@ pub fn call_precedes_output(items: &[ToolSearchItem], output_index: usize) -> bo
 ///   its `call_id`, never its own pairability, so `[call("in_progress"), out]` reports
 ///   `true` at a skeleton call.
 ///
-/// **Domain: `call_index` must be the index of a `tool_search_call`** — see
+/// **Domain: `call_index` must be the index of a call half** — a
+/// `tool_search_call` (Responses) or a `server_tool_use` (Messages; apex-xk51) — see
 /// [`call_precedes_output`] for why that boundary is asserted rather than implied, and
 /// for the two `#[cfg(not(debug_assertions))]` tests that own the release-build answer
 /// (`a_wrong_kind_index_gets_a_meaningless_true_when_the_guard_is_compiled_out`,
@@ -1889,17 +1976,16 @@ pub fn call_precedes_output(items: &[ToolSearchItem], output_index: usize) -> bo
 /// sanctioned action here — the caller reports them and leaves the bytes alone.
 pub fn output_follows_call(items: &[ToolSearchItem], call_index: usize) -> bool {
     if let Some(at) = items.get(call_index) {
-        debug_assert_eq!(
-            at.kind,
-            ToolSearchKind::Call,
-            "output_follows_call takes the index of a tool_search_call"
+        debug_assert!(
+            is_call_half(at.kind),
+            "output_follows_call takes the index of a call half (tool_search_call / server_tool_use)"
         );
     }
     let Some(key) = items.get(call_index).and_then(ToolSearchItem::call_id) else {
         return false;
     };
     items.iter().skip(call_index + 1).any(|other| {
-        other.kind == ToolSearchKind::Output && other.is_pairable() && other.call_id() == Some(key)
+        is_output_half(other.kind) && other.is_pairable() && other.call_id() == Some(key)
     })
 }
 
@@ -2033,13 +2119,21 @@ pub fn pairing_of(items: &[ToolSearchItem]) -> Vec<ToolSearchPairing> {
             let required = match item.kind {
                 ToolSearchKind::Call => ToolSearchKind::Output,
                 ToolSearchKind::Output => ToolSearchKind::Call,
+                // Family-internal counterpart (apex-xk51): the two Messages
+                // halves pair within their own family, never across.
+                ToolSearchKind::ServerToolUse => ToolSearchKind::ToolSearchToolResult,
+                ToolSearchKind::ToolSearchToolResult => ToolSearchKind::ServerToolUse,
             };
             if counterpart_present(items, required, key) {
                 return ToolSearchPairing::CounterpartPresent;
             }
             match item.kind {
-                ToolSearchKind::Call => ToolSearchPairing::UnansweredCall,
-                ToolSearchKind::Output => ToolSearchPairing::OrphanOutput,
+                ToolSearchKind::Call | ToolSearchKind::ServerToolUse => {
+                    ToolSearchPairing::UnansweredCall
+                }
+                ToolSearchKind::Output | ToolSearchKind::ToolSearchToolResult => {
+                    ToolSearchPairing::OrphanOutput
+                }
             }
         })
         .collect()
@@ -2316,11 +2410,13 @@ fn discovery_groups(items: &[ConversationItem]) -> Vec<Vec<usize>> {
             continue;
         }
         match item.kind() {
-            ToolSearchKind::Call => open_calls.push(*index),
-            ToolSearchKind::Output => match open_calls.is_empty() {
-                true => groups.push(vec![*index]),
-                false => groups.push(vec![open_calls.remove(0), *index]),
-            },
+            ToolSearchKind::Call | ToolSearchKind::ServerToolUse => open_calls.push(*index),
+            ToolSearchKind::Output | ToolSearchKind::ToolSearchToolResult => {
+                match open_calls.is_empty() {
+                    true => groups.push(vec![*index]),
+                    false => groups.push(vec![open_calls.remove(0), *index]),
+                }
+            }
         }
     }
     for call in open_calls {
@@ -2333,28 +2429,33 @@ fn discovery_groups(items: &[ConversationItem]) -> Vec<Vec<usize>> {
     groups
 }
 
-/// Whether a group actually answers itself: at least one `tool_search_call` AND at
-/// least one `tool_search_output`.
+/// Whether a group actually answers itself: at least one CALL half AND at least
+/// one OUTPUT half, any family (apex-xk51: `tool_search_call`/`tool_search_output`
+/// or `server_tool_use`/`tool_search_tool_result`).
 ///
 /// `group.len() >= 2` is NOT this question (cut review F-3): two `tool_search_call`s
 /// sharing a reused `call_id` are a length-2 group that answers nothing, and the
 /// wire shape that keeps one of them is the strict-backend 400 this helper family
 /// exists to prevent.
 fn group_is_closed(discovery: &[(usize, &ToolSearchItem)], group: &[usize]) -> bool {
-    let holds = |kind: ToolSearchKind| {
-        group.iter().any(|index| {
-            discovery
-                .iter()
-                .any(|(found, item)| *found == *index && item.kind() == kind)
-        })
-    };
-    holds(ToolSearchKind::Call) && holds(ToolSearchKind::Output)
+    let holds_call_half = group.iter().any(|index| {
+        discovery
+            .iter()
+            .any(|(found, item)| *found == *index && is_call_half(item.kind()))
+    });
+    let holds_output_half = group.iter().any(|index| {
+        discovery
+            .iter()
+            .any(|(found, item)| *found == *index && is_output_half(item.kind()))
+    });
+    holds_call_half && holds_output_half
 }
 
 /// Whether the LAST item of `items` is a discovery half that cannot be sent as it
-/// stands: a `tool_search_call` at the very tail is unanswered, and a
-/// `tool_search_output` whose call does not immediately precede it (same `call_id`,
-/// or both keyless as the provider mints them) cannot be certified as paired.
+/// stands: a CALL half at the very tail (either family; apex-xk51) is
+/// unanswered, and an OUTPUT half whose call does not immediately precede it
+/// (same `call_id`, or both keyless as the provider mints them) cannot be
+/// certified as paired.
 ///
 /// An answered `[call, output]` tail is NOT unpaired: the pair is the provider's own
 /// record of the loaded tool set and must never be stripped (ruling apex-waj.18
@@ -2380,20 +2481,20 @@ pub fn trailing_discovery_is_unpaired(items: &[ConversationItem]) -> bool {
         // The tail is some other item type; nothing discovery-shaped to guard.
         return false;
     }
-    match item.kind() {
-        ToolSearchKind::Call => true,
-        ToolSearchKind::Output => {
-            match index
-                .checked_sub(1)
-                .and_then(|previous| items.get(previous))
-                .and_then(ConversationItem::discovery)
-            {
-                Some(before) => {
-                    before.kind() != ToolSearchKind::Call
-                        || (item.call_id().is_some() && before.call_id() != item.call_id())
-                }
-                None => true,
+    if is_call_half(item.kind()) {
+        // A call half at the very tail is unanswered (any family).
+        true
+    } else {
+        match index
+            .checked_sub(1)
+            .and_then(|previous| items.get(previous))
+            .and_then(ConversationItem::discovery)
+        {
+            Some(before) => {
+                !is_call_half(before.kind())
+                    || (item.call_id().is_some() && before.call_id() != item.call_id())
             }
+            None => true,
         }
     }
 }
@@ -2454,10 +2555,8 @@ pub const MAX_SNAP_GROUP_SPAN: usize = 8;
 /// Whether a group is narrow enough for the snap to honour it, see
 /// [`MAX_SNAP_GROUP_SPAN`].
 fn group_is_snappable(group: &[usize]) -> bool {
-    let (Some(first), Some(last)) = (
-        group.iter().min().copied(),
-        group.iter().max().copied(),
-    ) else {
+    let (Some(first), Some(last)) = (group.iter().min().copied(), group.iter().max().copied())
+    else {
         return false;
     };
     last - first + 1 <= MAX_SNAP_GROUP_SPAN
@@ -2525,9 +2624,8 @@ pub fn snap_index_over_discovery_pairs(items: &[ConversationItem], cut: usize) -
                 // whose halves are both present-but-far-apart, so this is the only
                 // witness that the body about to be sent is the shape a strict
                 // backend rejects (cut review WAJ21R2-03).
-                let too_wide_span = too_wide.iter().max().unwrap_or(&0)
-                    - too_wide.iter().min().unwrap_or(&0)
-                    + 1;
+                let too_wide_span =
+                    too_wide.iter().max().unwrap_or(&0) - too_wide.iter().min().unwrap_or(&0) + 1;
                 tracing::error!(
                     span = too_wide_span,
                     max_span = MAX_SNAP_GROUP_SPAN,
@@ -3763,7 +3861,7 @@ mod tests {
     /// carry their subject).
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "takes the index of a tool_search_output")]
+    #[should_panic(expected = "call_precedes_output takes the index of an output half")]
     fn handing_a_call_index_to_the_output_predicate_is_caught() {
         let items = [keyed_call(CX3_KEY, Some("completed"))];
         assert!(
@@ -3777,7 +3875,7 @@ mod tests {
     /// predicates. Without this test the assert can be deleted and the suite stays green.
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "output_follows_call takes the index of a tool_search_call")]
+    #[should_panic(expected = "output_follows_call takes the index of a call half")]
     fn handing_an_output_index_to_the_call_predicate_is_caught() {
         let items = [keyed_output(CX3_KEY, Some("completed"))];
         assert!(
@@ -6373,13 +6471,13 @@ mod tests {
     //   ST-M-D21 (43) a history cut stops snapping (review F-4) → `truncate_for_prompt_never_returns_a_count_inside_a_discovery_pair`
     // ==========================================================================
 
-    use crate::conversation::{
-        DanglingToolCallReason, ResponsesReplayDialect, Role, ToolCall,
-        apply_enc_affinity_gate, codex_cross_provider_fallback, conversation_to_chat_messages,
-        drop_model_bound_items, drop_orphaned_tool_results, repair_dangling_tool_calls,
-        stamp_reasoning_mint_tag, transform_conversation_cwd,
-    };
     use crate::conversation::{ConversationItem, ConversationRequest};
+    use crate::conversation::{
+        DanglingToolCallReason, ResponsesReplayDialect, Role, ToolCall, apply_enc_affinity_gate,
+        codex_cross_provider_fallback, conversation_to_chat_messages, drop_model_bound_items,
+        drop_orphaned_tool_results, repair_dangling_tool_calls, stamp_reasoning_mint_tag,
+        transform_conversation_cwd,
+    };
 
     /// The only way to build the variant outside `conversation.rs`: the payload
     /// type has no public constructor except [`ToolSearchItem::from_wire`].
@@ -6426,7 +6524,8 @@ mod tests {
              jsonl loader both read this spelling"
         );
         assert_eq!(
-            value["item"], cx3_call(),
+            value["item"],
+            cx3_call(),
             "the provider item rides verbatim under `item`"
         );
         let top_level_keys: Vec<&str> = value
@@ -6520,8 +6619,7 @@ mod tests {
             .map(|item| serde_json::to_string(item).expect("a discovery row serialises"))
             .collect();
         assert_eq!(
-            stored,
-            STORED_PAIR_LINES,
+            stored, STORED_PAIR_LINES,
             "the spelling a `chat_history.jsonl` row carries is a contract with every \
              file already on disk: a renamed tag or a re-wrapped payload makes the \
              loader's `skip_line` drop a whole pair in silence (apex-waj.18 A-26)"
@@ -6588,7 +6686,10 @@ mod tests {
                 "a discovery item is model-side continuation state, not a tool result"
             );
         }
-        assert_eq!(call.text_content(), "[tool_search] \"crm order management\"");
+        assert_eq!(
+            call.text_content(),
+            "[tool_search] \"crm order management\""
+        );
         assert_eq!(
             output.text_content(),
             "[tool_search results] 3 tools in 1 namespace(s)"
@@ -6613,7 +6714,9 @@ mod tests {
         let slots: Vec<usize> = request
             .items
             .iter()
-            .map(|item| crate::conversation::responses::conversation_item_to_input_items(item).len())
+            .map(|item| {
+                crate::conversation::responses::conversation_item_to_input_items(item).len()
+            })
             .collect();
         assert_eq!(
             slots,
@@ -6633,10 +6736,8 @@ mod tests {
 
         let replacements = request.raw_responses_input_replacements(ResponsesReplayDialect::Codex);
         assert_eq!(replacements.len(), 2, "both halves splice");
-        let expected_indices: Vec<usize> = replacements
-            .iter()
-            .map(|r| r.input_item_index)
-            .collect();
+        let expected_indices: Vec<usize> =
+            replacements.iter().map(|r| r.input_item_index).collect();
         assert_eq!(
             expected_indices,
             vec![2, 3],
@@ -6647,7 +6748,8 @@ mod tests {
             body["input"][replacement.input_item_index] = replacement.value.clone();
         }
         assert_eq!(
-            body["input"][2], cx3_call(),
+            body["input"][2],
+            cx3_call(),
             "the spliced bytes are `raw()` verbatim: no re-serialisation, no \
              re-wrapped `arguments`, no stripped key (T15 owns the `created_by` strip)"
         );
@@ -6820,7 +6922,11 @@ mod tests {
             1,
             "the result is orphaned: only an Assistant tool_call or a BackendToolCall owns a call id"
         );
-        assert_eq!(items.len(), 2, "the discovery pair itself is never pair-checked here");
+        assert_eq!(
+            items.len(),
+            2,
+            "the discovery pair itself is never pair-checked here"
+        );
     }
 
     /// M-D11: opaque artifacts are handles, not content (wire invariant 6) and
@@ -6897,7 +7003,11 @@ mod tests {
                 &crate::conversation::projection::inert_route(boundary),
             );
             assert_eq!(projected.items.len(), items.len(), "{boundary:?}");
-            assert!(projected.drops.is_empty(), "{boundary:?}: {:?}", projected.drops);
+            assert!(
+                projected.drops.is_empty(),
+                "{boundary:?}: {:?}",
+                projected.drops
+            );
             let discovery: Vec<&ToolSearchItem> = projected
                 .items
                 .iter()
@@ -6923,7 +7033,13 @@ mod tests {
         let messages = conversation_to_chat_messages(items);
         let roles: Vec<String> = messages
             .iter()
-            .map(|m| serde_json::to_value(m.role).unwrap().as_str().unwrap().to_owned())
+            .map(|m| {
+                serde_json::to_value(m.role)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
             .collect();
         assert_eq!(
             roles,
@@ -6948,7 +7064,10 @@ mod tests {
         );
         for message in &messages[2..4] {
             assert!(message.tool_calls.is_empty());
-            assert_eq!(message.tool_call_id, None, "no tool_use/tool_result id is invented");
+            assert_eq!(
+                message.tool_call_id, None,
+                "no tool_use/tool_result id is invented"
+            );
         }
         assert_eq!(
             messages[4].reasoning_content.as_deref(),
@@ -6965,7 +7084,8 @@ mod tests {
     fn messages_wire_renders_one_bounded_text_block_per_discovery_item() {
         let request = ConversationRequest::from_items(history_with_discovery_pair())
             .with_model("messages-compatible-model");
-        let body = serde_json::to_value(crate::conversation::build_messages_request(&request)).unwrap();
+        let body =
+            serde_json::to_value(crate::conversation::build_messages_request(&request)).unwrap();
         let rendered = body.to_string();
         assert!(rendered.contains("[tool_search] \\\"crm order management\\\""));
         assert!(
@@ -6982,7 +7102,10 @@ mod tests {
         // Assistant <-> ToolResult.
         let cleaned = crate::conversation::messages::clean_orphaned_items(&request.items);
         assert_eq!(
-            cleaned.iter().filter_map(ConversationItem::discovery).count(),
+            cleaned
+                .iter()
+                .filter_map(ConversationItem::discovery)
+                .count(),
             2
         );
     }
@@ -7131,7 +7254,10 @@ mod tests {
 
         // A cut past the whole pair does not move: the fixture's pair is one keyed
         // group at [2, 3] and cut 4 is above its last member.
-        assert_eq!(snap_index_over_discovery_pairs(&history_with_discovery_pair(), 4), 4);
+        assert_eq!(
+            snap_index_over_discovery_pairs(&history_with_discovery_pair(), 4),
+            4
+        );
     }
 
     /// Cut review F-2 in its hardest quadrant: the keyed rule groups by `call_id`
@@ -7176,7 +7302,10 @@ mod tests {
             let groups = discovery_groups(&shape);
             for cut in 0..=shape.len() {
                 let snapped = snap_index_over_discovery_pairs(&shape, cut);
-                assert!(snapped <= cut, "rotation {shift}: cut {cut} moved UP to {snapped}");
+                assert!(
+                    snapped <= cut,
+                    "rotation {shift}: cut {cut} moved UP to {snapped}"
+                );
                 for group in &groups {
                     let first = group.iter().min().copied().unwrap_or(0);
                     let last = group.iter().max().copied().unwrap_or(0);
