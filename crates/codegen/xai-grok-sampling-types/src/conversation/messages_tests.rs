@@ -4675,3 +4675,584 @@ fn placeholder_index_stable() {
         "the promotion appends exactly one materialised entry after the placeholder: {after_tools:#?}"
     );
 }
+
+// ============================================================================
+// apex-waj.36 cut 2 — D2 advertisement (R-2) + ToolSearch max_results
+// declaration (R-3) + select-list-order replay (R-4). Synthetic tests only:
+// the byte-exact CC5 gate (the 2,728 / 53462a528780 advertisement and the
+// 953 / 055d548fb923 entry pins) is N-1's separate bead — no CC5 filesystem
+// path is hardcoded here. The select: query PARSING (R-4.1..R-4.5) is the
+// hosted ToolSearch (provider-side); the encoder only replays.
+// ============================================================================
+
+/// T-2.1's independent oracle: the fixed advertisement sentence, byte-
+/// identical to the donor (the U+2014 em-dash spelled explicitly — an
+/// ASCII `-` in the encoder OR here is the T-2.1 mutant) and the literal
+/// `select:` grammar text.
+const D2_AD_SENTENCE: &str = "The following deferred tools are now available via ToolSearch. Their schemas are NOT loaded \u{2014} calling them directly will fail with InputValidationError. Use ToolSearch with query \"select:<name>[,<name>...]\" to load tool schemas before calling them:";
+
+/// An admitted D2 row: `supports_search_tool` on, surface non-empty.
+fn d2_armed_req(items: Vec<ConversationItem>, tools: Vec<ToolSpec>) -> ConversationRequest {
+    let mut req = ConversationRequest::from_items(items)
+        .with_model("test-model")
+        .with_tools(tools);
+    req.search_admission = Some(SearchAdmission::for_row(true, &req.tools));
+    req
+}
+
+/// The encoded `system` texts of a request — the block array when the
+/// encoder emits Blocks (marked or multi-block), the single string when it
+/// collapses to Text.
+fn d2_system_texts(msgs: &crate::messages::MessagesRequest) -> Vec<String> {
+    let json = serde_json::to_value(msgs).unwrap();
+    match json.get("system") {
+        None => Vec::new(),
+        Some(serde_json::Value::String(s)) => vec![s.clone()],
+        Some(serde_json::Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|b| {
+                b.get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .collect(),
+        Some(other) => panic!("unexpected system shape: {other:#}"),
+    }
+}
+
+/// The advertisement fragment of an encoded request (the system text
+/// opening with the fixed sentence), or None.
+fn d2_advertisement(msgs: &crate::messages::MessagesRequest) -> Option<String> {
+    d2_system_texts(msgs)
+        .into_iter()
+        .find(|t| t.starts_with("The following deferred tools"))
+}
+
+/// The `tool_name`s of the replayed discovery `tool_result`'s
+/// `tool_reference` blocks, in wire order (the select-list order, R-4.6).
+fn d2_replayed_reference_names(msgs: &crate::messages::MessagesRequest) -> Vec<String> {
+    let json = serde_json::to_value(msgs).unwrap();
+    let messages = json
+        .pointer("/messages")
+        .and_then(serde_json::Value::as_array)
+        .expect("messages[]");
+    let result_block = messages
+        .iter()
+        .filter_map(|m| m.get("content").and_then(serde_json::Value::as_array))
+        .flatten()
+        .find(|b| b.get("type").and_then(serde_json::Value::as_str) == Some("tool_result"))
+        .expect("the replayed tool_result: {json:#}");
+    result_block
+        .get("content")
+        .and_then(serde_json::Value::as_array)
+        .expect("tool_result content is a block array")
+        .iter()
+        .filter(|b| b.get("type").and_then(serde_json::Value::as_str) == Some("tool_reference"))
+        .filter_map(|b| b.get("tool_name").and_then(serde_json::Value::as_str).map(str::to_owned))
+        .collect()
+}
+
+/// A client-executed discovery pair with an explicit `select:` query and
+/// the `max_results` spelling (R-3.1: `max_results` is the Messages
+/// spelling — the call half carries what the model sent, verbatim, R-5.1).
+/// The answer stores exactly the tools the provider resolved (misses are
+/// already dropped there — R-4.7).
+fn d2_client_pair_select(
+    call_id: &str,
+    query: &str,
+    tools: Vec<serde_json::Value>,
+) -> (ToolSearchItem, ToolSearchItem) {
+    let call = tool_search::ToolSearchItem::from_wire(serde_json::json!({
+        "id": format!("tsc_{call_id}"),
+        "type": "tool_search_call",
+        "call_id": call_id,
+        "execution": "client",
+        "status": "completed",
+        "arguments": { "query": query, "max_results": 5 }
+    }))
+    .expect("the client call decodes");
+    let answer = tool_search::ToolSearchItem::client_answer(call_id, tools);
+    (call, answer)
+}
+
+#[test]
+fn advertisement_fragment_structure() {
+    // T-2.1: the fragment is the fixed sentence VERBATIM (the U+2014
+    // em-dash present — an ASCII `-` is the mutant), one `\n`, the
+    // deferred names one per line ASCII-sorted, and NO trailing newline
+    // inside the fragment. (The CC5 byte pin — 2,728 chars /
+    // sha256[:12] = 53462a528780 — is N-1's; the STRUCTURE is pinned here.)
+    let (call, answer) = d2_client_pair(
+        "call_ad1",
+        vec![
+            d2_def("zeta_tool", serde_json::json!({"type": "object"})),
+            d2_def("alpha_tool", serde_json::json!({"type": "object"})),
+            d2_def("beta_tool", serde_json::json!({"type": "object"})),
+        ],
+    );
+    let items = vec![
+        ConversationItem::user("hi"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+        ConversationItem::user("next"),
+    ];
+    let msgs = build_messages_request(&d2_armed_req(items, vec![d2_tool("base_tool")]));
+    let fragment = d2_advertisement(&msgs)
+        .unwrap_or_else(|| panic!("the admitted row advertises its deferred set: {msgs:?}"));
+    let expected = format!("{D2_AD_SENTENCE}\nalpha_tool\nbeta_tool\nzeta_tool");
+    assert_eq!(
+        fragment, expected,
+        "the fragment is the sentence + one \\n + the names one per line ASCII-sorted"
+    );
+    assert!(
+        fragment.contains('\u{2014}'),
+        "the U+2014 em-dash must survive verbatim: {fragment:?}"
+    );
+    assert!(
+        !fragment.ends_with('\n'),
+        "no trailing newline inside the fragment: {fragment:?}"
+    );
+}
+
+#[test]
+fn advertisement_invariant_under_promotion() {
+    // T-2.2 (THE headline mutant): the advertisement is computed ONCE from
+    // the row's deferred set — a promoted name does NOT leave it. The
+    // mutant recomputes the list as `deferred − promoted` (the obvious
+    // wrong implementation); here every deferred name IS promoted — in
+    // this model discovery loads materialise, and the replayed answer pair
+    // stays in history — so the mutant emits an EMPTY name list and the
+    // fragment collapses to the bare sentence. The crate carries no sha2
+    // (Cargo.toml is outside this cut's PATHSPEC), so byte-equality is
+    // asserted — it implies the sha256 identity the spec names.
+    let (call, answer) = d2_client_pair(
+        "call_ad2",
+        vec![
+            d2_def("zeta_tool", serde_json::json!({"type": "object"})),
+            d2_def("alpha_tool", serde_json::json!({"type": "object"})),
+        ],
+    );
+    let items = vec![
+        ConversationItem::user("hi"),
+        ConversationItem::Discovery { item: call.clone() },
+        ConversationItem::Discovery { item: answer.clone() },
+        ConversationItem::user("next"),
+    ];
+    // The turn the promotion lands on.
+    let at_promotion = build_messages_request(&d2_armed_req(
+        items.clone(),
+        vec![d2_tool("base_tool")],
+    ));
+    // A later turn: the promoted names are long since in tools[] — the
+    // advertisement must be byte-identical (the names did not leave it).
+    let items_later = vec![
+        items,
+        vec![
+            ConversationItem::assistant("done"),
+            ConversationItem::user("and another"),
+        ],
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let later = build_messages_request(&d2_armed_req(
+        items_later,
+        vec![d2_tool("base_tool")],
+    ));
+    let expected = format!("{D2_AD_SENTENCE}\nalpha_tool\nzeta_tool");
+    let at_fragment = d2_advertisement(&at_promotion)
+        .expect("the row advertises at the promotion turn");
+    let later_fragment = d2_advertisement(&later)
+        .expect("the row still advertises on a later turn");
+    assert_eq!(
+        at_fragment, expected,
+        "every loaded (promoted) name stays in the advertisement"
+    );
+    assert_eq!(
+        at_fragment, later_fragment,
+        "the advertisement is promotion-invariant: sha256-identical (byte-identical) \
+         before and after the names sit in tools[]"
+    );
+    // The names ARE promoted — in tools[] — which is what the invariant is about.
+    let later_names = d2_tool_names(&later);
+    assert!(
+        later_names.contains(&"alpha_tool".to_owned())
+            && later_names.contains(&"zeta_tool".to_owned()),
+        "the advertised names are the materialised ones: {later_names:?}"
+    );
+}
+
+#[test]
+fn advertisement_disjoint_from_static_tools() {
+    // T-2.3: advertisement_names ∩ static_tool_names == {} — the search
+    // surface (ToolSearch), the placeholder, and any statically-loaded
+    // tool are excluded. Mutant: include the search surface in the
+    // deferred list.
+    let (call, answer) = d2_client_pair(
+        "call_ad3",
+        vec![
+            d2_def("shared_tool", serde_json::json!({"type": "object"})),
+            d2_def("only_loaded", serde_json::json!({"type": "object"})),
+        ],
+    );
+    let items = vec![
+        ConversationItem::user("hi"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+        ConversationItem::user("next"),
+    ];
+    let static_tools = vec![d2_tool("shared_tool"), d2_tool("static_only")];
+    let msgs = build_messages_request(&d2_armed_req(items, static_tools.clone()));
+    let fragment = d2_advertisement(&msgs)
+        .expect("the admitted row advertises its deferred set");
+    let names: Vec<&str> = fragment
+        .split('\n')
+        .skip(1)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let static_names: Vec<&str> = static_tools.iter().map(|t| t.name.as_str()).collect();
+    for name in &names {
+        assert!(
+            !static_names.contains(name),
+            "static tool {name:?} must not be advertised"
+        );
+        assert!(
+            !name.eq_ignore_ascii_case("toolsearch") && *name != "DeferredToolPlaceholder",
+            "the search surface / placeholder must not be advertised: {name:?}"
+        );
+    }
+    assert_eq!(
+        names,
+        vec!["only_loaded"],
+        "the shared name keeps its STATIC entry (excluded from the ad); \
+         the loaded-only name is advertised: {fragment:?}"
+    );
+}
+
+#[test]
+fn no_system_role_message_emitted() {
+    // T-2.4 (R-2.4/R-2.5): the advertisement rides a `system[]` text
+    // block, NOT a `role:"system"` message — `MessageRole` has only
+    // User/Assistant. Mutant: add a System variant and emit the ad as a
+    // message (which would also land between a tool_use and its
+    // tool_result and be silently stripped by the adjacency cleanup,
+    // G-20 — exactly the failure a message-form ad invites).
+    let (call, answer) = d2_client_pair(
+        "call_ad4",
+        vec![d2_def("promo", serde_json::json!({"type": "object"}))],
+    );
+    let items = vec![
+        ConversationItem::user("hi"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+        ConversationItem::user("next"),
+    ];
+    let msgs = build_messages_request(&d2_armed_req(items, vec![d2_tool("base_tool")]));
+    // The negative must not be vacuous: the ad did arrive (via system[]).
+    assert!(
+        d2_advertisement(&msgs).is_some(),
+        "the advertisement is present as a system[] block: {msgs:?}"
+    );
+    let json = serde_json::to_value(&msgs).unwrap();
+    let messages = json
+        .pointer("/messages")
+        .and_then(serde_json::Value::as_array)
+        .expect("messages[]");
+    for (i, m) in messages.iter().enumerate() {
+        assert!(
+            matches!(
+                m.get("role").and_then(serde_json::Value::as_str),
+                Some("user") | Some("assistant")
+            ),
+            "messages[{i}] has a non User/Assistant role — the ad must not \
+             be a role:\"system\" message: {m:#}"
+        );
+    }
+}
+
+#[test]
+fn advertisement_inside_cached_prefix() {
+    // T-2.6: the advertisement block's index is < (or ==) the index of
+    // the marked last system block — the ad sits INSIDE the cached
+    // prefix. Mutant: move it after the marked block (a per-turn cache
+    // bust of the whole system param).
+    let (call, answer) = d2_client_pair(
+        "call_ad6",
+        vec![d2_def("promo", serde_json::json!({"type": "object"}))],
+    );
+    let items = vec![
+        ConversationItem::system("stable instructions"),
+        ConversationItem::user("hi"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+        ConversationItem::user("next"),
+        ConversationItem::system("turn-variable context"),
+    ];
+    let msgs = build_messages_request(&d2_armed_req(items, vec![d2_tool("base_tool")]));
+    let json = serde_json::to_value(&msgs).unwrap();
+    let system = json
+        .get("system")
+        .and_then(serde_json::Value::as_array)
+        .expect("the multi-block system param is an array: {json:#}");
+    let ad_idx = system
+        .iter()
+        .position(|b| {
+            b.get("text")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|t| t.starts_with("The following deferred tools"))
+        })
+        .expect("the advertisement block is present: {system:#?}");
+    let marked_idx = system
+        .iter()
+        .position(|b| b.get("cache_control").is_some())
+        .expect("the last system block carries the marker: {system:#?}");
+    assert!(
+        ad_idx <= marked_idx,
+        "the advertisement must sit at or before the marked (last) system \
+         block — inside the cached prefix: ad={ad_idx} marked={marked_idx} {system:#?}"
+    );
+}
+
+#[test]
+fn toolsearch_schema_matches_donor() {
+    // T-3.1: sorted(required) == ["max_results", "query"], max_results
+    // default 5 and type number, additionalProperties false. Mutant: drop
+    // max_results from required (the intel's shape, C-3). The 953-char
+    // donor description (the three query forms, G-10) is pinned here at
+    // the structural level; the byte pin (953 / 055d548fb923) is N-1's.
+    let msgs = build_messages_request(&d2_armed_req(
+        vec![ConversationItem::user("hi")],
+        vec![d2_tool("static_tool")],
+    ));
+    let json = serde_json::to_value(&msgs).unwrap();
+    let entry = json
+        .pointer("/tools")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|t| {
+            t.iter()
+                .find(|e| e.get("name").and_then(serde_json::Value::as_str) == Some("ToolSearch"))
+        })
+        .expect("the admitted row declares ToolSearch: {json:#}");
+    let schema = entry.get("input_schema").expect("the declaration carries input_schema");
+    let required = schema
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .expect("required[]")
+        .iter()
+        .map(|v| v.as_str().unwrap_or_default().to_owned())
+        .collect::<Vec<_>>();
+    let mut sorted_required = required.clone();
+    sorted_required.sort();
+    assert_eq!(
+        sorted_required,
+        vec!["max_results", "query"],
+        "BOTH query and max_results are required (the intel's shape is \
+         required==[query] — C-3): {required:?}"
+    );
+    let max_results = &schema["properties"]["max_results"];
+    assert_eq!(
+        max_results.get("default"),
+        Some(&serde_json::json!(5)),
+        "max_results defaults to 5: {max_results:#}"
+    );
+    assert_eq!(
+        max_results.get("type"),
+        Some(&serde_json::json!("number")),
+        "max_results is a number: {max_results:#}"
+    );
+    assert_eq!(
+        schema.get("additionalProperties"),
+        Some(&serde_json::json!(false)),
+        "additionalProperties is false: {schema:#}"
+    );
+    assert_eq!(
+        schema["properties"]["query"]["type"],
+        serde_json::json!("string"),
+        "query is a string"
+    );
+    // Key order is the donor's (G-8; the crate's preserve_order keeps it
+    // on the wire).
+    let keys = |v: &serde_json::Value| -> Vec<String> {
+        v.as_object().expect("object").keys().cloned().collect()
+    };
+    assert_eq!(
+        keys(schema),
+        vec!["$schema", "type", "properties", "required", "additionalProperties"]
+    );
+    assert_eq!(keys(&schema["properties"]), vec!["query", "max_results"]);
+    assert_eq!(keys(&schema["properties"]["query"]), vec!["description", "type"]);
+    assert_eq!(
+        keys(&schema["properties"]["max_results"]),
+        vec!["description", "default", "type"]
+    );
+    // The 953-char donor description (G-9): the only place the model is
+    // told the `select:` grammar exists (G-10's three query forms).
+    let description = entry
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+        .expect("the declaration carries the donor description");
+    assert_eq!(
+        description.chars().count(),
+        953,
+        "the donor description is 953 chars (the byte pin 055d548fb923 is N-1's)"
+    );
+    assert!(
+        description.contains("select:Read,Edit,Grep")
+            && description.contains("notebook jupyter")
+            && description.contains("+slack send"),
+        "the three query forms (G-10) are present: {description:?}"
+    );
+    // A live declared tool: no defer_loading key (the donor entry has
+    // none — the materialised class marker is not copied onto it).
+    assert_eq!(
+        entry.get("defer_loading"),
+        None,
+        "ToolSearch is a live declared tool, not a materialised entry: {entry:#}"
+    );
+}
+
+#[test]
+fn toolsearch_schema_has_no_limit_key() {
+    // T-3.2 (R-3.3): the Messages ToolSearch schema MUST NOT emit a
+    // `limit` key — that is the Responses spelling (optional, default 8).
+    // Mutant: emit the Responses `limit` spelling. And `max_results` is
+    // REQUIRED (the Responses `limit` is optional).
+    let msgs = build_messages_request(&d2_armed_req(
+        vec![ConversationItem::user("hi")],
+        vec![d2_tool("static_tool")],
+    ));
+    let json = serde_json::to_value(&msgs).unwrap();
+    let schema = json
+        .pointer("/tools")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|t| {
+            t.iter()
+                .find(|e| e.get("name").and_then(serde_json::Value::as_str) == Some("ToolSearch"))
+        })
+        .expect("the admitted row declares ToolSearch: {json:#}")
+        .get("input_schema")
+        .expect("input_schema");
+    assert!(
+        schema["properties"].get("limit").is_none(),
+        "no `limit` key in the Messages schema (the Responses spelling \
+         must not cross — R-3.3): {schema:#}"
+    );
+    let required = schema
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .expect("required[]")
+        .iter()
+        .any(|v| v == &serde_json::json!("max_results"));
+    assert!(
+        required,
+        "max_results is REQUIRED (the Responses limit is optional): {schema:#}"
+    );
+}
+
+#[test]
+fn select_result_in_list_order_not_ascii() {
+    // T-4.5 (R-4.6): the replayed tool_result's tool_reference blocks are
+    // in SELECT-LIST order — NOT ASCII (the ASCII sort is the tools[]
+    // order, G-4; applying it to the reference list is the T-4.5 mutant).
+    // Verifies Cut 1's transcript.
+    let (call, answer) = d2_client_pair_select(
+        "call_so1",
+        "select:zeta_tool,alpha_tool",
+        vec![
+            d2_def("zeta_tool", serde_json::json!({"type": "object"})),
+            d2_def("alpha_tool", serde_json::json!({"type": "object"})),
+        ],
+    );
+    let items = vec![
+        ConversationItem::user("q"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+        ConversationItem::user("next"),
+    ];
+    let msgs = build_messages_request(&d2_armed_req(items, vec![d2_tool("static_tool")]));
+    let refs = d2_replayed_reference_names(&msgs);
+    assert_eq!(
+        refs,
+        vec!["zeta_tool", "alpha_tool"],
+        "the reference list replays the SELECT-LIST order, not the ASCII \
+         sort: {refs:?}"
+    );
+    // The two orders genuinely diverge: tools[] IS ASCII-sorted (R-1.3) —
+    // the materialised tail keeps that sort while the references do not.
+    let tool_names = d2_tool_names(&msgs);
+    let materialised: Vec<&str> = tool_names
+        .iter()
+        .map(String::as_str)
+        .filter(|n| *n == "zeta_tool" || *n == "alpha_tool")
+        .collect();
+    assert_eq!(
+        materialised,
+        vec!["alpha_tool", "zeta_tool"],
+        "tools[] keeps the ASCII order (the reference list's sort is the \
+         tools[] order — G-4 — and is wrong there): {tool_names:?}"
+    );
+    // The call half carries the select: query verbatim (R-5.1).
+    let json = serde_json::to_value(&msgs).unwrap();
+    let call_input = json
+        .pointer("/messages")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|messages| {
+            messages
+                .iter()
+                .filter_map(|m| m.get("content").and_then(serde_json::Value::as_array))
+                .flatten()
+                .find(|b| b.get("type").and_then(serde_json::Value::as_str) == Some("tool_use"))
+        })
+        .expect("the replayed tool_use: {json:#}")
+        .get("input")
+        .cloned()
+        .expect("the tool_use input");
+    assert_eq!(
+        call_input.get("query"),
+        Some(&serde_json::json!("select:zeta_tool,alpha_tool")),
+        "the select: query is replayed verbatim: {call_input:#}"
+    );
+}
+
+#[test]
+fn select_partial_drops_misses() {
+    // T-4.6 (R-4.7): partial results are in-band — the provider's answer
+    // stores only the resolvable names, and the encoder replays exactly
+    // that: unresolvable names are DROPPED from the tool_reference list,
+    // never turned into a synthetic reference (a tool_reference to an
+    // undeclared name is the proven G-16 400 — H-11 would fire). Mutant:
+    // emit a tool_reference for the miss.
+    let (call, answer) = d2_client_pair_select(
+        "call_so2",
+        "select:real_tool,bogus_tool",
+        // The provider resolved only real_tool; bogus_tool is absent from
+        // the answer (R-4.7 — the miss never reaches the encoder as a
+        // reference, it is simply not in the stored list).
+        vec![d2_def("real_tool", serde_json::json!({"type": "object"}))],
+    );
+    let items = vec![
+        ConversationItem::user("q"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+        ConversationItem::user("next"),
+    ];
+    let msgs = build_messages_request(&d2_armed_req(items, vec![d2_tool("static_tool")]));
+    let refs = d2_replayed_reference_names(&msgs);
+    assert_eq!(
+        refs,
+        vec!["real_tool"],
+        "only the resolvable name is replayed — the miss is not turned \
+         into a synthetic tool_reference: {refs:?}"
+    );
+    // And the replayed reference resolves in tools[]: H-11 does not fire.
+    let json = serde_json::to_value(&msgs).unwrap();
+    let violations = crate::conversation::outbound_lint::lint_outbound_request(
+        crate::conversation::projection::Boundary::Vertex,
+        &json,
+    );
+    assert!(
+        violations.iter().all(|v| v.rule != "H-11"),
+        "every replayed tool_reference resolves in tools[] — H-11 is clean: \
+         {violations:?}"
+    );
+}

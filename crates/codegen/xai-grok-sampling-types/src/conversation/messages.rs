@@ -683,6 +683,71 @@ fn image_source_or_fallback(url: &str) -> Result<crate::messages::ImageSource, S
 /// absent carrier degrades the half to the text summary instead.
 const TOOL_SEARCH_CARRIER_NAME: &str = "ToolSearch";
 
+/// R-2 (apex-waj.36 cut 2; SPEC-W2 R-2.1, G-7): the fixed advertisement
+/// sentence, VERBATIM — the dash is U+2014 (an ASCII `-` is the T-2.1
+/// mutant) and `select:<name>[,<name>...]` is literal text, not a pattern.
+const DEFERRED_ADVERTISEMENT_SENTENCE: &str = "The following deferred tools are now available via ToolSearch. Their schemas are NOT loaded — calling them directly will fail with InputValidationError. Use ToolSearch with query \"select:<name>[,<name>...]\" to load tool schemas before calling them:";
+
+/// R-2 (apex-waj.36 cut 2; SPEC-W2 R-2.1): the advertisement fragment — the
+/// fixed sentence, a single `\n`, then the deferred names one per line,
+/// ASCII-sorted, with NO trailing newline inside the fragment.
+fn d2_advertisement_fragment(deferred_names: &[String]) -> String {
+    let mut fragment = String::with_capacity(
+        DEFERRED_ADVERTISEMENT_SENTENCE.len()
+            + deferred_names.iter().map(|name| name.len() + 1).sum::<usize>(),
+    );
+    fragment.push_str(DEFERRED_ADVERTISEMENT_SENTENCE);
+    for name in deferred_names {
+        fragment.push('\n');
+        fragment.push_str(name);
+    }
+    fragment
+}
+
+/// R-3 (apex-waj.36 cut 2; SPEC-W2 R-3.4, G-9/G-10): the donor's 953-char
+/// ToolSearch description, VERBATIM (the three query forms, G-10) — the only
+/// place the model is told the `select:` grammar exists. The entry byte pin
+/// (`sha256[:12] = 055d548fb923`) is N-1's CC5 gate; the constant and its
+/// structure are pinned here (T-3.1).
+const TOOL_SEARCH_D2_DESCRIPTION: &str = r#"Fetches full schema definitions for deferred tools so they can be called.
+
+Deferred tools appear by name in <system-reminder> messages. Until fetched, only the name is known — there is no parameter schema, so the tool cannot be invoked. This tool takes a query, matches it against the deferred tool list, and returns the matched tools' complete JSONSchema definitions inside a <functions> block. Once a tool's schema appears in that result, it is callable exactly like any tool defined at the top of the prompt.
+
+Result format: each matched tool appears as one <function>{"description": "...", "name": "...", "parameters": {...}}</function> line inside the <functions> block — the same encoding as the tool list at the top of this prompt.
+
+Query forms:
+- "select:Read,Edit,Grep" — fetch these exact tools by name
+- "notebook jupyter" — keyword search, up to max_results best matches
+- "+slack send" — require "slack" in the name, rank by remaining terms"#;
+
+/// R-3 (apex-waj.36 cut 2; SPEC-W2 R-3.1/R-3.3, G-8): the ToolSearch
+/// `input_schema` — `query` and `max_results` BOTH in `required`,
+/// `max_results` a number with `"default": 5`, `additionalProperties:
+/// false`. Key order is the donor's (the crate's `serde_json`
+/// `preserve_order` keeps it on the wire; the entry byte pin
+/// `sha256[:12] = 055d548fb923` is N-1's CC5 gate). R-3.3: NO `limit`
+/// key — that is the Responses spelling (optional, default 8) and it
+/// must not cross into the Messages schema (T-3.2).
+fn tool_search_d2_input_schema() -> serde_json::Value {
+    serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            "query": {
+                "description": "Query to find deferred tools. Use \"select:<tool_name>\" for direct selection, or keywords to search.",
+                "type": "string"
+            },
+            "max_results": {
+                "description": "Maximum number of results to return (default: 5)",
+                "default": 5,
+                "type": "number"
+            }
+        },
+        "required": ["query", "max_results"],
+        "additionalProperties": false
+    })
+}
+
 /// The tool_reference names a discovery ANSWER half carries, FLAT (A-16 —
 /// never the child short name), in select-list order, deduped by distinct
 /// name. `tool_search_output` names come from the stored definitions (a
@@ -772,17 +837,34 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     // // cannot be fail-closed-checked here. Cut 2 replaces the warn below
     // // with the real check; until then it fires whenever materialisation
     // // actually appends.
-    let (d2_materialised, d2_declared) = {
+    let (d2_materialised, d2_declared, d2_deferred) = {
         let discovery = tool_search::discovery_items(&items);
         let loaded = tool_search::loaded_tool_set(discovery.iter().map(|(_, item)| *item));
         let mut declared: Vec<String> = req.tools.iter().map(|t| t.name.clone()).collect();
         let mut seen: std::collections::BTreeSet<String> = declared.iter().cloned().collect();
+        let static_names: std::collections::BTreeSet<String> =
+            req.tools.iter().map(|t| t.name.clone()).collect();
+        // R-2.2 (apex-waj.36 cut 2): the deferred set — every name this
+        // row KNOWS from discovery that the static tools[] region does not
+        // carry (the search surface, the placeholder, and static tools are
+        // excluded by construction — T-2.3). Computed from the row's
+        // history; R-2.3's promotion invariance follows from the replayed
+        // answer pair staying in history — a promoted name is NOT
+        // subtracted (the `deferred − promoted` recompute is the T-2.2
+        // mutant).
+        let mut deferred: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut entries: Vec<(String, &serde_json::Value)> = Vec::new();
         for definition in loaded {
             let Some(name) = definition.name() else {
                 continue;
             };
             let flat = tool_name::flat_tool_name(name, definition.namespace()).into_string();
+            // R-2.2 (cut 2): the deferred set admits the name before `flat`
+            // moves into the materialised entries (the BTreeSet dedupes by
+            // name, so first-seen wins here too).
+            if !static_names.contains(&flat) {
+                deferred.insert(flat.clone());
+            }
             // R-1.4: dedup by DISTINCT FLAT name, not occurrence count —
             // first-seen wins (a reloaded schema does not re-declare), and a
             // name the static region already holds keeps its BASE entry
@@ -793,8 +875,23 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             }
         }
         entries.sort_by(|a, b| a.0.cmp(&b.0));
-        (entries, declared)
+        (
+            entries,
+            declared,
+            deferred.into_iter().collect::<Vec<String>>(),
+        )
     };
+
+    // R-3 (apex-waj.36 cut 2): the carrier `tool_use` is backed when the
+    // static region declares it OR the row admits native discovery (the
+    // encoder then declares ToolSearch in the tools region itself). An
+    // unadmitted, undeclared row still degrades to the text summary — an
+    // undeclared tool_use name is a 400.
+    let d2_carrier_declared = req
+        .tools
+        .iter()
+        .any(|t| t.name == TOOL_SEARCH_CARRIER_NAME)
+        || req.search_admission.is_some_and(|admission| admission.admitted());
 
     let mut system_blocks: Vec<TextBlock> = Vec::new();
     let mut messages: Vec<Message> = Vec::new();
@@ -1044,12 +1141,11 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                             // The Responses-family call carries no tool name;
                             // the donor's Messages-wire carrier is the row's
                             // declared "ToolSearch" tool (G-19; CC1/CC2).
-                            // Replay it only when THIS request declares it.
-                            _ => req
-                                .tools
-                                .iter()
-                                .find(|t| t.name == TOOL_SEARCH_CARRIER_NAME)
-                                .map(|_| TOOL_SEARCH_CARRIER_NAME.to_owned()),
+                            // Replay it only when THIS request declares it —
+                            // statically, or via the encoder's own R-3
+                            // declaration on an admitted row (cut 2).
+                            _ => d2_carrier_declared
+                                .then(|| TOOL_SEARCH_CARRIER_NAME.to_owned()),
                         };
                         let id = item
                             .call_id()
@@ -1223,6 +1319,36 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     strip_thinking_blocks(&mut messages, req.thinking_replay.as_deref() != Some("off"));
     repair_trailing_assistant(&mut messages);
 
+    // R-2 (apex-waj.36 cut 2; SPEC-W2 R-2.4, C-6): the deferred-name
+    // advertisement is a `system[]` TEXT BLOCK — not a `role:"system"`
+    // message (R-2.5: `MessageRole` has only User/Assistant; a system
+    // message landing between a tool_use and its tool_result would be
+    // silently stripped by the adjacency cleanup, G-20 — exactly the
+    // failure a message-form ad invites). Placed after the row's STABLE
+    // instruction blocks (the leading System run) and before any
+    // turn-variable block, INSIDE the cached prefix (the marker pass
+    // below marks the last system block — T-2.6). An empty deferred set
+    // emits nothing (a sentence-only ad has no information to carry).
+    if req
+        .search_admission
+        .is_some_and(|admission| admission.admitted())
+        && !d2_deferred.is_empty()
+    {
+        let stable_system_count = items
+            .iter()
+            .take_while(|item| matches!(item, ConversationItem::System(_)))
+            .count();
+        let at = stable_system_count.min(system_blocks.len());
+        system_blocks.insert(
+            at,
+            TextBlock {
+                r#type: "text".to_string(),
+                text: d2_advertisement_fragment(&d2_deferred),
+                cache_control: None,
+            },
+        );
+    }
+
     // ANTHROPIC-WIRE-1 (cut 3): only "1h" reaches the wire; "5m"/absent and
     // unknown tiers map to the wire default (no ttl field).
     let head_ttl = crate::messages::cache_control_ttl(req.cache_ttl.as_deref());
@@ -1298,8 +1424,6 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         // CC5 gate, not this cut's). It is donor parity, NOT a provider
         // requirement (R-7.4): never dispatched, and it counts as deferred
         // for H-12 (a `[placeholder]`-only tools[] trips it by design).
-        // // CUT-2: the advertisement (R-2) and the max_results/select:
-        // // ToolSearch schema (R-3/R-4) join this region then.
         if req.search_admission.is_some_and(|admission| admission.admitted()) {
             mapped.push(ToolParam::Custom(crate::messages::ToolCustom {
                 name: "DeferredToolPlaceholder".to_owned(),
@@ -1312,6 +1436,44 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 cache_control: None,
                 defer_loading: Some(true),
             }));
+        }
+        // R-3 (apex-waj.36 cut 2; SPEC-W2 R-3): the ToolSearch
+        // declaration — the only tool that loads deferred schemas. An
+        // admitted row declares it: canonicalised IN PLACE when the
+        // static region already names it (position-stable — the Last
+        // breakpoint pin above keeps its pre-cut meaning), otherwise
+        // appended AFTER the placeholder (the placeholder keeps its
+        // fixed first-slot-after-static index). R-3.1: `query` +
+        // `max_results` both required, `max_results` default 5; R-3.3:
+        // NO `limit` key (that is the Responses spelling — optional,
+        // default 8). `defer_loading: None`: a live declared tool, not a
+        // materialised entry (the donor entry carries no such key — the
+        // entry byte pin is N-1's CC5 gate).
+        if req.search_admission.is_some_and(|admission| admission.admitted()) {
+            let schema = tool_search_d2_input_schema();
+            match mapped.iter_mut().position(|tool| {
+                matches!(
+                    tool,
+                    ToolParam::Custom(crate::messages::ToolCustom {
+                        name,
+                        ..
+                    }) if name == TOOL_SEARCH_CARRIER_NAME
+                )
+            }) {
+                Some(idx) => {
+                    if let ToolParam::Custom(custom) = &mut mapped[idx] {
+                        custom.description = Some(TOOL_SEARCH_D2_DESCRIPTION.to_owned());
+                        custom.input_schema = schema;
+                    }
+                }
+                None => mapped.push(ToolParam::Custom(crate::messages::ToolCustom {
+                    name: TOOL_SEARCH_CARRIER_NAME.to_owned(),
+                    description: Some(TOOL_SEARCH_D2_DESCRIPTION.to_owned()),
+                    input_schema: schema,
+                    cache_control: None,
+                    defer_loading: None,
+                })),
+            }
         }
         // R-1 (apex-waj.36 cut 1): the materialised region — one entry per
         // distinct FLAT name the conversation has loaded, appended AFTER
