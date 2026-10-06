@@ -492,9 +492,14 @@ pub fn stream_messages<'a>(
                         // forwarded (no consumer claims redacted_thinking
                         // support), but RECORDED as inert so its stop is not
                         // misclassified as the fatal never-started-index class.
+                        // N-4: `ToolReference` is harness-SENT transcript data
+                        // (the provider never mints it in a response) — open it
+                        // inert (no FirstToken), same as the other non-model
+                        // data blocks.
                         ContentBlock::RedactedThinking { .. }
                         | ContentBlock::Image { .. }
                         | ContentBlock::ToolResult { .. }
+                        | ContentBlock::ToolReference { .. }
                         | ContentBlock::Unknown { .. } => {
                             let block_type = match content_block {
                                 ContentBlock::Unknown { .. } => BlockType::Unknown,

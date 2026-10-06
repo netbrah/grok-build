@@ -426,6 +426,16 @@ pub enum ContentBlock {
         tool_use_id: String,
         content: serde_json::Value,
     },
+    /// The harness-SENT transcript block (Messages wire, N-4):
+    /// `tool_reference`. Carries the FLAT `<namespace>__<name>` (A-16) of a
+    /// materialised client tool, inside a `tool_result` content array. EXACTLY
+    /// two keys — `type` and `tool_name`; no schema, no text, no `tool_use_id`
+    /// (spec R-4.6). It is a REQUEST/transcript block: the provider never mints
+    /// a `tool_reference` block in a RESPONSE (spec G-30: 0 in responses), but
+    /// it must still parse (the R4 round-trip deserialises it). The encoder
+    /// (apex-waj.36) constructs it; the stream transform opens it inert.
+    #[serde(rename = "tool_reference")]
+    ToolReference { tool_name: String },
     /// A content block kind this build does not model (R1 forward-compat).
     /// Stream-decode ONLY: the `MessageStreamEvent` parse site maps an unknown
     /// `content_block` kind to this variant so the stream transform opens a
@@ -494,6 +504,10 @@ impl<'de> Deserialize<'de> for ContentBlock {
                 tool_use_id: String,
                 content: serde_json::Value,
             },
+            // N-4: the harness-SENT `tool_reference` block joins the strict
+            // set so the R4 round-trip deserialises it (the provider never
+            // mints it in a response, but it is a request/transcript block).
+            ToolReference { tool_name: String },
         }
         let block = StrictBlock::deserialize(deserializer)?;
         Ok(match block {
@@ -551,6 +565,9 @@ impl<'de> Deserialize<'de> for ContentBlock {
                 tool_use_id,
                 content,
             },
+            StrictBlock::ToolReference { tool_name } => {
+                ContentBlock::ToolReference { tool_name }
+            }
         })
     }
 }
@@ -594,6 +611,14 @@ pub struct ToolCustom {
     /// opts in via `tools_cache_breakpoint = "last"` (§3.5) — spends the free 4th marker slot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<CacheControl>,
+    /// Hosted-tool-search materialisation marker (N-4, spec R-1.6): `Some(true)`
+    /// on a materialised client tool, `None` on a static entry. A static entry
+    /// (`None`) serialises NO `defer_loading` key at all — emitting
+    /// `"defer_loading": false` on a static entry is a donor divergence (R-1.6
+    /// is SHOULD, not MUST: G-17 `P2-plain` is 200 without it). The encoder
+    /// (apex-waj.36) is what later sets `Some(true)` on materialised entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defer_loading: Option<bool>,
 }
 
 /// Dated server-tool members (docs GA create.md L1442–3044 + BETA
@@ -2202,5 +2227,111 @@ mod tests {
             }
             other => panic!("expected ToolSearchToolResult, got {other:?}"),
         }
+    }
+
+    /// N-4 (apex-waj.87, R4): the harness-SENT transcript block
+    /// `tool_reference` (a materialised client-tool name carried inside a
+    /// `tool_result` content array) round-trips through the wire types. The
+    /// four donor names are inlined from CC5/req-002.json
+    /// $.messages[3].content[0] (the fixture lives in the plans repo, not on
+    /// this lane, so no filesystem path is hardcoded). R-4.6: each block is
+    /// EXACTLY `{"type":"tool_reference","tool_name":…}` — two keys, in order;
+    /// no schema, no text, no tool_use_id.
+    #[test]
+    fn tool_reference_block_round_trips_the_donor_names() {
+        // (a) build + serialise: the content array is exactly the four donor
+        // reference objects, in donor order, and nothing else.
+        let donor_names: [&str; 4] = [
+            "mcp__sem__sem_callers",
+            "mcp__sem__sem_impact",
+            "mcp__sem__sem_context",
+            "mcp__code-graph__get_call_graph",
+        ];
+        let blocks: Vec<ContentBlock> = donor_names
+            .iter()
+            .map(|name| ContentBlock::ToolReference {
+                tool_name: (*name).to_string(),
+            })
+            .collect();
+        let tool_result = ContentBlock::ToolResult {
+            tool_use_id: "toolu_vrtx_01LF8PjSdXuFPg3KNCgnxbqd".to_string(),
+            content: ToolResultContent::Blocks(blocks),
+            is_error: false,
+            cache_control: None,
+        };
+        let json = serde_json::to_value(&tool_result).unwrap();
+        let arr = json
+            .get("content")
+            .and_then(serde_json::Value::as_array)
+            .expect("the tool_result content must serialise as the block array");
+        assert_eq!(
+            arr.len(),
+            4,
+            "the donor tool_result carries exactly four reference blocks"
+        );
+        for (i, name) in donor_names.iter().enumerate() {
+            assert_eq!(
+                arr[i],
+                serde_json::json!({ "type": "tool_reference", "tool_name": name }),
+                "block {i} must serialise to EXACTLY the two donor keys in order (R-4.6)"
+            );
+        }
+
+        // (b) deserialise the same JSON back; the flat names round-trip.
+        let back: ContentBlock = serde_json::from_value(json).unwrap();
+        match back {
+            ContentBlock::ToolResult {
+                content: ToolResultContent::Blocks(blocks),
+                ..
+            } => {
+                let names: Vec<&str> = blocks
+                    .iter()
+                    .map(|b| match b {
+                        ContentBlock::ToolReference { tool_name } => tool_name.as_str(),
+                        other => panic!("expected ToolReference, got {other:?}"),
+                    })
+                    .collect();
+                let expected: Vec<&str> = donor_names.iter().copied().collect();
+                assert_eq!(names, expected, "the donor names must round-trip");
+            }
+            other => panic!("expected a ToolResult back, got {other:?}"),
+        }
+    }
+
+    /// N-4 (apex-waj.87, R5): `ToolCustom.defer_loading` is `Option<bool>` +
+    /// `skip_serializing_if = "Option::is_none"` (spec R-1.6). A materialised
+    /// entry (`Some(true)`) serialises `"defer_loading": true`; a static entry
+    /// (`None`) serialises NO `defer_loading` key at all — emitting
+    /// `"defer_loading": false` on a static entry is a donor divergence (R6.i).
+    #[test]
+    fn tool_custom_defer_loading_serialisation() {
+        let schema = serde_json::json!({ "type": "object", "properties": {} });
+
+        let materialised = ToolCustom {
+            name: "mcp__code-graph__get_call_graph".to_string(),
+            description: Some("get the call graph".to_string()),
+            input_schema: schema.clone(),
+            cache_control: None,
+            defer_loading: Some(true),
+        };
+        let json = serde_json::to_value(&materialised).unwrap();
+        assert_eq!(
+            json.get("defer_loading"),
+            Some(&serde_json::json!(true)),
+            "a materialised entry must serialise defer_loading:true"
+        );
+
+        let static_tool = ToolCustom {
+            name: "static_tool".to_string(),
+            description: Some("a static tool".to_string()),
+            input_schema: schema,
+            cache_control: None,
+            defer_loading: None,
+        };
+        let json = serde_json::to_value(&static_tool).unwrap();
+        assert!(
+            json.get("defer_loading").is_none(),
+            "a static entry (None) must serialise NO defer_loading key, got {json}"
+        );
     }
 }

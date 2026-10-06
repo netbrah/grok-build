@@ -527,6 +527,10 @@ fn mark_message_cache_breakpoint_with(
                     // breakpoint scans past them.
                     | ContentBlock::ServerToolUse { .. }
                     | ContentBlock::ToolSearchToolResult { .. }
+                    // N-4: `ToolReference` is harness-SENT transcript data and
+                    // carries no `cache_control` by construction — the
+                    // breakpoint scans past it, same as Thinking/Unknown.
+                    | ContentBlock::ToolReference { .. }
                     | ContentBlock::Unknown { .. } => {
                         continue;
                     }
@@ -1025,6 +1029,10 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 description: t.description.clone(),
                 input_schema: t.parameters.clone(),
                 cache_control: None,
+                // N-4: static client tools emit no `defer_loading` key (the
+                // encoder, apex-waj.36, sets Some(true) on materialised
+                // entries later).
+                defer_loading: None,
             }))
             .collect();
         // F5 per-tool breakpoint: the marker spends the free 4th marker

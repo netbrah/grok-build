@@ -155,7 +155,11 @@ fn message_event_has_content(event: &messages::MessageStreamEvent) -> bool {
             // apex-xk51 (R4): the hosted-tool-search ANSWER is tool data, not
             // model generation — parity with the Responses wire's
             // `ToolSearchOutput` arm.
+            // N-4: `ToolReference` is harness-SENT transcript data (the
+            // provider never mints it in a response) — not model generation,
+            // so it is not meaningful content.
             ContentBlock::ToolSearchToolResult { .. }
+            | ContentBlock::ToolReference { .. }
             | ContentBlock::Image { .. }
             | ContentBlock::ToolResult { .. }
             | ContentBlock::RedactedThinking { .. }

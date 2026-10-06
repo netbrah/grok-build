@@ -707,12 +707,14 @@ mod tests {
                         "properties": { "key": { "type": "integer" } }
                     }),
                     cache_control: None,
+                    defer_loading: None,
                 }),
                 ToolParam::Custom(crate::messages::ToolCustom {
                     name: "plain".to_string(),
                     description: None,
                     input_schema: serde_json::json!({ "type": "object" }),
                     cache_control: None,
+                    defer_loading: None,
                 }),
             ]),
             tool_choice: Some(ToolChoiceParam::Tool {
@@ -1117,6 +1119,7 @@ mod tests {
             description: Some(String::new()),
             input_schema: schema.clone(),
             cache_control: None,
+            defer_loading: None,
         });
         let base_len = serde_json::to_vec(&base).unwrap().len() as u64;
         let over = ToolParam::Custom(crate::messages::ToolCustom {
@@ -1124,6 +1127,7 @@ mod tests {
             description: Some("a".repeat(((MAX_MODEL_CONTEXT_ITEM_TOKENS + 1) * 4 - base_len) as usize)),
             input_schema: schema.clone(),
             cache_control: None,
+            defer_loading: None,
         });
         let estimated = est(&serde_json::to_vec(&over).unwrap());
         assert_eq!(estimated, MAX_MODEL_CONTEXT_ITEM_TOKENS + 1);
@@ -1145,6 +1149,7 @@ mod tests {
             description: Some("a small tool".to_string()),
             input_schema: schema,
             cache_control: None,
+            defer_loading: None,
         });
         let request =
             request_with_tools(vec![text_message(MessageRole::User, "hi")], vec![under]);

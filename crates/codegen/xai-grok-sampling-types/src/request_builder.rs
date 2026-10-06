@@ -329,6 +329,10 @@ impl MessagesRequestBuilder {
             description,
             input_schema: input_schema.into_value(),
             cache_control: None,
+            // N-4: the static-tool build site emits no `defer_loading` key
+            // (the encoder, apex-waj.36, sets Some(true) on materialised
+            // entries later).
+            defer_loading: None,
         }));
         this
     }
@@ -610,6 +614,14 @@ fn check_block_list(
                 content,
             } => {
                 let _ = (tool_use_id, content);
+            }
+            // N-4: `ToolReference` is harness-SENT transcript data (a
+            // materialised client-tool name inside a `tool_result` content
+            // array), not model generation — inert like `Unknown`: no
+            // `cache_control` field by construction, so no marker; no pairing;
+            // no `last_markable`.
+            ContentBlock::ToolReference { tool_name } => {
+                let _ = tool_name;
             }
         }
     }
