@@ -716,7 +716,15 @@ impl SessionActor {
             connected_names.retain(|name| !mcp_state.has_failure_record(name));
             classify_failed_servers(&mcp_state, &connected_names)
         };
-        let hint = self.rendered_mcp_hint().await;
+        let model_id = self.current_model_id().await;
+        let hint = if self
+            .models_manager
+            .model_supports_search_tool(model_id.as_str())
+        {
+            None
+        } else {
+            self.rendered_mcp_hint().await
+        };
         let announcements_changed = self.latch_and_push_mcp_reminder(
             &server_summaries,
             new_fingerprints,

@@ -745,3 +745,92 @@ async fn client_that_fails_relist_on_the_rebuilt_bridge_is_evicted() {
         })
         .await;
 }
+/// AB-REMINDER-001: the locked legacy "call `search_tool` first" hint is appended to the
+/// injected MCP reminder only when the active model's catalog row does NOT admit the native
+/// `tool_search` flow (`supports_search_tool == false`). On an admitted row the hint is
+/// dropped; the MCP server LISTING is retained in both arms. This is exactly what the A/B
+/// harness pins (arm A: hint once; arm B: hint zero). The flag is driven through the catalog
+/// row, not a live model.
+#[tokio::test(flavor = "current_thread")]
+async fn mcp_reminder_legacy_hint_gated_on_supports_search_tool() {
+    use std::collections::HashMap;
+    use xai_grok_tools::types::template_renderer::TemplateRenderer;
+    use xai_grok_tools::types::tool::ToolKind;
+    const HINT: &str = "To use MCP tools, you MUST call";
+    /// Boot an actor whose active model resolves to the catalog row `model` carrying `supports`,
+    /// with a `TemplateRenderer` registered so `rendered_mcp_hint` resolves its `${{ tools.by_kind.* }}`
+    /// placeholders. The standard test actor ships no tools, so without the renderer the hint
+    /// renders to `None` in every arm and could not discriminate the gate.
+    async fn actor_on_row_renderable(
+        model: &str,
+        supports: bool,
+    ) -> (SessionActor, tempfile::TempDir) {
+        let (manager, tmp) = manager_with_entries();
+        manager.insert_test_entry(model, entry_with_search_flag(model, supports));
+        let mut actor = plain_actor().await;
+        actor.models_manager = manager;
+        let mut cfg = actor
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .expect("the test actor carries a sampling config");
+        cfg.model = model.to_owned();
+        cfg.supports_search_tool = actor
+            .models_manager
+            .model_supports_search_tool(cfg.model.as_str());
+        actor.chat_state_handle.update_sampling_config(cfg);
+        actor.mcp_reminder_mode = McpReminderMode::Full;
+        let renderer = TemplateRenderer::new(
+            HashMap::from([
+                (ToolKind::SearchTool, "search_tool".to_owned()),
+                (ToolKind::UseTool, "use_tool".to_owned()),
+            ]),
+            HashMap::new(),
+        );
+        actor
+            .tool_bridge_handle()
+            .update_resource(renderer)
+            .await;
+        (actor, tmp)
+    }
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            // ARM B: the row admits the native tool_search flow -> the legacy hint is dropped,
+            // the server listing is kept.
+            {
+                let (actor, _tmp) = actor_on_row_renderable("hts-native", true).await;
+                connect_server(&actor, "demo").await;
+                refresh_and_inject(&actor).await;
+                let conversation = actor.chat_state_handle.get_conversation().await;
+                let body = conversation
+                    .last()
+                    .expect("the MCP reminder was injected")
+                    .text_content();
+                assert!(
+                    !body.contains(HINT),
+                    "arm B (supports_search_tool) must NOT deliver the legacy hint:\n{body}"
+                );
+                assert!(
+                    body.contains("demo"),
+                    "arm B must keep the MCP server listing:\n{body}"
+                );
+            }
+            // ARM A: legacy row -> the legacy hint is delivered once.
+            {
+                let (actor, _tmp) = actor_on_row_renderable("hts-legacy", false).await;
+                connect_server(&actor, "demo").await;
+                refresh_and_inject(&actor).await;
+                let conversation = actor.chat_state_handle.get_conversation().await;
+                let body = conversation
+                    .last()
+                    .expect("the MCP reminder was injected")
+                    .text_content();
+                assert!(
+                    body.contains(HINT),
+                    "arm A (legacy) MUST deliver the legacy hint:\n{body}"
+                );
+            }
+        })
+        .await;
+}
