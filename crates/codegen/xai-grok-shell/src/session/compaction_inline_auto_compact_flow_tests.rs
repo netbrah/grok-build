@@ -2586,3 +2586,152 @@ async fn compactn3_red6a_same_class_cm_merge_over_cap() {
         })
         .await;
 }
+/// The legacy "call `search_tool` first … NEVER guess parameter names …" sentence has a second,
+/// independent render site. `run_compact_inner` builds the `McpToolNames` value (the
+/// `let mcp_tool_names: Option<McpToolNames>` gate in `session/compaction.rs`) that
+/// `to_system_reminder` formats into the
+/// `## Connected MCP Servers` section (`session/helpers/compaction_context.rs:244`). `5411b8fa`
+/// gated only the turn path (`acp_session_impl/mcp.rs:722`), so an admitted row got the
+/// local-tool-search instruction back after the first `/compress`.
+///
+/// The two arms live in ONE test because a lone assert-absent test is vacuous at this site: the
+/// `else` branch discards unresolved `${{ tools.by_kind.* }}` placeholders (its
+/// `.filter(|s| !s.is_empty() && !s.contains("by_kind"))` guards), so an
+/// actor with no registered `TemplateRenderer` yields `mcp_tool_names == None` in BOTH arms and the
+/// negative arm would pass on unfixed code. Arm A asserts the span is PRESENT — the fixture proving
+/// the render path is live — before arm B may be believed for lacking it. Both arms must still carry
+/// the server list, which `session/helpers/compaction_context.rs:237` gates separately, so closing
+/// the hint cannot regress the MCP-tool visibility closed under apex-ckqr.
+#[tokio::test(flavor = "current_thread")]
+async fn compaction_legacy_mcp_hint_gated_on_supports_search_tool() {
+    use std::collections::HashMap;
+    use xai_grok_test_support::MockInferenceServer;
+    use xai_grok_tools::types::template_renderer::TemplateRenderer;
+    use xai_grok_tools::types::tool::ToolKind;
+    /// What `ab_config.v1.json` pins as `legacy_reminder_pin`: 199 chars / 201 UTF-8 bytes once
+    /// `${{ tools.by_kind.* }}` has resolved to the two names the renderer below supplies.
+    const LEGACY_HINT: &str = "To use MCP tools, you MUST call `search_tool` first to retrieve the tool's input schema before calling `use_tool`. NEVER guess parameter names — always use the exact schema returned by `search_tool`.";
+    const SERVER_SECTION: &str = "## Connected MCP Servers";
+    const SERVER_LINE: &str = "- demo (2 tools)";
+    /// Compact a session whose live model is the catalog row `model`, and return the
+    /// `SyntheticReason::SystemReminder` item the compacted history installs.
+    async fn compact_over_row(model: &str, row_admits_search: bool) -> String {
+        let (manager, _tmp) = manager_with_entries();
+        manager.insert_test_entry("hts-legacy", entry_with_search_flag("hts-legacy", false));
+        manager.insert_test_entry("hts-native", entry_with_search_flag("hts-native", true));
+        assert_eq!(
+            manager.model_supports_search_tool(model),
+            row_admits_search,
+            "the catalog row `{model}` does not answer the flag this arm needs"
+        );
+        let (gateway_tx, _gateway_rx) = mpsc::unbounded_channel();
+        let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel();
+        let mut actor = create_test_actor(50_000, 200_000, 85, gateway_tx, persistence_tx).await;
+        actor.models_manager = manager;
+        let server = MockInferenceServer::start().await.expect("mock server");
+        server.set_response("Summary of prior work. ".repeat(30));
+        let mut cfg = actor
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .expect("the test actor carries a sampling config");
+        cfg.base_url = server.url();
+        cfg.model = model.to_owned();
+        cfg.supports_search_tool = actor
+            .models_manager
+            .model_supports_search_tool(cfg.model.as_str());
+        actor.chat_state_handle.update_sampling_config(cfg);
+        // Two tools on one server. `connected_server_summaries()` reads this snapshot, and a
+        // non-empty result is what both the `else` branch and the server section need.
+        {
+            let mut snapshot = actor.tool_metadata_snapshot.lock().unwrap();
+            snapshot.tools = vec![
+                crate::session::tool_index::ToolMetadata {
+                    qualified_name: "demo__echo".to_string(),
+                    server_name: "demo".to_string(),
+                    tool_name: "echo".to_string(),
+                    description: "echo".to_string(),
+                    parameters: vec![],
+                    input_schema: serde_json::json!({ "type": "object" }),
+                },
+                crate::session::tool_index::ToolMetadata {
+                    qualified_name: "demo__ping".to_string(),
+                    server_name: "demo".to_string(),
+                    tool_name: "ping".to_string(),
+                    description: "ping".to_string(),
+                    parameters: vec![],
+                    input_schema: serde_json::json!({ "type": "object" }),
+                },
+            ];
+            snapshot.servers = vec![crate::session::tool_index::ServerMetadata {
+                name: "demo".to_string(),
+                description: None,
+            }];
+            snapshot.mcp_initialized = true;
+        }
+        // The anti-vacuity half of the fixture: resolve the two placeholders so the `else` branch
+        // can actually produce names. Without it every arm is `None` for an unrelated reason.
+        let renderer = TemplateRenderer::new(
+            HashMap::from([
+                (ToolKind::SearchTool, "search_tool".to_owned()),
+                (ToolKind::UseTool, "use_tool".to_owned()),
+            ]),
+            HashMap::new(),
+        );
+        actor.tool_bridge_handle().update_resource(renderer).await;
+        let filler = "x".repeat(8_000);
+        actor.chat_state_handle.replace_conversation(vec![
+            ConversationItem::system("sys"),
+            ConversationItem::user(format!("u0 {filler}")),
+            ConversationItem::assistant(format!("a0 {filler}")),
+            ConversationItem::user("final query"),
+        ]);
+        let actor = Arc::new(actor);
+        let result = actor.run_compact(None).await;
+        assert!(result.is_ok(), "compaction should succeed: {result:?}");
+        actor
+            .chat_state_handle
+            .get_conversation()
+            .await
+            .iter()
+            .find(|item| {
+                matches!(
+                    item,
+                    ConversationItem::User(user)
+                        if user.synthetic_reason == Some(SyntheticReason::SystemReminder)
+                )
+            })
+            .map(ConversationItem::text_content)
+            .expect("compaction must install a system-reminder item")
+    }
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let arm_a = compact_over_row("hts-legacy", false).await;
+            let arm_b = compact_over_row("hts-native", true).await;
+            assert!(
+                arm_a.contains(SERVER_SECTION) && arm_a.contains(SERVER_LINE),
+                "arm A must carry the connected-server list:\n{arm_a}"
+            );
+            assert!(
+                arm_a.contains(LEGACY_HINT),
+                "arm A (row without `supports_search_tool`) MUST still deliver the legacy hint — \
+                 if it is absent the fixture is dead, not the code fixed:\n{arm_a}"
+            );
+            assert!(
+                !arm_b.contains(LEGACY_HINT),
+                "arm B (row with `supports_search_tool`) must NOT deliver the legacy hint \
+                 post-compaction:\n{arm_b}"
+            );
+            assert!(
+                arm_b.contains(SERVER_SECTION) && arm_b.contains(SERVER_LINE),
+                "arm B must keep the connected-server list — the hint is gated, the list is not:\n{arm_b}"
+            );
+            assert_eq!(
+                arm_b,
+                arm_a.replace(&format!("\n{LEGACY_HINT}"), ""),
+                "the gated sentence must be the ONLY difference between the two arms"
+            );
+        })
+        .await;
+}

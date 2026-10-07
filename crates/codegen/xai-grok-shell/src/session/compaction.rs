@@ -2270,26 +2270,35 @@ impl SessionActor {
                 }
             };
         use crate::session::helpers::compaction_context::McpToolNames;
-        let mcp_tool_names: Option<McpToolNames> =
-            if use_short_prompt || state_context.connected_mcp_servers.is_empty() {
-                None
-            } else {
-                let agent_ref = self.agent.borrow();
-                let bridge = agent_ref.tool_bridge();
-                let empty = serde_json::json!({});
-                let search_name = bridge
-                    .render_prompt("${{ tools.by_kind.search_tool }}", &empty)
-                    .await
-                    .filter(|s| !s.is_empty() && !s.contains("by_kind"));
-                let call_name = bridge
-                    .render_prompt("${{ tools.by_kind.use_tool }}", &empty)
-                    .await
-                    .filter(|s| !s.is_empty() && !s.contains("by_kind"));
-                match (search_name, call_name) {
-                    (Some(search), Some(call)) => Some(McpToolNames { search, call }),
-                    _ => None,
-                }
-            };
+        // The legacy hint has its own render site here, independent of the turn path's
+        // `acp_session_impl/mcp.rs:722`, so the same predicate is applied here too: an admitted row
+        // must not be told to call `search_tool` after a `/compress` it natively declares. Only the
+        // sentence is gated — `helpers/compaction_context.rs:237` gates the server list separately,
+        // and `:244` is this value's sole consumer.
+        let mcp_tool_names: Option<McpToolNames> = if use_short_prompt
+            || state_context.connected_mcp_servers.is_empty()
+            || self
+                .models_manager
+                .model_supports_search_tool(self.current_model_id().await.as_str())
+        {
+            None
+        } else {
+            let agent_ref = self.agent.borrow();
+            let bridge = agent_ref.tool_bridge();
+            let empty = serde_json::json!({});
+            let search_name = bridge
+                .render_prompt("${{ tools.by_kind.search_tool }}", &empty)
+                .await
+                .filter(|s| !s.is_empty() && !s.contains("by_kind"));
+            let call_name = bridge
+                .render_prompt("${{ tools.by_kind.use_tool }}", &empty)
+                .await
+                .filter(|s| !s.is_empty() && !s.contains("by_kind"));
+            match (search_name, call_name) {
+                (Some(search), Some(call)) => Some(McpToolNames { search, call }),
+                _ => None,
+            }
+        };
         let memory_backend_impl = {
             let g = self.memory.storage.borrow();
             g.as_ref()
