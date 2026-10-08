@@ -5384,6 +5384,10 @@ fn declared_search_carrier_name_resolves_in_the_registry_surface() {
     // (it declares no carrier of its own), plus the R-1 materialised set and the
     // R-7 placeholder. The carrier-absent half of the rule is pinned by
     // `carrier_absent_admitted_row_declares_no_search_carrier`.
+    // The R-7 placeholder and the apex-nfdb vendor declaration are the two
+    // allow-listed exceptions: neither is dispatched locally (the placeholder is
+    // never called, `conversation/messages.rs:1557`; the vendor entry is executed
+    // by the provider), so neither has a dispatcher name to resolve to.
     let answer_names: BTreeSet<String> = ["lookup_shipping_eta"]
         .into_iter()
         .map(str::to_owned)
@@ -5392,6 +5396,7 @@ fn declared_search_carrier_name_resolves_in_the_registry_surface() {
         .union(&answer_names)
         .cloned()
         .chain(std::iter::once("DeferredToolPlaceholder".to_owned()))
+        .chain(std::iter::once(NFDB_SEARCH_NAME.to_owned()))
         .collect();
     let tools = d2_tool_names(&msgs);
     for name in &tools {
@@ -5628,5 +5633,369 @@ fn advertisement_names_a_declared_tool() {
     assert_eq!(
         via, use_,
         "both carrier slots name the same tool: {sentence:?}"
+    );
+}
+
+// ============================================================================
+// apex-nfdb (MSGVENDORDECL-1) — the vendor search declaration on Messages.
+//
+// Entry bytes are pinned from the 200-returning probe at
+// ~/hts-o-durable/captures/20261008T011235Z-vertex-native-search/A1-nobeta.req.json,
+// whose `tools[]` carries exactly one search entry, serialising to
+//   {"type":"tool_search_tool_bm25_20251119","name":"tool_search_tool_bm25"}
+// — `name` is NOT the dated slug, and the entry carries neither `defer_loading`
+// nor `cache_control`. Every assertion below goes through `build_messages_request`,
+// the real encoder: `MessagesRequestBuilder::tool()` would pass whether or not the
+// encoder ever emits the entry.
+// ============================================================================
+
+const NFDB_SEARCH_TYPE: &str = "tool_search_tool_bm25_20251119";
+const NFDB_SEARCH_NAME: &str = "tool_search_tool_bm25";
+
+/// The surface N1/N2/N4/N5/N6 share: three static client tools, so the R-6 `Last`
+/// breakpoint has a defined target at index 2.
+fn nfdb_tools() -> Vec<ToolSpec> {
+    nfdb_tools_n(3)
+}
+
+/// N3's variable-count surface.
+fn nfdb_tools_n(n: usize) -> Vec<ToolSpec> {
+    (0..n).map(|i| d2_tool(&format!("t{i}"))).collect()
+}
+
+/// The N-series base: one user turn over `tools`, with NO admission and no
+/// breakpoint. The three named builders below add those, so no callsite passes
+/// an anonymous `true` / `None` (AGENTS §7).
+fn nfdb_req(tools: Vec<ToolSpec>) -> ConversationRequest {
+    ConversationRequest::from_items(vec![ConversationItem::user("go")])
+        .with_model("test-model")
+        .with_tools(tools)
+}
+
+/// The row's `supports_search_tool = true`. `SearchAdmission::for_row` is the only
+/// construction path (ruling D1), and it takes the surface off the request itself,
+/// so the pair cannot desync from `req.tools`.
+fn nfdb_admitted(mut req: ConversationRequest) -> ConversationRequest {
+    req.search_admission = Some(SearchAdmission::for_row(true, &req.tools));
+    req
+}
+
+/// The row's `supports_search_tool = false`: the field is present, un-admitted.
+/// The third N2 arm covers the distinct state where the field is absent entirely.
+fn nfdb_row_flag_off(mut req: ConversationRequest) -> ConversationRequest {
+    req.search_admission = Some(SearchAdmission::for_row(false, &req.tools));
+    req
+}
+
+/// `tool_cache_breakpoint = Last` — R-6's stamp site.
+fn nfdb_last_breakpoint(mut req: ConversationRequest) -> ConversationRequest {
+    req.tool_cache_breakpoint = Some(ToolCacheBreakpoint::Last);
+    req
+}
+
+/// The encoded `tools[]` as JSON — the bytes that actually leave.
+fn nfdb_tools_json(req: &ConversationRequest) -> Vec<serde_json::Value> {
+    serde_json::to_value(build_messages_request(req))
+        .unwrap()
+        .pointer("/tools")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn nfdb_search_entries(req: &ConversationRequest) -> Vec<serde_json::Value> {
+    nfdb_tools_json(req)
+        .into_iter()
+        .filter(|t| t.get("type").and_then(serde_json::Value::as_str) == Some(NFDB_SEARCH_TYPE))
+        .collect()
+}
+
+/// N1: an admitted `messages` row declares the vendor search entry exactly once,
+/// with the capture's `type`/`name` pair.
+#[test]
+fn nfdb_n1_admitted_row_declares_the_vendor_search_entry() {
+    let req = nfdb_admitted(nfdb_req(nfdb_tools()));
+    let msgs = build_messages_request(&req);
+
+    let servers: Vec<&ToolParam> = msgs
+        .tools()
+        .expect("tools projected")
+        .iter()
+        .filter(|t| matches!(t, ToolParam::Server(_)))
+        .collect();
+    assert_eq!(
+        servers.len(),
+        1,
+        "an admitted row must declare exactly one server tool, the vendor search entry: {:?}",
+        msgs.tools().expect("tools projected")
+    );
+
+    let entries = nfdb_search_entries(&req);
+    assert_eq!(
+        entries.len(),
+        1,
+        "exactly one {NFDB_SEARCH_TYPE} entry in tools[]: {:?}",
+        nfdb_tools_json(&req)
+    );
+    assert_eq!(
+        entries[0],
+        serde_json::json!({ "type": NFDB_SEARCH_TYPE, "name": NFDB_SEARCH_NAME }),
+        "the entry is the capture's pair and nothing else: {}",
+        entries[0]
+    );
+}
+
+/// Byte offset of the first `cache_control` inside the serialised `tools[]`
+/// array. R-6's promise is that this offset does not move; scoping the search to
+/// the array keeps the message-block marker (which `apply_cache_breakpoints`
+/// stamps on the user text block) out of the measurement.
+fn nfdb_tool_marker_offset(req: &ConversationRequest) -> Option<usize> {
+    let arr = serde_json::to_value(build_messages_request(req))
+        .unwrap()
+        .get("tools")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    serde_json::to_string(&arr)
+        .unwrap()
+        .find("\"cache_control\"")
+}
+
+/// N2: `supports_search_tool=false` emits no search entry and is byte-identical
+/// to HEAD. The two literals are `build_messages_request`'s own output captured at
+/// `50bccd2e` with the encoder unmodified, not hand-built expectations. The
+/// equality is also structural: the item's entire product delta is one block
+/// guarded by `req.search_admission.is_some_and(SearchAdmission::admitted)`
+/// (`conversation/messages.rs:1733`), so an un-admitted route cannot reach it — the
+/// literals are what would catch a future guard that let it.
+#[test]
+fn nfdb_n2_unadmitted_row_is_byte_identical_to_head() {
+    const HEAD_UNADMITTED_LAST: &str = r#"{"model":"test-model","messages":[{"role":"user","content":[{"type":"text","text":"go","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"tools":[{"name":"t0","description":"the t0 tool","input_schema":{"type":"object","properties":{}}},{"name":"t1","description":"the t1 tool","input_schema":{"type":"object","properties":{}}},{"name":"t2","description":"the t2 tool","input_schema":{"type":"object","properties":{}},"cache_control":{"type":"ephemeral"}}]}"#;
+    const HEAD_UNADMITTED_NO_BREAKPOINT: &str = r#"{"model":"test-model","messages":[{"role":"user","content":[{"type":"text","text":"go","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"tools":[{"name":"t0","description":"the t0 tool","input_schema":{"type":"object","properties":{}}},{"name":"t1","description":"the t1 tool","input_schema":{"type":"object","properties":{}}},{"name":"t2","description":"the t2 tool","input_schema":{"type":"object","properties":{}}}]}"#;
+
+    let no_admission = nfdb_last_breakpoint(nfdb_req(nfdb_tools()));
+    for (label, req, head) in [
+        (
+            "admission off + Last",
+            nfdb_last_breakpoint(nfdb_row_flag_off(nfdb_req(nfdb_tools()))),
+            HEAD_UNADMITTED_LAST,
+        ),
+        (
+            "admission off + no breakpoint",
+            nfdb_row_flag_off(nfdb_req(nfdb_tools())),
+            HEAD_UNADMITTED_NO_BREAKPOINT,
+        ),
+        (
+            "no admission field at all + Last",
+            no_admission,
+            HEAD_UNADMITTED_LAST,
+        ),
+    ] {
+        let wire = serde_json::to_string(&build_messages_request(&req)).unwrap();
+        assert_eq!(
+            wire, head,
+            "the un-admitted route must stay byte-identical to HEAD ({label}); got {wire}"
+        );
+        assert!(
+            nfdb_search_entries(&req).is_empty(),
+            "no search entry on an un-admitted row ({label}): {:?}",
+            nfdb_tools_json(&req)
+        );
+    }
+}
+
+/// N3: one declaration per request, never one per tool.
+#[test]
+fn nfdb_n3_admitted_row_declares_the_entry_once_however_many_tools() {
+    let req = nfdb_admitted(nfdb_req(nfdb_tools_n(30)));
+    let entries = nfdb_search_entries(&req);
+    assert_eq!(
+        entries.len(),
+        1,
+        "30 admitted tools must still yield exactly one vendor entry, not one per tool: {:?}",
+        nfdb_tools_json(&req)
+    );
+    assert_eq!(
+        nfdb_tools_json(&req)
+            .iter()
+            .filter(|t| t.get("name").and_then(serde_json::Value::as_str) == Some(NFDB_SEARCH_NAME))
+            .count(),
+        1,
+        "the entry is not duplicated under any other key: {:?}",
+        nfdb_tools_json(&req)
+    );
+}
+
+/// N4: the vendor entry is appended AFTER the R-6 stamp site, so the marker
+/// stays on the last static client tool and its byte offset does not move. This
+/// is the guard against the silent failure brief §3 describes.
+#[test]
+fn nfdb_n4_vendor_entry_never_collects_the_r6_cache_marker() {
+    let admitted = nfdb_last_breakpoint(nfdb_admitted(nfdb_req(nfdb_tools())));
+    let unadmitted = nfdb_last_breakpoint(nfdb_row_flag_off(nfdb_req(nfdb_tools())));
+
+    let tools = nfdb_tools_json(&admitted);
+    let marked: Vec<usize> = tools
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.get("cache_control").is_some())
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        marked,
+        vec![2],
+        "exactly one marker, on the last STATIC client tool (index 2), never on the vendor \
+         entry or the placeholder: {tools:#?}"
+    );
+    assert_eq!(
+        tools[2].get("name").and_then(serde_json::Value::as_str),
+        Some("t2"),
+        "the marked entry is the last static client tool: {tools:#?}"
+    );
+
+    let search_idx = tools
+        .iter()
+        .position(|t| t.get("type").and_then(serde_json::Value::as_str) == Some(NFDB_SEARCH_TYPE))
+        .expect("the admitted row carries the vendor entry");
+    assert!(
+        tools[search_idx].get("cache_control").is_none(),
+        "the vendor entry must not collect the marker: {:#}",
+        tools[search_idx]
+    );
+
+    assert_eq!(
+        nfdb_tool_marker_offset(&admitted),
+        nfdb_tool_marker_offset(&unadmitted),
+        "the marker's byte offset inside tools[] must be unchanged by the append (R-6 \
+         promotion-invariance)"
+    );
+    assert!(
+        nfdb_tool_marker_offset(&admitted).is_some(),
+        "the admitted row still has a marker at all: {:#?}",
+        nfdb_tools_json(&admitted)
+    );
+}
+
+/// N5: the capture's entry serialises exactly `type` + `name`. The affirmative
+/// evidence is `A1-nobeta.req.json` (HTTP 200), whose vendor entry carries neither
+/// `cache_control` nor `defer_loading`. `N1-all-deferred` is the on-point negative
+/// control for `defer_loading` — in that request this entry itself carries
+/// `defer_loading: true` and the body is refused ("At least one tool must have
+/// defer_loading=false"). `N2-cc-on-deferred` is NOT a control on this entry: its
+/// 400 names `lookup_weather`, a custom entry that carried both keys; this entry
+/// declares no `defer_loading`, so it never engages that provider rule.
+#[test]
+fn nfdb_n5_vendor_entry_serialises_neither_cache_control_nor_defer_loading() {
+    let req = nfdb_last_breakpoint(nfdb_admitted(nfdb_req(nfdb_tools())));
+    let entries = nfdb_search_entries(&req);
+    assert_eq!(entries.len(), 1, "{:#?}", nfdb_tools_json(&req));
+    let entry = &entries[0];
+    assert!(
+        entry.get("cache_control").is_none(),
+        "cache_control leaked: {entry}"
+    );
+    assert!(
+        entry.get("defer_loading").is_none(),
+        "defer_loading leaked: {entry}"
+    );
+    assert_eq!(
+        entry.as_object().map(|m| m.len()),
+        Some(2),
+        "the entry is exactly type + name: {entry}"
+    );
+}
+
+/// N6: the append is suppressed when the request's own `req.server_tools` already
+/// projected this declaration — brief §2's "exactly once per request" is a rule
+/// about the projected array, not about the new block alone. Both request fields
+/// are written from ONE `SamplingConfig`
+/// (`xai-chat-state/src/actor/request_builder.rs:88` and `:106`) and the
+/// `FieldSource::ProxyRow` / `FieldSource::Config` rungs can carry the member
+/// (`xai-grok-shell/src/agent/config.rs:4606-4616`), so the two authors are live
+/// together. Only the DATED spelling is exercised: the config layer canonicalises
+/// the `tool_search` family alias to it before `server_tools` is stored
+/// (`xai-grok-shell/src/agent/config.rs:6701`, `:6708-6718`, `:6727-6745`), so an
+/// uncanonicalised alias never reaches the encoder — and if it did,
+/// `server_tool_from_type` has no arm for the bare token and its
+/// `_ => return None` (`src/messages.rs:1236`, fn at `:1047`) drops the member, so
+/// the append would still fire and still fire exactly once.
+#[test]
+fn nfdb_n6_admitted_row_never_declares_the_vendor_entry_twice() {
+    let mut req = nfdb_admitted(nfdb_req(nfdb_tools()));
+    req.server_tools = Some(vec![NFDB_SEARCH_TYPE.to_owned()]);
+
+    let tools = nfdb_tools_json(&req);
+    let typed = tools
+        .iter()
+        .filter(|t| t.get("type").and_then(serde_json::Value::as_str) == Some(NFDB_SEARCH_TYPE))
+        .count();
+    assert_eq!(
+        typed, 1,
+        "an admitted row whose config also selects {NFDB_SEARCH_TYPE} must declare it \
+         exactly once — not once as the config member and again as the apex-nfdb \
+         append, since one `SamplingConfig` writes both request fields \
+         (`xai-chat-state/src/actor/request_builder.rs:88`, `:106`): {tools:#?}"
+    );
+    assert_eq!(
+        tools
+            .iter()
+            .filter(|t| t.get("name").and_then(serde_json::Value::as_str) == Some(NFDB_SEARCH_NAME))
+            .count(),
+        1,
+        "exactly one entry carries the capture's name {NFDB_SEARCH_NAME}: {tools:#?}"
+    );
+    // The guard must not DELETE the declaration: the config member survives, and
+    // the static region + R-7 placeholder are untouched.
+    assert_eq!(
+        tools
+            .iter()
+            .filter_map(|t| t.get("name").and_then(serde_json::Value::as_str))
+            .count(),
+        5,
+        "three static tools + the placeholder + exactly one vendor declaration: {tools:#?}"
+    );
+}
+
+/// N6b: the guard is keyed on THIS declaration, so it must not over-suppress. An
+/// admitted row whose config selects a different server-tool member still gets the
+/// vendor entry appended beside it.
+#[test]
+fn nfdb_n6b_other_server_tool_members_do_not_suppress_the_vendor_entry() {
+    let mut req = nfdb_admitted(nfdb_req(nfdb_tools()));
+    req.server_tools = Some(vec!["web_search_20250305".to_owned()]);
+
+    let tools = nfdb_tools_json(&req);
+    assert_eq!(
+        nfdb_search_entries(&req).len(),
+        1,
+        "an unrelated server-tool member must not suppress the vendor declaration: {tools:#?}"
+    );
+    assert!(
+        tools
+            .iter()
+            .any(|t| t.get("name").and_then(serde_json::Value::as_str) == Some("web_search")),
+        "the configured web_search member must still be projected: {tools:#?}"
+    );
+}
+
+/// N7: the append site and the config-side producer are two authors of the same
+/// declaration, and this pins them together. N1 compares against this file's own
+/// `NFDB_SEARCH_NAME`, so on its own it cannot see the append site drifting from
+/// `server_tool_from_type`'s arm (`src/messages.rs:1216-1222`); this compares the
+/// two emitted byte streams directly, which is the coupling the second author needs.
+#[test]
+fn nfdb_n7_append_site_and_the_producer_arm_stay_identical() {
+    let req = nfdb_admitted(nfdb_req(nfdb_tools()));
+    let entries = nfdb_search_entries(&req);
+    assert_eq!(entries.len(), 1, "{:#?}", nfdb_tools_json(&req));
+    let produced = crate::messages::server_tool_from_type(NFDB_SEARCH_TYPE)
+        .expect("the dated slug must stay in server_tool_from_type's map");
+    assert_eq!(
+        entries[0],
+        serde_json::to_value(&produced).unwrap(),
+        "the entry the encoder appends drifted from the one \
+         `server_tool_from_type({NFDB_SEARCH_TYPE})` builds: the vendor name is \
+         authored twice (`conversation/messages.rs`, the apex-nfdb append, and \
+         `src/messages.rs:1216`) and a rename must move both"
     );
 }

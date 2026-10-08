@@ -1689,6 +1689,81 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 }
             }
         }
+        // apex-nfdb (MSGVENDORDECL-1): the provider-executed search trigger, derived
+        // from admission (the fold mirrors the Responses twin,
+        // `conversation/responses.rs:814`); a non-admitted row emits nothing here.
+        // The bundled config rung reads `supports_search_tool` through at
+        // `xai-grok-shell/src/agent/config.rs:4915` while hardcoding
+        // `server_tools: None` at `:4978`, so the `req.server_tools` block above can
+        // never express this entry from a baked value.
+        //
+        // Position is load-bearing: it must stay AFTER the R-6 stamp site
+        // (`conversation/messages.rs:1534-1535`), whose scrutinee matches only a
+        // `ToolParam::Custom` (`:1546-1547`). Appended before it, this entry takes the
+        // `last` slot and the marker leaves `tools[]` altogether rather than moving
+        // onto it — measured: brief §3's reorder mutant leaves zero `cache_control`
+        // entries under `tools[]`. Killed by
+        // `nfdb_n4_vendor_entry_never_collects_the_r6_cache_marker`.
+        //
+        // Suppressed when already declared, never duplicated: ONE `SamplingConfig`
+        // writes both request fields — the tool surface
+        // (`xai-chat-state/src/actor/request_builder.rs:88`) and `server_tools`
+        // (`:106`) — and `server_tool_from_type` maps the dated slug to this same
+        // variant with this same `name` (`src/messages.rs:1216-1222`), so a row that
+        // both admits and selects `tool_search` would otherwise project the
+        // declaration twice. The guard only sees that config-produced member because
+        // this block runs after its projection (`:1656`); both facts are pinned by
+        // `nfdb_n6_admitted_row_never_declares_the_vendor_entry_twice`, measured red
+        // for an append above `:1656`.
+        //
+        // Two open questions ride on this append, both owed a lane-N ruling. (1)
+        // Auxiliary side-calls reach it too: they admit over the turn's real tool
+        // surface (`xai-grok-shell/src/session/acp_session_impl/side_call.rs:139-142`,
+        // tools from `acp_session_impl/recap.rs:176`) while never executing tools
+        // themselves (`acp_session_impl/side_call.rs:160-161`), so a /btw call now
+        // declares a search the provider can run inside it. (2) The same admission
+        // also drives R-7's placeholder (`:1559-1571`) and the R-3 carrier
+        // canonicalisation (`:1594-1609`), and the R-2 advertisement keys off it plus
+        // `d2_carrier_declared` and a non-empty deferred set (`:1463-1467`), so a
+        // registering preset can put all of them in one `tools[]` beside this entry.
+        //
+        // Every 200 arm in the pinned capture declares this entry at `tools[0]`, never
+        // last: the shipped position is unproven, so the §6 harness capture must
+        // exercise a trailing placement before the baked flag is banked as firing.
+        if req.search_admission.is_some_and(SearchAdmission::admitted)
+            && !mapped.iter().any(|tool| {
+                matches!(
+                    tool,
+                    ToolParam::Server(
+                        crate::messages::ToolServer::ToolSearchToolBm2520251119 { .. }
+                    )
+                )
+            })
+        {
+            mapped.push(ToolParam::Server(
+                crate::messages::ToolServer::ToolSearchToolBm2520251119 {
+                    // Both values are pinned from the 200-returning probe
+                    // `~/hts-o-durable/captures/20261008T011235Z-vertex-native-search/A1-nobeta.req.json`:
+                    // `name` is NOT the dated slug, and `type` is this variant's serde
+                    // rename (`src/messages.rs:935`). The `None`s below omit every
+                    // optional key, so the entry serialises exactly the `{type, name}`
+                    // pair every 200 arm carries. The all-deferred control
+                    // (`N1-all-deferred.req.json`, HTTP 400) sets `defer_loading: true`
+                    // on this very entry and is refused with "At least one tool must
+                    // have defer_loading=false".
+                    //
+                    // `server_tool_from_type` builds this same pair for the same slug
+                    // (`src/messages.rs:1216-1222`), so the bytes have two authors:
+                    // `nfdb_n1_...` pins this entry to the probe and `nfdb_n7_...` pins
+                    // the map's arm to the same pair; a rename must move both sites.
+                    name: "tool_search_tool_bm25".to_owned(),
+                    allowed_callers: None,
+                    cache_control: None,
+                    defer_loading: None,
+                    strict: None,
+                },
+            ));
+        }
         if mapped.is_empty() {
             None
         } else {
