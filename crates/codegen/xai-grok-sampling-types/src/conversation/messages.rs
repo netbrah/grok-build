@@ -676,27 +676,91 @@ fn image_source_or_fallback(url: &str) -> Result<crate::messages::ImageSource, S
 }
 
 /// The Messages-wire client carrier for native discovery: the donor's CC1/CC2
-/// conversations replay the client-executed search as a `tool_use` naming
-/// exactly this, and a row admitting client-side discovery declares it in
-/// `tools[]` (G-19). The encoder replays the carrier name ONLY when this
-/// request declares it — an undeclared `tool_use` name is a 400, so an
-/// absent carrier degrades the half to the text summary instead.
-const TOOL_SEARCH_CARRIER_NAME: &str = "ToolSearch";
+/// conversations replay the client-executed search as a `tool_use` naming their
+/// client carrier and declare that same name in `tools[]` — a name G-19 records as
+/// the donor's `ToolSearch` spelling, NOT this constant. This value is this fork's
+/// registry spelling of that role (TOOLSEARCH-NAME-1 below). This encoder's rule is
+/// canonicalise-or-nothing: it rewrites the caller's own static entry of this name,
+/// in place, and names the carrier nowhere else. A region without that entry gets
+/// no declaration, no advertisement sentence and no replayed `tool_use` naming it.
+/// Two of those three withholdings are measured, and neither dodges a 400: G-16b
+/// for the replay leg (a history `tool_use` naming an undeclared tool is ACCEPTED —
+/// 200 on our Vertex route, one model, non-streaming, request acceptance only),
+/// G-17 for the advertisement leg (its arms carried no advertisement sentence and
+/// no `DeferredToolPlaceholder` and still returned 200). No arm tests the
+/// declaration leg on its own; the closest the record comes is that G-16b's arms
+/// carried no client-carrier entry in `tools[]` at all and were accepted. So this
+/// rule is policy — see the `d2_carrier_declared` gate below.
+///
+/// TOOLSEARCH-NAME-1 (apex-hw0c): the value is the name the registry actually
+/// answers, not the donor's `ToolSearch` spelling. A call is dispatched by the
+/// registry's client-facing name — `find(|t| t.client_name == tool_name)`
+/// (`xai-grok-tools/src/registry/types.rs:1398`), which answers
+/// `Tool not found: {tool_name}` for anything else (same file, :1387) — and the
+/// search tool registers under `SEARCH_TOOL_NAME = "search_tool"`
+/// (`xai-grok-tools/src/implementations/search_tool/mod.rs:14`, ToolId at :228,
+/// registered at `xai-grok-tools/src/registry/types.rs:670`). `ToolSearch` is a
+/// Claude allowlist matcher feeding `kind_for`
+/// (`xai-grok-tools/src/types/claude_alias.rs:71`), never a registration or a
+/// dispatch name; declaring it made an admitted row call a tool nothing could
+/// answer. A production request's static region carries that same registry name
+/// — the shell maps every registry definition through `ToolSpec::from(td.clone())`
+/// (`xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs:359`) — which
+/// makes that name the gate on the R-3 declaration: a static region without it
+/// declares no carrier at all (canonicalise-or-nothing, apex-hw0c fix-1).
+///
+/// A value-level mirror, not an import, and UNPINNED in this crate: this crate
+/// declares no dependency edge to `xai-grok-tools`
+/// (`xai-grok-sampling-types/Cargo.toml`), so `SEARCH_TOOL_NAME` is not nameable
+/// here and no test in this crate can compare the two values.
+/// `declared_search_carrier_name_resolves_in_the_registry_surface`
+/// (`conversation/messages_tests.rs`) pins only that the encoder names tools its
+/// caller declared, and that fixture spells the name with a second literal
+/// (`D2_CARRIER`, same file). Rename `SEARCH_TOOL_NAME` and this const plus every
+/// test in this crate stay green while dispatch breaks: dispatch keys on the
+/// registry's `client_name` (registry/types.rs:1398, cited above) and this tool's
+/// registration identity is built from `SEARCH_TOOL_NAME` (`SearchTool::id`,
+/// `xai-grok-tools/src/implementations/search_tool/mod.rs:228`). The
+/// acceptance's "resolvable by the dispatcher" leg needs a test in a crate that
+/// can name both surfaces — build the static region from
+/// `(&search_tool::SearchTool).into()` (xai-grok-agent/src/config.rs:264), encode
+/// through `build_messages_request`, and match every emitted carrier name
+/// against the built registry's `client_name`
+/// (`xai-grok-tools/src/registry/types.rs:1398`). No such test exists yet, so
+/// that leg stays open and this value is a manual mirror of `SEARCH_TOOL_NAME`.
+const TOOL_SEARCH_CARRIER_NAME: &str = "search_tool";
 
 /// R-2 (apex-waj.36 cut 2; SPEC-W2 R-2.1, G-7): the fixed advertisement
 /// sentence, VERBATIM — the dash is U+2014 (an ASCII `-` is the T-2.1
 /// mutant) and `select:<name>[,<name>...]` is literal text, not a pattern.
-const DEFERRED_ADVERTISEMENT_SENTENCE: &str = "The following deferred tools are now available via ToolSearch. Their schemas are NOT loaded — calling them directly will fail with InputValidationError. Use ToolSearch with query \"select:<name>[,<name>...]\" to load tool schemas before calling them:";
+/// TOOLSEARCH-NAME-1 (apex-hw0c) splits it around the two carrier mentions so
+/// the sentence renders [`TOOL_SEARCH_CARRIER_NAME`] instead of naming a tool
+/// the request never declares; the three parts concatenate to the donor's bytes
+/// with the name interpolated at both sites.
+const DEFERRED_ADVERTISEMENT_PRE_NAME: &str = "The following deferred tools are now available via ";
+const DEFERRED_ADVERTISEMENT_BETWEEN_NAMES: &str = ". Their schemas are NOT loaded — calling them directly will fail with InputValidationError. Use ";
+const DEFERRED_ADVERTISEMENT_POST_NAME: &str =
+    " with query \"select:<name>[,<name>...]\" to load tool schemas before calling them:";
 
 /// R-2 (apex-waj.36 cut 2; SPEC-W2 R-2.1): the advertisement fragment — the
 /// fixed sentence, a single `\n`, then the deferred names one per line,
 /// ASCII-sorted, with NO trailing newline inside the fragment.
 fn d2_advertisement_fragment(deferred_names: &[String]) -> String {
     let mut fragment = String::with_capacity(
-        DEFERRED_ADVERTISEMENT_SENTENCE.len()
-            + deferred_names.iter().map(|name| name.len() + 1).sum::<usize>(),
+        DEFERRED_ADVERTISEMENT_PRE_NAME.len()
+            + DEFERRED_ADVERTISEMENT_BETWEEN_NAMES.len()
+            + DEFERRED_ADVERTISEMENT_POST_NAME.len()
+            + TOOL_SEARCH_CARRIER_NAME.len() * 2
+            + deferred_names
+                .iter()
+                .map(|name| name.len() + 1)
+                .sum::<usize>(),
     );
-    fragment.push_str(DEFERRED_ADVERTISEMENT_SENTENCE);
+    fragment.push_str(DEFERRED_ADVERTISEMENT_PRE_NAME);
+    fragment.push_str(TOOL_SEARCH_CARRIER_NAME);
+    fragment.push_str(DEFERRED_ADVERTISEMENT_BETWEEN_NAMES);
+    fragment.push_str(TOOL_SEARCH_CARRIER_NAME);
+    fragment.push_str(DEFERRED_ADVERTISEMENT_POST_NAME);
     for name in deferred_names {
         fragment.push('\n');
         fragment.push_str(name);
@@ -720,7 +784,7 @@ Query forms:
 - "notebook jupyter" — keyword search, up to max_results best matches
 - "+slack send" — require "slack" in the name, rank by remaining terms"#;
 
-/// R-3 (apex-waj.36 cut 2; SPEC-W2 R-3.1/R-3.3, G-8): the ToolSearch
+/// R-3 (apex-waj.36 cut 2; SPEC-W2 R-3.1/R-3.3, G-8): the search carrier's
 /// `input_schema` — `query` and `max_results` BOTH in `required`,
 /// `max_results` a number with `"default": 5`, `additionalProperties:
 /// false`. Key order is the donor's (the crate's `serde_json`
@@ -728,6 +792,13 @@ Query forms:
 /// `sha256[:12] = 055d548fb923` is N-1's CC5 gate). R-3.3: NO `limit`
 /// key — that is the Responses spelling (optional, default 8) and it
 /// must not cross into the Messages schema (T-3.2).
+///
+/// apex-hw0c: the dispatcher reads the count off `SearchToolInput::limit`, so
+/// this donor spelling is honoured by a serde alias on that field
+/// (`xai-grok-tools/src/implementations/search_tool/types.rs`,
+/// `#[serde(alias = "max_results")]`) rather than by re-spelling this schema —
+/// the alternative silently discarded the key the declaration requires.
+/// `declared_max_results_spelling_reaches_the_limit_field` pins the pairing.
 fn tool_search_d2_input_schema() -> serde_json::Value {
     serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -882,16 +953,68 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         )
     };
 
-    // R-3 (apex-waj.36 cut 2): the carrier `tool_use` is backed when the
-    // static region declares it OR the row admits native discovery (the
-    // encoder then declares ToolSearch in the tools region itself). An
-    // unadmitted, undeclared row still degrades to the text summary — an
-    // undeclared tool_use name is a 400.
-    let d2_carrier_declared = req
-        .tools
-        .iter()
-        .any(|t| t.name == TOOL_SEARCH_CARRIER_NAME)
-        || req.search_admission.is_some_and(|admission| admission.admitted());
+    // R-3 (apex-waj.36 cut 2; re-ruled by apex-hw0c fix-1): the CLIENT carrier
+    // `tool_use` is backed ONLY when the caller's own static region declares the
+    // carrier. Cut 2 also accepted a bare `admitted()` here: the committed blob
+    // (HEAD:890-894, open with `git show HEAD:` + this path) gates on
+    // `static-declares || admitted()` and its R-3 declaration appends the carrier
+    // entry when the static region omits the name (`None => mapped.push(…)`,
+    // HEAD:1469-1475). With canonicalise-or-nothing that self-declaration is
+    // gone, so on a
+    // carrier-absent surface the non-`ServerToolUse` arm of the `name` match
+    // (`:1272-1273`) yields no name and BOTH halves of that client-carrier pair
+    // degrade to the text summary — the call half through its own arm
+    // (`:1296-1305`), and the answer half through `paired_id` (`:1315-1334`), which
+    // is `backed.then(…).filter(…)`: for a completed, non-empty answer `backed`
+    // holds (the promoted names are in `d2_declared`, `:911-954`) and it is the
+    // filter that finds no `tool_use` to close against; an empty or unloaded answer
+    // degrades one gate earlier, on `backed` itself. Both halves go either way, and
+    // on this path no lone
+    // half reaches the provider: a pair split across a message boundary is the loud
+    // G-20 leg of SPEC-W2 R-5.2. The `ServerToolUse` arm takes its name from the
+    // stored body (`:1261-1266`) and is not gated by this boolean.
+    //
+    // What this gate buys is a SILENT outcome, not a dodged 400: R-5.2 row 1
+    // (drop the reference result AND its `tools[]` entries) is "Silent: 200,
+    // degraded behaviour, extra round trips and extra spend", and row 2 (drop the
+    // result, keep the entries) is "Silent today" only because the damage it leaves
+    // is R-1.1's — "`tools[]` carries names no history justifies", which a future
+    // provider-side re-derivation turns into a desync (A-26). Row 2 is this path's
+    // shape, since the R-1 materialised append (`:1616-1640`) is not gated on the
+    // carrier. G-16 is NOT the authority for withholding the replay: it measured a
+    // `tool_reference` inside a `tool_result` whose name `tools[]` does not carry,
+    // which is the separate backing gate on `d2_declared` (`:1313-1314`) and the H-11
+    // lint (`outbound_lint.rs:460`).
+    //
+    // The plain-`tool_use`-NAME leg has its own measurement and it goes the other
+    // way: SPEC-W2 G-16b — R-5.2 row 4's measurement — on our Vertex route a
+    // history `tool_use` naming a tool absent from `tools[]` is ACCEPTED (200; the
+    // probed name was `lookup_weather`, an ordinary tool name, and that run's own
+    // FINDINGS.md forbids generalising past its table; the endpoint continued from
+    // that
+    // history and minted a `server_tool_use`,
+    // ~/hts-o-durable/captures/20261008T022355Z-undeclared-tooluse2/), replicated
+    // at ~/hts-o-durable/captures/20261008T024456Z-undeclared-tooluse/, where the
+    // same battery's `tool_reference` arm 400s for the SAME name on the same route
+    // — the asymmetry that keeps the two gates apart. Scope limits bind: one model,
+    // non-streaming, request acceptance only. This leg therefore rests on
+    // canonicalise-or-nothing as policy plus G-20 pair atomicity, never on an
+    // undeclared-name 400. Its first live attempt was VACUOUS: the `tools[]` filter
+    // left every tool deferred, so the all-deferred 400 of G-18 fired before the
+    // name leg was reached, and that directory's FINDINGS.md carries the corrected
+    // arm design (~/hts-o-durable/captures/20261008T022136Z-undeclared-tooluse/).
+    //
+    // One predicate gates the carrier wherever the request may name it — the
+    // caller's static region must carry its name — but it is read two ways: the
+    // replay (`:1272-1273`) and the advertisement (`:1466`) both read the
+    // `d2_carrier_declared` boolean bound here, while the R-3 canonicalisation
+    // below (`:1594-1605`) recomputes the same name test over `mapped` and, as the
+    // advertisement already does (`:1463-1465`), adds `admitted()`. `mapped` starts
+    // as a 1:1 map of `req.tools` (`:1514-1527`), but by the canonicalisation
+    // lookup an admitted row has also pushed the R-7 placeholder
+    // (`:1559-1571`) — so it is the name test, not the length, that stays
+    // equivalent to the boolean bound at `:1017`.
+    let d2_carrier_declared = req.tools.iter().any(|t| t.name == TOOL_SEARCH_CARRIER_NAME);
 
     let mut system_blocks: Vec<TextBlock> = Vec::new();
     let mut messages: Vec<Message> = Vec::new();
@@ -1119,9 +1242,12 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             // clean_orphaned_blocks_by_adjacency (R-5.3): a pair split across
             // a message boundary is silently stripped and 400s one turn later
             // (G-20). The reference list is gated on `d2_declared` (static ∪
-            // materialised): a reference this request cannot declare is the
-            // proven G-16 400, so an unbacked or unpairable half degrades to
-            // the bounded text summary with a loud warn — never a stub
+            // materialised): a reference naming a tool this request cannot declare
+            // is the proven G-16 400, so an unbacked half degrades to the bounded
+            // text summary with a loud warn. The `paired_id` binding stacks the G-20
+            // pairing test ON TOP of that same backing test (`:1313-1314` then
+            // `:1318-1334`), so an unpairable half degrades on the same arm —
+            // the names are G-16's reason, the split is G-20's — never a stub
             // declaration, never an invented id.
             ConversationItem::Discovery { item } => {
                 flush_user(&mut pending_user, &mut messages);
@@ -1140,10 +1266,9 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                                 .map(str::to_owned),
                             // The Responses-family call carries no tool name;
                             // the donor's Messages-wire carrier is the row's
-                            // declared "ToolSearch" tool (G-19; CC1/CC2).
-                            // Replay it only when THIS request declares it —
-                            // statically, or via the encoder's own R-3
-                            // declaration on an admitted row (cut 2).
+                            // declared search carrier tool (G-19; CC1/CC2).
+                            // Replay it only when the caller's static region
+                            // declares it — see `d2_carrier_declared`.
                             _ => d2_carrier_declared
                                 .then(|| TOOL_SEARCH_CARRIER_NAME.to_owned()),
                         };
@@ -1329,9 +1454,16 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     // turn-variable block, INSIDE the cached prefix (the marker pass
     // below marks the last system block — T-2.6). An empty deferred set
     // emits nothing (a sentence-only ad has no information to carry).
+    // apex-hw0c fix-1: the ad also requires the carrier to be declared by the
+    // caller's static region (`d2_carrier_declared`), because the sentence names
+    // that tool twice as the way to load the deferred schemas. On a surface that
+    // never registers it the encoder declares it neither (the R-3 declaration),
+    // so the sentence would otherwise invite a call the dispatcher cannot answer
+    // — the cites are on the `TOOL_SEARCH_CARRIER_NAME` doc.
     if req
         .search_admission
         .is_some_and(|admission| admission.admitted())
+        && d2_carrier_declared
         && !d2_deferred.is_empty()
     {
         let stable_system_count = items
@@ -1437,21 +1569,32 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 defer_loading: Some(true),
             }));
         }
-        // R-3 (apex-waj.36 cut 2; SPEC-W2 R-3): the ToolSearch
-        // declaration — the only tool that loads deferred schemas. An
-        // admitted row declares it: canonicalised IN PLACE when the
-        // static region already names it (position-stable — the Last
-        // breakpoint pin above keeps its pre-cut meaning), otherwise
-        // appended AFTER the placeholder (the placeholder keeps its
-        // fixed first-slot-after-static index). R-3.1: `query` +
-        // `max_results` both required, `max_results` default 5; R-3.3:
-        // NO `limit` key (that is the Responses spelling — optional,
-        // default 8). `defer_loading: None`: a live declared tool, not a
-        // materialised entry (the donor entry carries no such key — the
-        // entry byte pin is N-1's CC5 gate).
-        if req.search_admission.is_some_and(|admission| admission.admitted()) {
-            let schema = tool_search_d2_input_schema();
-            match mapped.iter_mut().position(|tool| {
+        // R-3 (apex-waj.36 cut 2; SPEC-W2 R-3; re-ruled by apex-hw0c fix-1): the
+        // search carrier declaration — the only tool that loads deferred schemas.
+        // An admitted row CANONICALISES the caller's own entry, in place, or
+        // declares nothing. The name lookup below is the gate: no match means the
+        // caller's surface has no carrier to canonicalise, and cut 2's fallback
+        // `None => mapped.push(..)` is gone because it declared a tool no
+        // dispatcher can answer (the `TOOL_SEARCH_CARRIER_NAME` doc above carries
+        // the dispatch cites). Presets that never register it:
+        // `grok_computer_toolset` (xai-grok-agent/src/config.rs:165),
+        // `grok_build_concise_toolset` (:279), `explore_toolset` (:349),
+        // `plan_toolset` (:362), `opencode_toolset` (:511) — none pushes
+        // `search_tool::SearchTool`, and admission cannot see that:
+        // `admitted() = supports_search_tool && has_searchable_tools`
+        // (conversation/responses.rs:1199-1201) with
+        // `has_searchable_tools = !declared_tools.is_empty()` (:1245-1247).
+        // In place also keeps the entry position-stable, so the R-6 `Last`
+        // breakpoint pin above keeps its pre-cut meaning. R-3.1: `query` +
+        // `max_results` both required, `max_results` default 5; R-3.3: NO `limit`
+        // key (that is the Responses spelling — optional, default 8).
+        // `defer_loading: None`: a live declared tool, not a materialised entry
+        // (the donor entry carries no such key — the entry byte pin is N-1's CC5
+        // gate).
+        if req
+            .search_admission
+            .is_some_and(|admission| admission.admitted())
+            && let Some(ToolParam::Custom(custom)) = mapped.iter_mut().find(|tool| {
                 matches!(
                     tool,
                     ToolParam::Custom(crate::messages::ToolCustom {
@@ -1459,21 +1602,10 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                         ..
                     }) if name == TOOL_SEARCH_CARRIER_NAME
                 )
-            }) {
-                Some(idx) => {
-                    if let ToolParam::Custom(custom) = &mut mapped[idx] {
-                        custom.description = Some(TOOL_SEARCH_D2_DESCRIPTION.to_owned());
-                        custom.input_schema = schema;
-                    }
-                }
-                None => mapped.push(ToolParam::Custom(crate::messages::ToolCustom {
-                    name: TOOL_SEARCH_CARRIER_NAME.to_owned(),
-                    description: Some(TOOL_SEARCH_D2_DESCRIPTION.to_owned()),
-                    input_schema: schema,
-                    cache_control: None,
-                    defer_loading: None,
-                })),
-            }
+            })
+        {
+            custom.description = Some(TOOL_SEARCH_D2_DESCRIPTION.to_owned());
+            custom.input_schema = tool_search_d2_input_schema();
         }
         // R-1 (apex-waj.36 cut 1): the materialised region — one entry per
         // distinct FLAT name the conversation has loaded, appended AFTER

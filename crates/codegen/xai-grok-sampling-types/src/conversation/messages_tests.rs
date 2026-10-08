@@ -4128,9 +4128,16 @@ fn mgw_f1_u_parity_3_marker_budget_with_server_members() {
 
 use crate::conversation::tool_search::ToolSearchItem;
 
-/// The row's declared client-carrier for native discovery (G-19; the donor's
-/// CC1/CC2 `tool_use` names it exactly). A BASE tool in the D2 test rows.
-const D2_CARRIER: &str = "ToolSearch";
+/// The row's declared client-carrier for native discovery (G-19): a hand-spelled
+/// mirror of `SEARCH_TOOL_NAME`
+/// (`xai-grok-tools/src/implementations/search_tool/mod.rs:14`), which is what a
+/// registering preset's static region ends up declaring. This crate has no
+/// dependency edge to `xai-grok-tools`, so NOTHING checks the two agree — move
+/// the registry constant and this file still passes, on a broken name.
+/// A BASE tool in the D2 test rows. It was `"ToolSearch"`, a name nothing
+/// dispatches (apex-hw0c): declaring it in the fixture is what let the encoder's
+/// unreachable in-place arm read as covered.
+const D2_CARRIER: &str = "search_tool";
 
 fn d2_tool(name: &str) -> ToolSpec {
     ToolSpec {
@@ -4214,7 +4221,7 @@ fn materialise_tools_equals_base_union_references() {
     let mut names = d2_tool_names(&msgs);
     names.sort();
     let mut expected = vec![
-        "ToolSearch",
+        D2_CARRIER,
         "base_alpha",
         "base_beta",
         "lookup_shipping_eta",
@@ -4688,8 +4695,11 @@ fn placeholder_index_stable() {
 /// T-2.1's independent oracle: the fixed advertisement sentence, byte-
 /// identical to the donor (the U+2014 em-dash spelled explicitly — an
 /// ASCII `-` in the encoder OR here is the T-2.1 mutant) and the literal
-/// `select:` grammar text.
-const D2_AD_SENTENCE: &str = "The following deferred tools are now available via ToolSearch. Their schemas are NOT loaded \u{2014} calling them directly will fail with InputValidationError. Use ToolSearch with query \"select:<name>[,<name>...]\" to load tool schemas before calling them:";
+/// `select:` grammar text. The carrier slot carries the registry name the
+/// row declares (D2_CARRIER); apex-hw0c killed the encoder's hardcoded
+/// `ToolSearch` there, and `advertisement_names_a_declared_tool` checks the
+/// sentence against the encoded tools[] rather than against this oracle.
+const D2_AD_SENTENCE: &str = "The following deferred tools are now available via search_tool. Their schemas are NOT loaded \u{2014} calling them directly will fail with InputValidationError. Use search_tool with query \"select:<name>[,<name>...]\" to load tool schemas before calling them:";
 
 /// An admitted D2 row: `supports_search_tool` on, surface non-empty.
 fn d2_armed_req(items: Vec<ConversationItem>, tools: Vec<ToolSpec>) -> ConversationRequest {
@@ -4796,7 +4806,12 @@ fn advertisement_fragment_structure() {
         ConversationItem::Discovery { item: answer },
         ConversationItem::user("next"),
     ];
-    let msgs = build_messages_request(&d2_armed_req(items, vec![d2_tool("base_tool")]));
+    // apex-hw0c fix-1: the ad only rides a request whose own static region
+    // declares the carrier, so the fixture declares it as production does.
+    let msgs = build_messages_request(&d2_armed_req(
+        items,
+        vec![d2_tool("base_tool"), d2_tool(D2_CARRIER)],
+    ));
     let fragment = d2_advertisement(&msgs)
         .unwrap_or_else(|| panic!("the admitted row advertises its deferred set: {msgs:?}"));
     let expected = format!("{D2_AD_SENTENCE}\nalpha_tool\nbeta_tool\nzeta_tool");
@@ -4838,10 +4853,11 @@ fn advertisement_invariant_under_promotion() {
         ConversationItem::Discovery { item: answer.clone() },
         ConversationItem::user("next"),
     ];
-    // The turn the promotion lands on.
+    // The turn the promotion lands on. The carrier rides the fixture's own
+    // static region (apex-hw0c fix-1: no carrier declared ⇒ no ad to compare).
     let at_promotion = build_messages_request(&d2_armed_req(
         items.clone(),
-        vec![d2_tool("base_tool")],
+        vec![d2_tool("base_tool"), d2_tool(D2_CARRIER)],
     ));
     // A later turn: the promoted names are long since in tools[] — the
     // advertisement must be byte-identical (the names did not leave it).
@@ -4857,7 +4873,7 @@ fn advertisement_invariant_under_promotion() {
     .collect();
     let later = build_messages_request(&d2_armed_req(
         items_later,
-        vec![d2_tool("base_tool")],
+        vec![d2_tool("base_tool"), d2_tool(D2_CARRIER)],
     ));
     let expected = format!("{D2_AD_SENTENCE}\nalpha_tool\nzeta_tool");
     let at_fragment = d2_advertisement(&at_promotion)
@@ -4885,7 +4901,7 @@ fn advertisement_invariant_under_promotion() {
 #[test]
 fn advertisement_disjoint_from_static_tools() {
     // T-2.3: advertisement_names ∩ static_tool_names == {} — the search
-    // surface (ToolSearch), the placeholder, and any statically-loaded
+    // surface (D2_CARRIER), the placeholder, and any statically-loaded
     // tool are excluded. Mutant: include the search surface in the
     // deferred list.
     let (call, answer) = d2_client_pair(
@@ -4901,7 +4917,14 @@ fn advertisement_disjoint_from_static_tools() {
         ConversationItem::Discovery { item: answer },
         ConversationItem::user("next"),
     ];
-    let static_tools = vec![d2_tool("shared_tool"), d2_tool("static_only")];
+    // The search surface is in the static region exactly as a registering
+    // preset delivers it (apex-hw0c fix-1: without a declared carrier there is
+    // no advertisement to take apart).
+    let static_tools = vec![
+        d2_tool(D2_CARRIER),
+        d2_tool("shared_tool"),
+        d2_tool("static_only"),
+    ];
     let msgs = build_messages_request(&d2_armed_req(items, static_tools.clone()));
     let fragment = d2_advertisement(&msgs)
         .expect("the admitted row advertises its deferred set");
@@ -4917,7 +4940,7 @@ fn advertisement_disjoint_from_static_tools() {
             "static tool {name:?} must not be advertised"
         );
         assert!(
-            !name.eq_ignore_ascii_case("toolsearch") && *name != "DeferredToolPlaceholder",
+            !name.eq_ignore_ascii_case(D2_CARRIER) && *name != "DeferredToolPlaceholder",
             "the search surface / placeholder must not be advertised: {name:?}"
         );
     }
@@ -4947,7 +4970,10 @@ fn no_system_role_message_emitted() {
         ConversationItem::Discovery { item: answer },
         ConversationItem::user("next"),
     ];
-    let msgs = build_messages_request(&d2_armed_req(items, vec![d2_tool("base_tool")]));
+    let msgs = build_messages_request(&d2_armed_req(
+        items,
+        vec![d2_tool("base_tool"), d2_tool(D2_CARRIER)],
+    ));
     // The negative must not be vacuous: the ad did arrive (via system[]).
     assert!(
         d2_advertisement(&msgs).is_some(),
@@ -4988,7 +5014,10 @@ fn advertisement_inside_cached_prefix() {
         ConversationItem::user("next"),
         ConversationItem::system("turn-variable context"),
     ];
-    let msgs = build_messages_request(&d2_armed_req(items, vec![d2_tool("base_tool")]));
+    let msgs = build_messages_request(&d2_armed_req(
+        items,
+        vec![d2_tool("base_tool"), d2_tool(D2_CARRIER)],
+    ));
     let json = serde_json::to_value(&msgs).unwrap();
     let system = json
         .get("system")
@@ -5020,9 +5049,11 @@ fn toolsearch_schema_matches_donor() {
     // max_results from required (the intel's shape, C-3). The 953-char
     // donor description (the three query forms, G-10) is pinned here at
     // the structural level; the byte pin (953 / 055d548fb923) is N-1's.
+    // apex-hw0c fix-1: the declaration is the caller's own entry canonicalised in
+    // place, so the fixture declares the carrier as a registering preset does.
     let msgs = build_messages_request(&d2_armed_req(
         vec![ConversationItem::user("hi")],
-        vec![d2_tool("static_tool")],
+        vec![d2_tool(D2_CARRIER), d2_tool("static_tool")],
     ));
     let json = serde_json::to_value(&msgs).unwrap();
     let entry = json
@@ -5030,9 +5061,9 @@ fn toolsearch_schema_matches_donor() {
         .and_then(serde_json::Value::as_array)
         .and_then(|t| {
             t.iter()
-                .find(|e| e.get("name").and_then(serde_json::Value::as_str) == Some("ToolSearch"))
+                .find(|e| e.get("name").and_then(serde_json::Value::as_str) == Some(D2_CARRIER))
         })
-        .expect("the admitted row declares ToolSearch: {json:#}");
+        .unwrap_or_else(|| panic!("the admitted row declares the search carrier: {json:#}"));
     let schema = entry.get("input_schema").expect("the declaration carries input_schema");
     let required = schema
         .get("required")
@@ -5107,19 +5138,19 @@ fn toolsearch_schema_matches_donor() {
     assert_eq!(
         entry.get("defer_loading"),
         None,
-        "ToolSearch is a live declared tool, not a materialised entry: {entry:#}"
+        "the search carrier is a live declared tool, not a materialised entry: {entry:#}"
     );
 }
 
 #[test]
 fn toolsearch_schema_has_no_limit_key() {
-    // T-3.2 (R-3.3): the Messages ToolSearch schema MUST NOT emit a
+    // T-3.2 (R-3.3): the Messages carrier schema MUST NOT emit a
     // `limit` key — that is the Responses spelling (optional, default 8).
     // Mutant: emit the Responses `limit` spelling. And `max_results` is
     // REQUIRED (the Responses `limit` is optional).
     let msgs = build_messages_request(&d2_armed_req(
         vec![ConversationItem::user("hi")],
-        vec![d2_tool("static_tool")],
+        vec![d2_tool(D2_CARRIER), d2_tool("static_tool")],
     ));
     let json = serde_json::to_value(&msgs).unwrap();
     let schema = json
@@ -5127,9 +5158,9 @@ fn toolsearch_schema_has_no_limit_key() {
         .and_then(serde_json::Value::as_array)
         .and_then(|t| {
             t.iter()
-                .find(|e| e.get("name").and_then(serde_json::Value::as_str) == Some("ToolSearch"))
+                .find(|e| e.get("name").and_then(serde_json::Value::as_str) == Some(D2_CARRIER))
         })
-        .expect("the admitted row declares ToolSearch: {json:#}")
+        .unwrap_or_else(|| panic!("the admitted row declares the search carrier: {json:#}"))
         .get("input_schema")
         .expect("input_schema");
     assert!(
@@ -5169,7 +5200,12 @@ fn select_result_in_list_order_not_ascii() {
         ConversationItem::Discovery { item: answer },
         ConversationItem::user("next"),
     ];
-    let msgs = build_messages_request(&d2_armed_req(items, vec![d2_tool("static_tool")]));
+    // The carrier must be declared by the caller for the discovery pair to
+    // replay as a tool_use/tool_result at all (apex-hw0c fix-1).
+    let msgs = build_messages_request(&d2_armed_req(
+        items,
+        vec![d2_tool(D2_CARRIER), d2_tool("static_tool")],
+    ));
     let refs = d2_replayed_reference_names(&msgs);
     assert_eq!(
         refs,
@@ -5236,7 +5272,12 @@ fn select_partial_drops_misses() {
         ConversationItem::Discovery { item: answer },
         ConversationItem::user("next"),
     ];
-    let msgs = build_messages_request(&d2_armed_req(items, vec![d2_tool("static_tool")]));
+    // Same carrier precondition as the select-order test above: no declared
+    // carrier ⇒ no replayed pair to inspect (apex-hw0c fix-1).
+    let msgs = build_messages_request(&d2_armed_req(
+        items,
+        vec![d2_tool(D2_CARRIER), d2_tool("static_tool")],
+    ));
     let refs = d2_replayed_reference_names(&msgs);
     assert_eq!(
         refs,
@@ -5254,5 +5295,338 @@ fn select_partial_drops_misses() {
         violations.iter().all(|v| v.rule != "H-11"),
         "every replayed tool_reference resolves in tools[] — H-11 is clean: \
          {violations:?}"
+    );
+}
+
+// ============================================================================
+// apex-hw0c (TOOLSEARCH-NAME-1) — the carrier NAME the encoder declares must
+// RESOLVE. Cut 2 pinned the declaration's bytes and never asked whether any
+// dispatcher could answer it, so the admitted claude row shipped an uncalled
+// tool (live: "Failed to parse arguments for tool `ToolSearch`: Tool not found:
+// ToolSearch", 7x per turn — capture 2026-10-07T194238Z).
+//
+// The dispatch derivation (the registry's `client_name` lookup, the not-found
+// path, the shell mapping that builds a production static region) is stated once
+// on `TOOL_SEARCH_CARRIER_NAME` in messages.rs and is not re-cited here. What a
+// test in THIS crate can pin is the encoder's own half: it may name only tools
+// the caller's static region declared. A fixture that means to exercise the
+// carrier spells the registry name by hand (`d2_tool(D2_CARRIER)`) — a literal
+// mirror, not the registry, which this crate has no dependency edge to (see the
+// const's doc). A fixture WITHOUT it is the carrier-absent case below: the
+// encoder must then name the carrier nowhere in the request.
+// ============================================================================
+use std::collections::BTreeSet;
+
+/// The `name` of every `tool_use` block an encoded request emits, in wire
+/// order — i.e. the calls a dispatcher will be asked to resolve.
+fn d2_replayed_tool_use_names(msgs: &crate::messages::MessagesRequest) -> Vec<String> {
+    serde_json::to_value(msgs)
+        .unwrap()
+        .pointer("/messages")
+        .and_then(serde_json::Value::as_array)
+        .expect("messages[]")
+        .iter()
+        .filter_map(|m| m.get("content").and_then(serde_json::Value::as_array))
+        .flatten()
+        .filter(|b| b.get("type").and_then(serde_json::Value::as_str) == Some("tool_use"))
+        .filter_map(|b| b.get("name").and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// apex-hw0c requirement 2, as far as THIS crate can reach it: the encoder may
+/// name no tool the caller did not declare. It does NOT pin the acceptance's
+/// "the declared carrier name is resolvable by the dispatcher" leg — its
+/// "registry surface" is `D2_CARRIER`, a literal in this file, and a rename of
+/// `xai_grok_tools::SEARCH_TOOL_NAME` would leave this test green (the const's
+/// doc spells out the test that could close that leg).
+#[test]
+fn declared_search_carrier_name_resolves_in_the_registry_surface() {
+    let (call, answer) = d2_client_pair(
+        "call_name1",
+        vec![d2_def(
+            "lookup_shipping_eta",
+            serde_json::json!({"type": "object"}),
+        )],
+    );
+    let items = vec![
+        ConversationItem::user("hi"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+        ConversationItem::user("next"),
+    ];
+    // A static region of the shape a registering preset builds: the carrier is
+    // present under the name the registry answers it under — spelled by hand
+    // here, since this crate cannot import that name (see the const's doc).
+    let region = vec![
+        d2_tool(D2_CARRIER),
+        d2_tool("use_tool"),
+        d2_tool("base_tool"),
+    ];
+    let caller_names: BTreeSet<String> = region.iter().map(|t| t.name.clone()).collect();
+    let msgs = build_messages_request(&d2_armed_req(items, region));
+
+    // (1) Every call the request replays must name a tool the caller declared —
+    // a production static region carries exactly the registry's own names (the
+    // shell's mapping is cited on `TOOL_SEARCH_CARRIER_NAME`), so naming
+    // anything else here is the dispatcher's not-found path.
+    for name in d2_replayed_tool_use_names(&msgs) {
+        assert!(
+            caller_names.contains(&name),
+            "the encoder replayed a tool_use naming {name:?}, which the caller's \
+             registry surface does not declare ({caller_names:?}) — the dispatcher \
+             answers Tool not found for it: {msgs:#?}"
+        );
+    }
+
+    // (2) The encoder may only ADD names the dispatcher can answer: when the
+    // static region declares the carrier it canonicalises THAT entry in place
+    // (it declares no carrier of its own), plus the R-1 materialised set and the
+    // R-7 placeholder. The carrier-absent half of the rule is pinned by
+    // `carrier_absent_admitted_row_declares_no_search_carrier`.
+    let answer_names: BTreeSet<String> = ["lookup_shipping_eta"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let allowed: BTreeSet<String> = caller_names
+        .union(&answer_names)
+        .cloned()
+        .chain(std::iter::once("DeferredToolPlaceholder".to_owned()))
+        .collect();
+    let tools = d2_tool_names(&msgs);
+    for name in &tools {
+        assert!(
+            allowed.contains(name),
+            "the encoder declared {name:?} in tools[], a name no dispatcher can \
+             resolve (allowed: {allowed:?}); tools[]={tools:?}"
+        );
+    }
+
+    // (3) One carrier, not two: the caller's static entry is canonicalised in
+    // place and the encoder adds no carrier entry of its own.
+    assert_eq!(
+        tools.iter().filter(|n| n.as_str() == D2_CARRIER).count(),
+        1,
+        "exactly one search carrier declaration: {tools:?}"
+    );
+}
+
+/// apex-hw0c: the carrier the encoder canonicalises is the caller's own static
+/// entry — the shell declares it from the registry
+/// (`xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs:359`
+/// `ToolSpec::from(td.clone())`), so the encoder must rewrite THAT entry, in
+/// place. Position stability is the point: the R-6 `Last` cache breakpoint is
+/// pinned to the last static tool (messages.rs, the R-6 comment above the
+/// placeholder block), so appending a second carrier ahead of the placeholder
+/// would move the marker.
+#[test]
+fn search_carrier_canonicalised_in_place_not_appended() {
+    let (call, answer) = d2_client_pair(
+        "call_inplace",
+        vec![d2_def("lookup_eta", serde_json::json!({"type": "object"}))],
+    );
+    let items = vec![
+        ConversationItem::user("hi"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+        ConversationItem::user("next"),
+    ];
+    let region = vec![
+        d2_tool("base_alpha"),
+        d2_tool(D2_CARRIER),
+        d2_tool("base_beta"),
+    ];
+    let msgs = build_messages_request(&d2_armed_req(items, region));
+    let tools = d2_tool_names(&msgs);
+    assert_eq!(
+        tools.iter().filter(|n| n.as_str() == D2_CARRIER).count(),
+        1,
+        "one carrier declaration, not a canonicalised entry plus an append: {tools:?}"
+    );
+    let carrier_at = tools
+        .iter()
+        .position(|n| n.as_str() == D2_CARRIER)
+        .expect("the row declares the carrier");
+    assert_eq!(
+        carrier_at, 1,
+        "the carrier keeps its static-region index (position-stable): {tools:?}"
+    );
+    let placeholder_at = tools
+        .iter()
+        .position(|n| n == "DeferredToolPlaceholder")
+        .expect("an admitted row declares the R-7 placeholder");
+    assert!(
+        carrier_at < placeholder_at,
+        "the placeholder keeps its fixed first-slot-after-static index: {tools:?}"
+    );
+
+    // Canonicalised, not merely present: the static entry now carries the
+    // donor description and the R-3.1 schema, and stays a live tool.
+    let json = serde_json::to_value(&msgs).unwrap();
+    let entry = &json["tools"][carrier_at];
+    assert_eq!(
+        entry
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .chars()
+            .count(),
+        953,
+        "the in-place entry is canonicalised to the donor description: {entry:#}"
+    );
+    let mut required: Vec<String> = entry["input_schema"]["required"]
+        .as_array()
+        .expect("required[]")
+        .iter()
+        .map(|v| v.as_str().unwrap_or_default().to_owned())
+        .collect();
+    required.sort();
+    assert_eq!(required, vec!["max_results", "query"], "{entry:#}");
+    assert_eq!(
+        entry.get("defer_loading"),
+        None,
+        "a live declared tool, not a materialised entry: {entry:#}"
+    );
+}
+
+/// apex-hw0c fix-1 (round-2 M1 and M3 are one bug seen through two lenses):
+/// **canonicalise-or-NOTHING**. Five toolsets register no search carrier while
+/// admission still admits their rows — the preset sweep and the `admitted()`
+/// derivation are on the R-3 declaration block in `conversation/messages.rs` —
+/// so such a row asked the encoder to DECLARE a tool nothing can answer while
+/// the advertisement sentence actively invited the call.
+///
+/// So a carrier-absent static region must name the carrier NOWHERE in the
+/// request: no `tools[]` entry, no advertisement fragment, and no replayed
+/// `tool_use` naming it. That last leg is policy, not a dodged 400: G-16 measured
+/// a `tool_reference` block naming a tool `tools[]` does not carry, while the
+/// plain-`tool_use`-NAME leg is R-5.2 row 4's measurement (SPEC-W2 G-16b) — a
+/// history `tool_use` naming an undeclared tool is ACCEPTED (200, measured on our
+/// Vertex route only). Its first live attempt,
+/// ~/hts-o-durable/captures/20261008T022136Z-undeclared-tooluse/FINDINGS.md, was
+/// VACUOUS (the `tools[]` filter left every tool deferred, so G-18's all-deferred
+/// 400 fired first); the verdict's full scope limits and provenance are on the
+/// `d2_carrier_declared` gate in `conversation/messages.rs`.
+///
+/// What this gate does buy sits on the silent side of R-5.2: both halves of the
+/// client-carrier pair degrade together (the `d2_carrier_declared` arm yields no
+/// name, so the answer half's `paired_id` finds no `tool_use` to close
+/// against) and, on this path, the pair never splits — a split pair is the G-20
+/// leg. The residual cost is row 2's, not row 1's: the R-1 materialised append is
+/// not gated on the carrier, so `tools[]` keeps the promoted names while the
+/// history that justified them is gone — R-1.1 violated, "Silent today" per the
+/// table, not a 400.
+///
+/// The row stays admitted — the R-7 placeholder is still emitted — so the
+/// absence below can only come from the declaration gate, not from a fixture
+/// that was never admitted in the first place.
+#[test]
+fn carrier_absent_admitted_row_declares_no_search_carrier() {
+    let (call, answer) = d2_client_pair(
+        "call_carrier_absent",
+        vec![d2_def("lookup_eta", serde_json::json!({"type": "object"}))],
+    );
+    let items = vec![
+        ConversationItem::user("hi"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+        ConversationItem::user("next"),
+    ];
+    // A carrier-absent surface of exactly the shape those presets build:
+    // non-empty (so the row admits), with no `search_tool` in it.
+    let region = vec![d2_tool("base_alpha"), d2_tool("base_beta")];
+    let req = d2_armed_req(items, region);
+    assert!(
+        req.search_admission
+            .is_some_and(|admission| admission.admitted()),
+        "the fixture must be an ADMITTED row, or it proves nothing about the gate"
+    );
+    let msgs = build_messages_request(&req);
+
+    let tools = d2_tool_names(&msgs);
+    assert!(
+        tools.iter().any(|n| n == "DeferredToolPlaceholder"),
+        "an admitted row still emits the R-7 placeholder — non-vacuity guard: \
+         admission is ON here, so a missing carrier is the gate's doing: {tools:?}"
+    );
+    assert!(
+        !tools.iter().any(|n| n == D2_CARRIER),
+        "the encoder declared {D2_CARRIER:?} in tools[] on a surface that never \
+         registers it; the dispatcher answers Tool not found for every call to it: \
+         tools[]={tools:?}"
+    );
+    assert!(
+        d2_advertisement(&msgs).is_none(),
+        "the advertisement tells the model to call {D2_CARRIER:?}, which this \
+         request does not declare: {:#?}",
+        serde_json::to_value(&msgs).unwrap()
+    );
+    assert!(
+        !d2_replayed_tool_use_names(&msgs)
+            .iter()
+            .any(|name| name == D2_CARRIER),
+        "no replayed tool_use may name a carrier the request does not declare: \
+         tools[]={tools:?}"
+    );
+}
+
+/// apex-hw0c requirement 3: the model-facing sentence must render the name the
+/// row actually declares. The two carrier slots are parsed OUT of the rendered
+/// fragment and looked up in the encoded `tools[]` — no constant is compared
+/// with a constant, so a sentence naming an undeclared tool is red here.
+///
+/// This is a FORWARD invariant, not a guard for the round-2 M1 defect: while the
+/// R-3 append existed the sentence and the appended entry were both
+/// `TOOL_SEARCH_CARRIER_NAME`, so the lookup below always matched and this test
+/// could not go red. `carrier_absent_admitted_row_declares_no_search_carrier`
+/// is the one that pins the defect.
+#[test]
+fn advertisement_names_a_declared_tool() {
+    let (call, answer) = d2_client_pair(
+        "call_adname",
+        vec![d2_def("lookup_eta", serde_json::json!({"type": "object"}))],
+    );
+    let items = vec![
+        ConversationItem::user("hi"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: answer },
+        ConversationItem::user("next"),
+    ];
+    let msgs = build_messages_request(&d2_armed_req(
+        items,
+        vec![d2_tool("base_tool"), d2_tool(D2_CARRIER)],
+    ));
+    let fragment = d2_advertisement(&msgs)
+        .unwrap_or_else(|| panic!("the admitted row advertises its deferred set: {msgs:#?}"));
+    let sentence = fragment
+        .split('\n')
+        .next()
+        .expect("the sentence is the fragment's first line");
+
+    let named = |before: &str, after: &str| -> String {
+        sentence
+            .split(before)
+            .nth(1)
+            .unwrap_or_else(|| panic!("the sentence carries a {before:?} slot: {sentence:?}"))
+            .split(after)
+            .next()
+            .unwrap_or_else(|| panic!("the {before:?} slot closes with {after:?}: {sentence:?}"))
+            .to_owned()
+    };
+    let via = named("available via ", ". Their schemas");
+    let use_ = named("Use ", " with query");
+
+    let tools = d2_tool_names(&msgs);
+    for name in [&via, &use_] {
+        assert!(
+            tools.iter().any(|t| t == name),
+            "the advertisement names {name:?}, which the request does not declare \
+             (the model would be told to call an undeclared tool); tools[]={tools:?}, \
+             sentence={sentence:?}"
+        );
+    }
+    assert_eq!(
+        via, use_,
+        "both carrier slots name the same tool: {sentence:?}"
     );
 }
