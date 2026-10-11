@@ -980,7 +980,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     // result, keep the entries) is "Silent today" only because the damage it leaves
     // is R-1.1's — "`tools[]` carries names no history justifies", which a future
     // provider-side re-derivation turns into a desync (A-26). Row 2 is this path's
-    // shape, since the R-1 materialised append (`:1616-1640`) is not gated on the
+    // shape, since the R-1 materialised append (`:1624-1648`) is not gated on the
     // carrier. G-16 is NOT the authority for withholding the replay: it measured a
     // `tool_reference` inside a `tool_result` whose name `tools[]` does not carry,
     // which is the separate backing gate on `d2_declared` (`:1313-1314`) and the H-11
@@ -1008,11 +1008,11 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     // caller's static region must carry its name — but it is read two ways: the
     // replay (`:1272-1273`) and the advertisement (`:1466`) both read the
     // `d2_carrier_declared` boolean bound here, while the R-3 canonicalisation
-    // below (`:1594-1605`) recomputes the same name test over `mapped` and, as the
+    // below (`:1604-1613`) recomputes the same name test over `mapped` and, as the
     // advertisement already does (`:1463-1465`), adds `admitted()`. `mapped` starts
-    // as a 1:1 map of `req.tools` (`:1514-1527`), but by the canonicalisation
+    // as a 1:1 map of `req.tools` (`:1515-1537`), but by the canonicalisation
     // lookup an admitted row has also pushed the R-7 placeholder
-    // (`:1559-1571`) — so it is the name test, not the length, that stays
+    // (`:1569-1581`) — so it is the name test, not the length, that stays
     // equivalent to the boolean bound at `:1017`.
     let d2_carrier_declared = req.tools.iter().any(|t| t.name == TOOL_SEARCH_CARRIER_NAME);
 
@@ -1511,6 +1511,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     // order (binding emission order, cache-stability). A server-tools-only
     // row (no client tools) still projects a non-empty tools array.
     let tools: Option<Vec<ToolParam>> = {
+        let admitted = req.search_admission.is_some_and(SearchAdmission::admitted);
         let mut mapped: Vec<ToolParam> = req
             .tools
             .iter()
@@ -1519,10 +1520,19 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 description: t.description.clone(),
                 input_schema: t.parameters.clone(),
                 cache_control: None,
-                // N-4: static client tools emit no `defer_loading` key (the
-                // encoder, apex-waj.36, sets Some(true) on materialised
-                // entries later).
-                defer_loading: None,
+                // MSGDEFERLOWER-1 (apex-lk0d): the Messages twin of
+                // `conversation/responses.rs:834`. A static client tool whose
+                // `exposure` (`conversation.rs:922`) the shell already set to
+                // `Deferred` — `turn_base_tool_specs`,
+                // `xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs:361`
+                // — rides an ADMITTED row with `defer_loading: true`. It keeps its
+                // full declaration: the lowering withholds it from the provider's
+                // eager corpus, it never drops it from `tools[]`. Every other cell
+                // emits `None`, which serialises no key (`src/messages.rs:620`), so
+                // an un-admitted row and an admitted row with nothing withheld stay
+                // byte-identical to pre-cut (the scope rule). `Some(false)` is
+                // unrepresentable here, which is R-1.6's donor divergence.
+                defer_loading: (admitted && t.exposure == ToolExposure::Deferred).then_some(true),
             }))
             .collect();
         // F5 per-tool breakpoint: the marker spends the free 4th marker
@@ -1556,7 +1566,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         // CC5 gate, not this cut's). It is donor parity, NOT a provider
         // requirement (R-7.4): never dispatched, and it counts as deferred
         // for H-12 (a `[placeholder]`-only tools[] trips it by design).
-        if req.search_admission.is_some_and(|admission| admission.admitted()) {
+        if admitted {
             mapped.push(ToolParam::Custom(crate::messages::ToolCustom {
                 name: "DeferredToolPlaceholder".to_owned(),
                 description: Some(
@@ -1588,12 +1598,10 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         // breakpoint pin above keeps its pre-cut meaning. R-3.1: `query` +
         // `max_results` both required, `max_results` default 5; R-3.3: NO `limit`
         // key (that is the Responses spelling — optional, default 8).
-        // `defer_loading: None`: a live declared tool, not a materialised entry
-        // (the donor entry carries no such key — the entry byte pin is N-1's CC5
-        // gate).
-        if req
-            .search_admission
-            .is_some_and(|admission| admission.admitted())
+        // `defer_loading` is not touched here — the static map decides it at
+        // `:1535`: a live declared carrier is `None` (no such key on the donor
+        // entry — N-1's CC5 byte pin); `true` only if it is itself `Deferred`.
+        if admitted
             && let Some(ToolParam::Custom(custom)) = mapped.iter_mut().find(|tool| {
                 matches!(
                     tool,
@@ -1698,8 +1706,8 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         // never express this entry from a baked value.
         //
         // Position is load-bearing: it must stay AFTER the R-6 stamp site
-        // (`conversation/messages.rs:1534-1535`), whose scrutinee matches only a
-        // `ToolParam::Custom` (`:1546-1547`). Appended before it, this entry takes the
+        // (`conversation/messages.rs:1544-1545`), whose scrutinee matches only a
+        // `ToolParam::Custom` (`:1556-1557`). Appended before it, this entry takes the
         // `last` slot and the marker leaves `tools[]` altogether rather than moving
         // onto it — measured: brief §3's reorder mutant leaves zero `cache_control`
         // entries under `tools[]`. Killed by
@@ -1712,9 +1720,9 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         // variant with this same `name` (`src/messages.rs:1216-1222`), so a row that
         // both admits and selects `tool_search` would otherwise project the
         // declaration twice. The guard only sees that config-produced member because
-        // this block runs after its projection (`:1656`); both facts are pinned by
+        // this block runs after its projection (`:1664`); both facts are pinned by
         // `nfdb_n6_admitted_row_never_declares_the_vendor_entry_twice`, measured red
-        // for an append above `:1656`.
+        // for an append above `:1664`.
         //
         // Two open questions ride on this append, both owed a lane-N ruling. (1)
         // Auxiliary side-calls reach it too: they admit over the turn's real tool
@@ -1722,15 +1730,15 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
         // tools from `acp_session_impl/recap.rs:176`) while never executing tools
         // themselves (`acp_session_impl/side_call.rs:160-161`), so a /btw call now
         // declares a search the provider can run inside it. (2) The same admission
-        // also drives R-7's placeholder (`:1559-1571`) and the R-3 carrier
-        // canonicalisation (`:1594-1609`), and the R-2 advertisement keys off it plus
+        // also drives R-7's placeholder (`:1569-1581`) and the R-3 carrier
+        // canonicalisation (`:1604-1617`), and the R-2 advertisement keys off it plus
         // `d2_carrier_declared` and a non-empty deferred set (`:1463-1467`), so a
         // registering preset can put all of them in one `tools[]` beside this entry.
         //
         // Every 200 arm in the pinned capture declares this entry at `tools[0]`, never
         // last: the shipped position is unproven, so the §6 harness capture must
         // exercise a trailing placement before the baked flag is banked as firing.
-        if req.search_admission.is_some_and(SearchAdmission::admitted)
+        if admitted
             && !mapped.iter().any(|tool| {
                 matches!(
                     tool,

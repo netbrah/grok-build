@@ -4330,7 +4330,11 @@ fn materialised_entry_carries_full_schema() {
 #[test]
 fn materialised_entry_is_defer_loading_true() {
     // T-1.6: materialised entries mark defer_loading: true (a class marker,
-    // never a load-state flag); static entries emit NO such key (N-4).
+    // never a load-state flag); a NON-deferred static entry emits NO such key
+    // (N-4; apex-lk0d: a `Deferred` exposure on an admitted row does —
+    // `conversation/messages.rs:1535`, pinned by `lk0d_a`). Every tool here is
+    // `d2_tool`-built and that fixture leaves `exposure` at its default
+    // (`:4147`), so this surface withholds nothing.
     let (call, answer) = d2_client_pair("call_dl1", vec![d2_def("promo", serde_json::json!({"type": "object"}))]);
     let items = vec![
         ConversationItem::user("hi"),
@@ -4354,7 +4358,8 @@ fn materialised_entry_is_defer_loading_true() {
             Some(_) => assert_eq!(
                 entry.get("defer_loading"),
                 None,
-                "static tools[{i}] must emit no defer_loading key: {entry:#}"
+                "a non-deferred static tools[{i}] must emit no defer_loading key \
+                 (a `Deferred` exposure on an admitted row does — see `lk0d_a`): {entry:#}"
             ),
             None => panic!("tools[{i}] has no name: {entry:#}"),
         }
@@ -5134,7 +5139,11 @@ fn toolsearch_schema_matches_donor() {
         "the three query forms (G-10) are present: {description:?}"
     );
     // A live declared tool: no defer_loading key (the donor entry has
-    // none — the materialised class marker is not copied onto it).
+    // none — the materialised class marker is not copied onto it). This row
+    // DOES admit (`d2_armed_req`:4714), so the key is absent because the
+    // carrier is not `Deferred`, not because it is static:
+    // `conversation/messages.rs:1535` is what marks a withheld static entry on
+    // an admitted row, and this carrier is not withheld.
     assert_eq!(
         entry.get("defer_loading"),
         None,
@@ -5386,7 +5395,7 @@ fn declared_search_carrier_name_resolves_in_the_registry_surface() {
     // `carrier_absent_admitted_row_declares_no_search_carrier`.
     // The R-7 placeholder and the apex-nfdb vendor declaration are the two
     // allow-listed exceptions: neither is dispatched locally (the placeholder is
-    // never called, `conversation/messages.rs:1557`; the vendor entry is executed
+    // never called, `conversation/messages.rs:1567`; the vendor entry is executed
     // by the provider), so neither has a dispatcher name to resolve to.
     let answer_names: BTreeSet<String> = ["lookup_shipping_eta"]
         .into_iter()
@@ -5490,7 +5499,9 @@ fn search_carrier_canonicalised_in_place_not_appended() {
     assert_eq!(
         entry.get("defer_loading"),
         None,
-        "a live declared tool, not a materialised entry: {entry:#}"
+        "a live declared tool, not a materialised entry, and not a withheld one \
+         either: this admitted row (`d2_armed_req`, `:4714`) leaves the carrier's \
+         `exposure` at its default, so `conversation/messages.rs:1535` emits no key: {entry:#}"
     );
 }
 
@@ -5761,12 +5772,23 @@ fn nfdb_tool_marker_offset(req: &ConversationRequest) -> Option<usize> {
         .find("\"cache_control\"")
 }
 
+/// Indices of the `tools[]` entries carrying a `cache_control` marker — the
+/// shape `nfdb_n4` measures and `lk0d_e` compares across admission states.
+fn nfdb_marker_indices(tools: &[serde_json::Value]) -> Vec<usize> {
+    tools
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.get("cache_control").is_some())
+        .map(|(i, _)| i)
+        .collect()
+}
+
 /// N2: `supports_search_tool=false` emits no search entry and is byte-identical
 /// to HEAD. The two literals are `build_messages_request`'s own output captured at
 /// `50bccd2e` with the encoder unmodified, not hand-built expectations. The
 /// equality is also structural: the item's entire product delta is one block
 /// guarded by `req.search_admission.is_some_and(SearchAdmission::admitted)`
-/// (`conversation/messages.rs:1733`), so an un-admitted route cannot reach it — the
+/// (`conversation/messages.rs:1741`), so an un-admitted route cannot reach it — the
 /// literals are what would catch a future guard that let it.
 #[test]
 fn nfdb_n2_unadmitted_row_is_byte_identical_to_head() {
@@ -5835,12 +5857,7 @@ fn nfdb_n4_vendor_entry_never_collects_the_r6_cache_marker() {
     let unadmitted = nfdb_last_breakpoint(nfdb_row_flag_off(nfdb_req(nfdb_tools())));
 
     let tools = nfdb_tools_json(&admitted);
-    let marked: Vec<usize> = tools
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| t.get("cache_control").is_some())
-        .map(|(i, _)| i)
-        .collect();
+    let marked = nfdb_marker_indices(&tools);
     assert_eq!(
         marked,
         vec![2],
@@ -5857,6 +5874,12 @@ fn nfdb_n4_vendor_entry_never_collects_the_r6_cache_marker() {
         .iter()
         .position(|t| t.get("type").and_then(serde_json::Value::as_str) == Some(NFDB_SEARCH_TYPE))
         .expect("the admitted row carries the vendor entry");
+    assert!(
+        search_idx > marked[0],
+        "the whole point of N4: the append sits AFTER the R-6 stamp site, so the \
+         marker stays on the last static client tool — vendor at {search_idx}, \
+         marker at {marked:?}: {tools:#?}"
+    );
     assert!(
         tools[search_idx].get("cache_control").is_none(),
         "the vendor entry must not collect the marker: {:#}",
@@ -5997,5 +6020,375 @@ fn nfdb_n7_append_site_and_the_producer_arm_stay_identical() {
          `server_tool_from_type({NFDB_SEARCH_TYPE})` builds: the vendor name is \
          authored twice (`conversation/messages.rs`, the apex-nfdb append, and \
          `src/messages.rs:1216`) and a rename must move both"
+    );
+}
+
+// ============================================================================
+// apex-lk0d (MSGDEFERLOWER-1) — Messages must LOWER `ToolExposure::Deferred`
+// onto the static client tool's own `tools[]` entry.
+//
+// The deferral DECISION is route-neutral and already runs: `turn_base_tool_specs`
+// (`xai-grok-shell/src/session/acp_session_impl/sampler_turn.rs:346-366`) sets
+// `spec.exposure = ToolExposure::Deferred` from
+// `models_manager.model_deferred_tools(current_model)`. Responses consumes it
+// (`conversation/responses.rs:834`); Messages did not — at the pinned base
+// `ef167848` its static map hardcoded `defer_loading: None`
+// (`git show ef167848:crates/codegen/xai-grok-sampling-types/src/conversation/messages.rs`,
+// line 1525), so a real built-in could never be withheld on a claude row.
+//
+// Why this seam and not another (measured, do not re-litigate):
+// ~/hts-o-durable/captures/20261008T130337Z-messages-defer-real-builtin/VERDICT.txt
+// = REAL-BUILTIN-SURFACED — with `read_file` and `search_replace` carrying
+// `defer_loading: true` in `tools[]`, the provider searched the request's OWN
+// `tools[]` and emitted `tool_use(read_file)`, `stop_reason: tool_use`. The corpus
+// Lane N searches is the body this encoder writes.
+// ============================================================================
+
+/// A static client tool the shell's decision has already marked withheld — the
+/// `ToolSpec` `turn_base_tool_specs` emits for a name in
+/// `model_deferred_tools(current_model)` (`sampler_turn.rs:361`).
+fn lk0d_withheld_tool(name: &str) -> ToolSpec {
+    ToolSpec {
+        exposure: ToolExposure::Deferred,
+        ..d2_tool(name)
+    }
+}
+
+/// `nfdb_tools()`'s three-tool surface with `t1` withheld: the R-6 `Last` target
+/// stays at index 2 and the withheld entry sits inside the static region.
+fn lk0d_surface() -> Vec<ToolSpec> {
+    vec![d2_tool("t0"), lk0d_withheld_tool("t1"), d2_tool("t2")]
+}
+
+/// The same shape with nothing withheld — the byte-identity baseline.
+fn lk0d_surface_all_immediate() -> Vec<ToolSpec> {
+    nfdb_tools()
+}
+
+/// The projected `tools[]` names in order (every entry this file exercises
+/// carries a `name`, including the dated server members).
+fn lk0d_tool_names(req: &ConversationRequest) -> Vec<String> {
+    nfdb_tools_json(req)
+        .iter()
+        .filter_map(|t| {
+            t.get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+/// The `defer_loading` value each projected entry carries, in order.
+fn lk0d_defer_flags(req: &ConversationRequest) -> Vec<Option<bool>> {
+    nfdb_tools_json(req)
+        .iter()
+        .map(|t| t.get("defer_loading").and_then(|v| v.as_bool()))
+        .collect()
+}
+
+/// (a) The RED check: an admitted row must lower `ToolExposure::Deferred` to
+/// `defer_loading: true` on the withheld built-in's own entry, and change nothing
+/// else in `tools[]`.
+#[test]
+fn lk0d_a_admitted_row_lowers_deferred_exposure_on_a_static_tool() {
+    let withheld = nfdb_admitted(nfdb_req(lk0d_surface()));
+    let plain = nfdb_admitted(nfdb_req(lk0d_surface_all_immediate()));
+
+    // Derived from the encoder's own admitted output rather than hand-built: the
+    // ONE difference a withheld tool may make is the one key on `t1`.
+    let mut expected = nfdb_tools_json(&plain);
+    expected[1]["defer_loading"] = serde_json::json!(true);
+
+    assert_eq!(
+        nfdb_tools_json(&withheld),
+        expected,
+        "an admitted row must mark the withheld static tool `t1` with \
+         `defer_loading: true` and change nothing else in tools[] (R-1.5: the \
+         tool keeps its full declaration — the lowering withholds, it does not drop)"
+    );
+    assert_eq!(
+        lk0d_defer_flags(&withheld),
+        vec![None, Some(true), None, Some(true), None],
+        "[t0, t1(withheld), t2, DeferredToolPlaceholder, vendor] — the R-7 \
+         placeholder is KEPT (donor parity, R-7.4; the ruling in brief §5 is \
+         unmade, so the default applies) and the vendor entry stays non-deferred"
+    );
+}
+
+/// (b) THE LOAD-BEARING CHECK — byte identity. Nothing is withheld unless the row
+/// admits, so an un-admitted surface that contains a deferred tool, and an
+/// admitted surface with nothing withheld, both serialise with NO `defer_loading`
+/// key and stay byte-identical to HEAD. This is what protects the rest of the
+/// corpus (SPEC-W2 G-16b); it is also the guard the named mutant dies on.
+#[test]
+fn lk0d_b_byte_identity_when_nothing_is_withheld() {
+    // `build_messages_request`'s own output for this exact three-tool surface,
+    // byte-identical to the literal `nfdb_n2_unadmitted_row_is_byte_identical_to_head`
+    // pins from `50bccd2e` and re-verified green against THIS cut's pre-edit bytes.
+    // The literal is on-point because the pre-cut encoder never read `exposure`,
+    // so a deferred `t1` could not have altered it.
+    //
+    // That makes this a verbatim second copy of nfdb_n2's
+    // `HEAD_UNADMITTED_NO_BREAKPOINT` (above in this file). Kept as two copies on
+    // purpose: nfdb_n2 witnesses the un-admitted route with nothing withheld and
+    // this one witnesses it with a withheld tool, so a single shared const would
+    // let one edit silence both guards at once.
+    const HEAD_STATIC_REGION: &str = r#"{"model":"test-model","messages":[{"role":"user","content":[{"type":"text","text":"go","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"tools":[{"name":"t0","description":"the t0 tool","input_schema":{"type":"object","properties":{}}},{"name":"t1","description":"the t1 tool","input_schema":{"type":"object","properties":{}}},{"name":"t2","description":"the t2 tool","input_schema":{"type":"object","properties":{}}}]}"#;
+
+    for (label, withheld, plain) in [
+        (
+            "un-admitted (supports_search_tool=false) + withheld t1",
+            nfdb_row_flag_off(nfdb_req(lk0d_surface())),
+            nfdb_row_flag_off(nfdb_req(lk0d_surface_all_immediate())),
+        ),
+        (
+            "no admission field at all + withheld t1",
+            nfdb_req(lk0d_surface()),
+            nfdb_req(lk0d_surface_all_immediate()),
+        ),
+    ] {
+        let wire = serde_json::to_string(&build_messages_request(&withheld)).unwrap();
+        assert_eq!(
+            wire, HEAD_STATIC_REGION,
+            "the un-admitted route must stay byte-identical to HEAD even when the \
+             surface marks a tool deferred ({label}); got {wire}"
+        );
+        assert_eq!(
+            wire,
+            serde_json::to_string(&build_messages_request(&plain)).unwrap(),
+            "a deferred exposure must be invisible on an un-admitted row ({label})"
+        );
+        assert_eq!(
+            lk0d_defer_flags(&withheld),
+            vec![None; 3],
+            "no `defer_loading` key may reach an un-admitted tools[] ({label})"
+        );
+    }
+
+    // The admitted row with NOTHING withheld: the static region keeps emitting no
+    // key at all, so it is byte-identical to pre-cut; only the placeholder (which
+    // apex-waj.36 already emitted) carries the marker.
+    let plain_admitted = nfdb_admitted(nfdb_req(lk0d_surface_all_immediate()));
+    assert_eq!(
+        lk0d_defer_flags(&plain_admitted),
+        vec![None, None, None, Some(true), None],
+        "an admitted row that withholds nothing must add no key to any static entry"
+    );
+
+    // The same admitted surface measured against HEAD's BYTES rather than against
+    // key absence — brief §4 check 2 names both surfaces, and all three `HEAD_*`
+    // literals in this file (nfdb_n2's two, plus the one above) pin un-admitted
+    // bodies. Strip the two entries admission itself appends — R-7's placeholder
+    // (`conversation/messages.rs:1569-1581`) and the apex-nfdb vendor member
+    // (`:1741-1774`) — out of the encoder's own admitted body and what is left of
+    // `tools[]` must be HEAD's static region verbatim. Derived from this encoder's
+    // output plus the literal above, so it is not a hand-built expectation.
+    let mut admitted_body = serde_json::to_value(build_messages_request(&plain_admitted)).unwrap();
+    let admitted_tools = admitted_body
+        .get_mut("tools")
+        .and_then(serde_json::Value::as_array_mut)
+        .expect("tools[] projected");
+    admitted_tools.retain(|t| {
+        t.get("name").and_then(serde_json::Value::as_str) != Some("DeferredToolPlaceholder")
+            && t.get("type").and_then(serde_json::Value::as_str) != Some(NFDB_SEARCH_TYPE)
+    });
+    let head_body: serde_json::Value = serde_json::from_str(HEAD_STATIC_REGION).unwrap();
+    assert_eq!(
+        serde_json::to_string(admitted_tools).unwrap(),
+        serde_json::to_string(&head_body["tools"]).unwrap(),
+        "the admitted row with nothing withheld must serialise the same static-region \
+         bytes as HEAD once the two appended entries are removed; got {admitted_tools:?}"
+    );
+}
+
+/// (c) R-1.6 donor divergence: `Some(false)` is NEVER emitted on a static entry.
+/// The field's own doc (`src/messages.rs:614-621`) records that emitting
+/// `"defer_loading": false` diverges from the donor, and the lowering is written
+/// as `(..).then_some(true)` so the `false` value is unrepresentable — this pins
+/// that across every admission state, including an un-withheld static region beside
+/// a withheld one.
+#[test]
+fn lk0d_c_no_entry_ever_carries_defer_loading_false() {
+    for (label, req) in [
+        (
+            "admitted + withheld",
+            nfdb_admitted(nfdb_req(lk0d_surface())),
+        ),
+        (
+            "admitted + nothing withheld",
+            nfdb_admitted(nfdb_req(lk0d_surface_all_immediate())),
+        ),
+        (
+            "un-admitted + withheld",
+            nfdb_row_flag_off(nfdb_req(lk0d_surface())),
+        ),
+        ("no admission field + withheld", nfdb_req(lk0d_surface())),
+    ] {
+        assert!(
+            !lk0d_defer_flags(&req).contains(&Some(false)),
+            "a `false` defer_loading on a tools[] entry is the R-1.6 donor \
+             divergence ({label}): {:?}",
+            lk0d_defer_flags(&req)
+        );
+    }
+}
+
+/// (d) SPEC-W2 G-18, pinned from OUR side. The live endpoint refuses an
+/// all-deferred `tools[]` with "At least one tool must have defer_loading=false.
+/// All tools cannot be deferred."
+/// (`~/hts-o-durable/captures/20261008T011235Z-vertex-native-search/N1-all-deferred`,
+/// HTTP 400). This test says out loud what the encoder does: it does NOT withhold
+/// the deferral when every static tool is deferred — it emits every static entry
+/// with `defer_loading: true`, and the admitted row escapes the 400 only because
+/// the apex-nfdb vendor append is the one non-deferred member in the array. The
+/// H-12 lint is observe-only in release (`xai-grok-sampler/src/client.rs:1845-1870`),
+/// so nothing here repairs such a body.
+#[test]
+fn lk0d_d_all_deferred_admitted_surface_emits_every_static_entry_deferred() {
+    let all_withheld = nfdb_admitted(nfdb_req(vec![
+        lk0d_withheld_tool("t0"),
+        lk0d_withheld_tool("t1"),
+        lk0d_withheld_tool("t2"),
+    ]));
+    assert_eq!(
+        lk0d_defer_flags(&all_withheld),
+        vec![Some(true), Some(true), Some(true), Some(true), None],
+        "the encoder lowers every withheld static tool and keeps exactly one \
+         non-deferred entry, the vendor declaration"
+    );
+
+    let mut body = serde_json::to_value(build_messages_request(&all_withheld)).unwrap();
+    assert!(
+        crate::conversation::outbound_lint::lint_outbound_request(
+            crate::conversation::projection::Boundary::Vertex,
+            &body,
+        )
+        .iter()
+        .all(|v| v.rule != "H-12"),
+        "the shipped body clears H-12 only via the vendor entry: {body}"
+    );
+
+    // Non-vacuity: drop that one member from OUR OWN body and the same body is
+    // the provider's 400. Without this leg the assertion above would pass for a
+    // body that could never trip the rule in the first place.
+    let tools = body
+        .get_mut("tools")
+        .and_then(serde_json::Value::as_array_mut)
+        .expect("tools[] projected");
+    tools.retain(|t| t.get("type").and_then(serde_json::Value::as_str) != Some(NFDB_SEARCH_TYPE));
+    let violations = crate::conversation::outbound_lint::lint_outbound_request(
+        crate::conversation::projection::Boundary::Vertex,
+        &body,
+    );
+    assert!(
+        violations.iter().any(|v| v.rule == "H-12"),
+        "with the vendor member removed the same body is all-deferred and H-12 \
+         must name it (G-18): {violations:?}"
+    );
+}
+
+/// (e) The R-7 placeholder and the apex-nfdb vendor append keep their positions
+/// when a real static entry starts carrying `defer_loading` — stated as equality
+/// against the same encoder over the all-immediate surface, so it is a position
+/// claim and not a hand-built expectation. The byte-offset leg of `nfdb_n4` stays
+/// on the all-immediate pair on purpose: a withheld entry inserts a key AHEAD of
+/// the R-6 marker and moves that offset by design, which is this cut's intended
+/// consequence, not an R-6 regression.
+#[test]
+fn lk0d_e_deferred_static_entries_do_not_move_the_placeholder_or_the_append() {
+    let withheld = nfdb_last_breakpoint(nfdb_admitted(nfdb_req(lk0d_surface())));
+    let plain = nfdb_last_breakpoint(nfdb_admitted(nfdb_req(lk0d_surface_all_immediate())));
+
+    assert_eq!(
+        lk0d_tool_names(&withheld),
+        lk0d_tool_names(&plain),
+        "withholding a static tool must not add, drop or reorder a tools[] entry"
+    );
+    assert_eq!(
+        nfdb_marker_indices(&nfdb_tools_json(&withheld)),
+        nfdb_marker_indices(&nfdb_tools_json(&plain)),
+        "the R-6 marker must stay pinned to the last STATIC client tool (index 2) \
+         and never migrate onto the withheld entry, the placeholder or the vendor \
+         member (`conversation/messages.rs:1556-1559` is the stamp site)"
+    );
+    assert_eq!(
+        lk0d_tool_names(&withheld),
+        vec![
+            "t0",
+            "t1",
+            "t2",
+            "DeferredToolPlaceholder",
+            NFDB_SEARCH_NAME,
+        ],
+        "static region, then the R-7 placeholder, then the vendor append (after the \
+         R-6 stamp site — see nfdb_n4)"
+    );
+}
+
+/// (f) The wire shape this cut makes newly reachable, pinned because nothing
+/// else in the repo exercises it. With the row key `tools_cache_breakpoint =
+/// "last"` the R-6 marker is stamped on the LAST static client tool
+/// (`conversation/messages.rs:1543-1561`, the write at `:1559`) — and when that
+/// very entry is withheld it now also carries `defer_loading: true` (`:1535`),
+/// so the two keys land on one `tools[]` object. Pre-cut the co-occurrence was
+/// unrepresentable: that field was hardcoded `None` there
+/// (`git show ef167848:…/conversation/messages.rs`, line 1525) and the only
+/// entries that carried the key sat after the stamp site.
+///
+/// THE PROVIDER REFUSES THIS BODY, so nothing here may be quoted as provider
+/// acceptance. `~/hts-o-durable/captures/20261008T011235Z-vertex-native-search/N2-cc-on-deferred`
+/// is HTTP 400 (`.status`) reading "Tool 'lookup_weather' cannot have both
+/// defer_loading=true and cache_control set. Tools with defer_loading cannot use
+/// prompt caching." (`.resp.raw`); in `.req.json` `lookup_weather` is the only
+/// `tools[]` member carrying both keys, while `lookup_shipping_eta` carries
+/// `defer_loading: true` alone and is not named. The 200 arms of
+/// `~/hts-o-durable/captures/20261008T130337Z-messages-defer-real-builtin` never
+/// show the pair either — `B.req.json` and `C.req.json`, 3 tools each,
+/// `defer_loading` on two, `cache_control` on none.
+///
+/// Why a refused shape is pinned anyway: the marker exists only on a row that
+/// opts in, and neither the bake nor this machine's local config opts in —
+/// `tools_cache_breakpoint` appears 0 times in
+/// `crates/codegen/xai-grok-models/default_models.json` and 0 times in this
+/// machine's `~/.grok/config.toml`, and the string resolves to
+/// `ToolCacheBreakpoint` only at
+/// `xai-grok-shell/src/agent/config.rs:6881-6895`. That is the full extent of
+/// what this file can exclude: a proxy-served row may set the same key
+/// (`xai-grok-shell/src/agent/config.rs:4572-4574`, `FieldSource::ProxyRow`), so
+/// the pair being unreachable is a deployment fact, not a code guarantee. No
+/// local check flags it either: `conversation/outbound_lint.rs` has no rule that
+/// reads `cache_control`, and its `tools[]` all-deferred rule reads
+/// `defer_loading` alone (`conversation/outbound_lint.rs:533-535`), while the
+/// lint gate is a debug-only panic
+/// (`xai-grok-sampler/src/client.rs:1845-1870`). Whether to suppress the marker
+/// on a withheld last tool, lint the pair, or rule it unreachable is booked as
+/// bead `apex-y6wu.1` — it is outside this cut's "THE CHANGE (nothing else)".
+/// Until that ruling lands, this test is the only witness that the pair is
+/// reachable from `Last`. The §6 harness capture must exercise it before row G's
+/// bake is banked as firing, exactly like the append's unproven shipped position
+/// (`conversation/messages.rs:1738-1740`).
+#[test]
+fn lk0d_f_the_r6_marker_and_defer_loading_can_land_on_one_static_entry() {
+    let withheld_last = nfdb_last_breakpoint(nfdb_admitted(nfdb_req(vec![
+        d2_tool("t0"),
+        d2_tool("t1"),
+        lk0d_withheld_tool("t2"),
+    ])));
+    let plain = nfdb_last_breakpoint(nfdb_admitted(nfdb_req(lk0d_surface_all_immediate())));
+
+    let tools = nfdb_tools_json(&withheld_last);
+    // Whole-object: derived from the same encoder over the all-immediate pair,
+    // so the ONE permitted difference is the key on the marked entry.
+    let mut expected = nfdb_tools_json(&plain);
+    expected[2]["defer_loading"] = serde_json::json!(true);
+
+    assert_eq!(
+        tools, expected,
+        "withholding the LAST static tool puts `defer_loading: true` on the very \
+         entry the R-6 marker sits on (index 2) and changes no other byte of \
+         tools[]. The pinned body is a PROVIDER-400 WITNESS, not endorsed bytes: \
+         the endpoint refuses `cache_control` + `defer_loading` on one entry \
+         (capture 20261008T011235Z-vertex-native-search/N2-cc-on-deferred; the \
+         suppress-or-lint ruling is booked as apex-y6wu.1): {tools:#?}"
     );
 }
