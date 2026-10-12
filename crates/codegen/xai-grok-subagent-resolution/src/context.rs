@@ -371,7 +371,9 @@ mod tests {
     }
 
     fn reasoning_item(text: &str) -> ConversationItem {
-        ConversationItem::Reasoning(xai_grok_sampling_types::synthesized_reasoning_item(text))
+        ConversationItem::Reasoning(
+            xai_grok_sampling_types::synthesized_reasoning_item(text).into(),
+        )
     }
 
     fn extract_background_text(item: &ConversationItem) -> String {

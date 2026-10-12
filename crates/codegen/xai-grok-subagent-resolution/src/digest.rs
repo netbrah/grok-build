@@ -287,7 +287,9 @@ mod tests {
     }
 
     fn reasoning(text: &str) -> ConversationItem {
-        ConversationItem::Reasoning(xai_grok_sampling_types::synthesized_reasoning_item(text))
+        ConversationItem::Reasoning(
+            xai_grok_sampling_types::synthesized_reasoning_item(text).into(),
+        )
     }
 
     /// Provenance: open-grok@240c99c9 crates/codegen/xai-grok-subagent-resolution/src/digest.rs:308 :: tests::tool_result (adapted: the worktree `ToolResultItem` has no `ordered_content` field — dropped)
@@ -310,6 +312,7 @@ mod tests {
                     "encrypted_content": "SECRET_ENCRYPTED_BLOB"
                 }),
                 cross_provider_fallback: fallback.map(str::to_owned),
+                mint_tag: None,
             }),
         })
     }
