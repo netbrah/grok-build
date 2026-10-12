@@ -4468,15 +4468,19 @@ async fn team_mailbox_rejects_foreign_scope_and_self_send() {
 // name, honestly answers `Queued`, and persists the body into the roster
 // mailbox — and then no production read path can ever surface it: the
 // `wait_agent` drain filters `native.is_none()` (`coordinator.rs` mailbox
-// drain), and the native door's Wait arm refuses a reader that is no longer
-// active. Two stores that never meet — the wild dead-accept datum
+// drain), and a completed named reader is refused at the native door's
+// `known` gate before any arm dispatch. Two stores that never meet — the
+// wild dead-accept datum
 // (bridge_claude entry sat undrained for the remaining ~3 h of its session)
 // is reproduced byte-shaped here. Draft: map/redcell-drafts/comms-unreadable-11.md.
 //
 // The LIVE-target variant is deferred pending the K2/Q4 contract ruling
-// (wait_agent-surfacing vs injection-only); this COMPLETED variant stands
-// under both candidate rulings — a stranded completed recipient has no
-// injection channel by definition.
+// (wait_agent-surfacing vs injection-only). This COMPLETED variant encodes
+// the readability bar as a DISJUNCTION over the production surfaces: it goes
+// green under any ruling that surfaces the body on some read path; under a
+// strict injection-only ruling the defect class changes to dishonest accept,
+// and this cell re-cuts to a reject/dead-letter assertion instead (review
+// R2/H1, 2026-10-12).
 #[tokio::test]
 #[ignore = "expected-red apex-ayl.164 — queued native mail is unreadable on every production path (COMMS-DRAIN-NONATIVE / apex-iib); run with --ignored until the C1 delivery-seam cut lands"]
 async fn comms_drain_nonative_strands_queued_native_mail() {
@@ -4513,9 +4517,9 @@ async fn comms_drain_nonative_strands_queued_native_mail() {
 
     // Root sends a plain (non-triggers_turn) native message to the named seat.
     let root = mailbox_identity("parent", "parent");
-    let send = harness
-        .backend
-        .native_agent(
+    let send = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        harness.backend.native_agent(
             root.clone(),
             NativeAgentOperation::Message {
                 target: "/root/bridge_b".to_owned(),
@@ -4526,8 +4530,9 @@ async fn comms_drain_nonative_strands_queued_native_mail() {
                     to_agent_id: "/root/bridge_b".to_owned(),
                     kind: AgentMailboxMessageKind::NativeMessage,
                     body: BODY.to_owned(),
-                    // Pinned from the banked wild entry (byte-shape; synthetic body).
-                    created_at_ms: 1789402166371,
+                    // Pinned synthetic epoch (review H5: no datum lifted
+                    // from the live banked entry rides into the fixture).
+                    created_at_ms: 1789000000000,
                     native: Some(NativeAgentMessage {
                         author: "/root".to_owned(),
                         recipient: "/root/bridge_b".to_owned(),
@@ -4536,9 +4541,11 @@ async fn comms_drain_nonative_strands_queued_native_mail() {
                     }),
                 },
             },
-        )
-        .await
-        .expect("named send resolves against the loaded roster");
+        ),
+    )
+    .await
+    .expect("named send replies within 5s (review ROB: no silent actor hang)")
+    .expect("named send resolves against the loaded roster");
     // Green pins: the accept was honest, not a silent drop — the wild
     // `{message_id, status:"queued"}` shape, and the entry persists.
     assert_eq!(
@@ -4552,14 +4559,43 @@ async fn comms_drain_nonative_strands_queued_native_mail() {
         persisted_bodies()
     );
 
-    // RED 1 — the v1 public read path: `wait_agent_messages` drains the
-    // mailbox but its filter skips every `native.is_some()` entry forever,
-    // so the body never reaches the named reader.
+    // READ SURFACES (review R2 rebuild, 2026-10-12) — the readability
+    // contract is a DISJUNCTION over production read paths, not a
+    // conjunction: ANY surface that carries the body satisfies it. Both
+    // candidates are probed and named in the failure so today's red stays
+    // attributable per surface; the cell stays RED only while BOTH are
+    // silent. Surface 1 — the v1 public `wait_agent_messages` drain, whose
+    // filter skips every `native.is_some()` entry forever. Surface 2 — the
+    // v2 door, where a completed named reader is refused at the `known`
+    // gate before any arm dispatch (the wild reader's answer was
+    // names-only anyway, `{"updates":[author-path]}`).
     let seat = mailbox_identity("parent", SEAT_ID);
-    let inbox = harness.backend.wait_agent_messages(seat.clone(), 0).await;
+    let inbox = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        harness.backend.wait_agent_messages(seat.clone(), 0),
+    )
+    .await
+    .expect("the public drain replies within 5s (review ROB)");
+    let public_surfaced = inbox
+        .messages
+        .iter()
+        .any(|message| message.body == BODY);
+    let door = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        harness.backend.native_agent(seat.clone(), NativeAgentOperation::Wait {
+            timeout_ms: 0,
+        }),
+    )
+    .await
+    .expect("the native door replies within 5s (review ROB)");
+    let door_surfaced = door
+        .as_ref()
+        .is_ok_and(|value| value.to_string().contains(BODY));
     assert!(
-        inbox.messages.iter().any(|message| message.body == BODY),
-        "a queued body must be readable through the public wait path, got: {:?}",
+        public_surfaced || door_surfaced,
+        "a queued body must be readable through SOME production path \
+         (public wait surfaced: {public_surfaced}; native door surfaced: \
+         {door_surfaced}; public inbox: {:?}; door reply: {door:?})",
         inbox
             .messages
             .iter()
@@ -4567,27 +4603,12 @@ async fn comms_drain_nonative_strands_queued_native_mail() {
             .collect::<Vec<_>>()
     );
 
-    // RED 2 — the v2 door: Wait refuses a completed named reader outright
-    // (today), while the wild reader's answer was names-only anyway
-    // (`{"updates":[author-path]}`). Either surface that carries the body
-    // satisfies the contract.
-    let door = harness
-        .backend
-        .native_agent(seat.clone(), NativeAgentOperation::Wait { timeout_ms: 0 })
-        .await;
-    let door_surfaced = door
-        .as_ref()
-        .is_ok_and(|value| value.to_string().contains(BODY));
-    assert!(
-        door_surfaced,
-        "the native door must surface queued mail to its named reader, got: {door:?}"
-    );
-
-    // RED 3 — drain-on-read: once a read has surfaced the body, the roster
-    // mailbox must hold the entry no longer (wild: never drained, mtime moved
-    // while the entry sat). Together with RED 1/2 this is the full
-    // never-meet contract; the naive C1 fix (drain native mail into
-    // `messages[]`, pop the entry) passes all three, so the cell can go green.
+    // DRAIN-ON-READ — reached only once the disjunction above holds: the
+    // read that surfaced the body must drain the roster mailbox entry
+    // (wild: never drained, mtime moved while the entry sat). Under a
+    // strict injection-only ruling the defect class changes to dishonest
+    // accept and this cell re-cuts to a reject/dead-letter assertion
+    // instead (header note; review H1 honesty).
     assert!(
         !persisted_bodies().iter().any(|body| body == BODY),
         "a read that surfaced the body must drain the roster mailbox entry; \
@@ -4636,9 +4657,18 @@ async fn coordinator_roster_v1_door() {
             .spawn(request("child", true), None)
             .await
     });
-    let _ = harness.requests.recv().await.expect("C observed");
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), harness.requests.recv())
+        .await
+        .expect("the actor forwards C within 5s (review ROB)")
+        .expect("C observed");
     let _ = harness.start.send(());
-    assert_eq!(harness.started.recv().await.as_deref(), Some("child"));
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), harness.started.recv())
+            .await
+            .expect("C commits within 5s (review ROB)")
+            .as_deref(),
+        Some("child")
+    );
 
     // G — C's running child through C's own session (v1 nested door). Stored
     // with the TEAM as parent (`spawn.rs` rewrites `parent_session_id` to the
@@ -4650,17 +4680,30 @@ async fn coordinator_roster_v1_door() {
             .spawn(request("grandchild", true), None)
             .await
     });
-    let _ = harness.requests.recv().await.expect("G observed");
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), harness.requests.recv())
+        .await
+        .expect("the actor forwards G within 5s (review ROB)")
+        .expect("G observed");
     let _ = harness.start.send(());
-    assert_eq!(harness.started.recv().await.as_deref(), Some("grandchild"));
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), harness.started.recv())
+            .await
+            .expect("G commits within 5s (review ROB)")
+            .as_deref(),
+        Some("grandchild")
+    );
 
     // The native door, entered AS the unnamed v1 child C.
     let caller = mailbox_identity("parent", "child");
-    let roster = harness
-        .backend
-        .native_agent(caller, NativeAgentOperation::List { path_prefix: None })
-        .await
-        .expect("an active v1-doored child is admitted to the native door today");
+    let roster = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        harness
+            .backend
+            .native_agent(caller, NativeAgentOperation::List { path_prefix: None }),
+    )
+    .await
+    .expect("the door replies within 5s (review ROB)")
+    .expect("an active v1-doored child is admitted to the native door today");
     let agents = roster["agents"]
         .as_array()
         .unwrap_or(&Vec::new())
