@@ -1776,6 +1776,7 @@ fn reload_from_disk_cache_ignores_stale_cache() {
     let cache = test_cache_manager(tmp.path());
     let scope = mgr.cache_scope();
     let stale = ModelsCache {
+        semantic_version: crate::agent::remote_config::cache::MODELS_CACHE_SEMANTIC_VERSION,
         fetched_at: Utc::now() - ChronoDuration::seconds(3600),
         renewed_at: None,
         grok_version: Some(xai_grok_version::VERSION.to_string()),
@@ -2133,6 +2134,7 @@ fn reload_from_disk_cache_ignores_legacy_cache_without_origin() {
     let cache = test_cache_manager(tmp.path());
     let scope = mgr.cache_scope();
     let legacy = ModelsCache {
+        semantic_version: crate::agent::remote_config::cache::MODELS_CACHE_SEMANTIC_VERSION,
         fetched_at: Utc::now(),
         renewed_at: None,
         grok_version: Some(xai_grok_version::VERSION.to_string()),

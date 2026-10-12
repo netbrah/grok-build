@@ -1167,3 +1167,40 @@ fn parse_v1_row_without_caps_keeps_none_provenance() {
     assert_eq!(result.feed_max_input_tokens, None, "zero window is absent, not a value");
     assert_eq!(result.feed_max_output_tokens, Some(0));
 }
+
+#[test]
+fn q36i_baked_search_observations_preserve_none_false_true() {
+    for observed in [None, Some(false), Some(true)] {
+        let row = crate::models::DefaultModelEntry {
+            model: "q36i-observation".to_string(),
+            supports_search_tool: observed,
+            ..Default::default()
+        };
+        let baked = baked_cap_row_from_entry(&row);
+        assert_eq!(
+            baked,
+            BakedCapRow {
+                supports_search_tool: observed,
+                context_window: None,
+                max_completion_tokens: None,
+            }
+        );
+        let table = [(row.model.clone(), baked)].into_iter().collect();
+        let parsed = parse_remote_model_value(
+            &serde_json::json!({"model": row.model}),
+            "https://catalog.example/v1",
+            &table,
+        )
+        .unwrap();
+        let prefetched =
+            crate::agent::remote_config::fetch::build_prefetched_map(vec![parsed], None);
+        let resolved = crate::agent::config::resolve_model_list(
+            &crate::agent::config::Config::default(),
+            Some(prefetched),
+        );
+        assert_eq!(
+            resolved["q36i-observation"].info.supports_search_tool,
+            observed.unwrap_or(false)
+        );
+    }
+}

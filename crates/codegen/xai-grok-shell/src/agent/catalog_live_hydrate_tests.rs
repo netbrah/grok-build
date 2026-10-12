@@ -319,6 +319,7 @@ fn parse_with_baked(
 fn backfill_live_null_caps_from_baked_row() {
     let baked: indexmap::IndexMap<String, crate::remote::client::BakedCapRow> =
         [("cap-null".to_string(), crate::remote::client::BakedCapRow {
+            supports_search_tool: None,
             context_window: std::num::NonZeroU64::new(777_000),
             max_completion_tokens: Some(64_000),
         })]
@@ -355,6 +356,7 @@ fn backfill_live_null_baked_null_keeps_defaults() {
     // None (observations, not folds) — the pre-cut last resort stands.
     let baked: indexmap::IndexMap<String, crate::remote::client::BakedCapRow> =
         [("no-caps".to_string(), crate::remote::client::BakedCapRow {
+            supports_search_tool: None,
             context_window: None,
             max_completion_tokens: None,
         })]
@@ -384,6 +386,7 @@ fn backfill_live_null_baked_null_keeps_defaults() {
 fn backfill_live_present_wins_over_baked() {
     let baked: indexmap::IndexMap<String, crate::remote::client::BakedCapRow> =
         [("live-wins".to_string(), crate::remote::client::BakedCapRow {
+            supports_search_tool: None,
             context_window: std::num::NonZeroU64::new(1_000_000),
             max_completion_tokens: Some(128_000),
         })]
@@ -414,6 +417,7 @@ fn backfill_config_toml_wins_at_resolution() {
     // operator authority wins over both.
     let baked: indexmap::IndexMap<String, crate::remote::client::BakedCapRow> =
         [("cfg-vs-backfill".to_string(), crate::remote::client::BakedCapRow {
+            supports_search_tool: None,
             context_window: std::num::NonZeroU64::new(777_000),
             max_completion_tokens: Some(64_000),
         })]
@@ -460,6 +464,7 @@ fn backfill_u32_overflow_live_value_not_backfilled() {
     // The in axis is independent and still backfills.
     let baked: indexmap::IndexMap<String, crate::remote::client::BakedCapRow> =
         [("overflow".to_string(), crate::remote::client::BakedCapRow {
+            supports_search_tool: None,
             context_window: std::num::NonZeroU64::new(555_000),
             max_completion_tokens: Some(128_000),
         })]
@@ -495,6 +500,7 @@ fn backfill_key_matches_prefetched_map_key() {
     // (id, else model) — otherwise the backfill misses real rows.
     let baked_by_id: indexmap::IndexMap<String, crate::remote::client::BakedCapRow> =
         [("id-key".to_string(), crate::remote::client::BakedCapRow {
+            supports_search_tool: None,
             context_window: std::num::NonZeroU64::new(313_370),
             max_completion_tokens: None,
         })]
@@ -513,6 +519,7 @@ fn backfill_key_matches_prefetched_map_key() {
     // model only (no id): the key is the model.
     let baked_by_model: indexmap::IndexMap<String, crate::remote::client::BakedCapRow> =
         [("model-name".to_string(), crate::remote::client::BakedCapRow {
+            supports_search_tool: None,
             context_window: std::num::NonZeroU64::new(313_370),
             max_completion_tokens: None,
         })]

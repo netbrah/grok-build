@@ -10623,3 +10623,188 @@ fn model_row_supports_search_tool_serde_states() {
         "absent must stay None so the bundled row is left untouched"
     );
 }
+
+#[test]
+fn q36i_every_baked_gpt_omission_resolves_search() {
+    let baked = crate::remote::client::baked_cap_rows();
+    let rows: Vec<_> = crate::models::default_model_rows()
+        .iter()
+        .filter(|r| r.model.starts_with("gpt-") && r.supports_search_tool == Some(true))
+        .collect();
+    assert!(rows.iter().any(|r| r.model != "gpt-5.6-sol"));
+    for row in rows {
+        let key = row.id.as_deref().unwrap_or(&row.model);
+        let live = serde_json::json!({"id": key, "model": row.model});
+        let parsed = crate::remote::client::parse_remote_model_value(
+            &live,
+            "https://catalog.example/v1",
+            &baked,
+        )
+        .unwrap();
+        let expected_caps = baked[key];
+        assert_eq!(
+            parsed.context_window,
+            expected_caps
+                .context_window
+                .unwrap_or_else(|| std::num::NonZeroU64::new(
+                    crate::remote::client::DEFAULT_CONTEXT_WINDOW
+                )
+                .unwrap())
+        );
+        assert_eq!(
+            parsed.max_completion_tokens,
+            expected_caps.max_completion_tokens
+        );
+        assert_eq!(
+            (parsed.feed_max_input_tokens, parsed.feed_max_output_tokens),
+            (None, None)
+        );
+        let prefetched =
+            crate::agent::remote_config::fetch::build_prefetched_map(vec![parsed], None);
+        let resolved = resolve_model_list(&Config::default(), Some(prefetched));
+        assert!(
+            resolved[key].info.supports_search_tool,
+            "{key}: omitted live flag must inherit exact baked true"
+        );
+    }
+}
+
+#[test]
+fn q36i_every_baked_gpt_aliases_and_user_false_resolve() {
+    let baked = crate::remote::client::baked_cap_rows();
+    for row in crate::models::default_model_rows()
+        .iter()
+        .filter(|r| r.model.starts_with("gpt-") && r.supports_search_tool == Some(true))
+    {
+        let key = row.id.as_deref().unwrap_or(&row.model);
+        for alias in ["supportsSearchTool", "supports_search_tool"] {
+            for flag in [false, true] {
+                let mut live = serde_json::json!({"id": key, "model": row.model});
+                live[alias] = flag.into();
+                let parsed = crate::remote::client::parse_remote_model_value(
+                    &live,
+                    "https://catalog.example/v1",
+                    &baked,
+                )
+                .unwrap();
+                let map =
+                    crate::agent::remote_config::fetch::build_prefetched_map(vec![parsed], None);
+                let resolved = resolve_model_list(&Config::default(), Some(map.clone()));
+                assert_eq!(
+                    resolved[key].info.supports_search_tool, flag,
+                    "{key}/{alias}/{flag}"
+                );
+                let cfg = Config::new_from_toml_cfg(
+                    &toml::from_str(&format!(
+                        "[model.\"{key}\"]\nsupports_search_tool = false\n"
+                    ))
+                    .unwrap(),
+                )
+                .unwrap();
+                let overridden = resolve_model_list(&cfg, Some(map));
+                assert!(
+                    !overridden[key].info.supports_search_tool,
+                    "{key}: user false wins"
+                );
+            }
+        }
+        let cfg = Config::new_from_toml_cfg(
+            &toml::from_str(&format!(
+                "[model.\"{key}\"]\nsupports_search_tool = false\n"
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !resolve_model_list(&cfg, None)[key]
+                .info
+                .supports_search_tool
+        );
+    }
+}
+
+#[test]
+fn q36i_selected_alias_and_exact_key_resolution() {
+    let baked = crate::remote::client::baked_cap_rows();
+    let admitting: Vec<_> = crate::models::default_model_rows()
+        .iter()
+        .filter(|r| r.model.starts_with("gpt-") && r.supports_search_tool == Some(true))
+        .collect();
+    assert!(admitting.len() >= 2);
+    for row in admitting {
+        let key = row.id.as_deref().unwrap_or(&row.model);
+        for (primary, secondary, expected) in [
+            (serde_json::json!(false), serde_json::json!(true), false),
+            (serde_json::json!(true), serde_json::json!(false), true),
+            (serde_json::Value::Null, serde_json::json!(false), true),
+            (serde_json::json!("invalid"), serde_json::json!(false), true),
+        ] {
+            let live = serde_json::json!({"id": key, "model": row.model,
+                "supportsSearchTool": primary, "supports_search_tool": secondary});
+            let parsed = crate::remote::client::parse_remote_model_value(
+                &live,
+                "https://catalog.example/v1",
+                &baked,
+            )
+            .unwrap();
+            let map = crate::agent::remote_config::fetch::build_prefetched_map(vec![parsed], None);
+            assert_eq!(
+                resolve_model_list(&Config::default(), Some(map))[key]
+                    .info
+                    .supports_search_tool,
+                expected,
+                "{key}: selected primary determines observation"
+            );
+        }
+        for live in [
+            serde_json::json!({"id": "q36i-unknown", "model": key}),
+            serde_json::json!({"id": "q36i-other", "model": key, "supportsSearchTool": null}),
+        ] {
+            let other = live["id"].as_str().unwrap();
+            let parsed = crate::remote::client::parse_remote_model_value(
+                &live,
+                "https://catalog.example/v1",
+                &baked,
+            )
+            .unwrap();
+            let map = crate::agent::remote_config::fetch::build_prefetched_map(vec![parsed], None);
+            assert!(
+                !resolve_model_list(&Config::default(), Some(map))[other]
+                    .info
+                    .supports_search_tool,
+                "{other}: model spelling must not donate to a different id"
+            );
+        }
+        let live = serde_json::json!({"model": key});
+        let parsed = crate::remote::client::parse_remote_model_value(
+            &live,
+            "https://catalog.example/v1",
+            &baked,
+        )
+        .unwrap();
+        let map = crate::agent::remote_config::fetch::build_prefetched_map(vec![parsed], None);
+        assert!(
+            resolve_model_list(&Config::default(), Some(map))[key]
+                .info
+                .supports_search_tool,
+            "model-only key must use its exact baked row"
+        );
+    }
+    for live in [
+        serde_json::json!({"id": "q36i-unbaked"}),
+        serde_json::json!({"id": "q36i-unbaked", "supports_search_tool": "invalid"}),
+    ] {
+        let parsed = crate::remote::client::parse_remote_model_value(
+            &live,
+            "https://catalog.example/v1",
+            &indexmap::IndexMap::new(),
+        )
+        .unwrap();
+        let map = crate::agent::remote_config::fetch::build_prefetched_map(vec![parsed], None);
+        assert!(
+            !resolve_model_list(&Config::default(), Some(map))["q36i-unbaked"]
+                .info
+                .supports_search_tool
+        );
+    }
+}

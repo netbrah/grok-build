@@ -7,6 +7,7 @@ use super::cache_file::{CacheLoadError, is_fresh, read_capped, write_atomic};
 use super::{CacheAuthMethod, ModelsCacheScope};
 use crate::agent::config::ModelEntry;
 
+pub(crate) const MODELS_CACHE_SEMANTIC_VERSION: u32 = 1;
 pub(crate) const MODELS_CACHE_FILE: &str = "models_cache.json";
 pub(crate) const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 /// Cap on the unsigned models cache read, mirroring the settings cache: a
@@ -20,6 +21,8 @@ static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct ModelsCache {
+    #[serde(default)]
+    pub(crate) semantic_version: u32,
     /// Fetch-initiation time. The monotonic content key: an older fetch never
     /// replaces a newer stored catalog.
     pub(crate) fetched_at: DateTime<Utc>,
@@ -87,7 +90,9 @@ impl ModelsCacheManager {
             read_capped(&self.path, MODELS_CACHE_MAX_BYTES).ok_or(CacheLoadError::NotFound)?;
         let cache: ModelsCache =
             serde_json::from_slice(&data).map_err(|_| CacheLoadError::ParseFailed)?;
-        if cache.grok_version.as_deref() != Some(xai_grok_version::VERSION) {
+        if cache.semantic_version != MODELS_CACHE_SEMANTIC_VERSION
+            || cache.grok_version.as_deref() != Some(xai_grok_version::VERSION)
+        {
             return Err(CacheLoadError::VersionMismatch);
         }
         if cache.auth_method.as_ref() != Some(&scope.auth_method) {
@@ -130,6 +135,7 @@ impl ModelsCacheManager {
             return;
         }
         let cache = ModelsCache {
+            semantic_version: MODELS_CACHE_SEMANTIC_VERSION,
             fetched_at,
             renewed_at: None,
             grok_version: Some(xai_grok_version::VERSION.to_string()),
@@ -149,6 +155,9 @@ impl ModelsCacheManager {
     fn disk_fetched_at(&self, scope: &ModelsCacheScope) -> Option<DateTime<Utc>> {
         let data = read_capped(&self.path, MODELS_CACHE_MAX_BYTES)?;
         let cache: ModelsCache = serde_json::from_slice(&data).ok()?;
+        if cache.semantic_version != MODELS_CACHE_SEMANTIC_VERSION {
+            return None;
+        }
         if cache.auth_method.as_ref() != Some(&scope.auth_method)
             || cache.origin.as_deref() != Some(scope.origin.as_str())
             || cache.identity.as_deref() != Some(scope.identity.as_str())
@@ -175,6 +184,10 @@ impl ModelsCacheManager {
             let Ok(mut cache) = serde_json::from_slice::<ModelsCache>(&data) else {
                 return;
             };
+            if cache.semantic_version != MODELS_CACHE_SEMANTIC_VERSION {
+                tracing::debug!("models cache TTL renewal skipped: semantic version mismatch");
+                return;
+            }
             if cache.auth_method.as_ref() != Some(&scope.auth_method)
                 || cache.origin.as_deref() != Some(scope.origin.as_str())
                 || cache.identity.as_deref() != Some(scope.identity.as_str())
@@ -273,6 +286,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let cache = test_cache(tmp.path());
         let cache_struct = ModelsCache {
+            semantic_version: MODELS_CACHE_SEMANTIC_VERSION,
             fetched_at: Utc::now(),
             renewed_at: None,
             grok_version: Some(xai_grok_version::VERSION.to_string()),
@@ -404,5 +418,110 @@ mod tests {
             section(),
             "the section of the NEWER fetch must survive the older write attempt"
         );
+    }
+
+    fn q36i_disk_fixture(
+        cache: &ModelsCacheManager,
+        semantic: Option<u64>,
+        fetched_at: DateTime<Utc>,
+    ) {
+        cache.persist(
+            &models(&["q36i-old-folded-false"]),
+            &section(),
+            Some("old"),
+            &scope(),
+            fetched_at,
+        );
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&cache.path).unwrap()).unwrap();
+        match semantic {
+            Some(version) => {
+                json["semantic_version"] = version.into();
+            }
+            None => {
+                json.as_object_mut().unwrap().remove("semantic_version");
+            }
+        }
+        std::fs::write(&cache.path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn q36i_legacy_and_future_semantic_cache_miss() {
+        for semantic in [None, Some(0), Some(2), Some(u64::from(u32::MAX))] {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let cache = test_cache(tmp.path());
+            q36i_disk_fixture(&cache, semantic, Utc::now());
+            let before = std::fs::read(&cache.path).unwrap();
+            assert!(
+                matches!(
+                    cache.try_load_fresh(&scope()),
+                    Err(CacheLoadError::VersionMismatch)
+                ),
+                "{semantic:?}: incompatible folded false must miss, not be inferred absent"
+            );
+            assert_eq!(std::fs::read(&cache.path).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn q36i_current_semantic_cache_round_trip() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = test_cache(tmp.path());
+        let expected = models(&["q36i-current"]);
+        cache.persist(&expected, &section(), Some("current"), &scope(), Utc::now());
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&cache.path).unwrap()).unwrap();
+        assert_eq!(raw["semantic_version"], serde_json::json!(1));
+        let hit = cache
+            .load_fresh(&scope())
+            .expect("current semantic cache hits");
+        assert_eq!(
+            serde_json::to_value(hit.models).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert_eq!(hit.model_groups, section());
+        assert_eq!(hit.etag.as_deref(), Some("current"));
+    }
+
+    #[tokio::test]
+    async fn q36i_renewal_never_promotes_incompatible_cache() {
+        for semantic in [None, Some(0), Some(2)] {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let cache = test_cache(tmp.path());
+            q36i_disk_fixture(&cache, semantic, Utc::now() - chrono::Duration::seconds(60));
+            let before = std::fs::read(&cache.path).unwrap();
+            cache.renew_ttl(&scope()).await;
+            assert_eq!(
+                std::fs::read(&cache.path).unwrap(),
+                before,
+                "{semantic:?}: renewal must not refresh or upgrade obsolete semantics"
+            );
+        }
+    }
+
+    #[test]
+    fn q36i_incompatible_newer_timestamp_cannot_veto_current_write() {
+        for semantic in [None, Some(0), Some(2)] {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let cache = test_cache(tmp.path());
+            let newer = Utc::now() - chrono::Duration::seconds(1);
+            q36i_disk_fixture(&cache, semantic, newer);
+            cache.persist(
+                &models(&["q36i-corrected"]),
+                &section(),
+                Some("corrected"),
+                &scope(),
+                newer - chrono::Duration::seconds(30),
+            );
+            let hit = cache
+                .load_fresh(&scope())
+                .expect("corrected current cache hits");
+            assert!(
+                hit.models.contains_key("q36i-corrected"),
+                "{semantic:?}: old semantic timestamp must not veto corrected current write"
+            );
+            assert_eq!(hit.etag.as_deref(), Some("corrected"));
+            assert_eq!(hit.model_groups, section());
+        }
     }
 }

@@ -633,6 +633,7 @@ pub(crate) const DEFAULT_CONTEXT_WINDOW: u64 = 256_000;
 /// contributes nothing and the pre-cut last resort stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BakedCapRow {
+    pub supports_search_tool: Option<bool>,
     pub context_window: Option<std::num::NonZeroU64>,
     pub max_completion_tokens: Option<u32>,
 }
@@ -643,6 +644,7 @@ pub(crate) fn baked_cap_row_from_entry(
     row: &crate::models::DefaultModelEntry,
 ) -> BakedCapRow {
     BakedCapRow {
+        supports_search_tool: row.supports_search_tool,
         context_window: row
             .context_window
             .or_else(|| row.max_input_tokens.and_then(std::num::NonZeroU64::new)),
@@ -737,14 +739,10 @@ pub(crate) fn parse_remote_model_value(
         .or_else(|| obj.get("strict_responses_input"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    // S3a (apex-ayl.142): the proxy catalog carries no capability field
-    // today; the parse seams mirror `strict_responses_input` (absent =
-    // false — the gate stays closed on live rows).
-    let supports_search_tool = obj
+    let observed_search_tool = obj
         .get("supportsSearchTool")
         .or_else(|| obj.get("supports_search_tool"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+        .and_then(|v| v.as_bool());
     let use_responses_lite = obj
         .get("useResponsesLite")
         .or_else(|| obj.get("use_responses_lite"))
@@ -775,6 +773,9 @@ pub(crate) fn parse_remote_model_value(
     // Provenance (feed_*) below keeps recording the live feed only.
     let baked_key = id.clone().unwrap_or_else(|| model.clone());
     let baked_row = baked.get(&baked_key);
+    let supports_search_tool = observed_search_tool
+        .or_else(|| baked_row.and_then(|r| r.supports_search_tool))
+        .unwrap_or(false);
     let context_window = feed_max_input_tokens
         .or_else(|| baked_row.and_then(|r| r.context_window).map(|nz| nz.get()))
         .unwrap_or(DEFAULT_CONTEXT_WINDOW);
