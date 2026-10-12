@@ -640,17 +640,16 @@ pub(crate) async fn generate_session_compact(
                 x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
                 ..Default::default()
             };
-                let stream_result =
-                // STABLE-REMINDER-1 (apex-ayl.110): side-call path (no
-                // per-session anchor) — `&mut None`. This request carries
-                // the real session conv-id, so the conv-id keyed entry gate
-                // takes Anchor(None): D lands at TAIL on this one-shot
-                // request; the write-back target is this discarded local.
-                await_unless_cancelled(
-                    cancel,
-                    client.conversation_stream_responses(request, &mut None),
-                )
-                    .await?;
+            // STABLE-REMINDER-1 (apex-ayl.110): side-call path (no
+            // per-session anchor) — `&mut None`. This request carries
+            // the real session conv-id, so the conv-id keyed entry gate
+            // takes Anchor(None): D lands at TAIL on this one-shot
+            // request; the write-back target is this discarded local.
+            let stream_result = await_unless_cancelled(
+                cancel,
+                client.conversation_stream_responses(request, &mut None),
+            )
+            .await?;
             let mut stream = match stream_result {
                 Ok((s, _metadata, _doom_loop)) => s,
                 Err(e) => return Err(classify_sampling_error(e)),
@@ -684,68 +683,67 @@ pub(crate) async fn generate_session_compact(
                         )),
                     ));
                 }
-                match chunk_result {
+                let chunk = match chunk_result {
                     Ok(ResponsesStreamItem::Heartbeat) => {
                         last_progress_at = std::time::Instant::now();
+                        continue;
                     }
-                    Ok(ResponsesStreamItem::Event(chunk)) => {
-                        if !matches!(
-                            &chunk,
-                            ResponseStreamEvent::ResponseCreated(_)
-                                | ResponseStreamEvent::ResponseInProgress(_)
-                                | ResponseStreamEvent::ResponseQueued(_)
-                        ) {
-                            last_progress_at = std::time::Instant::now();
-                        }
-                        match &chunk {
-                            ResponseStreamEvent::ResponseOutputTextDelta(text_delta_event) => {
-                                timing.record_delta();
-                                content.push_str(&text_delta_event.delta);
-                            }
-                            ResponseStreamEvent::ResponseFailed(failed_event) => {
-                                let event_error = failed_event.response.error.as_ref();
-                                let code = event_error.map(|e| e.code.as_str());
-                                let message = event_error
-                                    .map(|e| e.message.as_str())
-                                    .unwrap_or("unknown error");
-                                tracing::warn!(
-                                    code = code.unwrap_or("none"),
-                                    message = %message,
-                                    status = ?failed_event.response.status,
-                                    "compact: response.failed event"
-                                );
-                                return Err(classify_response_event_error(code, message));
-                            }
-                            ResponseStreamEvent::ResponseError(error_event) => {
-                                let code = error_event.code.as_deref();
-                                tracing::warn!(
-                                    code = code.unwrap_or("none"),
-                                    message = %error_event.message,
-                                    "compact: stream error event"
-                                );
-                                return Err(classify_response_event_error(
-                                    code,
-                                    &error_event.message,
-                                ));
-                            }
-                            ResponseStreamEvent::ResponseIncomplete(incomplete_event) => {
-                                let reason = incomplete_event
-                                    .response
-                                    .incomplete_details
-                                    .as_ref()
-                                    .map(|d| d.reason.clone())
-                                    .unwrap_or_else(|| "unknown".to_string());
-                                tracing::warn!(
-                                    reason = %reason,
-                                    "compact: response.incomplete event"
-                                );
-                                stop_reason = Some(reason);
-                                truncated = true;
-                            }
-                            _ => {}
-                        }
-                    }
+                    Ok(item) => item
+                        .into_event()
+                        .expect("non-heartbeat Responses item carries an event"),
                     Err(e) => return Err(classify_sampling_error(e)),
+                };
+                if !matches!(
+                    &chunk,
+                    ResponseStreamEvent::ResponseCreated(_)
+                        | ResponseStreamEvent::ResponseInProgress(_)
+                        | ResponseStreamEvent::ResponseQueued(_)
+                ) {
+                    last_progress_at = std::time::Instant::now();
+                }
+                match &chunk {
+                    ResponseStreamEvent::ResponseOutputTextDelta(text_delta_event) => {
+                        timing.record_delta();
+                        content.push_str(&text_delta_event.delta);
+                    }
+                    ResponseStreamEvent::ResponseFailed(failed_event) => {
+                        let event_error = failed_event.response.error.as_ref();
+                        let code = event_error.map(|e| e.code.as_str());
+                        let message = event_error
+                            .map(|e| e.message.as_str())
+                            .unwrap_or("unknown error");
+                        tracing::warn!(
+                            code = code.unwrap_or("none"),
+                            message = %message,
+                            status = ?failed_event.response.status,
+                            "compact: response.failed event"
+                        );
+                        return Err(classify_response_event_error(code, message));
+                    }
+                    ResponseStreamEvent::ResponseError(error_event) => {
+                        let code = error_event.code.as_deref();
+                        tracing::warn!(
+                            code = code.unwrap_or("none"),
+                            message = %error_event.message,
+                            "compact: stream error event"
+                        );
+                        return Err(classify_response_event_error(code, &error_event.message));
+                    }
+                    ResponseStreamEvent::ResponseIncomplete(incomplete_event) => {
+                        let reason = incomplete_event
+                            .response
+                            .incomplete_details
+                            .as_ref()
+                            .map(|d| d.reason.clone())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        tracing::warn!(
+                            reason = %reason,
+                            "compact: response.incomplete event"
+                        );
+                        stop_reason = Some(reason);
+                        truncated = true;
+                    }
+                    _ => {}
                 }
             }
             CompactOutput {

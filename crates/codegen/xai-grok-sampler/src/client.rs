@@ -26,24 +26,25 @@ use tracing::Instrument;
 use xai_grok_sampling_types::error::{
     parse_error_code, try_parse_stream_error, user_facing_api_error_message,
 };
+use xai_grok_sampling_types::request_validation::EncodedMessagesRequest;
 use xai_grok_sampling_types::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ConversationRequest,
     ConversationResponse, CreateResponseWrapper, DEFAULT_EXACT_REPETITION_MIN_TOKENS,
     DOOM_LOOP_CHECK_HEADER, EXACT_REPETITION_CHECK_HEADER, MessagesRequestWrapper, ReasoningEffort,
-    ResponseModelMetadata, Result, SamplingError, SentCredential,
-    build_messages_request,
+    ResponseModelMetadata, Result, SamplingError, SentCredential, build_messages_request,
     is_check_event, messages, rs,
 };
-use xai_grok_sampling_types::request_validation::EncodedMessagesRequest;
 
 use crate::config::{AuthScheme, OriginClientInfo, SamplerConfig};
 use crate::events::SamplingErrorInfo;
 use crate::provider::{
-    DAnchorState, MultiAgentModeAnchor, ResponsesWireDialect, responses_wire_dialect_for_model_family,
+    DAnchorState, MultiAgentModeAnchor, ResponsesWireDialect,
+    responses_wire_dialect_for_model_family,
 };
 use crate::span_timing::{ERROR, STATUS_CODE, SUCCESS, StreamSpanTiming};
 use crate::stream_classify::{chat_chunk_class, message_event_class, responses_stream_item_class};
-use crate::types::ResponsesStreamItem;
+use crate::terminal::{NamedEvent, OutputPresence, TerminalReason};
+use crate::types::{DecodedResponsesFrame, RawTerminalEnvelope, ResponsesStreamItem};
 use xai_grok_auth::bearer_suffix;
 
 pub use xai_grok_sampling_types::ApiBackend;
@@ -223,7 +224,9 @@ fn normalize_response_event_for_dialect(
             | "response.reasoning_summary_part.added"
             | "response.reasoning_summary_part.done"
     ) {
-        event.entry("summary_index").or_insert(serde_json::Value::from(0));
+        event
+            .entry("summary_index")
+            .or_insert(serde_json::Value::from(0));
     }
 
     // LiteLLM's gemini responses-compat adapter synthesizes Gemini thinking as a
@@ -239,10 +242,7 @@ fn normalize_response_event_for_dialect(
             .get_mut("part")
             .and_then(serde_json::Value::as_object_mut)
         {
-            if part
-                .get("type")
-                .and_then(serde_json::Value::as_str)
-                == Some("reasoning_text")
+            if part.get("type").and_then(serde_json::Value::as_str) == Some("reasoning_text")
                 && !part.contains_key("text")
             {
                 let text = part
@@ -317,6 +317,16 @@ fn normalize_response_event_for_dialect(
         }
     }
 
+    // Both compatibility dialects can omit or null terminal output. The raw
+    // presence was captured before this bridge, so supply the typed SDK's
+    // required array without losing the terminal-shape fact used by L2.
+    if response
+        .get("output")
+        .is_none_or(serde_json::Value::is_null)
+    {
+        response.insert("output".to_owned(), serde_json::Value::Array(Vec::new()));
+    }
+
     if dialect != ResponsesWireDialect::Codex {
         return;
     }
@@ -330,11 +340,70 @@ fn normalize_response_event_for_dialect(
         .entry("object")
         .or_insert_with(|| serde_json::Value::String("response".to_owned()));
     response
-        .entry("output")
-        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
-    response
         .entry("status")
         .or_insert_with(|| serde_json::Value::String(status.to_owned()));
+}
+
+fn terminal_reason_from_wire(reason: &str) -> TerminalReason {
+    match reason {
+        "max_output_tokens" | "max_time_limit" | "length" => TerminalReason::Length,
+        "refusal" => TerminalReason::Refusal,
+        "content_filter" => TerminalReason::ContentFilter,
+        "max_prompt_tokens" | "context_window_exceeded" => TerminalReason::ContextWindow,
+        other => TerminalReason::Other(other.to_owned()),
+    }
+}
+
+/// Read the terminal envelope before compatibility normalization can fill a
+/// missing/null `response.output` with an empty array.
+fn raw_terminal_envelope(data: &str, dialect: ResponsesWireDialect) -> Option<RawTerminalEnvelope> {
+    let value: serde_json::Value = serde_json::from_str(data).ok()?;
+    let named_event = match value.get("type").and_then(serde_json::Value::as_str)? {
+        "response.completed" => NamedEvent::Completed,
+        "response.done" if dialect == ResponsesWireDialect::Xai => NamedEvent::Completed,
+        "response.incomplete" => NamedEvent::Incomplete,
+        "response.failed" => NamedEvent::Failed,
+        _ => return None,
+    };
+    let response = value.get("response")?.as_object()?;
+    let raw_output_presence = match response.get("output") {
+        None => OutputPresence::Missing,
+        Some(serde_json::Value::Null) => OutputPresence::Null,
+        Some(serde_json::Value::Array(output)) => OutputPresence::Array(output.len()),
+        Some(_) => OutputPresence::Missing,
+    };
+    let dialect = Some(
+        match dialect {
+            ResponsesWireDialect::Xai => "xai",
+            ResponsesWireDialect::Codex => "codex",
+            ResponsesWireDialect::Strict => "openai",
+        }
+        .to_owned(),
+    );
+
+    Some(RawTerminalEnvelope {
+        dialect,
+        named_event,
+        status: response
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        reason: response
+            .get("incomplete_details")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|details| details.get("reason"))
+            .and_then(serde_json::Value::as_str)
+            .map(terminal_reason_from_wire),
+        raw_output_presence,
+        response_id: response
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        response_model: response
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    })
 }
 
 fn deserialize_response_event_for_dialect(
@@ -449,7 +518,11 @@ fn decode_responses_sse_frame_for_model(
     if let Some(stream_error) = try_parse_stream_error(data) {
         return Err(stream_error);
     }
+    let raw_terminal = raw_terminal_envelope(data, dialect);
     match deserialize_response_event_for_dialect(data, dialect, requested_model) {
+        Ok(Some(event)) if raw_terminal.is_some() => Ok(ResponsesStreamItem::Decoded(
+            DecodedResponsesFrame::new(event, raw_terminal),
+        )),
         Ok(Some(event)) => Ok(ResponsesStreamItem::Event(event)),
         Ok(None) => Ok(ResponsesStreamItem::Heartbeat),
         Err(error) => Err(error),
@@ -764,11 +837,11 @@ fn patch_raw_input_replacements(
 /// Map the client's wire dialect to the sampling-types replay dialect
 /// (apex-ayl.76). The Strict family has no provider-native history
 /// contract — fail closed.
-fn replay_dialect_for(dialect: ResponsesWireDialect) -> xai_grok_sampling_types::ResponsesReplayDialect {
+fn replay_dialect_for(
+    dialect: ResponsesWireDialect,
+) -> xai_grok_sampling_types::ResponsesReplayDialect {
     match dialect {
-        ResponsesWireDialect::Codex => {
-            xai_grok_sampling_types::ResponsesReplayDialect::Codex
-        }
+        ResponsesWireDialect::Codex => xai_grok_sampling_types::ResponsesReplayDialect::Codex,
         ResponsesWireDialect::Xai => xai_grok_sampling_types::ResponsesReplayDialect::Xai,
         ResponsesWireDialect::Strict => xai_grok_sampling_types::ResponsesReplayDialect::Other,
     }
@@ -2350,7 +2423,8 @@ impl SamplingClient {
             model_id = request.inner.model.as_deref().unwrap_or(""),
         );
         if region.span().is_disabled() {
-            self.create_response_stream_inner(request, region, d_anchor).await
+            self.create_response_stream_inner(request, region, d_anchor)
+                .await
         } else {
             let span = region.span().clone();
             self.create_response_stream_inner(request, region, d_anchor)
@@ -2789,13 +2863,12 @@ impl SamplingClient {
                 "affinity gate: stripped mismatched reasoning ciphertext at the send seam"
             );
         }
-        let request_body =
-            self.codex_compaction_request_body(
-                &request,
-                instructions,
-                include_compaction_trigger,
-                &mut DAnchorState::default(),
-            )?;
+        let request_body = self.codex_compaction_request_body(
+            &request,
+            instructions,
+            include_compaction_trigger,
+            &mut DAnchorState::default(),
+        )?;
         let endpoint = self.endpoint("responses");
         let mut beta_headers = HeaderMap::new();
         beta_headers.insert(
@@ -2972,10 +3045,11 @@ impl SamplingClient {
         // headers that `post()` applies, so no explicit header is added —
         // reqwest's `.json()` (contains_key guard, request.rs:452-455 of
         // 0.12.24) likewise skips inserting it here.
-        let encoded = xai_grok_sampling_types::request_validation::validate_and_encode_messages_request(
-            &request.inner,
-        )
-        .map_err(SamplingError::from)?;
+        let encoded =
+            xai_grok_sampling_types::request_validation::validate_and_encode_messages_request(
+                &request.inner,
+            )
+            .map_err(SamplingError::from)?;
 
         tracing::debug!("create_message: {:?}", &request.inner);
         tracing::debug!("endpoint: {:?}", self.endpoint("messages"));
@@ -2996,7 +3070,9 @@ impl SamplingClient {
             builder,
             sent_bearer,
         } = self.post(self.endpoint("messages"));
-        let http_request = grok_headers.apply(builder).body(encoded.as_bytes().to_vec());
+        let http_request = grok_headers
+            .apply(builder)
+            .body(encoded.as_bytes().to_vec());
 
         let response = http_request.send().await.map_err(|e| {
             tracing::debug!("HTTP request failed: {}", e);
@@ -3077,7 +3153,8 @@ impl SamplingClient {
             model_id = request.inner.model(),
         );
         if region.span().is_disabled() {
-            self.create_message_stream_inner(request, carrier, region).await
+            self.create_message_stream_inner(request, carrier, region)
+                .await
         } else {
             let span = region.span().clone();
             self.create_message_stream_inner(request, carrier, region)
@@ -3419,10 +3496,9 @@ impl SamplingClient {
         // compaction items, xAI restores the native `x_search_call`, every
         // other route keeps the typed placeholder (fail-closed
         // cross-provider behavior).
-        let raw_input_replacements =
-            request.raw_responses_input_replacements(replay_dialect_for(
-                responses_wire_dialect_for_model_family(self.defaults.model_family.as_deref()),
-            ));
+        let raw_input_replacements = request.raw_responses_input_replacements(replay_dialect_for(
+            responses_wire_dialect_for_model_family(self.defaults.model_family.as_deref()),
+        ));
 
         let responses_request: rs::CreateResponse = (&request).into();
 
@@ -3459,7 +3535,9 @@ impl SamplingClient {
         } else {
             DAnchorState::Legacy
         };
-        let result = self.create_response_stream(wrapper, &mut d_anchor_state).await;
+        let result = self
+            .create_response_stream(wrapper, &mut d_anchor_state)
+            .await;
         if let DAnchorState::Anchor(anchor) = d_anchor_state {
             *d_anchor = anchor;
         }
@@ -3513,10 +3591,9 @@ impl SamplingClient {
         // compaction items, xAI restores the native `x_search_call`, every
         // other route keeps the typed placeholder (fail-closed
         // cross-provider behavior).
-        let raw_input_replacements =
-            request.raw_responses_input_replacements(replay_dialect_for(
-                responses_wire_dialect_for_model_family(self.defaults.model_family.as_deref()),
-            ));
+        let raw_input_replacements = request.raw_responses_input_replacements(replay_dialect_for(
+            responses_wire_dialect_for_model_family(self.defaults.model_family.as_deref()),
+        ));
 
         let responses_request: rs::CreateResponse = (&request).into();
 
@@ -3591,7 +3668,8 @@ impl SamplingClient {
             wrapper.trace = Some(trace);
         }
 
-        self.create_message_stream_with_carrier(wrapper, carrier).await
+        self.create_message_stream_with_carrier(wrapper, carrier)
+            .await
     }
 
     /// Send a conversation request using the Anthropic Messages API (non-streaming).
@@ -3656,8 +3734,9 @@ impl SamplingClient {
                 // STABLE-REMINDER-1 (apex-ayl.110): collect is a side-call API —
                 // per-call anchor (never persisted across collect calls); conv-id
                 // gating inside the entry decides Anchor vs Legacy.
-                let (raw, meta, doom_loop) =
-                    self.conversation_stream_responses(request, &mut None).await?;
+                let (raw, meta, doom_loop) = self
+                    .conversation_stream_responses(request, &mut None)
+                    .await?;
                 let events =
                     crate::stream::stream_responses(raw, meta, request_id, idle_timeout, doom_loop);
                 crate::stream::collect_response(events).await
@@ -4018,7 +4097,10 @@ mod tests {
         } else {
             request.tools = None;
             client
-                .create_response(CreateResponseWrapper::new(request), &mut DAnchorState::default())
+                .create_response(
+                    CreateResponseWrapper::new(request),
+                    &mut DAnchorState::default(),
+                )
                 .await
                 .expect("unary request should succeed");
         }
@@ -5370,8 +5452,7 @@ mod tests {
             "content_index": 0,
             "part": { "type": "reasoning_text" }
         }"#;
-        let event =
-            deserialize_response_event(sse).expect("parse without reasoning or text");
+        let event = deserialize_response_event(sse).expect("parse without reasoning or text");
         let rs::ResponseStreamEvent::ResponseContentPartDone(e) = event else {
             panic!("expected ResponseContentPartDone");
         };
@@ -5876,8 +5957,7 @@ mod tests {
         )
         .expect("Codex sparse completion without sequence_number should parse");
 
-        let ResponsesStreamItem::Event(rs::ResponseStreamEvent::ResponseCompleted(event)) = decoded
-        else {
+        let Some(rs::ResponseStreamEvent::ResponseCompleted(event)) = decoded.into_event() else {
             panic!("expected a completed event");
         };
         assert_eq!(event.sequence_number, 0);
@@ -5929,8 +6009,7 @@ mod tests {
         )
         .expect("the observed xAI terminal lifecycle shape should parse");
 
-        let ResponsesStreamItem::Event(rs::ResponseStreamEvent::ResponseCompleted(event)) = decoded
-        else {
+        let Some(rs::ResponseStreamEvent::ResponseCompleted(event)) = decoded.into_event() else {
             panic!("expected a completed event");
         };
         assert_eq!(event.sequence_number, 0);
@@ -5957,8 +6036,7 @@ mod tests {
 
         let decoded = decode_responses_sse_frame("", data, ResponsesWireDialect::Xai)
             .expect("xAI response.done should normalize to response.completed");
-        let ResponsesStreamItem::Event(rs::ResponseStreamEvent::ResponseCompleted(event)) = decoded
-        else {
+        let Some(rs::ResponseStreamEvent::ResponseCompleted(event)) = decoded.into_event() else {
             panic!("expected a completed event");
         };
         assert_eq!(event.sequence_number, 0);
@@ -6392,10 +6470,9 @@ mod tests {
     /// at GREEN (raw strict parse is never repaired).
     #[test]
     fn ingress77_actionless_web_search_strict_parse_fatals_missing_action() {
-        let err = serde_json::from_str::<rs::ResponseStreamEvent>(
-            INGRESS77_ACTIONLESS_WEB_SEARCH_DONE,
-        )
-        .unwrap_err();
+        let err =
+            serde_json::from_str::<rs::ResponseStreamEvent>(INGRESS77_ACTIONLESS_WEB_SEARCH_DONE)
+                .unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("missing field `action`"),
@@ -6427,7 +6504,10 @@ mod tests {
         let rs::WebSearchToolCallAction::Search(search) = call.action else {
             panic!("expected the sentinel search action");
         };
-        assert!(search.query.is_empty(), "the filled action must be the empty-search sentinel");
+        assert!(
+            search.query.is_empty(),
+            "the filled action must be the empty-search sentinel"
+        );
     }
 
     /// W2-4 RED pin: a native xAI x_search_call frame is an unknown variant of
@@ -6479,9 +6559,10 @@ mod tests {
     /// GREEN.
     #[test]
     fn ingress77_idless_custom_tool_call_strict_parse_fatals_missing_id() {
-        let err =
-            serde_json::from_str::<rs::ResponseStreamEvent>(INGRESS77_IDLESS_CUSTOM_TOOL_CALL_ADDED)
-                .unwrap_err();
+        let err = serde_json::from_str::<rs::ResponseStreamEvent>(
+            INGRESS77_IDLESS_CUSTOM_TOOL_CALL_ADDED,
+        )
+        .unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("missing field `id`"),
@@ -6519,8 +6600,8 @@ mod tests {
     /// fails; GREEN post-cut: it parses with the sentinel action.
     #[test]
     fn ingress77_repair_actionless_web_search_item() {
-        let frame: serde_json::Value = serde_json::from_str(INGRESS77_ACTIONLESS_WEB_SEARCH_DONE)
-            .unwrap();
+        let frame: serde_json::Value =
+            serde_json::from_str(INGRESS77_ACTIONLESS_WEB_SEARCH_DONE).unwrap();
         let mut item = frame["item"].clone();
         repair_output_item(&mut item);
         let typed: rs::OutputItem = serde_json::from_value(item)
@@ -6540,7 +6621,8 @@ mod tests {
     /// `type` is rewritten; the four carrier fields are donor-pinned).
     #[test]
     fn ingress77_repair_native_x_search_item() {
-        let frame: serde_json::Value = serde_json::from_str(INGRESS77_NATIVE_X_SEARCH_ADDED).unwrap();
+        let frame: serde_json::Value =
+            serde_json::from_str(INGRESS77_NATIVE_X_SEARCH_ADDED).unwrap();
         let mut item = frame["item"].clone();
         repair_output_item(&mut item);
         assert_eq!(
@@ -6566,8 +6648,8 @@ mod tests {
             serde_json::from_str(INGRESS77_IDLESS_CUSTOM_TOOL_CALL_ADDED).unwrap();
         let mut item = frame["item"].clone();
         repair_output_item(&mut item);
-        let typed: rs::OutputItem =
-            serde_json::from_value(item).expect("RED today: missing field `id`; GREEN: filled parse");
+        let typed: rs::OutputItem = serde_json::from_value(item)
+            .expect("RED today: missing field `id`; GREEN: filled parse");
         let rs::OutputItem::CustomToolCall(call) = typed else {
             panic!("expected CustomToolCall");
         };
@@ -6585,7 +6667,10 @@ mod tests {
             ..SamplerConfig::default()
         })
         .expect("sampling client");
-        assert_eq!(client.defaults.ultra_wire_effort, Some(ReasoningEffort::Xhigh));
+        assert_eq!(
+            client.defaults.ultra_wire_effort,
+            Some(ReasoningEffort::Xhigh)
+        );
     }
 
     /// apex-ayl.69 (XW-EMPTYID-1) ordering pin (sdd-69 §3 case 4,
