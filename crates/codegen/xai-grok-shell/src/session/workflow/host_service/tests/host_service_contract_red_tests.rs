@@ -24,6 +24,21 @@ fn payload_14() -> String {
     )
 }
 
+/// Distinct oversized payload for the RETRY attempt (review codex-R1: both
+/// attempts returning the same payload would let a salvage that returns the
+/// FIRST attempt's text — or any earlier partial — pass the oracle while the
+/// final child's text was the one actually discarded).
+fn payload_retry() -> String {
+    let confirmations = (1..=14)
+        .map(|i| format!("\"d{i:02}\""))
+        .collect::<Vec<_>>();
+    format!(
+        "SALVAGE-RETRY-4b9e — re-emit after the corrective, stands unchanged.\n\n\
+         ```json\n{{\"findings\": [\"f09\", \"f10\"], \"confirmations\": [{}]}}\n```",
+        confirmations.join(", ")
+    )
+}
+
 /// Clone of the mined run's contract (`script.rhai:79`): 12-item ceiling on
 /// `confirmations`.
 fn contract_violation_schema() -> serde_json::Value {
@@ -54,7 +69,8 @@ fn contract_validator_flags_the_item_count_not_the_fence() {
 /// contract exhausts its single in-band retry, the **completed** child's
 /// captured final text is discarded — `AgentResult.output` keeps only the
 /// validation-error string (`host_service.rs` exhaustion arm) — while the
-/// sibling subagent plane preserves `final_text` on the identical failure
+/// sibling subagent plane preserves `final_text` on its structured-output
+/// failure path
 /// (`crates/codegen/xai-grok-shell/src/agent/subagent/prompt_turn_result.rs:71-77`).
 /// The mined cluster re-paid 1.7 M–19.9 M tokens of finished work per
 /// occurrence because the rhai script lost the payload and re-ran the whole
@@ -115,7 +131,17 @@ async fn contract_violation_discards_completed_child_output() {
 
     let respond = |request: &SubagentRequest, child_id: &str| SubagentResult {
         success: true,
-        output: Arc::from(payload_14().as_str()),
+        // Per-attempt distinct payloads (review codex-R1): the salvage oracle
+        // below can only prove the FINAL child's text survived if each
+        // attempt's text is identifiable.
+        output: Arc::from(
+            if child_id.ends_with("-1") {
+                payload_14()
+            } else {
+                payload_retry()
+            }
+            .as_str(),
+        ),
         subagent_id: request.id.clone(),
         child_session_id: child_id.into(),
         ..Default::default()
@@ -172,9 +198,13 @@ async fn contract_violation_discards_completed_child_output() {
     // accident; the parent key and the prose preamble do not.)
     let output = result.output.to_string();
     // RED: the child's captured final text must stay reachable to the script.
+    // The RETRY sentinel, not the first attempt's (review codex-R1): a
+    // salvage that resurrects the wrong text is still the defect. Prose
+    // sentinel only — array item strings survive inside the error text by
+    // accident (see the c14 note above), so `d01` here would be vacuous.
     assert!(
-        output.contains("SALVAGE-PREAMBLE-7f3a"),
-        "salvage: the child's preamble must survive contract exhaustion, got: {output}"
+        output.contains("SALVAGE-RETRY-4b9e"),
+        "salvage: the FINAL child's preamble must survive contract exhaustion, got: {output}"
     );
     // Unquoted on purpose (review R1): `result.output.to_string()` JSON-escapes
     // interior quotes, so a quoted `"findings"` pattern could never appear under

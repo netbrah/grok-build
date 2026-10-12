@@ -4569,6 +4569,14 @@ async fn comms_drain_nonative_strands_queued_native_mail() {
     // v2 door, where a completed named reader is refused at the `known`
     // gate before any arm dispatch (the wild reader's answer was
     // names-only anyway, `{"updates":[author-path]}`).
+    // Codex-R1 (2026-10-12): Surface 1 is the BACKEND drain — the
+    // model-facing `wait_agent` tool routes through Surface 2's door
+    // (`NativeAgentOperation::Wait`, `native_agents.rs:432`), so a
+    // surfacing fix that greens this probe alone does NOT make the body
+    // readable to a model: the implementation gate must pin the
+    // model-facing read too. Under an injection-only ruling the send is
+    // honestly refused and the `Queued` pin above re-cuts to a
+    // reject + not-persisted assertion.
     let seat = mailbox_identity("parent", SEAT_ID);
     let inbox = tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -4733,6 +4741,22 @@ async fn coordinator_roster_v1_door() {
     assert!(
         ids.iter().any(|id| *id == "grandchild"),
         "A1: the nested running child must be roster-addressable, got ids: {ids:?}"
+    );
+    // A1b (review codex-R1): membership alone is not the claimed bar — the
+    // entry must render a roster PATH, not the raw id, or the fix greens
+    // presence while the addressability defect survives. Masked behind A1,
+    // same as A2 behind it.
+    let grandchild_entry = agents.iter().find(|agent| {
+        agent["agent_id"].as_str() == Some("grandchild")
+    });
+    assert!(
+        grandchild_entry.is_some_and(|agent| {
+            agent["task_name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("/root/"))
+        }),
+        "A1b: the nested child's roster entry must carry a canonical \
+         /root/… path, got: {grandchild_entry:?}"
     );
     // A2 (RED today): the calling child itself is absent from its own roster
     // (wild proof: the caller's List returned only `/root`).
