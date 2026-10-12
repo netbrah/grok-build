@@ -323,12 +323,9 @@ impl From<&SamplingError> for SamplingErrorInfo {
             // status). The dedicated kind is what keeps `synthesize_from_info`
             // (request_task.rs) from collapsing this L2-synthesized terminal
             // into a generic retryable `Api { 500 }` — see the variant doc.
-            SamplingError::UnsupportedStopControl { .. } => (
-                SamplingErrorKind::UnsupportedStopControl,
-                None,
-                None,
-                None,
-            ),
+            SamplingError::UnsupportedStopControl { .. } => {
+                (SamplingErrorKind::UnsupportedStopControl, None, None, None)
+            }
         };
 
         let empty_response_context = match err {
@@ -574,7 +571,13 @@ mod tests {
             // That failure is the reminder to also extend `all` and `from_str`
             // Only variants listed in `all` are round-trip-checked; the compiler cannot force those two edits
             match kind {
-                Auth | Http | Api | Serialization | IdleTimeout | RateLimited | EmptyResponse
+                Auth
+                | Http
+                | Api
+                | Serialization
+                | IdleTimeout
+                | RateLimited
+                | EmptyResponse
                 | MaxTokensTruncation
                 | DoomLoopDetected
                 | UnsupportedStopControl => {}

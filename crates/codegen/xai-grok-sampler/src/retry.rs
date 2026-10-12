@@ -603,8 +603,14 @@ mod tests {
     #[test]
     fn xw_orphan_unclassified_400s_now_strip_not_fatal() {
         for (label, body) in [
-            ("class-(a) vLLM pydantic dotted-id", XW_ORPHAN_VLLM_PYDANTIC_400_BODY),
-            ("class-(b) Azure `.call_id` orphan", XW_ORPHAN_AZURE_CALLID_400_BODY),
+            (
+                "class-(a) vLLM pydantic dotted-id",
+                XW_ORPHAN_VLLM_PYDANTIC_400_BODY,
+            ),
+            (
+                "class-(b) Azure `.call_id` orphan",
+                XW_ORPHAN_AZURE_CALLID_400_BODY,
+            ),
         ] {
             let message = xai_grok_sampling_types::user_facing_api_error_message(
                 StatusCode::BAD_REQUEST,
@@ -1271,8 +1277,13 @@ mod tests {
             RequestValidationError::EncodedBodyTooLarge { bytes: 32_000_001 },
             RequestValidationError::CounterOverflow,
             RequestValidationError::AllocationFailed { bytes: 4 },
-            RequestValidationError::PassLengthMismatch { counted: 5, actual: 6 },
-            RequestValidationError::ItemEncodingFailed { item: ItemRef::Tool(1) },
+            RequestValidationError::PassLengthMismatch {
+                counted: 5,
+                actual: 6,
+            },
+            RequestValidationError::ItemEncodingFailed {
+                item: ItemRef::Tool(1),
+            },
         ];
         for variant in variants {
             let err = SamplingError::RequestValidation(variant);
@@ -1313,8 +1324,13 @@ mod tests {
             RequestValidationError::EncodedBodyTooLarge { bytes: 32_000_001 },
             RequestValidationError::CounterOverflow,
             RequestValidationError::AllocationFailed { bytes: 4 },
-            RequestValidationError::PassLengthMismatch { counted: 5, actual: 6 },
-            RequestValidationError::ItemEncodingFailed { item: ItemRef::Tool(1) },
+            RequestValidationError::PassLengthMismatch {
+                counted: 5,
+                actual: 6,
+            },
+            RequestValidationError::ItemEncodingFailed {
+                item: ItemRef::Tool(1),
+            },
             RequestValidationError::MissingRequiredField { field: "model" },
             RequestValidationError::InvalidRoleOrder {
                 index: 0,
@@ -1367,8 +1383,8 @@ mod enc_boundary_mf6_tests {
     //! the phrasings classify to `RetryWithModelBoundStateStrip`).
 
     use super::*;
-    use xai_grok_sampling_types::{ApiErrorCode, SentCredential, SamplingError};
     use reqwest::StatusCode;
+    use xai_grok_sampling_types::{ApiErrorCode, SamplingError, SentCredential};
 
     const SIG_ENC_503: &str = "litellm.ServiceUnavailableError: The deployment that produced this encrypted_content is currently unavailable (likely cooled down), and no deployment on the same encryption boundary is configured. Retry later or configure a deployment with the same (api_base, api_key).. Received Model Group=qwen3.8-27b";
 

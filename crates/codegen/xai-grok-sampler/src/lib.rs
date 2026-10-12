@@ -27,6 +27,7 @@ mod shared_http;
 mod span_timing;
 pub mod stream;
 mod stream_classify;
+mod terminal;
 pub mod types;
 
 // Public re-exports: the API consumers see
@@ -54,5 +55,9 @@ pub use retry::{
 };
 pub use sampling_log::AuthInfo;
 pub use stream::{collect_response, stream_chat_completions, stream_messages, stream_responses};
+pub use terminal::{
+    NamedEvent, OutputPresence, RetryLane, TerminalClass, TerminalFacts, TerminalReason,
+    classify_terminal,
+};
 pub use types::{RequestId, ResponsesStreamItem};
 pub use xai_grok_sampling_types::ConversationGroupId;

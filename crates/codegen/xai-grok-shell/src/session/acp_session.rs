@@ -1933,6 +1933,9 @@ mod cancel_running_task_tests;
 #[path = "acp_session_tests/turn/chat_history_integrity_tests.rs"]
 mod chat_history_integrity_tests;
 #[cfg(test)]
+#[path = "acp_session_tests/responses_terminal_tests.rs"]
+mod responses_terminal_tests;
+#[cfg(test)]
 #[path = "acp_session_tests/turn/disk_full_tests.rs"]
 mod disk_full_tests;
 #[cfg(test)]

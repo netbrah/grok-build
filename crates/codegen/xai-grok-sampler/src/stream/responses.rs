@@ -19,7 +19,7 @@
 //! fork's companion 197ea1642c flatten half was NOT ported). The dialect
 //! sequence synthesis lives in `sampler/src/client.rs`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -30,14 +30,15 @@ use futures_util::StreamExt;
 use futures_util::stream::{BoxStream, Stream};
 
 use xai_grok_sampling_types::{
-    ConversationItem, ConversationResponse, ResponseModelMetadata, SamplingError, StopReason,
-    TokenUsage, messages as messages_types, rs,
+    ApiBackend, ConversationItem, ConversationResponse, ResponseModelMetadata, SamplingError,
+    StopReason, TokenUsage, messages as messages_types, rs,
 };
 
 use crate::doom_loop_recovery::FailedResponseCapture;
 use crate::events::{SamplingChannel, SamplingErrorInfo, SamplingEvent};
 use crate::metrics::InferenceLatencyStats;
-use crate::types::{RequestId, ResponsesStreamItem};
+use crate::terminal::{NamedEvent, OutputPresence, TerminalFacts, TerminalReason};
+use crate::types::{AttemptStreamItem, RawTerminalEnvelope, RequestId, ResponsesStreamItem};
 
 /// Wire values of `incomplete_details.reason` on an `Incomplete` response.
 /// The xAI server emits the three `max_*` values; `content_filter` is OpenAI vocabulary, kept for spec compatibility.
@@ -47,6 +48,489 @@ const INCOMPLETE_REASON_MAX_OUTPUT_TOKENS: &str = "max_output_tokens";
 const INCOMPLETE_REASON_MAX_PROMPT_TOKENS: &str = "max_prompt_tokens";
 /// A server-side time limit cut generation short (xAI extension).
 const INCOMPLETE_REASON_MAX_TIME_LIMIT: &str = "max_time_limit";
+
+type AccumulatedPartMap = BTreeMap<(u32, u32), (String, String)>;
+
+/// Lossless-enough reconstruction state for compatibility terminals that omit
+/// or null `response.output`. An explicitly present terminal output remains
+/// authoritative and is never replaced by this state.
+#[derive(Default)]
+struct ResponseOutputAccumulator {
+    output_items: BTreeMap<u32, rs::OutputItem>,
+    completed_tool_items: BTreeSet<u32>,
+    text_parts: AccumulatedPartMap,
+    refusal_parts: AccumulatedPartMap,
+    reasoning_text_parts: AccumulatedPartMap,
+    reasoning_summary_parts: AccumulatedPartMap,
+    tool_activity: bool,
+    refusal: bool,
+}
+
+impl ResponseOutputAccumulator {
+    fn append_part(
+        parts: &mut AccumulatedPartMap,
+        output_index: u32,
+        content_index: u32,
+        item_id: &str,
+        delta: &str,
+    ) {
+        let (stored_id, text) = parts
+            .entry((output_index, content_index))
+            .or_insert_with(|| (item_id.to_owned(), String::new()));
+        if stored_id.is_empty() {
+            *stored_id = item_id.to_owned();
+        }
+        text.push_str(delta);
+    }
+
+    fn replace_part(
+        parts: &mut AccumulatedPartMap,
+        output_index: u32,
+        content_index: u32,
+        item_id: &str,
+        value: &str,
+    ) {
+        parts.insert(
+            (output_index, content_index),
+            (item_id.to_owned(), value.to_owned()),
+        );
+    }
+
+    fn observe(&mut self, event: &rs::ResponseStreamEvent) {
+        use rs::ResponseStreamEvent as Event;
+        match event {
+            Event::ResponseOutputTextDelta(part) => Self::append_part(
+                &mut self.text_parts,
+                part.output_index,
+                part.content_index,
+                &part.item_id,
+                &part.delta,
+            ),
+            Event::ResponseOutputTextDone(part) => Self::replace_part(
+                &mut self.text_parts,
+                part.output_index,
+                part.content_index,
+                &part.item_id,
+                &part.text,
+            ),
+            Event::ResponseRefusalDelta(part) => {
+                self.refusal = true;
+                Self::append_part(
+                    &mut self.refusal_parts,
+                    part.output_index,
+                    part.content_index,
+                    &part.item_id,
+                    &part.delta,
+                );
+            }
+            Event::ResponseRefusalDone(part) => {
+                self.refusal = true;
+                Self::replace_part(
+                    &mut self.refusal_parts,
+                    part.output_index,
+                    part.content_index,
+                    &part.item_id,
+                    &part.refusal,
+                );
+            }
+            Event::ResponseReasoningTextDelta(part) => Self::append_part(
+                &mut self.reasoning_text_parts,
+                part.output_index,
+                part.content_index,
+                &part.item_id,
+                &part.delta,
+            ),
+            Event::ResponseReasoningTextDone(part) => Self::replace_part(
+                &mut self.reasoning_text_parts,
+                part.output_index,
+                part.content_index,
+                &part.item_id,
+                &part.text,
+            ),
+            Event::ResponseReasoningSummaryTextDelta(part) => Self::append_part(
+                &mut self.reasoning_summary_parts,
+                part.output_index,
+                part.summary_index,
+                &part.item_id,
+                &part.delta,
+            ),
+            Event::ResponseReasoningSummaryTextDone(part) => Self::replace_part(
+                &mut self.reasoning_summary_parts,
+                part.output_index,
+                part.summary_index,
+                &part.item_id,
+                &part.text,
+            ),
+            Event::ResponseOutputItemAdded(item) => {
+                let is_tool = output_item_is_tool(&item.item);
+                self.tool_activity |= is_tool;
+                if is_tool && tool_item_has_completed_status(&item.item) {
+                    self.completed_tool_items.insert(item.output_index);
+                }
+                self.refusal |= output_item_has_refusal(&item.item);
+                self.output_items
+                    .insert(item.output_index, item.item.clone());
+            }
+            Event::ResponseOutputItemDone(item) => {
+                let is_tool = output_item_is_tool(&item.item);
+                self.tool_activity |= is_tool;
+                if is_tool {
+                    self.completed_tool_items.insert(item.output_index);
+                }
+                self.refusal |= output_item_has_refusal(&item.item);
+                self.output_items
+                    .insert(item.output_index, item.item.clone());
+            }
+            Event::ResponseFunctionCallArgumentsDelta(arguments) => {
+                self.tool_activity = true;
+                if let Some(rs::OutputItem::FunctionCall(call)) =
+                    self.output_items.get_mut(&arguments.output_index)
+                {
+                    call.arguments.push_str(&arguments.delta);
+                }
+            }
+            Event::ResponseFunctionCallArgumentsDone(arguments) => {
+                self.tool_activity = true;
+                if let Some(rs::OutputItem::FunctionCall(call)) =
+                    self.output_items.get_mut(&arguments.output_index)
+                {
+                    call.arguments.clone_from(&arguments.arguments);
+                    if let Some(name) = &arguments.name {
+                        call.name.clone_from(name);
+                    }
+                }
+            }
+            Event::ResponseCustomToolCallInputDelta(_)
+            | Event::ResponseCustomToolCallInputDone(_)
+            | Event::ResponseMCPCallArgumentsDelta(_)
+            | Event::ResponseMCPCallArgumentsDone(_)
+            | Event::ResponseCodeInterpreterCallCodeDelta(_)
+            | Event::ResponseCodeInterpreterCallCodeDone(_)
+            | Event::ResponseCodeInterpreterCallInProgress(_)
+            | Event::ResponseCodeInterpreterCallInterpreting(_)
+            | Event::ResponseCodeInterpreterCallCompleted(_)
+            | Event::ResponseFileSearchCallInProgress(_)
+            | Event::ResponseFileSearchCallSearching(_)
+            | Event::ResponseFileSearchCallCompleted(_)
+            | Event::ResponseWebSearchCallInProgress(_)
+            | Event::ResponseWebSearchCallSearching(_)
+            | Event::ResponseWebSearchCallCompleted(_)
+            | Event::ResponseImageGenerationCallInProgress(_)
+            | Event::ResponseImageGenerationCallGenerating(_)
+            | Event::ResponseImageGenerationCallCompleted(_)
+            | Event::ResponseMCPCallInProgress(_)
+            | Event::ResponseMCPCallCompleted(_)
+            | Event::ResponseMCPCallFailed(_) => self.tool_activity = true,
+            _ => {}
+        }
+    }
+
+    fn reconstructed_output(&self) -> Vec<rs::OutputItem> {
+        let mut output = self.output_items.clone();
+
+        let mut message_indexes = BTreeMap::<u32, BTreeMap<u32, rs::OutputMessageContent>>::new();
+        let mut message_ids = BTreeMap::<u32, String>::new();
+        for (&(output_index, content_index), (item_id, text)) in &self.text_parts {
+            message_ids
+                .entry(output_index)
+                .or_insert_with(|| item_id.clone());
+            message_indexes.entry(output_index).or_default().insert(
+                content_index,
+                rs::OutputMessageContent::OutputText(rs::OutputTextContent {
+                    annotations: Vec::new(),
+                    logprobs: None,
+                    text: text.clone(),
+                }),
+            );
+        }
+        for (&(output_index, content_index), (item_id, refusal)) in &self.refusal_parts {
+            message_ids
+                .entry(output_index)
+                .or_insert_with(|| item_id.clone());
+            message_indexes.entry(output_index).or_default().insert(
+                content_index,
+                rs::OutputMessageContent::Refusal(rs::RefusalContent {
+                    refusal: refusal.clone(),
+                }),
+            );
+        }
+        for (output_index, parts) in message_indexes {
+            let content = parts.into_values().collect();
+            match output.get_mut(&output_index) {
+                Some(rs::OutputItem::Message(message)) => {
+                    message.content = content;
+                    message.status = rs::OutputStatus::Completed;
+                }
+                Some(_) => {}
+                None => {
+                    output.insert(
+                        output_index,
+                        rs::OutputItem::Message(rs::OutputMessage {
+                            content,
+                            id: message_ids.remove(&output_index).unwrap_or_default(),
+                            role: rs::AssistantRole::Assistant,
+                            status: rs::OutputStatus::Completed,
+                        }),
+                    );
+                }
+            }
+        }
+
+        let mut reasoning_indexes =
+            BTreeMap::<u32, (String, Vec<rs::SummaryPart>, Vec<rs::ReasoningTextContent>)>::new();
+        for (&(output_index, _), (item_id, text)) in &self.reasoning_summary_parts {
+            let entry = reasoning_indexes
+                .entry(output_index)
+                .or_insert_with(|| (item_id.clone(), Vec::new(), Vec::new()));
+            entry
+                .1
+                .push(rs::SummaryPart::SummaryText(rs::SummaryTextContent {
+                    text: text.clone(),
+                }));
+        }
+        for (&(output_index, _), (item_id, text)) in &self.reasoning_text_parts {
+            let entry = reasoning_indexes
+                .entry(output_index)
+                .or_insert_with(|| (item_id.clone(), Vec::new(), Vec::new()));
+            entry
+                .2
+                .push(rs::ReasoningTextContent { text: text.clone() });
+        }
+        for (output_index, (item_id, summary, content)) in reasoning_indexes {
+            match output.get_mut(&output_index) {
+                Some(rs::OutputItem::Reasoning(reasoning)) => {
+                    if !summary.is_empty() {
+                        reasoning.summary = summary;
+                    }
+                    if !content.is_empty() {
+                        reasoning.content = Some(content);
+                    }
+                    reasoning.status = Some(rs::OutputStatus::Completed);
+                }
+                Some(_) => {}
+                None => {
+                    output.insert(
+                        output_index,
+                        rs::OutputItem::Reasoning(rs::ReasoningItem {
+                            id: item_id,
+                            summary,
+                            content: (!content.is_empty()).then_some(content),
+                            encrypted_content: None,
+                            status: Some(rs::OutputStatus::Completed),
+                        }),
+                    );
+                }
+            }
+        }
+
+        output.into_values().collect()
+    }
+
+    fn reconstructed_tools_have_completion_evidence(&self) -> bool {
+        self.output_items
+            .iter()
+            .filter(|(_, item)| output_item_is_tool(item))
+            .all(|(output_index, _)| self.completed_tool_items.contains(output_index))
+    }
+}
+
+fn output_item_is_tool(item: &rs::OutputItem) -> bool {
+    !matches!(
+        item,
+        rs::OutputItem::Message(_) | rs::OutputItem::Reasoning(_) | rs::OutputItem::Compaction(_)
+    )
+}
+
+fn output_item_has_refusal(item: &rs::OutputItem) -> bool {
+    matches!(
+        item,
+        rs::OutputItem::Message(message)
+            if message
+                .content
+                .iter()
+                .any(|part| matches!(part, rs::OutputMessageContent::Refusal(_)))
+    )
+}
+
+fn tool_item_is_complete(item: &rs::OutputItem) -> bool {
+    if !output_item_is_tool(item) {
+        return true;
+    }
+    let Ok(value) = serde_json::to_value(item) else {
+        return false;
+    };
+    let status_complete = !matches!(
+        value.get("status").and_then(serde_json::Value::as_str),
+        Some("in_progress" | "incomplete" | "failed")
+    );
+    let arguments_complete = match item {
+        rs::OutputItem::FunctionCall(call) => {
+            call.arguments.trim().is_empty()
+                || serde_json::from_str::<serde::de::IgnoredAny>(&call.arguments).is_ok()
+        }
+        _ => true,
+    };
+    status_complete && arguments_complete
+}
+
+fn tool_item_has_completed_status(item: &rs::OutputItem) -> bool {
+    serde_json::to_value(item).is_ok_and(|value| {
+        value.get("status").and_then(serde_json::Value::as_str) == Some("completed")
+    })
+}
+
+fn response_usage(response: &rs::Response) -> Option<TokenUsage> {
+    response.usage.as_ref().map(|usage| TokenUsage {
+        prompt_tokens: usage.input_tokens,
+        completion_tokens: usage.output_tokens,
+        total_tokens: usage.total_tokens,
+        reasoning_tokens: usage.output_tokens_details.reasoning_tokens,
+        cached_prompt_tokens: usage.input_tokens_details.cached_tokens,
+        cache_creation_prompt_tokens: usage
+            .input_tokens_details
+            .cache_write_tokens
+            .map(|value| value.max(0) as u32)
+            .unwrap_or(0),
+        cache_creation_5m_input_tokens: 0,
+        cache_creation_1h_input_tokens: 0,
+    })
+}
+
+fn response_cost_usd_ticks(response: &rs::Response) -> Option<i64> {
+    response
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get(crate::client::COST_USD_TICKS_METADATA_KEY))
+        .and_then(|value| value.parse::<i64>().ok())
+}
+
+fn response_status(status: &rs::Status) -> String {
+    match status {
+        rs::Status::Completed => "completed",
+        rs::Status::Failed => "failed",
+        rs::Status::InProgress => "in_progress",
+        rs::Status::Cancelled => "cancelled",
+        rs::Status::Queued => "queued",
+        rs::Status::Incomplete => "incomplete",
+    }
+    .to_owned()
+}
+
+fn terminal_reason(reason: &str) -> TerminalReason {
+    match reason {
+        INCOMPLETE_REASON_MAX_OUTPUT_TOKENS | INCOMPLETE_REASON_MAX_TIME_LIMIT | "length" => {
+            TerminalReason::Length
+        }
+        "refusal" => TerminalReason::Refusal,
+        INCOMPLETE_REASON_CONTENT_FILTER => TerminalReason::ContentFilter,
+        INCOMPLETE_REASON_MAX_PROMPT_TOKENS | "context_window_exceeded" => {
+            TerminalReason::ContextWindow
+        }
+        other => TerminalReason::Other(other.to_owned()),
+    }
+}
+
+fn typed_terminal_envelope(
+    named_event: NamedEvent,
+    response: &rs::Response,
+) -> RawTerminalEnvelope {
+    RawTerminalEnvelope {
+        dialect: None,
+        named_event,
+        status: Some(response_status(&response.status)),
+        reason: response
+            .incomplete_details
+            .as_ref()
+            .map(|details| terminal_reason(&details.reason)),
+        raw_output_presence: OutputPresence::Array(response.output.len()),
+        response_id: Some(response.id.clone()),
+        response_model: Some(response.model.clone()),
+    }
+}
+
+fn terminal_facts(
+    response: &rs::Response,
+    envelope: RawTerminalEnvelope,
+    accumulator: &ResponseOutputAccumulator,
+) -> TerminalFacts {
+    let mut text = String::new();
+    let mut message_items = 0;
+    let mut reasoning_items = 0;
+    let mut output_tool_activity = false;
+    let mut output_tools_complete = true;
+    let mut refusal = accumulator.refusal;
+
+    for item in &response.output {
+        match item {
+            rs::OutputItem::Message(message) => {
+                message_items += 1;
+                for part in &message.content {
+                    match part {
+                        rs::OutputMessageContent::OutputText(part) => {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(&part.text);
+                        }
+                        rs::OutputMessageContent::Refusal(_) => refusal = true,
+                    }
+                }
+            }
+            rs::OutputItem::Reasoning(_) => reasoning_items += 1,
+            item if output_item_is_tool(item) => {
+                output_tool_activity = true;
+                output_tools_complete &= tool_item_is_complete(item);
+            }
+            _ => {}
+        }
+    }
+
+    let tool_activity = accumulator.tool_activity || output_tool_activity;
+    let tools_have_completion_evidence = match envelope.raw_output_presence {
+        OutputPresence::Missing | OutputPresence::Null => {
+            accumulator.reconstructed_tools_have_completion_evidence()
+        }
+        OutputPresence::Array(_)
+            if matches!(envelope.reason.as_ref(), Some(TerminalReason::Length)) =>
+        {
+            response
+                .output
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| output_item_is_tool(item))
+                .all(|(output_index, item)| {
+                    tool_item_has_completed_status(item)
+                        || u32::try_from(output_index).is_ok_and(|output_index| {
+                            accumulator.completed_tool_items.contains(&output_index)
+                        })
+                })
+        }
+        OutputPresence::Array(_) => true,
+    };
+    let tool_items_complete = tool_activity
+        && output_tool_activity
+        && output_tools_complete
+        && tools_have_completion_evidence;
+    TerminalFacts {
+        wire: ApiBackend::Responses,
+        dialect: envelope.dialect,
+        named_event: Some(envelope.named_event),
+        status: envelope.status,
+        reason: envelope.reason,
+        raw_output_presence: envelope.raw_output_presence,
+        message_items,
+        reasoning_items,
+        raw_text_bytes: text.len(),
+        trimmed_text_bytes: text.trim().len(),
+        tool_activity,
+        tool_items_complete,
+        refusal,
+        response_id: envelope.response_id,
+        response_model: envelope.response_model,
+        usage: response_usage(response),
+        cost_usd_ticks: response_cost_usd_ticks(response),
+    }
+}
 
 /// Returns whether a Responses API event reflects real model progress rather than a liveness-only heartbeat or status transition.
 pub(crate) fn responses_event_has_meaningful_content(event: &rs::ResponseStreamEvent) -> bool {
@@ -215,15 +699,48 @@ pub fn stream_responses<'a, T>(
 where
     T: Into<ResponsesStreamItem> + Send + 'a,
 {
-    stream_responses_tracked(
-        raw_stream,
-        model_metadata,
-        request_id,
-        idle_timeout,
-        doom_loop,
-        Arc::new(AtomicBool::new(false)),
-        FailedResponseCapture::default(),
-    )
+    async_stream::stream! {
+        let public_request_id = request_id.clone();
+        let tracked = stream_responses_tracked(
+            raw_stream,
+            model_metadata,
+            request_id,
+            idle_timeout,
+            doom_loop,
+            Arc::new(AtomicBool::new(false)),
+            FailedResponseCapture::default(),
+        );
+        let mut tracked = std::pin::pin!(tracked);
+        let mut terminal_forwarded = false;
+        while let Some(item) = tracked.next().await {
+            if let Some(event) = item.into_forward() {
+                terminal_forwarded |= matches!(
+                    &event,
+                    SamplingEvent::Completed { .. } | SamplingEvent::Failed { .. }
+                );
+                yield event;
+            }
+        }
+        if !terminal_forwarded {
+            let err = responses_eof_error();
+            yield SamplingEvent::Failed {
+                request_id: public_request_id,
+                error: SamplingErrorInfo::from(&err),
+            };
+        }
+    }
+}
+
+fn responses_eof_error() -> SamplingError {
+    SamplingError::Api {
+        status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        message: "No ResponseCompleted or ResponseIncomplete event received from Responses API"
+            .to_owned(),
+        model_metadata: None,
+        retry_after_secs: None,
+        should_retry: None,
+        error_code: None,
+    }
 }
 
 pub(crate) fn stream_responses_tracked<'a, T>(
@@ -234,7 +751,7 @@ pub(crate) fn stream_responses_tracked<'a, T>(
     doom_loop: Option<crate::doom_loop::DoomLoopSignalCollector>,
     output_observed: Arc<AtomicBool>,
     failed_response: FailedResponseCapture,
-) -> impl Stream<Item = SamplingEvent> + Send + 'a
+) -> impl Stream<Item = AttemptStreamItem> + Send + 'a
 where
     T: Into<ResponsesStreamItem> + Send + 'a,
 {
@@ -251,19 +768,21 @@ where
         let stream_start = Instant::now();
         let mut chunk_timestamps: Vec<Instant> = Vec::new();
 
-        yield SamplingEvent::StreamStarted {
+        yield AttemptStreamItem::Forward(SamplingEvent::StreamStarted {
             request_id: request_id.clone(),
             timestamp_ms: chrono::Utc::now().timestamp_millis(),
-        };
+        });
 
         if let Some(metadata) = model_metadata {
-            yield SamplingEvent::ModelMetadata {
+            yield AttemptStreamItem::Forward(SamplingEvent::ModelMetadata {
                 request_id: request_id.clone(),
                 metadata,
-            };
+            });
         }
 
         let mut final_response: Option<rs::Response> = None;
+        let mut final_terminal: Option<RawTerminalEnvelope> = None;
+        let mut output_accumulator = ResponseOutputAccumulator::default();
         let mut chunk_index: u64 = 0;
         let mut message_chunk_count: u64 = 0;
         let mut first_token_emitted = false;
@@ -285,10 +804,10 @@ where
                     let err = SamplingError::IdleTimeout {
                         elapsed_secs: idle_timeout.as_secs(),
                     };
-                    yield SamplingEvent::Failed {
+                    yield AttemptStreamItem::Forward(SamplingEvent::Failed {
                         request_id: request_id.clone(),
                         error: SamplingErrorInfo::from(&err),
-                    };
+                    });
                     return;
                 }
             };
@@ -296,21 +815,24 @@ where
             let item = match event_result {
                 Ok(item) => item.into(),
                 Err(err) => {
-                    yield SamplingEvent::Failed {
+                    yield AttemptStreamItem::Forward(SamplingEvent::Failed {
                         request_id: request_id.clone(),
                         error: SamplingErrorInfo::from(&err),
-                    };
+                    });
                     return;
                 }
             };
 
-            let event = match item {
-                ResponsesStreamItem::Event(event) => event,
+            let (event, raw_terminal) = match item {
+                ResponsesStreamItem::Event(event) => (event, None),
+                ResponsesStreamItem::Decoded(frame) => frame.into_parts(),
                 ResponsesStreamItem::Heartbeat => {
                     last_content_chunk_at = Instant::now();
                     continue;
                 }
             };
+
+            output_accumulator.observe(&event);
 
             if responses_event_may_have_output(&event) {
                 output_observed.store(true, Ordering::Relaxed);
@@ -323,6 +845,7 @@ where
                 &event,
                 ResponseStreamEvent::ResponseCompleted(_)
                     | ResponseStreamEvent::ResponseIncomplete(_)
+                    | ResponseStreamEvent::ResponseFailed(_)
             );
             // Observation happens before the abort gate so the aborting frame lands in the capture like any other
             // The attempt is discarded either way, so nothing here reaches downstream consumers
@@ -341,18 +864,18 @@ where
                             .collect()
                     })
                     .unwrap_or_default();
-                yield SamplingEvent::DoomLoopSignals {
+                yield AttemptStreamItem::Forward(SamplingEvent::DoomLoopSignals {
                     request_id: request_id.clone(),
                     triggers: all_triggers,
-                };
+                });
                 let err = SamplingError::DoomLoopDetected {
                     triggers,
                     aborted_at_chunk: Some(chunk_index),
                 };
-                yield SamplingEvent::Failed {
+                yield AttemptStreamItem::Forward(SamplingEvent::Failed {
                     request_id: request_id.clone(),
                     error: SamplingErrorInfo::from(&err),
-                };
+                });
                 return;
             }
 
@@ -367,19 +890,19 @@ where
                     if !delta.is_empty() {
                         if !first_token_emitted {
                             first_token_emitted = true;
-                            yield SamplingEvent::FirstToken {
+                            yield AttemptStreamItem::Forward(SamplingEvent::FirstToken {
                                 request_id: request_id.clone(),
-                            };
+                            });
                         }
                         chunk_timestamps.push(Instant::now());
                         chunk_index += 1;
                         message_chunk_count += 1;
-                        yield SamplingEvent::ChannelToken {
+                        yield AttemptStreamItem::Forward(SamplingEvent::ChannelToken {
                             request_id: request_id.clone(),
                             channel: SamplingChannel::Text,
                             text: delta,
                             chunk_index,
-                        };
+                        });
                     }
                 }
 
@@ -388,17 +911,17 @@ where
                     if !delta.is_empty() {
                         if !first_token_emitted {
                             first_token_emitted = true;
-                            yield SamplingEvent::FirstToken {
+                            yield AttemptStreamItem::Forward(SamplingEvent::FirstToken {
                                 request_id: request_id.clone(),
-                            };
+                            });
                         }
                         chunk_index += 1;
-                        yield SamplingEvent::ChannelToken {
+                        yield AttemptStreamItem::Forward(SamplingEvent::ChannelToken {
                             request_id: request_id.clone(),
                             channel: SamplingChannel::Reasoning,
                             text: delta,
                             chunk_index,
-                        };
+                        });
                     }
                 }
 
@@ -407,18 +930,18 @@ where
                     if !delta.is_empty() {
                         if !first_token_emitted {
                             first_token_emitted = true;
-                            yield SamplingEvent::FirstToken {
+                            yield AttemptStreamItem::Forward(SamplingEvent::FirstToken {
                                 request_id: request_id.clone(),
-                            };
+                            });
                         }
                         chunk_index += 1;
                         reasoning_acc.push_str(&delta);
-                        yield SamplingEvent::ChannelToken {
+                        yield AttemptStreamItem::Forward(SamplingEvent::ChannelToken {
                             request_id: request_id.clone(),
                             channel: SamplingChannel::Reasoning,
                             text: delta,
                             chunk_index,
-                        };
+                        });
                     }
                 }
 
@@ -429,13 +952,13 @@ where
                         next_tool_index += 1;
                         output_to_tool_index.insert(added_event.output_index, tool_index);
 
-                        yield SamplingEvent::ToolCallDelta {
+                        yield AttemptStreamItem::Forward(SamplingEvent::ToolCallDelta {
                             request_id: request_id.clone(),
                             tool_index,
                             id: Some(fc.call_id),
                             name: Some(fc.name),
                             arguments_delta: None,
-                        };
+                        });
                     }
                 }
 
@@ -447,27 +970,51 @@ where
                         && let Some(&tool_index) =
                             output_to_tool_index.get(&args_event.output_index)
                     {
-                        yield SamplingEvent::ToolCallDelta {
+                        yield AttemptStreamItem::Forward(SamplingEvent::ToolCallDelta {
                             request_id: request_id.clone(),
                             tool_index,
                             id: None,
                             name: None,
                             arguments_delta: Some(delta),
-                        };
+                        });
                     }
                 }
 
                 ResponseStreamEvent::ResponseCompleted(completed_event) => {
+                    final_terminal = Some(raw_terminal.unwrap_or_else(|| {
+                        typed_terminal_envelope(NamedEvent::Completed, &completed_event.response)
+                    }));
                     final_response = Some(completed_event.response);
+                    should_break = true;
                 }
 
                 ResponseStreamEvent::ResponseIncomplete(incomplete_event) => {
+                    final_terminal = Some(raw_terminal.unwrap_or_else(|| {
+                        typed_terminal_envelope(NamedEvent::Incomplete, &incomplete_event.response)
+                    }));
                     final_response = Some(incomplete_event.response);
                     should_break = true;
                 }
 
                 ResponseStreamEvent::ResponseFailed(failed_event) => {
-                    let response = failed_event.response;
+                    let mut response = failed_event.response;
+                    let terminal = raw_terminal.unwrap_or_else(|| {
+                        typed_terminal_envelope(NamedEvent::Failed, &response)
+                    });
+                    if matches!(
+                        terminal.raw_output_presence,
+                        OutputPresence::Missing | OutputPresence::Null
+                    ) {
+                        let reconstructed = output_accumulator.reconstructed_output();
+                        if !reconstructed.is_empty() {
+                            response.output = reconstructed;
+                        }
+                    }
+                    yield AttemptStreamItem::TerminalFacts(terminal_facts(
+                        &response,
+                        terminal,
+                        &output_accumulator,
+                    ));
                     let error_message = response
                         .error
                         .as_ref()
@@ -484,10 +1031,10 @@ where
                             .as_ref()
                             .map(|e| xai_grok_sampling_types::ApiErrorCode::parse(&e.code)),
                     };
-                    yield SamplingEvent::Failed {
+                    yield AttemptStreamItem::Forward(SamplingEvent::Failed {
                         request_id: request_id.clone(),
                         error: SamplingErrorInfo::from(&err),
-                    };
+                    });
                     return;
                 }
 
@@ -509,10 +1056,10 @@ where
                             .as_deref()
                             .map(xai_grok_sampling_types::ApiErrorCode::parse),
                     };
-                    yield SamplingEvent::Failed {
+                    yield AttemptStreamItem::Forward(SamplingEvent::Failed {
                         request_id: request_id.clone(),
                         error: SamplingErrorInfo::from(&err),
-                    };
+                    });
                     return;
                 }
 
@@ -522,11 +1069,11 @@ where
 
                 // Web search
                 ResponseStreamEvent::ResponseWebSearchCallInProgress(ev) => {
-                    yield SamplingEvent::BackendToolCallStarted {
+                    yield AttemptStreamItem::Forward(SamplingEvent::BackendToolCallStarted {
                         request_id: request_id.clone(),
                         call_id: ev.item_id.clone(),
                         name: "web_search".to_string(),
-                    };
+                    });
                 }
                 // Completed/Searching carry no data; the real payload arrives via ResponseOutputItemDone(WebSearchCall) below
                 ResponseStreamEvent::ResponseWebSearchCallCompleted(_)
@@ -536,11 +1083,11 @@ where
                 // The shell renders that as a client `tool_use` and `user` `tool_result` split grok has no HostedTool::CodeInterpreter, so these events never arrive under the current hosted-tool set
                 // The started event fires on InProgress; the full payload (code and outputs) rides ResponseOutputItemDone(CodeInterpreterCall) below
                 ResponseStreamEvent::ResponseCodeInterpreterCallInProgress(ev) => {
-                    yield SamplingEvent::BackendToolCallStarted {
+                    yield AttemptStreamItem::Forward(SamplingEvent::BackendToolCallStarted {
                         request_id: request_id.clone(),
                         call_id: ev.item_id.clone(),
                         name: "code_interpreter".to_string(),
-                    };
+                    });
                 }
                 // Interpreting/Completed carry no payload; the result arrives via ResponseOutputItemDone(CodeInterpreterCall) below
                 ResponseStreamEvent::ResponseCodeInterpreterCallInterpreting(_)
@@ -553,35 +1100,35 @@ where
                     match &done_event.item {
                         rs::OutputItem::WebSearchCall(ws) => {
                             let result = serde_json::to_value(ws).ok();
-                            yield SamplingEvent::BackendToolCallCompleted {
+                            yield AttemptStreamItem::Forward(SamplingEvent::BackendToolCallCompleted {
                                 request_id: request_id.clone(),
                                 call_id: ws.id.clone(),
                                 name: "web_search".to_string(),
                                 result,
-                            };
+                            });
                         }
                         // X search results arrive as CustomToolCall with names like x_keyword_search, x_semantic_search, etc
                         // Use "x_search" consistently (matching the Started event)
                         // The specific sub-type is in the serialized result payload and extracted by the pager from raw_output.name
                         rs::OutputItem::CustomToolCall(ct) => {
                             let result = serde_json::to_value(ct).ok();
-                            yield SamplingEvent::BackendToolCallCompleted {
+                            yield AttemptStreamItem::Forward(SamplingEvent::BackendToolCallCompleted {
                                 request_id: request_id.clone(),
                                 call_id: ct.id.clone(),
                                 name: "x_search".to_string(),
                                 result,
-                            };
+                            });
                         }
                         // Code interpreter: the full call (code and outputs) rides the done item
                         // The completed event uses the shared "code_interpreter" name (matching the Started event)
                         rs::OutputItem::CodeInterpreterCall(ci) => {
                             let result = serde_json::to_value(ci).ok();
-                            yield SamplingEvent::BackendToolCallCompleted {
+                            yield AttemptStreamItem::Forward(SamplingEvent::BackendToolCallCompleted {
                                 request_id: request_id.clone(),
                                 call_id: ci.id.clone(),
                                 name: "code_interpreter".to_string(),
                                 result,
-                            };
+                            });
                         }
                         _ => {}
                     }
@@ -590,11 +1137,11 @@ where
                 // CustomToolCallInputDelta is x_search in-progress streaming.
                 // Emit a started event on first delta per item_id.
                 ResponseStreamEvent::ResponseCustomToolCallInputDone(ev) => {
-                    yield SamplingEvent::BackendToolCallStarted {
+                    yield AttemptStreamItem::Forward(SamplingEvent::BackendToolCallStarted {
                         request_id: request_id.clone(),
                         call_id: ev.item_id.clone(),
                         name: "x_search".to_string(),
-                    };
+                    });
                 }
 
                 // All other events (intermediate progress, annotations, image gen, file search, etc.) need no action
@@ -607,10 +1154,10 @@ where
                 let err = SamplingError::IdleTimeout {
                     elapsed_secs: idle_timeout.as_secs(),
                 };
-                yield SamplingEvent::Failed {
+                yield AttemptStreamItem::Forward(SamplingEvent::Failed {
                     request_id: request_id.clone(),
                     error: SamplingErrorInfo::from(&err),
-                };
+                });
                 return;
             }
 
@@ -622,42 +1169,32 @@ where
         // ── Build the final response ─────────────────────────────────
         let mut response = match final_response {
             Some(r) => r,
-            None => {
-                let err = SamplingError::Api {
-                    status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
-                    message: "No ResponseCompleted or ResponseIncomplete event received from \
-                              Responses API"
-                        .to_string(),
-                    model_metadata: None,
-                    retry_after_secs: None,
-                    should_retry: None,
-                    // Synthesized client-side; no wire envelope to read.
-                    error_code: None,
-                };
-                yield SamplingEvent::Failed {
-                    request_id: request_id.clone(),
-                    error: SamplingErrorInfo::from(&err),
-                };
-                return;
-            }
+            None => return,
         };
+
+        let terminal = final_terminal.expect("a final response has a terminal envelope");
+        if matches!(
+            terminal.raw_output_presence,
+            OutputPresence::Missing | OutputPresence::Null
+        ) {
+            let reconstructed = output_accumulator.reconstructed_output();
+            if !reconstructed.is_empty() {
+                response.output = reconstructed;
+            }
+        }
+
+        let facts = terminal_facts(&response, terminal, &output_accumulator);
+
+        if matches!(
+            facts.reason.as_ref(),
+            Some(TerminalReason::ContentFilter | TerminalReason::ContextWindow)
+        ) {
+            response.output.clear();
+        }
 
         // Billing fields (`prompt_tokens`, `completion_tokens`, `cached_prompt_tokens`, `reasoning_tokens`) are the cumulative wire values
         // The SSE decoder (`deserialize_response_event`) has already rewritten `u.total_tokens` to `context_details.input + output`
-        let usage = response.usage.as_ref().map(|u| TokenUsage {
-            prompt_tokens: u.input_tokens,
-            completion_tokens: u.output_tokens,
-            total_tokens: u.total_tokens,
-            reasoning_tokens: u.output_tokens_details.reasoning_tokens,
-            cached_prompt_tokens: u.input_tokens_details.cached_tokens,
-            cache_creation_prompt_tokens: u
-                .input_tokens_details
-                .cache_write_tokens
-                .map(|v| v.max(0) as u32)
-                .unwrap_or(0),
-            cache_creation_5m_input_tokens: 0,
-            cache_creation_1h_input_tokens: 0,
-        });
+        let usage = facts.usage.clone();
 
         let cost_usd_ticks = response
             .metadata
@@ -689,23 +1226,23 @@ where
         // Only the strings match: the xAI Messages backend itself reports a context cut as `max_tokens`, and only this mapping splits it
         let incomplete_classification: Option<(StopReason, Option<messages_types::StopReason>)> =
             if matches!(status, Status::Incomplete) {
-                Some(match incomplete_reason.as_deref() {
+                match incomplete_reason.as_deref() {
                     // A moderation cut ("content_filter") maps to ContentFilter, not Length
                     // A filter-cut response must never be salvaged and continued by `LengthPolicy`
-                    Some(INCOMPLETE_REASON_CONTENT_FILTER) => (StopReason::ContentFilter, None),
-                    Some(INCOMPLETE_REASON_MAX_OUTPUT_TOKENS) => (
+                    Some(INCOMPLETE_REASON_CONTENT_FILTER) => {
+                        Some((StopReason::ContentFilter, None))
+                    }
+                    Some(INCOMPLETE_REASON_MAX_OUTPUT_TOKENS) => Some((
                         StopReason::Length,
                         Some(messages_types::StopReason::MaxTokens),
-                    ),
+                    )),
                     // A prompt-side overflow is the typed context-full terminal (apex-ayl.49
                     // item 1): it is NEVER length-salvaged, so the salvage loop keyed on
-                    // `Length` exits structurally. The raw echo is preserved. Provenance:
-                    // frozen-spec@2cbc222c §6.3 L4280 (m-2: the with-tools case below still
-                    // projects ToolCalls — the recorded pre-existing divergence).
-                    Some(INCOMPLETE_REASON_MAX_PROMPT_TOKENS) => (
+                    // `Length` exits structurally. The raw echo is preserved.
+                    Some(INCOMPLETE_REASON_MAX_PROMPT_TOKENS) => Some((
                         StopReason::ContextWindowExceeded,
                         Some(messages_types::StopReason::ModelContextWindowExceeded),
-                    ),
+                    )),
                     // A time-limit cut is a Length cut with no Messages vocabulary word
                     // Log it because the truncation notice the user sees says "output limit"
                     Some(INCOMPLETE_REASON_MAX_TIME_LIMIT) => {
@@ -713,51 +1250,33 @@ where
                             request_id = %request_id,
                             "response cut by the server-side time limit"
                         );
-                        (StopReason::Length, None)
+                        Some((StopReason::Length, None))
                     }
-                    // An Incomplete response without a reason is a length cut with nothing to carry
-                    None => (StopReason::Length, None),
+                    // Missing and unknown causes remain provider-incomplete.
+                    // They must not enter length salvage or semantic-empty retry.
+                    None => None,
                     Some(other) => {
                         tracing::warn!(
                             reason = %other,
-                            "unknown incomplete reason; treating as Length"
+                            "unknown incomplete reason; preserving provider-incomplete terminal"
                         );
-                        (StopReason::Length, None)
+                        None
                     }
-                })
+                }
             } else {
                 None
             };
 
-        // NOTE: tool calls win even over an Incomplete status, the opposite precedence from the Messages backend
-        // On the Messages backend Length wins, so the `LengthPolicy` gate can refuse a possibly argument-truncated trailing call
-        // The difference is deliberate; don't "fix" it here
-        let (stop_reason, raw_stop_reason) = if has_tool_calls {
-            // m-2: the conjunct covers BOTH cut classes — post the O1 remap a
-            // prompt-overflow classifies as `ContextWindowExceeded`, and the bare
-            // `Length` key would silently disable the only diagnostic on exactly
-            // the divergent with-tools case
-            if matches!(
-                incomplete_classification,
-                Some((StopReason::Length | StopReason::ContextWindowExceeded, _))
-            ) {
-                tracing::warn!(
-                    request_id = %request_id,
-                    "tool calls mask a length-truncated response; arguments may be truncated"
-                );
-            }
-            // Keep the pair coherent: a tool-bearing turn reports ToolCalls with no raw length reason (the warn above is the truncation signal)
-            // That preserves the headless output's `tool_use`
-            (Some(StopReason::ToolCalls), None)
-        } else {
-            match status {
-                Status::Completed => (Some(StopReason::Stop), None),
-                Status::Incomplete => match incomplete_classification {
-                    Some((stop, raw)) => (Some(stop), raw.map(|r| r.wire_str())),
-                    None => (None, None),
-                },
-                _ => (None, None),
-            }
+        // The named incomplete cause outranks output shape. In particular, a
+        // length-cut function call must still reach `LengthPolicy`.
+        let (stop_reason, raw_stop_reason) = match status {
+            Status::Incomplete => match incomplete_classification {
+                Some((stop, raw)) => (Some(stop), raw.map(|reason| reason.wire_str())),
+                None => (None, None),
+            },
+            Status::Completed if has_tool_calls => (Some(StopReason::ToolCalls), None),
+            Status::Completed => (Some(StopReason::Stop), None),
+            _ => (None, None),
         };
 
         let stream_end = Instant::now();
@@ -806,11 +1325,12 @@ where
             stop_sequence: None,
         };
 
-        yield SamplingEvent::Completed {
+        yield AttemptStreamItem::TerminalFacts(facts);
+        yield AttemptStreamItem::Forward(SamplingEvent::Completed {
             request_id: request_id.clone(),
             response: Box::new(conversation_response),
             metrics,
-        };
+        });
     }
 }
 
@@ -893,7 +1413,7 @@ mod tests {
         })
     }
 
-    async fn collect(s: impl Stream<Item = SamplingEvent>) -> Vec<SamplingEvent> {
+    async fn collect<T>(s: impl Stream<Item = T>) -> Vec<T> {
         let mut out = Vec::new();
         let mut s = pin!(s);
         while let Some(ev) = s.next().await {
@@ -951,7 +1471,10 @@ mod tests {
             .await;
 
             assert!(
-                matches!(events.last(), Some(SamplingEvent::Failed { .. })),
+                matches!(
+                    events.last(),
+                    Some(AttemptStreamItem::Forward(SamplingEvent::Failed { .. }))
+                ),
                 "the confident signal aborts the attempt"
             );
             assert!(
@@ -1064,9 +1587,10 @@ mod tests {
         );
     }
 
-    /// A missing `incomplete_details` still maps to Length: an Incomplete response must never look like a clean Stop.
+    /// A missing `incomplete_details` remains provider-incomplete rather than
+    /// being guessed into the length-salvage lane.
     #[tokio::test]
-    async fn incomplete_without_details_maps_to_length() {
+    async fn incomplete_without_details_has_no_collapsed_stop_reason() {
         let event =
             rs::ResponseStreamEvent::ResponseIncomplete(rs_types::ResponseIncompleteEvent {
                 response: build_response(rs_types::Status::Incomplete),
@@ -1083,17 +1607,16 @@ mod tests {
         .await;
         match events.last().unwrap() {
             SamplingEvent::Completed { response, .. } => {
-                assert_eq!(response.stop_reason, Some(StopReason::Length));
+                assert_eq!(response.stop_reason, None);
             }
             other => panic!("expected Completed, got {other:?}"),
         }
     }
 
-    /// Pins the precedence where tool calls beat an Incomplete status.
-    /// A truncated response that still carries a function call reports ToolCalls, not Length.
-    /// The pair stays coherent: no raw length reason rides along, so the headless output keeps reporting `tool_use` for tool-bearing turns.
+    /// A named length cause outranks tool shape so the actor can reject an
+    /// incomplete or syntactically invalid call before salvage.
     #[tokio::test]
-    async fn incomplete_with_tool_calls_maps_to_tool_calls() {
+    async fn incomplete_with_tool_calls_preserves_length() {
         let mut response = build_response(rs_types::Status::Incomplete);
         response.incomplete_details = Some(rs_types::IncompleteDetails {
             reason: "max_output_tokens".into(),
@@ -1123,23 +1646,17 @@ mod tests {
         .await;
         match events.last().unwrap() {
             SamplingEvent::Completed { response, .. } => {
-                assert_eq!(response.stop_reason, Some(StopReason::ToolCalls));
-                assert_eq!(response.raw_stop_reason, None);
+                assert_eq!(response.stop_reason, Some(StopReason::Length));
+                assert_eq!(response.raw_stop_reason.as_deref(), Some("max_tokens"));
             }
-            other => panic!("expected Completed, got {other:?}"),
+            other => panic!("expected Completed(Length), got {other:?}"),
         }
     }
 
-    /// OR1 (apex-ayl.49 m-2 guard pin, green-by-construction — NOT in the RED set): the deliberate
-    /// `has_tool_calls -> (ToolCalls, None)` rewrite (the recorded responses/messages precedence
-    /// asymmetry) WINS over the O1 `max_prompt_tokens` remap. A context-full Incomplete response
-    /// carrying a completed tool call still projects as `ToolCalls` — the L4280 with-tools divergence
-    /// persists on this wire (a later parity cut is its own bead). The truncation warn's `matches!`
-    /// conjunct is extended to `Length | ContextWindowExceeded` so the diagnostic is not silently
-    /// disabled post-remap (source-pinned; the warn is a tracing side-effect, asserted here by the
-    /// projected shape).
+    /// Context-window exhaustion also outranks tool shape and never enters
+    /// length salvage.
     #[tokio::test]
-    async fn responses_with_tools_context_full_projects_toolcalls_with_warn() {
+    async fn responses_with_tools_preserve_context_window() {
         let mut response = build_response(rs_types::Status::Incomplete);
         response.incomplete_details = Some(rs_types::IncompleteDetails {
             reason: "max_prompt_tokens".into(),
@@ -1171,26 +1688,26 @@ mod tests {
             SamplingEvent::Completed { response, .. } => {
                 assert_eq!(
                     response.stop_reason,
-                    Some(StopReason::ToolCalls),
-                    "the deliberate with-tools rewrite wins over the O1 remap (recorded divergence)"
+                    Some(StopReason::ContextWindowExceeded),
+                    "the named context-window cause wins over output shape"
                 );
                 assert_eq!(
-                    response.raw_stop_reason,
-                    None,
-                    "the pair stays coherent: no raw length reason rides along"
+                    response.raw_stop_reason.as_deref(),
+                    Some("model_context_window_exceeded"),
+                    "the raw named cause remains available"
                 );
             }
-            other => panic!("expected Completed(ToolCalls), got {other:?}"),
+            other => panic!("expected Completed(ContextWindowExceeded), got {other:?}"),
         }
     }
 
-    /// The unknown-reason arm is the forward-compatibility story.
-    /// A wire value this client has never seen collapses to Length (salvageable, never a parse failure) and carries no raw reason.
+    /// Unknown reasons remain provider-incomplete and cannot enter length
+    /// salvage merely because this client has not learned their spelling.
     #[tokio::test]
-    async fn incomplete_unknown_reason_maps_to_length() {
+    async fn incomplete_unknown_reason_has_no_collapsed_stop_reason() {
         assert_eq!(
             stop_reasons_for_incomplete("some_future_reason").await,
-            (Some(StopReason::Length), None)
+            (None, None)
         );
     }
 
@@ -1862,15 +2379,16 @@ mod tests {
 
     // SDD 101 (apex-ayl.101) T1 — G-series byte pin: the recorded sol-resp
     // response.completed frame (smoke/redteam/fixtures/parity/101/
-    // response_completed_frame.json — wire input_tokens=16,595,
-    // cached_tokens=0, cache_write_tokens=16,592; capture
+    // response_completed_frame.json — wire input_tokens=16,589,
+    // cached_tokens=0, cache_write_tokens=16,569; capture
     // smoke/wstream/report/20260919T060151Z/sol-resp, session
     // 01a0b842-948a-75b3-bfa4-1d7e2d3c0b19, frame_index 116) must land in the
-    // terminal TokenUsage with cache_creation_prompt_tokens = 16,592.
+    // terminal TokenUsage with cache_creation_prompt_tokens = 16,569.
     // Pre-field control: the same frame minus the cache_write_tokens member
     // (captures recorded before the field existed) still parses and maps 0.
-    const CACHEWRITE_RECORD_FRAME: &str =
-        include_str!("../../../../../smoke/redteam/fixtures/parity/101/response_completed_frame.json");
+    const CACHEWRITE_RECORD_FRAME: &str = include_str!(
+        "../../../../../smoke/redteam/fixtures/parity/101/response_completed_frame.json"
+    );
 
     #[tokio::test]
     async fn response_completed_cache_write_tokens_lands_in_token_usage() {
@@ -1878,15 +2396,21 @@ mod tests {
         let event: rs::ResponseStreamEvent =
             serde_json::from_str(CACHEWRITE_RECORD_FRAME).expect("recorded frame parses");
         let raw = stream::iter(vec![Ok(event)]).boxed();
-        let events =
-            collect(stream_responses(raw, None, rid(), Duration::from_secs(60), None)).await;
+        let events = collect(stream_responses(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+            None,
+        ))
+        .await;
         match events.last().expect("terminal event") {
             SamplingEvent::Completed { response, .. } => {
                 let usage = response.usage.as_ref().expect("terminal usage present");
-                assert_eq!(usage.prompt_tokens, 16_595);
+                assert_eq!(usage.prompt_tokens, 16_589);
                 assert_eq!(usage.cached_prompt_tokens, 0);
                 assert_eq!(
-                    usage.cache_creation_prompt_tokens, 16_592,
+                    usage.cache_creation_prompt_tokens, 16_569,
                     "wire cache_write_tokens must land in TokenUsage.cache_creation_prompt_tokens"
                 );
             }
@@ -1904,8 +2428,14 @@ mod tests {
         let event: rs::ResponseStreamEvent =
             serde_json::from_str(&stripped).expect("pre-field frame parses");
         let raw = stream::iter(vec![Ok(event)]).boxed();
-        let events =
-            collect(stream_responses(raw, None, rid(), Duration::from_secs(60), None)).await;
+        let events = collect(stream_responses(
+            raw,
+            None,
+            rid(),
+            Duration::from_secs(60),
+            None,
+        ))
+        .await;
         match events.last().expect("terminal event") {
             SamplingEvent::Completed { response, .. } => {
                 let usage = response.usage.as_ref().expect("terminal usage present");

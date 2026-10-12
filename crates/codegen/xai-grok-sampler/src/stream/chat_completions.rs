@@ -6,8 +6,8 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use futures_util::StreamExt;
 use futures_util::stream::{BoxStream, Stream};
+use futures_util::{StreamExt, future};
 
 use xai_grok_sampling_types::{
     AssistantItem, ChatCompletionChunk, ConversationItem, ConversationResponse,
@@ -16,7 +16,8 @@ use xai_grok_sampling_types::{
 
 use crate::events::{SamplingChannel, SamplingErrorInfo, SamplingEvent};
 use crate::metrics::InferenceLatencyStats;
-use crate::types::RequestId;
+use crate::terminal::{NamedEvent, OutputPresence, TerminalFacts, TerminalReason};
+use crate::types::{AttemptStreamItem, RequestId};
 
 /// The output stream emits exactly one terminal event per request.
 /// Callers must not consume past the terminal event (the implementation `return`s after yielding it).
@@ -26,6 +27,16 @@ pub fn stream_chat_completions<'a>(
     request_id: RequestId,
     idle_timeout: Duration,
 ) -> impl Stream<Item = SamplingEvent> + Send + 'a {
+    stream_chat_completions_tracked(raw_stream, model_metadata, request_id, idle_timeout)
+        .filter_map(|item| future::ready(item.into_forward()))
+}
+
+pub(crate) fn stream_chat_completions_tracked<'a>(
+    raw_stream: BoxStream<'a, Result<ChatCompletionChunk, SamplingError>>,
+    model_metadata: Option<ResponseModelMetadata>,
+    request_id: RequestId,
+    idle_timeout: Duration,
+) -> impl Stream<Item = AttemptStreamItem> + Send + 'a {
     async_stream::stream! {
         let decode_region = crate::span_timing::Region::from_span(tracing::info_span!(
             "sampling.stream_decode",
@@ -38,22 +49,23 @@ pub fn stream_chat_completions<'a>(
         let mut chunk_timestamps: Vec<Instant> = Vec::new();
 
         // Emit StreamStarted before reading any chunks so subscribers can record TTFB / TTLB baselines
-        yield SamplingEvent::StreamStarted {
+        yield AttemptStreamItem::Forward(SamplingEvent::StreamStarted {
             request_id: request_id.clone(),
             timestamp_ms: chrono::Utc::now().timestamp_millis(),
-        };
+        });
 
         if let Some(metadata) = model_metadata {
-            yield SamplingEvent::ModelMetadata {
+            yield AttemptStreamItem::Forward(SamplingEvent::ModelMetadata {
                 request_id: request_id.clone(),
                 metadata,
-            };
+            });
         }
 
         // Per-response accumulators
         let mut first_chunk_seen = false;
         let mut first_choice_seen = false;
         let mut first_token_emitted = false;
+        let mut response_id: Option<String> = None;
         let mut model: String = String::new();
         let mut model_fingerprint: Option<String> = None;
         let mut usage: Option<TokenUsage> = None;
@@ -86,25 +98,26 @@ pub fn stream_chat_completions<'a>(
                     let err = SamplingError::IdleTimeout {
                         elapsed_secs: idle_timeout.as_secs(),
                     };
-                    yield SamplingEvent::Failed {
+                    yield AttemptStreamItem::Forward(SamplingEvent::Failed {
                         request_id: request_id.clone(),
                         error: SamplingErrorInfo::from(&err),
-                    };
+                    });
                     return;
                 }
             };
             let chunk = match next {
                 Ok(chunk) => chunk,
                 Err(err) => {
-                    yield SamplingEvent::Failed {
+                    yield AttemptStreamItem::Forward(SamplingEvent::Failed {
                         request_id: request_id.clone(),
                         error: SamplingErrorInfo::from(&err),
-                    };
+                    });
                     return;
                 }
             };
 
             if !first_chunk_seen {
+                response_id = (!chunk.id.is_empty()).then(|| chunk.id.clone());
                 model = chunk.model.clone();
                 model_fingerprint = chunk
                     .system_fingerprint
@@ -142,21 +155,21 @@ pub fn stream_chat_completions<'a>(
                 {
                     if !first_token_emitted {
                         first_token_emitted = true;
-                        yield SamplingEvent::FirstToken {
+                        yield AttemptStreamItem::Forward(SamplingEvent::FirstToken {
                             request_id: request_id.clone(),
-                        };
+                        });
                     }
                     chunk_has_content = true;
                     chunk_timestamps.push(Instant::now());
                     chunk_index += 1;
                     message_chunk_count += 1;
                     content_acc.push_str(&text);
-                    yield SamplingEvent::ChannelToken {
+                    yield AttemptStreamItem::Forward(SamplingEvent::ChannelToken {
                         request_id: request_id.clone(),
                         channel: SamplingChannel::Text,
                         text,
                         chunk_index,
-                    };
+                    });
                 }
 
                 if let Some(thought) = delta.reasoning_content
@@ -164,19 +177,19 @@ pub fn stream_chat_completions<'a>(
                 {
                     if !first_token_emitted {
                         first_token_emitted = true;
-                        yield SamplingEvent::FirstToken {
+                        yield AttemptStreamItem::Forward(SamplingEvent::FirstToken {
                             request_id: request_id.clone(),
-                        };
+                        });
                     }
                     chunk_has_content = true;
                     chunk_index += 1;
                     reasoning_acc.push_str(&thought);
-                    yield SamplingEvent::ChannelToken {
+                    yield AttemptStreamItem::Forward(SamplingEvent::ChannelToken {
                         request_id: request_id.clone(),
                         channel: SamplingChannel::Reasoning,
                         text: thought,
                         chunk_index,
-                    };
+                    });
                 }
 
                 for tc_delta in delta.tool_calls.into_iter() {
@@ -205,13 +218,13 @@ pub fn stream_chat_completions<'a>(
                         }
                     }
 
-                    yield SamplingEvent::ToolCallDelta {
+                    yield AttemptStreamItem::Forward(SamplingEvent::ToolCallDelta {
                         request_id: request_id.clone(),
                         tool_index: tc_delta.index,
                         id: id_for_event,
                         name: name_for_event,
                         arguments_delta: args_for_event,
-                    };
+                    });
                 }
             }
 
@@ -221,10 +234,10 @@ pub fn stream_chat_completions<'a>(
                 let err = SamplingError::IdleTimeout {
                     elapsed_secs: idle_timeout.as_secs(),
                 };
-                yield SamplingEvent::Failed {
+                yield AttemptStreamItem::Forward(SamplingEvent::Failed {
                     request_id: request_id.clone(),
                     error: SamplingErrorInfo::from(&err),
-                };
+                });
                 return;
             }
         }
@@ -239,18 +252,79 @@ pub fn stream_chat_completions<'a>(
             })
             .collect();
 
-        // Tool calls override the stop reason, even an explicit `length`.
-        // NOTE: the Messages backend has the opposite precedence: Length wins there
-        // Load-bearing; don't "fix" here
-        if !tool_calls.is_empty() {
-            if finish_reason == Some(StopReason::Length) {
-                tracing::warn!(
-                    request_id = %request_id,
-                    "tool calls mask a length-truncated response; arguments may be truncated"
-                );
-            }
+        let provider_finish_reason = finish_reason;
+        // A named length cut outranks tool shape so the actor can apply the
+        // caller's LengthPolicy. Other successful tool finishes retain the
+        // established ToolCalls projection.
+        if !tool_calls.is_empty() && finish_reason != Some(StopReason::Length) {
             finish_reason = Some(StopReason::ToolCalls);
         }
+
+        let terminal_facts = if let Some(provider_finish_reason) = provider_finish_reason {
+            let reason = match provider_finish_reason {
+                StopReason::Length => Some(TerminalReason::Length),
+                StopReason::ContentFilter => Some(TerminalReason::ContentFilter),
+                StopReason::ContextWindowExceeded => Some(TerminalReason::ContextWindow),
+                StopReason::Stop | StopReason::ToolCalls => None,
+            };
+            let named_event = if provider_finish_reason == StopReason::Length {
+                NamedEvent::Incomplete
+            } else {
+                NamedEvent::Completed
+            };
+            let tool_activity = !tool_calls.is_empty();
+            let tool_items_complete = tool_activity
+                && tool_calls.iter().all(|call| {
+                    call.arguments.trim().is_empty()
+                        || serde_json::from_str::<serde::de::IgnoredAny>(&call.arguments).is_ok()
+                });
+            TerminalFacts {
+                wire: xai_grok_sampling_types::ApiBackend::ChatCompletions,
+                dialect: None,
+                named_event: Some(named_event),
+                status: Some(
+                    if named_event == NamedEvent::Incomplete {
+                        "incomplete"
+                    } else {
+                        "completed"
+                    }
+                    .to_owned(),
+                ),
+                reason,
+                raw_output_presence: OutputPresence::Missing,
+                message_items: usize::from(first_choice_seen),
+                reasoning_items: usize::from(!reasoning_acc.is_empty()),
+                raw_text_bytes: content_acc.len(),
+                trimmed_text_bytes: content_acc.trim().len(),
+                tool_activity,
+                tool_items_complete,
+                refusal: false,
+                response_id,
+                response_model: (!model.is_empty()).then(|| model.clone()),
+                usage: usage.clone(),
+                cost_usd_ticks,
+            }
+        } else {
+            TerminalFacts {
+                wire: xai_grok_sampling_types::ApiBackend::ChatCompletions,
+                dialect: None,
+                named_event: None,
+                status: Some("transport_eof".to_owned()),
+                reason: None,
+                raw_output_presence: OutputPresence::Missing,
+                message_items: usize::from(first_choice_seen),
+                reasoning_items: usize::from(!reasoning_acc.is_empty()),
+                raw_text_bytes: content_acc.len(),
+                trimmed_text_bytes: content_acc.trim().len(),
+                tool_activity: !tool_calls.is_empty(),
+                tool_items_complete: false,
+                refusal: false,
+                response_id,
+                response_model: (!model.is_empty()).then(|| model.clone()),
+                usage: usage.clone(),
+                cost_usd_ticks,
+            }
+        };
 
         // Build the trailing Assistant and any reasoning sibling
         let mut items: Vec<ConversationItem> = Vec::new();
@@ -305,11 +379,12 @@ pub fn stream_chat_completions<'a>(
             stop_sequence: None,
         };
 
-        yield SamplingEvent::Completed {
+        yield AttemptStreamItem::TerminalFacts(terminal_facts);
+        yield AttemptStreamItem::Forward(SamplingEvent::Completed {
             request_id: request_id.clone(),
             response: Box::new(response),
             metrics,
-        };
+        });
     }
 }
 
@@ -525,10 +600,10 @@ mod tests {
         }
     }
 
-    /// Pins the load-bearing precedence: tool calls override an explicit `length` finish (opposite of the Messages backend).
-    /// See the NOTE at the override site.
+    /// A named `length` finish outranks tool shape so incomplete arguments can
+    /// never bypass the actor's length policy.
     #[tokio::test]
-    async fn tool_calls_override_length_finish() {
+    async fn length_finish_outranks_tool_calls() {
         let tool_chunk = make_chunk(vec![ChatChunkDelta {
             role: None,
             content: None,
@@ -559,10 +634,10 @@ mod tests {
 
         match events.last().unwrap() {
             SamplingEvent::Completed { response, .. } => {
-                assert_eq!(response.stop_reason, Some(StopReason::ToolCalls));
+                assert_eq!(response.stop_reason, Some(StopReason::Length));
                 assert_eq!(response.tool_calls().len(), 1);
             }
-            other => panic!("expected Completed(ToolCalls), got {other:?}"),
+            other => panic!("expected Completed(Length), got {other:?}"),
         }
     }
 

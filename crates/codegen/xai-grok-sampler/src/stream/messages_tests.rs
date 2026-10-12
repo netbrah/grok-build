@@ -6,8 +6,7 @@ use futures_util::stream;
 use std::pin::pin;
 use xai_grok_sampling_types::messages::{
     CacheCreation, ContentBlock, MessageDeltaBody, MessageDeltaUsage, MessagesResponse,
-    MessagesUsage,
-    OutputTokensDetails, StopDetails, StreamDelta, StreamError,
+    MessagesUsage, OutputTokensDetails, StopDetails, StreamDelta, StreamError,
 };
 use xai_grok_sampling_types::presence::WirePresence;
 
@@ -59,9 +58,7 @@ fn refusal_stop_details(explanation: &str) -> StopDetails {
 }
 
 /// 46c helper: base start event with the `stop_details` carrier varied; all other carriers missing.
-fn message_start_with_stop_details(
-    stop_details: WirePresence<StopDetails>,
-) -> MessageStreamEvent {
+fn message_start_with_stop_details(stop_details: WirePresence<StopDetails>) -> MessageStreamEvent {
     MessageStreamEvent::MessageStart {
         message: MessagesResponse {
             id: "msg_46c".into(),
@@ -85,9 +82,7 @@ fn message_start_with_stop_details(
 }
 
 /// 46c helper: base terminal delta with the `stop_details` carrier varied; all other carriers missing.
-fn message_delta_with_stop_details(
-    stop_details: WirePresence<StopDetails>,
-) -> MessageStreamEvent {
+fn message_delta_with_stop_details(stop_details: WirePresence<StopDetails>) -> MessageStreamEvent {
     MessageStreamEvent::MessageDelta {
         delta: MessageDeltaBody {
             stop_reason: Some(messages::StopReason::EndTurn),
@@ -106,9 +101,7 @@ fn message_delta_with_stop_details(
 }
 
 /// 46c helper: base start event with the `container` carrier varied; all other carriers missing.
-fn message_start_with_container(
-    container: WirePresence<serde_json::Value>,
-) -> MessageStreamEvent {
+fn message_start_with_container(container: WirePresence<serde_json::Value>) -> MessageStreamEvent {
     MessageStreamEvent::MessageStart {
         message: MessagesResponse {
             id: "msg_46c".into(),
@@ -132,9 +125,7 @@ fn message_start_with_container(
 }
 
 /// 46c helper: base terminal delta with the `container` carrier varied; all other carriers missing.
-fn message_delta_with_container(
-    container: WirePresence<serde_json::Value>,
-) -> MessageStreamEvent {
+fn message_delta_with_container(container: WirePresence<serde_json::Value>) -> MessageStreamEvent {
     MessageStreamEvent::MessageDelta {
         delta: MessageDeltaBody {
             stop_reason: Some(messages::StopReason::EndTurn),
@@ -586,7 +577,8 @@ async fn pause_turn_terminal_fails_with_dedicated_error() {
         other => panic!("expected Failed(UnsupportedStopControl), got {other:?}"),
     }
     assert!(
-        !evs.iter().any(|e| matches!(e, SamplingEvent::Completed { .. })),
+        !evs.iter()
+            .any(|e| matches!(e, SamplingEvent::Completed { .. })),
         "a pause_turn turn must never yield a Completed outcome"
     );
 }
@@ -601,7 +593,7 @@ async fn unknown_stop_reason_terminal_is_stream_protocol_error() {
         Ok(text_delta(0, "partial answer")),
         Ok(block_stop(0)),
         Ok(message_delta_with_stop(messages::StopReason::Unknown(
-            "mystery_reason".to_string()
+            "mystery_reason".to_string(),
         ))),
         Ok(MessageStreamEvent::MessageStop),
     ];
@@ -867,7 +859,11 @@ async fn context_full_with_completed_tools_keeps_context_full_terminal() {
                 Some(StopReason::ContextWindowExceeded),
                 "context-full keeps its typed terminal (not Length, not ToolCalls)"
             );
-            assert_eq!(response.tool_calls().len(), 1, "the tool call stays on the item");
+            assert_eq!(
+                response.tool_calls().len(),
+                1,
+                "the tool call stays on the item"
+            );
         }
         other => panic!("expected Completed(ContextWindowExceeded), got {other:?}"),
     }
@@ -926,7 +922,11 @@ async fn max_tokens_with_open_final_tool_block_completes() {
                 Some(StopReason::Length),
                 "the pinned exception shape completes as Length"
             );
-            assert_eq!(response.tool_calls().len(), 1, "the open tool block is carried");
+            assert_eq!(
+                response.tool_calls().len(),
+                1,
+                "the open tool block is carried"
+            );
             assert_eq!(
                 response.tool_calls()[0].arguments.as_ref(),
                 r#"{"x": "trunc"#,
@@ -1220,9 +1220,7 @@ fn message_start_with_thinking(input: u32, thinking_tokens: u32) -> MessageStrea
                 output_tokens: 0,
                 cache_creation_input_tokens: WirePresence::missing(),
                 cache_read_input_tokens: WirePresence::missing(),
-                output_tokens_details: WirePresence::value(OutputTokensDetails {
-                    thinking_tokens,
-                }),
+                output_tokens_details: WirePresence::value(OutputTokensDetails { thinking_tokens }),
                 cache_creation: WirePresence::missing(),
             },
             container: WirePresence::missing(),
@@ -1291,7 +1289,9 @@ async fn thinking_tokens_delta_overrides_message_start() {
         block_stop(0),
         message_delta_with_thinking(
             7,
-            WirePresence::value(OutputTokensDetails { thinking_tokens: 40 }),
+            WirePresence::value(OutputTokensDetails {
+                thinking_tokens: 40,
+            }),
         ),
         MessageStreamEvent::MessageStop,
     ])
@@ -2220,9 +2220,9 @@ async fn container_start_crossed_with_missing_null_value_deltas() {
                 SamplingEvent::Failed { error, .. } => panic!(
                     "start {start:?} x delta {delta:?}: the stream must complete, got Failed({error:?})"
                 ),
-                other => panic!(
-                    "start {start:?} x delta {delta:?}: expected Completed, got {other:?}"
-                ),
+                other => {
+                    panic!("start {start:?} x delta {delta:?}: expected Completed, got {other:?}")
+                }
             }
         }
     }
@@ -2313,7 +2313,9 @@ async fn usage_overlay_output_tokens_details_missing_null_value() {
         ("null", WirePresence::null(), 40),
         (
             "value",
-            WirePresence::value(OutputTokensDetails { thinking_tokens: 44 }),
+            WirePresence::value(OutputTokensDetails {
+                thinking_tokens: 44,
+            }),
             44,
         ),
     ];
@@ -2455,7 +2457,11 @@ async fn absent_cache_creation_reports_zero_ttl_split_end_to_end() {
     ])
     .await;
 
-    assert_eq!(usage.prompt_tokens, 100 + 500 + 200, "full prompt sum unchanged");
+    assert_eq!(
+        usage.prompt_tokens,
+        100 + 500 + 200,
+        "full prompt sum unchanged"
+    );
     assert_eq!(usage.cached_prompt_tokens, 500, "cache-read sum unchanged");
     assert_eq!(
         usage.cache_creation_prompt_tokens, 200,

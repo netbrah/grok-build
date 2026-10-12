@@ -40,7 +40,9 @@ fn fixture_dir() -> PathBuf {
         .join("..")
         .join("smoke/redteam/fixtures/parity/110")
         .canonicalize()
-        .expect("fixture dir smoke/redteam/fixtures/parity/110 must exist (coordinator-lane artifact)")
+        .expect(
+            "fixture dir smoke/redteam/fixtures/parity/110 must exist (coordinator-lane artifact)",
+        )
 }
 
 fn fixture_input(n: u32) -> Vec<Value> {
@@ -85,18 +87,20 @@ fn drive(input: Vec<Value>, d_anchor: &mut DAnchorState) -> Value {
 /// Element-wise common prefix of the two patched inputs: item count plus the
 /// byte accounting for the RED receipt (compact serde_json per item).
 fn common_prefix(prev: &Value, cur: &Value) -> (usize, usize, usize) {
-    let pi = prev["input"].as_array().expect("patched body has an input array");
-    let ci = cur["input"].as_array().expect("patched body has an input array");
-    let k = pi
-        .iter()
-        .zip(ci.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
+    let pi = prev["input"]
+        .as_array()
+        .expect("patched body has an input array");
+    let ci = cur["input"]
+        .as_array()
+        .expect("patched body has an input array");
+    let k = pi.iter().zip(ci.iter()).take_while(|(a, b)| a == b).count();
     let kept: usize = pi[..k]
         .iter()
         .map(|item| serde_json::to_string(item).expect("item serializes").len())
         .sum();
-    let prev_bytes = serde_json::to_string(pi).expect("input array serializes").len();
+    let prev_bytes = serde_json::to_string(pi)
+        .expect("input array serializes")
+        .len();
     (k, kept, prev_bytes)
 }
 
@@ -120,16 +124,10 @@ fn assert_pair_stable(prev_n: u32, cur_n: u32) {
         pi
     );
     assert_eq!(
-        k,
-        pi,
+        k, pi,
         "pair {}->{}: element-wise common prefix covers only {} of {} previous items \
          (kept {} of {} input bytes) — SDD §2.3 strict kept==prev_bytes violated",
-        prev_n,
-        cur_n,
-        k,
-        pi,
-        kept,
-        prev_bytes
+        prev_n, cur_n, k, pi, kept, prev_bytes
     );
 }
 
@@ -176,7 +174,11 @@ fn find_d_index(body: &Value) -> usize {
 
 #[test]
 fn anchor_pins_d_across_appends() {
-    let base = vec![item("user", "u1"), item("assistant", "a1"), item("user", "u2")];
+    let base = vec![
+        item("user", "u1"),
+        item("assistant", "a1"),
+        item("user", "u2"),
+    ];
     let mut d_anchor = DAnchorState::Anchor(None);
     let first = drive(base.clone(), &mut d_anchor);
     assert_eq!(
@@ -205,13 +207,20 @@ fn anchor_pins_d_across_appends() {
     let si: Vec<&Value> = second["input"].as_array().unwrap().iter().collect();
     assert!(si.len() >= fi.len(), "M-append never shrinks the body");
     for (a, b) in fi.iter().zip(si.iter()) {
-        assert_eq!(a, b, "M-append: previous body is an element-wise prefix of the next");
+        assert_eq!(
+            a, b,
+            "M-append: previous body is an element-wise prefix of the next"
+        );
     }
 }
 
 #[test]
 fn anchor_reanchors_at_tail_after_prefix_divergence() {
-    let base = vec![item("user", "u1"), item("assistant", "a1"), item("user", "u2")];
+    let base = vec![
+        item("user", "u1"),
+        item("assistant", "a1"),
+        item("user", "u2"),
+    ];
     let mut d_anchor = DAnchorState::Anchor(None);
     let _first = drive(base, &mut d_anchor);
     // A declared reset (SDD §6 taxonomy) diverged the raw prefix: an early
@@ -240,7 +249,11 @@ fn anchor_reanchors_at_tail_after_prefix_divergence() {
 
 #[test]
 fn in_place_d_content_update_keeps_anchor_position() {
-    let input = vec![item("user", "u1"), item("assistant", "a1"), item("user", "u2")];
+    let input = vec![
+        item("user", "u1"),
+        item("assistant", "a1"),
+        item("user", "u2"),
+    ];
     let mut d_anchor = DAnchorState::Anchor(None);
     // Sub-ultra: D carries the expanded explicit_request_only sentence.
     let before = drive(input.clone(), &mut d_anchor);
@@ -275,7 +288,10 @@ fn in_place_d_content_update_keeps_anchor_position() {
         d2, d1,
         "the D-content reset is a sanctioned one-time IN-PLACE update — the position never moves"
     );
-    assert!(text_after.contains("proactive"), "ultra codex D text: {text_after:?}");
+    assert!(
+        text_after.contains("proactive"),
+        "ultra codex D text: {text_after:?}"
+    );
     assert_ne!(text_after, text_before, "the mode text actually changed");
     let before_items: Vec<&Value> = before["input"]
         .as_array()
@@ -611,8 +627,7 @@ fn forbidden_phrasing_scan_r1c_8() {
         "mcp.rs::format_mcp_connecting_reminder",
         fn_body(mcp, "format_mcp_connecting_reminder"),
     );
-    let reminders =
-        include_str!("../../xai-grok-shell/src/session/acp_session_impl/reminders.rs");
+    let reminders = include_str!("../../xai-grok-shell/src/session/acp_session_impl/reminders.rs");
     assert_no_forbidden_phrasing_in_source(
         "reminders.rs::wrap_in_reminder_tag",
         fn_body(reminders, "wrap_in_reminder_tag"),

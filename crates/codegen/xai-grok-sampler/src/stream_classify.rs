@@ -184,6 +184,7 @@ pub(crate) fn responses_event_class(event: &rs::ResponseStreamEvent) -> ItemClas
 pub(crate) fn responses_stream_item_class(item: &ResponsesStreamItem) -> ItemClass {
     match item {
         ResponsesStreamItem::Event(event) => responses_event_class(event),
+        ResponsesStreamItem::Decoded(frame) => responses_event_class(frame.event()),
         ResponsesStreamItem::Heartbeat => ItemClass::Other,
     }
 }

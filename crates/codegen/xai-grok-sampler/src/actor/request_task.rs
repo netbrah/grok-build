@@ -24,17 +24,19 @@ use crate::actor::request_metadata::{
 };
 use crate::client::{ApiBackend, SamplingClient};
 use crate::config::{RetryPolicy, SamplerConfig};
-use crate::provider::MultiAgentModeAnchor;
 use crate::doom_loop_recovery::{FailedResponseCapture, append_recovery_context};
 use crate::events::{SamplingErrorInfo, SamplingErrorKind, SamplingEvent, StripReason};
 use crate::handle::CollectedSamplingResult;
 use crate::metrics::InferenceLatencyStats;
+use crate::provider::MultiAgentModeAnchor;
 use crate::retry::{
     self as retry_mod, RetryDecision, classify_error, clone_error, resolve_max_retries,
 };
+use crate::stream::chat_completions::stream_chat_completions_tracked;
 use crate::stream::responses::stream_responses_tracked;
-use crate::stream::{stream_chat_completions, stream_messages};
-use crate::types::RequestId;
+use crate::stream::stream_messages;
+use crate::terminal::{TerminalClass, TerminalFacts, classify_terminal};
+use crate::types::{AttemptStreamItem, RequestId};
 
 /// Default per-chunk idle timeout when neither config nor caller supplies one.
 /// Matches the shell's session-level default of 5 minutes.
@@ -681,9 +683,11 @@ async fn run_one_attempt(
                 Err(e) => return AttemptOutcome::InitFailed { error: e },
             };
             let (teed, captured) = tee_errors(raw);
-            let l2 = stream_chat_completions(teed, metadata, request_id.clone(), idle_timeout);
+            let l2 =
+                stream_chat_completions_tracked(teed, metadata, request_id.clone(), idle_timeout);
             drive_l2(
                 l2,
+                ApiBackend::ChatCompletions,
                 request_id,
                 event_tx,
                 cancel_token,
@@ -696,11 +700,13 @@ async fn run_one_attempt(
             .await
         }
         ApiBackend::Responses => {
-            let (raw, metadata, doom_loop) =
-                match client.conversation_stream_responses(request, d_anchor).await {
-                    Ok(parts) => parts,
-                    Err(e) => return AttemptOutcome::InitFailed { error: e },
-                };
+            let (raw, metadata, doom_loop) = match client
+                .conversation_stream_responses(request, d_anchor)
+                .await
+            {
+                Ok(parts) => parts,
+                Err(e) => return AttemptOutcome::InitFailed { error: e },
+            };
             if doom_check.is_none()
                 && let Some(collector) = &doom_loop
             {
@@ -724,6 +730,7 @@ async fn run_one_attempt(
             );
             drive_l2(
                 l2,
+                ApiBackend::Responses,
                 request_id,
                 event_tx,
                 cancel_token,
@@ -744,6 +751,7 @@ async fn run_one_attempt(
             let l2 = stream_messages(teed, metadata, request_id.clone(), idle_timeout);
             drive_l2(
                 l2,
+                ApiBackend::Messages,
                 request_id,
                 event_tx,
                 cancel_token,
@@ -787,8 +795,9 @@ fn tee_errors<'a, T: Send + 'a>(
 /// Drive an L2 event stream: forward non-terminal events to `event_tx` and watch `cancel_token`.
 /// `doom_check`, when set, turns a completed response carrying confident doom-loop signals into a retryable failure.
 #[allow(clippy::too_many_arguments)]
-async fn drive_l2(
-    l2: impl futures_util::Stream<Item = SamplingEvent>,
+async fn drive_l2<I>(
+    l2: impl futures_util::Stream<Item = I>,
+    wire: ApiBackend,
     request_id: RequestId,
     event_tx: &mpsc::UnboundedSender<SamplingEvent>,
     cancel_token: &CancellationToken,
@@ -797,20 +806,36 @@ async fn drive_l2(
     failed_response: FailedResponseCapture,
     output_observed: Arc<AtomicBool>,
     length_policy: xai_grok_sampling_types::LengthPolicy,
-) -> AttemptOutcome {
+) -> AttemptOutcome
+where
+    I: Into<AttemptStreamItem>,
+{
     let mut l2 = pin!(l2);
     let mut doom_loop_signals = Vec::new();
+    let mut terminal_facts: Option<TerminalFacts> = None;
     let mut await_first_output_span = Some(tracing::info_span!("sampling.await_first_output"));
     loop {
         tokio::select! {
             biased;
-            _ = cancel_token.cancelled() => {
+            _ = cancel_token.cancelled(), if terminal_facts.is_none() => {
+                let facts = synthetic_terminal_facts(&wire, "cancelled");
+                debug_assert_eq!(
+                    classify_terminal(&facts).0,
+                    TerminalClass::Cancelled,
+                );
                 return AttemptOutcome::Cancelled;
             }
-            next = l2.next() => match next {
-                Some(SamplingEvent::Completed { response, metrics, .. }) => {
+            next = l2.next() => match next.map(Into::into) {
+                Some(AttemptStreamItem::TerminalFacts(facts)) => {
+                    terminal_facts = Some(facts);
+                }
+                Some(AttemptStreamItem::Forward(SamplingEvent::Completed { response, metrics, .. })) => {
                     output_observed.store(true, Ordering::Relaxed);
                     await_first_output_span.take();
+                    let observed_terminal = terminal_facts.take();
+                    let terminal_class = observed_terminal
+                        .as_ref()
+                        .map(|facts| classify_terminal(facts).0);
                     let mut all_triggers = Vec::new();
                     merge_signal_labels(
                         &mut all_triggers,
@@ -836,9 +861,19 @@ async fn drive_l2(
                             };
                         }
                     }
-                    // Fail-vs-salvage is centralized in `apply_length_policy`; detector metadata survives a failing verdict
-                    // A salvaged response has no empty reason, so it falls through to `Completed` below
-                    let response =
+                    // Classify the original wire terminal before length policy or
+                    // response-shape emptiness can erase its cause.
+                    let response = if terminal_class == Some(TerminalClass::Length) {
+                        let incomplete_tool = observed_terminal
+                            .as_ref()
+                            .is_some_and(|facts| facts.tool_activity && !facts.tool_items_complete);
+                        if incomplete_tool {
+                            return AttemptOutcome::Failed {
+                                error: SamplingError::MaxTokensTruncation,
+                                doom_loop_signals: all_triggers,
+                                recovery_items: Vec::new(),
+                            };
+                        }
                         match crate::client::apply_length_policy(length_policy, *response) {
                             Ok(response) => Box::new(response),
                             Err(error) => {
@@ -848,7 +883,71 @@ async fn drive_l2(
                                     recovery_items: Vec::new(),
                                 };
                             }
+                        }
+                    } else if observed_terminal.is_none() {
+                        // Messages has no Task-2 terminal-facts carrier yet; retain
+                        // its established length handling.
+                        match crate::client::apply_length_policy(length_policy, *response) {
+                            Ok(response) => Box::new(response),
+                            Err(error) => {
+                                return AttemptOutcome::Failed {
+                                    error,
+                                    doom_loop_signals: all_triggers,
+                                    recovery_items: Vec::new(),
+                                };
+                            }
+                        }
+                    } else {
+                        response
+                    };
+
+                    if matches!(
+                        terminal_class,
+                        Some(
+                            TerminalClass::Refusal
+                                | TerminalClass::ProviderIncomplete
+                                | TerminalClass::Malformed
+                                | TerminalClass::ProviderFailed
+                        )
+                    ) {
+                        return AttemptOutcome::Failed {
+                            error: protocol_terminal_error(
+                                terminal_class.expect("matched terminal class"),
+                            ),
+                            doom_loop_signals: all_triggers,
+                            recovery_items: Vec::new(),
                         };
+                    }
+                    if terminal_class == Some(TerminalClass::TransportEof) {
+                        return AttemptOutcome::Failed {
+                            error: SamplingError::EventStreamError(
+                                "stream dropped without terminal event".to_owned(),
+                            ),
+                            doom_loop_signals: all_triggers,
+                            recovery_items: Vec::new(),
+                        };
+                    }
+                    if terminal_class == Some(TerminalClass::Cancelled) {
+                        return AttemptOutcome::Cancelled;
+                    }
+
+                    if let Some(empty_reason) = match terminal_class {
+                        Some(TerminalClass::ReasoningOnly) => {
+                            Some(xai_grok_sampling_types::EmptyReason::ReasoningOnly)
+                        }
+                        Some(
+                            TerminalClass::ExactEmpty
+                            | TerminalClass::WhitespaceEmpty
+                            | TerminalClass::ZeroOutput,
+                        ) => Some(xai_grok_sampling_types::EmptyReason::NoVisibleContent),
+                        _ => None,
+                    } {
+                        let context = build_empty_context(empty_reason, &response);
+                        return AttemptOutcome::Empty {
+                            context,
+                            doom_loop_signals: all_triggers,
+                        };
+                    }
                     // A content-filtered turn (Anthropic refusal, OpenAI
                     // content_filter stop reason) is legitimately content-less and
                     // deterministic — resampling it would retry-storm.
@@ -863,7 +962,10 @@ async fn drive_l2(
                             xai_grok_sampling_types::StopReason::ContentFilter
                                 | xai_grok_sampling_types::StopReason::ContextWindowExceeded
                         ));
-                    if !content_filtered && let Some(reason) = response.empty_reason() {
+                    if terminal_class.is_none()
+                        && !content_filtered
+                        && let Some(reason) = response.empty_reason()
+                    {
                         let context = build_empty_context(reason, &response);
                         return AttemptOutcome::Empty {
                             context,
@@ -872,13 +974,41 @@ async fn drive_l2(
                     }
                     return AttemptOutcome::Completed { response, metrics };
                 }
-                Some(SamplingEvent::Failed { error: info, .. }) => {
+                Some(AttemptStreamItem::Forward(SamplingEvent::Failed { error: info, .. })) => {
                     await_first_output_span.take();
+                    // Consume a provider terminal observation before reconstructing
+                    // the public error. Its named cause remains authoritative over
+                    // a cancellation that raced after the fact was yielded.
+                    let terminal_class = terminal_facts
+                        .take()
+                        .as_ref()
+                        .map(|facts| classify_terminal(facts).0);
                     let raw = captured
                         .lock()
                         .ok()
                         .and_then(|mut g| g.take());
                     let error = raw.unwrap_or_else(|| synthesize_from_info(&info));
+                    let error = match (terminal_class, error) {
+                        (
+                            Some(TerminalClass::ProviderFailed),
+                            SamplingError::Api {
+                                status,
+                                message,
+                                model_metadata,
+                                retry_after_secs,
+                                error_code,
+                                ..
+                            },
+                        ) => SamplingError::Api {
+                            status,
+                            message,
+                            model_metadata,
+                            retry_after_secs,
+                            should_retry: Some(false),
+                            error_code,
+                        },
+                        (_, error) => error,
+                    };
                     let recovery_items = if matches!(error, SamplingError::DoomLoopDetected { .. }) {
                         failed_response.take_items()
                     } else {
@@ -890,14 +1020,14 @@ async fn drive_l2(
                         recovery_items,
                     };
                 }
-                Some(SamplingEvent::DoomLoopSignals { triggers, .. }) => {
+                Some(AttemptStreamItem::Forward(SamplingEvent::DoomLoopSignals { triggers, .. })) => {
                     merge_signal_labels(&mut doom_loop_signals, triggers.iter().cloned());
                     let _ = event_tx.send(SamplingEvent::DoomLoopSignals {
                         request_id: request_id.clone(),
                         triggers,
                     });
                 }
-                Some(other) => {
+                Some(AttemptStreamItem::Forward(other)) => {
                     if matches!(
                         other,
                         SamplingEvent::FirstToken { .. }
@@ -912,18 +1042,57 @@ async fn drive_l2(
                     let _ = event_tx.send(retag(other, &request_id));
                 }
                 None => {
-                    // L2 streams always terminate with Completed or Failed
-                    // Reaching None means the producer was dropped without termination; treat it as a synthetic transport error
+                    let facts = terminal_facts.take().unwrap_or_else(|| {
+                        synthetic_terminal_facts(&wire, "transport_eof")
+                    });
+                    let terminal_class = classify_terminal(&facts).0;
                     return AttemptOutcome::Failed {
-                        error: SamplingError::EventStreamError(
-                            "stream dropped without terminal event".to_string(),
-                        ),
+                        error: if terminal_class == TerminalClass::TransportEof {
+                            SamplingError::EventStreamError(
+                                "stream dropped without terminal event".to_string(),
+                            )
+                        } else {
+                            protocol_terminal_error(terminal_class)
+                        },
                         doom_loop_signals,
                         recovery_items: Vec::new(),
                     };
                 }
             }
         }
+    }
+}
+
+fn synthetic_terminal_facts(wire: &ApiBackend, status: &str) -> TerminalFacts {
+    TerminalFacts {
+        wire: wire.clone(),
+        dialect: None,
+        named_event: None,
+        status: Some(status.to_owned()),
+        reason: None,
+        raw_output_presence: crate::terminal::OutputPresence::Missing,
+        message_items: 0,
+        reasoning_items: 0,
+        raw_text_bytes: 0,
+        trimmed_text_bytes: 0,
+        tool_activity: false,
+        tool_items_complete: true,
+        refusal: false,
+        response_id: None,
+        response_model: None,
+        usage: None,
+        cost_usd_ticks: None,
+    }
+}
+
+fn protocol_terminal_error(class: TerminalClass) -> SamplingError {
+    SamplingError::Api {
+        status: reqwest::StatusCode::BAD_REQUEST,
+        message: format!("provider returned non-accepting terminal class {class:?}"),
+        model_metadata: None,
+        retry_after_secs: None,
+        should_retry: Some(false),
+        error_code: None,
     }
 }
 
@@ -1274,6 +1443,7 @@ mod tests {
         let (event_tx, _event_rx) = mpsc::unbounded_channel();
         drive_l2(
             stream::iter([event]),
+            ApiBackend::Messages,
             RequestId::random(),
             &event_tx,
             &CancellationToken::new(),
@@ -1294,6 +1464,7 @@ mod tests {
                 response: Box::new(response),
                 metrics: InferenceLatencyStats::default(),
             }]),
+            ApiBackend::Messages,
             RequestId::from("terminal-signals"),
             &event_tx,
             &CancellationToken::new(),
@@ -1357,6 +1528,7 @@ mod tests {
                 response: Box::new(response),
                 metrics: InferenceLatencyStats::default(),
             }]),
+            ApiBackend::Messages,
             RequestId::from("bounded-terminal-signals"),
             &event_tx,
             &CancellationToken::new(),
@@ -1837,7 +2009,10 @@ mod tests {
             "the terminal rejection emits a failed event"
         );
         let collected = completion_rx.await.expect("terminal completion sent");
-        assert!(collected.result.is_err(), "the turn fails with the original error");
+        assert!(
+            collected.result.is_err(),
+            "the turn fails with the original error"
+        );
     }
 
     #[tokio::test]
@@ -1865,11 +2040,10 @@ mod tests {
         // Verbatim probe-D wire shape: the incident body through the client's
         // user-facing message builder, wrapped as the 401 arm emits it.
         let body = r#"{"error":{"message":"Not allowed to access model due to tags configuration. Passed model=gpt-5.6-sol and tags=['East US 2']","type":"internal_server_error","param":null,"code":"401"}}"#;
-        let server_message =
-            xai_grok_sampling_types::user_facing_api_error_message(
-                StatusCode::UNAUTHORIZED,
-                body.as_bytes(),
-            );
+        let server_message = xai_grok_sampling_types::user_facing_api_error_message(
+            StatusCode::UNAUTHORIZED,
+            body.as_bytes(),
+        );
         let err = SamplingError::Auth {
             message: format!(
                 "Unauthorized (401) from {}/v1/responses: {server_message}",
@@ -1952,7 +2126,10 @@ mod tests {
             "the terminal rejection emits a failed event"
         );
         let collected = completion_rx.await.expect("terminal completion sent");
-        assert!(collected.result.is_err(), "the turn fails with the original error");
+        assert!(
+            collected.result.is_err(),
+            "the turn fails with the original error"
+        );
     }
 
     #[tokio::test]
@@ -1991,7 +2168,10 @@ mod tests {
             &parent,
         )
         .await;
-        assert!(!continue1, "a genuine credential 401 is terminal (no retry)");
+        assert!(
+            !continue1,
+            "a genuine credential 401 is terminal (no retry)"
+        );
         assert_eq!(retry_count, 0, "no retry is debited");
         assert_eq!(
             request.items.len(),
@@ -1999,7 +2179,10 @@ mod tests {
             "a genuine credential 401 does NOT strip the request"
         );
         let collected = completion_rx.await.expect("terminal completion sent");
-        assert!(collected.result.is_err(), "the turn fails with the original error");
+        assert!(
+            collected.result.is_err(),
+            "the turn fails with the original error"
+        );
     }
 
     #[tokio::test]
@@ -2127,28 +2310,47 @@ mod enc_boundary_mf6_tests {
             &parent,
         )
         .await;
-        assert!(continue1, "SIG-ENC-BOUNDARY with strippable ciphertext retries");
-        assert_eq!(retry_count, 1, "exactly one retry is debited (bounded max-1)");
+        assert!(
+            continue1,
+            "SIG-ENC-BOUNDARY with strippable ciphertext retries"
+        );
+        assert_eq!(
+            retry_count, 1,
+            "exactly one retry is debited (bounded max-1)"
+        );
 
         // bulk: BOTH reasoning ciphertexts gone, field-level (items survive)
         let mut reasoning_seen = 0;
         for item in &request.items {
             if let xai_grok_sampling_types::ConversationItem::Reasoning(r) = item {
                 reasoning_seen += 1;
-                assert!(r.item.encrypted_content.is_none(), "bulk strip removed every reasoning ciphertext");
+                assert!(
+                    r.item.encrypted_content.is_none(),
+                    "bulk strip removed every reasoning ciphertext"
+                );
                 // payload-only: the mint provenance survives the strip
                 // (the store keeps ciphertext + mint_tag; re-pin recovers)
                 let _ = r.mint_tag;
             }
         }
-        assert_eq!(reasoning_seen, 2, "reasoning items survive the FIELD-level bulk strip");
+        assert_eq!(
+            reasoning_seen, 2,
+            "reasoning items survive the FIELD-level bulk strip"
+        );
         // carrier EXCLUDED: its ciphertext is intact (retain-only, D2)
         let carrier_idx = request
             .items
             .iter()
-            .position(|i| matches!(i, xai_grok_sampling_types::ConversationItem::BackendToolCall(_)))
+            .position(|i| {
+                matches!(
+                    i,
+                    xai_grok_sampling_types::ConversationItem::BackendToolCall(_)
+                )
+            })
             .expect("carrier present");
-        if let xai_grok_sampling_types::ConversationItem::BackendToolCall(b) = &request.items[carrier_idx] {
+        if let xai_grok_sampling_types::ConversationItem::BackendToolCall(b) =
+            &request.items[carrier_idx]
+        {
             if let xai_grok_sampling_types::BackendToolKind::CodexRawInput(raw) = &b.kind {
                 assert!(
                     raw.raw.get("encrypted_content").is_some(),
@@ -2173,7 +2375,10 @@ mod enc_boundary_mf6_tests {
             matches!(ev1, SamplingEvent::Retrying { .. }),
             "expected the retrying event first, got: {ev1:?}"
         );
-        assert!(event_rx.try_recv().is_err(), "no further events (no strip event)");
+        assert!(
+            event_rx.try_recv().is_err(),
+            "no further events (no strip event)"
+        );
 
         // Attempt 2: nothing left to strip -> terminal, fail closed.
         let continue2 = apply_retry_decision(
@@ -2191,14 +2396,20 @@ mod enc_boundary_mf6_tests {
             &parent,
         )
         .await;
-        assert!(!continue2, "second same-class after bulk-strip is terminal (no-loop guard)");
+        assert!(
+            !continue2,
+            "second same-class after bulk-strip is terminal (no-loop guard)"
+        );
         assert_eq!(retry_count, 1, "no second retry is debited");
         assert!(
             matches!(event_rx.recv().await, Some(SamplingEvent::Failed { .. })),
             "the terminal rejection emits a failed event"
         );
         let collected = completion_rx.await.expect("terminal completion sent");
-        assert!(collected.result.is_err(), "the turn fails with the original error");
+        assert!(
+            collected.result.is_err(),
+            "the turn fails with the original error"
+        );
     }
 
     #[tokio::test]

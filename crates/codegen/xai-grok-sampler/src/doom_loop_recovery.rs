@@ -452,13 +452,16 @@ impl FailedResponseCapture {
             if text.is_empty() {
                 continue;
             }
-            items.push(ConversationItem::Reasoning(rs::ReasoningItem {
-                id: item_id,
-                summary: Vec::new(),
-                content: Some(vec![rs::ReasoningTextContent { text }]),
-                encrypted_content: None,
-                status: None,
-            }.into()));
+            items.push(ConversationItem::Reasoning(
+                rs::ReasoningItem {
+                    id: item_id,
+                    summary: Vec::new(),
+                    content: Some(vec![rs::ReasoningTextContent { text }]),
+                    encrypted_content: None,
+                    status: None,
+                }
+                .into(),
+            ));
         }
         if !wire_carried_text {
             let text = text_budget.fit(&captured.output);

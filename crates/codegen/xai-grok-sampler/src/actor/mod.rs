@@ -11,9 +11,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::commands::SamplerCommand;
 use crate::config::{RetryPolicy, SamplerConfig};
-use crate::provider::MultiAgentModeAnchor;
 use crate::events::SamplingEvent;
 use crate::handle::SamplerHandle;
+use crate::provider::MultiAgentModeAnchor;
 use state::{ActiveRequest, ActorState};
 
 use crate::types::RequestId;
