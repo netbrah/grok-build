@@ -4462,3 +4462,243 @@ async fn team_mailbox_rejects_foreign_scope_and_self_send() {
     spawn.abort();
     harness.actor.abort();
 }
+
+// Expected-red (apex-ayl.164, COMMS-DRAIN-NONATIVE ← apex-iib): a native
+// Queue-op `send_message` from root to a NAMED COMPLETED seat resolves the
+// name, honestly answers `Queued`, and persists the body into the roster
+// mailbox — and then no production read path can ever surface it: the
+// `wait_agent` drain filters `native.is_none()` (`coordinator.rs` mailbox
+// drain), and the native door's Wait arm refuses a reader that is no longer
+// active. Two stores that never meet — the wild dead-accept datum
+// (bridge_claude entry sat undrained for the remaining ~3 h of its session)
+// is reproduced byte-shaped here. Draft: map/redcell-drafts/comms-unreadable-11.md.
+//
+// The LIVE-target variant is deferred pending the K2/Q4 contract ruling
+// (wait_agent-surfacing vs injection-only); this COMPLETED variant stands
+// under both candidate rulings — a stranded completed recipient has no
+// injection channel by definition.
+#[tokio::test]
+#[ignore = "expected-red apex-ayl.164 — queued native mail is unreadable on every production path (COMMS-DRAIN-NONATIVE / apex-iib); run with --ignored until the C1 delivery-seam cut lands"]
+async fn comms_drain_nonative_strands_queued_native_mail() {
+    let harness = harness(true, std::time::Duration::from_secs(60));
+    const SEAT_ID: &str = "01a0b00b-0000-4000-8000-00000000000b";
+    const BODY: &str = "R1N_FIXTURE_9d2c04ea pair-root-to-completed-seat";
+    // Completed named seat, byte-shaped from the banked wild roster entry
+    // (empty mailbox on load). Seeded through the real registry-load path so
+    // `ensure_native_registry` installs `native_names`/`native_records`
+    // exactly as production would on first use.
+    harness.registry.lock().unwrap().insert(
+        "parent".to_owned(),
+        vec![NativeAgentRecord {
+            task_name: "/root/bridge_b".to_owned(),
+            agent_id: SEAT_ID.to_owned(),
+            agent_type: "general-purpose".to_owned(),
+            model: Some("fixture-model".to_owned()),
+            cwd: None,
+            mailbox: Vec::new(),
+        }],
+    );
+    let registry = harness.registry.clone();
+    let persisted_bodies = move || -> Vec<String> {
+        registry
+            .lock()
+            .unwrap()
+            .get("parent")
+            .into_iter()
+            .flatten()
+            .flat_map(|record| record.mailbox.iter())
+            .map(|message| message.body.clone())
+            .collect()
+    };
+
+    // Root sends a plain (non-triggers_turn) native message to the named seat.
+    let root = mailbox_identity("parent", "parent");
+    let send = harness
+        .backend
+        .native_agent(
+            root.clone(),
+            NativeAgentOperation::Message {
+                target: "/root/bridge_b".to_owned(),
+                message: AgentMailboxMessage {
+                    message_id: "m-r1n".to_owned(),
+                    team_scope_id: "parent".to_owned(),
+                    from_agent_id: "parent".to_owned(),
+                    to_agent_id: "/root/bridge_b".to_owned(),
+                    kind: AgentMailboxMessageKind::NativeMessage,
+                    body: BODY.to_owned(),
+                    // Pinned from the banked wild entry (byte-shape; synthetic body).
+                    created_at_ms: 1789402166371,
+                    native: Some(NativeAgentMessage {
+                        author: "/root".to_owned(),
+                        recipient: "/root/bridge_b".to_owned(),
+                        encrypted: false,
+                        trigger_prompt_id: None,
+                    }),
+                },
+            },
+        )
+        .await
+        .expect("named send resolves against the loaded roster");
+    // Green pins: the accept was honest, not a silent drop — the wild
+    // `{message_id, status:"queued"}` shape, and the entry persists.
+    assert_eq!(
+        send["status"], "queued",
+        "a Queue-op on a completed named target must answer Queued: {send}"
+    );
+    assert!(
+        persisted_bodies().iter().any(|body| body == BODY),
+        "the queued body must persist into the roster mailbox (wild: it stayed \
+         in native_agents.json); bodies persisted: {:?}",
+        persisted_bodies()
+    );
+
+    // RED 1 — the v1 public read path: `wait_agent_messages` drains the
+    // mailbox but its filter skips every `native.is_some()` entry forever,
+    // so the body never reaches the named reader.
+    let seat = mailbox_identity("parent", SEAT_ID);
+    let inbox = harness.backend.wait_agent_messages(seat.clone(), 0).await;
+    assert!(
+        inbox.messages.iter().any(|message| message.body == BODY),
+        "a queued body must be readable through the public wait path, got: {:?}",
+        inbox
+            .messages
+            .iter()
+            .map(|message| message.body.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    // RED 2 — the v2 door: Wait refuses a completed named reader outright
+    // (today), while the wild reader's answer was names-only anyway
+    // (`{"updates":[author-path]}`). Either surface that carries the body
+    // satisfies the contract.
+    let door = harness
+        .backend
+        .native_agent(seat.clone(), NativeAgentOperation::Wait { timeout_ms: 0 })
+        .await;
+    let door_surfaced = door
+        .as_ref()
+        .is_ok_and(|value| value.to_string().contains(BODY));
+    assert!(
+        door_surfaced,
+        "the native door must surface queued mail to its named reader, got: {door:?}"
+    );
+
+    // RED 3 — drain-on-read: once a read has surfaced the body, the roster
+    // mailbox must hold the entry no longer (wild: never drained, mtime moved
+    // while the entry sat). Together with RED 1/2 this is the full
+    // never-meet contract; the naive C1 fix (drain native mail into
+    // `messages[]`, pop the entry) passes all three, so the cell can go green.
+    assert!(
+        !persisted_bodies().iter().any(|body| body == BODY),
+        "a read that surfaced the body must drain the roster mailbox entry; \
+         persisted bodies: {:?}",
+        persisted_bodies()
+    );
+
+    harness.actor.abort();
+}
+
+// Expected-red (apex-ayl.164, ROSTER-V1, dup_known G-31/G-32): a v1-doored
+// child admitted to the native door's `List` sees neither the calling child
+// itself nor its nested running children. The List arm keeps root plus
+// NATIVE-NAMED agents only (`native_names` filter in the door); unnamed v1
+// members are cut, and nesting is recorded as `spawner_session_id`/graph —
+// never rendered back as an addressable path. An unnamed agent's `native_path`
+// falls back to its raw id, which fails the List arm's path-prefix filter (and
+// the adjacent `native_names` filter) — so v1 members cannot appear as a
+// roster path at all. Wild census (01a10407): the caller's own roster call
+// returned only `/root`; the 149-name render (01a129a1) was all named seats.
+// A1/A2/A3 split so the red is attributable per clause after the fix.
+// Draft: map/redcell-drafts/v2-tools-from-v1-door-01.md.
+#[tokio::test]
+#[ignore = "expected-red apex-ayl.164 — v1-door children are invisible to the native roster List (ROSTER-V1); run with --ignored until the C1 roster cut lands"]
+async fn coordinator_roster_v1_door() {
+    let mut harness = harness(true, std::time::Duration::from_secs(60));
+    // Named seat under root, byte-shape of a loaded roster entry — the class
+    // the door renders today.
+    harness.registry.lock().unwrap().insert(
+        "parent".to_owned(),
+        vec![NativeAgentRecord {
+            task_name: "/root/seat_s".to_owned(),
+            agent_id: "01a5ea00-0000-4000-8000-000000000053".to_owned(),
+            agent_type: "general-purpose".to_owned(),
+            model: Some("fixture-model".to_owned()),
+            cwd: None,
+            mailbox: Vec::new(),
+        }],
+    );
+
+    // C — unnamed v1-doored child, active under root (the wild caller shape:
+    // a plain spawn_subagent child that later calls a native door tool).
+    let c_backend = harness.backend.clone();
+    let c_spawn = tokio::spawn(async move {
+        c_backend
+            .spawn(request("child", true), None)
+            .await
+    });
+    let _ = harness.requests.recv().await.expect("C observed");
+    let _ = harness.start.send(());
+    assert_eq!(harness.started.recv().await.as_deref(), Some("child"));
+
+    // G — C's running child through C's own session (v1 nested door). Stored
+    // with the TEAM as parent (`spawn.rs` rewrites `parent_session_id` to the
+    // spawner's root and keeps `spawner_session_id` separately), so the
+    // roster's parent filter admits G — the naming filter is what cuts it.
+    let g_backend = session_backend(&harness, "child");
+    let g_spawn = tokio::spawn(async move {
+        g_backend
+            .spawn(request("grandchild", true), None)
+            .await
+    });
+    let _ = harness.requests.recv().await.expect("G observed");
+    let _ = harness.start.send(());
+    assert_eq!(harness.started.recv().await.as_deref(), Some("grandchild"));
+
+    // The native door, entered AS the unnamed v1 child C.
+    let caller = mailbox_identity("parent", "child");
+    let roster = harness
+        .backend
+        .native_agent(caller, NativeAgentOperation::List { path_prefix: None })
+        .await
+        .expect("an active v1-doored child is admitted to the native door today");
+    let agents = roster["agents"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .clone();
+    let paths: Vec<&str> = agents
+        .iter()
+        .filter_map(|agent| agent["task_name"].as_str())
+        .collect();
+    let ids: Vec<&str> = agents
+        .iter()
+        .filter_map(|agent| agent["agent_id"].as_str())
+        .collect();
+
+    // A3 (green anchor, anti-vacuity): the roster is NOT empty — root and the
+    // named seat render today, exactly as the wild 149-name render proved.
+    assert!(
+        paths.iter().any(|path| *path == "/root"),
+        "root must render on its own roster, got: {paths:?}"
+    );
+    assert!(
+        paths.iter().any(|path| *path == "/root/seat_s"),
+        "named seats must render on the roster, got: {paths:?}"
+    );
+    // A1 (RED today): G is live and running under C; a transport-blind roster
+    // cannot see it. Today G renders under its raw id and is cut at the door's
+    // prefix/naming filters, and the spawner relation never renders back.
+    assert!(
+        ids.iter().any(|id| *id == "grandchild"),
+        "A1: the nested running child must be roster-addressable, got ids: {ids:?}"
+    );
+    // A2 (RED today): the calling child itself is absent from its own roster
+    // (wild proof: the caller's List returned only `/root`).
+    assert!(
+        ids.iter().any(|id| *id == "child"),
+        "A2: the calling child must appear on the roster it reads, got ids: {ids:?}"
+    );
+
+    c_spawn.abort();
+    g_spawn.abort();
+    harness.actor.abort();
+}
