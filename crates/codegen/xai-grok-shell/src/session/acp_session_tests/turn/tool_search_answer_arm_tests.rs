@@ -6,6 +6,7 @@
 //! per-`call_id` idempotence, both observed on the wire rather than on state.
 
 use super::rate_limit_backoff_tests::{SessionKind, actor_under_test, pump_local_tasks};
+use super::support::test_grok_build_agent_with_todo;
 use super::*;
 use std::time::Duration;
 use xai_grok_test_support::{
@@ -127,6 +128,193 @@ fn second_request_input(server: &MockInferenceServer) -> Vec<serde_json::Value> 
         .clone()
 }
 
+fn shipping_tool_definition() -> serde_json::Value {
+    serde_json::json!({
+        "type": "function",
+        "name": "shipping__lookup_eta",
+        "description": "shipping ETA lookup by order ID",
+        "parameters": {
+            "type": "object",
+            "properties": {"order_id": {"type": "string"}},
+            "required": ["order_id"],
+            "additionalProperties": false
+        }
+    })
+}
+
+fn seed_searchable_mcp(actor: &SessionActor) {
+    use crate::session::tool_index::{ServerMetadata, ToolMetadata};
+    let definition = shipping_tool_definition();
+    let mut snapshot = actor.tool_metadata_snapshot.lock().unwrap();
+    snapshot.tools = vec![ToolMetadata {
+        qualified_name: "shipping__lookup_eta".to_string(),
+        server_name: "shipping".to_string(),
+        tool_name: "lookup_eta".to_string(),
+        description: definition["description"].as_str().unwrap().to_string(),
+        parameters: vec!["order_id".to_string()],
+        input_schema: definition["parameters"].clone(),
+    }];
+    snapshot.servers = vec![ServerMetadata {
+        name: "shipping".to_string(),
+        description: Some("Shipping ETA lookup".to_string()),
+    }];
+    snapshot.mcp_initialized = true;
+}
+
+async fn install_ordinary_tool(actor: &SessionActor) {
+    let agent = test_grok_build_agent_with_todo().await;
+    *actor.agent.borrow_mut() = agent;
+    actor
+        .workspace_ops
+        .bind_local_session(
+            &actor.session_id_string(),
+            actor.tool_context.cwd.as_path().to_path_buf(),
+            actor.tool_context.hunk_tracker_handle.clone(),
+            actor.agent.borrow().tool_bridge().toolset(),
+            None,
+        )
+        .expect("bind the ordinary built-in tool");
+}
+
+fn ordinary_call_item(call_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "function_call",
+        "id": format!("fc_{call_id}"),
+        "call_id": call_id,
+        "name": "todo_write",
+        "arguments": serde_json::json!({
+            "merge": false,
+            "todos": [{
+                "id": call_id,
+                "content": "paired ordinary dispatch",
+                "status": "completed"
+            }]
+        }).to_string(),
+        "status": "completed"
+    })
+}
+
+fn provider_answer_item(call_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "tool_search_output",
+        "id": format!("tso_{call_id}"),
+        "call_id": call_id,
+        "execution": "client",
+        "status": "completed",
+        "tools": [shipping_tool_definition()]
+    })
+}
+
+fn incomplete_search_response(items: &[serde_json::Value]) -> ScriptedResponse {
+    let mut events =
+        with_terminal_output_items(responses_api_completed_only_events("test"), items.to_vec());
+    for event in &mut events {
+        if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&event.data)
+            && value["type"] == "response.completed"
+        {
+            value["type"] = serde_json::json!("response.incomplete");
+            value["response"]["status"] = serde_json::json!("incomplete");
+            value["response"]["incomplete_details"] =
+                serde_json::json!({"reason": "max_output_tokens"});
+            event.data = value.to_string();
+        }
+    }
+    ScriptedResponse::sse(events)
+}
+
+fn request_inputs(server: &MockInferenceServer) -> Vec<Vec<serde_json::Value>> {
+    let inputs: Vec<_> = server
+        .request_bodies()
+        .into_iter()
+        .filter_map(|body| {
+            body.get("input")
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+        })
+        .collect();
+    assert_eq!(inputs.len(), server.request_count_for("/v1/responses"));
+    inputs
+}
+
+async fn transcript_discovery_items(actor: &SessionActor) -> Vec<serde_json::Value> {
+    actor
+        .chat_state_handle
+        .get_conversation()
+        .await
+        .iter()
+        .filter_map(|item| match item {
+            ConversationItem::Discovery { item } => Some(item.raw().clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn assert_native_pair(input: &[serde_json::Value], call_id: &str, tools: Vec<serde_json::Value>) {
+    let call_at = input
+        .iter()
+        .position(|item| item["type"] == "tool_search_call" && item["call_id"] == call_id)
+        .expect("the accepted call must survive");
+    assert_eq!(input[call_at]["execution"], "client");
+    let outputs: Vec<_> = input
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item["type"] == "tool_search_output" && item["call_id"] == call_id)
+        .collect();
+    assert_eq!(
+        outputs.len(),
+        1,
+        "every accepted client call must have exactly one paired output: {call_id}"
+    );
+    let (output_at, output) = outputs[0];
+    assert!(
+        call_at < output_at,
+        "the call must precede its paired output"
+    );
+    assert_eq!(
+        output,
+        &serde_json::json!({
+            "type": "tool_search_output",
+            "call_id": call_id,
+            "execution": "client",
+            "status": "completed",
+            "tools": tools
+        })
+    );
+    assert!(output["tools"].as_array().unwrap().len() <= 8);
+    assert!(
+        output.to_string().len()
+            <= xai_grok_sampling_types::conversation::tool_search::MAX_DISCOVERY_ANSWER_BYTES
+    );
+}
+
+fn assert_ordinary_result(input: &[serde_json::Value], call_id: &str) {
+    let calls: Vec<_> = input
+        .iter()
+        .filter(|item| item["type"] == "function_call" && item["call_id"] == call_id)
+        .collect();
+    let results: Vec<_> = input
+        .iter()
+        .filter(|item| item["type"] == "function_call_output" && item["call_id"] == call_id)
+        .collect();
+    assert_eq!(
+        calls.len(),
+        1,
+        "ordinary call dispatch remains exactly once"
+    );
+    assert_eq!(
+        results.len(),
+        1,
+        "ordinary dispatch produces one matching result"
+    );
+    assert!(
+        results[0]["output"]
+            .to_string()
+            .contains("paired ordinary dispatch"),
+        "ordinary tool must execute successfully: {:?}",
+        results[0]
+    );
+}
+
 /// R7b (D17): drive the real turn loop over a canned discovery-only response.
 /// The call is invisible to `tool_calls()`, so without the answer arm the
 /// loop would end the turn after one request; the arm must re-enter the
@@ -237,14 +425,9 @@ fn the_answered_pair_rides_the_codex_wire_on_the_second_request() {
     });
 }
 
-/// R17-a: the answer-and-`continue` path is budgeted per turn
-/// (`MAX_DISCOVERY_ANSWERS_PER_TURN`). Five client calls in one response
-/// therefore yield exactly four harness answers — the fifth stays in-flight
-/// (the documented residual: the client still holds the call, and the
-/// compaction orphan policy bounds it) — and the arm still re-enters the
-/// model once.
+/// The search budget limits populated answers, never accepted-call pairing.
 #[test]
-fn the_answer_arm_budget_caps_harness_answers_at_four_per_turn() {
+fn the_answer_arm_caps_searches_but_pairs_all_five_calls() {
     on_session_stack(|| {
         run_paused(|| async {
             let server = MockInferenceServer::start_with_models(vec![MockModelEntry::new("test")])
@@ -257,6 +440,7 @@ fn the_answer_arm_budget_caps_harness_answers_at_four_per_turn() {
             let (actor, _retries) =
                 actor_under_test(&server, SessionKind::Main, sampler_no_retries(), false).await;
             seed_codex_family(&actor).await;
+            seed_searchable_mcp(&actor);
             let outcome = run_discovery_turn(&server, &actor, "req-waj57-budget").await;
             pump_local_tasks().await;
             assert!(
@@ -278,9 +462,27 @@ fn the_answer_arm_budget_caps_harness_answers_at_four_per_turn() {
                 "every minted call rides the wire: {input:?}"
             );
             assert_eq!(
-                answers_on_wire, 4,
-                "the per-turn budget caps harness answers at four; the fifth stays \
-                 in-flight by design: {input:?}"
+                answers_on_wire, 5,
+                "all five accepted calls must be paired; the search cap cannot orphan the fifth"
+            );
+            for index in 0..5 {
+                let tools = if index < 4 {
+                    vec![shipping_tool_definition()]
+                } else {
+                    vec![]
+                };
+                assert_native_pair(&input, &format!("call_WAJ57BUDGET{index}"), tools);
+            }
+            let output_ids: Vec<_> = input
+                .iter()
+                .filter(|item| item["type"] == "tool_search_output")
+                .map(|item| item["call_id"].clone())
+                .collect();
+            assert_eq!(
+                output_ids,
+                (0..5)
+                    .map(|index| serde_json::json!(format!("call_WAJ57BUDGET{index}")))
+                    .collect::<Vec<_>>()
             );
         });
     });
@@ -336,6 +538,352 @@ fn a_re_delivered_call_id_appends_no_second_output() {
                  release-build duplicate defence: {input:?}"
             );
             assert_eq!(answers[0]["call_id"], serde_json::json!("call_WAJ57REDIV"));
+        });
+    });
+}
+
+#[test]
+fn mixed_response_pairs_search_and_dispatches_the_ordinary_tool() {
+    on_session_stack(|| {
+        run_paused(|| async {
+            let server = MockInferenceServer::start_with_models(vec![MockModelEntry::new("test")])
+                .await
+                .expect("mock inference server");
+            server.enqueue_response(
+                "/v1/responses",
+                discovery_only_response(&[
+                    lone_client_call_item("call_J086MIXED"),
+                    ordinary_call_item("ordinary_J086MIXED"),
+                ]),
+            );
+            let (actor, _retries) =
+                actor_under_test(&server, SessionKind::Main, sampler_no_retries(), false).await;
+            seed_codex_family(&actor).await;
+            seed_searchable_mcp(&actor);
+            install_ordinary_tool(&actor).await;
+            let outcome = run_discovery_turn(&server, &actor, "req-j086-mixed").await;
+            pump_local_tasks().await;
+            assert!(
+                matches!(outcome, Ok(TurnOutcome::Completed { ref tools_called, .. }) if tools_called == &["todo_write"]),
+                "mixed response must execute its ordinary tool once"
+            );
+            let input = second_request_input(&server);
+            assert_ordinary_result(&input, "ordinary_J086MIXED");
+            assert_native_pair(&input, "call_J086MIXED", vec![shipping_tool_definition()]);
+        });
+    });
+}
+
+#[test]
+fn length_retry_carries_the_accepted_search_pair() {
+    on_session_stack(|| {
+        run_paused(|| async {
+            let server = MockInferenceServer::start_with_models(vec![MockModelEntry::new("test")])
+                .await
+                .expect("mock inference server");
+            server.enqueue_response(
+                "/v1/responses",
+                incomplete_search_response(&[lone_client_call_item("call_J086LENGTH")]),
+            );
+            let (actor, _retries) =
+                actor_under_test(&server, SessionKind::Main, sampler_no_retries(), false).await;
+            seed_codex_family(&actor).await;
+            seed_searchable_mcp(&actor);
+            let mut salvage = length_salvage::LengthSalvage::new(Some(1));
+            let outcome = tokio::time::timeout(
+                Duration::from_secs(300),
+                actor.process_conversation_turn_with_recovery(
+                    "req-j086-length",
+                    None,
+                    None,
+                    None,
+                    &mut salvage,
+                    &mut Default::default(),
+                ),
+            )
+            .await
+            .expect("length retry must finish within timeout");
+            pump_local_tasks().await;
+            assert!(
+                outcome.is_ok(),
+                "enabled salvage must accept the Length response"
+            );
+            assert_eq!(
+                salvage.continues(),
+                1,
+                "the second request is the Length salvage retry"
+            );
+            let input = second_request_input(&server);
+            assert!(
+                input
+                    .iter()
+                    .any(|item| item.to_string().contains("exceeded the output token limit")),
+                "the actual salvage reminder must ride the retry"
+            );
+            assert_native_pair(&input, "call_J086LENGTH", vec![shipping_tool_definition()]);
+        });
+    });
+}
+
+#[test]
+fn a_committed_provider_pair_seeds_cross_response_idempotence_without_spending_budgets() {
+    on_session_stack(|| {
+        run_paused(|| async {
+            let server = MockInferenceServer::start_with_models(vec![MockModelEntry::new("test")])
+                .await
+                .expect("mock inference server");
+            let original_answer = provider_answer_item("call_J086PAIRED");
+            server.enqueue_response(
+                "/v1/responses",
+                discovery_only_response(&[
+                    lone_client_call_item("call_J086PAIRED"),
+                    original_answer.clone(),
+                    ordinary_call_item("ordinary_J086PAIRED1"),
+                ]),
+            );
+            let mut redelivered = lone_client_call_item("call_J086PAIRED");
+            redelivered["id"] = serde_json::json!("tsc_J086PAIRED_redelivered");
+            let mut mixed = vec![
+                redelivered.clone(),
+                ordinary_call_item("ordinary_J086PAIRED2"),
+            ];
+            mixed.extend(
+                (0..4).map(|index| lone_client_call_item(&format!("call_J086FRESH{index}"))),
+            );
+            server.enqueue_response("/v1/responses", discovery_only_response(&mixed));
+            redelivered["id"] = serde_json::json!("tsc_J086PAIRED_duplicate_only");
+            server.enqueue_response("/v1/responses", discovery_only_response(&[redelivered]));
+            let (actor, _retries) =
+                actor_under_test(&server, SessionKind::Main, sampler_no_retries(), false).await;
+            seed_codex_family(&actor).await;
+            seed_searchable_mcp(&actor);
+            install_ordinary_tool(&actor).await;
+            let outcome = run_discovery_turn(&server, &actor, "req-j086-provider-pair").await;
+            pump_local_tasks().await;
+            assert!(
+                matches!(outcome, Ok(TurnOutcome::Completed { ref tools_called, .. }) if tools_called == &["todo_write", "todo_write"]),
+                "both ordinary tools must dispatch"
+            );
+            assert_eq!(
+                server.request_count_for("/v1/responses"),
+                3,
+                "redelivery alone must not spend a discovery continuation"
+            );
+            let inputs = request_inputs(&server);
+            for input in &inputs[1..] {
+                let answers: Vec<_> = input
+                    .iter()
+                    .filter(|item| {
+                        item["type"] == "tool_search_output" && item["call_id"] == "call_J086PAIRED"
+                    })
+                    .cloned()
+                    .collect();
+                assert_eq!(
+                    answers,
+                    vec![original_answer.clone()],
+                    "the committed provider pair survives without an extra harness answer"
+                );
+            }
+            let third = &inputs[2];
+            assert_ordinary_result(third, "ordinary_J086PAIRED1");
+            assert_ordinary_result(third, "ordinary_J086PAIRED2");
+            for index in 0..4 {
+                assert_native_pair(
+                    third,
+                    &format!("call_J086FRESH{index}"),
+                    vec![shipping_tool_definition()],
+                );
+            }
+            let final_items = transcript_discovery_items(&actor).await;
+            let answers: Vec<_> = final_items
+                .iter()
+                .filter(|item| {
+                    item["type"] == "tool_search_output" && item["call_id"] == "call_J086PAIRED"
+                })
+                .cloned()
+                .collect();
+            assert_eq!(
+                answers,
+                vec![original_answer],
+                "later redelivery cannot append a second output to the final transcript"
+            );
+        });
+    });
+}
+
+#[test]
+fn five_discovery_responses_allow_exactly_four_followups_and_persist_the_fifth_empty_pair() {
+    on_session_stack(|| {
+        run_paused(|| async {
+            let server = MockInferenceServer::start_with_models(vec![MockModelEntry::new("test")])
+                .await
+                .expect("mock inference server");
+            for index in 0..6 {
+                server.enqueue_response(
+                    "/v1/responses",
+                    discovery_only_response(&[lone_client_call_item(&format!(
+                        "call_J086FOLLOWUP{index}"
+                    ))]),
+                );
+            }
+            let (actor, _retries) =
+                actor_under_test(&server, SessionKind::Main, sampler_no_retries(), false).await;
+            seed_codex_family(&actor).await;
+            seed_searchable_mcp(&actor);
+            let outcome = run_discovery_turn(&server, &actor, "req-j086-followups").await;
+            pump_local_tasks().await;
+            assert!(outcome.is_ok(), "bounded discovery must complete the turn");
+            assert_eq!(
+                server.request_count_for("/v1/responses"),
+                5,
+                "four discovery continuations permit five requests, never a sixth"
+            );
+            let inputs = request_inputs(&server);
+            for (request_index, input) in inputs.iter().enumerate().skip(1) {
+                assert_eq!(
+                    input
+                        .iter()
+                        .filter(|item| item["type"] == "tool_search_output")
+                        .count(),
+                    request_index,
+                    "each follow-up carries every earlier paired output"
+                );
+                for call_index in 0..request_index {
+                    assert_native_pair(
+                        input,
+                        &format!("call_J086FOLLOWUP{call_index}"),
+                        vec![shipping_tool_definition()],
+                    );
+                }
+            }
+            let final_items = transcript_discovery_items(&actor).await;
+            assert_eq!(
+                final_items
+                    .iter()
+                    .filter(|item| item["type"] == "tool_search_call")
+                    .count(),
+                5
+            );
+            assert_eq!(
+                final_items
+                    .iter()
+                    .filter(|item| item["type"] == "tool_search_output")
+                    .count(),
+                5,
+                "the fifth accepted discovery call must persist its empty paired output"
+            );
+            for index in 0..5 {
+                let tools = if index < 4 {
+                    vec![shipping_tool_definition()]
+                } else {
+                    vec![]
+                };
+                assert_native_pair(&final_items, &format!("call_J086FOLLOWUP{index}"), tools);
+            }
+        });
+    });
+}
+
+#[test]
+fn exhausted_discovery_budgets_still_pair_and_dispatch_a_mixed_fifth_response() {
+    on_session_stack(|| {
+        run_paused(|| async {
+            let server = MockInferenceServer::start_with_models(vec![MockModelEntry::new("test")])
+                .await
+                .expect("mock inference server");
+            for index in 0..4 {
+                server.enqueue_response(
+                    "/v1/responses",
+                    discovery_only_response(&[lone_client_call_item(&format!(
+                        "call_J086EXHAUST{index}"
+                    ))]),
+                );
+            }
+            server.enqueue_response(
+                "/v1/responses",
+                discovery_only_response(&[
+                    lone_client_call_item("call_J086EXHAUST4"),
+                    ordinary_call_item("ordinary_J086EXHAUST"),
+                ]),
+            );
+            let (actor, _retries) =
+                actor_under_test(&server, SessionKind::Main, sampler_no_retries(), false).await;
+            seed_codex_family(&actor).await;
+            seed_searchable_mcp(&actor);
+            install_ordinary_tool(&actor).await;
+            let outcome = run_discovery_turn(&server, &actor, "req-j086-exhausted-mixed").await;
+            pump_local_tasks().await;
+            assert!(
+                matches!(outcome, Ok(TurnOutcome::Completed { ref tools_called, .. }) if tools_called == &["todo_write"]),
+                "both exhausted discovery budgets must leave ordinary dispatch intact"
+            );
+            assert_eq!(
+                server.request_count_for("/v1/responses"),
+                6,
+                "ordinary dispatch, not discovery, permits the sixth request"
+            );
+            let inputs = request_inputs(&server);
+            for (request_index, input) in inputs.iter().enumerate().take(5).skip(1) {
+                for call_index in 0..request_index {
+                    assert_native_pair(
+                        input,
+                        &format!("call_J086EXHAUST{call_index}"),
+                        vec![shipping_tool_definition()],
+                    );
+                }
+            }
+            let final_input = &inputs[5];
+            assert_ordinary_result(final_input, "ordinary_J086EXHAUST");
+            for index in 0..5 {
+                let tools = if index < 4 {
+                    vec![shipping_tool_definition()]
+                } else {
+                    vec![]
+                };
+                assert_native_pair(final_input, &format!("call_J086EXHAUST{index}"), tools);
+            }
+        });
+    });
+}
+
+#[test]
+fn a_server_executed_search_is_never_answered_by_the_harness() {
+    on_session_stack(|| {
+        run_paused(|| async {
+            let server = MockInferenceServer::start_with_models(vec![MockModelEntry::new("test")])
+                .await
+                .expect("mock inference server");
+            let mut server_call = lone_client_call_item("call_J086SERVER");
+            server_call["execution"] = serde_json::json!("server");
+            let mut server_answer = provider_answer_item("call_J086SERVER");
+            server_answer["execution"] = serde_json::json!("server");
+            let text = serde_json::json!({
+                "type": "message", "id": "msg_J086SERVER", "role": "assistant", "status": "completed",
+                "content": [{"type": "output_text", "text": "Provider search completed.", "annotations": []}]
+            });
+            server.enqueue_response(
+                "/v1/responses",
+                discovery_only_response(&[server_call, server_answer.clone(), text]),
+            );
+            let (actor, _retries) =
+                actor_under_test(&server, SessionKind::Main, sampler_no_retries(), false).await;
+            seed_codex_family(&actor).await;
+            seed_searchable_mcp(&actor);
+            let outcome = run_discovery_turn(&server, &actor, "req-j086-server").await;
+            pump_local_tasks().await;
+            assert!(outcome.is_ok());
+            assert_eq!(server.request_count_for("/v1/responses"), 1);
+            let items = transcript_discovery_items(&actor).await;
+            let outputs: Vec<_> = items
+                .iter()
+                .filter(|item| item["type"] == "tool_search_output")
+                .cloned()
+                .collect();
+            assert_eq!(
+                outputs,
+                vec![server_answer],
+                "server execution keeps only its provider-authored output"
+            );
         });
     });
 }
