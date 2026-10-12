@@ -444,7 +444,7 @@ fn ensure_reasoning_object(request_body: &mut Value) {
 }
 
 /// Whether a developer input item carries the multi_agent_mode marker.
-fn is_multi_agent_mode_item(item: &Value) -> bool {
+pub(crate) fn is_multi_agent_mode_item(item: &Value) -> bool {
     let role = item.get("role").and_then(Value::as_str);
     if role != Some("developer") {
         return false;

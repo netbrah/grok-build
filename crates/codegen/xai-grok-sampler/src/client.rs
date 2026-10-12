@@ -825,6 +825,113 @@ fn patch_raw_input_replacements(
     Ok(())
 }
 
+enum RawInputReplacementRebase<'a> {
+    Empty,
+    Layout {
+        input_len: usize,
+        removed_policy_indices: Vec<usize>,
+        replacements: &'a [xai_grok_sampling_types::RawInputItemReplacement],
+    },
+}
+
+impl<'a> RawInputReplacementRebase<'a> {
+    fn capture(
+        request_body: &serde_json::Value,
+        replacements: &'a [xai_grok_sampling_types::RawInputItemReplacement],
+    ) -> Result<Self> {
+        if replacements.is_empty() {
+            return Ok(Self::Empty);
+        }
+        let input = request_body
+            .get("input")
+            .and_then(serde_json::Value::as_array)
+            .ok_or(SamplingError::InvalidConfiguration(
+                "Codex raw input replacements require an input array",
+            ))?;
+        let removed_policy_indices: Vec<usize> = input
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                crate::provider::is_multi_agent_mode_item(item).then_some(index)
+            })
+            .collect();
+        for replacement in replacements {
+            if replacement.input_item_index >= input.len() {
+                return Err(SamplingError::InvalidConfiguration(
+                    "Codex raw input replacement index is out of range",
+                ));
+            }
+            if removed_policy_indices
+                .binary_search(&replacement.input_item_index)
+                .is_ok()
+            {
+                return Err(SamplingError::InvalidConfiguration(
+                    "raw input replacement targets a removed provider policy item",
+                ));
+            }
+        }
+        Ok(Self::Layout {
+            input_len: input.len(),
+            removed_policy_indices,
+            replacements,
+        })
+    }
+
+    fn restore(self, request_body: &mut serde_json::Value) -> Result<()> {
+        let Self::Layout {
+            input_len,
+            removed_policy_indices,
+            replacements,
+        } = self
+        else {
+            return Ok(());
+        };
+        let input = request_body
+            .get_mut("input")
+            .and_then(serde_json::Value::as_array_mut)
+            .ok_or(SamplingError::InvalidConfiguration(
+                "Codex raw input replacements require an input array",
+            ))?;
+        if input.len() != input_len - removed_policy_indices.len() + 1 {
+            return Err(SamplingError::InvalidConfiguration(
+                "raw input replacement input length changed unexpectedly",
+            ));
+        }
+        let policy_indices: Vec<usize> = input
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                crate::provider::is_multi_agent_mode_item(item).then_some(index)
+            })
+            .collect();
+        let [insert_at] = policy_indices.as_slice() else {
+            return Err(SamplingError::InvalidConfiguration(
+                "raw input replacement requires exactly one provider policy item",
+            ));
+        };
+        // Validate the entire mapping before restoring any opaque value.
+        let mapped_indices = replacements
+            .iter()
+            .map(|replacement| {
+                let removed_before = removed_policy_indices
+                    .partition_point(|&index| index < replacement.input_item_index);
+                let retained_index = replacement.input_item_index - removed_before;
+                let mapped_index = retained_index + usize::from(retained_index >= *insert_at);
+                if mapped_index >= input.len() || mapped_index == *insert_at {
+                    return Err(SamplingError::InvalidConfiguration(
+                        "raw input replacement mapped index is invalid",
+                    ));
+                }
+                Ok(mapped_index)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for (replacement, index) in replacements.iter().zip(mapped_indices) {
+            input[index] = replacement.value.clone();
+        }
+        Ok(())
+    }
+}
+
 /// Map the client's wire dialect to the sampling-types replay dialect
 /// (apex-ayl.76). The Strict family has no provider-native history
 /// contract — fail closed.
@@ -2317,6 +2424,8 @@ impl SamplingClient {
         // ids as ""; synthesize the shared xw_ id pre-send (strict rows strip
         // it again downstream — REPLAY-1 ordering preserved).
         xai_grok_sampling_types::patch_reasoning_empty_ids(&mut request_body, &model_id);
+        let raw_input_rebase =
+            RawInputReplacementRebase::capture(&request_body, &request.raw_input_replacements)?;
         // Provider-specific patches (Codex Max/Ultra wire mapping, v2 policy,
         // content-type normalization for non-OpenAI shims).
         crate::provider::patch_responses_request(
@@ -2331,9 +2440,8 @@ impl SamplingClient {
         // the ingress sentinel web-search action pre-egress — the wire keeps
         // the provider's original action-less shape.
         xai_grok_sampling_types::strip_sentinel_web_search_actions(&mut request_body);
-        // Restore Codex compaction carriers (opaque provider items) at their
-        // typed placeholder positions. Empty for every non-Codex request.
-        patch_raw_input_replacements(&mut request_body, &request.raw_input_replacements)?;
+        // Restore native values after provider edits to their typed placeholders.
+        raw_input_rebase.restore(&mut request_body)?;
         // Transport seam: strict targets forbid non-empty reasoning.content
         // on replay (REPLAY-1); project per the per-model gate.
         crate::provider::project_strict_responses_input(
@@ -2496,6 +2604,8 @@ impl SamplingClient {
         // apex-ayl.69 (XW-EMPTYID-1): the streaming send path — same
         // first-send empty-id repair as `create_response` above.
         xai_grok_sampling_types::patch_reasoning_empty_ids(&mut request_body, &model_id);
+        let raw_input_rebase =
+            RawInputReplacementRebase::capture(&request_body, &request.raw_input_replacements)?;
         // Provider-specific patches (Codex Max/Ultra wire mapping, v2 policy,
         // content-type normalization for non-OpenAI shims).
         crate::provider::patch_responses_request(
@@ -2510,9 +2620,8 @@ impl SamplingClient {
         // the ingress sentinel web-search action pre-egress — the wire keeps
         // the provider's original action-less shape.
         xai_grok_sampling_types::strip_sentinel_web_search_actions(&mut request_body);
-        // Restore Codex compaction carriers (opaque provider items) at their
-        // typed placeholder positions. Empty for every non-Codex request.
-        patch_raw_input_replacements(&mut request_body, &request.raw_input_replacements)?;
+        // Restore native values after provider edits to their typed placeholders.
+        raw_input_rebase.restore(&mut request_body)?;
         // Transport seam: strict targets forbid non-empty reasoning.content
         // on replay (REPLAY-1); project per the per-model gate.
         crate::provider::project_strict_responses_input(
@@ -3816,6 +3925,11 @@ fn stream_collect_error(info: SamplingErrorInfo) -> SamplingError {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(test)]
+    mod raw_input_replay_tests {
+        include!("client_raw_input_replay_tests.rs");
+    }
+
     use serial_test::serial;
 
     use super::*;
