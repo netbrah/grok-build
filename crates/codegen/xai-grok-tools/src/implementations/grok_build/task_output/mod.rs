@@ -272,6 +272,9 @@ impl TaskOutputTool {
         } else {
             timeout_ms
         };
+        // Whether a subagent plane was consulted at all: with no backend
+        // installed the only evidence available is the terminal task list.
+        let asked_subagent_backend = backend.is_some();
         if let Some(backend) = backend
             && let Some(snapshot) = backend
                 .backend()
@@ -287,24 +290,19 @@ impl TaskOutputTool {
                 render_legacy_task_output_not_found(task_id)
             } else {
                 // The terminal backend is shared with the root session.
-                let mut known = terminal.list_tasks().await;
-                known.retain(|task| {
-                    crate::reminders::task_completion::task_owned_by_session(
-                        task,
-                        my_owner.as_deref(),
-                    )
-                });
-                if known.is_empty() {
-                    format!(
-                        "Task {task_id} not found. No background tasks or subagents exist in this session.",
-                    )
-                } else {
-                    let ids: Vec<&str> = known.iter().map(|t| t.task_id.as_str()).collect();
-                    format!(
-                        "Task {task_id} not found. Known task IDs: [{}]",
-                        ids.join(", ")
-                    )
-                }
+                let known: Vec<String> = terminal
+                    .list_tasks()
+                    .await
+                    .into_iter()
+                    .filter(|task| {
+                        crate::reminders::task_completion::task_owned_by_session(
+                            task,
+                            my_owner.as_deref(),
+                        )
+                    })
+                    .map(|task| task.task_id)
+                    .collect();
+                task_output_not_found_message(task_id, &known, asked_subagent_backend)
             };
             Ok(TaskOutputOutput::TaskNotFound(msg))
         }
@@ -630,6 +628,35 @@ pub(crate) async fn wait_all_event_driven(
 /// Exact historical not-found message for `get_task_output` in legacy-0.4.10.
 fn render_legacy_task_output_not_found(task_id: &str) -> String {
     format!("Task {} not found", task_id)
+}
+
+/// Refusal shown when neither the terminal backend nor the subagent backend
+/// recognised `task_id`.
+///
+/// `known_task_ids` are this session's bash background tasks. The subagent
+/// backend is queried for `task_id` alone and exposes no way to enumerate a
+/// session's children, so the refusal reports only that this id is unknown to
+/// it — a session with live children must not be told it has none.
+fn task_output_not_found_message(
+    task_id: &str,
+    known_task_ids: &[String],
+    asked_subagent_backend: bool,
+) -> String {
+    let mut msg = if known_task_ids.is_empty() {
+        format!("Task {task_id} not found. No background tasks are owned by this session.")
+    } else {
+        format!(
+            "Task {task_id} not found. Known task IDs: [{}]",
+            known_task_ids.join(", ")
+        )
+    };
+    if asked_subagent_backend {
+        msg.push_str(
+            " The subagent backend has no record of this id; it cannot enumerate a session's \
+             subagents, so this says nothing about whether any are still running.",
+        );
+    }
+    msg
 }
 
 pub(crate) fn format_subagent_snapshot(
@@ -1083,6 +1110,91 @@ mod tests {
     use crate::types::tool_metadata::test_ctx;
     use std::sync::Arc;
 
+    /// apex-ayl.161: this refusal is composed from the terminal backend's task
+    /// list alone. The subagent backend is asked about the requested id only and
+    /// exposes no way to enumerate a session's children, so the message cannot
+    /// state that no subagents exist — a session with a live child was being told
+    /// none did (reproduced live: agent-smoke campaign 20261012T131537Z_9f3f /
+    /// W3-POLL-MSG-TRUTH).
+    #[test]
+    fn not_found_message_does_not_deny_subagents() {
+        let none_known = task_output_not_found_message("task-1", &[], true);
+        assert!(none_known.contains("task-1"), "{none_known}");
+        assert!(
+            !none_known.contains("subagents exist"),
+            "refusal asserts about a plane it never queried: {none_known}"
+        );
+        assert!(none_known.contains("No background tasks"), "{none_known}");
+
+        let listed = task_output_not_found_message("task-1", &["bg-7".to_string()], true);
+        assert!(listed.contains("bg-7"), "{listed}");
+        assert!(!listed.contains("subagents exist"), "{listed}");
+
+        // With no subagent backend installed, the refusal cannot report what
+        // that backend knows either.
+        let unqueried = task_output_not_found_message("task-1", &[], false);
+        assert!(
+            !unqueried.contains("subagent backend"),
+            "refusal reports a backend that was never installed: {unqueried}"
+        );
+    }
+
+    /// apex-ayl.161: the subagent clause has to track whether a backend was
+    /// actually installed. Reporting one that is not there is the same unfounded
+    /// claim in the other direction, so both arms are pinned at the call site
+    /// rather than only in the formatter.
+    #[tokio::test]
+    async fn not_found_subagent_clause_tracks_backend_presence() {
+        // No SubagentBackendResource installed: nothing was asked of it.
+        let no_backend = xai_tool_runtime::Tool::run(
+            &TaskOutputTool,
+            test_ctx(resources_with_terminal(None).into_shared()),
+            TaskOutputToolInput {
+                task_ids: vec!["task-x".into()],
+                timeout_ms: None,
+            },
+        )
+        .await
+        .unwrap();
+        match no_backend {
+            TaskOutputOutput::TaskNotFound(msg) => assert!(
+                !msg.contains("subagent backend"),
+                "refusal reports a backend that was never installed: {msg}"
+            ),
+            other => panic!("Expected TaskNotFound, got {other:?}"),
+        }
+
+        // A backend is installed and answers None for the id: the refusal may
+        // report that the id is unknown to it, and still must not deny children.
+        let (resources, mut query_rx) = resources_with_backend_query();
+        let shared = resources.into_shared();
+        let responder = tokio::spawn(async move {
+            let req = unwrap_query(query_rx.recv().await.unwrap());
+            req.respond_to.send(None).unwrap();
+        });
+        let with_backend = xai_tool_runtime::Tool::run(
+            &TaskOutputTool,
+            test_ctx(shared),
+            TaskOutputToolInput {
+                task_ids: vec!["sub-nope".into()],
+                timeout_ms: None,
+            },
+        )
+        .await
+        .unwrap();
+        responder.await.unwrap();
+        match with_backend {
+            TaskOutputOutput::TaskNotFound(msg) => {
+                assert!(msg.contains("subagent backend has no record"), "{msg}");
+                assert!(
+                    !msg.contains("subagents exist"),
+                    "denies live children: {msg}"
+                );
+            }
+            other => panic!("Expected TaskNotFound, got {other:?}"),
+        }
+    }
+
     // A blocking wait must never hold the turn for longer than the wait
     // cap, regardless of the model's requested `timeout_ms` (repro: an
     // unbounded blocking wait wedged the turn for hours).
@@ -1443,10 +1555,7 @@ mod tests {
         match result {
             TaskOutputOutput::TaskNotFound(msg) => {
                 assert!(msg.contains("not found"), "msg: {msg}");
-                assert!(
-                    msg.contains("No background tasks or subagents exist"),
-                    "msg: {msg}"
-                );
+                assert!(msg.contains("No background tasks"), "msg: {msg}");
             }
             other => panic!("Expected TaskNotFound, got {:?}", other),
         }
@@ -1581,8 +1690,8 @@ mod tests {
             owner_scoped_not_found_message(&[("task-a", Some("other")), ("task-b", Some("other"))])
                 .await;
         assert!(
-            msg.contains("No background tasks or subagents exist in this session."),
-            "msg: {msg}"
+            msg.contains("No background tasks"),
+            "foreign-only tasks must still report an empty session, got: {msg}"
         );
         assert!(!msg.contains("Known task IDs"), "msg: {msg}");
         assert!(
@@ -2097,7 +2206,7 @@ mod tests {
         match result {
             TaskOutputOutput::TaskNotFound(msg) => {
                 assert!(
-                    msg.contains("No background tasks or subagents exist"),
+                    msg.contains("No background tasks"),
                     "Current path must include discoverability text, got: {msg}"
                 );
             }

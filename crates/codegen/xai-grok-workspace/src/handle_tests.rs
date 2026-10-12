@@ -1550,7 +1550,7 @@ async fn restarted_workspace_recreates_session_and_reports_lost_task() {
         "the message must name the lost task id: {msg}"
     );
     assert!(
-        msg.contains("No background tasks or subagents exist in this session"),
+        msg.contains("No background tasks"),
         "the message must say the restarted session has no tasks: {msg}"
     );
     session_a.terminal_backend().kill_task(&bg.task_id).await;
