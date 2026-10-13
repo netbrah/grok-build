@@ -7,7 +7,7 @@ use super::cache_file::{CacheLoadError, is_fresh, read_capped, write_atomic};
 use super::{CacheAuthMethod, ModelsCacheScope};
 use crate::agent::config::ModelEntry;
 
-pub(crate) const MODELS_CACHE_SEMANTIC_VERSION: u32 = 1;
+pub(crate) const MODELS_CACHE_SEMANTIC_VERSION: u32 = 2;
 pub(crate) const MODELS_CACHE_FILE: &str = "models_cache.json";
 pub(crate) const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 /// Cap on the unsigned models cache read, mirroring the settings cache: a
@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     fn q36i_legacy_and_future_semantic_cache_miss() {
-        for semantic in [None, Some(0), Some(2), Some(u64::from(u32::MAX))] {
+        for semantic in [None, Some(0), Some(1), Some(3), Some(u64::from(u32::MAX))] {
             let tmp = tempfile::TempDir::new().unwrap();
             let cache = test_cache(tmp.path());
             q36i_disk_fixture(&cache, semantic, Utc::now());
@@ -471,7 +471,10 @@ mod tests {
         cache.persist(&expected, &section(), Some("current"), &scope(), Utc::now());
         let raw: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&cache.path).unwrap()).unwrap();
-        assert_eq!(raw["semantic_version"], serde_json::json!(1));
+        assert_eq!(
+            raw["semantic_version"],
+            serde_json::json!(MODELS_CACHE_SEMANTIC_VERSION)
+        );
         let hit = cache
             .load_fresh(&scope())
             .expect("current semantic cache hits");
@@ -485,7 +488,7 @@ mod tests {
 
     #[tokio::test]
     async fn q36i_renewal_never_promotes_incompatible_cache() {
-        for semantic in [None, Some(0), Some(2)] {
+        for semantic in [None, Some(0), Some(1), Some(3)] {
             let tmp = tempfile::TempDir::new().unwrap();
             let cache = test_cache(tmp.path());
             q36i_disk_fixture(&cache, semantic, Utc::now() - chrono::Duration::seconds(60));
@@ -501,7 +504,7 @@ mod tests {
 
     #[test]
     fn q36i_incompatible_newer_timestamp_cannot_veto_current_write() {
-        for semantic in [None, Some(0), Some(2)] {
+        for semantic in [None, Some(0), Some(1), Some(3)] {
             let tmp = tempfile::TempDir::new().unwrap();
             let cache = test_cache(tmp.path());
             let newer = Utc::now() - chrono::Duration::seconds(1);
@@ -522,6 +525,143 @@ mod tests {
             );
             assert_eq!(hit.etag.as_deref(), Some("corrected"));
             assert_eq!(hit.model_groups, section());
+        }
+    }
+    fn b5ixm_legacy_cache_fixture(cache: &ModelsCacheManager, fetched_at: DateTime<Utc>) {
+        cache.persist(
+            &models(&["claude-b5ixm-legacy"]),
+            &section(),
+            Some("legacy"),
+            &scope(),
+            fetched_at,
+        );
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&cache.path).unwrap()).unwrap();
+        json["semantic_version"] = serde_json::json!(1);
+        for model in json["models"].as_object_mut().unwrap().values_mut() {
+            model["info"]
+                .as_object_mut()
+                .unwrap()
+                .remove("feed_api_backend");
+        }
+        std::fs::write(&cache.path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn b5ixm_legacy_version1_cache_is_a_miss() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = test_cache(tmp.path());
+        b5ixm_legacy_cache_fixture(&cache, Utc::now());
+        let before = std::fs::read(&cache.path).unwrap();
+        assert!(
+            matches!(
+                cache.try_load_fresh(&scope()),
+                Err(CacheLoadError::VersionMismatch)
+            ),
+            "version1 backend-presence-erased cache must miss"
+        );
+        assert_eq!(std::fs::read(&cache.path).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn b5ixm_legacy_version1_cannot_renew_or_veto_current_write() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache = test_cache(tmp.path());
+        let newer = Utc::now() - chrono::Duration::seconds(1);
+        b5ixm_legacy_cache_fixture(&cache, newer);
+        let before = std::fs::read(&cache.path).unwrap();
+        cache.renew_ttl(&scope()).await;
+        assert_eq!(
+            std::fs::read(&cache.path).unwrap(),
+            before,
+            "version1 cache must not renew erased backend presence"
+        );
+        cache.persist(
+            &models(&["b5ixm-current-write"]),
+            &section(),
+            Some("current"),
+            &scope(),
+            newer - chrono::Duration::seconds(30),
+        );
+        let hit = cache
+            .load_fresh(&scope())
+            .expect("current cache must replace incompatible newer timestamp");
+        assert!(
+            hit.models.contains_key("b5ixm-current-write"),
+            "version1 timestamp must not veto current write"
+        );
+    }
+
+    #[test]
+    fn b5ixm_cache2_warm_round_trip_preserves_explicit_feed_backends() {
+        use crate::agent::config::{Config, ConfigModelOverride, FieldSource, resolve_model_list};
+        use crate::sampling::ApiBackend;
+        for (backend, wire) in [
+            (ApiBackend::ChatCompletions, "chat_completions"),
+            (ApiBackend::Responses, "responses"),
+            (ApiBackend::Messages, "messages"),
+        ] {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let cache = test_cache(tmp.path());
+            let parsed = parse_remote_model_value(
+                &serde_json::json!({"id": "claude-b5ixm-warm", "apiBackend": wire}),
+                "https://backend.example/v1",
+                &IndexMap::new(),
+            )
+            .unwrap();
+            let map = crate::agent::remote_config::build_prefetched_map(vec![parsed], None);
+            let mut cfg = Config::default();
+            cfg.endpoints.models_base_url = None;
+            cfg.endpoints.models_list_url = None;
+            cfg.endpoints.default_api_backend = Some(ApiBackend::Messages);
+            cfg.endpoints.default_model_family = None;
+            cfg.config_models.clear();
+            cfg.model_providers.clear();
+            cache.persist(&map, &section(), Some("backend2"), &scope(), Utc::now());
+            let raw: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&cache.path).unwrap()).unwrap();
+            assert_eq!(raw["semantic_version"], serde_json::json!(2));
+            let hit = cache
+                .load_fresh(&scope())
+                .expect("cache2 hits with backend provenance");
+            assert_eq!(
+                serde_json::to_value(&hit.models).unwrap(),
+                serde_json::to_value(&map).unwrap()
+            );
+            assert_eq!(
+                hit.models["claude-b5ixm-warm"].info.feed_api_backend,
+                Some(backend.clone())
+            );
+            let resolved = resolve_model_list(&cfg, Some(hit.models.clone()));
+            assert_eq!(resolved["claude-b5ixm-warm"].info.api_backend, backend);
+            let view = crate::agent::config::bind_messages_wire_model(
+                &cfg,
+                Some(hit.models.clone()),
+                "claude-b5ixm-warm",
+            )
+            .expect("explicit warm backend binds");
+            assert_eq!(
+                (view.api_backend.value, view.api_backend.source),
+                (backend.clone(), FieldSource::ProxyRow)
+            );
+            cfg.config_models.insert(
+                "claude-b5ixm-warm".into(),
+                ConfigModelOverride {
+                    api_backend: Some(ApiBackend::Responses),
+                    ..Default::default()
+                },
+            );
+            let overridden = resolve_model_list(&cfg, Some(hit.models.clone()));
+            assert_eq!(
+                (
+                    overridden["claude-b5ixm-warm"].info.api_backend.clone(),
+                    overridden["claude-b5ixm-warm"]
+                        .info
+                        .feed_api_backend
+                        .clone()
+                ),
+                (ApiBackend::Responses, Some(backend))
+            );
         }
     }
 }

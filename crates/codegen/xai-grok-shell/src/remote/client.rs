@@ -787,15 +787,15 @@ pub(crate) fn parse_remote_model_value(
         .or_else(|| meta.and_then(|m| get_string(m, "agentType")))
         .or_else(|| meta.and_then(|m| get_string(m, "agent_type")))
         .unwrap_or_else(crate::agent::config::default_agent_type);
-    let api_backend = get_string(obj, "apiBackend")
+    let feed_api_backend = get_string(obj, "apiBackend")
         .or_else(|| get_string(obj, "api_backend"))
         .and_then(|s| match s.as_str() {
             "responses" => Some(crate::sampling::ApiBackend::Responses),
             "chat_completions" => Some(crate::sampling::ApiBackend::ChatCompletions),
             "messages" => Some(crate::sampling::ApiBackend::Messages),
             _ => None,
-        })
-        .unwrap_or_default();
+        });
+    let api_backend = feed_api_backend.clone().unwrap_or_default();
     // CATALOG-HYDRATE-1 (apex-93d): raw feed budget observed BEFORE the u32
     // fold into max_completion_tokens (a >u32::MAX feed value keeps its
     // provenance even when the fold drops it). Chain spellings/order
@@ -826,6 +826,7 @@ pub(crate) fn parse_remote_model_value(
         description: get_string(obj, "description"),
         feed_max_input_tokens,
         feed_max_output_tokens,
+        feed_api_backend,
         max_completion_tokens,
         temperature: get_f64(obj, "temperature").map(|v| v as f32),
         top_p: get_f64(obj, "topP").or_else(|| get_f64(obj, "top_p")).map(|v| v as f32),

@@ -3426,12 +3426,9 @@ fn managed_settings_env_flag(key: &str) -> Option<bool> {
 /// endpoint-default fill, so the effective priority is: config > donor >
 /// explicit row field > catalog inference > endpoint defaults > built-in.
 ///
-/// Strict: never touches a value that moved off its built-in default (row
-/// fields always win, same gate style as the P1 fill). Anthropic and Other
-/// rows get no backend or family fill — they must stay at their built-in
-/// defaults so the endpoint-default fill can still apply (e.g. a
-/// `qwen3.8-27b`-shape row on a proxy with
-/// `[endpoints] default_api_backend = "responses"`). `model_family` is filled
+/// Backend fills require a default value with no explicit live observation.
+/// Anthropic infers Messages; Other retains endpoint-default behavior.
+/// Family inference is unchanged: `model_family` is filled
 /// with "xai" for Xai rows and "codex" for OpenAi rows — "codex" is the
 /// provider-family string that gates the Codex Responses wire dialect in
 /// `xai-grok-sampler::provider` and matches the live gpt rows; a deliberate
@@ -3460,14 +3457,16 @@ fn fill_from_catalog_inference(entry: &mut ModelEntry) {
         }
     }
     if info.api_backend == ApiBackend::default()
-        && matches!(family, CatalogFamily::Xai | CatalogFamily::OpenAi)
+        && info.feed_api_backend.is_none()
+        && family != CatalogFamily::Other
     {
-        // The row's field is at its built-in default, i.e. not explicit at
-        // this seam, so the resolver's explicit input is `None` and the
-        // slug-keyed fallback decides. Legacy OpenAI slugs map to
-        // ChatCompletions — the built-in default — a no-op that is skipped
-        // (no fill, no log) rather than recorded as an inference.
-        let inferred = resolve_api_backend(None, &info.model);
+        // Explicit feed defaults are not absent. Legacy OpenAI slugs keep
+        // ChatCompletions; only an actual backend change is recorded.
+        let inferred = match family {
+            CatalogFamily::Anthropic => ApiBackend::Messages,
+            CatalogFamily::Xai | CatalogFamily::OpenAi => resolve_api_backend(None, &info.model),
+            CatalogFamily::Other => ApiBackend::default(),
+        };
         if inferred != info.api_backend {
             tracing::debug!(
                 model = %info.model,
@@ -3504,6 +3503,7 @@ fn fill_from_catalog_inference(entry: &mut ModelEntry) {
 fn fill_from_endpoint_defaults(entry: &mut ModelEntry, endpoints: &EndpointsConfig) {
     let info = &mut entry.info;
     if info.api_backend == ApiBackend::default()
+        && info.feed_api_backend.is_none()
         && let Some(backend) = &endpoints.default_api_backend
     {
         if is_anthropic_model(&info.model) && backend != &ApiBackend::Messages {
@@ -3699,7 +3699,9 @@ pub(crate) fn resolve_model_list(
                 if entry.info.agent_type == DEFAULT_AGENT_TYPE {
                     entry.info.agent_type.clone_from(&donor.info.agent_type);
                 }
-                if entry.info.api_backend == ApiBackend::default() {
+                if entry.info.api_backend == ApiBackend::default()
+                    && entry.info.feed_api_backend.is_none()
+                {
                     entry.info.api_backend.clone_from(&donor.info.api_backend);
                 }
             }
@@ -3829,6 +3831,7 @@ pub(crate) fn resolve_model_list(
                 }
                 if !explicit_api_backend_keys.contains(key.as_str())
                     && entry.info.api_backend == ApiBackend::default()
+                    && entry.info.feed_api_backend.is_none()
                     && *donor_backend != ApiBackend::default()
                 {
                     entry.info.api_backend.clone_from(donor_backend);
@@ -4052,6 +4055,15 @@ fn model_authority_view(
 ) -> ModelAuthorityView {
     let endpoints = &cfg.endpoints;
     let override_cfg = cfg.config_models.get(key);
+    let provider_backend_override = override_cfg.and_then(|ov| {
+        ov.model_provider
+            .as_deref()
+            .map(|pid| match cfg.model_providers.get(pid) {
+                Some(provider) => ov.with_provider_defaults(provider, pid),
+                None => ov.with_missing_provider(),
+            })
+    });
+    let backend_override_cfg = provider_backend_override.as_ref().or(override_cfg);
     let row = prefetched.as_ref().and_then(|rows| rows.get(key));
     let bundled = if endpoints.has_custom_endpoint() {
         None
@@ -4101,7 +4113,7 @@ fn model_authority_view(
     };
     let mut endpoint_inference_fired = false;
     if let Some(row) = row {
-        if row.info.api_backend != ApiBackend::default() {
+        if row.info.api_backend != ApiBackend::default() || row.info.feed_api_backend.is_some() {
             api_backend = row.info.api_backend.clone();
             api_backend_source = FieldSource::ProxyRow;
         } else {
@@ -4109,19 +4121,25 @@ fn model_authority_view(
                 api_backend = donor.info.api_backend.clone();
                 api_backend_source = FieldSource::Donor;
             }
+            let family = resolve_family(row.info.model_family.as_deref(), &row.info.model);
             if api_backend == ApiBackend::default()
-                && matches!(
-                    resolve_family(row.info.model_family.as_deref(), &row.info.model),
-                    CatalogFamily::Xai | CatalogFamily::OpenAi
-                )
+                && row.info.feed_api_backend.is_none()
+                && family != CatalogFamily::Other
             {
-                let inferred = resolve_api_backend(None, &row.info.model);
+                let inferred = match family {
+                    CatalogFamily::Anthropic => ApiBackend::Messages,
+                    CatalogFamily::Xai | CatalogFamily::OpenAi => {
+                        resolve_api_backend(None, &row.info.model)
+                    }
+                    CatalogFamily::Other => ApiBackend::default(),
+                };
                 if inferred != api_backend {
                     api_backend = inferred;
                     api_backend_source = FieldSource::CatalogInference;
                 }
             }
             if api_backend == ApiBackend::default()
+                && row.info.feed_api_backend.is_none()
                 && let Some(backend) = &endpoints.default_api_backend
             {
                 if is_anthropic_model(&row.info.model) && backend != &ApiBackend::Messages {
@@ -4139,19 +4157,25 @@ fn model_authority_view(
     // seams on the bundled row for EVERY key (apex-b0f); mirror them
     // 1:1 so the replay labels seam fills identically.
     if !is_prefetched && let Some(b) = bundled_entry {
+        let family = resolve_family(b.info.model_family.as_deref(), &b.info.model);
         if api_backend == ApiBackend::default()
-            && matches!(
-                resolve_family(b.info.model_family.as_deref(), &b.info.model),
-                CatalogFamily::Xai | CatalogFamily::OpenAi
-            )
+            && b.info.feed_api_backend.is_none()
+            && family != CatalogFamily::Other
         {
-            let inferred = resolve_api_backend(None, &b.info.model);
+            let inferred = match family {
+                CatalogFamily::Anthropic => ApiBackend::Messages,
+                CatalogFamily::Xai | CatalogFamily::OpenAi => {
+                    resolve_api_backend(None, &b.info.model)
+                }
+                CatalogFamily::Other => ApiBackend::default(),
+            };
             if inferred != api_backend {
                 api_backend = inferred;
                 api_backend_source = FieldSource::CatalogInference;
             }
         }
         if api_backend == ApiBackend::default()
+            && b.info.feed_api_backend.is_none()
             && let Some(backend) = &endpoints.default_api_backend
         {
             if is_anthropic_model(&b.info.model) && backend != &ApiBackend::Messages {
@@ -4164,7 +4188,7 @@ fn model_authority_view(
             }
         }
     }
-    if let Some(backend) = override_cfg.and_then(|ov| ov.api_backend.as_ref()) {
+    if let Some(backend) = backend_override_cfg.and_then(|ov| ov.api_backend.as_ref()) {
         api_backend = backend.clone();
         api_backend_source = FieldSource::Config;
     }
@@ -4691,29 +4715,34 @@ fn model_authority_view(
             name: "catalog-inference-to-messages",
             reachable_for_messages: inference_input.is_some_and(|r| {
                 r.info.api_backend == ApiBackend::default()
-                    && matches!(
-                        resolve_family(r.info.model_family.as_deref(), &r.info.model),
-                        CatalogFamily::Xai | CatalogFamily::OpenAi
-                    )
-                    && resolve_api_backend(None, &r.info.model) == ApiBackend::Messages
+                    && r.info.feed_api_backend.is_none()
+                    && resolve_family(r.info.model_family.as_deref(), &r.info.model)
+                        == CatalogFamily::Anthropic
+                    && !donor.is_some_and(|d| d.info.api_backend != ApiBackend::default())
             }),
             fired: api_backend_source == FieldSource::CatalogInference
                 && api_backend == ApiBackend::Messages,
         },
         InferenceBranch {
             name: "donor-inheritance-to-messages",
-            reachable_for_messages: row
-                .is_some_and(|r| r.info.api_backend == ApiBackend::default())
-                && donor.is_some_and(|d| d.info.api_backend == ApiBackend::Messages),
-            fired: api_backend_source == FieldSource::Donor
-                && api_backend == ApiBackend::Messages,
+            reachable_for_messages: row.is_some_and(|r| {
+                r.info.api_backend == ApiBackend::default() && r.info.feed_api_backend.is_none()
+            }) && donor
+                .is_some_and(|d| d.info.api_backend == ApiBackend::Messages),
+            fired: api_backend_source == FieldSource::Donor && api_backend == ApiBackend::Messages,
         },
         InferenceBranch {
             name: "endpoint-defaults-inference-to-messages",
             // ANTHROPIC-WIRE-1 (cut 2) refusal branch: an anthropic row
             // meeting a non-messages endpoint default is the shape that
             // always reaches it for the messages wire (T29 m-2).
-            reachable_for_messages: is_anthropic_model(&info.model)
+            reachable_for_messages: inference_input.is_some_and(|r| {
+                r.info.api_backend == ApiBackend::default()
+                    && r.info.feed_api_backend.is_none()
+                    && resolve_family(r.info.model_family.as_deref(), &r.info.model)
+                        != CatalogFamily::Anthropic
+                    && !donor.is_some_and(|d| d.info.api_backend != ApiBackend::default())
+            }) && is_anthropic_model(&info.model)
                 && endpoints
                     .default_api_backend
                     .as_ref()
@@ -4924,6 +4953,7 @@ pub(crate) fn entry_config_from_default_row(
             .unwrap_or_else(|| NonZeroU64::new(200_000).expect("200000 is non-zero")),
         feed_max_input_tokens: None,
         feed_max_output_tokens: None,
+        feed_api_backend: None,
         auto_compact_threshold_percent: row.auto_compact_threshold_percent,
         system_prompt_label: row.system_prompt_label.clone(),
         temperature: None,
@@ -5094,6 +5124,9 @@ pub struct ModelEntryConfig {
     /// `max_completion_tokens`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feed_max_output_tokens: Option<u64>,
+    /// Valid explicit backend from the live feed, before default folding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feed_api_backend: Option<ApiBackend>,
     /// Per-model auto-compact threshold (0-100). When the session's token usage exceeds this percentage of `context_window`, the conversation is summarized.
     /// Resolver precedence: requirements > env > user (per-model > global) > managed (per-model > global). Below those: remote per-model (this field) > remote global > 85.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5600,6 +5633,9 @@ pub struct ModelInfo {
     /// See [`ModelEntryConfig::feed_max_output_tokens`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feed_max_output_tokens: Option<u64>,
+    /// Valid explicit backend from the live feed, before default folding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feed_api_backend: Option<ApiBackend>,
     /// Per-model auto-compact threshold (0-100).
     /// `None` defers to the global / default tiers in `resolve_auto_compact_threshold_percent`.
     pub auto_compact_threshold_percent: Option<u8>,
@@ -5724,6 +5760,7 @@ impl ModelInfo {
             context_window: NonZeroU64::new(200_000).unwrap(),
             feed_max_input_tokens: None,
             feed_max_output_tokens: None,
+            feed_api_backend: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
             use_concise: false,
@@ -5781,6 +5818,7 @@ impl ModelInfo {
             context_window: entry.context_window,
             feed_max_input_tokens: entry.feed_max_input_tokens,
             feed_max_output_tokens: entry.feed_max_output_tokens,
+            feed_api_backend: entry.feed_api_backend.clone(),
             auto_compact_threshold_percent: entry.auto_compact_threshold_percent,
             system_prompt_label: entry.system_prompt_label.clone(),
             use_concise: entry.use_concise,
@@ -6558,6 +6596,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 context_window: NonZeroU64::new(200_000).unwrap(),
                 feed_max_input_tokens: None,
                 feed_max_output_tokens: None,
+                feed_api_backend: None,
                 auto_compact_threshold_percent: None,
                 system_prompt_label: None,
                 use_concise: false,
@@ -7023,6 +7062,7 @@ fn resolve_hidden_default_web_search_sampling_config(
             context_window: NonZeroU64::new(200_000).unwrap(),
             feed_max_input_tokens: None,
             feed_max_output_tokens: None,
+            feed_api_backend: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
             use_concise: false,

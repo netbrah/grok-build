@@ -1085,6 +1085,7 @@ fn test_model_entry(
             context_window: NonZeroU64::new(200_000).unwrap(),
             feed_max_input_tokens: None,
             feed_max_output_tokens: None,
+            feed_api_backend: None,
             auto_compact_threshold_percent: None,
             system_prompt_label: None,
             use_concise: false,
@@ -2257,6 +2258,7 @@ fn model_info_from_config_propagates_use_concise() {
         context_window: NonZeroU64::new(200_000).unwrap(),
         feed_max_input_tokens: None,
         feed_max_output_tokens: None,
+        feed_api_backend: None,
         auto_compact_threshold_percent: None,
         system_prompt_label: None,
         api_base_url: None,
@@ -2436,6 +2438,7 @@ fn model_info_from_config_propagates_agent_type() {
         context_window: NonZeroU64::new(200_000).unwrap(),
         feed_max_input_tokens: None,
         feed_max_output_tokens: None,
+        feed_api_backend: None,
         auto_compact_threshold_percent: None,
         system_prompt_label: None,
         api_base_url: None,
@@ -2907,6 +2910,7 @@ fn inference_idle_timeout_propagates_to_model_info() {
         context_window: NonZeroU64::new(200_000).unwrap(),
         feed_max_input_tokens: None,
         feed_max_output_tokens: None,
+        feed_api_backend: None,
         auto_compact_threshold_percent: None,
         system_prompt_label: None,
         api_base_url: None,
@@ -7612,6 +7616,7 @@ fn prefetch_model_entry(slug: &str, context_window: u64, api_backend: ApiBackend
             context_window: NonZeroU64::new(context_window).unwrap(),
             feed_max_input_tokens: None,
             feed_max_output_tokens: None,
+            feed_api_backend: None,
             use_concise: false,
             agent_type: default_agent_type(),
             inference_idle_timeout_secs: None,
@@ -9633,7 +9638,10 @@ fn exact_slug_binding_match() {
 
     // exact slug binds in both phases
     let mut prefetched = IndexMap::new();
-    prefetched.insert("claude-opus-4.6".to_string(), prefetched_row("claude-opus-4.6"));
+    let mut explicit_row = prefetched_row("claude-opus-4.6");
+    explicit_row.info.api_backend = ApiBackend::Messages;
+    explicit_row.info.feed_api_backend = Some(ApiBackend::Messages);
+    prefetched.insert("claude-opus-4.6".to_string(), explicit_row);
     let view = bind_messages_wire_model(&cfg, Some(prefetched), "claude-opus-4.6")
         .expect("exact slug must bind");
     assert_eq!(view.model, "claude-opus-4.6");
@@ -9824,8 +9832,8 @@ cache_ttl = "1h"
 }
 
 /// T29 (47b): the messages-wire binding must require an EXPLICIT
-/// api_backend authority. The endpoint-defaults inference-to-messages
-/// branch produces a Messages backend with non-explicit source and must be
+/// api_backend authority. Catalog inference produces a Messages backend
+/// with non-explicit source and must be
 /// rejected (RED-2 red: the stub returns Ok); an explicitly-messages row
 /// binds (green both phases) and its view enumerates the inference
 /// branches (m-2; RED-2 red: the stub returns an empty list).
@@ -9837,11 +9845,30 @@ default_api_backend = "chat_completions"
 "#;
     let cfg = Config::new_from_toml_cfg(&toml::from_str(toml_src).unwrap()).expect("config parses");
 
-    // inference-to-messages (endpoint-defaults branch) is not explicit
+    // Catalog inference to Messages is not explicit.
     let mut inferred_prefetched = IndexMap::new();
     inferred_prefetched.insert(
         "claude-opus-4.6".to_string(),
         prefetched_row("claude-opus-4.6"),
+    );
+    let inferred = resolve_model_list(&cfg, Some(inferred_prefetched.clone()));
+    let inferred_view = model_authority_view(
+        &cfg,
+        "claude-opus-4.6",
+        &Some(inferred_prefetched.clone()),
+        &inferred["claude-opus-4.6"],
+    );
+    assert_eq!(
+        inferred_view.api_backend.source,
+        FieldSource::CatalogInference
+    );
+    assert!(
+        inferred_view
+            .inference_branches
+            .iter()
+            .any(|branch| branch.name == "catalog-inference-to-messages"
+                && branch.reachable_for_messages
+                && branch.fired)
     );
     let err = bind_messages_wire_model(&cfg, Some(inferred_prefetched), "claude-opus-4.6")
         .expect_err("inferred messages backend must be rejected (no explicit authority)");
@@ -9853,26 +9880,24 @@ default_api_backend = "chat_completions"
     // explicit api_backend = Messages binds (green both phases)
     let mut explicit_row = prefetched_row("claude-sonnet-4.6");
     explicit_row.info.api_backend = ApiBackend::Messages;
+    explicit_row.info.feed_api_backend = Some(ApiBackend::Messages);
     let mut explicit_prefetched = IndexMap::new();
     explicit_prefetched.insert("claude-sonnet-4.6".to_string(), explicit_row);
     let view = bind_messages_wire_model(&cfg, Some(explicit_prefetched), "claude-sonnet-4.6")
         .expect("explicit messages backend must bind");
     assert_eq!(view.api_backend.value, ApiBackend::Messages);
 
-    // m-2: the view enumerates every inference branch; the
-    // endpoint-defaults inference-to-messages branch is always reachable
-    // for messages (RED-2 red: the stub returns an empty list)
-    assert!(
-        !view.inference_branches.is_empty(),
-        "inference branches must be enumerated"
-    );
-    assert!(
-        view.inference_branches.iter().any(|branch| {
-            branch.name == "endpoint-defaults-inference-to-messages"
-                && branch.reachable_for_messages
-        }),
-        "endpoint-defaults inference-to-messages branch must be enumerated, got: {:?}",
+    // Explicit feed metadata enumerates every branch without reaching any inference.
+    assert_eq!(
         view.inference_branches
+            .iter()
+            .map(|branch| (branch.name, branch.reachable_for_messages, branch.fired))
+            .collect::<Vec<_>>(),
+        vec![
+            ("catalog-inference-to-messages", false, false),
+            ("donor-inheritance-to-messages", false, false),
+            ("endpoint-defaults-inference-to-messages", false, false),
+        ]
     );
 }
 
@@ -9955,7 +9980,10 @@ models_base_url = "http://{addr}"
     );
     let cfg = Config::new_from_toml_cfg(&toml::from_str(&toml_src).unwrap()).expect("config parses");
     let mut prefetched = IndexMap::new();
-    prefetched.insert("claude-opus-4.6".to_string(), prefetched_row("claude-opus-4.6"));
+    let mut explicit_row = prefetched_row("claude-opus-4.6");
+    explicit_row.info.api_backend = ApiBackend::Messages;
+    explicit_row.info.feed_api_backend = Some(ApiBackend::Messages);
+    prefetched.insert("claude-opus-4.6".to_string(), explicit_row);
     bind_messages_wire_model(&cfg, Some(prefetched), "claude-opus-4.6")
         .expect("prefetched binding succeeds");
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -10807,4 +10835,547 @@ fn q36i_selected_alias_and_exact_key_resolution() {
                 .supports_search_tool
         );
     }
+}
+
+fn b5ixm_prefetched(rows: Vec<serde_json::Value>) -> IndexMap<String, ModelEntry> {
+    let baked = crate::remote::client::baked_cap_rows();
+    let parsed = rows
+        .iter()
+        .map(|row| {
+            crate::remote::client::parse_remote_model_value(
+                row,
+                "https://backend.example/v1",
+                &baked,
+            )
+            .expect("backend fixture parses")
+        })
+        .collect();
+    crate::agent::remote_config::build_prefetched_map(parsed, None)
+}
+
+fn b5ixm_config() -> Config {
+    let mut cfg = Config::default();
+    cfg.endpoints.models_base_url = None;
+    cfg.endpoints.models_list_url = None;
+    cfg.endpoints.default_api_backend = None;
+    cfg.endpoints.default_model_family = None;
+    cfg.config_models.clear();
+    cfg.model_providers.clear();
+    cfg
+}
+
+fn b5ixm_backend_cases() -> [(ApiBackend, &'static str); 3] {
+    [
+        (ApiBackend::ChatCompletions, "chat_completions"),
+        (ApiBackend::Responses, "responses"),
+        (ApiBackend::Messages, "messages"),
+    ]
+}
+
+#[test]
+fn b5ixm_missing_claude_resolves_messages_and_inference_authority() {
+    for endpoint in [
+        None,
+        Some(ApiBackend::Responses),
+        Some(ApiBackend::Messages),
+    ] {
+        let mut cfg = b5ixm_config();
+        cfg.endpoints.default_api_backend = endpoint.clone();
+        let rows = b5ixm_prefetched(vec![serde_json::json!({"id": "claude-b5ixm-missing"})]);
+        let resolved = resolve_model_list(&cfg, Some(rows.clone()));
+        let entry = &resolved["claude-b5ixm-missing"];
+        assert_eq!(
+            entry.info.api_backend,
+            ApiBackend::Messages,
+            "missing Claude backend must infer Messages without endpoint configuration"
+        );
+        let view = model_authority_view(&cfg, "claude-b5ixm-missing", &Some(rows), entry);
+        assert_eq!(
+            (view.api_backend.value, view.api_backend.source),
+            (ApiBackend::Messages, FieldSource::CatalogInference)
+        );
+        let branch = view
+            .inference_branches
+            .iter()
+            .find(|b| b.name == "catalog-inference-to-messages")
+            .unwrap();
+        assert!((branch.reachable_for_messages, branch.fired) == (true, true));
+        assert!(
+            !view
+                .inference_branches
+                .iter()
+                .find(|b| b.name == "endpoint-defaults-inference-to-messages")
+                .unwrap()
+                .fired
+        );
+    }
+}
+
+#[test]
+fn b5ixm_explicit_feed_backends_survive_donor_catalog_and_endpoint_fills() {
+    for id in [
+        "gpt-5.6-sol",
+        "gpt-5.6-b5ixm",
+        "claude-b5ixm-explicit",
+        "b5ixm-other",
+    ] {
+        for (backend, wire) in b5ixm_backend_cases() {
+            for endpoint in [
+                None,
+                Some(ApiBackend::Responses),
+                Some(ApiBackend::Messages),
+            ] {
+                let mut cfg = b5ixm_config();
+                cfg.endpoints.default_api_backend = endpoint;
+                let rows =
+                    b5ixm_prefetched(vec![serde_json::json!({"id": id, "apiBackend": wire})]);
+                let resolved = resolve_model_list(&cfg, Some(rows.clone()));
+                let entry = &resolved[id];
+                assert_eq!(
+                    entry.info.api_backend, backend,
+                    "{id}: explicit feed backend must survive fallback, including enum default"
+                );
+                let view = model_authority_view(&cfg, id, &Some(rows), entry);
+                assert_eq!(
+                    (view.api_backend.value, view.api_backend.source),
+                    (backend.clone(), FieldSource::ProxyRow)
+                );
+                assert!(
+                    !view
+                        .inference_branches
+                        .iter()
+                        .any(|b| b.reachable_for_messages || b.fired),
+                    "explicit backend disables inference branches"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn b5ixm_explicit_feed_default_survives_sibling_backend_fill() {
+    let mut cfg = b5ixm_config();
+    cfg.config_models.insert(
+        "b5ixm-alias".into(),
+        ConfigModelOverride {
+            model: Some("b5ixm-sibling".into()),
+            context_window: Some(500_000),
+            api_backend: Some(ApiBackend::Responses),
+            ..Default::default()
+        },
+    );
+    let rows = b5ixm_prefetched(vec![
+        serde_json::json!({"id": "b5ixm-sibling", "apiBackend": "chat_completions"}),
+    ]);
+    let resolved = resolve_model_list(&cfg, Some(rows.clone()));
+    let entry = &resolved["b5ixm-sibling"];
+    assert_eq!(
+        (
+            entry.info.api_backend.clone(),
+            entry.info.context_window.get()
+        ),
+        (ApiBackend::ChatCompletions, 500_000),
+        "explicit feed default must survive sibling backend fill while context inherits"
+    );
+    let view = model_authority_view(&cfg, "b5ixm-sibling", &Some(rows), entry);
+    assert_eq!(
+        (view.api_backend.value, view.api_backend.source),
+        (ApiBackend::ChatCompletions, FieldSource::ProxyRow)
+    );
+}
+
+#[test]
+fn b5ixm_provider_only_backends_match_resolver_and_authority() {
+    use crate::agent::model_providers::ModelProviderConfig;
+    for (feed, feed_wire) in b5ixm_backend_cases() {
+        for (backend, _) in b5ixm_backend_cases() {
+            let mut cfg = b5ixm_config();
+            cfg.model_providers.insert(
+                "b5ixm-provider".into(),
+                ModelProviderConfig {
+                    api_backend: Some(backend.clone()),
+                    ..Default::default()
+                },
+            );
+            cfg.config_models.insert(
+                "b5ixm-provider-row".into(),
+                ConfigModelOverride {
+                    model_provider: Some("b5ixm-provider".into()),
+                    ..Default::default()
+                },
+            );
+            let rows = b5ixm_prefetched(vec![
+                serde_json::json!({"id": "b5ixm-provider-row", "apiBackend": feed_wire}),
+            ]);
+            let resolved = resolve_model_list(&cfg, Some(rows.clone()));
+            let entry = &resolved["b5ixm-provider-row"];
+            assert_eq!(
+                entry.info.api_backend, backend,
+                "provider-only backend must beat {feed:?}"
+            );
+            let view = model_authority_view(&cfg, "b5ixm-provider-row", &Some(rows), entry);
+            assert_eq!(
+                (view.api_backend.value, view.api_backend.source),
+                (backend, FieldSource::Config),
+                "provider-only backend authority must expand the same defaults as the resolver"
+            );
+        }
+    }
+}
+
+#[test]
+fn b5ixm_explicit_model_backends_win_over_provider_defaults() {
+    use crate::agent::model_providers::ModelProviderConfig;
+    for (backend, _) in b5ixm_backend_cases() {
+        for (provider, _) in b5ixm_backend_cases() {
+            let mut cfg = b5ixm_config();
+            cfg.model_providers.insert(
+                "b5ixm-provider".into(),
+                ModelProviderConfig {
+                    api_backend: Some(provider),
+                    ..Default::default()
+                },
+            );
+            cfg.config_models.insert(
+                "claude-b5ixm-user".into(),
+                ConfigModelOverride {
+                    model_provider: Some("b5ixm-provider".into()),
+                    api_backend: Some(backend.clone()),
+                    ..Default::default()
+                },
+            );
+            let rows = b5ixm_prefetched(vec![
+                serde_json::json!({"id": "claude-b5ixm-user", "apiBackend": "messages"}),
+            ]);
+            let resolved = resolve_model_list(&cfg, Some(rows.clone()));
+            let entry = &resolved["claude-b5ixm-user"];
+            assert_eq!(entry.info.api_backend, backend);
+            let view = model_authority_view(&cfg, "claude-b5ixm-user", &Some(rows), entry);
+            assert_eq!(
+                (view.api_backend.value, view.api_backend.source),
+                (backend.clone(), FieldSource::Config)
+            );
+        }
+    }
+}
+
+#[test]
+fn b5ixm_missing_provider_and_non_claude_family_controls() {
+    let mut cfg = b5ixm_config();
+    cfg.config_models.insert(
+        "b5ixm-missing-provider".into(),
+        ConfigModelOverride {
+            model_provider: Some("not-configured".into()),
+            ..Default::default()
+        },
+    );
+    let rows = b5ixm_prefetched(vec![
+        serde_json::json!({"id": "b5ixm-missing-provider", "apiBackend": "messages"}),
+        serde_json::json!({"id": "b5ixm-other"}),
+        serde_json::json!({"id": "gpt-5.6-b5ixm-family"}),
+        serde_json::json!({"id": "b5ixm-explicit-family", "modelFamily": "anthropic"}),
+        serde_json::json!({"id": "claude-b5ixm-other-family", "modelFamily": "openai"}),
+    ]);
+    let resolved = resolve_model_list(&cfg, Some(rows.clone()));
+    for (id, backend, source) in [
+        (
+            "b5ixm-missing-provider",
+            ApiBackend::Messages,
+            FieldSource::ProxyRow,
+        ),
+        (
+            "b5ixm-other",
+            ApiBackend::ChatCompletions,
+            FieldSource::BuiltIn,
+        ),
+        (
+            "gpt-5.6-b5ixm-family",
+            ApiBackend::Responses,
+            FieldSource::CatalogInference,
+        ),
+        (
+            "b5ixm-explicit-family",
+            ApiBackend::Messages,
+            FieldSource::CatalogInference,
+        ),
+        (
+            "claude-b5ixm-other-family",
+            ApiBackend::ChatCompletions,
+            FieldSource::BuiltIn,
+        ),
+    ] {
+        assert_eq!(
+            resolved[id].info.api_backend, backend,
+            "{id}: resolved family controls backend inference"
+        );
+        let view = model_authority_view(&cfg, id, &Some(rows.clone()), &resolved[id]);
+        assert_eq!(
+            (view.api_backend.value, view.api_backend.source),
+            (backend, source),
+            "{id}: authority follows actual resolution"
+        );
+    }
+    assert_eq!(
+        resolved["gpt-5.6-b5ixm-family"]
+            .info
+            .model_family
+            .as_deref(),
+        Some("codex")
+    );
+    assert_eq!(
+        resolved["b5ixm-explicit-family"]
+            .info
+            .model_family
+            .as_deref(),
+        Some("anthropic")
+    );
+    assert_eq!(
+        resolved["claude-b5ixm-other-family"]
+            .info
+            .model_family
+            .as_deref(),
+        Some("openai")
+    );
+    let mut endpoints = b5ixm_config();
+    endpoints.endpoints.default_api_backend = Some(ApiBackend::Responses);
+    assert_eq!(
+        resolve_model_list(&endpoints, Some(rows))["b5ixm-other"]
+            .info
+            .api_backend,
+        ApiBackend::Responses
+    );
+}
+
+#[test]
+fn b5ixm_backend_parser_selection_controls() {
+    for (fields, expected) in [
+        (
+            serde_json::json!({"apiBackend": "responses", "api_backend": "messages"}),
+            ApiBackend::Responses,
+        ),
+        (
+            serde_json::json!({"apiBackend": null, "api_backend": "messages"}),
+            ApiBackend::Messages,
+        ),
+        (
+            serde_json::json!({"apiBackend": 7, "api_backend": "messages"}),
+            ApiBackend::Messages,
+        ),
+        (
+            serde_json::json!({"apiBackend": "unknown", "api_backend": "messages"}),
+            ApiBackend::ChatCompletions,
+        ),
+        (
+            serde_json::json!({"apiBackend": "", "api_backend": "messages"}),
+            ApiBackend::ChatCompletions,
+        ),
+        (
+            serde_json::json!({"api_backend": "chat_completions"}),
+            ApiBackend::ChatCompletions,
+        ),
+        (serde_json::json!({}), ApiBackend::ChatCompletions),
+    ] {
+        let mut row = fields;
+        row["id"] = serde_json::json!("b5ixm-parser");
+        let parsed = crate::remote::client::parse_remote_model_value(
+            &row,
+            "https://backend.example/v1",
+            &IndexMap::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.api_backend, expected,
+            "{row}: parser selection unchanged"
+        );
+        assert_eq!(ModelInfo::from_config(&parsed).api_backend, expected);
+    }
+}
+
+#[test]
+fn b5ixm_observation_survives_config_hydration_and_user_override() {
+    for (backend, wire) in b5ixm_backend_cases() {
+        let row = serde_json::json!({"id": "claude-b5ixm-provenance", "apiBackend": wire});
+        let parsed = crate::remote::client::parse_remote_model_value(
+            &row,
+            "https://backend.example/v1",
+            &IndexMap::new(),
+        )
+        .unwrap();
+        assert_eq!(parsed.feed_api_backend, Some(backend.clone()));
+        let json = serde_json::to_value(&parsed).unwrap();
+        let reread: ModelEntryConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(reread.feed_api_backend, Some(backend.clone()));
+        let info = ModelInfo::from_config(&reread);
+        assert_eq!(info.feed_api_backend, Some(backend.clone()));
+        let map = crate::agent::remote_config::build_prefetched_map(vec![reread], None);
+        let mut cfg = b5ixm_config();
+        cfg.config_models.insert(
+            "claude-b5ixm-provenance".into(),
+            ConfigModelOverride {
+                api_backend: Some(ApiBackend::Responses),
+                ..Default::default()
+            },
+        );
+        let resolved = resolve_model_list(&cfg, Some(map.clone()));
+        assert_eq!(
+            (
+                resolved["claude-b5ixm-provenance"]
+                    .info
+                    .feed_api_backend
+                    .clone(),
+                resolved["claude-b5ixm-provenance"].info.api_backend.clone()
+            ),
+            (Some(backend), ApiBackend::Responses)
+        );
+        let view = model_authority_view(
+            &cfg,
+            "claude-b5ixm-provenance",
+            &Some(map),
+            &resolved["claude-b5ixm-provenance"],
+        );
+        assert_eq!(
+            (view.api_backend.value, view.api_backend.source),
+            (ApiBackend::Responses, FieldSource::Config)
+        );
+    }
+    let row = serde_json::json!({"id": "claude-b5ixm-absent"});
+    let parsed = crate::remote::client::parse_remote_model_value(
+        &row,
+        "https://backend.example/v1",
+        &IndexMap::new(),
+    )
+    .unwrap();
+    assert_eq!(parsed.feed_api_backend, None);
+    let json = serde_json::to_value(&parsed).unwrap();
+    assert!(json.get("feed_api_backend").is_none());
+    let info = ModelInfo::from_config(&parsed);
+    assert!(
+        serde_json::to_value(info)
+            .unwrap()
+            .get("feed_api_backend")
+            .is_none()
+    );
+    assert_eq!(
+        ModelInfo::fallback("claude-b5ixm-fallback").feed_api_backend,
+        None
+    );
+    for entry in default_model_entries(&b5ixm_config().endpoints).values() {
+        assert_eq!(
+            entry.info.feed_api_backend, None,
+            "bundled rows are not live feed observations"
+        );
+    }
+}
+
+#[test]
+fn b5ixm_observation_alias_selection_preserves_valid_explicit_defaults() {
+    for (fields, observation) in [
+        (
+            serde_json::json!({"apiBackend": "chat_completions", "api_backend": "messages"}),
+            Some(ApiBackend::ChatCompletions),
+        ),
+        (
+            serde_json::json!({"apiBackend": null, "api_backend": "responses"}),
+            Some(ApiBackend::Responses),
+        ),
+        (
+            serde_json::json!({"apiBackend": 7, "api_backend": "messages"}),
+            Some(ApiBackend::Messages),
+        ),
+        (
+            serde_json::json!({"apiBackend": "unknown", "api_backend": "messages"}),
+            None,
+        ),
+        (
+            serde_json::json!({"apiBackend": "", "api_backend": "messages"}),
+            None,
+        ),
+        (
+            serde_json::json!({"api_backend": "chat_completions"}),
+            Some(ApiBackend::ChatCompletions),
+        ),
+        (serde_json::json!({}), None),
+    ] {
+        let mut row = fields;
+        row["id"] = serde_json::json!("b5ixm-observation");
+        let parsed = crate::remote::client::parse_remote_model_value(
+            &row,
+            "https://backend.example/v1",
+            &IndexMap::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.feed_api_backend, observation,
+            "{row}: feed presence follows current string-selection semantics"
+        );
+        assert_eq!(parsed.api_backend, observation.clone().unwrap_or_default());
+    }
+}
+
+#[test]
+fn b5ixm_provider_only_config_rows_match_backend_authority() {
+    use crate::agent::model_providers::ModelProviderConfig;
+    for (backend, _) in b5ixm_backend_cases() {
+        let mut cfg = b5ixm_config();
+        cfg.endpoints.models_base_url = Some("https://backend.example/v1".into());
+        cfg.model_providers.insert(
+            "b5ixm-provider".into(),
+            ModelProviderConfig {
+                api_backend: Some(backend.clone()),
+                ..Default::default()
+            },
+        );
+        cfg.config_models.insert(
+            "b5ixm-config-only".into(),
+            ConfigModelOverride {
+                model_provider: Some("b5ixm-provider".into()),
+                ..Default::default()
+            },
+        );
+        let resolved = resolve_model_list(&cfg, None);
+        let view = model_authority_view(
+            &cfg,
+            "b5ixm-config-only",
+            &None,
+            &resolved["b5ixm-config-only"],
+        );
+        assert_eq!(
+            (
+                resolved["b5ixm-config-only"].info.api_backend.clone(),
+                view.api_backend.value,
+                view.api_backend.source
+            ),
+            (backend.clone(), backend, FieldSource::Config)
+        );
+    }
+}
+
+#[test]
+fn b5ixm_gpt_codex_family_reaches_actual_sampler_config() {
+    let cfg = b5ixm_config();
+    let rows = b5ixm_prefetched(vec![serde_json::json!({"id": "gpt-5.6-b5ixm-sampler"})]);
+    let resolved = resolve_model_list(&cfg, Some(rows));
+    let entry = &resolved["gpt-5.6-b5ixm-sampler"];
+    let sampler = sampling_config_for_model(
+        entry,
+        resolve_credentials(entry, None),
+        None,
+        None,
+        None,
+        None,
+    );
+    assert_eq!(sampler.model_family.as_deref(), Some("codex"));
+    assert_eq!(sampler.api_backend, ApiBackend::Responses);
+}
+
+#[test]
+fn b5ixm_user_schema_excludes_internal_feed_observation() {
+    let schema = crate::agent::config_schema::config_schema_value();
+    let generated = serde_json::to_string(&schema).unwrap();
+    assert!(
+        !generated.contains("feed_api_backend"),
+        "internal feed provenance is not a user configuration knob"
+    );
+    let override_json = serde_json::to_value(ConfigModelOverride::default()).unwrap();
+    assert!(override_json.get("feed_api_backend").is_none());
 }

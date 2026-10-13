@@ -215,11 +215,8 @@ fn donor_map_is_pre_bake_seed_keys_only() {
         "pre-bake donor inherits the api_backend"
     );
 
-    // A bundled NON-pre-bake row (claude-sonnet-5 rides the curated
-    // menu) must NEVER donate: the live claude row at the same
-    // placeholder keeps its client values (no endpoint defaults in
-    // Config::default, and the anthropic catalog inference is silent on
-    // the backend).
+    // Non-pre-bake rows never donate. The live Claude context stays at
+    // the placeholder; its missing backend infers Messages from its family.
     let claude = &resolved["claude-sonnet-5"];
     assert_eq!(
         claude.info.context_window,
@@ -228,8 +225,29 @@ fn donor_map_is_pre_bake_seed_keys_only() {
     );
     assert_eq!(
         claude.info.api_backend,
+        ApiBackend::Messages,
+        "non-pre-bake Claude backend comes from family inference, not donation"
+    );
+    assert_eq!(claude.info.feed_api_backend, None);
+}
+
+#[test]
+fn non_seed_claude_with_xai_family_does_not_inherit_bundled_messages() {
+    let mut row = live_row("claude-sonnet-5");
+    row.info.model_family = Some("xai".to_string());
+    let prefetched = IndexMap::from([("claude-sonnet-5".to_string(), row)]);
+    let resolved = resolve_model_list(&Config::default(), Some(prefetched));
+    let claude = &resolved["claude-sonnet-5"];
+    assert_eq!(
+        claude.info.context_window,
+        NonZeroU64::new(256_000).unwrap()
+    );
+    assert_eq!(claude.info.model_family.as_deref(), Some("xai"));
+    assert_eq!(claude.info.feed_api_backend, None);
+    assert_eq!(
+        claude.info.api_backend,
         ApiBackend::ChatCompletions,
-        "no donor for a non-pre-bake key: the row keeps its built-in backend"
+        "explicit Xai family keeps the Claude slug fallback; non-seed Messages must not donate"
     );
 }
 
