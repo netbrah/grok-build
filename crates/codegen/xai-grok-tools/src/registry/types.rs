@@ -261,24 +261,6 @@ pub struct SessionContext {
     /// Hosts that expect a different tag name may override this.
     pub system_reminder_tag: &'static str,
 }
-/// Default metadata for dynamically registered tools (e.g., MCP tools)
-/// that don't implement `ToolMetadata`.
-struct DefaultToolMetadata {
-    kind: ToolKind,
-    description: String,
-}
-#[async_trait::async_trait]
-impl ToolMetadata for DefaultToolMetadata {
-    fn kind(&self) -> ToolKind {
-        self.kind
-    }
-    fn tool_namespace(&self) -> ToolNamespace {
-        ToolNamespace::MCP
-    }
-    fn description_template(&self) -> &str {
-        &self.description
-    }
-}
 /// Drain a `ToolStream<TypedToolOutput>` to the terminal result's `value`.
 /// Progress items are discarded.
 pub async fn drain_value_stream(
@@ -1136,7 +1118,7 @@ impl ToolRegistryBuilder {
         }
         let native_tool_names: std::collections::HashSet<String> = tools
             .iter()
-            .filter(|t| !t.client_name.contains("__"))
+            .filter(|t| t.metadata.tool_namespace() != ToolNamespace::MCP)
             .map(|t| t.client_name.clone())
             .collect();
         resources.insert(crate::types::resources::EnabledNativeToolNames(
@@ -1145,7 +1127,7 @@ impl ToolRegistryBuilder {
         resources.insert(crate::types::resources::NativeToolClientNames(
             tools
                 .iter()
-                .filter(|tool| !tool.client_name.contains("__"))
+                .filter(|tool| tool.metadata.tool_namespace() != ToolNamespace::MCP)
                 .map(|tool| (tool.registry_id.clone(), tool.client_name.clone()))
                 .collect(),
         ));
@@ -1290,6 +1272,14 @@ impl FinalizedToolset {
             .map(|t| t.definition.clone())
             .collect()
     }
+    /// Clone a consistent inventory paired with each entry's actual namespace.
+    pub fn tools_namespaced(&self) -> Vec<(ToolDefinition, ToolNamespace)> {
+        self.tools
+            .read()
+            .iter()
+            .map(|tool| (tool.definition.clone(), tool.metadata.tool_namespace()))
+            .collect()
+    }
     /// Client-facing name of the (first) enabled tool of `kind`, honoring `name_override` / preset
     /// renames — `None` if no tool of that kind is enabled. Mirrors `${{ tools.by_kind.<kind> }}`
     /// template resolution; used
@@ -1342,14 +1332,12 @@ impl FinalizedToolset {
     pub async fn get_resource_cloned<T: Clone + Send + Sync + 'static>(&self) -> Option<T> {
         self.resources.lock().await.get::<T>().cloned()
     }
-    /// Get only built-in tool definitions (exclude MCP tools). TODO: use ToolNamespace metadata
-    /// instead of the "__" string heuristic. This breaks if a built-in tool ever has "__" in its
-    /// name or an MCP server omits the delimiter.
+    /// Get built-in tool definitions, excluding entries whose metadata reports MCP.
     pub fn tool_definitions_builtins_only(&self) -> Vec<ToolDefinition> {
         self.tools
             .read()
             .iter()
-            .filter(|t| !t.client_name.contains("__"))
+            .filter(|t| t.metadata.tool_namespace() != ToolNamespace::MCP)
             .map(|t| t.definition.clone())
             .collect()
     }
@@ -1739,21 +1727,21 @@ impl FinalizedToolset {
                 "Tool already registered: {name}"
             )));
         }
+        let tool = Arc::new(tool);
         let description = tool.description_template().to_string();
-        let kind = tool.kind();
-        let registry_id = xai_tool_runtime::Tool::id(&tool).as_str().to_owned();
+        let namespace = tool.tool_namespace().to_string();
+        let registry_id = xai_tool_runtime::Tool::id(tool.as_ref())
+            .as_str()
+            .to_owned();
         let input_schema = input_schema_override.unwrap_or_else(generate_schema_cached::<T::Args>);
         let definition = ToolDefinition::function(&name, Some(&description), input_schema.clone());
-        self.local_registry.register(tool);
+        self.local_registry.register_arc(Arc::clone(&tool));
         tools.push(FinalizedTool {
-            namespace: ToolNamespace::MCP.to_string(),
+            namespace,
             id: name.clone(),
             registry_id,
             client_name: name.clone(),
-            metadata: Arc::new(DefaultToolMetadata {
-                kind,
-                description: description.clone(),
-            }),
+            metadata: tool,
             output_converter: Arc::new(|value| {
                 serde_json::from_value::<ToolOutput>(value.clone()).or_else(|_| match value {
                     serde_json::Value::String(s) => Ok(ToolOutput::Text(s.into())),
@@ -3502,14 +3490,13 @@ mod tests {
             .unwrap();
         assert_eq!(toolset.tool_definitions().len(), 3);
         let builtins = toolset.tool_definitions_builtins_only();
-        assert_eq!(builtins.len(), 2);
-        for def in &builtins {
-            assert!(
-                !def.function.name.contains("__"),
-                "MCP tool {} should be hidden",
-                def.function.name
-            );
-        }
+        assert_eq!(
+            builtins
+                .iter()
+                .map(|def| def.function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["read_file", "grep"]
+        );
     }
     /// `task` tool must be rejected when neither `get_task_output` nor
     /// `kill_task` are present in the toolset.
@@ -4927,5 +4914,656 @@ mod tests {
             "gate ON must produce ≥ 1 Progress frame via workspace dispatch, got {progress_count}",
         );
         assert!(got_terminal, "must observe terminal");
+    }
+    #[derive(Debug)]
+    struct NamespaceRuntimeFixture {
+        id: &'static str,
+        namespace: ToolNamespace,
+        label: &'static str,
+        notifications: &'static [&'static str],
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        dispatch_address: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ToolMetadata for NamespaceRuntimeFixture {
+        fn kind(&self) -> ToolKind {
+            ToolKind::Other
+        }
+        fn tool_namespace(&self) -> ToolNamespace {
+            self.namespace
+        }
+        fn description_template(&self) -> &str {
+            self.label
+        }
+        fn is_read_only(&self) -> bool {
+            true
+        }
+        fn emitted_notifications(&self) -> &'static [&'static str] {
+            self.notifications
+        }
+    }
+
+    impl xai_tool_runtime::Tool for NamespaceRuntimeFixture {
+        type Args = serde_json::Value;
+        type Output = String;
+
+        fn id(&self) -> xai_tool_protocol::ToolId {
+            xai_tool_protocol::ToolId::new(self.id).expect("valid namespace fixture id")
+        }
+        fn description(
+            &self,
+            _ctx: &xai_tool_runtime::ListToolsContext,
+        ) -> xai_tool_types::ToolDescription {
+            xai_tool_types::ToolDescription::new(self.id, self.label)
+        }
+        fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
+            xai_tool_protocol::ToolCapabilities {
+                is_read_only: true,
+                tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+                ..Default::default()
+            }
+        }
+        async fn run(
+            &self,
+            _ctx: xai_tool_runtime::ToolCallContext,
+            input: serde_json::Value,
+        ) -> Result<String, xai_tool_runtime::ToolError> {
+            use std::sync::atomic::Ordering;
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.dispatch_address
+                .store(self as *const Self as usize, Ordering::SeqCst);
+            Ok(format!("{}:{}", self.label, input))
+        }
+    }
+
+    fn namespace_runtime_fixture(
+        id: &'static str,
+        namespace: ToolNamespace,
+        label: &'static str,
+        notifications: &'static [&'static str],
+    ) -> NamespaceRuntimeFixture {
+        NamespaceRuntimeFixture {
+            id,
+            namespace,
+            label,
+            notifications,
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            dispatch_address: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_registry_id_replacement_preserves_existing_dispatch() {
+        use std::sync::atomic::Ordering;
+        let toolset = Arc::new(FinalizedToolset::empty_for_test());
+        let first = namespace_runtime_fixture(
+            "namespace_replaced_id",
+            ToolNamespace::GrokBuild,
+            "entry-a",
+            &["FileWritten"],
+        );
+        let first_calls = Arc::clone(&first.calls);
+        let second = namespace_runtime_fixture(
+            "namespace_replaced_id",
+            ToolNamespace::MCP,
+            "entry-b",
+            &["BashExecutionComplete"],
+        );
+        let second_calls = Arc::clone(&second.calls);
+        toolset
+            .register_tool("namespace-first".into(), first, None)
+            .unwrap();
+        toolset
+            .register_tool("namespace-second".into(), second, None)
+            .unwrap();
+        let result = toolset
+            .call(
+                "namespace-first",
+                serde_json::json!({"value": 7}),
+                "namespace-replacement-call",
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(result.output).unwrap(),
+            serde_json::to_value(ToolOutput::Text("entry-b:{\"value\":7}".into())).unwrap()
+        );
+        assert_eq!(
+            (
+                first_calls.load(Ordering::SeqCst),
+                second_calls.load(Ordering::SeqCst)
+            ),
+            (0, 1)
+        );
+        assert_eq!(
+            toolset
+                .tools
+                .read()
+                .iter()
+                .map(|t| t.registry_id.as_str())
+                .collect::<Vec<_>>(),
+            ["namespace_replaced_id", "namespace_replaced_id"]
+        );
+        let first_metadata = toolset.get_tool_metadata("namespace-first").unwrap();
+        assert_eq!(
+            first_metadata.emitted_notifications(),
+            ["FileWritten"],
+            "older client entry must retain metadata A while dispatch resolves replacement B"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_metadata_overrides_share_dispatch_instance() {
+        use std::sync::atomic::Ordering;
+        let toolset = Arc::new(FinalizedToolset::empty_for_test());
+        let fixture = namespace_runtime_fixture(
+            "namespace_unique_dispatch",
+            ToolNamespace::GrokBuild,
+            "unique-entry",
+            &["FileWritten"],
+        );
+        let calls = Arc::clone(&fixture.calls);
+        let address = Arc::clone(&fixture.dispatch_address);
+        let schema = serde_json::json!({"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]});
+        toolset
+            .register_tool(
+                "namespace_unique_client".into(),
+                fixture,
+                Some(schema.clone()),
+            )
+            .unwrap();
+        let metadata = toolset
+            .get_tool_metadata("namespace_unique_client")
+            .unwrap();
+        assert!(
+            metadata.is_read_only(),
+            "actual runtime read-only override must be retained, not derived from Other"
+        );
+        assert_eq!(
+            metadata.emitted_notifications(),
+            ["FileWritten"],
+            "actual runtime emitted-notification override must be retained"
+        );
+        assert_eq!(metadata.tool_namespace(), ToolNamespace::GrokBuild);
+        let identity = toolset.tool_identity("namespace_unique_client").unwrap();
+        assert_eq!(
+            (identity.tool_kind, identity.namespace, identity.read_only),
+            (ToolKind::Other, ToolNamespace::GrokBuild, true)
+        );
+        let expected =
+            ToolDefinition::function("namespace_unique_client", Some("unique-entry"), schema);
+        assert_eq!(
+            serde_json::to_value(toolset.tool_definitions()).unwrap(),
+            serde_json::to_value(vec![expected]).unwrap()
+        );
+        let input = serde_json::json!({"query": "needle"});
+        let parsed = toolset
+            .try_parse("namespace_unique_client", &input)
+            .await
+            .unwrap();
+        match parsed {
+            ToolInput::MCPTool(parsed) => {
+                assert_eq!(
+                    (parsed.tool_name.as_str(), parsed.tool_input),
+                    ("namespace_unique_client", input.clone())
+                );
+            }
+            other => panic!("runtime parse representation changed: {other:?}"),
+        }
+        let result = toolset
+            .call(
+                "namespace_unique_client",
+                input,
+                "namespace-unique-call",
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(result.output).unwrap(),
+            serde_json::to_value(ToolOutput::Text(
+                "unique-entry:{\"query\":\"needle\"}".into()
+            ))
+            .unwrap()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            address.load(Ordering::SeqCst),
+            Arc::as_ptr(&metadata) as *const () as usize,
+            "metadata and dispatch must share the actual unique-ID instance"
+        );
+        let duplicate = namespace_runtime_fixture(
+            "namespace_duplicate_id",
+            ToolNamespace::MCP,
+            "duplicate",
+            &[],
+        );
+        assert!(
+            toolset
+                .register_tool("namespace_unique_client".into(), duplicate, None)
+                .is_err()
+        );
+        assert_eq!(
+            toolset
+                .tools
+                .read()
+                .iter()
+                .map(|t| (t.registry_id.as_str(), t.client_name.as_str()))
+                .collect::<Vec<_>>(),
+            [("namespace_unique_dispatch", "namespace_unique_client")]
+        );
+    }
+
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+    struct NamespaceConfiguredArgs {
+        value: String,
+    }
+
+    impl From<NamespaceConfiguredArgs> for ToolInput {
+        fn from(input: NamespaceConfiguredArgs) -> Self {
+            ToolInput::MCPTool(crate::types::tool_io::MCPToolInput {
+                tool_name: "namespace_configured".into(),
+                tool_input: serde_json::json!({"value": input.value}),
+            })
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct NamespaceConfiguredFixture<const N: u8>;
+
+    impl<const N: u8> ToolMetadata for NamespaceConfiguredFixture<N> {
+        fn kind(&self) -> ToolKind {
+            ToolKind::Other
+        }
+        fn tool_namespace(&self) -> ToolNamespace {
+            match N {
+                0 => ToolNamespace::GrokBuild,
+                1 => ToolNamespace::GrokBuildConcise,
+                2 => ToolNamespace::GrokBuildHashline,
+                3 => ToolNamespace::Codex,
+                4 => ToolNamespace::OpenCode,
+                5 => ToolNamespace::MCP,
+                _ => panic!("unsupported namespace fixture"),
+            }
+        }
+        fn description_template(&self) -> &str {
+            "configured namespace fixture"
+        }
+    }
+
+    impl<const N: u8> xai_tool_runtime::Tool for NamespaceConfiguredFixture<N> {
+        type Args = NamespaceConfiguredArgs;
+        type Output = ToolOutput;
+
+        fn id(&self) -> xai_tool_protocol::ToolId {
+            xai_tool_protocol::ToolId::new(format!("namespace_configured_{N}"))
+                .expect("valid configured fixture id")
+        }
+        fn description(
+            &self,
+            _ctx: &xai_tool_runtime::ListToolsContext,
+        ) -> xai_tool_types::ToolDescription {
+            xai_tool_types::ToolDescription::new(
+                format!("namespace_configured_{N}"),
+                "configured namespace fixture",
+            )
+        }
+        async fn run(
+            &self,
+            _ctx: xai_tool_runtime::ToolCallContext,
+            input: NamespaceConfiguredArgs,
+        ) -> Result<ToolOutput, xai_tool_runtime::ToolError> {
+            Ok(ToolOutput::Text(input.value.into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn namespace_view_separates_a_qualified_builtin_from_an_mcp_tool() {
+        let tmp = TempDir::new().unwrap();
+        let builder = ToolRegistryBuilder::new();
+        let config = ToolServerConfig {
+            tools: vec![
+                ToolConfig::for_tool::<grok_build::ReadFileTool>()
+                    .with_name("read_file__renamed")
+                    .with_description("read from the fixture"),
+            ],
+            behavior_preset: None,
+        };
+        let toolset = builder
+            .finalize(config, test_session_context(&tmp))
+            .unwrap();
+        let builtin = toolset.tool_definitions()[0].clone();
+        toolset
+            .register_tool(
+                "memory_search".into(),
+                crate::implementations::memory::MemorySearchImpl,
+                None,
+            )
+            .unwrap();
+        let mcp_schema =
+            serde_json::json!({"type": "object", "properties": {"value": {"type": "string"}}});
+        toolset
+            .register_tool(
+                "server__namespace_mcp".into(),
+                namespace_runtime_fixture(
+                    "namespace_separation_mcp",
+                    ToolNamespace::MCP,
+                    "typed mcp fixture",
+                    &[],
+                ),
+                Some(mcp_schema.clone()),
+            )
+            .unwrap();
+        let definitions = toolset.tool_definitions();
+        let expected = vec![
+            (builtin.clone(), ToolNamespace::GrokBuild),
+            (definitions[1].clone(), ToolNamespace::GrokBuild),
+            (
+                ToolDefinition::function(
+                    "server__namespace_mcp",
+                    Some("typed mcp fixture"),
+                    mcp_schema,
+                ),
+                ToolNamespace::MCP,
+            ),
+        ];
+        assert_eq!(
+            serde_json::to_value(toolset.tools_namespaced()).unwrap(),
+            serde_json::to_value(expected).unwrap(),
+            "namespace inventory must pair exact definitions with actual registered metadata"
+        );
+        assert_eq!(
+            serde_json::to_value(toolset.tool_definitions_builtins_only()).unwrap(),
+            serde_json::to_value(vec![builtin, definitions[1].clone()]).unwrap(),
+            "qualified builtin and runtime memory remain builtins; typed MCP is excluded"
+        );
+        assert_eq!(
+            toolset.tool_name_for_registry_id("read_file").as_deref(),
+            Some("read_file__renamed")
+        );
+    }
+
+    #[tokio::test]
+    async fn namespace_view_preserves_all_six_variants() {
+        let tmp = TempDir::new().unwrap();
+        let mut builder = ToolRegistryBuilder::new();
+        builder.register::<NamespaceConfiguredFixture<0>>();
+        builder.register::<NamespaceConfiguredFixture<1>>();
+        builder.register::<NamespaceConfiguredFixture<2>>();
+        builder.register::<NamespaceConfiguredFixture<3>>();
+        builder.register::<NamespaceConfiguredFixture<4>>();
+        builder.register::<NamespaceConfiguredFixture<5>>();
+        let config = ToolServerConfig {
+            tools: vec![
+                ToolConfig::for_tool::<NamespaceConfiguredFixture<0>>(),
+                ToolConfig::for_tool::<NamespaceConfiguredFixture<1>>(),
+                ToolConfig::for_tool::<NamespaceConfiguredFixture<2>>(),
+                ToolConfig::for_tool::<NamespaceConfiguredFixture<3>>(),
+                ToolConfig::for_tool::<NamespaceConfiguredFixture<4>>(),
+                ToolConfig::for_tool::<NamespaceConfiguredFixture<5>>(),
+            ],
+            behavior_preset: None,
+        };
+        let toolset = toolset_from_namespace_fixture(builder, config, &tmp);
+        let expected_namespaces = [
+            ToolNamespace::GrokBuild,
+            ToolNamespace::GrokBuildConcise,
+            ToolNamespace::GrokBuildHashline,
+            ToolNamespace::Codex,
+            ToolNamespace::OpenCode,
+            ToolNamespace::MCP,
+        ];
+        let definitions = toolset.tool_definitions();
+        for (i, expected) in expected_namespaces.iter().enumerate() {
+            let name = format!("namespace_configured_{i}");
+            assert_eq!(
+                toolset.get_tool_metadata(&name).unwrap().tool_namespace(),
+                *expected,
+                "configured metadata is the actual existing namespace control"
+            );
+        }
+        let expected: Vec<_> = definitions.into_iter().zip(expected_namespaces).collect();
+        assert_eq!(
+            serde_json::to_value(toolset.tools_namespaced()).unwrap(),
+            serde_json::to_value(expected).unwrap(),
+            "namespace inventory must retain all six enum variants in registry order"
+        );
+    }
+
+    fn toolset_from_namespace_fixture(
+        builder: ToolRegistryBuilder,
+        config: ToolServerConfig,
+        tmp: &TempDir,
+    ) -> FinalizedToolset {
+        builder.finalize(config, test_session_context(tmp)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn native_name_resources_use_namespace_not_delimiter() {
+        let tmp = TempDir::new().unwrap();
+        let mut builder = ToolRegistryBuilder::new();
+        builder.register::<NamespaceConfiguredFixture<5>>();
+        let config = ToolServerConfig {
+            tools: vec![
+                ToolConfig::for_tool::<grok_build::ReadFileTool>().with_name("read_file__renamed"),
+                ToolConfig::for_tool::<NamespaceConfiguredFixture<5>>()
+                    .with_name("namespace_plain_mcp"),
+            ],
+            behavior_preset: None,
+        };
+        let toolset = builder
+            .finalize(config, test_session_context(&tmp))
+            .unwrap();
+        let definitions = toolset.tool_definitions();
+        let resources = toolset.resources.lock().await;
+        let names = resources
+            .get::<crate::types::resources::EnabledNativeToolNames>()
+            .unwrap();
+        assert_eq!(
+            names.0,
+            std::collections::HashSet::from(["read_file__renamed".to_string()]),
+            "native names use actual MCP metadata, not delimiter spelling"
+        );
+        let clients = resources
+            .get::<crate::types::resources::NativeToolClientNames>()
+            .unwrap();
+        assert_eq!(
+            clients.0,
+            HashMap::from([("read_file".to_string(), "read_file__renamed".to_string())]),
+            "native canonical-ID/client-name map must preserve the renamed builtin and exclude typed MCP"
+        );
+        assert_eq!(
+            definitions
+                .iter()
+                .map(|d| d.function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["read_file__renamed", "namespace_plain_mcp"]
+        );
+    }
+
+    #[test]
+    fn typed_mcp_without_delimiter_is_excluded_from_builtins() {
+        let toolset = FinalizedToolset::empty_for_test();
+        let schema =
+            serde_json::json!({"type": "object", "properties": {"value": {"type": "string"}}});
+        toolset
+            .register_tool(
+                "namespace_plain_mcp".into(),
+                namespace_runtime_fixture(
+                    "namespace_plain_mcp_registry",
+                    ToolNamespace::MCP,
+                    "plain typed mcp",
+                    &[],
+                ),
+                Some(schema.clone()),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(toolset.tools_namespaced()).unwrap(),
+            serde_json::to_value(vec![(
+                ToolDefinition::function("namespace_plain_mcp", Some("plain typed mcp"), schema),
+                ToolNamespace::MCP
+            )])
+            .unwrap(),
+            "typed MCP without delimiter remains MCP in the registry-only inventory"
+        );
+        assert!(
+            toolset.tool_definitions_builtins_only().is_empty(),
+            "typed MCP must not be directly declared by the builtins-only view"
+        );
+    }
+
+    #[tokio::test]
+    async fn namespace_snapshot_is_owned_across_remove_and_reregister() {
+        let toolset = Arc::new(FinalizedToolset::empty_for_test());
+        let first_schema =
+            serde_json::json!({"type": "object", "properties": {"value": {"type": "string"}}});
+        let second_schema =
+            serde_json::json!({"type": "object", "properties": {"value": {"type": "integer"}}});
+        toolset
+            .register_tool(
+                "namespace_lifecycle".into(),
+                namespace_runtime_fixture(
+                    "namespace_lifecycle_a",
+                    ToolNamespace::GrokBuild,
+                    "first-life",
+                    &[],
+                ),
+                Some(first_schema.clone()),
+            )
+            .unwrap();
+        let old = toolset.tools_namespaced();
+        let old_json = serde_json::to_value(&old).unwrap();
+        assert_eq!(
+            old_json,
+            serde_json::to_value(vec![(
+                ToolDefinition::function("namespace_lifecycle", Some("first-life"), first_schema),
+                ToolNamespace::GrokBuild
+            )])
+            .unwrap()
+        );
+        assert!(toolset.unregister_tool_by_name("namespace_lifecycle"));
+        assert!(!toolset.unregister_tool_by_name("namespace_lifecycle"));
+        assert!(toolset.tools_namespaced().is_empty());
+        assert!(toolset.get_tool_metadata("namespace_lifecycle").is_none());
+        assert!(
+            !toolset
+                .local_registry()
+                .contains(&xai_tool_protocol::ToolId::new("namespace_lifecycle_a").unwrap())
+        );
+        toolset
+            .register_tool(
+                "namespace_lifecycle".into(),
+                namespace_runtime_fixture(
+                    "namespace_lifecycle_b",
+                    ToolNamespace::MCP,
+                    "second-life",
+                    &[],
+                ),
+                Some(second_schema.clone()),
+            )
+            .unwrap();
+        assert_eq!(serde_json::to_value(&old).unwrap(), old_json);
+        assert_eq!(
+            serde_json::to_value(toolset.tools_namespaced()).unwrap(),
+            serde_json::to_value(vec![(
+                ToolDefinition::function("namespace_lifecycle", Some("second-life"), second_schema),
+                ToolNamespace::MCP
+            )])
+            .unwrap()
+        );
+        let duplicate = namespace_runtime_fixture(
+            "namespace_lifecycle_duplicate",
+            ToolNamespace::Codex,
+            "duplicate",
+            &[],
+        );
+        assert!(
+            toolset
+                .register_tool("namespace_lifecycle".into(), duplicate, None)
+                .is_err()
+        );
+        assert_eq!(toolset.tools_namespaced().len(), 1);
+        assert_eq!(toolset.unregister_tools_by_prefix("namespace_"), 1);
+        assert!(toolset.tools_namespaced().is_empty());
+        assert!(
+            !toolset
+                .local_registry()
+                .contains(&xai_tool_protocol::ToolId::new("namespace_lifecycle_b").unwrap())
+        );
+        assert_eq!(serde_json::to_value(old).unwrap(), old_json);
+    }
+
+    #[tokio::test]
+    async fn namespace_definition_and_dispatch_preserve_configured_overrides() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("namespace.txt"), "namespace fixture\n").unwrap();
+        let builder = ToolRegistryBuilder::new();
+        let config = ToolServerConfig {
+            tools: vec![
+                ToolConfig::for_tool::<grok_build::ReadFileTool>()
+                    .with_name("read_file__namespace")
+                    .with_description("namespace fixture description")
+                    .with_param_rename("target_file", "fixture_path"),
+            ],
+            behavior_preset: None,
+        };
+        let toolset = Arc::new(
+            builder
+                .finalize(config, test_session_context(&tmp))
+                .unwrap(),
+        );
+        let definition = toolset.tool_definitions()[0].clone();
+        assert_eq!(definition.function.name, "read_file__namespace");
+        assert_eq!(
+            definition.function.description.as_deref(),
+            Some("namespace fixture description")
+        );
+        let mut expected_schema =
+            generate_schema_cached::<<grok_build::ReadFileTool as xai_tool_runtime::Tool>::Args>();
+        expected_schema = crate::util::remap::remap_schema_properties(
+            &expected_schema,
+            &HashMap::from([("target_file".into(), "fixture_path".into())]),
+        );
+        assert_eq!(definition.function.parameters, expected_schema);
+        assert_eq!(
+            serde_json::to_value(toolset.tools_namespaced()).unwrap(),
+            serde_json::to_value(vec![(definition.clone(), ToolNamespace::GrokBuild)]).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(toolset.tool_definitions_builtins_only()).unwrap(),
+            serde_json::to_value(vec![definition]).unwrap()
+        );
+        let args = serde_json::json!({"fixture_path": "namespace.txt"});
+        match toolset
+            .try_parse("read_file__namespace", &args)
+            .await
+            .unwrap()
+        {
+            ToolInput::ReadFile(input) => assert_eq!(input.path, "namespace.txt"),
+            other => panic!("configured parse-input representation changed: {other:?}"),
+        }
+        let result = toolset
+            .call(
+                "read_file__namespace",
+                args,
+                "namespace-configured-call",
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(result.prompt_text.contains("namespace fixture"));
+        assert_eq!(toolset.tools.read()[0].registry_id, "read_file");
+        assert_eq!(
+            toolset.tools.read()[0].reverse_params,
+            HashMap::from([("fixture_path".to_string(), "target_file".to_string())])
+        );
+        assert_eq!(
+            toolset
+                .get_contract_version("read_file__namespace")
+                .as_deref(),
+            Some("current")
+        );
     }
 }

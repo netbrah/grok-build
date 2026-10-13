@@ -990,4 +990,62 @@ mod tests {
             vec!["reserved".to_string()]
         );
     }
+    #[test]
+    fn runtime_memory_tools_retain_declared_namespace() {
+        use crate::implementations::memory::{MemoryGetImpl, MemorySearchImpl};
+        use crate::types::tool::ToolNamespace;
+        use crate::types::tool_metadata::ToolMetadata;
+        let bridge = ToolBridge::for_test();
+        let toolset = bridge.toolset();
+        let search = MemorySearchImpl;
+        let get = MemoryGetImpl;
+        let expected = vec![
+            ToolDefinition::function(
+                "memory_search",
+                Some(search.description_template()),
+                crate::registry::types::generate_schema_cached::<
+                    <MemorySearchImpl as xai_tool_runtime::Tool>::Args,
+                >(),
+            ),
+            ToolDefinition::function(
+                "memory_get",
+                Some(get.description_template()),
+                crate::registry::types::generate_schema_cached::<
+                    <MemoryGetImpl as xai_tool_runtime::Tool>::Args,
+                >(),
+            ),
+        ];
+        bridge
+            .register_mcp_tools("memory_search".into(), search, None)
+            .unwrap();
+        bridge
+            .register_mcp_tools("memory_get".into(), get, None)
+            .unwrap();
+        for (name, kind) in [
+            ("memory_search", ToolKind::MemorySearch),
+            ("memory_get", ToolKind::MemoryGet),
+        ] {
+            let metadata = toolset.get_tool_metadata(name).unwrap();
+            assert_eq!(
+                metadata.tool_namespace(),
+                ToolNamespace::GrokBuild,
+                "runtime memory metadata must retain its declared built-in namespace"
+            );
+            assert_eq!(metadata.kind(), kind);
+            assert!(metadata.is_read_only());
+            let identity = toolset.tool_identity(name).unwrap();
+            assert_eq!(
+                (identity.tool_kind, identity.namespace, identity.read_only),
+                (kind, ToolNamespace::GrokBuild, true)
+            );
+            assert_eq!(
+                toolset.tool_name_for_registry_id(name).as_deref(),
+                Some(name)
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(toolset.tool_definitions()).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+    }
 }
