@@ -6281,6 +6281,7 @@ impl<'de> Deserialize<'de> for FeatureEntries {
 }
 /// Resolved credentials for a model session.
 pub(crate) struct ResolvedCredentials {
+    pub api_backend: ApiBackend,
     pub api_key: Option<String>,
     pub base_url: String,
     pub auth_type: xai_chat_state::AuthType,
@@ -6357,6 +6358,7 @@ pub(crate) fn resolve_credentials(
         "resolved credentials"
     );
     ResolvedCredentials {
+        api_backend: info.api_backend.clone(),
         api_key,
         base_url,
         auth_type,
@@ -6433,21 +6435,33 @@ pub(crate) fn try_resolve_model_credentials(
     model_id: &str,
     session_key: Option<&str>,
 ) -> Option<ResolvedCredentials> {
-    let raw = crate::config::load_effective_config()
-        .map_err(|e| tracing::warn!(error = %e, "config load failed for credential resolution"))
-        .ok()?;
-    let cfg = Config::new_from_toml_cfg(&raw)
-        .map_err(|e| tracing::warn!(error = %e, "config parse failed for credential resolution"))
-        .ok()?;
+    resolve_routed_model_credentials(model_id, session_key)
+        .ok()
+        .flatten()
+}
+
+/// Distinguish an absent route from an unreadable or invalid effective config.
+pub(crate) fn resolve_routed_model_credentials(
+    model_id: &str,
+    session_key: Option<&str>,
+) -> Result<Option<ResolvedCredentials>, ()> {
+    let raw = crate::config::load_effective_config().map_err(|e| {
+        tracing::warn!(error = %e, "config load failed for credential resolution");
+    })?;
+    let cfg = Config::new_from_toml_cfg(&raw).map_err(|e| {
+        tracing::warn!(error = %e, "config parse failed for credential resolution");
+    })?;
     let models = resolve_model_list(&cfg, None);
-    let entry = find_model_by_id(&models, model_id)?;
+    let Some(entry) = find_model_by_id(&models, model_id) else {
+        return Ok(None);
+    };
     let mut credentials = resolve_credentials(entry, session_key);
     enforce_disable_api_key_auth(
         &mut credentials,
         cfg.grok_com_config.api_key_auth_disabled(),
         session_key,
     );
-    Some(credentials)
+    Ok(Some(credentials))
 }
 /// Per-model auth facts (BYOK status and auth scheme) from one effective-config load, memoized by the session actor.
 #[derive(Clone, Copy)]

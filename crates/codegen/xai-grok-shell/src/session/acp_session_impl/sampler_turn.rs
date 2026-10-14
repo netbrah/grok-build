@@ -303,6 +303,10 @@ fn revoked_sampling_info() -> xai_grok_sampler::SamplingErrorInfo {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static BYOK_WRITE_PROBE: std::cell::RefCell<Option<xai_chat_state::RequestTransportBinding>> = const { std::cell::RefCell::new(None) };
+}
 impl SessionActor {
     pub(super) async fn prepare_tool_definitions_timed(&self) -> (Vec<ToolDefinition>, u64) {
         let prep_span = region::Region::from_span(tracing::info_span!(
@@ -500,10 +504,14 @@ impl SessionActor {
     }
 
     /// The single writer of a provider mint/rotation into chat-state credentials.
-    async fn set_chat_api_key(&self, new_key: String) {
-        let mut creds = self.chat_state_handle.get_credentials().await;
-        creds.api_key = Some(new_key);
-        self.chat_state_handle.update_credentials(creds);
+    async fn set_chat_api_key(
+        &self,
+        new_key: String,
+        captured: &xai_chat_state::RequestTransportBinding,
+    ) {
+        self.chat_state_handle
+            .patch_api_key(captured.clone(), Some(new_key))
+            .await;
     }
 
     /// Pre-turn arm for a provider-backed model: mint on a cold cache, re-mint near expiry, and adopt a rotation that chat state missed.
@@ -513,6 +521,7 @@ impl SessionActor {
         provider: &xai_grok_login::AuthProviderRef,
         current_key: Option<&str>,
         model_id: &str,
+        captured: &xai_chat_state::RequestTransportBinding,
     ) {
         match provider.ensure_fresh_token(current_key).await {
             xai_grok_login::ProviderRefreshOutcome::Rotated(new_key) => {
@@ -522,7 +531,7 @@ impl SessionActor {
                     cold = current_key.is_none(),
                     "auth provider token rotated pre-turn"
                 );
-                self.set_chat_api_key(new_key).await;
+                self.set_chat_api_key(new_key, captured).await;
             }
             xai_grok_login::ProviderRefreshOutcome::Unchanged => {}
             // A genuine mint failure; the 401 arm handles the rejection.
@@ -551,8 +560,12 @@ impl SessionActor {
     /// 401 arm for a provider-backed model: re-run the helper once and resubmit.
     /// A missing key means the cold mint failed and the request went out unauthenticated, so mint instead.
     /// Returns `false` when the fresh-mint guard blocked the re-run or the helper failed; the 401 then becomes a terminal error.
-    async fn try_provider_401_recovery(&self, provider: &xai_grok_login::AuthProviderRef) -> bool {
-        let rejected_key = self.chat_state_handle.get_credentials().await.api_key;
+    async fn try_provider_401_recovery(
+        &self,
+        provider: &xai_grok_login::AuthProviderRef,
+        captured: &xai_chat_state::RequestTransportBinding,
+    ) -> bool {
+        let rejected_key = captured.credentials.api_key.clone();
         let recovered = match rejected_key {
             Some(ref rejected_key) => provider.recover_rejected_token(rejected_key).await,
             None => provider.ensure_fresh_token(None).await.rotated(),
@@ -580,7 +593,7 @@ impl SessionActor {
             Some(self.session_info.id.0.as_ref()),
             None,
         );
-        self.set_chat_api_key(new_key).await;
+        self.set_chat_api_key(new_key, captured).await;
         true
     }
 
@@ -1237,6 +1250,23 @@ impl SessionActor {
     /// Classify a terminal sampler failure and decide recovery.
     /// `transient`: turn-loop retry state (the loop owns the counters).
     /// `park`: already parked — a still-credential-less 401 re-parks without a recovery dispatch.
+    async fn apply_failure_context(
+        &self,
+        captured: &xai_chat_state::RequestTransportBinding,
+        window: Option<std::num::NonZeroU64>,
+    ) {
+        if self.compaction.context_window_override.is_none() {
+            self.chat_state_handle
+                .patch_sampling_fields(
+                    captured.clone(),
+                    xai_chat_state::SamplingFieldPatch {
+                        context_window: window,
+                        ..Default::default()
+                    },
+                )
+                .await;
+        }
+    }
     pub(crate) async fn handle_sampling_failure(
         self: &Arc<Self>,
         error: xai_grok_sampler::SamplingErrorInfo,
@@ -1246,6 +1276,7 @@ impl SessionActor {
         park: TurnParkState,
     ) -> Result<SamplerFailureRecovery, acp::Error> {
         use xai_grok_sampler::SamplingErrorKind;
+        let handler_capture = self.chat_state_handle.capture_transport_binding().await;
 
         // On an in-flight salvage continuation, a max-tokens failure or a probable context overflow is not terminal.
         // Return before the budgeted-child rewrites so the marker survives for workflow children.
@@ -1323,12 +1354,9 @@ impl SessionActor {
                 let percentage = xai_token_estimation::usage_percentage_u8(total_tokens, cw);
 
                 // Update the in-memory sampling config's `context_window` if the model reported a different value (mirror the legacy path's bookkeeping)
-                if let Some(mut cfg) = self.chat_state_handle.get_sampling_config().await
-                    && let Some(new_cw) = std::num::NonZeroU64::new(cw)
-                    && self.compaction.context_window_override.is_none()
-                {
-                    cfg.context_window = new_cw;
-                    self.chat_state_handle.update_sampling_config(cfg);
+                if let Some(ref captured) = handler_capture {
+                    self.apply_failure_context(captured, std::num::NonZeroU64::new(cw))
+                        .await;
                 }
 
                 let trigger_info = compaction::AutoCompactTriggerInfo {
@@ -1396,11 +1424,15 @@ impl SessionActor {
         // Auth-401 recovery only applies to refreshable session-token auth (the stable gate, not `creds.auth_type`).
         // A static api-key isn't refreshable, so retrying re-sends the same rejected bearer and 401-loops the turn See `crate::agent::auth_method::session_token_auth_gate`.
         // One sampling-config snapshot drives every arm-4 decision, so the provider resolution and the gate can't disagree mid-model-switch.
-        let (failed_model_id, failed_base_url) = self
-            .chat_state_handle
-            .get_sampling_config()
-            .await
-            .map(|c| (c.model, c.base_url))
+        let failed_binding = self.chat_state_handle.capture_transport_binding().await;
+        let (failed_model_id, failed_base_url) = failed_binding
+            .as_ref()
+            .map(|binding| {
+                (
+                    binding.config.model.clone(),
+                    binding.config.base_url.clone(),
+                )
+            })
             .unwrap_or_default();
 
         // Provider-backed models recover via arm 4c below
@@ -1508,7 +1540,8 @@ impl SessionActor {
 
         // 4c. Auth failure or bare 401 on a provider-backed model (gateway 401s can classify under other error kinds).
         if let Some(ref provider) = auth_provider
-            && self.try_provider_401_recovery(provider).await
+            && let Some(ref captured) = failed_binding
+            && self.try_provider_401_recovery(provider, captured).await
         {
             self.prepare_sampler_for_turn().await;
             return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
@@ -2033,15 +2066,16 @@ impl SessionActor {
     /// On failure, do not fall through to the JWT/config.toml branch when the session gate was active; that path is for BYOK JWTs only.
     pub(crate) async fn refresh_token_if_expired(&self) {
         if let Some(ref am) = self.auth_manager {
-            let creds = self.chat_state_handle.get_credentials().await;
+            let Some(captured) = self.chat_state_handle.capture_transport_binding().await else {
+                return;
+            };
+            let creds = captured.credentials.clone();
             // Gate on the stable classifier, not `creds.auth_type`; this also heals a transient `ApiKey` flip by writing the refreshed token into `creds.api_key` below
             // See `crate::agent::auth_method::session_token_auth_gate`
-            let (model_id, base_url) = self
-                .chat_state_handle
-                .get_sampling_config()
-                .await
-                .map(|c| (c.model, c.base_url))
-                .unwrap_or_default();
+            let (model_id, base_url) = (
+                captured.config.model.clone(),
+                captured.config.base_url.clone(),
+            );
             // Same condition as the seed guard above, so without this the re-seed puts the key back.
             if self.auth_gate(&model_id, &base_url).active()
                 && ActiveAuthBackend::default().is_xai_authority()
@@ -2049,9 +2083,9 @@ impl SessionActor {
                 match am.get_valid_token().await {
                     Ok(key) => {
                         if creds.api_key.as_deref() != Some(&key) {
-                            let mut creds = creds;
-                            creds.api_key = Some(key);
-                            self.chat_state_handle.update_credentials(creds);
+                            self.chat_state_handle
+                                .patch_api_key(captured.clone(), Some(key))
+                                .await;
                         }
                         // Re-enable auth-suppressed compact; waiting for a 200 deadlocks over-window
                         self.clear_auth_compact_suppression();
@@ -2063,9 +2097,9 @@ impl SessionActor {
                         // Hard-expired: strip the chat-state seed so default headers cannot carry a dead AT (resolver is wire-valid only)
                         let hard_expired = !am.has_usable_token();
                         if hard_expired && creds.api_key.is_some() {
-                            let mut cleared = creds;
-                            cleared.api_key = None;
-                            self.chat_state_handle.update_credentials(cleared);
+                            self.chat_state_handle
+                                .patch_api_key(captured.clone(), None)
+                                .await;
                         }
                         tracing::warn!(
                             error = %e,
@@ -2099,14 +2133,11 @@ impl SessionActor {
 
         const REFRESH_THRESHOLD: chrono::Duration = chrono::Duration::minutes(5);
 
-        let creds = self.chat_state_handle.get_credentials().await;
-        let current_key = creds.api_key;
-        let current_model_id = self
-            .chat_state_handle
-            .get_sampling_config()
-            .await
-            .map(|c| c.model)
-            .unwrap_or_default();
+        let Some(captured) = self.chat_state_handle.capture_transport_binding().await else {
+            return;
+        };
+        let current_key = captured.credentials.api_key.clone();
+        let current_model_id = captured.config.model.clone();
 
         // Provider-backed models mint and refresh here so `resolve_credentials` stays cache-only
         if let Some(provider) = self.model_auth_provider(&current_model_id) {
@@ -2114,6 +2145,7 @@ impl SessionActor {
                 &provider,
                 current_key.as_deref(),
                 &current_model_id,
+                &captured,
             )
             .await;
             // Provider models carry no session JWT, so skip the JWT refresh below.
@@ -2170,9 +2202,31 @@ impl SessionActor {
             "Refreshed API token from config.toml"
         );
 
-        let mut creds = self.chat_state_handle.get_credentials().await;
-        creds.api_key = Some(new_key);
-        self.chat_state_handle.update_credentials(creds);
+        self.apply_reloaded_api_key(&captured, new_key).await;
+    }
+
+    async fn apply_reloaded_api_key(
+        &self,
+        captured: &xai_chat_state::RequestTransportBinding,
+        new_key: String,
+    ) {
+        #[cfg(test)]
+        {
+            let probe = BYOK_WRITE_PROBE.with(|probe| probe.borrow_mut().take());
+            if let Some(binding) = probe {
+                self.chat_state_handle
+                    .install_transport_binding(binding)
+                    .await;
+            }
+        }
+        self.set_chat_api_key(new_key, captured).await;
+    }
+
+    async fn reload_captured_api_key(&self, captured: &xai_chat_state::RequestTransportBinding) {
+        let Some(new_key) = self.reload_api_key_from_config(&captured.config.model) else {
+            return;
+        };
+        self.apply_reloaded_api_key(captured, new_key).await;
     }
 
     fn reload_api_key_from_config(&self, current_model_id: &str) -> Option<String> {

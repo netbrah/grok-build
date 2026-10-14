@@ -423,3 +423,222 @@ async fn an_admitted_row_that_withholds_nothing_moves_no_defer_loading_byte() {
         })
         .await;
 }
+
+async fn writer_pair_actor() -> (
+    std::sync::Arc<super::SessionActor>,
+    xai_chat_state::RequestTransportBinding,
+) {
+    let (manager, _tmp) = support::manager_with_entries();
+    let actor = support::actor_on_row("writer-a", manager).await;
+    let mut a = actor
+        .chat_state_handle
+        .capture_transport_binding()
+        .await
+        .unwrap();
+    a.config.base_url = "https://writer-a.example/v1".into();
+    a.credentials.api_key = Some("writer-a-key".into());
+    actor
+        .chat_state_handle
+        .install_transport_binding(a.clone())
+        .await
+        .unwrap();
+    (actor, a)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn provider_401_write_uses_caller_capture() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let dir = tempfile::tempdir().unwrap();
+            let name = format!("u5-recovery-{}", uuid::Uuid::new_v4());
+            let provider = xai_grok_login::test_counting_provider(&name, dir.path());
+            let token = provider.ensure_fresh_token(None).await.rotated().unwrap();
+            assert_eq!(token, "tok-1");
+            xai_grok_login::test_backdate_provider_mint(&name, std::time::Duration::from_secs(60));
+            let (actor, mut a) = writer_pair_actor().await;
+            a.credentials.api_key = Some(token);
+            actor
+                .chat_state_handle
+                .install_transport_binding(a.clone())
+                .await
+                .unwrap();
+            let mut b = a.clone();
+            b.config.model = "writer-b".into();
+            b.config.base_url = "https://writer-b.example/v1".into();
+            b.credentials.api_key = Some("b-not-provider-tokens".into());
+            actor
+                .chat_state_handle
+                .install_transport_binding(b.clone())
+                .await
+                .unwrap();
+            let recovered = actor.try_provider_401_recovery(&provider, &a).await;
+            assert!(
+                recovered,
+                "provider recovery outcome remains successful when actor write refuses"
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("count"))
+                    .unwrap()
+                    .lines()
+                    .count(),
+                2,
+                "captured rejected token must force the second provider run"
+            );
+            assert_eq!(
+                actor
+                    .chat_state_handle
+                    .capture_transport_binding()
+                    .await
+                    .unwrap()
+                    .credentials,
+                b.credentials,
+                "late recovery must not write A's recovered key into B"
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn provider_preflight_write_uses_caller_capture() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let dir = tempfile::tempdir().unwrap();
+            let name = format!("u5-preflight-{}", uuid::Uuid::new_v4());
+            let provider = xai_grok_login::test_counting_provider(&name, dir.path());
+            let (actor, a) = writer_pair_actor().await;
+            let mut b = a.clone();
+            b.config.model = "writer-b".into();
+            b.config.base_url = "https://writer-b.example/v1".into();
+            b.credentials.api_key = Some("b-not-provider-tokens".into());
+            actor
+                .chat_state_handle
+                .install_transport_binding(b.clone())
+                .await
+                .unwrap();
+            actor
+                .refresh_provider_token_pre_turn(
+                    &provider,
+                    a.credentials.api_key.as_deref(),
+                    &a.config.model,
+                    &a,
+                )
+                .await;
+            assert_eq!(
+                actor
+                    .chat_state_handle
+                    .capture_transport_binding()
+                    .await
+                    .unwrap()
+                    .credentials,
+                b.credentials,
+                "late preflight rotation must use caller capture, not live B"
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn byok_reload_refuses_stale_source_row() {
+    if isolated_item1a_config_test(
+        "session::acp_session::sampler_turn::tests::byok_reload_refuses_stale_source_row",
+    ) {
+        return;
+    }
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            use xai_grok_test_support::EnvGuard;
+            let dir = tempfile::tempdir().unwrap();
+            let _home = EnvGuard::set("GROK_HOME", dir.path().to_str().unwrap());
+            std::fs::write(
+                dir.path().join("config.toml"),
+                "[model.writer-a]\napi_key = \"rotated-config-key\"\n",
+            )
+            .unwrap();
+            let (actor, a) = writer_pair_actor().await;
+            let mut b = a.clone();
+            b.config.model = "writer-b".into();
+            b.config.base_url = "https://writer-b.example/v1".into();
+            b.credentials.api_key = Some("b-not-provider-tokens".into());
+            let expected = a.clone();
+            super::BYOK_WRITE_PROBE.with(|probe| *probe.borrow_mut() = Some(b.clone()));
+            actor.reload_captured_api_key(&expected).await;
+            assert_eq!(
+                actor
+                    .chat_state_handle
+                    .capture_transport_binding()
+                    .await
+                    .unwrap()
+                    .credentials,
+                b.credentials,
+                "config reload must refuse stale source row after late B install"
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn failure_context_patch_refuses_stale_row() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (actor, a) = writer_pair_actor().await;
+            let mut b = a.clone();
+            b.config.model = "failure-new-row".into();
+            b.config.base_url = "https://failure-new.example/v1".into();
+            b.credentials.api_key = Some("failure-new-key".into());
+            actor
+                .chat_state_handle
+                .install_transport_binding(b.clone())
+                .await
+                .unwrap();
+            actor
+                .apply_failure_context(&a, Some(std::num::NonZeroU64::new(400000).unwrap()))
+                .await;
+            let after = actor
+                .chat_state_handle
+                .capture_transport_binding()
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(after.config).unwrap(),
+                serde_json::to_value(b.config).unwrap(),
+                "failure-context patch must refuse stale source-row capture"
+            );
+            assert_eq!(after.credentials, b.credentials);
+        })
+        .await;
+}
+
+// Effective config reads a process-cached home; re-exec isolates it from sibling tests.
+fn isolated_item1a_config_test(name: &str) -> bool {
+    const CHILD: &str = "GROK_TEST_ITEM1A_CONFIG_CHILD";
+    if std::env::var(CHILD).as_deref() == Ok(name) {
+        return false;
+    }
+    let home = tempfile::tempdir().unwrap();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .env(CHILD, name)
+        .env("GROK_HOME", home.path())
+        .env_remove("GROK_CONFIG")
+        .env_remove("GROK_CONFIG_PATH")
+        .env_remove("GROK_CAMPAIGNS_OVERRIDE")
+        .env_remove("GROK_CAMPAIGNS")
+        .env_remove("XAI_API_KEY")
+        .env_remove("APEX_LLM_API_KEY")
+        .args(["--exact", name, "--nocapture"])
+        .stdin(std::process::Stdio::null());
+    xai_tty_utils::detach_std_command(&mut command);
+    let output = command.output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "isolated item-1a test failed: {stdout} {stderr}"
+    );
+    assert!(
+        stdout.contains(&format!("test {name} ... ok")),
+        "isolated item-1a exact test was not selected: {stdout} {stderr}"
+    );
+    true
+}

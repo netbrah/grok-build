@@ -19,6 +19,9 @@ use crate::types::{
 #[derive(Clone)]
 pub struct ChatStateHandle {
     cmd_tx: mpsc::UnboundedSender<ChatStateCommand>,
+    #[cfg(test)]
+    pub(crate) pair_install_probe:
+        std::sync::Arc<std::sync::Mutex<Option<oneshot::Sender<crate::RequestTransportBinding>>>>,
 }
 
 /// The chat-state actor can no longer accept commands.
@@ -36,14 +39,22 @@ impl std::error::Error for ChatStateMailboxClosed {}
 impl ChatStateHandle {
     /// Create a new handle with the given command sender.
     pub(crate) fn new(cmd_tx: mpsc::UnboundedSender<ChatStateCommand>) -> Self {
-        Self { cmd_tx }
+        Self {
+            cmd_tx,
+            #[cfg(test)]
+            pair_install_probe: Default::default(),
+        }
     }
 
     /// Create a no-op handle that discards all commands.
     /// Useful for tests and situations where chat state tracking is not needed.
     pub fn noop() -> Self {
         let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
-        Self { cmd_tx }
+        Self {
+            cmd_tx,
+            #[cfg(test)]
+            pair_install_probe: Default::default(),
+        }
     }
 
     // ═══ Fire-and-forget mutations ═══
@@ -235,6 +246,76 @@ impl ChatStateHandle {
         let _ = self.cmd_tx.send(ChatStateCommand::UpdateSamplingConfig {
             config: Box::new(config),
         });
+    }
+
+    pub async fn capture_transport_binding(&self) -> Option<crate::RequestTransportBinding> {
+        self.query("CaptureTransportBinding", |reply| {
+            ChatStateCommand::CaptureTransportBinding { reply }
+        })
+        .await
+    }
+    pub async fn install_transport_binding(
+        &self,
+        binding: crate::RequestTransportBinding,
+    ) -> Option<()> {
+        let installed = self
+            .query("InstallTransportBinding", |reply| {
+                ChatStateCommand::InstallTransportBinding {
+                    binding: Box::new(binding),
+                    reply,
+                }
+            })
+            .await;
+        #[cfg(test)]
+        {
+            let probe = self.pair_install_probe.lock().unwrap().take();
+            if let Some(probe) = probe {
+                let _ = probe.send(self.capture_transport_binding().await?);
+            }
+        }
+        installed
+    }
+
+    pub async fn replace_expected_transport_binding(
+        &self,
+        expected: crate::RequestTransportBinding,
+        binding: crate::RequestTransportBinding,
+    ) -> Option<bool> {
+        self.query("ReplaceExpectedTransportBinding", |reply| {
+            ChatStateCommand::ReplaceExpectedTransportBinding {
+                expected: Box::new(expected),
+                binding: Box::new(binding),
+                reply,
+            }
+        })
+        .await
+    }
+
+    pub async fn patch_api_key(
+        &self,
+        expected: crate::RequestTransportBinding,
+        api_key: Option<String>,
+    ) -> Option<bool> {
+        self.query("PatchApiKey", |reply| ChatStateCommand::PatchApiKey {
+            expected: Box::new(expected),
+            api_key,
+            reply,
+        })
+        .await
+    }
+    pub async fn patch_sampling_fields(
+        &self,
+        expected: crate::RequestTransportBinding,
+        fields: crate::SamplingFieldPatch,
+    ) -> Option<bool> {
+        self.query("PatchSamplingFields", |reply| {
+            ChatStateCommand::PatchSamplingFields {
+                expected: Box::new(expected),
+                fields,
+                reply,
+            }
+        })
+        .await
     }
 
     /// Track that the agent edited a file path.

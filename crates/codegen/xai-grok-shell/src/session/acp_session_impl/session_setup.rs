@@ -401,9 +401,10 @@ impl SessionActor {
         if idle_secs < Self::IDLE_REFRESH_THRESHOLD_SECS {
             return;
         }
-        let Some(current_config) = self.chat_state_handle.get_sampling_config().await else {
+        let Some(captured) = self.chat_state_handle.capture_transport_binding().await else {
             return;
         };
+        let current_config = &captured.config;
         let current_model = &current_config.model;
         let base_url = &current_config.base_url;
         if !crate::util::is_cli_chat_proxy_url(base_url) {
@@ -517,9 +518,38 @@ impl SessionActor {
             config_changed = true;
         }
         if config_changed {
-            self.chat_state_handle
-                .update_sampling_config(updated_config);
+            self.apply_expected_model_metadata(
+                &captured,
+                (updated_config.context_window != current_config.context_window)
+                    .then_some(updated_config.context_window),
+                if updated_config.max_completion_tokens != current_config.max_completion_tokens {
+                    updated_config.max_completion_tokens
+                } else {
+                    None
+                },
+            )
+            .await;
         }
+    }
+    async fn apply_expected_model_metadata(
+        &self,
+        captured: &xai_chat_state::RequestTransportBinding,
+        context_window: Option<std::num::NonZeroU64>,
+        completion: Option<u32>,
+    ) {
+        if context_window.is_none() && completion.is_none() {
+            return;
+        }
+        self.chat_state_handle
+            .patch_sampling_fields(
+                captured.clone(),
+                xai_chat_state::SamplingFieldPatch {
+                    context_window,
+                    max_completion_tokens: completion.map(Some),
+                    ..Default::default()
+                },
+            )
+            .await;
     }
     /// Update cached sampling config if model metadata changed (from response headers).
     #[tracing::instrument(level = "debug", skip_all)]
@@ -527,13 +557,13 @@ impl SessionActor {
         &self,
         metadata: crate::sampling::ResponseModelMetadata,
     ) {
+        let Some(captured) = self.chat_state_handle.capture_transport_binding().await else {
+            return;
+        };
         if let Some(ref etag) = metadata.models_etag {
             self.models_manager.refresh_if_new_etag(etag.clone()).await;
         }
-        let current_config = match self.chat_state_handle.get_sampling_config().await {
-            Some(cfg) => cfg,
-            None => return,
-        };
+        let current_config = &captured.config;
         let mut config_changed = false;
         let mut new_context_window = current_config.context_window;
         let mut new_max_completion_tokens = current_config.max_completion_tokens;
@@ -571,13 +601,16 @@ impl SessionActor {
         if !config_changed {
             return;
         }
-        let updated_config = xai_grok_sampling_types::SamplingConfig {
-            context_window: new_context_window,
-            max_completion_tokens: new_max_completion_tokens,
-            ..current_config
-        };
-        self.chat_state_handle
-            .update_sampling_config(updated_config);
+        self.apply_expected_model_metadata(
+            &captured,
+            (new_context_window != current_config.context_window).then_some(new_context_window),
+            if new_max_completion_tokens != current_config.max_completion_tokens {
+                new_max_completion_tokens
+            } else {
+                None
+            },
+        )
+        .await;
     }
     /// Inject the actor's managed Read-deny globs into the current ToolBridge so the Grep tool excludes policy-forbidden paths.
     /// No-op when empty.
@@ -710,5 +743,110 @@ impl SessionActor {
             &agent.agents_md_section()?,
             file_count,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::support::{actor_on_row, manager_with_entries};
+    use super::*;
+    async fn metadata_actor() -> (Arc<SessionActor>, xai_chat_state::RequestTransportBinding) {
+        let (manager, _tmp) = manager_with_entries();
+        let actor = actor_on_row("metadata-a", manager).await;
+        let mut a = actor
+            .chat_state_handle
+            .capture_transport_binding()
+            .await
+            .unwrap();
+        a.config.base_url = "https://metadata-a.example/v1".into();
+        a.credentials.api_key = Some("metadata-a-key".into());
+        actor
+            .chat_state_handle
+            .install_transport_binding(a.clone())
+            .await
+            .unwrap();
+        (actor, a)
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn resume_metadata_patch_refuses_stale_row() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (actor, a) = metadata_actor().await;
+                let mut b = a.clone();
+                b.config.model = "metadata-b".into();
+                b.config.base_url = "https://metadata-b.example/v1".into();
+                b.credentials.api_key = Some("metadata-b-key".into());
+                actor
+                    .chat_state_handle
+                    .install_transport_binding(b.clone())
+                    .await
+                    .unwrap();
+                actor
+                    .apply_expected_model_metadata(
+                        &a,
+                        Some(std::num::NonZeroU64::new(400000).unwrap()),
+                        Some(42),
+                    )
+                    .await;
+                let after = actor
+                    .chat_state_handle
+                    .capture_transport_binding()
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    serde_json::to_value(after.config).unwrap(),
+                    serde_json::to_value(b.config).unwrap(),
+                    "resume metadata patch must refuse stale A after B publication"
+                );
+                assert_eq!(after.credentials, b.credentials);
+            })
+            .await;
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn response_metadata_patch_preserves_unrelated_fields() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (actor, a) = metadata_actor().await;
+                let mut updated = a.clone();
+                updated.config.temperature = Some(0.9);
+                updated
+                    .config
+                    .extra_headers
+                    .insert("unrelated-new".into(), "preserve-me".into());
+                actor
+                    .chat_state_handle
+                    .install_transport_binding(updated.clone())
+                    .await
+                    .unwrap();
+                actor
+                    .apply_expected_model_metadata(&a, None, Some(42))
+                    .await;
+                let after = actor
+                    .chat_state_handle
+                    .capture_transport_binding()
+                    .await
+                    .unwrap();
+                assert_eq!(after.config.max_completion_tokens, Some(42));
+                assert_eq!(
+                    after.config.temperature, updated.config.temperature,
+                    "response metadata must not replace unrelated same-row updates"
+                );
+                assert_eq!(after.config.extra_headers, updated.config.extra_headers);
+                assert_eq!(after.credentials, updated.credentials);
+                actor
+                    .apply_expected_model_metadata(&after, None, None)
+                    .await;
+                assert_eq!(
+                    actor
+                        .chat_state_handle
+                        .capture_transport_binding()
+                        .await
+                        .unwrap()
+                        .config
+                        .temperature,
+                    Some(0.9)
+                );
+            })
+            .await;
     }
 }

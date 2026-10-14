@@ -2,6 +2,26 @@ use super::*;
 use crate::remote::DEFAULT_CONTEXT_WINDOW;
 use xai_chat_state::conversation_util::replace_or_insert_system_head;
 use xai_grok_sampling_types::conversation::projection::TargetRoute;
+#[cfg(test)]
+thread_local! {
+    static MODEL_PAIR_PROBE: std::cell::RefCell<Option<tokio::sync::oneshot::Sender<xai_chat_state::RequestTransportBinding>>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+async fn observe_model_pair_seam(actor: &SessionActor) {
+    #[cfg(test)]
+    {
+        let probe = MODEL_PAIR_PROBE.with(|probe| probe.borrow_mut().take());
+        if let Some(probe) = probe {
+            if let Some(binding) = actor.chat_state_handle.capture_transport_binding().await {
+                let _ = probe.send(binding);
+            }
+        }
+    }
+}
+#[cfg(test)]
+thread_local! {
+    static EFFORT_PAIR_PROBE: std::cell::RefCell<Option<xai_chat_state::RequestTransportBinding>> = const { std::cell::RefCell::new(None) };
+}
 impl SessionActor {
     pub(super) async fn handle_set_session_model(
         self: &std::sync::Arc<Self>,
@@ -71,56 +91,62 @@ impl SessionActor {
         let row_supports_search_tool = self
             .models_manager
             .model_supports_search_tool(&sampling_config.model);
-        self.chat_state_handle
-            .update_sampling_config(xai_grok_sampling_types::SamplingConfig {
-                base_url: sampling_config.base_url.clone(),
-                mtls_cert_dir: sampling_config.mtls_cert_dir.clone(),
-                model: sampling_config.model.clone(),
-                max_completion_tokens: sampling_config.max_completion_tokens,
-                temperature: sampling_config.temperature,
-                top_p: sampling_config.top_p,
-                max_retries: Some(xai_grok_sampler::resolve_max_retries(
-                    sampling_config.max_retries,
-                )),
-                rate_limit_retry_threshold: sampling_config.rate_limit_retry_threshold,
-                api_backend: sampling_config.api_backend.clone(),
-                extra_headers: sampling_config.extra_headers.clone(),
-                conversation_group_id: sampling_config.conversation_group_id.clone(),
-                query_params: sampling_config.query_params.clone(),
-                env_http_headers: sampling_config.env_http_headers.clone(),
-                context_window: new_context_window,
-                reasoning_effort: sampling_config.reasoning_effort,
-                ultra_wire_effort: sampling_config.ultra_wire_effort,
-                stream_tool_calls: Some(sampling_config.stream_tool_calls),
-                cache_ttl: sampling_config.cache_ttl.clone(),
-                thinking_replay: sampling_config.thinking_replay.clone(),
-                top_k: sampling_config.top_k,
-                stop_sequences: sampling_config.stop_sequences.clone(),
-                disable_parallel_tool_use: sampling_config.disable_parallel_tool_use,
-                tool_cache_breakpoint: sampling_config.tool_cache_breakpoint,
-                supports_search_tool: row_supports_search_tool,
-                // MGW F1 (apex-ayl.115): the config-selected server-tool
-                // surface rides the sampler carrier (F2 carrier precedent).
-                server_tools: sampling_config.server_tools.clone(),
-                mcp_servers: sampling_config.mcp_servers.clone(),
-                mcp_toolset_server: sampling_config.mcp_toolset_server.clone(),
-            });
+        let replacement_config = xai_grok_sampling_types::SamplingConfig {
+            base_url: sampling_config.base_url.clone(),
+            mtls_cert_dir: sampling_config.mtls_cert_dir.clone(),
+            model: sampling_config.model.clone(),
+            max_completion_tokens: sampling_config.max_completion_tokens,
+            temperature: sampling_config.temperature,
+            top_p: sampling_config.top_p,
+            max_retries: Some(xai_grok_sampler::resolve_max_retries(
+                sampling_config.max_retries,
+            )),
+            rate_limit_retry_threshold: sampling_config.rate_limit_retry_threshold,
+            api_backend: sampling_config.api_backend.clone(),
+            extra_headers: sampling_config.extra_headers.clone(),
+            conversation_group_id: sampling_config.conversation_group_id.clone(),
+            query_params: sampling_config.query_params.clone(),
+            env_http_headers: sampling_config.env_http_headers.clone(),
+            context_window: new_context_window,
+            reasoning_effort: sampling_config.reasoning_effort,
+            ultra_wire_effort: sampling_config.ultra_wire_effort,
+            stream_tool_calls: Some(sampling_config.stream_tool_calls),
+            cache_ttl: sampling_config.cache_ttl.clone(),
+            thinking_replay: sampling_config.thinking_replay.clone(),
+            top_k: sampling_config.top_k,
+            stop_sequences: sampling_config.stop_sequences.clone(),
+            disable_parallel_tool_use: sampling_config.disable_parallel_tool_use,
+            tool_cache_breakpoint: sampling_config.tool_cache_breakpoint,
+            supports_search_tool: row_supports_search_tool,
+            // MGW F1 (apex-ayl.115): the config-selected server-tool
+            // surface rides the sampler carrier (F2 carrier precedent).
+            server_tools: sampling_config.server_tools.clone(),
+            mcp_servers: sampling_config.mcp_servers.clone(),
+            mcp_toolset_server: sampling_config.mcp_toolset_server.clone(),
+        };
         let existing = self.chat_state_handle.get_credentials().await;
         let session_key = self
             .auth_manager
             .as_ref()
             .and_then(|am| am.current_or_expired().map(|a| a.key));
+        let replacement_credentials = xai_chat_state::Credentials {
+            api_key: sampling_config.api_key.clone(),
+            auth_type: crate::agent::config::resolve_chat_state_auth_type(
+                sampling_config.model.as_str(),
+                session_key.as_deref(),
+                existing.auth_type,
+            ),
+            alpha_test_key: existing.alpha_test_key,
+            client_version: sampling_config.client_version.clone(),
+        };
         self.chat_state_handle
-            .update_credentials(xai_chat_state::Credentials {
-                api_key: sampling_config.api_key.clone(),
-                auth_type: crate::agent::config::resolve_chat_state_auth_type(
-                    sampling_config.model.as_str(),
-                    session_key.as_deref(),
-                    existing.auth_type,
-                ),
-                alpha_test_key: existing.alpha_test_key,
-                client_version: sampling_config.client_version.clone(),
-            });
+            .install_transport_binding(xai_chat_state::RequestTransportBinding {
+                config: replacement_config,
+                credentials: replacement_credentials,
+            })
+            .await;
+        #[cfg(test)]
+        observe_model_pair_seam(self).await;
         self.invalidate_model_auth_memo();
         self.signals_handle()
             .record_model_usage(&sampling_config.model);
@@ -240,9 +266,10 @@ impl SessionActor {
         self: &std::sync::Arc<Self>,
         effort: xai_grok_sampling_types::ReasoningEffort,
     ) -> Result<acp::ModelId, acp::Error> {
-        let Some(mut cfg) = self.chat_state_handle.get_sampling_config().await else {
+        let Some(captured) = self.chat_state_handle.capture_transport_binding().await else {
             return Err(acp::Error::internal_error().data("session has no sampling config"));
         };
+        let mut cfg = captured.config.clone();
         if !self
             .models_manager
             .model_supports_reasoning_effort(&cfg.model)
@@ -271,7 +298,66 @@ impl SessionActor {
         cfg.supports_search_tool = self
             .models_manager
             .model_supports_search_tool(cfg.model.as_str());
-        self.chat_state_handle.update_sampling_config(cfg);
+        #[cfg(test)]
+        {
+            let updated = EFFORT_PAIR_PROBE.with(|probe| probe.borrow_mut().take());
+            if let Some(updated) = updated {
+                self.chat_state_handle
+                    .install_transport_binding(updated)
+                    .await;
+            }
+        }
+        let routed = if cfg.model == captured.config.model {
+            None
+        } else {
+            let session_key =
+                if captured.credentials.auth_type == xai_chat_state::AuthType::SessionToken {
+                    captured.credentials.api_key.as_deref()
+                } else {
+                    None
+                };
+            crate::agent::config::resolve_routed_model_credentials(&cfg.model, session_key)
+                .map_err(|()| {
+                    acp::Error::internal_error().data("routed model credential resolution failed")
+                })?
+        };
+        let replacement = routed.filter(|resolved| {
+            resolved.base_url != captured.config.base_url
+                || resolved.api_backend != captured.config.api_backend
+                || resolved.api_key != captured.credentials.api_key
+                || resolved.auth_type != captured.credentials.auth_type
+        });
+        if let Some(resolved) = replacement {
+            cfg.base_url = resolved.base_url;
+            cfg.api_backend = resolved.api_backend;
+            self.chat_state_handle
+                .replace_expected_transport_binding(
+                    captured.clone(),
+                    xai_chat_state::RequestTransportBinding {
+                        config: cfg,
+                        credentials: xai_chat_state::Credentials {
+                            api_key: resolved.api_key,
+                            auth_type: resolved.auth_type,
+                            alpha_test_key: captured.credentials.alpha_test_key.clone(),
+                            client_version: captured.credentials.client_version.clone(),
+                        },
+                    },
+                )
+                .await;
+        } else {
+            self.chat_state_handle
+                .patch_sampling_fields(
+                    captured.clone(),
+                    xai_chat_state::SamplingFieldPatch {
+                        model: Some(cfg.model),
+                        reasoning_effort: Some(cfg.reasoning_effort),
+                        ultra_wire_effort: Some(cfg.ultra_wire_effort),
+                        supports_search_tool: Some(cfg.supports_search_tool),
+                        ..Default::default()
+                    },
+                )
+                .await;
+        }
         let agent_name = self.agent.borrow().definition().name.clone();
         let _ = self
             .notifications
@@ -1074,5 +1160,215 @@ mod tests {
                 );
             })
             .await;
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn model_switch_publishes_complete_pair() {
+        tokio::task::LocalSet::new().run_until(async {
+            let (manager, _tmp) = manager_with_entries();
+            manager.insert_test_entry("pair-row-a", entry_with_search_flag("pair-row-a", false));
+            manager.insert_test_entry("pair-row-b", entry_with_search_flag("pair-row-b", false));
+            let actor = actor_on_row("pair-row-a", manager).await;
+            let mut a = row_config("pair-row-a", xai_grok_sampling_types::ApiBackend::Responses);
+            a.base_url = "https://a.example/v1".into(); a.api_key = Some("switch-a-key".into());
+            actor.handle_set_session_model(a, false, false, false, false, 85).await.unwrap();
+            let mut b = row_config("pair-row-b", xai_grok_sampling_types::ApiBackend::Messages);
+            b.base_url = "https://b.example/v1".into(); b.api_key = Some("switch-b-key".into());
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            MODEL_PAIR_PROBE.with(|probe| *probe.borrow_mut() = Some(tx));
+            actor.handle_set_session_model(b.clone(), false, false, false, false, 85).await.unwrap();
+            let captured = rx.await.unwrap();
+            assert_eq!((captured.config.model, captured.config.base_url, captured.config.api_backend, captured.credentials.api_key), (b.model.clone(), b.base_url.clone(), b.api_backend.clone(), b.api_key.clone()), "switch must publish complete target config and credentials before the legacy seam");
+            let final_pair = actor.chat_state_handle.capture_transport_binding().await.unwrap();
+            assert_eq!(final_pair.config.model, b.model);
+            assert_eq!(final_pair.credentials.api_key, b.api_key);
+        }).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn effort_route_change_publishes_resolved_pair() {
+        if isolated_item1a_config_test(
+            "session::acp_session::model_switch::tests::effort_route_change_publishes_resolved_pair",
+        ) {
+            return;
+        }
+        tokio::task::LocalSet::new().run_until(async {
+            use xai_grok_test_support::EnvGuard;
+            let dir=tempfile::tempdir().unwrap();let _home=EnvGuard::set("GROK_HOME",dir.path().to_str().unwrap());let _key=EnvGuard::unset("XAI_API_KEY");let _apex=EnvGuard::unset("APEX_LLM_API_KEY");
+            std::fs::write(dir.path().join("config.toml"),"[model.effort-a]\nbase_url = \"https://effort-a.example/v1\"\napi_key = \"effort-a-key\"\napi_backend = \"responses\"\n[model.effort-b]\nbase_url = \"https://effort-b.example/v1\"\napi_key = \"effort-b-key\"\napi_backend = \"messages\"\n").unwrap();
+            let (manager,_tmp)=manager_with_entries();
+            let mut entry=entry_with_menu("effort-a",true,&[(ReasoningEffort::Ultra,false),(ReasoningEffort::Low,true)]);
+            entry.info.variants=vec![crate::agent::config::ModelVariant { effort:ReasoningEffort::Ultra,model_id:"effort-b".into() }];manager.insert_test_entry("effort-a",entry);manager.insert_test_entry("effort-b",entry_with_menu("effort-b",true,&[(ReasoningEffort::Ultra,true)]));
+            let actor=actor_on_row("effort-a",manager).await;let mut a=actor.chat_state_handle.capture_transport_binding().await.unwrap();a.config.base_url="https://effort-a.example/v1".into();a.credentials.api_key=Some("effort-a-key".into());actor.chat_state_handle.install_transport_binding(a).await.unwrap();
+            actor.handle_set_reasoning_effort(ReasoningEffort::Ultra).await.unwrap();
+            let result=actor.chat_state_handle.capture_transport_binding().await.unwrap();
+            assert_eq!((result.config.model,result.config.base_url,result.config.api_backend,result.credentials.api_key),("effort-b".to_string(),"https://effort-b.example/v1".to_string(),xai_grok_sampling_types::ApiBackend::Messages,Some("effort-b-key".to_string())),"routed effort must publish resolved target row URL/backend/key together");
+        }).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn same_route_effort_patch_preserves_pair() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (manager, _tmp) = manager_with_entries();
+                manager.insert_test_entry(
+                    "effort-same",
+                    entry_with_menu("effort-same", true, &[(ReasoningEffort::High, true)]),
+                );
+                let actor = actor_on_row("effort-same", manager).await;
+                let a = actor
+                    .chat_state_handle
+                    .capture_transport_binding()
+                    .await
+                    .unwrap();
+                let mut updated = a.clone();
+                updated.config.temperature = Some(0.73);
+                updated.credentials.api_key = Some("same-route-key".into());
+                actor
+                    .chat_state_handle
+                    .install_transport_binding(updated.clone())
+                    .await
+                    .unwrap();
+                let mut concurrent = updated.clone();
+                concurrent.config.temperature = Some(0.91);
+                concurrent
+                    .config
+                    .extra_headers
+                    .insert("same-route-new".into(), "keep".into());
+                EFFORT_PAIR_PROBE.with(|probe| *probe.borrow_mut() = Some(concurrent.clone()));
+                actor
+                    .handle_set_reasoning_effort(ReasoningEffort::High)
+                    .await
+                    .unwrap();
+                let after = actor
+                    .chat_state_handle
+                    .capture_transport_binding()
+                    .await
+                    .unwrap();
+                assert_eq!(after.config.reasoning_effort, Some(ReasoningEffort::High));
+                assert_eq!(
+                    after.config.temperature,
+                    Some(0.91),
+                    "same-route effort patch must preserve newer unrelated config fields"
+                );
+                assert_eq!(after.config.extra_headers, concurrent.config.extra_headers);
+                assert_eq!(after.credentials, concurrent.credentials);
+            })
+            .await;
+    }
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn routed_effort_refuses_newer_source_row() {
+        if isolated_item1a_config_test(
+            "session::acp_session::model_switch::tests::routed_effort_refuses_newer_source_row",
+        ) {
+            return;
+        }
+        tokio::task::LocalSet::new().run_until(async {
+            use xai_grok_test_support::EnvGuard;
+            let dir=tempfile::tempdir().unwrap();let _home=EnvGuard::set("GROK_HOME",dir.path().to_str().unwrap());let _key=EnvGuard::unset("XAI_API_KEY");let _apex=EnvGuard::unset("APEX_LLM_API_KEY");
+            std::fs::write(dir.path().join("config.toml"),"[model.effort-a]\nbase_url = \"https://effort-a.example/v1\"\napi_key = \"effort-a-key\"\napi_backend = \"responses\"\n[model.effort-b]\nbase_url = \"https://effort-b.example/v1\"\napi_key = \"effort-b-key\"\napi_backend = \"messages\"\n").unwrap();
+            let (manager,_tmp)=manager_with_entries();
+            let mut entry=entry_with_menu("effort-a",true,&[(ReasoningEffort::Ultra,false),(ReasoningEffort::Low,true)]);
+            entry.info.variants=vec![crate::agent::config::ModelVariant { effort:ReasoningEffort::Ultra,model_id:"effort-b".into() }];manager.insert_test_entry("effort-a",entry);manager.insert_test_entry("effort-b",entry_with_menu("effort-b",true,&[(ReasoningEffort::Ultra,true)]));
+            let actor=actor_on_row("effort-a",manager).await;let mut a=actor.chat_state_handle.capture_transport_binding().await.unwrap();a.config.base_url="https://effort-a.example/v1".into();a.credentials.api_key=Some("effort-a-key".into());actor.chat_state_handle.install_transport_binding(a).await.unwrap();
+            let mut newer=actor.chat_state_handle.capture_transport_binding().await.unwrap();
+            newer.config.model="newer-row".into();newer.config.base_url="https://newer.example/v1".into();newer.config.api_backend=xai_grok_sampling_types::ApiBackend::ChatCompletions;newer.credentials.api_key=Some("newer-key".into());
+            EFFORT_PAIR_PROBE.with(|probe| *probe.borrow_mut()=Some(newer.clone()));
+            actor.handle_set_reasoning_effort(ReasoningEffort::Ultra).await.unwrap();
+            let result=actor.chat_state_handle.capture_transport_binding().await.unwrap();
+            assert_eq!(result.config.model,newer.config.model,"routed effort refusal must not overwrite a newer source row");
+            assert_eq!(result.config.base_url,newer.config.base_url);assert_eq!(result.config.api_backend,newer.config.api_backend);assert_eq!(result.credentials,newer.credentials);
+        }).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn equal_resolved_effort_route_preserves_unrelated_fields() {
+        if isolated_item1a_config_test(
+            "session::acp_session::model_switch::tests::equal_resolved_effort_route_preserves_unrelated_fields",
+        ) {
+            return;
+        }
+        tokio::task::LocalSet::new().run_until(async {
+            use xai_grok_test_support::EnvGuard;
+            let dir=tempfile::tempdir().unwrap();let _home=EnvGuard::set("GROK_HOME",dir.path().to_str().unwrap());let _key=EnvGuard::unset("XAI_API_KEY");let _apex=EnvGuard::unset("APEX_LLM_API_KEY");
+            std::fs::write(dir.path().join("config.toml"),"[model.effort-a]\nbase_url = \"https://effort-a.example/v1\"\napi_key = \"effort-a-key\"\napi_backend = \"responses\"\n[model.effort-b]\nbase_url = \"https://effort-a.example/v1\"\napi_key = \"effort-a-key\"\napi_backend = \"responses\"\n").unwrap();
+            let (manager,_tmp)=manager_with_entries();
+            let mut entry=entry_with_menu("effort-a",true,&[(ReasoningEffort::Ultra,false),(ReasoningEffort::Low,true)]);
+            entry.info.variants=vec![crate::agent::config::ModelVariant { effort:ReasoningEffort::Ultra,model_id:"effort-b".into() }];manager.insert_test_entry("effort-a",entry);manager.insert_test_entry("effort-b",entry_with_menu("effort-b",true,&[(ReasoningEffort::Ultra,true)]));
+            let actor=actor_on_row("effort-a",manager).await;let mut a=actor.chat_state_handle.capture_transport_binding().await.unwrap();a.config.base_url="https://effort-a.example/v1".into();a.credentials.api_key=Some("effort-a-key".into());actor.chat_state_handle.install_transport_binding(a).await.unwrap();
+            let mut newer=actor.chat_state_handle.capture_transport_binding().await.unwrap();
+            newer.config.api_backend=xai_grok_sampling_types::ApiBackend::Responses;
+            newer.credentials.auth_type=xai_chat_state::AuthType::ApiKey;
+            actor.chat_state_handle.install_transport_binding(newer.clone()).await.unwrap();
+            newer.config.temperature=Some(0.92);newer.config.extra_headers.insert("equal-route-update".into(),"preserve".into());
+            EFFORT_PAIR_PROBE.with(|probe| *probe.borrow_mut()=Some(newer.clone()));
+            actor.handle_set_reasoning_effort(ReasoningEffort::Ultra).await.unwrap();
+            let result=actor.chat_state_handle.capture_transport_binding().await.unwrap();
+            assert_eq!(result.config.model,"effort-b");
+            assert_eq!(result.config.temperature,newer.config.temperature,"equal resolved route must preserve concurrent unrelated fields");
+            assert_eq!(result.config.extra_headers,newer.config.extra_headers);assert_eq!(result.credentials,newer.credentials);
+
+        }).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn invalid_effective_effort_config_refuses_newer_row() {
+        if isolated_item1a_config_test(
+            "session::acp_session::model_switch::tests::invalid_effective_effort_config_refuses_newer_row",
+        ) {
+            return;
+        }
+        tokio::task::LocalSet::new().run_until(async {
+            use xai_grok_test_support::EnvGuard;
+            let dir=tempfile::tempdir().unwrap();let _home=EnvGuard::set("GROK_HOME",dir.path().to_str().unwrap());let _key=EnvGuard::unset("XAI_API_KEY");let _apex=EnvGuard::unset("APEX_LLM_API_KEY");
+            std::fs::write(dir.path().join("config.toml"),"[model.effort-a]\nbase_url = \"https://effort-a.example/v1\"\napi_key = \"effort-a-key\"\napi_backend = \"responses\"\n[model.effort-b]\nbase_url = \"https://effort-b.example/v1\"\napi_key = \"effort-b-key\"\napi_backend = \"messages\"\n").unwrap();
+            let (manager,_tmp)=manager_with_entries();
+            let mut entry=entry_with_menu("effort-a",true,&[(ReasoningEffort::Ultra,false),(ReasoningEffort::Low,true)]);
+            entry.info.variants=vec![crate::agent::config::ModelVariant { effort:ReasoningEffort::Ultra,model_id:"effort-b".into() }];manager.insert_test_entry("effort-a",entry);manager.insert_test_entry("effort-b",entry_with_menu("effort-b",true,&[(ReasoningEffort::Ultra,true)]));
+            let actor=actor_on_row("effort-a",manager).await;let mut a=actor.chat_state_handle.capture_transport_binding().await.unwrap();a.config.base_url="https://effort-a.example/v1".into();a.credentials.api_key=Some("effort-a-key".into());actor.chat_state_handle.install_transport_binding(a).await.unwrap();
+            std::fs::write(dir.path().join("config.toml"),"[broken").unwrap();
+            let mut newer=actor.chat_state_handle.capture_transport_binding().await.unwrap();newer.config.model="error-newer".into();newer.credentials.api_key=Some("error-newer-key".into());
+            EFFORT_PAIR_PROBE.with(|probe| *probe.borrow_mut()=Some(newer.clone()));
+            assert!(actor.handle_set_reasoning_effort(ReasoningEffort::Ultra).await.is_err(),"invalid effective config must not be treated as an absent routed row");
+            let result=actor.chat_state_handle.capture_transport_binding().await.unwrap();
+            assert_eq!(serde_json::to_value(&result.config).unwrap(),serde_json::to_value(&newer.config).unwrap());assert_eq!(result.credentials,newer.credentials);
+
+        }).await;
+    }
+    // Effective config reads a process-cached home; re-exec isolates it from sibling tests.
+    fn isolated_item1a_config_test(name: &str) -> bool {
+        const CHILD: &str = "GROK_TEST_ITEM1A_CONFIG_CHILD";
+        if std::env::var(CHILD).as_deref() == Ok(name) {
+            return false;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .env(CHILD, name)
+            .env("GROK_HOME", home.path())
+            .env_remove("GROK_CONFIG")
+            .env_remove("GROK_CONFIG_PATH")
+            .env_remove("GROK_CAMPAIGNS_OVERRIDE")
+            .env_remove("GROK_CAMPAIGNS")
+            .env_remove("XAI_API_KEY")
+            .env_remove("APEX_LLM_API_KEY")
+            .args(["--exact", name, "--nocapture"])
+            .stdin(std::process::Stdio::null());
+        xai_tty_utils::detach_std_command(&mut command);
+        let output = command.output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "isolated item-1a test failed: {stdout} {stderr}"
+        );
+        assert!(
+            stdout.contains(&format!("test {name} ... ok")),
+            "isolated item-1a exact test was not selected: {stdout} {stderr}"
+        );
+        true
     }
 }

@@ -1194,3 +1194,111 @@ async fn never_recovering_credential_less_401_hits_runaway_guard() {
         })
         .await;
 }
+
+struct PairSeedRefresher {
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    calls: Arc<AtomicU32>,
+    succeed: bool,
+}
+#[async_trait::async_trait]
+impl xai_grok_login::refresh::TokenRefresher for PairSeedRefresher {
+    async fn refresh(
+        &self,
+        _reason: xai_grok_login::refresh::RefreshReason,
+    ) -> xai_grok_login::refresh::RefreshOutcome {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.entered.notify_one();
+        self.release.notified().await;
+        if self.succeed {
+            xai_grok_login::refresh::RefreshOutcome::success(GrokAuth {
+                key: "pair-fresh-session".into(),
+                auth_mode: AuthMode::Oidc,
+                refresh_token: Some("pair-refresh".into()),
+                expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+                ..GrokAuth::test_default()
+            })
+        } else {
+            xai_grok_login::refresh::RefreshOutcome::TransientFailure {
+                message: "pair fixture failed refresh".into(),
+            }
+        }
+    }
+}
+async fn late_seed_pair_fixture(succeed: bool) {
+    let server = MockInferenceServer::start_with_required_auth(
+        vec![MockModelEntry::new("test")],
+        FRESH_TOKEN,
+    )
+    .await
+    .unwrap();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let calls = Arc::new(AtomicU32::new(0));
+    let refresher = Arc::new(PairSeedRefresher {
+        entered: entered.clone(),
+        release: release.clone(),
+        calls: calls.clone(),
+        succeed,
+    });
+    let (_dir, manager) = expired_auth_manager(refresher);
+    let (actor, _updates) = session_token_actor(&server, manager, ActorShape::default()).await;
+    let mut a = actor
+        .chat_state_handle
+        .capture_transport_binding()
+        .await
+        .unwrap();
+    a.credentials.api_key = Some("expired-initial-seed".into());
+    actor
+        .chat_state_handle
+        .install_transport_binding(a.clone())
+        .await
+        .unwrap();
+    let mut b = a.clone();
+    b.config.model = "new-byok-row".into();
+    b.config.base_url = "https://new-byok.example/v1".into();
+    b.credentials.api_key = Some("new-row-api-key".into());
+    b.credentials.auth_type = xai_chat_state::AuthType::ApiKey;
+    let task_actor = actor.clone();
+    let task = tokio::task::spawn_local(async move {
+        task_actor.refresh_token_if_expired().await;
+    });
+    entered.notified().await;
+    actor
+        .chat_state_handle
+        .install_transport_binding(b.clone())
+        .await
+        .unwrap();
+    release.notify_one();
+    task.await.unwrap();
+    let after = actor
+        .chat_state_handle
+        .capture_transport_binding()
+        .await
+        .unwrap();
+    assert_eq!(
+        after.credentials, b.credentials,
+        "late session seed or clear must preserve newly installed complete B credentials"
+    );
+    assert_eq!(
+        (after.config.model, after.config.base_url),
+        (b.config.model, b.config.base_url)
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "captured first-party refresh path must run exactly once without BYOK fallthrough"
+    );
+}
+#[tokio::test(flavor = "current_thread")]
+async fn late_session_seed_does_not_overwrite_new_row() {
+    tokio::task::LocalSet::new()
+        .run_until(late_seed_pair_fixture(true))
+        .await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn late_expired_seed_clear_does_not_clear_new_row() {
+    tokio::task::LocalSet::new()
+        .run_until(late_seed_pair_fixture(false))
+        .await;
+}

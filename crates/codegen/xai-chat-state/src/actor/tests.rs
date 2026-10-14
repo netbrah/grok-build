@@ -6745,3 +6745,271 @@ async fn a_row_switch_with_a_turn_in_flight_moves_the_admission_with_the_row() {
         "anti-vacuity: a turn really was captured, so this is the in-flight shape"
     );
 }
+
+fn binding_fixture(
+    model: &str,
+    url: &str,
+    backend: xai_grok_sampling_types::ApiBackend,
+    key: &str,
+) -> crate::RequestTransportBinding {
+    let mut config = test_config();
+    config.model = model.into();
+    config.base_url = url.into();
+    config.api_backend = backend;
+    config
+        .extra_headers
+        .insert("x-test-private".into(), "header-sentinel".into());
+    crate::RequestTransportBinding {
+        config,
+        credentials: crate::Credentials {
+            api_key: Some(key.into()),
+            auth_type: crate::AuthType::ApiKey,
+            alpha_test_key: Some("alpha-sentinel".into()),
+            client_version: Some("fixture-version".into()),
+        },
+    }
+}
+
+#[tokio::test]
+async fn pair_install_and_capture_are_coherent() {
+    use xai_grok_sampling_types::ApiBackend;
+    let a = binding_fixture(
+        "pair-a",
+        "https://a.example/v1",
+        ApiBackend::Responses,
+        "key-a-sentinel",
+    );
+    let b = binding_fixture(
+        "pair-b",
+        "https://b.example/v1",
+        ApiBackend::Messages,
+        "key-b-sentinel",
+    );
+    let h = TestHarness::with_config(vec![], a.config.clone());
+    h.handle.update_credentials(a.credentials.clone());
+    let before = h.handle.capture_transport_binding().await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&before.config).unwrap(),
+        serde_json::to_value(&a.config).unwrap()
+    );
+    assert_eq!(before.credentials, a.credentials);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    *h.handle.pair_install_probe.lock().unwrap() = Some(tx);
+    assert!(
+        h.handle
+            .install_transport_binding(b.clone())
+            .await
+            .is_some()
+    );
+    let observed = rx.await.unwrap();
+    assert_eq!(
+        (
+            observed.config.model,
+            observed.config.base_url,
+            observed.config.api_backend,
+            observed.credentials
+        ),
+        (
+            b.config.model.clone(),
+            b.config.base_url.clone(),
+            b.config.api_backend.clone(),
+            b.credentials.clone()
+        ),
+        "single pair publication must not expose B config with A credentials"
+    );
+    let after = h.handle.capture_transport_binding().await.unwrap();
+    assert_eq!(
+        serde_json::to_value(after.config).unwrap(),
+        serde_json::to_value(b.config).unwrap()
+    );
+    assert_eq!(after.credentials, b.credentials);
+}
+
+#[test]
+fn transport_binding_debug_redacts_secrets() {
+    let binding = binding_fixture(
+        "debug-model",
+        "https://debug.example/v1",
+        xai_grok_sampling_types::ApiBackend::Responses,
+        "key-debug-sentinel",
+    );
+    let rendered = format!("{binding:?}");
+    for sentinel in ["key-debug-sentinel", "alpha-sentinel", "header-sentinel"] {
+        assert!(
+            !rendered.contains(sentinel),
+            "transport binding Debug must omit every credential/header value"
+        );
+    }
+}
+
+#[tokio::test]
+async fn api_key_patch_checks_row_and_complete_credentials() {
+    use xai_grok_sampling_types::ApiBackend;
+    let a = binding_fixture(
+        "patch-a",
+        "https://patch.example/v1",
+        ApiBackend::Responses,
+        "a-key",
+    );
+    let h = TestHarness::with_config(vec![], a.config.clone());
+    h.handle.update_credentials(a.credentials.clone());
+    let installed = h.handle.capture_transport_binding().await.unwrap();
+    for mismatch in 0..7 {
+        let mut expected = installed.clone();
+        match mismatch {
+            0 => expected.config.model = "wrong".into(),
+            1 => expected.config.base_url = "https://wrong.example/v1".into(),
+            2 => expected.config.api_backend = ApiBackend::Messages,
+            3 => expected.credentials.api_key = Some("wrong".into()),
+            4 => expected.credentials.alpha_test_key = None,
+            5 => expected.credentials.client_version = None,
+            6 => expected.credentials.auth_type = crate::AuthType::SessionToken,
+            _ => unreachable!(),
+        }
+        assert!(
+            !h.handle
+                .patch_api_key(expected, Some("new-key".into()))
+                .await
+                .unwrap(),
+            "key patch must refuse each expected row/complete credential mismatch"
+        );
+        assert_eq!(
+            h.handle
+                .capture_transport_binding()
+                .await
+                .unwrap()
+                .credentials,
+            installed.credentials
+        );
+    }
+    assert!(
+        h.handle
+            .patch_api_key(installed.clone(), Some("new-key".into()))
+            .await
+            .unwrap()
+    );
+    let changed = h.handle.capture_transport_binding().await.unwrap();
+    let mut expected = installed.credentials.clone();
+    expected.api_key = Some("new-key".into());
+    assert_eq!(changed.credentials, expected);
+    assert!(h.handle.patch_api_key(changed, None).await.unwrap());
+    assert_eq!(
+        h.handle
+            .capture_transport_binding()
+            .await
+            .unwrap()
+            .credentials
+            .api_key,
+        None
+    );
+    h.handle.install_transport_binding(a.clone()).await.unwrap();
+    let b = binding_fixture(
+        "patch-b",
+        "https://b.example/v1",
+        ApiBackend::Messages,
+        "b-key",
+    );
+    h.handle.install_transport_binding(b).await.unwrap();
+    h.handle.install_transport_binding(a).await.unwrap();
+    assert!(
+        h.handle
+            .patch_api_key(installed, Some("equal-a-valid".into()))
+            .await
+            .unwrap(),
+        "equal-value A to B to A requires no epoch"
+    );
+}
+
+#[tokio::test]
+async fn config_field_patch_preserves_current_pair() {
+    use xai_grok_sampling_types::ApiBackend;
+    let a = binding_fixture(
+        "config-a",
+        "https://a.example/v1",
+        ApiBackend::Responses,
+        "a-key",
+    );
+    let h = TestHarness::with_config(vec![], a.config.clone());
+    h.handle.update_credentials(a.credentials.clone());
+    let b = binding_fixture(
+        "config-b",
+        "https://b.example/v1",
+        ApiBackend::Messages,
+        "b-key",
+    );
+    h.handle.install_transport_binding(b.clone()).await.unwrap();
+    assert!(
+        !h.handle
+            .patch_sampling_fields(
+                a,
+                crate::SamplingFieldPatch {
+                    max_completion_tokens: Some(Some(42)),
+                    ..Default::default()
+                }
+            )
+            .await
+            .unwrap(),
+        "config patch must refuse stale source row"
+    );
+    let mut expected = h.handle.capture_transport_binding().await.unwrap();
+    expected.config.temperature = Some(0.1);
+    let mut current = b.clone();
+    current.config.temperature = Some(0.9);
+    current
+        .config
+        .extra_headers
+        .insert("preserved".into(), "new-value".into());
+    h.handle
+        .install_transport_binding(current.clone())
+        .await
+        .unwrap();
+    assert!(
+        h.handle
+            .patch_sampling_fields(
+                expected,
+                crate::SamplingFieldPatch {
+                    max_completion_tokens: Some(Some(42)),
+                    ..Default::default()
+                }
+            )
+            .await
+            .unwrap()
+    );
+    let after = h.handle.capture_transport_binding().await.unwrap();
+    assert_eq!(after.config.max_completion_tokens, Some(42));
+    assert_eq!(
+        after.config.temperature,
+        Some(0.9),
+        "field patch must preserve unrelated current config fields"
+    );
+    assert_eq!(after.config.extra_headers, current.config.extra_headers);
+    assert_eq!(after.credentials, current.credentials);
+}
+
+#[tokio::test]
+async fn pair_capture_after_snapshot_restore_preserves_both_halves() {
+    use xai_grok_sampling_types::ApiBackend;
+    let a = binding_fixture(
+        "restore-a",
+        "https://restore-a.example/v1",
+        ApiBackend::Responses,
+        "restore-a-key",
+    );
+    let b = binding_fixture(
+        "restore-b",
+        "https://restore-b.example/v1",
+        ApiBackend::Messages,
+        "restore-b-key",
+    );
+    let h = TestHarness::new();
+    h.handle.install_transport_binding(a.clone()).await.unwrap();
+    let snapshot = h.handle.snapshot().await.unwrap();
+    h.handle.install_transport_binding(b).await.unwrap();
+    h.handle.restore_snapshot(snapshot);
+    let restored = h.handle.capture_transport_binding().await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&restored.config).unwrap(),
+        serde_json::to_value(&a.config).unwrap()
+    );
+    assert_eq!(restored.credentials, a.credentials);
+}

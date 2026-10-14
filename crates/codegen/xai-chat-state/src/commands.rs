@@ -54,6 +54,28 @@ pub enum StrictAppendError {
 
 /// Commands sent to the ChatStateActor via mpsc channel.
 pub enum ChatStateCommand {
+    PatchApiKey {
+        expected: Box<crate::RequestTransportBinding>,
+        api_key: Option<String>,
+        reply: oneshot::Sender<bool>,
+    },
+    PatchSamplingFields {
+        expected: Box<crate::RequestTransportBinding>,
+        fields: crate::SamplingFieldPatch,
+        reply: oneshot::Sender<bool>,
+    },
+    ReplaceExpectedTransportBinding {
+        expected: Box<crate::RequestTransportBinding>,
+        binding: Box<crate::RequestTransportBinding>,
+        reply: oneshot::Sender<bool>,
+    },
+    InstallTransportBinding {
+        binding: Box<crate::RequestTransportBinding>,
+        reply: oneshot::Sender<()>,
+    },
+    CaptureTransportBinding {
+        reply: oneshot::Sender<crate::RequestTransportBinding>,
+    },
     // ═══ Mutations (fire-and-forget) ═══
     /// Push a user message into the conversation.
     PushUserMessage { item: ConversationItem },

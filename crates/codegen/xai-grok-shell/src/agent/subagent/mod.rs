@@ -758,13 +758,27 @@ fn parent_catalog_model_id(ctx: &SubagentSpawnContext, routing_model: &str) -> a
 }
 /// Read the parent session's actual current sampling config. Prefers the live state from `ChatStateHandle` (authoritative). Falls back to the baseline on `SubagentSpawnContext` if the actor is unavailable.
 /// The returned [`acp::ModelId`] is the parent session catalog id (`ctx.model_id`), not the process-global default or chat-state routing slug.
+#[cfg(test)]
+thread_local! {
+    static PARENT_PAIR_PROBE: std::cell::RefCell<Option<(xai_chat_state::ChatStateHandle, xai_chat_state::RequestTransportBinding)>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+async fn parent_pair_probe() {
+    let probe = PARENT_PAIR_PROBE.with(|probe| probe.borrow_mut().take());
+    if let Some((handle, binding)) = probe {
+        handle.install_transport_binding(binding).await;
+    }
+}
 #[tracing::instrument(level = "debug", skip_all)]
 async fn read_parent_sampling_config(
     ctx: &SubagentSpawnContext,
 ) -> (xai_grok_sampler::SamplerConfig, acp::ModelId) {
     if let Some(ref chat_state) = ctx.parent_chat_state {
-        if let Some(cfg) = chat_state.get_sampling_config().await {
-            let creds = chat_state.get_credentials().await;
+        if let Some(binding) = chat_state.capture_transport_binding().await {
+            let cfg = binding.config;
+            let creds = binding.credentials;
+            #[cfg(test)]
+            parent_pair_probe().await;
             let mut extra_headers = cfg.extra_headers;
             crate::agent::config::inject_url_derived_headers(
                 &mut extra_headers,
@@ -3163,3 +3177,51 @@ pub(crate) async fn reconcile_live_orphaned_subagents(
 mod tests;
 #[cfg(test)]
 mod fork_prefix_tests;
+
+#[cfg(test)]
+mod pair_capture_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn parent_sampling_config_is_all_a_or_all_b() {
+        tokio::task::LocalSet::new().run_until(async {
+            let config: xai_grok_sampling_types::SamplingConfig = serde_json::from_value(serde_json::json!({
+                "base_url": "https://inherit-a.example/v1", "model": "inherit-a", "context_window": 256000,
+                "api_backend": "responses", "extra_headers": {}, "query_params": {}, "env_http_headers": {},
+                "supports_search_tool": false
+            })).unwrap();
+            let (persistence, _persistence_rx) = xai_chat_state::MockChatPersistence::new();
+            let (events, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+            let handle = xai_chat_state::ChatStateActor::spawn(vec![], config, Box::new(persistence), events, tokio_util::sync::CancellationToken::new());
+            let mut a = handle.capture_transport_binding().await.unwrap();
+            a.config.model = "inherit-a".into(); a.config.base_url = "https://inherit-a.example/v1".into(); a.config.api_backend = xai_grok_sampling_types::ApiBackend::Responses; a.credentials.api_key = Some("inherit-a-key".into());
+            handle.install_transport_binding(a.clone()).await.unwrap();
+            let mut b = a.clone(); b.config.model = "inherit-b".into(); b.config.base_url = "https://inherit-b.example/v1".into(); b.config.api_backend = xai_grok_sampling_types::ApiBackend::Messages; b.credentials.api_key = Some("inherit-b-key".into());
+            let mut ctx = crate::test_support::lsp_runtime::ctx_with_toggle(Default::default());
+            ctx.parent_chat_state = Some(handle.clone());
+            ctx.model_id = acp::ModelId::new("parent-catalog");
+            PARENT_PAIR_PROBE.with(|probe| *probe.borrow_mut() = Some((handle.clone(), b.clone())));
+            let (inherited, catalog) = read_parent_sampling_config(&ctx).await;
+            let tuple = (inherited.model, inherited.base_url, inherited.api_backend, inherited.api_key);
+            let all_a = (a.config.model, a.config.base_url, a.config.api_backend, a.credentials.api_key);
+            let all_b = (b.config.model, b.config.base_url, b.config.api_backend, b.credentials.api_key);
+            assert!(tuple == all_a || tuple == all_b, "subagent capture must return a complete A or B config/credential pair");
+            assert_eq!(catalog.0.as_ref(), "parent-catalog");
+        }).await;
+    }
+
+    #[tokio::test]
+    async fn absent_or_closed_parent_uses_original_fallback() {
+        let mut ctx = crate::test_support::lsp_runtime::ctx_with_toggle(Default::default());
+        ctx.sampling_config.model = "fallback-row".into();
+        ctx.sampling_config.base_url = "https://fallback.example/v1".into();
+        ctx.sampling_config.api_key = Some("fallback-key".into());
+        let (absent, _) = read_parent_sampling_config(&ctx).await;
+        ctx.parent_chat_state = Some(xai_chat_state::ChatStateHandle::noop());
+        let (closed, _) = read_parent_sampling_config(&ctx).await;
+        assert_eq!(
+            (absent.model, absent.base_url, absent.api_key),
+            (closed.model, closed.base_url, closed.api_key)
+        );
+    }
+}

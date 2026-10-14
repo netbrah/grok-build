@@ -107,7 +107,7 @@ pub enum AuthType {
 
 /// Credential/secret fields that the actor stores opaquely.
 /// Not part of secret-free `SamplingConfig`. The actor stores and returns them — it never interprets them.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Credentials {
     /// API key for authentication.
     pub api_key: Option<String>,
@@ -152,6 +152,32 @@ pub struct ConversationCounts {
     /// "the model claims a tool it was never given" desync needs to see whether the
     /// history still carries it.
     pub discovery: usize,
+}
+
+#[derive(Clone)]
+pub struct RequestTransportBinding {
+    pub config: SamplingConfig,
+    pub credentials: Credentials,
+}
+
+impl std::fmt::Debug for RequestTransportBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestTransportBinding")
+            .field("model", &self.config.model)
+            .field("base_url", &self.config.base_url)
+            .field("api_backend", &self.config.api_backend)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SamplingFieldPatch {
+    pub context_window: Option<NonZeroU64>,
+    pub max_completion_tokens: Option<Option<u32>>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<Option<xai_grok_sampling_types::ReasoningEffort>>,
+    pub ultra_wire_effort: Option<Option<xai_grok_sampling_types::ReasoningEffort>>,
+    pub supports_search_tool: Option<bool>,
 }
 
 /// Info returned when auto-compact threshold is exceeded.

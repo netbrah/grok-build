@@ -224,6 +224,88 @@ impl ChatStateActor {
             ChatStateCommand::IncrementPromptIndex => {
                 self.increment_prompt_index();
             }
+            ChatStateCommand::InstallTransportBinding { binding, reply } => {
+                self.state.sampling_config = binding.config;
+                self.state.credentials = binding.credentials;
+                let _ = reply.send(());
+            }
+            ChatStateCommand::CaptureTransportBinding { reply } => {
+                let _ = reply.send(crate::RequestTransportBinding {
+                    config: self.state.sampling_config.clone(),
+                    credentials: self.state.credentials.clone(),
+                });
+            }
+            ChatStateCommand::ReplaceExpectedTransportBinding {
+                expected,
+                binding,
+                reply,
+            } => {
+                let applied = self.state.sampling_config.model == expected.config.model
+                    && self.state.sampling_config.base_url == expected.config.base_url
+                    && self.state.sampling_config.api_backend == expected.config.api_backend
+                    && self.state.credentials == expected.credentials;
+                if applied {
+                    self.state.sampling_config = binding.config;
+                    self.state.credentials = binding.credentials;
+                }
+                let _ = reply.send(applied);
+            }
+            ChatStateCommand::PatchApiKey {
+                expected,
+                api_key,
+                reply,
+            } => {
+                let applied = self.state.sampling_config.model == expected.config.model
+                    && self.state.sampling_config.base_url == expected.config.base_url
+                    && self.state.sampling_config.api_backend == expected.config.api_backend
+                    && self.state.credentials == expected.credentials;
+                if applied {
+                    self.state.credentials.api_key = api_key;
+                }
+                let _ = reply.send(applied);
+            }
+            ChatStateCommand::PatchSamplingFields {
+                expected,
+                fields,
+                reply,
+            } => {
+                let config = &mut self.state.sampling_config;
+                let applied = config.model == expected.config.model
+                    && config.base_url == expected.config.base_url
+                    && config.api_backend == expected.config.api_backend
+                    && self.state.credentials == expected.credentials
+                    && (fields.context_window.is_none()
+                        || config.context_window == expected.config.context_window)
+                    && (fields.max_completion_tokens.is_none()
+                        || config.max_completion_tokens == expected.config.max_completion_tokens)
+                    && (fields.reasoning_effort.is_none()
+                        || config.reasoning_effort == expected.config.reasoning_effort)
+                    && (fields.ultra_wire_effort.is_none()
+                        || config.ultra_wire_effort == expected.config.ultra_wire_effort)
+                    && (fields.supports_search_tool.is_none()
+                        || config.supports_search_tool == expected.config.supports_search_tool);
+                if applied {
+                    if let Some(value) = fields.context_window {
+                        config.context_window = value;
+                    }
+                    if let Some(value) = fields.max_completion_tokens {
+                        config.max_completion_tokens = value;
+                    }
+                    if let Some(value) = fields.model {
+                        config.model = value;
+                    }
+                    if let Some(value) = fields.reasoning_effort {
+                        config.reasoning_effort = value;
+                    }
+                    if let Some(value) = fields.ultra_wire_effort {
+                        config.ultra_wire_effort = value;
+                    }
+                    if let Some(value) = fields.supports_search_tool {
+                        config.supports_search_tool = value;
+                    }
+                }
+                let _ = reply.send(applied);
+            }
             ChatStateCommand::UpdateSamplingConfig { config } => {
                 // apex-waj.35 (ruling `map/RULINGS-o1o5.md` §"O3, run 5"): the row's
                 // `supports_search_tool` flag rides the config that names the row, so moving the

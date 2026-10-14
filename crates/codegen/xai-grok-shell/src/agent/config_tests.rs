@@ -1178,6 +1178,7 @@ fn sampling_config_uses_fallback_when_no_model_api_key() {
         ResolvedCredentials {
             api_key: Some("fallback-key".to_string()),
             base_url: model.info().base_url.clone(),
+            api_backend: model.info().api_backend.clone(),
             auth_type: xai_chat_state::AuthType::ApiKey,
             auth_scheme: AuthScheme::Bearer,
         },
@@ -1325,6 +1326,7 @@ fn default_models_dual_endpoint_routing() {
                 .api_base_url
                 .clone()
                 .unwrap_or(entry.info().base_url.clone()),
+            api_backend: entry.info().api_backend.clone(),
             auth_type: xai_chat_state::AuthType::ApiKey,
             auth_scheme: AuthScheme::Bearer,
         };
@@ -1609,6 +1611,7 @@ fn api_key_creds(base_url: &str) -> ResolvedCredentials {
     ResolvedCredentials {
         api_key: Some("xai-secret".to_string()),
         base_url: base_url.to_string(),
+        api_backend: ApiBackend::ChatCompletions,
         auth_type: xai_chat_state::AuthType::ApiKey,
         auth_scheme: Default::default(),
     }
@@ -11378,4 +11381,35 @@ fn b5ixm_user_schema_excludes_internal_feed_observation() {
     );
     let override_json = serde_json::to_value(ConfigModelOverride::default()).unwrap();
     assert!(override_json.get("feed_api_backend").is_none());
+}
+
+#[test]
+fn resolved_credentials_retain_backend_provenance() {
+    for backend in [
+        ApiBackend::ChatCompletions,
+        ApiBackend::Responses,
+        ApiBackend::Messages,
+    ] {
+        let mut info = ModelInfo::fallback("credential-provenance");
+        info.api_backend = backend.clone();
+        info.base_url = "https://provenance.example/v1".into();
+        let entry = ModelEntry {
+            info,
+            api_key: Some("provenance-key".into()),
+            env_key: None,
+            auth_provider: None,
+            api_base_url: None,
+            mtls_cert_dir: None,
+        };
+        let resolved = resolve_credentials(&entry, None);
+        assert_eq!(
+            (resolved.api_backend, resolved.base_url, resolved.api_key),
+            (
+                backend,
+                "https://provenance.example/v1".to_string(),
+                Some("provenance-key".into())
+            ),
+            "credential resolution must retain the actual backend along with URL/key provenance"
+        );
+    }
 }
