@@ -750,6 +750,11 @@ pub fn stream_messages<'a>(
                                         }
                                     }
                                     if let Ok(item) = ToolSearchItem::from_wire(raw) {
+                                        let native_search = item.raw().get("type").and_then(serde_json::Value::as_str) == Some("tool_search_tool_result")
+                                            || matches!(item.raw().get("name").and_then(serde_json::Value::as_str), Some("tool_search_tool_bm25" | "tool_search_tool_regex"));
+                                        if native_search {
+                                            yield SamplingEvent::MessagesToolSearchDisplay { request_id: request_id.clone(), item: item.clone() };
+                                        }
                                         discovery_items.push(ConversationItem::Discovery { item });
                                     }
                                 }

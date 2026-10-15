@@ -1942,3 +1942,351 @@ async fn tool_search_call_owned_at_another_generation_does_not_stamp_turn_first_
         })
         .await;
 }
+
+fn messages_display_fixture_events() -> Vec<xai_grok_sampling_types::messages::MessageStreamEvent> {
+    include_str!("../../../../xai-grok-sampler/tests/fixtures/resp-001.raw")
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .filter(|data| data.trim() != "[DONE]")
+        .map(|data| serde_json::from_str(data.trim()).expect("committed Messages fixture parses"))
+        .collect()
+}
+
+fn drain_native_search_cards(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<SessionEvent>,
+    cards: &mut Vec<acp::SessionUpdate>,
+) {
+    while let Ok(event) = rx.try_recv() {
+        if let SessionEvent::Notification(SessionNotification::Acp(notification)) = event {
+            match &notification.update {
+                acp::SessionUpdate::ToolCall(call)
+                    if call.meta.as_ref().and_then(|m| m.get("tool_search"))
+                        == Some(&serde_json::json!(true)) =>
+                {
+                    cards.push(notification.update)
+                }
+                acp::SessionUpdate::ToolCallUpdate(update)
+                    if update
+                        .fields
+                        .raw_output
+                        .as_ref()
+                        .is_some_and(|r| r.get("result_count").is_some()) =>
+                {
+                    cards.push(notification.update)
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn messages_resp001_stream_opens_and_enriches_native_card() {
+    use futures_util::{FutureExt, StreamExt};
+    use xai_grok_sampler::{RequestId, stream_messages};
+    use xai_grok_sampling_types::messages::MessageStreamEvent;
+
+    tokio::task::LocalSet::new().run_until(async {
+        for seeded in [false, true] {
+            let mut fixture = make_replay_send_update_fixture().await;
+            let actor = Arc::new(fixture.actor);
+            if seeded {
+                actor.tool_metadata_snapshot.lock().unwrap().tools = vec![
+                    crate::session::tool_index::ToolMetadata {
+                        qualified_name: "shipping__lookup_shipping_eta".into(),
+                        server_name: "shipping".into(),
+                        tool_name: "lookup_shipping_eta".into(),
+                        description: "Find the shipping ETA".into(),
+                        parameters: vec![],
+                        input_schema: serde_json::json!({"type": "object"}),
+                    },
+                ];
+            }
+            let request = RequestId::random();
+            own_request(&actor, &request);
+            let (tx, rx) = futures::channel::mpsc::unbounded();
+            let mut stream = Box::pin(stream_messages(rx.boxed(), None, request.clone(), Duration::from_secs(60)));
+            let mut cards = Vec::new();
+            for raw in messages_display_fixture_events() {
+                let checkpoint = match &raw {
+                    MessageStreamEvent::ContentBlockStop { index: 1 } => Some(1),
+                    MessageStreamEvent::ContentBlockStop { index: 2 } => Some(2),
+                    _ => None,
+                };
+                tx.unbounded_send(Ok(raw)).unwrap();
+                while let Some(Some(event)) = stream.next().now_or_never() {
+                    actor.handle_sampling_event(event).await;
+                }
+                drain_native_search_cards(&mut fixture.event_rx, &mut cards);
+                if let Some(expected) = checkpoint {
+                    assert_eq!(cards.len(), expected, "card must arrive at its block stop before message_stop");
+                }
+            }
+            assert_eq!(cards.len(), 2, "exactly one opening and one terminal search update");
+            let acp::SessionUpdate::ToolCall(call) = &cards[0] else { panic!("opening card"); };
+            assert_eq!(call.tool_call_id.0.as_ref(), "srvtoolu_vrtx_01Hh2DfGwhjyYDSnUWDFveu3");
+            assert_eq!(call.status, acp::ToolCallStatus::InProgress);
+            assert_eq!(call.kind, acp::ToolKind::Search);
+            assert_eq!(call.raw_input, Some(serde_json::json!({"query": "shipping ETA estimated delivery date order"})));
+            let acp::SessionUpdate::ToolCallUpdate(close) = &cards[1] else { panic!("terminal card"); };
+            assert_eq!(close.tool_call_id, call.tool_call_id);
+            assert_eq!(close.fields.status, Some(acp::ToolCallStatus::Completed));
+            assert_eq!(close.fields.raw_output, Some(serde_json::json!({
+                "result_count": 1, "status": "completed",
+                "results": [{"server": if seeded {"shipping"} else {""}, "tools": [{
+                    "tool_name": "lookup_shipping_eta", "description": if seeded {"Find the shipping ETA"} else {""}
+                }]}]
+            })));
+        }
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn messages_native_card_status_and_ownership_preserve_close_exemption() {
+    use futures_util::StreamExt;
+    use xai_grok_sampler::{RequestId, SamplingEvent, ToolSearchStatus, stream_messages};
+    use xai_grok_sampling_types::messages::MessageStreamEvent;
+
+    tokio::task::LocalSet::new().run_until(async {
+        let mut fixture = make_replay_send_update_fixture().await;
+        let actor = Arc::new(fixture.actor);
+        let request = RequestId::random();
+        let raw: Vec<_> = messages_display_fixture_events();
+        let call: Vec<_> = raw.iter().filter(|event| match event {
+            MessageStreamEvent::ContentBlockStart { index: 1, .. }
+            | MessageStreamEvent::ContentBlockDelta { index: 1, .. }
+            | MessageStreamEvent::ContentBlockStop { index: 1 } => true,
+            _ => false,
+        }).cloned().collect();
+        let result: Vec<_> = raw.iter().filter(|event| matches!(event,
+            MessageStreamEvent::ContentBlockStart { index: 2, .. }
+            | MessageStreamEvent::ContentBlockStop { index: 2 }
+        )).cloned().collect();
+        let mut cards = Vec::new();
+        let events: Vec<_> = stream_messages(futures_util::stream::iter(call.clone().into_iter().map(Ok)).boxed(), None, request.clone(), Duration::from_secs(60)).collect().await;
+        for event in events {
+            if !matches!(event, SamplingEvent::Completed { .. } | SamplingEvent::Failed { .. }) {
+                actor.handle_sampling_event(event).await;
+            }
+        }
+        drain_native_search_cards(&mut fixture.event_rx, &mut cards);
+        assert!(cards.is_empty(), "stale Messages opening remains suppressed");
+        let events: Vec<_> = stream_messages(futures_util::stream::iter(result.clone().into_iter().map(Ok)).boxed(), None, request.clone(), Duration::from_secs(60)).collect().await;
+        for event in events {
+            if !matches!(event, SamplingEvent::Completed { .. } | SamplingEvent::Failed { .. }) {
+                actor.handle_sampling_event(event).await;
+            }
+        }
+        drain_native_search_cards(&mut fixture.event_rx, &mut cards);
+        assert_eq!(cards.len(), 1, "unowned result without prior opening is admitted");
+        let acp::SessionUpdate::ToolCallUpdate(close) = &cards[0] else { panic!("close"); };
+        assert_eq!(close.fields.status, Some(acp::ToolCallStatus::Completed));
+        assert_eq!(close.fields.raw_output.as_ref().unwrap()["results"][0]["tools"][0]["tool_name"], "lookup_shipping_eta");
+
+        own_request(&actor, &request);
+        let events: Vec<_> = stream_messages(futures_util::stream::iter(call.into_iter().map(Ok)).boxed(), None, request.clone(), Duration::from_secs(60)).collect().await;
+        for event in events {
+            if !matches!(event, SamplingEvent::Completed { .. } | SamplingEvent::Failed { .. }) { actor.handle_sampling_event(event).await; }
+        }
+        let mut opened = Vec::new();
+        drain_native_search_cards(&mut fixture.event_rx, &mut opened);
+        assert_eq!(opened.len(), 1, "owned Messages card opens");
+        actor.turn_stream_drained.lock().remove(&request);
+        let events: Vec<_> = stream_messages(futures_util::stream::iter(result.into_iter().map(Ok)).boxed(), None, request.clone(), Duration::from_secs(60)).collect().await;
+        for event in events {
+            if !matches!(event, SamplingEvent::Completed { .. } | SamplingEvent::Failed { .. }) { actor.handle_sampling_event(event).await; }
+        }
+        let mut closed = Vec::new();
+        drain_native_search_cards(&mut fixture.event_rx, &mut closed);
+        assert_eq!(closed.len(), 1, "late unowned Messages result closes visible card");
+        assert!(matches!(&closed[0], acp::SessionUpdate::ToolCallUpdate(close) if close.fields.status == Some(acp::ToolCallStatus::Completed)));
+
+        own_request(&actor, &request);
+        actor.handle_sampling_event(SamplingEvent::ToolSearchCallReceived {
+            request_id: request.clone(), call_id: "old-response".into(), query: "old query".into(), limit: 4,
+        }).await;
+        drain_native_search_cards(&mut fixture.event_rx, &mut cards);
+        actor.turn_stream_drained.lock().remove(&request);
+        for (status, acp_status, raw_output) in [
+            (ToolSearchStatus::Error, acp::ToolCallStatus::Failed, serde_json::json!({"result_count": 0, "status": "error"})),
+            (ToolSearchStatus::Unknown, acp::ToolCallStatus::Failed, serde_json::json!({"result_count": 0})),
+            (ToolSearchStatus::InProgress, acp::ToolCallStatus::InProgress, serde_json::json!({"result_count": 0, "status": "in_progress"})),
+        ] {
+            actor.handle_sampling_event(SamplingEvent::ToolSearchCompleted {
+                request_id: request.clone(), call_id: "old-response".into(), result_count: 0, status,
+            }).await;
+            let mut updates = Vec::new();
+            drain_native_search_cards(&mut fixture.event_rx, &mut updates);
+            assert_eq!(updates.len(), 1);
+            let acp::SessionUpdate::ToolCallUpdate(close) = &updates[0] else { panic!("existing close"); };
+            assert_eq!(close.fields.status, Some(acp_status));
+            assert_eq!(close.fields.raw_output.as_ref(), Some(&raw_output));
+        }
+
+
+            actor.tool_metadata_snapshot.lock().unwrap().tools = vec![
+                crate::session::tool_index::ToolMetadata {
+                    qualified_name: "a__first".into(), server_name: "a".into(), tool_name: "first".into(),
+                    description: "First local".into(), parameters: vec![], input_schema: serde_json::json!({}),
+                },
+                crate::session::tool_index::ToolMetadata {
+                    qualified_name: "z__last".into(), server_name: "z".into(), tool_name: "last".into(),
+                    description: "Last local".into(), parameters: vec![], input_schema: serde_json::json!({}),
+                },
+            ];
+            let raw = vec![MessageStreamEvent::ContentBlockStart { index: 0,
+                content_block: xai_grok_sampling_types::messages::ContentBlock::ToolSearchToolResult {
+                    tool_use_id: "ordered-search".into(), content: serde_json::json!({
+                        "type": "tool_search_tool_search_result", "tool_references": [
+                            {"type": "tool_reference", "tool_name": "z__last"},
+                            {"type": "tool_reference", "tool_name": "unresolved"},
+                            {"type": "tool_reference", "tool_name": "a__first"},
+                            {"type": "tool_reference", "tool_name": "z__last"}
+                        ]
+                    }),
+                },
+            }, MessageStreamEvent::ContentBlockStop { index: 0 }];
+            let events: Vec<_> = stream_messages(futures_util::stream::iter(raw.into_iter().map(Ok)).boxed(), None, request.clone(), Duration::from_secs(60)).collect().await;
+            for event in events {
+                if !matches!(event, SamplingEvent::Completed { .. } | SamplingEvent::Failed { .. }) { actor.handle_sampling_event(event).await; }
+            }
+            let mut updates = Vec::new();
+            drain_native_search_cards(&mut fixture.event_rx, &mut updates);
+            assert_eq!(updates.len(), 1);
+            let acp::SessionUpdate::ToolCallUpdate(close) = &updates[0] else { panic!("ordered close"); };
+            assert_eq!(close.fields.raw_output, Some(serde_json::json!({"result_count": 4, "status": "completed", "results": [
+                {"server": "z", "tools": [{"tool_name": "z__last", "description": "Last local"}]},
+                {"server": "", "tools": [{"tool_name": "unresolved", "description": ""}]},
+                {"server": "a", "tools": [{"tool_name": "a__first", "description": "First local"}]},
+                {"server": "z", "tools": [{"tool_name": "z__last", "description": "Last local"}]}
+            ]})), "provider order, duplicates and unresolved names survive local metadata");
+
+        for content in [
+            serde_json::json!({"type": "tool_search_tool_result_error", "error_code": "too_many_requests"}),
+            serde_json::json!({"type": "unknown_result", "tool_references": []}),
+            serde_json::json!({"type": "tool_search_tool_search_result"}),
+            serde_json::json!({"type": "tool_search_tool_search_result", "tool_references": [{"type": "tool_reference"}]}),
+        ] {
+            let raw = vec![MessageStreamEvent::ContentBlockStart { index: 0,
+                content_block: xai_grok_sampling_types::messages::ContentBlock::ToolSearchToolResult {
+                    tool_use_id: "late-error".into(), content,
+                },
+            }, MessageStreamEvent::ContentBlockStop { index: 0 }];
+            let events: Vec<_> = stream_messages(futures_util::stream::iter(raw.into_iter().map(Ok)).boxed(), None, request.clone(), Duration::from_secs(60)).collect().await;
+            for event in events {
+                if !matches!(event, SamplingEvent::Completed { .. } | SamplingEvent::Failed { .. }) { actor.handle_sampling_event(event).await; }
+            }
+            let mut updates = Vec::new();
+            drain_native_search_cards(&mut fixture.event_rx, &mut updates);
+            assert_eq!(updates.len(), 1, "malformed/error shape still closes unowned");
+            let acp::SessionUpdate::ToolCallUpdate(close) = &updates[0] else { panic!("error close"); };
+            assert_eq!(close.fields.status, Some(acp::ToolCallStatus::Failed));
+            assert_eq!(close.fields.raw_output, Some(serde_json::json!({"result_count": 0, "status": "error"})));
+        }
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn messages_native_metadata_ambiguity_preserves_provider_references() {
+    use futures_util::StreamExt;
+    use xai_grok_sampler::{RequestId, SamplingEvent, stream_messages};
+    use xai_grok_sampling_types::messages::{ContentBlock, MessageStreamEvent};
+
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            for reverse in [false, true] {
+                let mut fixture = make_replay_send_update_fixture().await;
+                let actor = Arc::new(fixture.actor);
+                let mut tools: Vec<_> = [
+                    ("a", "lookup_shipping_eta", "Shipping ETA from A"),
+                    ("b", "lookup_shipping_eta", "Shipping ETA from B"),
+                    ("shipping", "lookup_order_eta", "Unique order ETA"),
+                    ("decoy", "b__lookup_shipping_eta", "Bare alias is not qualified"),
+                ]
+                .into_iter()
+                .map(|(server, tool_name, description)| {
+                    crate::session::tool_index::ToolMetadata {
+                        qualified_name: format!("{server}__{tool_name}"),
+                        server_name: server.into(),
+                        tool_name: tool_name.into(),
+                        description: description.into(),
+                        parameters: vec![],
+                        input_schema: serde_json::json!({}),
+                    }
+                })
+                .collect();
+                if reverse {
+                    tools.reverse();
+                }
+                actor.tool_metadata_snapshot.lock().unwrap().tools = tools;
+                let request = RequestId::random();
+                own_request(&actor, &request);
+                let mut raw: Vec<_> = messages_display_fixture_events()
+                    .into_iter()
+                    .filter(|event| {
+                        matches!(
+                            event,
+                            MessageStreamEvent::ContentBlockStart { index: 2, .. }
+                                | MessageStreamEvent::ContentBlockStop { index: 2 }
+                        )
+                    })
+                    .collect();
+                for event in &mut raw {
+                    if let MessageStreamEvent::ContentBlockStart {
+                        content_block: ContentBlock::ToolSearchToolResult { content, .. },
+                        ..
+                    } = event
+                    {
+                        *content = serde_json::json!({
+                            "type": "tool_search_tool_search_result",
+                            "tool_references": [
+                                {"type": "tool_reference", "tool_name": "lookup_shipping_eta"},
+                                {"type": "tool_reference", "tool_name": "b__lookup_shipping_eta"},
+                                {"type": "tool_reference", "tool_name": "lookup_order_eta"},
+                                {"type": "tool_reference", "tool_name": "lookup_shipping_eta"},
+                                {"type": "tool_reference", "tool_name": "a__lookup_shipping_eta"}
+                            ]
+                        });
+                    }
+                }
+                let events: Vec<_> = stream_messages(
+                    futures_util::stream::iter(raw.into_iter().map(Ok)).boxed(),
+                    None,
+                    request,
+                    Duration::from_secs(60),
+                )
+                .collect()
+                .await;
+                for event in events {
+                    if !matches!(event, SamplingEvent::Completed { .. } | SamplingEvent::Failed { .. }) {
+                        actor.handle_sampling_event(event).await;
+                    }
+                }
+                let mut updates = Vec::new();
+                drain_native_search_cards(&mut fixture.event_rx, &mut updates);
+                assert_eq!(updates.len(), 1);
+                let acp::SessionUpdate::ToolCallUpdate(close) = &updates[0] else {
+                    panic!("native result close");
+                };
+                assert_eq!(close.tool_call_id.0.as_ref(), "srvtoolu_vrtx_01Hh2DfGwhjyYDSnUWDFveu3");
+                assert_eq!(close.fields.status, Some(acp::ToolCallStatus::Completed));
+                assert_eq!(
+                    close.fields.raw_output,
+                    Some(serde_json::json!({
+                        "result_count": 5, "status": "completed", "results": [
+                            {"server": "", "tools": [{"tool_name": "lookup_shipping_eta", "description": ""}]},
+                            {"server": "b", "tools": [{"tool_name": "b__lookup_shipping_eta", "description": "Shipping ETA from B"}]},
+                            {"server": "shipping", "tools": [{"tool_name": "lookup_order_eta", "description": "Unique order ETA"}]},
+                            {"server": "", "tools": [{"tool_name": "lookup_shipping_eta", "description": ""}]},
+                            {"server": "a", "tools": [{"tool_name": "a__lookup_shipping_eta", "description": "Shipping ETA from A"}]}
+                        ]
+                    })),
+                    "ambiguous bare names keep empty metadata; exact and unique matches keep provider order"
+                );
+            }
+        })
+        .await;
+}

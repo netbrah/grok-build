@@ -807,3 +807,41 @@ mod tests {
         );
     }
 }
+
+/// Messages reports success through its result content, not a Responses status field.
+pub(super) fn messages_search_results(
+    item: &xai_grok_sampling_types::tool_search::ToolSearchItem,
+    snapshot: &crate::session::tool_index::ToolMetadataSnapshot,
+) -> Option<serde_json::Value> {
+    let content = item.raw().get("content")?;
+    if content.get("type")?.as_str()? != "tool_search_tool_search_result" {
+        return None;
+    }
+    let references = content.get("tool_references")?.as_array()?;
+    let mut groups = Vec::with_capacity(references.len());
+    for reference in references {
+        if reference.get("type")?.as_str()? != "tool_reference" {
+            return None;
+        }
+        let name = reference.get("tool_name")?.as_str()?;
+        if name.is_empty() {
+            return None;
+        }
+        let metadata = snapshot
+            .tools
+            .iter()
+            .find(|tool| tool.qualified_name == name)
+            .or_else(|| {
+                let mut matches = snapshot.tools.iter().filter(|tool| tool.tool_name == name);
+                let metadata = matches.next()?;
+                matches.next().is_none().then_some(metadata)
+            });
+        groups.push(serde_json::json!({
+            "server": metadata.map_or("", |tool| tool.server_name.as_str()),
+            "tools": [{"tool_name": name, "description": metadata.map_or("", |tool| tool.description.as_str())}]
+        }));
+    }
+    Some(
+        serde_json::json!({"result_count": references.len(), "status": "completed", "results": groups}),
+    )
+}

@@ -136,7 +136,8 @@ impl SessionActor {
             event,
             SamplingEvent::BackendToolCallCompleted { .. }
                 | SamplingEvent::ToolSearchCompleted { .. }
-        );
+        ) || matches!(&event, SamplingEvent::MessagesToolSearchDisplay { item, .. }
+            if item.kind() == xai_grok_sampling_types::tool_search::ToolSearchKind::ToolSearchToolResult);
         let resolves_pending_strip = match &event {
             SamplingEvent::ImagesStripped {
                 stripped_urls,
@@ -594,6 +595,65 @@ impl SessionActor {
                     None,
                 )
                 .await;
+            }
+            SamplingEvent::MessagesToolSearchDisplay { request_id, item } => {
+                use xai_grok_sampling_types::tool_search::ToolSearchKind;
+                let Some(call_id) = item.call_id() else {
+                    return;
+                };
+                match item.kind() {
+                    ToolSearchKind::ServerToolUse => {
+                        let Some(query) = item.query() else {
+                            return;
+                        };
+                        self.record_turn_first_token(Some(&request_id));
+                        let (title, kind, mut raw_input) =
+                            tool_search_display(query, item.limit().unwrap_or(0));
+                        if item.limit().is_none() {
+                            raw_input.as_object_mut().unwrap().remove("limit");
+                        }
+                        self.send_update(
+                            acp::SessionUpdate::ToolCall(
+                                acp::ToolCall::new(acp::ToolCallId::new(Arc::from(call_id)), title)
+                                    .kind(kind)
+                                    .status(acp::ToolCallStatus::InProgress)
+                                    .content(vec![])
+                                    .locations(vec![])
+                                    .raw_input(Some(raw_input))
+                                    .meta(
+                                        serde_json::json!({"tool_search": true})
+                                            .as_object()
+                                            .cloned(),
+                                    ),
+                            ),
+                            None,
+                        )
+                        .await;
+                    }
+                    ToolSearchKind::ToolSearchToolResult => {
+                        let snapshot = self.tool_metadata_snapshot.lock().unwrap().clone();
+                        let result = messages_search_results(&item, &snapshot);
+                        let status = if result.is_some() {
+                            acp::ToolCallStatus::Completed
+                        } else {
+                            acp::ToolCallStatus::Failed
+                        };
+                        let raw_output = result.unwrap_or_else(
+                            || serde_json::json!({"result_count": 0, "status": "error"}),
+                        );
+                        self.send_update(
+                            acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+                                acp::ToolCallId::new(Arc::from(call_id)),
+                                acp::ToolCallUpdateFields::new()
+                                    .status(Some(status))
+                                    .raw_output(Some(raw_output)),
+                            )),
+                            None,
+                        )
+                        .await;
+                    }
+                    ToolSearchKind::Call | ToolSearchKind::Output => {}
+                }
             }
             // ── Client-executed tool discovery ─────────────────────
             // The model asked for tool definitions and the client runs the search, so the call is

@@ -1744,10 +1744,130 @@ fn execute_command_from_tool_call(tc: &acp::ToolCall) -> String {
     }
     String::new()
 }
+fn is_use_tool_envelope(raw: &serde_json::Value) -> bool {
+    matches!(
+        raw.get("variant").and_then(serde_json::Value::as_str),
+        Some("UseTool" | "MCPTool")
+    ) && raw
+        .get("tool_name")
+        .is_some_and(serde_json::Value::is_string)
+}
+
+fn trusted_mcp_name(tc: &acp::ToolCall) -> Option<String> {
+    use xai_grok_tools::tool_taxonomy::{CanonicalToolMeta, TOOL_META_KEY, TOOL_META_VERSION};
+    use xai_grok_tools::types::tool::ToolNamespace;
+    if let Some(value) = tc.meta.as_ref().and_then(|meta| meta.get(TOOL_META_KEY))
+        && let Ok(meta) = serde_json::from_value::<CanonicalToolMeta>(value.clone())
+        && meta.version == TOOL_META_VERSION
+        && meta.namespace == ToolNamespace::MCP
+    {
+        return Some(meta.name);
+    }
+    None
+}
+
+fn direct_mcp_name(tc: &acp::ToolCall) -> Option<String> {
+    if let Some(name) = trusted_mcp_name(tc) {
+        return Some(if name.is_empty() {
+            tc.title.clone()
+        } else {
+            name
+        });
+    }
+    if tc.raw_input.as_ref().is_some_and(is_use_tool_envelope) {
+        return Some(extract_raw_field(tc, "tool_name").unwrap_or_else(|| tc.title.clone()));
+    }
+    if let Some(raw) = tc.raw_output.as_ref()
+        && let Ok(ToolOutput::MCP(_)) = serde_json::from_value::<ToolOutput>(raw.clone())
+    {
+        return Some(
+            match (
+                raw.get("server_name").and_then(|v| v.as_str()),
+                raw.get("tool_name").and_then(|v| v.as_str()),
+            ) {
+                (Some(server), Some(tool)) if !server.is_empty() && !tool.is_empty() => {
+                    format!("{server}__{tool}")
+                }
+                _ => tc.title.clone(),
+            },
+        );
+    }
+    None
+}
+
+fn use_tool_block(tc: &acp::ToolCall, tool_name: String) -> RenderBlock {
+    let mut block = UseToolCallBlock::new(tool_name);
+    block.input_args = extract_use_tool_args(tc);
+    let text = content_text(tc);
+    if !text.is_empty() {
+        block.output = Some(text);
+    } else if let Some(extracted) = extract_use_tool_output(&tc.raw_output) {
+        block.output = Some(extracted);
+    }
+    if matches!(tc.status, acp::ToolCallStatus::Failed) {
+        block.error = Some(
+            block
+                .output
+                .take()
+                .unwrap_or_else(|| "Tool call failed".into()),
+        );
+    }
+    RenderBlock::ToolCall(ToolCallBlock::UseTool(block))
+}
+
+fn is_native_tool_search(tc: &acp::ToolCall) -> bool {
+    tc.meta.as_ref().and_then(|meta| meta.get("tool_search"))
+        == Some(&serde_json::Value::Bool(true))
+}
+
+fn integration_search_block(tc: &acp::ToolCall) -> RenderBlock {
+    let success = !matches!(tc.status, acp::ToolCallStatus::Failed);
+    let query = extract_raw_field(tc, "query").unwrap_or_default();
+    let mut block = IntegrationSearchToolCallBlock::new(query);
+    block.limit = tc
+        .raw_input
+        .as_ref()
+        .and_then(|v| v.get("limit"))
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u8);
+    if is_native_tool_search(tc) {
+        if let Some(raw) = tc.raw_output.as_ref() {
+            block.result_count = raw
+                .get("result_count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as usize;
+            if raw.get("results").is_some() {
+                let content = raw.to_string();
+                block.results = parse_search_tool_results(&content);
+                block.content = Some(content);
+            }
+        }
+    } else if let Some(ref raw) = tc.raw_output
+        && let Ok(ToolOutput::SearchTool(SearchToolOutput {
+            result_count,
+            content,
+        })) = serde_json::from_value::<ToolOutput>(raw.clone())
+    {
+        block.result_count = result_count;
+        block.results = parse_search_tool_results(&content);
+        block.content = Some(content);
+    }
+    if !success {
+        block = block.with_error("Search failed");
+    }
+    RenderBlock::ToolCall(ToolCallBlock::IntegrationSearch(block))
+}
+
 /// Convert an ACP ToolCall to a RenderBlock.
 /// Parses `tool_call.kind` to create the appropriate block type, extracting fields from `raw_input` JSON when available.
 /// `session_cwd` sets execute `header_display` when a leading `cd <cwd>` is redundant.
 fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderBlock {
+    if let Some(name) = direct_mcp_name(tc) {
+        return use_tool_block(tc, name);
+    }
+    if is_native_tool_search(tc) {
+        return integration_search_block(tc);
+    }
     let success = !matches!(tc.status, acp::ToolCallStatus::Failed);
     match tc.kind {
         acp::ToolKind::Execute => {
@@ -2078,48 +2198,7 @@ fn tool_call_to_block(tc: &acp::ToolCall, session_cwd: Option<&Path>) -> RenderB
             RenderBlock::ToolCall(ToolCallBlock::ListDir(block))
         }
         _ if extract_raw_field(tc, "variant").as_deref() == Some("SearchTool") => {
-            let query = extract_raw_field(tc, "query").unwrap_or_default();
-            let mut block = IntegrationSearchToolCallBlock::new(query);
-            block.limit = tc
-                .raw_input
-                .as_ref()
-                .and_then(|v| v.get("limit"))
-                .and_then(|v| v.as_u64())
-                .map(|n| n as u8);
-            if let Some(ref raw) = tc.raw_output
-                && let Ok(ToolOutput::SearchTool(SearchToolOutput {
-                    result_count,
-                    content,
-                })) = serde_json::from_value::<ToolOutput>(raw.clone())
-            {
-                block.result_count = result_count;
-                block.results = parse_search_tool_results(&content);
-                block.content = Some(content);
-            }
-            if !success {
-                block = block.with_error("Search failed");
-            }
-            RenderBlock::ToolCall(ToolCallBlock::IntegrationSearch(block))
-        }
-        _ if extract_raw_field(tc, "variant").as_deref() == Some("UseTool") => {
-            let tool_name = extract_raw_field(tc, "tool_name").unwrap_or_else(|| tc.title.clone());
-            let mut block = UseToolCallBlock::new(tool_name);
-            block.input_args = extract_use_tool_args(tc);
-            let text = content_text(tc);
-            if !text.is_empty() {
-                block.output = Some(text);
-            } else if let Some(extracted) = extract_use_tool_output(&tc.raw_output) {
-                block.output = Some(extracted);
-            }
-            if !success {
-                block.error = Some(
-                    block
-                        .output
-                        .take()
-                        .unwrap_or_else(|| "Tool call failed".into()),
-                );
-            }
-            RenderBlock::ToolCall(ToolCallBlock::UseTool(block))
+            integration_search_block(tc)
         }
         _ if crate::acp::subagent_message::is_tool(tc) => {
             crate::acp::subagent_message::to_block(tc)
@@ -2830,8 +2909,13 @@ fn extract_use_tool_args(tc: &acp::ToolCall) -> Vec<(String, String)> {
     let Some(raw) = tc.raw_input.as_ref() else {
         return Vec::new();
     };
-    let Some(tool_input) = raw.get("tool_input") else {
-        return Vec::new();
+    let tool_input = if is_use_tool_envelope(raw)
+        && trusted_mcp_name(tc).is_none_or(|name| {
+            raw.get("tool_name").and_then(serde_json::Value::as_str) == Some(name.as_str())
+        }) {
+        raw.get("tool_input").unwrap_or(&serde_json::Value::Null)
+    } else {
+        raw
     };
     let Some(obj) = tool_input.as_object() else {
         return Vec::new();

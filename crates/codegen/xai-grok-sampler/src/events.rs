@@ -190,6 +190,12 @@ pub enum SamplingEvent {
         limit: u64,
     },
 
+    /// Display-only Messages search item; execution and Discovery history are unchanged.
+    MessagesToolSearchDisplay {
+        request_id: RequestId,
+        item: xai_grok_sampling_types::tool_search::ToolSearchItem,
+    },
+
     /// Emitted by the `rs::OutputItem::ToolSearchOutput` arm of the same match. Its guards are
     /// the call event's minus the status gate: `execution` is `client` and `call_id` is
     /// non-null. `call_id` is the key the two variants share; a close may arrive with no open
@@ -227,6 +233,7 @@ impl SamplingEvent {
             | Self::BackendToolCallStarted { request_id, .. }
             | Self::BackendToolCallCompleted { request_id, .. }
             | Self::ToolSearchCallReceived { request_id, .. }
+            | Self::MessagesToolSearchDisplay { request_id, .. }
             | Self::ToolSearchCompleted { request_id, .. } => request_id,
         }
     }

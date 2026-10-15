@@ -5070,3 +5070,566 @@ fn hook_gate_survives_a_text_chunk_stamped_before_the_batch() {
         Some(TurnActivity::Waiting(WaitingReason::Hooks { .. }))
     ));
 }
+
+#[test]
+fn native_direct_mcp_recorded_updates_use_use_tool_block() {
+    use crate::scrollback::block::BlockContent;
+    use crate::scrollback::types::{BlockContext, DisplayMode};
+    let recordings: &[&str] = &[
+        r####"[{"sessionId":"01a136b9-169a-7cc0-b0fc-d6fb16bc1cfe","update":{"sessionUpdate":"tool_call","toolCallId":"call_tJTZaAfkT4R0IJLNs39Qf7Y1","title":"pty__pty_list","rawInput":{},"_meta":{"x.ai/tool":{"version":1,"name":"pty__pty_list","kind":"other","namespace":"mcp","label":"Tool","read_only":false}}},"_meta":{"totalTokens":33278,"eventId":"01a136b9-169a-7cc0-b0fc-d6fb16bc1cfe-47","agentTimestampMs":1791919529928,"promptId":"6f351c83-9e50-4657-b935-47a9f0abf510","streamStartMs":1791919519478,"turnStartMs":1791919506134,"updateType":"ToolCall","updateParams":{"toolCallId":"call_tJTZaAfkT4R0IJLNs39Qf7Y1","title":"pty__pty_list","kind":"Other","status":"Pending"}}},{"sessionId":"01a136b9-169a-7cc0-b0fc-d6fb16bc1cfe","update":{"sessionUpdate":"tool_call_update","toolCallId":"call_tJTZaAfkT4R0IJLNs39Qf7Y1","kind":"other","title":"pty__pty_list","locations":[],"rawInput":{"variant":"MCPTool","tool_name":"pty__pty_list","tool_input":{}},"_meta":{"x.ai/tool":{"version":1,"name":"pty__pty_list","kind":"other","namespace":"mcp","label":"Tool","read_only":false}}},"_meta":{"totalTokens":33278,"eventId":"01a136b9-169a-7cc0-b0fc-d6fb16bc1cfe-48","agentTimestampMs":1791919529928,"promptId":"6f351c83-9e50-4657-b935-47a9f0abf510","streamStartMs":1791919519478,"turnStartMs":1791919506134,"updateType":"ToolCallUpdate","updateParams":{"toolCallId":"call_tJTZaAfkT4R0IJLNs39Qf7Y1","status":null}}},{"sessionId":"01a136b9-169a-7cc0-b0fc-d6fb16bc1cfe","update":{"sessionUpdate":"tool_call_update","toolCallId":"call_tJTZaAfkT4R0IJLNs39Qf7Y1","status":"completed","rawOutput":{"type":"MCP","tool_name":"pty_list","server_name":"pty","output":{"OkayOutput":"{\"sessions\":[]}"}}},"_meta":{"totalTokens":33278,"eventId":"01a136b9-169a-7cc0-b0fc-d6fb16bc1cfe-49","agentTimestampMs":1791919529963,"promptId":"6f351c83-9e50-4657-b935-47a9f0abf510","streamStartMs":1791919519478,"turnStartMs":1791919506134,"updateType":"ToolCallUpdate","updateParams":{"toolCallId":"call_tJTZaAfkT4R0IJLNs39Qf7Y1","status":"Completed"}}}]"####,
+        r####"[{"sessionId":"01a136b9-169a-7cc0-b0fc-d6fb16bc1cfe","update":{"sessionUpdate":"tool_call","toolCallId":"call_WsJnwT73vXlDPC29MWzlGhFI","title":"pty__pty_spawn","rawInput":{"args":["-u","-c","import os,sys,time; print('PTY_SMOKE_READY tty='+str(sys.stdin.isatty())+' env='+os.environ.get('PTY_SMOKE_TOKEN','missing'),flush=True); line=input(); print('PTY_SMOKE_ECHO='+line,flush=True); print('\\x1b[32mPTY_SMOKE_COLOR\\x1b[0m',flush=True); print('PTY_SMOKE_DONE',flush=True); sys.exit(7)"],"capture_limit":10,"capture_wait_ms":1000,"command":"python3","cwd":"/Users/palanisd","description":"Direct MCP smoke test: interactive input, TTY, environment, ANSI output, exit code","env":[{"name":"PTY_SMOKE_TOKEN","value":"direct-mcp"}],"line_number_mode":"none","output_view":"plain","title":"pty-direct-smoke"},"_meta":{"x.ai/tool":{"version":1,"name":"pty__pty_spawn","kind":"other","namespace":"mcp","label":"Tool","read_only":false}}},"_meta":{"totalTokens":33478,"eventId":"01a136b9-169a-7cc0-b0fc-d6fb16bc1cfe-53","agentTimestampMs":1791919537966,"promptId":"6f351c83-9e50-4657-b935-47a9f0abf510","streamStartMs":1791919536248,"turnStartMs":1791919506134,"updateType":"ToolCall","updateParams":{"toolCallId":"call_WsJnwT73vXlDPC29MWzlGhFI","title":"pty__pty_spawn","kind":"Other","status":"Pending"}}},{"sessionId":"01a136b9-169a-7cc0-b0fc-d6fb16bc1cfe","update":{"sessionUpdate":"tool_call_update","toolCallId":"call_WsJnwT73vXlDPC29MWzlGhFI","kind":"other","title":"pty__pty_spawn","locations":[],"rawInput":{"variant":"MCPTool","tool_name":"pty__pty_spawn","tool_input":{"args":["-u","-c","import os,sys,time; print('PTY_SMOKE_READY tty='+str(sys.stdin.isatty())+' env='+os.environ.get('PTY_SMOKE_TOKEN','missing'),flush=True); line=input(); print('PTY_SMOKE_ECHO='+line,flush=True); print('\\x1b[32mPTY_SMOKE_COLOR\\x1b[0m',flush=True); print('PTY_SMOKE_DONE',flush=True); sys.exit(7)"],"capture_limit":10,"capture_wait_ms":1000,"command":"python3","cwd":"/Users/palanisd","description":"Direct MCP smoke test: interactive input, TTY, environment, ANSI output, exit code","env":[{"name":"PTY_SMOKE_TOKEN","value":"direct-mcp"}],"line_number_mode":"none","output_view":"plain","title":"pty-direct-smoke"}},"_meta":{"x.ai/tool":{"version":1,"name":"pty__pty_spawn","kind":"other","namespace":"mcp","label":"Tool","read_only":false}}},"_meta":{"totalTokens":33478,"eventId":"01a136b9-169a-7cc0-b0fc-d6fb16bc1cfe-54","agentTimestampMs":1791919537967,"promptId":"6f351c83-9e50-4657-b935-47a9f0abf510","streamStartMs":1791919536248,"turnStartMs":1791919506134,"updateType":"ToolCallUpdate","updateParams":{"toolCallId":"call_WsJnwT73vXlDPC29MWzlGhFI","status":null}}},{"sessionId":"01a136b9-169a-7cc0-b0fc-d6fb16bc1cfe","update":{"sessionUpdate":"tool_call_update","toolCallId":"call_WsJnwT73vXlDPC29MWzlGhFI","status":"completed","rawOutput":{"type":"MCP","tool_name":"pty_spawn","server_name":"pty","output":{"OkayOutput":"{\"cwd\":\"/Users/palanisd\",\"initial_output\":{\"has_more\":false,\"offset\":0,\"returned\":1,\"text\":\"PTY_SMOKE_READY tty=True env=direct-mcp\",\"total_lines\":1},\"pid\":20326,\"session_id\":\"pty_19bf9975e5f14ccb82c2b883c390ad1e\",\"started_at\":\"2026-10-13T19:25:37.969597Z\",\"status\":\"running\",\"title\":\"pty-direct-smoke\"}"}}},"_meta":{"totalTokens":33478,"eventId":"01a136b9-169a-7cc0-b0fc-d6fb16bc1cfe-55","agentTimestampMs":1791919538080,"promptId":"6f351c83-9e50-4657-b935-47a9f0abf510","streamStartMs":1791919536248,"turnStartMs":1791919506134,"updateType":"ToolCallUpdate","updateParams":{"toolCallId":"call_WsJnwT73vXlDPC29MWzlGhFI","status":"Completed"}}}]"####,
+    ];
+    for recording in recordings {
+        let rows: Vec<serde_json::Value> = serde_json::from_str(recording).unwrap();
+        let mut tracker = AcpUpdateTracker::new();
+        let mut sb = ScrollbackState::new();
+        let opening = &rows[0]["update"];
+        let name = opening["title"].as_str().unwrap();
+        let args = opening["rawInput"].clone();
+        for (index, row) in rows.iter().enumerate() {
+            let update: acp::SessionUpdate = serde_json::from_value(row["update"].clone()).unwrap();
+            let notification_meta = NotificationMeta::from_json(row["_meta"].as_object());
+            tracker.handle_update(update, &notification_meta, &mut sb);
+            assert_eq!(sb.len(), 1);
+            let entry = sb.get(0).unwrap();
+            let RenderBlock::ToolCall(ToolCallBlock::UseTool(native)) = &entry.block else {
+                panic!(
+                    "direct MCP must use UseTool at recorded update {index}: {:?}",
+                    entry.block
+                );
+            };
+            let bridge =
+                acp::ToolCall::new(acp::ToolCallId::new(Arc::from("bridge-control")), name)
+                    .status(if index == 2 {
+                        acp::ToolCallStatus::Completed
+                    } else {
+                        acp::ToolCallStatus::Pending
+                    })
+                    .raw_input(Some(
+                        serde_json::json!({"variant":"UseTool","tool_name":name,"tool_input":args}),
+                    ))
+                    .raw_output(if index == 2 {
+                        Some(row["update"]["rawOutput"].clone())
+                    } else {
+                        None
+                    });
+            let RenderBlock::ToolCall(ToolCallBlock::UseTool(control)) =
+                tool_call_to_block(&bridge, None)
+            else {
+                panic!("bridge control must use UseTool");
+            };
+            assert_eq!(native.tool_name, name);
+            assert_eq!(native.input_args, control.input_args);
+            assert_eq!(native.output, control.output);
+            if index == 2 {
+                let expected_output = if name == "pty__pty_list" {
+                    r###"{
+  "sessions": []
+}"###
+                } else {
+                    r###"{
+  "cwd": "/Users/palanisd",
+  "initial_output": {
+    "has_more": false,
+    "offset": 0,
+    "returned": 1,
+    "text": "PTY_SMOKE_READY tty=True env=direct-mcp",
+    "total_lines": 1
+  },
+  "pid": 20326,
+  "session_id": "pty_19bf9975e5f14ccb82c2b883c390ad1e",
+  "started_at": "2026-10-13T19:25:37.969597Z",
+  "status": "running",
+  "title": "pty-direct-smoke"
+}"###
+                };
+                assert_eq!(native.output.as_deref(), Some(expected_output));
+            }
+            assert_eq!(native.error, control.error);
+            assert_eq!(native.copy_text(), control.copy_text());
+            assert_eq!(native.is_foldable(), control.is_foldable());
+            assert_eq!(
+                native.default_display_mode(),
+                control.default_display_mode()
+            );
+            for mode in [
+                DisplayMode::Collapsed,
+                DisplayMode::Truncated,
+                DisplayMode::Expanded,
+            ] {
+                let ctx = BlockContext {
+                    width: 80,
+                    mode,
+                    is_running: index != 2,
+                    raw: false,
+                    max_lines: None,
+                    appearance: Default::default(),
+                    is_selected: false,
+                    cwd: None,
+                };
+                let native_lines: Vec<_> = native
+                    .output(&ctx)
+                    .lines
+                    .into_iter()
+                    .map(|line| line.content)
+                    .collect();
+                let control_lines: Vec<_> = control
+                    .output(&ctx)
+                    .lines
+                    .into_iter()
+                    .map(|line| line.content)
+                    .collect();
+                assert_eq!(native_lines, control_lines);
+                if index == 2 && mode == DisplayMode::Expanded {
+                    let rendered = native_lines
+                        .iter()
+                        .map(|line| {
+                            line.spans
+                                .iter()
+                                .map(|span| span.content.as_ref())
+                                .collect::<String>()
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let expected = if name == "pty__pty_list" {
+                        "\"sessions\": []"
+                    } else {
+                        "PTY_SMOKE_READY tty=True env=direct-mcp"
+                    };
+                    assert!(
+                        rendered.contains(expected),
+                        "recorded output must survive rendering: {rendered}"
+                    );
+                }
+                assert_eq!(
+                    format!("{:?}", native.accent(&ctx)),
+                    format!("{:?}", control.accent(&ctx))
+                );
+                assert_eq!(
+                    format!("{:?}", native.bullet(&ctx)),
+                    format!("{:?}", control.bullet(&ctx))
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn native_direct_mcp_identity_arguments_and_failures_match_bridge() {
+    use crate::scrollback::block::BlockContent;
+    let args = serde_json::json!({"target_directory":"/tmp","tool_input":{"actual":"argument"},"nested":[true,null,{"n":3}],"text":"scalar","number":7});
+    let output = serde_json::json!({"type":"MCP","tool_name":"run","server_name":"server","output":{"OkayOutput":"{\"exit_code\":7}"}});
+    let identity = serde_json::json!({"x.ai/tool":{"version":1,"name":"server__run","kind":"other","namespace":"mcp","label":"Tool","read_only":false}});
+    for args in [
+        args,
+        serde_json::json!({"variant":"UseTool","tool_input":{"actual":"argument"},"x":1}),
+        serde_json::json!({"variant":"MCPTool","tool_input":{"actual":"argument"},"x":1}),
+    ] {
+        for route in 0..4 {
+            for failed in [false, true] {
+                let raw_input = if route == 1 {
+                    serde_json::json!({"variant":"MCPTool","tool_name":"server__run","tool_input":args})
+                } else {
+                    args.clone()
+                };
+                let raw_output = if failed {
+                    serde_json::json!({"type":"MCP","tool_name":"run","server_name":"server","output":{"Error":"failure"},"is_error":true})
+                } else {
+                    output.clone()
+                };
+                let mut tc = acp::ToolCall::new(
+                    acp::ToolCallId::new(Arc::from("native-matrix")),
+                    if route == 2 { "opaque" } else { "server__run" },
+                )
+                .kind(if route == 0 {
+                    acp::ToolKind::Search
+                } else {
+                    acp::ToolKind::Other
+                })
+                .status(if failed {
+                    acp::ToolCallStatus::Failed
+                } else {
+                    acp::ToolCallStatus::Completed
+                })
+                .raw_input(Some(raw_input))
+                .raw_output(if route == 3 {
+                    None
+                } else {
+                    Some(raw_output.clone())
+                });
+                if route == 0 || route == 3 {
+                    tc.meta = identity.as_object().cloned();
+                }
+                let bridge = acp::ToolCall::new(acp::ToolCallId::new(Arc::from("bridge-matrix")), "server__run")
+                .status(tc.status)
+                .raw_input(Some(serde_json::json!({"variant":"UseTool","tool_name":"server__run","tool_input":args})))
+                .raw_output(tc.raw_output.clone());
+                let RenderBlock::ToolCall(ToolCallBlock::UseTool(native)) =
+                    tool_call_to_block(&tc, None)
+                else {
+                    panic!("native matrix route {route} must use UseTool");
+                };
+                let RenderBlock::ToolCall(ToolCallBlock::UseTool(control)) =
+                    tool_call_to_block(&bridge, None)
+                else {
+                    panic!("bridge control");
+                };
+                assert_eq!(native.tool_name, control.tool_name);
+                assert_eq!(native.input_args, control.input_args);
+                assert_eq!(native.output, control.output);
+                assert_eq!(native.error, control.error);
+                assert_eq!(native.copy_text(), control.copy_text());
+                assert_eq!(native.is_success(), !failed);
+            }
+        }
+    }
+    for variant in ["MCPTool", "UseTool"] {
+        for tool_name in ["server__run", "argument-name"] {
+            let raw = serde_json::json!({"variant":variant,"tool_name":tool_name,"tool_input":{"actual":"argument"},"x":1});
+            let eager = acp::ToolCall::new(
+                acp::ToolCallId::new(Arc::from("eager-envelope-collision")),
+                "server__run",
+            )
+            .meta(identity.as_object().cloned())
+            .raw_input(Some(raw));
+            let RenderBlock::ToolCall(ToolCallBlock::UseTool(block)) =
+                tool_call_to_block(&eager, None)
+            else {
+                panic!("trusted eager metadata must use UseTool");
+            };
+            assert_eq!(block.tool_name, "server__run");
+            assert_eq!(
+                block.input_args,
+                if tool_name == "server__run" {
+                    vec![("actual".into(), "argument".into())]
+                } else {
+                    vec![
+                        ("variant".into(), variant.into()),
+                        ("tool_name".into(), tool_name.into()),
+                        ("tool_input".into(), r#"{"actual":"argument"}"#.into()),
+                        ("x".into(), "1".into()),
+                    ]
+                },
+                "trusted eager metadata unwraps only an envelope with the same tool name",
+            );
+        }
+    }
+    let tc = acp::ToolCall::new(
+        acp::ToolCallId::new(Arc::from("content-first")),
+        "server__run",
+    )
+    .meta(identity.as_object().cloned())
+    .raw_output(Some(output))
+    .content(vec![acp::ToolCallContent::Content(acp::Content::new(
+        acp::ContentBlock::Text(acp::TextContent::new("authoritative content")),
+    ))]);
+    let RenderBlock::ToolCall(ToolCallBlock::UseTool(native)) = tool_call_to_block(&tc, None)
+    else {
+        panic!("metadata-only content route");
+    };
+    assert_eq!(native.output.as_deref(), Some("authoritative content"));
+    assert!(native.error.is_none());
+}
+
+#[test]
+fn native_display_preserves_non_mcp_and_bridge_routes() {
+    let ordinary = acp::ToolCall::new(acp::ToolCallId::new(Arc::from("ordinary")), "server__tool");
+    assert!(matches!(
+        tool_call_to_block(&ordinary, None),
+        RenderBlock::ToolCall(ToolCallBlock::Other(_))
+    ));
+    let grep = ordinary
+        .clone()
+        .kind(acp::ToolKind::Search)
+        .raw_input(Some(serde_json::json!({"pattern":"needle"})));
+    assert!(matches!(
+        tool_call_to_block(&grep, None),
+        RenderBlock::ToolCall(ToolCallBlock::Search(_))
+    ));
+    for variant in ["WebSearch", "XSearch"] {
+        let web = ordinary.clone().kind(acp::ToolKind::Search).raw_input(Some(
+            serde_json::json!({"variant":variant,"query":"needle"}),
+        ));
+        assert!(matches!(
+            tool_call_to_block(&web, None),
+            RenderBlock::ToolCall(ToolCallBlock::WebSearch(_))
+        ));
+    }
+    let list = ordinary
+        .clone()
+        .raw_input(Some(serde_json::json!({"target_directory":"/tmp"})));
+    assert!(matches!(
+        tool_call_to_block(&list, None),
+        RenderBlock::ToolCall(ToolCallBlock::ListDir(_))
+    ));
+    let search = ordinary.clone().raw_input(Some(
+        serde_json::json!({"variant":"SearchTool","query":"needle"}),
+    ));
+    assert!(matches!(
+        tool_call_to_block(&search, None),
+        RenderBlock::ToolCall(ToolCallBlock::IntegrationSearch(_))
+    ));
+    let bridge = ordinary.clone().raw_input(Some(serde_json::json!({"variant":"UseTool","tool_name":"server__tool","tool_input":{"query":"needle"}})));
+    assert!(matches!(
+        tool_call_to_block(&bridge, None),
+        RenderBlock::ToolCall(ToolCallBlock::UseTool(_))
+    ));
+    for output in [
+        serde_json::json!({"type":"Text","text":"ordinary"}),
+        serde_json::json!({"type":"Dynamic","value":{"key":1}}),
+    ] {
+        assert!(matches!(
+            tool_call_to_block(&ordinary.clone().raw_output(Some(output)), None),
+            RenderBlock::ToolCall(ToolCallBlock::Other(_))
+        ));
+    }
+    let unsupported = ordinary.meta(serde_json::json!({"x.ai/tool":{"version":2,"name":"server__tool","kind":"other","namespace":"mcp","label":"Tool","read_only":false}}).as_object().cloned());
+    assert!(matches!(
+        tool_call_to_block(&unsupported, None),
+        RenderBlock::ToolCall(ToolCallBlock::Other(_))
+    ));
+}
+
+#[test]
+fn native_search_recorded_count_only_routes_to_integration_search() {
+    let rows: Vec<serde_json::Value> = serde_json::from_str(r####"[{"sessionId":"01a136b9-169a-7cc0-b0fc-d6fb16bc1cfe","update":{"sessionUpdate":"tool_call","toolCallId":"call_LkRJptMRHsgpsSlR7jelBihM","title":"Tool search: \"+pty pty_spawn pty_write pty_read pty_list pty_kill pty_wait\"","kind":"search","status":"in_progress","rawInput":{"query":"+pty pty_spawn pty_write pty_read pty_list pty_kill pty_wait","limit":6},"_meta":{"tool_search":true}},"_meta":{"totalTokens":32283,"eventId":"01a136b9-169a-7cc0-b0fc-d6fb16bc1cfe-15","agentTimestampMs":1791919517041,"promptId":"6f351c83-9e50-4657-b935-47a9f0abf510","streamStartMs":1791919513988,"turnStartMs":1791919506134,"updateType":"ToolCall","updateParams":{"toolCallId":"call_LkRJptMRHsgpsSlR7jelBihM","title":"Tool search: \"+pty pty_spawn pty_write pty_read pty_list pty_kill pty_wait\"","kind":"Search","status":"InProgress"}}},{"sessionId":"01a136b9-169a-7cc0-b0fc-d6fb16bc1cfe","update":{"sessionUpdate":"tool_call_update","toolCallId":"call_LkRJptMRHsgpsSlR7jelBihM","status":"completed","rawOutput":{"result_count":6,"status":"completed"}},"_meta":{"totalTokens":33613,"eventId":"01a136b9-169a-7cc0-b0fc-d6fb16bc1cfe-17","agentTimestampMs":1791919517394,"promptId":"6f351c83-9e50-4657-b935-47a9f0abf510","streamStartMs":1791919513988,"turnStartMs":1791919506134,"updateType":"ToolCallUpdate","updateParams":{"toolCallId":"call_LkRJptMRHsgpsSlR7jelBihM","status":"Completed"}}}]"####).unwrap();
+    let mut tracker = AcpUpdateTracker::new();
+    let mut sb = ScrollbackState::new();
+    for (index, row) in rows.iter().enumerate() {
+        let update: acp::SessionUpdate = serde_json::from_value(row["update"].clone()).unwrap();
+        tracker.handle_update(
+            update,
+            &NotificationMeta::from_json(row["_meta"].as_object()),
+            &mut sb,
+        );
+        assert_eq!(sb.len(), 1);
+        let entry = sb.get(0).unwrap();
+        assert_eq!(entry.is_running, index == 0);
+        let RenderBlock::ToolCall(ToolCallBlock::IntegrationSearch(block)) = &entry.block else {
+            panic!("recorded native search must use IntegrationSearch at update {index}");
+        };
+        assert_eq!(
+            block.query,
+            "+pty pty_spawn pty_write pty_read pty_list pty_kill pty_wait"
+        );
+        assert_eq!(block.limit, Some(6));
+        assert_eq!(block.result_count, if index == 0 { 0 } else { 6 });
+        assert!(
+            block.results.is_empty(),
+            "old count-only recording has no names"
+        );
+        assert!(block.error.is_none());
+    }
+}
+
+#[test]
+fn native_search_grouped_results_preserve_bridge_render_and_copy() {
+    use crate::scrollback::block::BlockContent;
+    use crate::scrollback::types::{BlockContext, DisplayMode};
+    use xai_grok_tools::types::output::{SearchToolOutput, ToolOutput};
+    // Derived from recorded definitions, not a recorded post-fix ACP update.
+    let definitions: Vec<serde_json::Value> = serde_json::from_str(r####"[{"tool_name":"pty__pty_kill","description":"Stop a PTY session and optionally clean up its metadata and buffered output."},{"tool_name":"pty__pty_spawn","description":"Create a new PTY session without waiting for the process to finish."},{"tool_name":"pty__pty_list","description":"List known PTY sessions without returning large log payloads."},{"tool_name":"pty__pty_write","description":"Send input into a running PTY session."},{"tool_name":"pty__pty_wait","description":"Wait for a PTY session to exit without requiring host task support."},{"tool_name":"pty__pty_read","description":"Read PTY output with pagination, optional filtering, and view selection."}]"####).unwrap();
+    let names = [
+        "pty__pty_kill",
+        "pty__pty_spawn",
+        "pty__pty_list",
+        "pty__pty_write",
+        "pty__pty_wait",
+        "pty__pty_read",
+    ];
+    let recorded_groups = serde_json::json!([{"server":"pty","tools":definitions}]);
+    let interleaved = serde_json::json!([
+        {"server":"z","tools":[{"tool_name":"z__first","description":"first"},{"tool_name":"z__second"}]},
+        {"server":"a","tools":[{"tool_name":"a__third","description":"third"}]},
+        {"server":"z","tools":[{"tool_name":"z__fourth","description":"fourth"}]},
+        {"server":"","tools":[{"tool_name":"unresolved"}]}
+    ]);
+    for (groups, expected_names) in [
+        (recorded_groups, names.to_vec()),
+        (
+            interleaved,
+            vec![
+                "z__first",
+                "z__second",
+                "a__third",
+                "z__fourth",
+                "unresolved",
+            ],
+        ),
+        (serde_json::json!([]), vec![]),
+    ] {
+        let content = serde_json::json!({"results":groups}).to_string();
+        let expected: Vec<_> = groups
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|group| {
+                group["tools"].as_array().unwrap().iter().map(|tool| {
+                    (
+                        tool["tool_name"].as_str().unwrap().to_owned(),
+                        group["server"].as_str().unwrap().to_owned(),
+                        tool["description"].as_str().unwrap_or("").to_owned(),
+                        0.0,
+                    )
+                })
+            })
+            .collect();
+        for status in [
+            acp::ToolCallStatus::InProgress,
+            acp::ToolCallStatus::Completed,
+            acp::ToolCallStatus::Failed,
+        ] {
+            for limit in [None, Some(6)] {
+                let mut input = serde_json::json!({"query":"needle","pattern":"grep collision","target_directory":"/tmp"});
+                if let Some(limit) = limit {
+                    input["limit"] = serde_json::json!(limit);
+                }
+                let native = acp::ToolCall::new(acp::ToolCallId::new(Arc::from("native-grouped")), "Tool search")
+                    .kind(acp::ToolKind::Search).status(status)
+                    .raw_input(Some(input.clone()))
+                    .meta(serde_json::json!({"tool_search":true}).as_object().cloned())
+                    .raw_output(Some(serde_json::json!({"result_count":expected.len(),"results":groups,"status":"failed"})));
+                input.as_object_mut().unwrap().remove("target_directory");
+                input["variant"] = serde_json::json!("SearchTool");
+                let bridge = acp::ToolCall::new(
+                    acp::ToolCallId::new(Arc::from("bridge-grouped")),
+                    "search_tool",
+                )
+                .status(status)
+                .raw_input(Some(input))
+                .raw_output(Some(
+                    serde_json::to_value(ToolOutput::SearchTool(SearchToolOutput {
+                        result_count: expected.len(),
+                        content: content.clone(),
+                    }))
+                    .unwrap(),
+                ));
+                let RenderBlock::ToolCall(ToolCallBlock::IntegrationSearch(native)) =
+                    tool_call_to_block(&native, None)
+                else {
+                    panic!("native grouped search route");
+                };
+                let RenderBlock::ToolCall(ToolCallBlock::IntegrationSearch(bridge)) =
+                    tool_call_to_block(&bridge, None)
+                else {
+                    panic!("bridge grouped search route");
+                };
+                assert_eq!(native.query, "needle");
+                assert_eq!(
+                    native.limit, limit,
+                    "missing native limit must remain absent"
+                );
+                assert_eq!(native.result_count, expected.len());
+                let fields = |block: &IntegrationSearchToolCallBlock| {
+                    block
+                        .results
+                        .iter()
+                        .map(|t| {
+                            (
+                                t.name.clone(),
+                                t.server.clone(),
+                                t.description.clone(),
+                                t.score,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(
+                    fields(&native),
+                    expected,
+                    "native names, descriptions and order must survive"
+                );
+                assert_eq!(fields(&native), fields(&bridge));
+                assert_eq!(
+                    native
+                        .results
+                        .iter()
+                        .map(|t| t.name.as_str())
+                        .collect::<Vec<_>>(),
+                    expected_names
+                );
+                assert_eq!(
+                    native.error.as_deref(),
+                    if status == acp::ToolCallStatus::Failed {
+                        Some("Search failed")
+                    } else {
+                        None
+                    },
+                    "ACP status is authoritative, not raw output status"
+                );
+                assert_eq!(native.error, bridge.error);
+                assert_eq!(native.copy_text(), bridge.copy_text());
+                for (_, _, description, _) in &expected {
+                    if !description.is_empty() {
+                        assert!(native.copy_text().contains(description));
+                    }
+                }
+                assert_eq!(native.is_foldable(), bridge.is_foldable());
+                assert_eq!(native.default_display_mode(), bridge.default_display_mode());
+                for mode in [
+                    DisplayMode::Collapsed,
+                    DisplayMode::Truncated,
+                    DisplayMode::Expanded,
+                ] {
+                    let ctx = BlockContext {
+                        width: 80,
+                        mode,
+                        is_running: status == acp::ToolCallStatus::InProgress,
+                        raw: false,
+                        max_lines: None,
+                        appearance: Default::default(),
+                        is_selected: false,
+                        cwd: None,
+                    };
+                    let native_output = native.output(&ctx);
+                    let bridge_output = bridge.output(&ctx);
+                    assert_eq!(
+                        native_output
+                            .lines
+                            .iter()
+                            .map(|l| (&l.content, &l.selection_text, &l.selection_range, &l.joiner))
+                            .collect::<Vec<_>>(),
+                        bridge_output
+                            .lines
+                            .iter()
+                            .map(|l| (&l.content, &l.selection_text, &l.selection_range, &l.joiner))
+                            .collect::<Vec<_>>()
+                    );
+                    assert_eq!(
+                        format!("{:?}", native.accent(&ctx)),
+                        format!("{:?}", bridge.accent(&ctx))
+                    );
+                    assert_eq!(
+                        format!("{:?}", native.bullet(&ctx)),
+                        format!("{:?}", bridge.bullet(&ctx))
+                    );
+                }
+            }
+        }
+    }
+    for marker in [
+        None,
+        Some(serde_json::json!(false)),
+        Some(serde_json::json!("true")),
+    ] {
+        let mut ordinary = acp::ToolCall::new(
+            acp::ToolCallId::new(Arc::from("generic-search")),
+            "Tool search: not identity",
+        )
+        .kind(acp::ToolKind::Search)
+        .raw_input(Some(
+            serde_json::json!({"query":"needle","pattern":"grep collision"}),
+        ));
+        if let Some(marker) = marker {
+            ordinary.meta = serde_json::json!({"tool_search":marker})
+                .as_object()
+                .cloned();
+        }
+        let RenderBlock::ToolCall(ToolCallBlock::Search(block)) =
+            tool_call_to_block(&ordinary, None)
+        else {
+            panic!("generic Search collision must remain grep");
+        };
+        assert_eq!(block.pattern, "grep collision");
+    }
+}

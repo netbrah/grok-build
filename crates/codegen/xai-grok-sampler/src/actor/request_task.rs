@@ -939,6 +939,7 @@ async fn drive_l2(
                             | SamplingEvent::BackendToolCallCompleted { .. }
                             | SamplingEvent::ToolSearchCallReceived { .. }
                             | SamplingEvent::ToolSearchCompleted { .. }
+                            | SamplingEvent::MessagesToolSearchDisplay { .. }
                     ) {
                         output_observed.store(true, Ordering::Relaxed);
                         await_first_output_span.take();
@@ -1298,6 +1299,53 @@ mod tests {
             request_id: RequestId::random(),
             response: Box::new(response),
             metrics: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn messages_display_is_output_and_retag_preserves_request_and_carrier() {
+        for raw in [
+            serde_json::json!({"type": "server_tool_use", "id": "native-id", "name": "tool_search_tool_bm25", "input": {"query": "shipping"}}),
+            serde_json::json!({"type": "tool_search_tool_result", "tool_use_id": "native-id", "content": {"type": "tool_search_tool_search_result", "tool_references": []}}),
+        ] {
+            let request = RequestId::from("messages-accounting");
+            let item = xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(raw.clone())
+                .unwrap();
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let output = Arc::new(AtomicBool::new(false));
+            let cancel = CancellationToken::new();
+            let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+            let l2 = async_stream::stream! {
+                yield SamplingEvent::MessagesToolSearchDisplay { request_id: request.clone(), item };
+                let _ = gate_rx.await;
+            };
+            let owner = RequestId::from("messages-accounting");
+            let task = drive_l2(
+                l2,
+                owner.clone(),
+                &tx,
+                &cancel,
+                Arc::new(Mutex::new(None)),
+                None,
+                FailedResponseCapture::default(),
+                output.clone(),
+                xai_grok_sampling_types::LengthPolicy::Fail,
+            );
+            tokio::pin!(task);
+            tokio::select! {
+                biased;
+                _ = &mut task => panic!("gated accounting task ended before forwarding"),
+                event = rx.recv() => {
+                    let event = event.unwrap();
+                    assert_eq!(event.request_id(), &owner);
+                    let SamplingEvent::MessagesToolSearchDisplay { item, .. } = event else { panic!("display forwarded"); };
+                    assert_eq!(item.raw(), &raw);
+                    assert!(output.load(Ordering::Relaxed), "display is output before terminal completion");
+                }
+            }
+            drop(gate_tx);
+            cancel.cancel();
+            let _ = task.await;
         }
     }
 

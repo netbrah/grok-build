@@ -2766,3 +2766,174 @@ async fn r5_re_swallow_tool_search_tool_result_at_stop_drops_answer() {
         other => panic!("expected Completed, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn messages_native_display_preserves_discovery_and_ordinary_calls() {
+    let source = include_str!("../../tests/fixtures/resp-001.raw");
+    let raw: Vec<_> = source
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .filter(|data| data.trim() != "[DONE]")
+        .map(|data| serde_json::from_str::<MessageStreamEvent>(data.trim()).unwrap())
+        .collect();
+    let request = rid();
+    let events = collect(stream_messages(
+        stream::iter(raw.clone().into_iter().map(Ok)).boxed(),
+        None,
+        request.clone(),
+        Duration::from_secs(60),
+    ))
+    .await;
+    assert!(events.iter().all(|event| event.request_id() == &request));
+    let displays: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            SamplingEvent::MessagesToolSearchDisplay { item, .. } => Some(item),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(displays.len(), 2);
+    let SamplingEvent::Completed { response, .. } = events.last().unwrap() else {
+        panic!("completed fixture");
+    };
+    let discovery: Vec<_> = response
+        .items
+        .iter()
+        .filter_map(ConversationItem::discovery)
+        .collect();
+    assert_eq!(discovery, displays);
+    assert_eq!(
+        discovery[0].raw(),
+        &serde_json::json!({
+            "type": "server_tool_use", "id": "srvtoolu_vrtx_01Hh2DfGwhjyYDSnUWDFveu3", "name": "tool_search_tool_bm25",
+            "input": {"query": "shipping ETA estimated delivery date order"}
+        })
+    );
+    assert_eq!(
+        discovery[1].raw(),
+        &serde_json::json!({
+            "type": "tool_search_tool_result", "tool_use_id": "srvtoolu_vrtx_01Hh2DfGwhjyYDSnUWDFveu3",
+            "content": {"type": "tool_search_tool_search_result", "tool_references": [{"type": "tool_reference", "tool_name": "lookup_shipping_eta"}]}
+        })
+    );
+    assert_eq!(discovery[0].call_id(), discovery[1].call_id());
+    let ordinary: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            SamplingEvent::ToolCallDelta {
+                tool_index,
+                id,
+                name,
+                arguments_delta,
+                ..
+            } => Some((
+                *tool_index,
+                id.clone(),
+                name.clone(),
+                arguments_delta.clone(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert!(!ordinary.is_empty());
+    let without_discovery: Vec<_> = raw
+        .into_iter()
+        .filter(|event| {
+            !matches!(
+                event,
+                MessageStreamEvent::ContentBlockStart { index: 1 | 2, .. }
+                    | MessageStreamEvent::ContentBlockDelta { index: 1 | 2, .. }
+                    | MessageStreamEvent::ContentBlockStop { index: 1 | 2 }
+            )
+        })
+        .map(Ok)
+        .collect();
+    let controls = collect(stream_messages(
+        stream::iter(without_discovery).boxed(),
+        None,
+        request.clone(),
+        Duration::from_secs(60),
+    ))
+    .await;
+    let ordinary_control: Vec<_> = controls
+        .iter()
+        .filter_map(|event| match event {
+            SamplingEvent::ToolCallDelta {
+                tool_index,
+                id,
+                name,
+                arguments_delta,
+                ..
+            } => Some((
+                *tool_index,
+                id.clone(),
+                name.clone(),
+                arguments_delta.clone(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ordinary, ordinary_control);
+    let SamplingEvent::Completed {
+        response: control, ..
+    } = controls.last().unwrap()
+    else {
+        panic!("ordinary completed");
+    };
+    let calls = |response: &ConversationResponse| {
+        response
+            .tool_calls()
+            .iter()
+            .map(|call| (call.id.clone(), call.name.clone(), call.arguments.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(calls(response), calls(control));
+
+    for name in [
+        "unrelated_server_tool",
+        "tool_search_tool_regex",
+        "tool_search_tool_bm25",
+    ] {
+        let raw = vec![
+            MessageStreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: ContentBlock::ServerToolUse {
+                    id: "authoritative-search".into(),
+                    name: name.into(),
+                    input: serde_json::json!({"query": "authoritative", "limit": 2}),
+                },
+            },
+            MessageStreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: StreamDelta::InputJsonDelta {
+                    partial_json: "{\"query\":\"fragmented\"}".into(),
+                },
+            },
+            MessageStreamEvent::ContentBlockStop { index: 0 },
+        ];
+        let events = collect(stream_messages(
+            stream::iter(raw.into_iter().map(Ok)).boxed(),
+            None,
+            request.clone(),
+            Duration::from_secs(60),
+        ))
+        .await;
+        let displays: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                SamplingEvent::MessagesToolSearchDisplay { item, .. } => Some(item),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(displays.len(), usize::from(name != "unrelated_server_tool"));
+        if let Some(item) = displays.first() {
+            assert_eq!(item.query(), Some("authoritative"));
+            assert_eq!(item.limit(), Some(2));
+        }
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, SamplingEvent::ToolCallDelta { .. }))
+        );
+    }
+}
