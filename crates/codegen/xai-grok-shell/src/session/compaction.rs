@@ -252,8 +252,16 @@ impl SessionActor {
     /// Agent `RefCell` borrows are only taken for synchronous snapshots (never held across `.await`).
     /// A long-lived borrow would race with turn/compact/cancel and panic on double-borrow.
     async fn two_pass_sample(&self, history: Vec<ConversationItem>) -> Option<CompactOutput> {
-        let sampling_config = self.reconstruct_full_config().await;
-        let client = match self.prepare_chat_completion(false).await {
+        let mut binding = self.capture_transport_binding_or_default().await;
+        #[cfg(test)]
+        binding_tests::after_capture(self, &binding).await;
+        let sampling_config = self.reconstruct_full_config_from_binding(&binding).await;
+        #[cfg(test)]
+        binding_tests::record_reconstruction(&sampling_config);
+        let client = match self
+            .prepare_chat_completion_from_binding(&mut binding, false)
+            .await
+        {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(error = %e, "two_pass: failed to prepare sampling client");
@@ -269,6 +277,21 @@ impl SessionActor {
             .compaction_policy()
             .wall_clock_budget_secs;
         let hosted_tools = self.hosted_tools_for_turn();
+        #[cfg(test)]
+        binding_tests::record_inputs(binding_tests::GeneratorInputs {
+            site: "two-pass",
+            history: history.clone(),
+            tools: tools.clone(),
+            hosted: hosted_tools.clone(),
+            token_kind: "specs",
+            token_input: serde_json::to_value(&tools).unwrap(),
+            tool_tokens: compaction_tool_tokens,
+            config: sampling_config.clone(),
+            client_backend: client.api_backend(),
+            idle_timeout: self.inference_idle_timeout,
+            wall_clock_budget_secs,
+            tool_choice: self.compaction.tool_choice,
+        });
         let (cancel, _cancel_scope) = self.compaction.cancel.enter();
         match generate_session_compact(
             history,
@@ -967,6 +990,7 @@ impl SessionActor {
         &self,
         provider_conversation: &[ConversationItem],
         sampling_config: &xai_grok_sampler::SamplerConfig,
+        binding: &mut xai_chat_state::RequestTransportBinding,
         mut client: xai_grok_sampler::SamplingClient,
         user_context: Option<&str>,
         auto_trigger: bool,
@@ -1042,6 +1066,8 @@ impl SessionActor {
         request.hosted_tools = compaction_hosted_tools;
         request.reasoning_effort = sampling_config.reasoning_effort;
         request.x_grok_session_id = Some(self.session_info.id.0.to_string());
+        #[cfg(test)]
+        binding_tests::record_remote_request(&request);
         // `prompt_cache_key` falls back to `x_grok_session_id` in the v2 body
         // builder; the worktree has no `prompt_cache_affinity_id` (DROP 1).
         let model_wait_start = std::time::Instant::now();
@@ -1116,8 +1142,9 @@ impl SessionActor {
                         // Worktree adaptation of OG's `codex_auth::force_refresh` +
                         // `update_codex_chat_credentials`: refresh the token, then
                         // rebuild the client from the reconstructed config.
-                        self.refresh_token_if_expired().await;
-                        client = self.prepare_chat_completion(false).await?;
+                        client = self
+                            .prepare_chat_completion_from_binding(binding, false)
+                            .await?;
                         continue;
                     }
                     // COMPACT-BOUNDARM-1 (apex-ayl.82): the model-bound arm.
@@ -1509,11 +1536,11 @@ impl SessionActor {
             xai_grok_telemetry::events::CompactionTrigger::Manual => "manual",
             xai_grok_telemetry::events::CompactionTrigger::Auto => "auto",
         };
-        let sampling_config = self.chat_state_handle.get_sampling_config().await;
-        let context_window = sampling_config
-            .as_ref()
-            .map(|c| c.context_window.get())
-            .unwrap_or(DEFAULT_CONTEXT_WINDOW);
+        let mut binding = self.capture_transport_binding_or_default().await;
+        #[cfg(test)]
+        binding_tests::after_capture(self, &binding).await;
+        let sampling_config = &binding.config;
+        let context_window = sampling_config.context_window.get();
         {
             let span = tracing::Span::current();
             let trigger_pct = if context_window == 0 {
@@ -1528,11 +1555,8 @@ impl SessionActor {
             );
             span.record("compaction_trigger", trigger_str);
         }
-        let summary_strips_reasoning = sampling_config
-            .as_ref()
-            .map(|c| c.api_backend == ApiBackend::Messages)
-            .unwrap_or(false);
-        let model_id = sampling_config.map(|c| c.model).unwrap_or_default();
+        let summary_strips_reasoning = sampling_config.api_backend == ApiBackend::Messages;
+        let model_id = sampling_config.model.clone();
         let compaction = xai_grok_telemetry::events::CompactionScope::begin(
             xai_grok_telemetry::events::CompactionBeginParams {
                 trigger,
@@ -1642,8 +1666,12 @@ impl SessionActor {
                 "{COMPACTION_FAILED_GUARD_PREFIX}no system message in simplified conversation"
             )));
         }
-        let sampling_config = self.reconstruct_full_config().await;
-        let sampling_client = self.prepare_chat_completion(false).await?;
+        let sampling_config = self.reconstruct_full_config_from_binding(&binding).await;
+        #[cfg(test)]
+        binding_tests::record_reconstruction(&sampling_config);
+        let sampling_client = self
+            .prepare_chat_completion_from_binding(&mut binding, false)
+            .await?;
         let backend_search_active = self.backend_search_active();
         let effective_tool_defs: Vec<xai_grok_sampling_types::ToolDefinition> = self
             .prepare_tool_definitions()
@@ -1653,12 +1681,33 @@ impl SessionActor {
             .collect();
         let compaction_tool_tokens =
             xai_chat_state::estimate_tool_definitions_tokens(&effective_tool_defs);
+        #[cfg(test)]
+        let compaction_token_input = serde_json::to_value(&effective_tool_defs).unwrap();
         let compaction_tools: Vec<xai_grok_sampling_types::ToolSpec> = effective_tool_defs
             .into_iter()
             .map(xai_grok_sampling_types::ToolSpec::from)
             .collect();
         let compaction_hosted_tools: Vec<xai_grok_sampling_types::HostedTool> =
             self.hosted_tools_for_turn();
+        #[cfg(test)]
+        binding_tests::record_inputs(binding_tests::GeneratorInputs {
+            site: "full",
+            history: simplified_messages.clone(),
+            tools: compaction_tools.clone(),
+            hosted: compaction_hosted_tools.clone(),
+            token_kind: "definitions",
+            token_input: compaction_token_input,
+            tool_tokens: compaction_tool_tokens,
+            config: sampling_config.clone(),
+            client_backend: sampling_client.api_backend(),
+            idle_timeout: self.inference_idle_timeout,
+            wall_clock_budget_secs: self
+                .agent
+                .borrow()
+                .compaction_policy()
+                .wall_clock_budget_secs,
+            tool_choice: self.compaction.tool_choice,
+        });
         if lossy_input {
             simplified_messages = xai_chat_state::compaction_utils::fit_conversation_to_budget(
                 simplified_messages,
@@ -1701,6 +1750,7 @@ impl SessionActor {
                 .run_codex_remote_compact(
                     &codex_provider_conversation,
                     &sampling_config,
+                    &mut binding,
                     sampling_client,
                     user_context.as_deref(),
                     auto_trigger,
@@ -3109,3 +3159,1109 @@ impl SessionActor {
 #[cfg(test)]
 #[path = "compaction_inline_auto_compact_flow_tests.rs"]
 mod inline_auto_compact_flow_tests;
+
+#[cfg(test)]
+pub(super) fn record_compaction_refresh(site: &'static str, model: &str, base_url: &str) {
+    binding_tests::record_refresh(site, model, base_url);
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::super::{ModelAuthMemo, support};
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use xai_chat_state::RequestTransportBinding;
+    use xai_grok_sampling_types::{HostedTool, ToolDefinition, ToolExposure, ToolSpec};
+    use xai_grok_test_support::{MockInferenceServer, ScriptedResponse};
+
+    pub(super) struct GeneratorInputs {
+        pub site: &'static str,
+        pub history: Vec<ConversationItem>,
+        pub tools: Vec<ToolSpec>,
+        pub hosted: Vec<HostedTool>,
+        pub token_kind: &'static str,
+        pub token_input: serde_json::Value,
+        pub tool_tokens: u64,
+        pub config: xai_grok_sampler::SamplerConfig,
+        pub client_backend: ApiBackend,
+        pub idle_timeout: std::time::Duration,
+        pub wall_clock_budget_secs: u64,
+        pub tool_choice: crate::util::config::CompactionToolChoice,
+    }
+
+    struct Trace {
+        next: Option<RequestTransportBinding>,
+        captured: Vec<RequestTransportBinding>,
+        reconstruction: Option<xai_grok_sampler::SamplerConfig>,
+        reconstruction_refreshes: usize,
+        inputs: Option<GeneratorInputs>,
+        before_send_refreshes: usize,
+        remote_request: Option<ConversationRequest>,
+        refreshes: Vec<(&'static str, String, String)>,
+        refresh_count: Arc<AtomicUsize>,
+    }
+
+    thread_local! {
+        static TRACE: std::cell::RefCell<Option<Trace>> = const { std::cell::RefCell::new(None) };
+    }
+
+    struct TraceGuard;
+
+    impl TraceGuard {
+        fn new(next: Option<RequestTransportBinding>, refresh_count: Arc<AtomicUsize>) -> Self {
+            TRACE.with(|trace| {
+                assert!(trace.borrow().is_none());
+                *trace.borrow_mut() = Some(Trace {
+                    next,
+                    captured: Vec::new(),
+                    reconstruction: None,
+                    reconstruction_refreshes: 0,
+                    inputs: None,
+                    before_send_refreshes: 0,
+                    remote_request: None,
+                    refreshes: Vec::new(),
+                    refresh_count,
+                });
+            });
+            Self
+        }
+
+        fn take(&self) -> Trace {
+            TRACE.with(|trace| trace.borrow_mut().take().unwrap())
+        }
+    }
+
+    impl Drop for TraceGuard {
+        fn drop(&mut self) {
+            TRACE.with(|trace| *trace.borrow_mut() = None);
+        }
+    }
+
+    pub(super) async fn after_capture(actor: &SessionActor, binding: &RequestTransportBinding) {
+        let next = TRACE.with(|trace| {
+            let mut trace = trace.borrow_mut();
+            let trace = trace.as_mut()?;
+            assert!(trace.captured.is_empty(), "one binding capture per sender");
+            trace.captured.push(binding.clone());
+            trace.next.take()
+        });
+        if let Some(next) = next {
+            actor
+                .chat_state_handle
+                .install_transport_binding(next)
+                .await
+                .unwrap();
+        }
+    }
+
+    pub(super) fn record_reconstruction(config: &xai_grok_sampler::SamplerConfig) {
+        TRACE.with(|trace| {
+            if let Some(trace) = trace.borrow_mut().as_mut() {
+                assert!(trace.reconstruction.is_none());
+                trace.reconstruction = Some(config.clone());
+                trace.reconstruction_refreshes = trace.refresh_count.load(Ordering::SeqCst);
+            }
+        });
+    }
+
+    pub(super) fn record_inputs(inputs: GeneratorInputs) {
+        TRACE.with(|trace| {
+            if let Some(trace) = trace.borrow_mut().as_mut() {
+                assert!(trace.inputs.is_none());
+                trace.before_send_refreshes = trace.refresh_count.load(Ordering::SeqCst);
+                trace.inputs = Some(inputs);
+            }
+        });
+    }
+
+    pub(super) fn record_remote_request(request: &ConversationRequest) {
+        TRACE.with(|trace| {
+            if let Some(trace) = trace.borrow_mut().as_mut() {
+                assert!(trace.remote_request.is_none());
+                trace.remote_request = Some(request.clone());
+            }
+        });
+    }
+
+    struct RefreshFailure(Arc<AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl xai_grok_login::refresh::TokenRefresher for RefreshFailure {
+        async fn refresh(
+            &self,
+            reason: xai_grok_login::refresh::RefreshReason,
+        ) -> xai_grok_login::refresh::RefreshOutcome {
+            assert_eq!(reason, xai_grok_login::refresh::RefreshReason::PreRequest);
+            self.0.fetch_add(1, Ordering::SeqCst);
+            xai_grok_login::refresh::RefreshOutcome::TransientFailure {
+                message: "u7 synthetic refresh unavailable".into(),
+            }
+        }
+    }
+
+    // Effective configuration caches its home, so isolate before the first lookup.
+    fn isolated(name: &str) -> bool {
+        const CHILD: &str = "GROK_TEST_U7_COMPACTION_CHILD";
+        if std::env::var(CHILD).as_deref() == Ok(name) {
+            return false;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .env(CHILD, name)
+            .env("GROK_HOME", home.path())
+            .env_remove("GROK_CONFIG")
+            .env_remove("GROK_CONFIG_PATH")
+            .env_remove("GROK_CAMPAIGNS")
+            .env_remove("GROK_CAMPAIGNS_OVERRIDE")
+            .env_remove("XAI_API_KEY")
+            .env_remove("APEX_LLM_API_KEY")
+            .args(["--exact", name, "--nocapture"])
+            .stdin(std::process::Stdio::null());
+        xai_tty_utils::detach_std_command(&mut command);
+        let output = command.output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stdout.contains("running 1 test"),
+            "isolated selector must select one test"
+        );
+        assert!(
+            output.status.success(),
+            "isolated compaction assertion failed: {stderr}"
+        );
+        assert!(stdout.contains(&format!("test {name} ... ok")));
+        true
+    }
+
+    struct Case {
+        backend: ApiBackend,
+        admitted: bool,
+        session_token: bool,
+        remote: bool,
+    }
+
+    struct Fixture {
+        actor: Arc<SessionActor>,
+        a: RequestTransportBinding,
+        b: RequestTransportBinding,
+        server_a: MockInferenceServer,
+        server_b: MockInferenceServer,
+        history: Vec<ConversationItem>,
+        refresh_count: Arc<AtomicUsize>,
+        _home: tempfile::TempDir,
+        _persistence: tokio::sync::mpsc::UnboundedReceiver<PersistenceMsg>,
+    }
+
+    async fn fixture(case: &Case) -> Fixture {
+        use xai_grok_sampling_types::ReasoningEffort;
+        use xai_grok_tools::implementations::grok_build::{
+            update_goal::UpdateGoalTool, web_search::WebSearchTool,
+        };
+        use xai_grok_tools::registry::types::ToolConfig;
+        let (gateway_tx, gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+        support::drain_gateway(gateway_rx);
+        let (persistence_tx, persistence) = tokio::sync::mpsc::unbounded_channel();
+        let mut actor =
+            support::create_test_actor(0, 384_000, 85, gateway_tx, persistence_tx).await;
+        actor.auth_method_id = support::test_auth_method_id("xai.api_key");
+        actor.inference_idle_timeout = std::time::Duration::from_secs(19);
+        let agent = support::test_agent_with_tools(vec![
+            ToolConfig::for_tool::<UpdateGoalTool>(),
+            ToolConfig::for_tool::<WebSearchTool>(),
+        ])
+        .await;
+        let bridge = Arc::clone(agent.tool_bridge());
+        support::register_stub(&bridge, "mcp__u7__lookup").await;
+        let mut policy = agent.compaction_policy().clone();
+        policy.two_pass_enabled = false;
+        policy.remote_compaction_v2 = case.remote;
+        policy.wall_clock_budget_secs = 43;
+        *actor.agent.borrow_mut() = xai_grok_agent::Agent::new(
+            agent.definition().clone(),
+            agent.prompt_context().clone(),
+            agent.system_prompt().to_string(),
+            bridge,
+            agent.reminder_policy().clone(),
+            policy,
+            vec![HostedTool::WebSearch { options: None }],
+            true,
+        );
+        actor.supports_backend_search.set(true);
+        let (manager, home) = support::manager_with_entries();
+        actor.models_manager = manager;
+        let defs = actor.prepare_tool_definitions().await;
+        assert!(defs.iter().any(|d| d.function.name == "web_search"));
+        let marked = defs
+            .iter()
+            .find(|d| d.function.name != "web_search")
+            .unwrap()
+            .function
+            .name
+            .clone();
+        actor.models_manager.insert_test_entry(
+            "u7-operator",
+            support::entry_with_deferred_tools("u7-operator", true, &[&marked]),
+        );
+        actor
+            .models_manager
+            .set_current_model_id(acp::ModelId::new("u7-operator"));
+        let mut entry = support::entry_with_search_flag("u7-source-a", case.admitted);
+        if case.remote {
+            entry.info.model_family = Some("codex".into());
+        }
+        actor.models_manager.insert_test_entry("u7-source-a", entry);
+        actor.models_manager.insert_test_entry(
+            "u7-installed-b",
+            support::entry_with_search_flag("u7-installed-b", !case.admitted),
+        );
+        let server_a = MockInferenceServer::start().await.unwrap();
+        let server_b = MockInferenceServer::start().await.unwrap();
+        for server in [&server_a, &server_b] {
+            server.set_response("<summary>Retain the request-scoped transport, complete tool schemas, and compaction state. ".to_owned() + "Continue the original user task with the recorded constraints. ".repeat(20).as_str() + "</summary>");
+        }
+        let mut a = actor
+            .chat_state_handle
+            .capture_transport_binding()
+            .await
+            .unwrap();
+        a.config.model = "u7-source-a".into();
+        a.config.base_url = server_a.url();
+        a.config.api_backend = case.backend.clone();
+        a.config.context_window = std::num::NonZeroU64::new(384_000).unwrap();
+        a.config.reasoning_effort = Some(ReasoningEffort::High);
+        a.config.ultra_wire_effort = Some(ReasoningEffort::Medium);
+        a.config.supports_search_tool = case.admitted;
+        a.config.max_completion_tokens = Some(8192);
+        a.config.temperature = Some(0.375);
+        a.config.top_p = Some(0.625);
+        a.config.max_retries = Some(0);
+        a.config.extra_headers = indexmap::indexmap! { "x-u7-row".into() => "a".into() };
+        a.credentials = xai_chat_state::Credentials {
+            api_key: Some("u7-a-key".into()),
+            auth_type: xai_chat_state::AuthType::ApiKey,
+            alpha_test_key: Some("u7-a-alpha".into()),
+            client_version: Some("u7-a-version".into()),
+        };
+        let mut b = a.clone();
+        b.config.model = "u7-installed-b".into();
+        b.config.base_url = server_b.url();
+        b.config.api_backend = if case.backend == ApiBackend::Messages {
+            ApiBackend::Responses
+        } else {
+            ApiBackend::Messages
+        };
+        b.config.context_window = std::num::NonZeroU64::new(96_000).unwrap();
+        b.config.reasoning_effort = Some(ReasoningEffort::None);
+        b.config.ultra_wire_effort = None;
+        b.config.supports_search_tool = !case.admitted;
+        b.config.extra_headers = indexmap::indexmap! { "x-u7-row".into() => "b".into() };
+        b.credentials.api_key = Some("u7-b-key".into());
+        b.credentials.alpha_test_key = Some("u7-b-alpha".into());
+        b.credentials.client_version = Some("u7-b-version".into());
+        let refresh_count = Arc::new(AtomicUsize::new(0));
+        if case.session_token {
+            let manager = Arc::new(xai_grok_login::AuthManager::new(
+                home.path(),
+                xai_grok_login::GrokComConfig::default(),
+            ));
+            manager.hot_swap(xai_grok_login::GrokAuth {
+                key: "u7-expired-bearer".into(),
+                auth_mode: xai_grok_login::AuthMode::Oidc,
+                refresh_token: Some("u7-refresh-token".into()),
+                expires_at: Some(chrono::Utc::now() - chrono::Duration::hours(1)),
+                ..xai_grok_login::GrokAuth::test_default()
+            });
+            manager.set_refresher(Arc::new(RefreshFailure(refresh_count.clone())));
+            actor.auth_manager = Some(manager);
+            actor.auth_method_id = support::test_auth_method_id("cached_token");
+            actor.model_auth_memo.replace(Some(ModelAuthMemo {
+                model_id: a.config.model.clone(),
+                facts: crate::agent::config::ModelAuthFacts {
+                    byok: crate::agent::auth_method::ModelByok::NotByok,
+                    auth_scheme: xai_grok_sampler::AuthScheme::Bearer,
+                },
+                provider: None,
+            }));
+        }
+        actor
+            .chat_state_handle
+            .install_transport_binding(a.clone())
+            .await
+            .unwrap();
+        let history = vec![
+            ConversationItem::system("u7 system instructions"),
+            ConversationItem::user("original task ".to_owned() + "x".repeat(24_000).as_str()),
+            ConversationItem::assistant("prior work ".to_owned() + "y".repeat(16_000).as_str()),
+            ConversationItem::user("continue the original task"),
+        ];
+        actor
+            .chat_state_handle
+            .replace_conversation(history.clone());
+        actor.chat_state_handle.get_conversation().await;
+        Fixture {
+            actor: Arc::new(actor),
+            a,
+            b,
+            server_a,
+            server_b,
+            history,
+            refresh_count,
+            _home: home,
+            _persistence: persistence,
+        }
+    }
+
+    struct LegacySurface {
+        tools: Vec<ToolSpec>,
+        hosted: Vec<HostedTool>,
+        token_kind: &'static str,
+        token_input: serde_json::Value,
+        tokens: u64,
+    }
+
+    async fn legacy_surface(actor: &SessionActor, two_pass: bool) -> LegacySurface {
+        let bridge = actor.agent.borrow().tool_bridge().clone();
+        assert!(
+            bridge
+                .tool_definitions()
+                .await
+                .iter()
+                .any(|d| d.function.name == "mcp__u7__lookup"),
+            "registered MCP exclusion control must exist"
+        );
+        let defs = actor.prepare_tool_definitions().await;
+        assert!(!defs.iter().any(|d| d.function.name == "mcp__u7__lookup"));
+        let hosted = actor.hosted_tools_for_turn();
+        assert!(!hosted.is_empty());
+        let active = actor.backend_search_active();
+        let full_defs: Vec<ToolDefinition> = defs
+            .iter()
+            .filter(|d| !active || d.function.name != "web_search")
+            .cloned()
+            .collect();
+        let full: Vec<ToolSpec> = full_defs.iter().cloned().map(ToolSpec::from).collect();
+        let prepared = actor.turn_base_tool_specs(&defs);
+        assert!(
+            prepared
+                .iter()
+                .any(|t| t.exposure == ToolExposure::Deferred)
+        );
+        assert!(full.iter().all(|t| t.exposure == ToolExposure::Immediate));
+        assert_ne!(
+            serde_json::to_value(&prepared).unwrap(),
+            serde_json::to_value(&full).unwrap(),
+            "legacy conversions must be distinguishable"
+        );
+        if two_pass {
+            LegacySurface {
+                tokens: xai_chat_state::estimate_tool_specs_tokens(&prepared),
+                token_kind: "specs",
+                token_input: serde_json::to_value(&prepared).unwrap(),
+                tools: prepared,
+                hosted,
+            }
+        } else {
+            LegacySurface {
+                tokens: xai_chat_state::estimate_tool_definitions_tokens(&full_defs),
+                token_kind: "definitions",
+                token_input: serde_json::to_value(&full_defs).unwrap(),
+                tools: full,
+                hosted,
+            }
+        }
+    }
+
+    fn assert_binding(actual: &RequestTransportBinding, expected: &RequestTransportBinding) {
+        assert_eq!(
+            serde_json::to_value(&actual.config).unwrap(),
+            serde_json::to_value(&expected.config).unwrap()
+        );
+        assert_eq!(actual.credentials, expected.credentials);
+    }
+
+    fn assert_inputs(
+        fixture: &Fixture,
+        case: &Case,
+        trace: &Trace,
+        surface: &LegacySurface,
+        expected_config: &xai_grok_sampler::SamplerConfig,
+        two_pass: bool,
+    ) {
+        assert_eq!(trace.captured.len(), 1, "one atomic capture per sender");
+        assert_binding(&trace.captured[0], &fixture.a);
+        let inputs = trace
+            .inputs
+            .as_ref()
+            .expect("production generator boundary reached");
+        assert_eq!(inputs.site, if two_pass { "two-pass" } else { "full" });
+        assert!(
+            !inputs.tools.iter().any(|t| t.name == "mcp__u7__lookup"),
+            "compaction must exclude registered MCP tools"
+        );
+        assert_eq!(
+            (serde_json::to_value(&inputs.tools).unwrap(), &inputs.hosted),
+            (
+                serde_json::to_value(&surface.tools).unwrap(),
+                &surface.hosted
+            ),
+            "each compaction sender retains its own complete legacy tool conversion"
+        );
+        assert_eq!(
+            (inputs.token_kind, &inputs.token_input, inputs.tool_tokens),
+            (surface.token_kind, &surface.token_input, surface.tokens),
+            "token accounting consumes the exact separate legacy surface"
+        );
+        let expected_history = if two_pass {
+            two_pass_history(&fixture.history)
+        } else {
+            prepare_conversation_for_verbatim_summarization(
+                fixture.history.clone(),
+                case.backend == ApiBackend::Messages,
+            )
+        };
+        assert_eq!(
+            serde_json::to_value(&inputs.history).unwrap(),
+            serde_json::to_value(&expected_history).unwrap(),
+            "sender preserves its history preparation"
+        );
+        assert_eq!(
+            serde_json::to_value(&inputs.config).unwrap(),
+            serde_json::to_value(expected_config).unwrap(),
+            "generator config remains completely on captured A"
+        );
+        let reconstructed = trace.reconstruction.as_ref().unwrap();
+        assert_eq!(
+            serde_json::to_value(reconstructed).unwrap(),
+            serde_json::to_value(expected_config).unwrap()
+        );
+        assert!(Arc::ptr_eq(
+            inputs.config.header_injector.as_ref().unwrap(),
+            reconstructed.header_injector.as_ref().unwrap()
+        ));
+        match (
+            &inputs.config.bearer_resolver,
+            &reconstructed.bearer_resolver,
+        ) {
+            (Some(a), Some(b)) => assert!(Arc::ptr_eq(a, b)),
+            (None, None) => assert!(!case.session_token),
+            _ => panic!("sender lost live resolver identity"),
+        }
+        assert_eq!(
+            inputs.client_backend, case.backend,
+            "client and generator use the same captured backend"
+        );
+        assert_eq!(
+            (
+                inputs.idle_timeout,
+                inputs.wall_clock_budget_secs,
+                format!("{:?}", inputs.tool_choice)
+            ),
+            (
+                std::time::Duration::from_secs(19),
+                43,
+                format!("{:?}", fixture.actor.compaction.tool_choice)
+            )
+        );
+        let counts = if case.session_token {
+            (1, 3, 3)
+        } else {
+            (0, 0, 0)
+        };
+        assert_eq!(
+            (
+                trace.reconstruction_refreshes,
+                trace.before_send_refreshes,
+                fixture.refresh_count.load(Ordering::SeqCst)
+            ),
+            counts,
+            "retain standalone gated auth plus one preflight and one gated auth at bound preparation"
+        );
+        if case.remote {
+            let request = trace
+                .remote_request
+                .as_ref()
+                .expect("actual remote compact request reached");
+            let mut expected = ConversationRequest::from_items(fixture.history[1..].to_vec())
+                .with_model(fixture.a.config.model.clone())
+                .with_tools(surface.tools.clone());
+            expected.hosted_tools = surface.hosted.clone();
+            expected.reasoning_effort = fixture.a.config.reasoning_effort;
+            expected.x_grok_session_id = Some(fixture.actor.session_info.id.0.to_string());
+            assert_eq!(
+                format!("{request:?}"),
+                format!("{expected:?}"),
+                "remote helper retains the complete legacy compact request"
+            );
+        } else {
+            assert!(trace.remote_request.is_none());
+        }
+    }
+
+    fn two_pass_history(history: &[ConversationItem]) -> Vec<ConversationItem> {
+        let mut items = history.to_vec();
+        items.push(ConversationItem::user(build_two_pass_compaction_prompt(
+            None,
+        )));
+        items
+    }
+
+    async fn run_sender(fixture: &Fixture, case: &Case, two_pass: bool) -> bool {
+        if case.remote {
+            for server in [&fixture.server_a, &fixture.server_b] {
+                server.enqueue_response("/v1/responses", ScriptedResponse::json(400, serde_json::json!({"error": {"type": "invalid_request_error", "message": "u7 terminal fixture rejection"}})));
+            }
+        }
+        if two_pass {
+            fixture
+                .actor
+                .two_pass_sample(two_pass_history(&fixture.history))
+                .await
+                .is_some()
+        } else {
+            fixture.actor.run_compact(None).await.is_ok()
+        }
+    }
+
+    async fn exercise_sender(case: Case, two_pass: bool) {
+        let fixture = fixture(&case).await;
+        let surface = legacy_surface(&fixture.actor, two_pass).await;
+        let mut baseline_tools = None;
+        for interleave in [false, true] {
+            fixture
+                .actor
+                .chat_state_handle
+                .install_transport_binding(fixture.a.clone())
+                .await
+                .unwrap();
+            fixture
+                .actor
+                .chat_state_handle
+                .replace_conversation(fixture.history.clone());
+            fixture.actor.chat_state_handle.get_conversation().await;
+            fixture.refresh_count.store(0, Ordering::SeqCst);
+            let expected_config = fixture
+                .actor
+                .assemble_sampler_config_without_refresh(&fixture.a)
+                .await;
+            let guard = TraceGuard::new(
+                interleave.then(|| fixture.b.clone()),
+                fixture.refresh_count.clone(),
+            );
+            let succeeded = run_sender(&fixture, &case, two_pass).await;
+            let trace = guard.take();
+            assert!(
+                fixture.server_b.requests().is_empty(),
+                "{} transport must never use installed B",
+                if two_pass { "two-pass" } else { "full" }
+            );
+            let requests = fixture.server_a.requests();
+            assert_eq!(
+                requests.len(),
+                if interleave { 2 } else { 1 },
+                "one actual send per compaction invocation"
+            );
+            let request = requests.last().unwrap();
+            assert_eq!(
+                request.path,
+                if case.backend == ApiBackend::Messages {
+                    "/v1/messages"
+                } else {
+                    "/v1/responses"
+                }
+            );
+            assert_eq!(
+                request.authorization.as_deref(),
+                if case.session_token {
+                    None
+                } else {
+                    Some("Bearer u7-a-key")
+                },
+                "captured source credentials reach the actual send"
+            );
+            assert_eq!(request.header("x-u7-row"), Some("a"));
+            let body = request.body.as_ref().unwrap();
+            assert_eq!(body["model"], fixture.a.config.model);
+            assert_eq!(
+                succeeded, !case.remote,
+                "local send succeeds; remote fixture terminates without an auth retry"
+            );
+            assert_inputs(
+                &fixture,
+                &case,
+                &trace,
+                &surface,
+                &expected_config,
+                two_pass,
+            );
+            if let Some(expected) = &baseline_tools {
+                assert_eq!(
+                    &body["tools"], expected,
+                    "actual complete wire tools retain the sender's no-switch baseline"
+                );
+            } else {
+                baseline_tools = Some(body["tools"].clone());
+            }
+            if interleave {
+                assert_binding(
+                    &fixture
+                        .actor
+                        .chat_state_handle
+                        .capture_transport_binding()
+                        .await
+                        .unwrap(),
+                    &fixture.b,
+                );
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn two_pass_sender_keeps_bound_transport_and_legacy_tools() {
+        const NAME: &str = "session::acp_session::compaction::binding_tests::two_pass_sender_keeps_bound_transport_and_legacy_tools";
+        if isolated(NAME) {
+            return;
+        }
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for (backend, admitted) in [
+                    (ApiBackend::Messages, true),
+                    (ApiBackend::Messages, false),
+                    (ApiBackend::Responses, true),
+                ] {
+                    exercise_sender(
+                        Case {
+                            backend,
+                            admitted,
+                            session_token: false,
+                            remote: false,
+                        },
+                        true,
+                    )
+                    .await;
+                }
+                exercise_sender(
+                    Case {
+                        backend: ApiBackend::Responses,
+                        admitted: true,
+                        session_token: true,
+                        remote: false,
+                    },
+                    true,
+                )
+                .await;
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn full_sender_keeps_bound_transport_and_legacy_tools() {
+        const NAME: &str = "session::acp_session::compaction::binding_tests::full_sender_keeps_bound_transport_and_legacy_tools";
+        if isolated(NAME) {
+            return;
+        }
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for (backend, admitted) in [
+                    (ApiBackend::Messages, true),
+                    (ApiBackend::Messages, false),
+                    (ApiBackend::Responses, true),
+                ] {
+                    exercise_sender(
+                        Case {
+                            backend,
+                            admitted,
+                            session_token: false,
+                            remote: false,
+                        },
+                        false,
+                    )
+                    .await;
+                }
+                exercise_sender(
+                    Case {
+                        backend: ApiBackend::Responses,
+                        admitted: true,
+                        session_token: true,
+                        remote: false,
+                    },
+                    false,
+                )
+                .await;
+                exercise_sender(
+                    Case {
+                        backend: ApiBackend::Responses,
+                        admitted: true,
+                        session_token: false,
+                        remote: true,
+                    },
+                    false,
+                )
+                .await;
+            })
+            .await;
+    }
+
+    pub(super) fn record_refresh(site: &'static str, model: &str, base_url: &str) {
+        TRACE.with(|trace| {
+            if let Some(trace) = trace.borrow_mut().as_mut() {
+                assert!(trace.refreshes.len() < 32);
+                trace
+                    .refreshes
+                    .push((site, model.to_owned(), base_url.to_owned()));
+            }
+        });
+    }
+
+    fn take_refreshes() -> Vec<(&'static str, String, String)> {
+        TRACE.with(|trace| std::mem::take(&mut trace.borrow_mut().as_mut().unwrap().refreshes))
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum RemoteRetryCase {
+        TerminalFailure,
+        SecondAuthFailure,
+        FinalAttemptAuthFailure,
+        Cancelled,
+        RotatedBearer,
+    }
+
+    fn retry_error(status: u16) -> ScriptedResponse {
+        let mut response = ScriptedResponse::json(
+            status,
+            serde_json::json!({
+                "error": {"type": "u8_fixture_error", "message": "u8 terminal fixture rejection"}
+            }),
+        );
+        response.headers.push(("retry-after".into(), "0".into()));
+        response
+    }
+
+    fn compact_success() -> ScriptedResponse {
+        use xai_grok_test_support::SseEvent;
+        ScriptedResponse::sse(vec![
+            SseEvent::with_event(
+                "response.output_item.done",
+                serde_json::json!({
+                    "type": "response.output_item.done", "output_index": 0,
+                    "item": {"type": "compaction", "encrypted_content": "u8-opaque-summary"}
+                })
+                .to_string(),
+            ),
+            SseEvent::with_event(
+                "response.completed",
+                serde_json::json!({
+                    "type": "response.completed", "response": {"id": "u8-compact-response"}
+                })
+                .to_string(),
+            ),
+        ])
+    }
+
+    fn assert_refreshes(
+        actual: &[(&'static str, String, String)],
+        sites: &[&'static str],
+        binding: &RequestTransportBinding,
+        message: &str,
+    ) {
+        let expected: Vec<_> = sites
+            .iter()
+            .map(|site| {
+                (
+                    *site,
+                    binding.config.model.clone(),
+                    binding.config.base_url.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(actual, expected, "{message}");
+    }
+
+    async fn exercise_remote_auth_retry(session_token: bool, scenario: RemoteRetryCase) {
+        use xai_grok_test_support::{InferenceEndpoint, InferenceRequestMatcher};
+        let case = Case {
+            backend: ApiBackend::Responses,
+            admitted: true,
+            session_token,
+            remote: true,
+        };
+        let mut fixture = fixture(&case).await;
+        fixture.b.config.api_backend = ApiBackend::Responses;
+        let mut entry = support::entry_with_search_flag(&fixture.b.config.model, false);
+        entry.info.model_family = Some("codex".into());
+        fixture
+            .actor
+            .models_manager
+            .insert_test_entry(&fixture.b.config.model, entry);
+        let surface = legacy_surface(&fixture.actor, false).await;
+        let expected_config = fixture
+            .actor
+            .assemble_sampler_config_without_refresh(&fixture.a)
+            .await;
+        assert!(surface.tools.len() + surface.hosted.len() >= 2);
+        let matcher = InferenceRequestMatcher::foreground(InferenceEndpoint::Responses);
+        let last_attempt = matches!(scenario, RemoteRetryCase::FinalAttemptAuthFailure);
+        let mut first = fixture.server_a.expect_response_blocked(
+            "u8-first-remote-response",
+            matcher,
+            retry_error(if last_attempt { 429 } else { 401 }),
+        );
+        let mut cancelled = if matches!(scenario, RemoteRetryCase::Cancelled) {
+            Some(fixture.server_a.expect_response_blocked(
+                "u8-cancel-before-install",
+                matcher,
+                compact_success(),
+            ))
+        } else {
+            let status = if last_attempt {
+                429
+            } else if matches!(scenario, RemoteRetryCase::SecondAuthFailure) {
+                401
+            } else {
+                400
+            };
+            fixture
+                .server_a
+                .enqueue_response("/v1/responses", retry_error(status));
+            fixture
+                .server_a
+                .enqueue_response("/v1/responses", retry_error(401));
+            None
+        };
+        fixture
+            .server_b
+            .enqueue_response("/v1/responses", retry_error(400));
+        let guard = TraceGuard::new(None, fixture.refresh_count.clone());
+        let actor = fixture.actor.clone();
+        let task = tokio::task::spawn_local(async move { actor.run_compact(None).await });
+        tokio::time::timeout(std::time::Duration::from_secs(10), first.wait_blocked())
+            .await
+            .expect("first remote compact response must reach its owned barrier");
+        assert_eq!(fixture.server_a.requests().len(), 1);
+        let initial_refreshes = take_refreshes();
+        assert_refreshes(
+            &initial_refreshes,
+            if session_token {
+                &["gated_auth", "preflight", "gated_auth"]
+            } else {
+                &["preflight"]
+            },
+            &fixture.a,
+            "U8 preserves the full sender's initial refresh sites",
+        );
+        assert_eq!(
+            fixture.refresh_count.load(Ordering::SeqCst),
+            if session_token { 3 } else { 0 }
+        );
+        fixture
+            .actor
+            .chat_state_handle
+            .install_transport_binding(fixture.b.clone())
+            .await
+            .unwrap();
+        if matches!(scenario, RemoteRetryCase::RotatedBearer) {
+            fixture
+                .actor
+                .auth_manager
+                .as_ref()
+                .unwrap()
+                .hot_swap(xai_grok_login::GrokAuth {
+                    key: "u8-live-rotated-bearer".into(),
+                    auth_mode: xai_grok_login::AuthMode::Oidc,
+                    refresh_token: Some("u8-refresh-token".into()),
+                    expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+                    ..xai_grok_login::GrokAuth::test_default()
+                });
+        }
+        first.release();
+        if let Some(expectation) = cancelled.as_mut() {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                expectation.wait_blocked(),
+            )
+            .await
+            .expect("retried remote compact must reach the cancellation barrier");
+            fixture.actor.compaction.cancel.request_cancel();
+            expectation.release();
+        }
+        let error = tokio::time::timeout(std::time::Duration::from_secs(10), task)
+            .await
+            .expect("bounded remote auth retry must complete")
+            .unwrap()
+            .expect_err("scripted terminal outcome");
+        first.assert_satisfied();
+        if let Some(expectation) = cancelled.as_ref() {
+            expectation.assert_satisfied();
+        }
+        let trace = guard.take();
+        assert!(
+            fixture.server_b.requests().is_empty(),
+            "U8 retry transport must never use installed B"
+        );
+        let requests = fixture.server_a.requests();
+        assert_eq!(
+            requests.len(),
+            if last_attempt { 3 } else { 2 },
+            "U8 auth retry must stay inside the one-refresh attempt budget"
+        );
+        let preflights: Vec<_> = trace
+            .refreshes
+            .iter()
+            .filter(|(site, _, _)| *site == "preflight")
+            .cloned()
+            .collect();
+        assert_refreshes(
+            &preflights,
+            if last_attempt { &[] } else { &["preflight"] },
+            &fixture.a,
+            "U8 retry must perform exactly one captured-row preflight, or none on the final attempt",
+        );
+        assert_refreshes(
+            &trace.refreshes,
+            if last_attempt {
+                &[]
+            } else if session_token {
+                &["preflight", "gated_auth"]
+            } else {
+                &["preflight"]
+            },
+            &fixture.a,
+            "U8 retry counts gated auth separately from source-row preflight",
+        );
+        let authority_calls = if !session_token {
+            0
+        } else if last_attempt || matches!(scenario, RemoteRetryCase::RotatedBearer) {
+            3
+        } else {
+            5
+        };
+        assert_eq!(
+            fixture.refresh_count.load(Ordering::SeqCst),
+            authority_calls,
+            "U8 fake authority calls are independent of named preflight and send counts"
+        );
+        assert_eq!(trace.captured.len(), 1);
+        assert_binding(&trace.captured[0], &fixture.a);
+        assert_binding(
+            &fixture
+                .actor
+                .chat_state_handle
+                .capture_transport_binding()
+                .await
+                .unwrap(),
+            &fixture.b,
+        );
+        let inputs = trace.inputs.as_ref().unwrap();
+        assert_eq!(
+            serde_json::to_value(&inputs.config).unwrap(),
+            serde_json::to_value(&expected_config).unwrap()
+        );
+        assert_eq!(
+            (
+                serde_json::to_value(&inputs.tools).unwrap(),
+                &inputs.hosted,
+                inputs.token_kind,
+                &inputs.token_input,
+                inputs.tool_tokens
+            ),
+            (
+                serde_json::to_value(&surface.tools).unwrap(),
+                &surface.hosted,
+                surface.token_kind,
+                &surface.token_input,
+                surface.tokens
+            ),
+            "U8 keeps the full sender's complete legacy tool and token surface",
+        );
+        let mut expected_request = ConversationRequest::from_items(fixture.history[1..].to_vec())
+            .with_model(fixture.a.config.model.clone())
+            .with_tools(surface.tools);
+        expected_request.hosted_tools = surface.hosted;
+        expected_request.reasoning_effort = fixture.a.config.reasoning_effort;
+        expected_request.x_grok_session_id = Some(fixture.actor.session_info.id.0.to_string());
+        assert_eq!(
+            format!("{:?}", trace.remote_request.unwrap()),
+            format!("{expected_request:?}")
+        );
+        for (index, request) in requests.iter().enumerate() {
+            assert_eq!(request.path, "/v1/responses");
+            assert_eq!(request.header("x-u7-row"), Some("a"));
+            let expected_key = if !session_token {
+                Some("Bearer u7-a-key")
+            } else if index > 0 && matches!(scenario, RemoteRetryCase::RotatedBearer) {
+                Some("Bearer u8-live-rotated-bearer")
+            } else {
+                None
+            };
+            assert_eq!(
+                request.authorization.as_deref(),
+                expected_key,
+                "U8 retry retains source credentials and live first-party bearer resolution"
+            );
+            let body = request.body.as_ref().unwrap();
+            assert_eq!(body["model"], fixture.a.config.model);
+            assert_eq!(body["reasoning"]["effort"], "high");
+            assert_eq!(body["store"], false);
+            assert_eq!(
+                request.body, requests[0].body,
+                "U8 retry preserves the complete initial A wire body"
+            );
+        }
+        if matches!(scenario, RemoteRetryCase::Cancelled) {
+            assert_eq!(
+                crate::session::helpers::session_compact::compact_error_kind(&error),
+                Some(crate::session::helpers::session_compact::CompactErrorKind::Cancelled)
+            );
+        } else {
+            let message = crate::sampling::error::acp_error_message(&error);
+            if matches!(
+                scenario,
+                RemoteRetryCase::SecondAuthFailure | RemoteRetryCase::FinalAttemptAuthFailure
+            ) {
+                assert_eq!(error.code, acp::Error::auth_required().code);
+                assert_eq!(
+                    message,
+                    if session_token {
+                        crate::agent::auth_method::AUTH_ERROR_SESSION_EXPIRED
+                    } else {
+                        crate::agent::auth_method::AUTH_ERROR_API_KEY
+                    },
+                    "second or final auth failure retains its method-specific terminal outcome"
+                );
+            } else {
+                assert!(
+                    message.contains("u8 terminal fixture rejection"),
+                    "{message}"
+                );
+            }
+        }
+        assert_eq!(
+            serde_json::to_value(fixture.actor.chat_state_handle.get_conversation().await).unwrap(),
+            serde_json::to_value(&fixture.history).unwrap(),
+            "U8 failure or cancellation must not install replacement history",
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn remote_auth_retry_uses_bound_row_and_one_preflight() {
+        const NAME: &str = "session::acp_session::compaction::binding_tests::remote_auth_retry_uses_bound_row_and_one_preflight";
+        if isolated(NAME) {
+            return;
+        }
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                for session_token in [false, true] {
+                    for scenario in [
+                        RemoteRetryCase::TerminalFailure,
+                        RemoteRetryCase::SecondAuthFailure,
+                        RemoteRetryCase::FinalAttemptAuthFailure,
+                        RemoteRetryCase::Cancelled,
+                    ] {
+                        exercise_remote_auth_retry(session_token, scenario).await;
+                    }
+                }
+                exercise_remote_auth_retry(true, RemoteRetryCase::RotatedBearer).await;
+            })
+            .await;
+    }
+}

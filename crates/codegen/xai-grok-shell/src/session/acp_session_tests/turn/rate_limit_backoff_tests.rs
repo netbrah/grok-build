@@ -151,6 +151,23 @@ pub(super) async fn conversation_request(actor: &Arc<SessionActor>) -> Conversat
         .expect("chat state actor should be alive")
 }
 
+pub(super) async fn bound_conversation_request(
+    actor: &Arc<SessionActor>,
+) -> (ConversationRequest, xai_chat_state::RequestTransportBinding) {
+    actor
+        .chat_state_handle
+        .build_request_with_binding(
+            xai_chat_state::NativeToolCandidates::builtins_only(Vec::new()),
+            None,
+            false,
+            None,
+            actor.session_id_string(),
+            "req-rate-limit-test".to_string(),
+        )
+        .await
+        .expect("chat state actor should be alive")
+}
+
 pub(super) async fn pump_local_tasks() {
     for _ in 0..8 {
         tokio::task::yield_now().await;
@@ -216,7 +233,7 @@ async fn subagent_429_wait_is_owned_and_capped_by_the_pacer() {
             let (actor, _retries) =
                 actor_under_test(&server, SessionKind::Subagent, sampler_surfaces_429(), true)
                     .await;
-            let request = conversation_request(&actor).await;
+            let (request, binding) = bound_conversation_request(&actor).await;
             let requests_before = server.request_count();
             let mut budget = actor.rate_limit_wait_budget(None);
 
@@ -225,6 +242,7 @@ async fn subagent_429_wait_is_owned_and_capped_by_the_pacer() {
                 Duration::from_secs(300),
                 actor.run_turn_via_sampler(
                     request,
+                    binding,
                     &mut budget,
                     transient_state(0, true),
                     false,
@@ -272,13 +290,14 @@ async fn paced_wait_notifies_the_client_with_a_retrying_state() {
             let (actor, retries) =
                 actor_under_test(&server, SessionKind::Subagent, sampler_surfaces_429(), true)
                     .await;
-            let request = conversation_request(&actor).await;
+            let (request, binding) = bound_conversation_request(&actor).await;
             let mut budget = actor.rate_limit_wait_budget(None);
 
             let outcome = tokio::time::timeout(
                 Duration::from_secs(30),
                 actor.run_turn_via_sampler(
                     request,
+                    binding,
                     &mut budget,
                     transient_state(0, true),
                     false,
@@ -335,13 +354,14 @@ async fn exhausted_subagent_budget_notifies_exhausted_with_the_attempts_taken() 
             let (actor, retries) =
                 actor_under_test(&server, SessionKind::Subagent, sampler_surfaces_429(), true)
                     .await;
-            let request = conversation_request(&actor).await;
+            let (request, binding) = bound_conversation_request(&actor).await;
             let mut budget = actor.rate_limit_wait_budget(None);
 
             let outcome = tokio::time::timeout(
                 Duration::from_secs(60),
                 actor.run_turn_via_sampler(
                     request,
+                    binding,
                     &mut budget,
                     transient_state(0, true),
                     false,
@@ -403,7 +423,7 @@ async fn main_session_429_is_owned_by_the_sampler_never_the_pacer() {
 
                 let (actor, _retries) =
                     actor_under_test(&server, SessionKind::Main, sampler_retries_429(), true).await;
-                let request = conversation_request(&actor).await;
+                let (request, binding) = bound_conversation_request(&actor).await;
                 let requests_before = server.request_count();
                 let mut budget = actor.rate_limit_wait_budget(None);
 
@@ -411,6 +431,7 @@ async fn main_session_429_is_owned_by_the_sampler_never_the_pacer() {
                     Duration::from_secs(30),
                     actor.run_turn_via_sampler(
                         request,
+                        binding,
                         &mut budget,
                         transient_state(0, true),
                         false,
@@ -468,19 +489,20 @@ async fn run_burst(n: usize, cap: usize) -> BurstMetrics {
     for _ in 0..n {
         let (actor, _retries) =
             actor_under_test(&server, SessionKind::Subagent, sampler_surfaces_429(), true).await;
-        let request = conversation_request(&actor).await;
-        turns.push((actor, request));
+        let (request, binding) = bound_conversation_request(&actor).await;
+        turns.push((actor, request, binding));
     }
 
     let handles: Vec<_> = turns
         .into_iter()
-        .map(|(actor, request)| {
+        .map(|(actor, request, binding)| {
             tokio::task::spawn_local(async move {
                 let mut budget = actor.rate_limit_wait_budget(None);
                 tokio::time::timeout(
                     Duration::from_secs(60),
                     actor.run_turn_via_sampler(
                         request,
+                        binding,
                         &mut budget,
                         transient_state(0, true),
                         false,
@@ -526,6 +548,191 @@ async fn subagents_over_cap_all_complete_under_paced_time() {
                 metrics.failed, 0,
                 "no turn may fail terminally under the cap"
             );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn bound_submit_and_paced_resubmit_stay_on_built_row() {
+    use xai_grok_sampling_types::{ApiBackend, ToolExposure, ToolSpec};
+
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            for session in [SessionKind::Main, SessionKind::Subagent] {
+                for park in [TurnParkState::Parked, TurnParkState::Fresh] {
+                    let server_a =
+                        MockInferenceServer::start_with_models(vec![MockModelEntry::new(
+                            "bound-row-a",
+                        )])
+                        .await
+                        .unwrap();
+                    let server_b =
+                        MockInferenceServer::start_with_models(vec![MockModelEntry::new(
+                            "bound-row-b",
+                        )])
+                        .await
+                        .unwrap();
+                    server_a.enqueue_response("/v1/messages", rate_limited_reply(90));
+                    server_b.enqueue_response("/v1/responses", rate_limited_reply(1));
+                    let retry_policy = match session {
+                        SessionKind::Main => sampler_retries_429(),
+                        SessionKind::Subagent => sampler_surfaces_429(),
+                    };
+                    let (actor, _) = actor_under_test(&server_a, session, retry_policy, true).await;
+                    let mut a = actor
+                        .chat_state_handle
+                        .capture_transport_binding()
+                        .await
+                        .unwrap();
+                    a.config.model = "bound-row-a".into();
+                    a.config.api_backend = ApiBackend::Messages;
+                    a.config.supports_search_tool = true;
+                    a.config.max_completion_tokens = Some(2345);
+                    a.config.temperature = Some(0.25);
+                    a.config.extra_headers = indexmap::indexmap! {
+                        "x-u4-row".into() => "a".into(),
+                    };
+                    a.credentials.api_key = Some("u4-row-a-key".into());
+                    a.credentials.auth_type = xai_chat_state::AuthType::ApiKey;
+                    actor
+                        .chat_state_handle
+                        .install_transport_binding(a.clone())
+                        .await
+                        .unwrap();
+                    actor.chat_state_handle.push_user_message(
+                        xai_grok_sampling_types::ConversationItem::user("bound row witness"),
+                    );
+                    let legacy = conversation_request(&actor).await;
+                    let (empty_bound, _) = bound_conversation_request(&actor).await;
+                    assert_eq!(
+                        format!("{empty_bound:?}"),
+                        format!("{legacy:?}"),
+                        "the local bound companion must preserve the legacy request bytes",
+                    );
+                    let tools = vec![
+                        ToolSpec {
+                            name: "lookup_weather".into(),
+                            description: Some("prepared weather lookup".into()),
+                            parameters: serde_json::json!({"type": "object", "properties": {
+                                "city": {"type": "string"}
+                            }, "required": ["city"]}),
+                            exposure: ToolExposure::Deferred,
+                        },
+                        ToolSpec {
+                            name: "read_file".into(),
+                            description: Some("prepared reader".into()),
+                            parameters: serde_json::json!({"type": "object"}),
+                            exposure: ToolExposure::Immediate,
+                        },
+                    ];
+                    let (request, binding) = actor
+                        .chat_state_handle
+                        .build_request_with_binding(
+                            xai_chat_state::NativeToolCandidates::builtins_only(tools.clone()),
+                            None,
+                            false,
+                            None,
+                            actor.session_id_string(),
+                            "u4-bound-a".into(),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        serde_json::to_value(&request.tools).unwrap(),
+                        serde_json::to_value(&tools).unwrap()
+                    );
+                    assert!(
+                        request
+                            .search_admission
+                            .is_some_and(|admission| admission.admitted())
+                    );
+                    let expected_config = actor.turn_sampler_config_from_binding(&binding).await;
+                    let client = xai_grok_sampler::SamplingClient::new(expected_config).unwrap();
+                    let expected_body: serde_json::Value = serde_json::from_slice(
+                        client
+                            .encode_conversation_messages(&request)
+                            .unwrap()
+                            .as_bytes(),
+                    )
+                    .unwrap();
+                    let mut b = a.clone();
+                    b.config.model = "bound-row-b".into();
+                    b.config.base_url = server_b.url();
+                    b.config.api_backend = ApiBackend::Responses;
+                    b.config.supports_search_tool = false;
+                    b.config.extra_headers = indexmap::indexmap! {
+                        "x-u4-row".into() => "b".into(),
+                    };
+                    b.credentials.api_key = Some("u4-row-b-key".into());
+                    actor
+                        .chat_state_handle
+                        .install_transport_binding(b.clone())
+                        .await
+                        .unwrap();
+                    actor
+                        .sampler_handle
+                        .update_config(actor.turn_sampler_config_from_binding(&b).await);
+                    let mut budget = actor.rate_limit_wait_budget(None);
+                    let outcome = tokio::time::timeout(
+                        Duration::from_secs(86_400),
+                        actor.run_turn_via_sampler(
+                            request,
+                            binding,
+                            &mut budget,
+                            transient_state(0, true),
+                            false,
+                            park,
+                        ),
+                    )
+                    .await
+                    .expect("bound turn completes");
+                    assert!(matches!(outcome, Ok(SamplerTurnOutcome::Response(..))));
+                    let sent = server_a.requests();
+                    assert_eq!(
+                        sent.len(),
+                        2,
+                        "bound Submit and same-request retry must retain A's endpoint and backend",
+                    );
+                    assert!(
+                        server_b.requests().is_empty(),
+                        "A must never submit through B"
+                    );
+                    for observed in sent {
+                        assert_eq!(observed.path, "/v1/messages");
+                        assert_eq!(
+                            observed.authorization.as_deref(),
+                            Some("Bearer u4-row-a-key")
+                        );
+                        assert_eq!(observed.header("x-u4-row"), Some("a"));
+                        assert_eq!(observed.body.as_ref(), Some(&expected_body));
+                    }
+                    assert!(
+                        expected_body["tools"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|tool| tool["name"] == "lookup_weather"
+                                && tool["defer_loading"] == true)
+                    );
+                    assert_eq!(
+                        budget.attempts_used(),
+                        match session {
+                            SessionKind::Main => 0,
+                            SessionKind::Subagent => 1,
+                        }
+                    );
+                    let installed = actor
+                        .chat_state_handle
+                        .capture_transport_binding()
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        serde_json::to_value(installed.config).unwrap(),
+                        serde_json::to_value(&b.config).unwrap()
+                    );
+                    assert_eq!(installed.credentials, b.credentials);
+                }
+            }
         })
         .await;
 }

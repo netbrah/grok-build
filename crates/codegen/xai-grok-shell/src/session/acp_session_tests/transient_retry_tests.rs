@@ -129,9 +129,15 @@ async fn idle_timeout_first_failure_requests_resubmit() {
     local
         .run_until(async {
             let (actor, _rx) = make_actor().await;
+            let mut request_binding = actor
+                .chat_state_handle
+                .capture_transport_binding()
+                .await
+                .expect("simulated originating request has a binding");
             let result = actor
                 .handle_sampling_failure(
                     error_of_kind(xai_grok_sampler::SamplingErrorKind::IdleTimeout, None),
+                    &mut request_binding,
                     0,
                     transient_state(0, true),
                     false,
@@ -156,9 +162,15 @@ async fn server_error_first_failure_requests_resubmit() {
     local
         .run_until(async {
             let (actor, _rx) = make_actor().await;
+            let mut request_binding = actor
+                .chat_state_handle
+                .capture_transport_binding()
+                .await
+                .expect("simulated originating request has a binding");
             let result = actor
                 .handle_sampling_failure(
                     error_of_kind(xai_grok_sampler::SamplingErrorKind::Api, Some(503)),
+                    &mut request_binding,
                     0,
                     transient_state(0, true),
                     false,
@@ -182,9 +194,15 @@ async fn exhausted_budget_falls_through_to_terminal() {
     local
         .run_until(async {
             let (actor, _rx) = make_actor().await;
+            let mut request_binding = actor
+                .chat_state_handle
+                .capture_transport_binding()
+                .await
+                .expect("simulated originating request has a binding");
             let result = actor
                 .handle_sampling_failure(
                     error_of_kind(xai_grok_sampler::SamplingErrorKind::IdleTimeout, None),
+                    &mut request_binding,
                     0,
                     transient_state(MAX_TRANSIENT_TURN_RETRIES, true),
                     false,
@@ -206,9 +224,15 @@ async fn kill_switch_disables_the_arm() {
     local
         .run_until(async {
             let (actor, _rx) = make_actor().await;
+            let mut request_binding = actor
+                .chat_state_handle
+                .capture_transport_binding()
+                .await
+                .expect("simulated originating request has a binding");
             let result = actor
                 .handle_sampling_failure(
                     error_of_kind(xai_grok_sampler::SamplingErrorKind::IdleTimeout, None),
+                    &mut request_binding,
                     0,
                     transient_state(0, false),
                     false,
@@ -237,9 +261,15 @@ async fn budgeted_workflow_child_stays_terminal() {
                 crate::tools::tool_context::TaskOutputTokenBudget::limited(1_000),
             );
             let actor = Arc::new(actor);
+            let mut request_binding = actor
+                .chat_state_handle
+                .capture_transport_binding()
+                .await
+                .expect("simulated originating request has a binding");
             let result = actor
                 .handle_sampling_failure(
                     error_of_kind(xai_grok_sampler::SamplingErrorKind::Api, Some(503)),
+                    &mut request_binding,
                     0,
                     transient_state(0, true),
                     false,
@@ -261,9 +291,15 @@ async fn empty_response_stays_terminal_with_full_budget() {
     local
         .run_until(async {
             let (actor, _rx) = make_actor().await;
+            let mut request_binding = actor
+                .chat_state_handle
+                .capture_transport_binding()
+                .await
+                .expect("simulated originating request has a binding");
             let result = actor
                 .handle_sampling_failure(
                     error_of_kind(xai_grok_sampler::SamplingErrorKind::EmptyResponse, None),
+                    &mut request_binding,
                     0,
                     transient_state(0, true),
                     false,
@@ -289,9 +325,15 @@ async fn prompt_total_cap_vetoes_even_with_fresh_step_budget() {
                 prompt_attempts: MAX_TRANSIENT_RETRIES_PER_PROMPT,
                 ..transient_state(0, true)
             };
+            let mut request_binding = actor
+                .chat_state_handle
+                .capture_transport_binding()
+                .await
+                .expect("simulated originating request has a binding");
             let result = actor
                 .handle_sampling_failure(
                     error_of_kind(xai_grok_sampler::SamplingErrorKind::Api, Some(503)),
+                    &mut request_binding,
                     0,
                     state,
                     false,
@@ -322,9 +364,15 @@ async fn episode_window_vetoes_after_wall_clock_budget() {
                 episode_start,
                 ..transient_state(0, true)
             };
+            let mut request_binding = actor
+                .chat_state_handle
+                .capture_transport_binding()
+                .await
+                .expect("simulated originating request has a binding");
             let result = actor
                 .handle_sampling_failure(
                     error_of_kind(xai_grok_sampler::SamplingErrorKind::IdleTimeout, None),
+                    &mut request_binding,
                     0,
                     state,
                     false,
@@ -348,9 +396,15 @@ async fn invalid_image_code_is_never_transient_retried() {
             let (actor, _rx) = make_actor().await;
             let mut error = error_of_kind(xai_grok_sampler::SamplingErrorKind::Api, Some(500));
             error.error_code = Some(xai_grok_sampling_types::ApiErrorCode::InvalidImage);
+            let mut request_binding = actor
+                .chat_state_handle
+                .capture_transport_binding()
+                .await
+                .expect("simulated originating request has a binding");
             let result = actor
                 .handle_sampling_failure(
                     error,
+                    &mut request_binding,
                     0,
                     transient_state(0, true),
                     false,

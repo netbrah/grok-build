@@ -2838,10 +2838,10 @@ impl SessionActor {
                     build_request_ms = tracing::field::Empty,
                     item_count = tracing::field::Empty,
                 ));
-            let request = self
+            let (request, binding) = self
                 .chat_state_handle
-                .build_request(
-                    effective_tools,
+                .build_request_with_binding(
+                    xai_chat_state::NativeToolCandidates::builtins_only(effective_tools),
                     memory_reminder,
                     self.memory.is_enabled(),
                     trace_gcs_config
@@ -2857,6 +2857,8 @@ impl SessionActor {
                 )
                 .await
                 .expect("chat state actor should be alive");
+            #[cfg(test)]
+            self.observe_outer_bound_build(&request, &binding).await;
             build_request_span.span().record(
                 "build_request_ms",
                 build_req_start.elapsed().as_millis() as i64,
@@ -2937,6 +2939,7 @@ impl SessionActor {
             let model_sampler_outcome = self
                 .run_turn_via_sampler(
                     request.clone(),
+                    binding,
                     &mut rate_limit_waits,
                     TransientRetryState {
                         step_attempts: transient_retry_attempts,

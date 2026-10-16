@@ -478,6 +478,34 @@ impl ChatStateActor {
                 );
                 let _ = reply.send(request);
             }
+            ChatStateCommand::BuildConversationRequestWithBinding {
+                tool_candidates,
+                memory_reminder,
+                persist_memory_reminder,
+                trace,
+                conv_id,
+                req_id,
+                reply,
+            } => {
+                self.ensure_conversation_integrity();
+                let binding = crate::RequestTransportBinding {
+                    config: self.state.sampling_config.clone(),
+                    credentials: self.state.credentials.clone(),
+                };
+                let crate::NativeToolCandidates {
+                    specs,
+                    mcp_membership: _mcp_membership,
+                } = tool_candidates;
+                let request = self.build_conversation_request(
+                    specs,
+                    memory_reminder,
+                    persist_memory_reminder,
+                    trace,
+                    conv_id,
+                    req_id,
+                );
+                let _ = reply.send((request, binding));
+            }
             ChatStateCommand::GetConversation { reply } => {
                 tracing::debug!(
                     conversation_len = self.state.conversation.len(),

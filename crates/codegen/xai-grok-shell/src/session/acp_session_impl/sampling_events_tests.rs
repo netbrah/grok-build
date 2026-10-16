@@ -1274,12 +1274,53 @@ async fn reasoning_only_doomloop_turn_captures_every_generation_as_segments() {
     local
         .run_until(async {
             let ReplaySendUpdateFixture {
-                actor,
+                mut actor,
                 event_rx,
                 sent: _sent,
                 persistence_rx: _persistence_rx,
             } = make_replay_send_update_fixture().await;
+            let (chat_event_tx, _chat_event_rx) = mpsc::unbounded_channel();
+            actor.chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+                vec![],
+                xai_grok_sampling_types::SamplingConfig {
+                    base_url: "http://localhost".to_string(),
+                    mtls_cert_dir: None,
+                    model: "grok-test".to_string(),
+                    max_completion_tokens: None,
+                    temperature: None,
+                    top_p: None,
+                    max_retries: None,
+                    rate_limit_retry_threshold: None,
+                    api_backend: Default::default(),
+                    extra_headers: Default::default(),
+                    conversation_group_id: None,
+                    query_params: Default::default(),
+                    env_http_headers: Default::default(),
+                    context_window: std::num::NonZeroU64::new(256_000).unwrap(),
+                    reasoning_effort: None,
+                    ultra_wire_effort: None,
+                    stream_tool_calls: None,
+                    cache_ttl: None,
+                    thinking_replay: None,
+                    top_k: None,
+                    stop_sequences: None,
+                    disable_parallel_tool_use: None,
+                    tool_cache_breakpoint: None,
+                    supports_search_tool: false,
+                    server_tools: None,
+                    mcp_servers: None,
+                    mcp_toolset_server: None,
+                },
+                Box::new(xai_chat_state::NullChatPersistence),
+                chat_event_tx,
+                tokio_util::sync::CancellationToken::new(),
+            );
             let actor = Arc::new(actor);
+            let mut request_binding = actor
+                .chat_state_handle
+                .capture_transport_binding()
+                .await
+                .expect("simulated originating request has a binding");
 
             // The prompt handler stamps the prompt id before any sampler event.
             *actor
@@ -1362,6 +1403,7 @@ async fn reasoning_only_doomloop_turn_captures_every_generation_as_segments() {
             let Err(_terminal) = actor
                 .handle_sampling_failure(
                     error,
+                    &mut request_binding,
                     0,
                     TransientRetryState {
                         step_attempts: 0,

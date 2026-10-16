@@ -287,6 +287,17 @@ pub enum ChatStateCommand {
         reply: oneshot::Sender<ConversationRequest>,
     },
 
+    /// Build a request and capture its transport from one actor state.
+    BuildConversationRequestWithBinding {
+        tool_candidates: crate::NativeToolCandidates,
+        memory_reminder: Option<String>,
+        persist_memory_reminder: bool,
+        trace: Option<Box<dyn TraceContext>>,
+        conv_id: String,
+        req_id: String,
+        reply: oneshot::Sender<(ConversationRequest, crate::RequestTransportBinding)>,
+    },
+
     /// Get a clone of the full conversation.
     GetConversation {
         reply: oneshot::Sender<Vec<ConversationItem>>,

@@ -136,6 +136,7 @@ impl SessionActor {
             tools: Vec::new(),
             hosted_tools: Vec::new(),
             model: setup.model.clone(),
+            supports_search_tool: setup.binding.config.supports_search_tool,
             reasoning_effort: setup.reasoning_effort,
             ultra_wire_effort: setup.ultra_wire_effort,
             backend: setup.client.api_backend(),
@@ -143,6 +144,8 @@ impl SessionActor {
             req_id: format!("xai-title-refresh-{}", uuid::Uuid::new_v4()),
         });
 
+        #[cfg(test)]
+        super::side_call::tests::record_auxiliary_send("title", &request);
         let response = match tokio::time::timeout(
             TITLE_REFRESH_MODEL_TIMEOUT,
             setup.client.conversation_collect(request),

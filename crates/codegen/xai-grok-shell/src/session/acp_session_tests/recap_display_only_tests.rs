@@ -1836,6 +1836,7 @@ async fn parent_cached_request_pins_fail_length_policy() {
         tools: Vec::new(),
         hosted_tools: Vec::new(),
         model: "test-model".to_string(),
+        supports_search_tool: false,
         reasoning_effort: None,
         ultra_wire_effort: None,
         backend: crate::sampling::ApiBackend::Messages,
@@ -1846,4 +1847,203 @@ async fn parent_cached_request_pins_fail_length_policy() {
         request.length_policy,
         xai_grok_sampling_types::LengthPolicy::Fail
     );
+}
+
+// Effective configuration caches its home; isolate the suggestion fixture before that cache is read.
+fn auxiliary_recap_isolated(name: &str) -> bool {
+    const CHILD: &str = "GROK_TEST_U6_AUXILIARY_CHILD";
+    if std::env::var(CHILD).as_deref() == Ok(name) {
+        return false;
+    }
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("config.toml"), "[ui]\nprompt_suggestions = true\n[prompt_suggestions]\nreasoning_effort = \"high\"\nmax_output_tokens = 72\n").unwrap();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .env(CHILD, name)
+        .env("GROK_HOME", home.path())
+        .env_remove("GROK_CONFIG")
+        .env_remove("GROK_CONFIG_PATH")
+        .env_remove("GROK_CAMPAIGNS")
+        .env_remove("GROK_CAMPAIGNS_OVERRIDE")
+        .env_remove("XAI_API_KEY")
+        .env_remove("APEX_LLM_API_KEY")
+        .args(["--exact", name, "--nocapture"])
+        .stdin(std::process::Stdio::null());
+    xai_tty_utils::detach_std_command(&mut command);
+    let output = command.output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains("running 1 test"),
+        "the isolated selector must select one test"
+    );
+    assert!(
+        output.status.success(),
+        "isolated auxiliary behavioral assertion failed: {stderr}"
+    );
+    assert!(
+        stdout.contains(&format!("test {name} ... ok")),
+        "the isolated selector must pass its named test"
+    );
+    true
+}
+
+struct AuxiliaryRefreshFailure(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+#[async_trait::async_trait]
+impl xai_grok_login::refresh::TokenRefresher for AuxiliaryRefreshFailure {
+    async fn refresh(
+        &self,
+        reason: xai_grok_login::refresh::RefreshReason,
+    ) -> xai_grok_login::refresh::RefreshOutcome {
+        assert_eq!(reason, xai_grok_login::refresh::RefreshReason::PreRequest);
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        xai_grok_login::refresh::RefreshOutcome::TransientFailure {
+            message: "u6 synthetic refresh unavailable".into(),
+        }
+    }
+}
+
+fn auxiliary_suggest_manager(home: &std::path::Path) -> crate::agent::remote_config::ModelsManager {
+    let auth = std::sync::Arc::new(xai_grok_login::AuthManager::new(
+        home,
+        xai_grok_login::GrokComConfig::default(),
+    ));
+    let mut config = crate::agent::config::Config::default();
+    config.prompt_suggest_model_pin =
+        crate::config::PromptSuggestModelPin::Pinned("u6-suggest-pinned".into());
+    crate::agent::remote_config::ModelsManager::new(
+        None,
+        indexmap::indexmap! {
+            "u6-row-a".into() => entry_with_search_flag("u6-row-a", true),
+            "u6-row-b".into() => entry_with_search_flag("u6-row-b", false),
+            "u6-suggest-pinned".into() => entry_with_search_flag("u6-suggest-pinned", false),
+        },
+        agent_client_protocol::ModelId::new("u6-row-a"),
+        auth,
+        config,
+    )
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn recap_client_and_request_keep_captured_row() {
+    const NAME: &str = "session::acp_session::recap_display_only_tests::recap_client_and_request_keep_captured_row";
+    if auxiliary_recap_isolated(NAME) {
+        return;
+    }
+    use super::side_call::tests::{
+        AuxiliaryGuard, assert_auxiliary_binding, assert_auxiliary_wire, auxiliary_fixture,
+    };
+    use xai_grok_sampling_types::{ApiBackend, ReasoningEffort, SearchAdmission};
+    tokio::task::LocalSet::new().run_until(async {
+        for call in ["recap", "btw", "ai-default", "ai-override", "prompt-api", "prompt-session"] {
+            let mut fixture = auxiliary_fixture(ApiBackend::Responses, true).await;
+            let before = fixture.actor.chat_state_handle.get_conversation().await;
+            let specs = fixture.actor.turn_base_tool_specs(&fixture.actor.prepare_tool_definitions().await);
+            let hosted = fixture.actor.hosted_tools_for_turn();
+            let is_prompt = call.starts_with("prompt-");
+            let refresh_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            if is_prompt {
+                fixture.actor.models_manager = auxiliary_suggest_manager(fixture.home.path());
+                let mut pinned = entry_with_search_flag("u6-suggest-pinned", false);
+                pinned.info.supports_reasoning_effort = true;
+                fixture.actor.models_manager.insert_test_entry("u6-suggest-pinned", pinned);
+            }
+            if call == "prompt-session" {
+                let manager = std::sync::Arc::new(xai_grok_login::AuthManager::new(fixture.home.path(), xai_grok_login::GrokComConfig::default()));
+                manager.hot_swap(xai_grok_login::GrokAuth {
+                    key: "u6-expired-bearer".into(), auth_mode: xai_grok_login::AuthMode::Oidc,
+                    refresh_token: Some("u6-refresh-token".into()),
+                    expires_at: Some(chrono::Utc::now() - chrono::Duration::hours(1)),
+                    ..xai_grok_login::GrokAuth::test_default()
+                });
+                manager.set_refresher(std::sync::Arc::new(AuxiliaryRefreshFailure(refresh_count.clone())));
+                fixture.actor.auth_manager = Some(manager);
+                fixture.actor.auth_method_id = test_auth_method_id("cached_token");
+                fixture.actor.model_auth_memo.replace(Some(ModelAuthMemo {
+                    model_id: fixture.a.config.model.clone(),
+                    facts: crate::agent::config::ModelAuthFacts {
+                        byok: crate::agent::auth_method::ModelByok::NotByok,
+                        auth_scheme: xai_grok_sampler::AuthScheme::Bearer,
+                    }, provider: None,
+                }));
+            }
+            let expected_suggest = if is_prompt {
+                let mut config = fixture.actor.assemble_sampler_config_without_refresh(&fixture.a).await;
+                config.model = "u6-suggest-pinned".into();
+                config.reasoning_effort = None;
+                fixture.actor.models_manager.apply_supported_effort(&mut config, Some(ReasoningEffort::High), &fixture.actor.session_info.id, crate::sampling::EffortTarget::SummaryClient);
+                Some(config)
+            } else { None };
+            fixture.actor.models_manager.insert_test_entry("u6-row-a", entry_with_search_flag("u6-row-a", false));
+            let guard = AuxiliaryGuard::new(fixture.b.clone());
+            guard.count_refreshes(refresh_count.clone());
+            let expected_model = match call {
+                "recap" => {
+                    fixture.actor.handle_recap(false).await;
+                    "u6-row-a"
+                }
+                "btw" => {
+                    assert!(fixture.actor.handle_side_question("What matters?").await.is_ok());
+                    "u6-row-a"
+                }
+                "ai-default" => {
+                    assert!(fixture.actor.handle_ai_suggest("git st", "/u6", None).await.is_some());
+                    "grok-4.6"
+                }
+                "ai-override" => {
+                    assert!(fixture.actor.handle_ai_suggest("git st", "/u6", Some("u6-ai-override")).await.is_some());
+                    "u6-ai-override"
+                }
+                "prompt-api" | "prompt-session" => {
+                    assert!(fixture.actor.handle_suggest_prompt(Some("u6-row-b")).await.is_some());
+                    "u6-suggest-pinned"
+                }
+                _ => unreachable!(),
+            };
+            let sends = guard.sends();
+            assert_eq!(sends.len(), 1, "one actual auxiliary request per caller");
+            let request = &sends[0].1;
+            assert_eq!(request.model.as_deref(), Some(expected_model), "recap and suggestions must retain captured request authority");
+            if matches!(call, "recap" | "btw") {
+                assert_eq!((serde_json::to_value(&request.tools).unwrap(), &request.hosted_tools), (serde_json::to_value(&specs).unwrap(), &hosted), "complete prepared tool surfaces must remain unchanged");
+                assert_eq!(request.search_admission, Some(SearchAdmission::for_row(true, &specs)));
+                assert_eq!((request.reasoning_effort, request.ultra_wire_effort), (fixture.a.config.reasoning_effort, fixture.a.config.ultra_wire_effort));
+                assert_rides_parent_prefix(fixture.server_a.requests()[0].body.as_ref().unwrap(), before.clone(), call, &fixture.a.config.model);
+                assert_eq!(request.length_policy, xai_grok_sampling_types::LengthPolicy::Fail);
+            } else {
+                assert_eq!((serde_json::to_value(&request.tools).unwrap(), &request.hosted_tools), (serde_json::json!([]), &Vec::new()));
+            }
+            if let Some(expected) = expected_suggest {
+                let configs = guard.suggest_configs();
+                assert_eq!(configs.len(), 2);
+                assert_eq!(serde_json::to_value(&configs[1]).unwrap(), serde_json::to_value(&expected).unwrap(), "suggest config keeps captured transport before deliberate model and effort overrides");
+                assert!(std::sync::Arc::ptr_eq(configs[0].header_injector.as_ref().unwrap(), configs[1].header_injector.as_ref().unwrap()), "suggest edits retain the assembled header injector");
+                assert!(std::sync::Arc::ptr_eq(configs[0].attribution_callback.as_ref().unwrap(), configs[1].attribution_callback.as_ref().unwrap()), "suggest edits retain the attribution callback");
+                assert!(std::sync::Arc::ptr_eq(configs[1].attribution_callback.as_ref().unwrap(), fixture.actor.attribution_callback.as_ref().unwrap()));
+                match (&configs[0].bearer_resolver, &configs[1].bearer_resolver) {
+                    (Some(before), Some(after)) => assert!(std::sync::Arc::ptr_eq(before, after), "suggest edits retain the live resolver identity"),
+                    (None, None) => {}
+                    (Some(_), None) | (None, Some(_)) => panic!("suggest edits changed resolver presence"),
+                }
+                assert_eq!(configs[1].bearer_resolver.is_some(), call == "prompt-session");
+                assert_eq!((request.reasoning_effort, request.ultra_wire_effort), (expected.reasoning_effort, expected.ultra_wire_effort));
+                assert_eq!(request.max_output_tokens, Some(328));
+                assert_eq!(guard.refreshes_before_send(), vec![if call == "prompt-session" { 2 } else { 0 }], "suggest preserves one preflight plus one gated reconstruction without extra preparation");
+                assert_eq!(refresh_count.load(std::sync::atomic::Ordering::SeqCst), if call == "prompt-session" { 2 } else { 0 }, "a hard-expired bearer must not drive another per-send refresh");
+            }
+            if call == "prompt-session" {
+                assert!(fixture.server_b.requests().is_empty());
+                let requests = fixture.server_a.requests();
+                assert_eq!(requests.len(), 1);
+                assert_eq!(requests[0].path, "/v1/responses");
+                assert!(requests[0].authorization.is_none(), "expired bearer must not be seeded");
+                assert_eq!(requests[0].body.as_ref().unwrap()["model"], expected_model);
+            } else {
+                assert_auxiliary_wire(&fixture, expected_model);
+            }
+            assert_eq!(serde_json::to_vec(&fixture.actor.chat_state_handle.get_conversation().await).unwrap(), serde_json::to_vec(&before).unwrap(), "auxiliary calls remain display-only");
+            assert_auxiliary_binding(&fixture.actor.chat_state_handle.capture_transport_binding().await.unwrap(), &fixture.b);
+        }
+    }).await;
 }

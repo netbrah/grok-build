@@ -7013,3 +7013,357 @@ async fn pair_capture_after_snapshot_restore_preserves_both_halves() {
     );
     assert_eq!(restored.credentials, a.credentials);
 }
+
+fn bound_build_rows() -> (
+    crate::RequestTransportBinding,
+    crate::RequestTransportBinding,
+) {
+    use xai_grok_sampling_types::ApiBackend;
+    let mut a = binding_fixture(
+        "bound-a",
+        "https://bound-a.example/v1",
+        ApiBackend::Messages,
+        "bound-api-key-a",
+    );
+    a.config.supports_search_tool = true;
+    a.config.temperature = Some(0.25);
+    a.config.top_p = Some(0.75);
+    a.config.max_completion_tokens = Some(4096);
+    a.config.cache_ttl = Some("1h".into());
+    let mut b = binding_fixture(
+        "bound-b",
+        "https://bound-b.example/v2",
+        ApiBackend::Responses,
+        "bound-api-key-b",
+    );
+    b.config.temperature = Some(0.5);
+    b.config.max_completion_tokens = Some(8192);
+    b.config.context_window = NonZeroU64::new(256_000).unwrap();
+    b.config
+        .extra_headers
+        .insert("x-test-private".into(), "header-b".into());
+    b.credentials.alpha_test_key = Some("alpha-b".into());
+    b.credentials.client_version = Some("client-b".into());
+    (a, b)
+}
+
+fn bound_build_items() -> Vec<ConversationItem> {
+    let ConversationItem::User(mut user) = ConversationItem::user("bind this image") else {
+        unreachable!();
+    };
+    user.add_image(concat!(
+        "data:image/png;base64,",
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    ));
+    vec![
+        ConversationItem::system("bound system"),
+        ConversationItem::User(user),
+    ]
+}
+
+fn bound_build_specs() -> Vec<xai_grok_sampling_types::ToolSpec> {
+    let mut tools = one_tool("zebra_builtin");
+    tools[0].parameters = serde_json::json!({
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+        "additionalProperties": false
+    });
+    tools.extend(one_tool("alpha_builtin"));
+    tools[1].exposure = xai_grok_sampling_types::ToolExposure::Deferred;
+    tools
+}
+
+fn assert_bound_request_matches_legacy(
+    actual: &xai_grok_sampling_types::ConversationRequest,
+    expected: &xai_grok_sampling_types::ConversationRequest,
+) {
+    // ConversationRequest has no PartialEq/Serialize; its derived Debug includes every field.
+    assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
+    assert_eq!(
+        serde_json::to_vec(&serialize_via_public_api(actual)).unwrap(),
+        serde_json::to_vec(&serialize_via_public_api(expected)).unwrap(),
+    );
+    assert_eq!(declaration_channel(actual), declaration_channel(expected));
+}
+
+#[tokio::test]
+async fn bound_build_captures_request_and_transport_atomically() {
+    let (a, b) = bound_build_rows();
+    let tools = bound_build_specs();
+    let h = TestHarness::with_config(bound_build_items(), a.config.clone());
+    h.handle.install_transport_binding(a.clone()).await.unwrap();
+    let legacy_a = TestHarness::with_config(bound_build_items(), a.config.clone());
+    legacy_a
+        .handle
+        .install_transport_binding(a.clone())
+        .await
+        .unwrap();
+    let expected_a = legacy_a
+        .handle
+        .build_request(
+            tools.clone(),
+            None,
+            false,
+            None,
+            "bound-conv".into(),
+            "bound-req".into(),
+        )
+        .await
+        .unwrap();
+
+    let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+    let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+    *h.handle.bound_build_probe.lock().unwrap() = Some((reached_tx, resume_rx));
+    let mut build = Box::pin(h.handle.build_request_with_binding(
+        crate::NativeToolCandidates::builtins_only(tools.clone()),
+        None,
+        false,
+        None,
+        "bound-conv".into(),
+        "bound-req".into(),
+    ));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            reached = reached_rx => reached.expect("bound build reached its reply barrier"),
+            _ = &mut build => panic!("bound build bypassed its test-owned reply barrier"),
+        }
+    })
+    .await
+    .expect("bound build reply barrier timed out");
+    h.handle.install_transport_binding(b.clone()).await.unwrap();
+    resume_tx.send(()).unwrap();
+    let (request, binding) = tokio::time::timeout(Duration::from_secs(5), build)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (
+            format!("{request:?}"),
+            serde_json::to_value(&binding.config).unwrap(),
+            binding.credentials
+        ),
+        (
+            format!("{expected_a:?}"),
+            serde_json::to_value(&a.config).unwrap(),
+            a.credentials.clone()
+        ),
+        "bound request and transport must remain A across installation of B"
+    );
+    assert_bound_request_matches_legacy(&request, &expected_a);
+
+    let legacy_b = TestHarness::with_config(bound_build_items(), b.config.clone());
+    legacy_b
+        .handle
+        .install_transport_binding(b.clone())
+        .await
+        .unwrap();
+    let expected_b = legacy_b
+        .handle
+        .build_request(
+            tools.clone(),
+            None,
+            false,
+            None,
+            "bound-conv".into(),
+            "bound-req".into(),
+        )
+        .await
+        .unwrap();
+    let (next, next_binding) = h
+        .handle
+        .build_request_with_binding(
+            crate::NativeToolCandidates::builtins_only(tools),
+            None,
+            false,
+            None,
+            "bound-conv".into(),
+            "bound-req".into(),
+        )
+        .await
+        .unwrap();
+    assert_bound_request_matches_legacy(&next, &expected_b);
+    assert_eq!(
+        (
+            serde_json::to_value(&next_binding.config).unwrap(),
+            next_binding.credentials
+        ),
+        (
+            serde_json::to_value(&b.config).unwrap(),
+            b.credentials.clone()
+        ),
+    );
+    let installed = h.handle.capture_transport_binding().await.unwrap();
+    assert_eq!(
+        (
+            serde_json::to_value(&installed.config).unwrap(),
+            installed.credentials
+        ),
+        (serde_json::to_value(&b.config).unwrap(), b.credentials),
+        "a bound build must not reinstall its older source"
+    );
+}
+
+#[tokio::test]
+async fn bound_build_preserves_legacy_bytes_and_builder_effects() {
+    let (a, b) = bound_build_rows();
+    for row in [a, b] {
+        for tools in [Vec::new(), bound_build_specs()] {
+            for persist_memory_reminder in [false, true] {
+                let mut h = TestHarness::with_config(bound_build_items(), row.config.clone());
+                let mut legacy = TestHarness::with_config(bound_build_items(), row.config.clone());
+                let pending = ConversationItem::assistant_tool_calls(vec![
+                    xai_grok_sampling_types::ToolCall {
+                        id: "bound-dangling".into(),
+                        name: "zebra_builtin".into(),
+                        arguments: "{}".into(),
+                    },
+                ]);
+                for actor in [&mut h, &mut legacy] {
+                    actor
+                        .handle
+                        .install_transport_binding(row.clone())
+                        .await
+                        .unwrap();
+                    actor.handle.push_assistant_response(pending.clone());
+                    let before = actor.handle.get_conversation().await;
+                    assert!(
+                        !before
+                            .iter()
+                            .any(|item| matches!(item, ConversationItem::ToolResult(_)))
+                    );
+                    assert!(actor.handle.check_auto_compact_needed(85).await.is_none());
+                    actor.drain_events();
+                    actor.drain_persistence();
+                }
+                let reminder = Some("<memory-context>\nbound memory\n</memory-context>".into());
+                let candidates = crate::NativeToolCandidates::builtins_only(tools.clone());
+                assert!(candidates.mcp_membership.is_empty());
+                let (request, binding) = h
+                    .handle
+                    .build_request_with_binding(
+                        candidates,
+                        reminder.clone(),
+                        persist_memory_reminder,
+                        None,
+                        "bound-conv".into(),
+                        "bound-req".into(),
+                    )
+                    .await
+                    .unwrap();
+                let expected = legacy
+                    .handle
+                    .build_request(
+                        tools.clone(),
+                        reminder,
+                        persist_memory_reminder,
+                        None,
+                        "bound-conv".into(),
+                        "bound-req".into(),
+                    )
+                    .await
+                    .unwrap();
+                let history = h.handle.get_conversation().await;
+                let legacy_history = legacy.handle.get_conversation().await;
+                let events = h.drain_events();
+                let legacy_events = legacy.drain_events();
+                let image_budget_events: Vec<_> = events
+                    .iter()
+                    .filter(|event| matches!(event, ChatStateEvent::ImageBudget { .. }))
+                    .collect();
+                assert_eq!(
+                    image_budget_events.len(),
+                    1,
+                    "bound builder must emit ImageBudget exactly once"
+                );
+                assert!(matches!(
+                    image_budget_events[0],
+                    ChatStateEvent::ImageBudget {
+                        inline_images: 1,
+                        needs_image_compaction: false,
+                        evicted: 0,
+                        ..
+                    }
+                ));
+                assert_eq!(format!("{events:?}"), format!("{legacy_events:?}"));
+                assert_bound_request_matches_legacy(&request, &expected);
+                assert_eq!(
+                    serde_json::to_value(&request.tools).unwrap(),
+                    serde_json::to_value(&tools).unwrap()
+                );
+                assert_eq!(
+                    (
+                        serde_json::to_value(&binding.config).unwrap(),
+                        binding.credentials
+                    ),
+                    (
+                        serde_json::to_value(&row.config).unwrap(),
+                        row.credentials.clone()
+                    ),
+                );
+                assert_eq!(
+                    serde_json::to_value(&history).unwrap(),
+                    serde_json::to_value(&legacy_history).unwrap()
+                );
+                assert!(history.iter().any(|item| matches!(item,
+                    ConversationItem::ToolResult(result) if result.tool_call_id == "bound-dangling"
+                )));
+                assert_eq!(
+                    history[0].text_content().contains("bound memory"),
+                    persist_memory_reminder
+                );
+                assert!(history.iter().any(|item| matches!(item, ConversationItem::User(user)
+                    if user.content.iter().any(|part| matches!(part, xai_grok_sampling_types::ContentPart::Image { .. }))
+                )));
+                assert_eq!(
+                    format!("{:?}", h.drain_persistence()),
+                    format!("{:?}", legacy.drain_persistence())
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn bound_build_closed_actor_returns_none() {
+    let closed = crate::ChatStateHandle::noop();
+    assert!(
+        closed
+            .build_request_with_binding(
+                crate::NativeToolCandidates::builtins_only(bound_build_specs()),
+                None,
+                false,
+                None,
+                "closed-conv".into(),
+                "closed-req".into(),
+            )
+            .await
+            .is_none()
+    );
+
+    let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
+    let handle = crate::ChatStateHandle::new(cmd_tx);
+    let mut build = Box::pin(handle.build_request_with_binding(
+        crate::NativeToolCandidates::builtins_only(Vec::new()),
+        None,
+        false,
+        None,
+        "closed-conv".into(),
+        "closed-req".into(),
+    ));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            command = cmd_rx.recv() => {
+                assert!(matches!(&command, Some(crate::commands::ChatStateCommand::BuildConversationRequestWithBinding { .. })));
+                drop(command);
+            }
+            _ = &mut build => panic!("bound build must wait for the actor's reply"),
+        }
+    }).await.expect("bound command was not queued");
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), build)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}

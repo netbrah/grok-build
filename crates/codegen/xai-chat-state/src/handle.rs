@@ -22,6 +22,9 @@ pub struct ChatStateHandle {
     #[cfg(test)]
     pub(crate) pair_install_probe:
         std::sync::Arc<std::sync::Mutex<Option<oneshot::Sender<crate::RequestTransportBinding>>>>,
+    #[cfg(test)]
+    pub(crate) bound_build_probe:
+        std::sync::Arc<std::sync::Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>>,
 }
 
 /// The chat-state actor can no longer accept commands.
@@ -43,6 +46,8 @@ impl ChatStateHandle {
             cmd_tx,
             #[cfg(test)]
             pair_install_probe: Default::default(),
+            #[cfg(test)]
+            bound_build_probe: Default::default(),
         }
     }
 
@@ -54,6 +59,8 @@ impl ChatStateHandle {
             cmd_tx,
             #[cfg(test)]
             pair_install_probe: Default::default(),
+            #[cfg(test)]
+            bound_build_probe: Default::default(),
         }
     }
 
@@ -552,6 +559,40 @@ impl ChatStateHandle {
             }
         })
         .await
+    }
+
+    /// Build a request with the config and credentials that produced it.
+    pub async fn build_request_with_binding(
+        &self,
+        tool_candidates: crate::NativeToolCandidates,
+        memory_reminder: Option<String>,
+        persist_memory_reminder: bool,
+        trace: Option<Box<dyn TraceContext>>,
+        conv_id: String,
+        req_id: String,
+    ) -> Option<(ConversationRequest, crate::RequestTransportBinding)> {
+        let built = self
+            .query("BuildConversationRequestWithBinding", |reply| {
+                ChatStateCommand::BuildConversationRequestWithBinding {
+                    tool_candidates,
+                    memory_reminder,
+                    persist_memory_reminder,
+                    trace,
+                    conv_id,
+                    req_id,
+                    reply,
+                }
+            })
+            .await?;
+        #[cfg(test)]
+        {
+            let probe = self.bound_build_probe.lock().unwrap().take();
+            if let Some((reached, resume)) = probe {
+                let _ = reached.send(());
+                let _ = resume.await;
+            }
+        }
+        Some(built)
     }
 
     /// Get a clone of the full conversation.

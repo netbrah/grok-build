@@ -310,9 +310,15 @@ fn rate_limit_mid_continuation_stays_terminal() {
             );
             let error =
                 error_with_tiny_window(xai_grok_sampler::SamplingErrorKind::RateLimited, 429);
+            let mut request_binding = actor
+                .chat_state_handle
+                .capture_transport_binding()
+                .await
+                .expect("simulated originating request has a binding");
             let Err(err) = actor
                 .handle_sampling_failure(
                     error,
+                    &mut request_binding,
                     0,
                     transient_state(0, true),
                     true,
@@ -348,9 +354,15 @@ fn suppressed_overflow_mid_continuation_still_completes_truncated() {
                 std::sync::atomic::Ordering::Relaxed,
             );
             let error = error_with_tiny_window(xai_grok_sampler::SamplingErrorKind::Api, 500);
+            let mut request_binding = actor
+                .chat_state_handle
+                .capture_transport_binding()
+                .await
+                .expect("simulated originating request has a binding");
             let Err(err) = actor
                 .handle_sampling_failure(
                     error,
+                    &mut request_binding,
                     0,
                     transient_state(0, true),
                     true,

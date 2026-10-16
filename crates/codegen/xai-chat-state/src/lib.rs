@@ -31,6 +31,7 @@ pub mod conversation_util;
 pub mod events;
 pub mod handle;
 pub mod image_budget;
+mod native_tool_candidates;
 pub mod persistence;
 pub mod types;
 pub mod usage;
@@ -46,6 +47,7 @@ pub use commands::{ModelMetadata, StrictAppendAck, StrictAppendError};
 pub use compaction_mode::CompactionMode;
 pub use events::ChatStateEvent;
 pub use handle::{ChatStateHandle, ChatStateMailboxClosed};
+pub use native_tool_candidates::NativeToolCandidates;
 pub use persistence::{
     ChatPersistence, MockChatPersistence, MockPersistenceReceiver, NullChatPersistence,
     PersistenceRecord, StripOutcome,

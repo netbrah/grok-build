@@ -806,12 +806,22 @@ async fn parked_429_wait_does_not_drive_refreshes() {
             )
             .await;
 
-            let request = super::rate_limit_backoff_tests::conversation_request(&actor).await;
+            let mut cfg = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .expect("test actor has sampling config");
+            cfg.max_retries = Some(0);
+            actor.chat_state_handle.update_sampling_config(cfg);
+
+            let (request, binding) =
+                super::rate_limit_backoff_tests::bound_conversation_request(&actor).await;
             let mut budget = actor.rate_limit_wait_budget(None);
             let outcome = tokio::time::timeout(
                 Duration::from_secs(300),
                 actor.run_turn_via_sampler(
                     request,
+                    binding,
                     &mut budget,
                     transient_state(0, true),
                     false,
@@ -1300,5 +1310,402 @@ async fn late_session_seed_does_not_overwrite_new_row() {
 async fn late_expired_seed_clear_does_not_clear_new_row() {
     tokio::task::LocalSet::new()
         .run_until(late_seed_pair_fixture(false))
+        .await;
+}
+
+fn bound_failure(
+    credential: xai_grok_sampling_types::SentCredential,
+) -> xai_grok_sampler::SamplingErrorInfo {
+    xai_grok_sampler::SamplingErrorInfo {
+        kind: xai_grok_sampler::SamplingErrorKind::Auth,
+        status_code: Some(401),
+        message: "bound originating request rejected".into(),
+        is_retryable: false,
+        retry_after_secs: None,
+        should_retry: None,
+        error_code: None,
+        model_metadata: None,
+        empty_response_context: None,
+        doom_loop_triggers: None,
+        doom_loop_aborted_at_chunk: None,
+        credential,
+    }
+}
+
+fn assert_recovery_binding(
+    actual: &xai_chat_state::RequestTransportBinding,
+    expected: &xai_chat_state::RequestTransportBinding,
+) {
+    assert_eq!(
+        serde_json::to_value(&actual.config).unwrap(),
+        serde_json::to_value(&expected.config).unwrap()
+    );
+    assert_eq!(actual.credentials, expected.credentials);
+}
+
+async fn recovered_provider_default_is_consumed() {
+    let server_a = MockInferenceServer::start_with_models(vec![MockModelEntry::new("test")])
+        .await
+        .unwrap();
+    let server_b =
+        MockInferenceServer::start_with_models(vec![MockModelEntry::new("provider-next")])
+            .await
+            .unwrap();
+    server_a.enqueue_response(
+        "/v1/responses",
+        ScriptedResponse::json(401, serde_json::json!({"error": "rejected provider A"})),
+    );
+    let refresher = Arc::new(DeferredRefreshNeverLands::default());
+    let (_home, manager) = expired_auth_manager(refresher.clone());
+    let (actor, _updates) = session_token_actor(&server_a, manager, ActorShape::default()).await;
+    let provider_home = tempfile::tempdir().unwrap();
+    let name = format!("u5-default-{}", uuid::Uuid::new_v4());
+    let provider = xai_grok_login::test_counting_provider(&name, provider_home.path());
+    let first = provider.ensure_fresh_token(None).await.rotated().unwrap();
+    assert_eq!(first, "tok-1");
+    xai_grok_login::test_backdate_provider_mint(&name, Duration::from_secs(60));
+    let mut a = actor
+        .chat_state_handle
+        .capture_transport_binding()
+        .await
+        .unwrap();
+    a.config.max_retries = Some(0);
+    a.config
+        .extra_headers
+        .insert("x-u5-source".into(), "recovery-a".into());
+    a.credentials.api_key = Some(first);
+    a.credentials.auth_type = xai_chat_state::AuthType::ApiKey;
+    a.credentials.alpha_test_key = Some("u5-default-alpha".into());
+    a.credentials.client_version = Some("u5-default-version".into());
+    actor.model_auth_memo.replace(Some(ModelAuthMemo {
+        model_id: a.config.model.clone(),
+        facts: crate::agent::config::ModelAuthFacts {
+            byok: crate::agent::auth_method::ModelByok::Byok,
+            auth_scheme: xai_grok_sampler::AuthScheme::Bearer,
+        },
+        provider: Some(provider),
+    }));
+    actor
+        .chat_state_handle
+        .install_transport_binding(a.clone())
+        .await
+        .unwrap();
+    let (request, mut failed) =
+        super::rate_limit_backoff_tests::bound_conversation_request(&actor).await;
+    let rejected = actor
+        .sampler_handle
+        .submit_and_collect_with_config(
+            xai_grok_sampler::RequestId::random(),
+            request.clone(),
+            actor.turn_sampler_config_from_binding(&failed).await,
+        )
+        .await
+        .result
+        .err()
+        .expect("provider A must actually be rejected");
+    let error = xai_grok_sampler::SamplingErrorInfo::from(&rejected);
+    assert_eq!(
+        error.credential,
+        xai_grok_sampling_types::SentCredential::Sent
+    );
+    let first_send = server_a
+        .requests()
+        .into_iter()
+        .find(|r| r.path == "/v1/responses")
+        .unwrap();
+    assert_eq!(first_send.authorization.as_deref(), Some("Bearer tok-1"));
+    let mut b = a.clone();
+    b.config.model = "provider-next".into();
+    b.config.base_url = server_b.url();
+    b.config.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+    b.config.context_window = std::num::NonZeroU64::new(96_000).unwrap();
+    b.credentials.api_key = Some("u5-next-static-key".into());
+    actor
+        .chat_state_handle
+        .install_transport_binding(b.clone())
+        .await
+        .unwrap();
+    let outcome = actor
+        .handle_sampling_failure(
+            error,
+            &mut failed,
+            0,
+            transient_state(0, true),
+            false,
+            TurnParkState::Fresh,
+        )
+        .await;
+    assert!(
+        matches!(
+            outcome,
+            Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
+                credential: xai_grok_sampling_types::SentCredential::Sent,
+                store: RecoveredStore::AuthProvider,
+            })
+        ),
+        "U5 production provider recovery must use originating row"
+    );
+    let mut expected = a;
+    expected.credentials.api_key = Some("tok-2".into());
+    assert_recovery_binding(&failed, &expected);
+    assert_recovery_binding(
+        &actor
+            .chat_state_handle
+            .capture_transport_binding()
+            .await
+            .unwrap(),
+        &b,
+    );
+    assert_eq!(
+        std::fs::read_to_string(provider_home.path().join("count"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+    assert_eq!(refresher.server_rejected_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(refresher.pre_request_calls.load(Ordering::SeqCst), 0);
+
+    // This diagnostic None-config send observes UpdateConfig before any next prepare or outer build.
+    let result = actor
+        .sampler_handle
+        .submit_and_collect(xai_grok_sampler::RequestId::random(), request)
+        .await;
+    assert!(result.is_ok(), "the recovered default must be usable");
+    assert_eq!(
+        server_a.request_count_for("/v1/responses"),
+        2,
+        "U5 recovery preparation must install originating A as sampler default"
+    );
+    assert_eq!(server_b.request_count_for("/v1/messages"), 0);
+    let send = server_a
+        .requests()
+        .into_iter()
+        .filter(|r| r.path == "/v1/responses")
+        .last()
+        .unwrap();
+    assert_eq!(
+        send.authorization.as_deref(),
+        Some("Bearer tok-2"),
+        "U5 recovery default must consume the updated failed binding"
+    );
+    assert_eq!(send.body.as_ref().unwrap()["model"], expected.config.model);
+    assert_eq!(
+        std::fs::read_to_string(provider_home.path().join("count"))
+            .unwrap()
+            .lines()
+            .count(),
+        2,
+        "U5 default send must not add a provider refresh"
+    );
+    assert_eq!(refresher.server_rejected_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(refresher.pre_request_calls.load(Ordering::SeqCst), 0);
+    assert_recovery_binding(
+        &actor
+            .chat_state_handle
+            .capture_transport_binding()
+            .await
+            .unwrap(),
+        &b,
+    );
+}
+
+#[derive(Default)]
+struct BoundRecoveryCounter {
+    counts: DeferredRefreshNeverLands,
+    wait_entered: tokio::sync::Notify,
+    wait_release: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl xai_grok_login::refresh::TokenRefresher for BoundRecoveryCounter {
+    async fn refresh(
+        &self,
+        reason: xai_grok_login::refresh::RefreshReason,
+    ) -> xai_grok_login::refresh::RefreshOutcome {
+        let pre_request = reason == xai_grok_login::refresh::RefreshReason::PreRequest;
+        let result = xai_grok_login::refresh::TokenRefresher::refresh(&self.counts, reason).await;
+        if pre_request && self.counts.pre_request_calls.load(Ordering::SeqCst) == 3 {
+            self.wait_entered.notify_one();
+            self.wait_release.notified().await;
+        }
+        result
+    }
+}
+
+async fn bound_session_recovery_counts() {
+    tokio::time::pause();
+    let server_a = MockInferenceServer::start_with_models(vec![MockModelEntry::new("test")])
+        .await
+        .unwrap();
+    let server_b = MockInferenceServer::start_with_models(vec![MockModelEntry::new("new-api-row")])
+        .await
+        .unwrap();
+    server_a.enqueue_response(
+        "/v1/responses",
+        ScriptedResponse::json(429, serde_json::json!({"error": "paced wait"})),
+    );
+    let counter = Arc::new(BoundRecoveryCounter::default());
+    let (_home, manager) = expired_auth_manager(counter.clone());
+    let (actor, _updates) = session_token_actor(
+        &server_a,
+        manager,
+        ActorShape {
+            is_subagent: true,
+            ..Default::default()
+        },
+    )
+    .await;
+    let mut a = actor
+        .chat_state_handle
+        .capture_transport_binding()
+        .await
+        .unwrap();
+    a.config.max_retries = Some(0);
+    actor
+        .chat_state_handle
+        .install_transport_binding(a.clone())
+        .await
+        .unwrap();
+    let (request, mut failed) =
+        super::rate_limit_backoff_tests::bound_conversation_request(&actor).await;
+    let mut b = a.clone();
+    b.config.model = "new-api-row".into();
+    b.config.base_url = server_b.url();
+    b.config.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+    b.credentials.api_key = Some("u5-live-b-key".into());
+    b.credentials.auth_type = xai_chat_state::AuthType::ApiKey;
+    actor
+        .chat_state_handle
+        .install_transport_binding(b.clone())
+        .await
+        .unwrap();
+    let runner = actor.clone();
+    let binding = failed.clone();
+    let task = tokio::task::spawn_local(async move {
+        let mut budget = runner.rate_limit_wait_budget(None);
+        let result = runner
+            .run_turn_via_sampler(
+                request,
+                binding,
+                &mut budget,
+                transient_state(0, true),
+                false,
+                TurnParkState::Fresh,
+            )
+            .await;
+        (result, budget.attempts_used())
+    });
+    tokio::time::timeout(Duration::from_secs(86_400), counter.wait_entered.notified())
+        .await
+        .expect("the first wait preflight must reach its barrier");
+    assert_eq!(server_a.request_count_for("/v1/responses"), 1);
+    assert_eq!(
+        counter.counts.pre_request_calls.load(Ordering::SeqCst),
+        3,
+        "U5 initial prepare is two calls before the wait preflight enters"
+    );
+    assert_eq!(
+        counter.counts.server_rejected_calls.load(Ordering::SeqCst),
+        0
+    );
+    counter.wait_release.notify_one();
+    let (result, waits) = tokio::time::timeout(Duration::from_secs(86_400), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(result, Ok(SamplerTurnOutcome::Response(..))));
+    assert_eq!(waits, 1);
+    assert_eq!(
+        counter.counts.pre_request_calls.load(Ordering::SeqCst),
+        4,
+        "U5 initial and wait prepares retain two calls each on captured A"
+    );
+    assert_eq!(server_a.request_count_for("/v1/responses"), 2);
+    assert_eq!(server_b.request_count_for("/v1/messages"), 0);
+    assert_recovery_binding(
+        &actor
+            .chat_state_handle
+            .capture_transport_binding()
+            .await
+            .unwrap(),
+        &b,
+    );
+
+    let outcome = actor
+        .handle_sampling_failure(
+            bound_failure(xai_grok_sampling_types::SentCredential::Missing),
+            &mut failed,
+            0,
+            transient_state(0, true),
+            false,
+            TurnParkState::Fresh,
+        )
+        .await;
+    assert!(
+        matches!(
+            outcome,
+            Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
+                credential: xai_grok_sampling_types::SentCredential::Missing,
+                store: RecoveredStore::SessionToken,
+            })
+        ),
+        "U5 failed session A must park despite installed API-key B"
+    );
+    assert_eq!(
+        counter.counts.server_rejected_calls.load(Ordering::SeqCst),
+        2,
+        "U5 one failed recovery dispatch retains its two attempts"
+    );
+    assert_eq!(
+        counter.counts.pre_request_calls.load(Ordering::SeqCst),
+        4,
+        "U5 failed recovery must not add a prepare before parking"
+    );
+    for _ in 0..2 {
+        let outcome = actor
+            .handle_sampling_failure(
+                bound_failure(xai_grok_sampling_types::SentCredential::Missing),
+                &mut failed,
+                0,
+                transient_state(0, true),
+                false,
+                TurnParkState::Parked,
+            )
+            .await;
+        assert!(matches!(
+            outcome,
+            Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
+                credential: xai_grok_sampling_types::SentCredential::Missing,
+                store: RecoveredStore::SessionToken,
+            })
+        ));
+        assert_eq!(
+            (
+                counter.counts.pre_request_calls.load(Ordering::SeqCst),
+                counter.counts.server_rejected_calls.load(Ordering::SeqCst)
+            ),
+            (4, 2),
+            "U5 already parked recovery must dispatch nothing"
+        );
+        assert_recovery_binding(
+            &actor
+                .chat_state_handle
+                .capture_transport_binding()
+                .await
+                .unwrap(),
+            &b,
+        );
+    }
+    tokio::time::resume();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bound_recovery_and_park_preserve_refresh_counts() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            recovered_provider_default_is_consumed().await;
+            bound_session_recovery_counts().await;
+        })
         .await;
 }

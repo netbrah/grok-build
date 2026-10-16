@@ -49,21 +49,18 @@ impl SessionActor {
         let parent_session_id = self.session_info.id.to_string();
         let asked_at = chrono::Utc::now();
 
-        let sampling_client = self
-            .prepare_chat_completion(false)
+        let setup = self
+            .prepare_side_call()
             .await
             .map_err(|e| SideQuestionError::PrepareClient(e.to_string()))?;
+        let sampling_client = &setup.client;
 
         // Full conversation snapshot including system prompt, reasoning, tool calls, and results.
         let mut items = self.chat_state_handle.get_conversation().await;
 
-        let sampling_config = self.chat_state_handle.get_sampling_config().await;
-        let reasoning_effort = sampling_config.as_ref().and_then(|c| c.reasoning_effort);
-        let ultra_wire_effort = sampling_config.as_ref().and_then(|c| c.ultra_wire_effort);
-        if super::side_call::should_strip_side_call_reasoning(
-            sampling_client.api_backend(),
-            reasoning_effort,
-        ) {
+        let reasoning_effort = setup.reasoning_effort;
+        let ultra_wire_effort = setup.ultra_wire_effort;
+        if setup.strip_reasoning {
             items = xai_chat_state::compaction_utils::strip_reasoning_blocks(items);
         }
 
@@ -74,7 +71,8 @@ impl SessionActor {
             self.side_question_prompt_and_tools(question).await;
         items.push(instruction);
 
-        let model = sampling_config.map(|c| c.model).unwrap_or_default();
+        let supports_search_tool = setup.binding.config.supports_search_tool;
+        let model = setup.model.clone();
 
         let persist = |answer: String, success: bool, error: Option<String>, attempts: u32| {
             let _ = self.notifications.persistence_tx.send(PersistenceMsg::Btw(
@@ -98,6 +96,7 @@ impl SessionActor {
             tools: tool_specs,
             hosted_tools,
             model: model.clone(),
+            supports_search_tool,
             reasoning_effort,
             // apex-ayl.86 (SDD §3.6 fill directive, review-fix m-1): same config read as the effort above.
             ultra_wire_effort,
@@ -110,6 +109,8 @@ impl SessionActor {
         // /btw adds its own bounded transient-failure retry (the policy and predicate above)
         use backon::Retryable as _;
         let attempts = std::cell::Cell::new(1u32);
+        #[cfg(test)]
+        super::side_call::tests::record_auxiliary_send("btw", &base_request);
         let result =
             (|| sampling_client.conversation_collect(build_side_question_attempt(&base_request)))
                 .retry(side_question_retry_policy())
@@ -264,6 +265,8 @@ impl SessionActor {
         // The artifact records the exact model-facing items after trust projection; the canonical conversation state remains raw
         let chat_history_for_artifact = request.items.clone();
 
+        #[cfg(test)]
+        super::side_call::tests::record_auxiliary_send("recap", &request);
         let response = match setup.client.conversation_collect(request).await {
             Ok(r) => r,
             Err(e) => {
@@ -498,7 +501,13 @@ impl SessionActor {
         cwd: &str,
         model_override: Option<&str>,
     ) -> Option<String> {
-        let sampling_client = self.prepare_chat_completion(false).await.ok()?;
+        let mut binding = self.capture_transport_binding_or_default().await;
+        #[cfg(test)]
+        super::side_call::tests::after_auxiliary_capture(self).await;
+        let sampling_client = self
+            .prepare_chat_completion_from_binding(&mut binding, false)
+            .await
+            .ok()?;
 
         let system = "You are a shell command autocomplete engine. \
             Given a partial command, output ONLY the completed command. \
@@ -526,6 +535,8 @@ impl SessionActor {
         };
 
         // Collect via the client so the LengthPolicy gate applies: a suggestion truncated at the 50-token cap must not become ghost text
+        #[cfg(test)]
+        super::side_call::tests::record_auxiliary_send("ai-suggest", &request);
         match sampling_client
             .conversation_collect_with_idle_timeout(request, std::time::Duration::from_secs(5))
             .await
@@ -563,8 +574,10 @@ impl SessionActor {
         let reasoning_is_off =
             crate::util::config::prompt_suggest_reasoning_is_off(configured_reasoning_effort);
 
-        let sampling_config = self.chat_state_handle.get_sampling_config().await;
-        let session_model = sampling_config.as_ref().map(|c| c.model.as_str());
+        let mut binding = self.capture_transport_binding_or_default().await;
+        #[cfg(test)]
+        super::side_call::tests::after_auxiliary_capture(self).await;
+        let session_model = Some(binding.config.model.as_str());
         let pin = self.models_manager.prompt_suggest_model_pin();
         let Some(model) = prompt_suggest::effective_suggest_model(
             &pin,
@@ -601,8 +614,11 @@ impl SessionActor {
             return None;
         };
 
-        self.refresh_token_if_expired().await;
-        let mut sampling_config = self.reconstruct_full_config().await;
+        self.refresh_token_if_expired_from_binding(&mut binding)
+            .await;
+        let mut sampling_config = self.reconstruct_full_config_from_binding(&binding).await;
+        #[cfg(test)]
+        super::side_call::tests::record_suggest_config(&sampling_config);
         sampling_config.model = model.clone();
         sampling_config.reasoning_effort = None;
         let supports_reasoning = self.models_manager.model_supports_reasoning_effort(&model);
@@ -632,6 +648,8 @@ impl SessionActor {
         let reasoning_effort = suggest_reasoning.effort;
         let request_model = sampling_config.model.clone();
         let ultra_wire_effort = sampling_config.ultra_wire_effort;
+        #[cfg(test)]
+        super::side_call::tests::record_suggest_config(&sampling_config);
         let sampling_client = match xai_grok_sampler::SamplingClient::new(sampling_config) {
             Ok(client) => client,
             Err(e) => {
@@ -690,6 +708,8 @@ impl SessionActor {
             });
         };
 
+        #[cfg(test)]
+        super::side_call::tests::record_auxiliary_send("prompt-suggest", &request);
         let response = match sampling_client.conversation_collect(request).await {
             Ok(r) => r,
             Err(e) => {
