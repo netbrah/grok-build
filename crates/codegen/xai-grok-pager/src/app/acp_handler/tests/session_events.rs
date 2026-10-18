@@ -410,6 +410,77 @@
     }
 
     #[test]
+    fn incomplete_turn_401_notification_has_dedicated_display() {
+        assert_incomplete_turn_notification("Unauthorized (401): credential rejected");
+    }
+
+    #[test]
+    fn incomplete_turn_402_notification_has_dedicated_display() {
+        assert_incomplete_turn_notification("API error (status 402 Payment Required): balance exhausted");
+    }
+
+    fn assert_incomplete_turn_notification(cause: &str) {
+        use xai_grok_shell::sampling::error::SamplingError;
+
+        let long_cause = format!("{cause}; {}", "bounded diagnostic ".repeat(30));
+        let terminal = SamplingError::incomplete_turn(&long_cause);
+        let SamplingError::IncompleteTurn { cause } = &terminal else {
+            panic!("incomplete constructor must retain its typed cause");
+        };
+        let bounded_cause = cause.to_string();
+        assert!(bounded_cause.chars().count() < long_cause.chars().count());
+        let expected_detail = crate::app::effects::sanitize_user_error(&bounded_cause);
+
+        for is_api_key_auth in [false, true] {
+            let mut session = make_session(Some("s1"));
+            let mut scrollback = ScrollbackState::new();
+            session.in_flight_prompt = Some(InFlightPrompt {
+                text: "do not resubmit this incomplete turn".into(),
+                images: Vec::new(),
+                scrollback_entry: EntryId::new(6),
+                combined_scrollback_entries: Vec::new(),
+                chip_elements: Vec::new(),
+            });
+            let update = XaiSessionUpdate::RetryState(RetryState::Failed {
+                error_type: "incomplete_turn".into(),
+                message: terminal.to_string(),
+            });
+            assert!(apply_session_event(
+                &update,
+                &mut session,
+                &mut scrollback,
+                is_api_key_auth,
+            ));
+
+            let event = last_session_event(&scrollback);
+            let display = match &event {
+                Some(SessionEvent::RequestFailed { status, headline, detail }) => {
+                    Some((*status, headline.as_str(), detail.as_str()))
+                }
+                _ => None,
+            };
+            assert_eq!(
+                display,
+                Some((None, "Server-tool turn is incomplete", expected_detail.as_str())),
+                "typed incomplete notification must bypass credit-limit and re-auth handling: event={event:?}, credit_limit_blocked={}",
+                session.credit_limit_blocked,
+            );
+            assert_eq!(scrollback.len(), 1, "no extra re-auth or terminal event");
+            assert_eq!(
+                (
+                    session.credit_limit_blocked,
+                    session.free_usage_blocked,
+                    session.in_flight_prompt.is_some(),
+                    session.blocked_prompt.is_some(),
+                    session.pending_prompts.len(),
+                ),
+                (false, false, false, false, 0),
+                "incomplete turn must not retain a credit-limit or re-auth resubmit path",
+            );
+        }
+    }
+
+    #[test]
     fn apply_retry_state_non_credit_limit_failed_clears_in_flight_prompt() {
         let mut session = make_session(Some("s1"));
         let mut scrollback = ScrollbackState::new();

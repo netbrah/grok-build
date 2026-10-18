@@ -48,6 +48,23 @@ use xai_grok_auth::bearer_suffix;
 
 pub use xai_grok_sampling_types::ApiBackend;
 
+pub(crate) fn parse_messages_stream_event(
+    data: &str,
+) -> Result<crate::messages_continuation::MessagesStreamFrame> {
+    if let Some(stream_error) = try_parse_stream_error(data) {
+        return Err(stream_error);
+    }
+    let event = serde_json::from_str::<messages::MessageStreamEvent>(data).map_err(|e| {
+        tracing::error!(
+            error = %e,
+            raw_data = %data,
+            "Failed to deserialize MessageStreamEvent from stream"
+        );
+        SamplingError::Serialization(e)
+    })?;
+    crate::messages_continuation::MessagesStreamFrame::decoded(event, data)
+}
+
 /// Process-level fallback for the `x-grok-client-identifier` header.
 const DEFAULT_CLIENT_IDENTIFIER: &str = "grok-shell";
 
@@ -3456,22 +3473,7 @@ impl SamplingClient {
                             data = %data,
                         );
 
-                        if let Some(stream_error) = try_parse_stream_error(data) {
-                            Some(Err(stream_error))
-                        } else {
-                            Some(
-                                serde_json::from_str::<messages::MessageStreamEvent>(data).map_err(
-                                    |e| {
-                                        tracing::error!(
-                                            error = %e,
-                                            raw_data = %data,
-                                            "Failed to deserialize MessageStreamEvent from stream"
-                                        );
-                                        SamplingError::Serialization(e)
-                                    },
-                                ),
-                            )
-                        }
+                        Some(parse_messages_stream_event(data).map(|frame| frame.event))
                     }
                     Err(e) => {
                         *had_transport_error = true;

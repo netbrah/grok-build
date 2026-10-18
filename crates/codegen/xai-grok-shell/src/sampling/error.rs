@@ -114,6 +114,9 @@ pub(crate) fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
         SamplingError::UnsupportedStopControl { .. } => {
             acp::Error::internal_error().data(err.to_string())
         }
+        SamplingError::IncompleteTurn { .. } => acp::Error::internal_error().data(
+            terminal_error_data(err.to_string(), None, SamplingErrorKind::IncompleteTurn),
+        ),
         SamplingError::Api {
             status, message, ..
         } => match status {
@@ -208,14 +211,17 @@ pub(crate) const SALVAGE_CAUSE_EMPTY: &str = "empty_continuation";
 pub(crate) const SALVAGE_CAUSE_OVERFLOW: &str = "context_overflow";
 
 /// Terminal-failure `acp::Error.data`.
-/// Only max-tokens truncation opts into the object shape with an `error_kind` marker.
-/// Every other kind keeps the legacy string/status shape because old clients render `data` via `Display` and would show the raw JSON object.
+/// Truncation and incomplete turns carry an `error_kind` marker.
+/// Other kinds keep the legacy string/status shape for clients that render `data` directly.
 pub(crate) fn terminal_error_data(
     message: String,
     http_status: Option<u16>,
     kind: SamplingErrorKind,
 ) -> serde_json::Value {
-    if kind != SamplingErrorKind::MaxTokensTruncation {
+    if !matches!(
+        kind,
+        SamplingErrorKind::MaxTokensTruncation | SamplingErrorKind::IncompleteTurn
+    ) {
         return error_data_with_status(message, http_status);
     }
     let mut data = serde_json::json!({ "message": message });
@@ -412,6 +418,52 @@ pub(crate) fn prompt_complete_fields(
 mod tests {
     use super::*;
     use reqwest::StatusCode;
+
+    #[test]
+    fn incomplete_turn_preserves_kind_and_cause() {
+        for cause in [
+            "continuation limit reached".to_owned(),
+            "Unauthorized (401): maximum context length exceeded".to_owned(),
+            "response truncated by max_tokens; empty response".to_owned(),
+            "replay refused: 界".repeat(40),
+        ] {
+            let mut bounded: String = cause.chars().take(MAX_USER_ERROR_BODY_CHARS).collect();
+            if cause.chars().count() > MAX_USER_ERROR_BODY_CHARS {
+                bounded.push('…');
+            }
+            let message = format!("Server-tool turn is incomplete: {bounded}");
+            let error = map_sampling_err_to_acp(SamplingError::incomplete_turn(&cause));
+            let expected = serde_json::json!({
+                "message": message, "error_kind": "incomplete_turn",
+            });
+            assert_eq!(
+                error.data.as_ref(),
+                Some(&expected),
+                "incomplete kind and bounded cause must survive ACP mapping"
+            );
+            let restored: acp::Error =
+                serde_json::from_value(serde_json::to_value(error.clone()).unwrap()).unwrap();
+            assert_eq!(restored.data.as_ref(), Some(&expected));
+            assert_eq!(
+                i32::from(restored.code),
+                i32::from(acp::ErrorCode::InternalError)
+            );
+            assert_eq!(
+                error_kind_str_from_error(&restored),
+                Some("incomplete_turn")
+            );
+            assert_eq!(http_status_from_error(&restored), None);
+            assert_eq!(stop_reason_for_turn_error(&restored), "Error");
+            assert!(!is_max_tokens_turn_error(&restored));
+            let (stop, result, kind) = prompt_complete_fields(&Err(restored));
+            assert_eq!(stop, serde_json::json!("error"));
+            assert_eq!(result, serde_json::json!(message));
+            assert_eq!(
+                kind.map(|kind| kind.as_ref().to_owned()).as_deref(),
+                Some("incomplete_turn")
+            );
+        }
+    }
 
     #[test]
     fn rewrite_service_names_is_ascii_case_insensitive() {

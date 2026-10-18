@@ -1629,33 +1629,44 @@ pub(super) fn apply_retry_state(
             if wire == crate::app::error_display::WireErrorType::EncryptedContentMismatch {
                 session.model_incompatible = true;
             }
-            is_credit_limit = super::super::dispatch::is_credit_limit_error(None, message);
-            if is_credit_limit {
-                session.credit_limit_blocked = true;
-            } else if is_reauthable_failure(Some(error_type.as_str()), message) {
-                is_reauth = true;
-                scrollback.push_block(RenderBlock::session_event(SessionEvent::ReAuthRequired));
-            } else if wire == crate::app::error_display::WireErrorType::DiskFull {
-                if !crate::app::dispatch::scrollback_has_recent_disk_full(scrollback) {
-                    scrollback.push_block(RenderBlock::session_event(SessionEvent::DiskFull));
-                }
-            } else if wire == crate::app::error_display::WireErrorType::ContextLength {
-                if !scrollback_has_recent_compaction_failed(scrollback) {
-                    scrollback
-                        .push_block(RenderBlock::session_event(SessionEvent::ContextTooLarge));
-                }
-            } else if wire == crate::app::error_display::WireErrorType::EncryptedContentMismatch
-                || wire == crate::app::error_display::WireErrorType::LegacyAuth
-            {
-                scrollback.push_block(RenderBlock::session_event(SessionEvent::RetryFailed {
-                    error: message.clone(),
-                    error_type: Some(error_type.clone()),
-                }));
-            } else {
+            if wire == crate::app::error_display::WireErrorType::IncompleteTurn {
                 scrollback.push_block(RenderBlock::session_event(
                     crate::app::error_display::format_request_failure(None, Some(wire), message)
                         .into_session_event(),
                 ));
+            } else {
+                is_credit_limit = super::super::dispatch::is_credit_limit_error(None, message);
+                if is_credit_limit {
+                    session.credit_limit_blocked = true;
+                } else if is_reauthable_failure(Some(error_type.as_str()), message) {
+                    is_reauth = true;
+                    scrollback.push_block(RenderBlock::session_event(SessionEvent::ReAuthRequired));
+                } else if wire == crate::app::error_display::WireErrorType::DiskFull {
+                    if !crate::app::dispatch::scrollback_has_recent_disk_full(scrollback) {
+                        scrollback.push_block(RenderBlock::session_event(SessionEvent::DiskFull));
+                    }
+                } else if wire == crate::app::error_display::WireErrorType::ContextLength {
+                    if !scrollback_has_recent_compaction_failed(scrollback) {
+                        scrollback
+                            .push_block(RenderBlock::session_event(SessionEvent::ContextTooLarge));
+                    }
+                } else if wire == crate::app::error_display::WireErrorType::EncryptedContentMismatch
+                    || wire == crate::app::error_display::WireErrorType::LegacyAuth
+                {
+                    scrollback.push_block(RenderBlock::session_event(SessionEvent::RetryFailed {
+                        error: message.clone(),
+                        error_type: Some(error_type.clone()),
+                    }));
+                } else {
+                    scrollback.push_block(RenderBlock::session_event(
+                        crate::app::error_display::format_request_failure(
+                            None,
+                            Some(wire),
+                            message,
+                        )
+                        .into_session_event(),
+                    ));
+                }
             }
         }
     }

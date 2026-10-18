@@ -109,7 +109,8 @@ pub(super) fn transient_retry_eligible(error: &xai_grok_sampler::SamplingErrorIn
         | SamplingErrorKind::DoomLoopDetected
         // pause_turn is a dedicated typed terminal (apex-ayl.49 N1): deterministic,
         // never transient-retry-eligible (re-sending cannot change the control)
-        | SamplingErrorKind::UnsupportedStopControl => false,
+        | SamplingErrorKind::UnsupportedStopControl
+        | SamplingErrorKind::IncompleteTurn => false,
     }
 }
 
@@ -1425,6 +1426,23 @@ impl SessionActor {
         park: TurnParkState,
     ) -> Result<SamplerFailureRecovery, acp::Error> {
         use xai_grok_sampler::SamplingErrorKind;
+
+        // Diagnostic cause text must not trigger salvage, compaction or credential recovery.
+        if error.kind == SamplingErrorKind::IncompleteTurn {
+            let terminal = crate::sampling::error::SamplingError::incomplete_turn_from_rendered(
+                &error.message,
+            );
+            let message = terminal.to_string();
+            self.log_terminal_failure(error.kind.as_ref(), None, &message);
+            self.send_xai_notification(XaiSessionUpdate::RetryState(
+                crate::extensions::notification::RetryState::Failed {
+                    error_type: error.kind.as_ref().to_owned(),
+                    message,
+                },
+            ))
+            .await;
+            return Err(crate::sampling::error::map_sampling_err_to_acp(terminal));
+        }
 
         // On an in-flight salvage continuation, a max-tokens failure or a probable context overflow is not terminal.
         // Return before the budgeted-child rewrites so the marker survives for workflow children.

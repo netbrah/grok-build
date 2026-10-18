@@ -188,7 +188,8 @@ fn classify_sampling_error(err: SamplingError) -> CompactFailure {
         // Unsupported stop control (pause_turn): deterministic typed terminal — re-sending
         // the same payload cannot change the control the model requested.
         | SamplingError::RequestValidation(_)
-        | SamplingError::UnsupportedStopControl { .. } => true,
+        | SamplingError::UnsupportedStopControl { .. }
+        | SamplingError::IncompleteTurn { .. } => true,
         SamplingError::Api { status, .. } => {
             status.is_client_error()
                 && *status != StatusCode::REQUEST_TIMEOUT

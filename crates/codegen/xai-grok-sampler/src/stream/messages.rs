@@ -18,6 +18,7 @@ use xai_grok_sampling_types::{
 };
 
 use crate::events::{SamplingChannel, SamplingErrorInfo, SamplingEvent};
+use crate::messages_continuation::{AttemptCapture, CompletedAttempt, MessagesStreamFrame};
 use crate::metrics::InferenceLatencyStats;
 use crate::types::RequestId;
 
@@ -102,6 +103,24 @@ pub fn stream_messages<'a>(
     model_metadata: Option<ResponseModelMetadata>,
     request_id: RequestId,
     idle_timeout: Duration,
+) -> impl Stream<Item = SamplingEvent> + Send + 'a {
+    stream_messages_tracked(
+        raw_stream
+            .map(|event| event.map(MessagesStreamFrame::from))
+            .boxed(),
+        model_metadata,
+        request_id,
+        idle_timeout,
+        None,
+    )
+}
+
+pub(crate) fn stream_messages_tracked<'a>(
+    raw_stream: BoxStream<'a, Result<MessagesStreamFrame, SamplingError>>,
+    model_metadata: Option<ResponseModelMetadata>,
+    request_id: RequestId,
+    idle_timeout: Duration,
+    mut capture: Option<&'a mut AttemptCapture>,
 ) -> impl Stream<Item = SamplingEvent> + Send + 'a {
     async_stream::stream! {
         use messages::{ContentBlock, StreamDelta};
@@ -227,6 +246,21 @@ pub fn stream_messages<'a>(
                 }
             };
 
+            if let Some(capture) = capture.as_deref_mut()
+                && let Err(error) = capture.observe(&event)
+            {
+                capture.failure = Some(error);
+                yield SamplingEvent::Failed {
+                    request_id: request_id.clone(),
+                    error: SamplingErrorInfo::from(&SamplingError::StreamError {
+                        error_type: "unfaithful_messages_capture".to_owned(),
+                        message: error.message().to_owned(),
+                        code: None,
+                    }),
+                };
+                return;
+            }
+            let event = event.event;
             let event_has_content = messages_event_has_meaningful_content(&event);
 
             match event {
@@ -791,6 +825,8 @@ pub fn stream_messages<'a>(
                     // (grammar: one terminal per stream — spec L1976-1978)
                     if let Some(sr) = delta.stop_reason {
                         terminal_delta_seen = true;
+                        // The public wrapper supplies no capture and retains the fatal pause path.
+                        if capture.is_none() || !matches!(&sr, messages::StopReason::PauseTurn) {
                         final_stop_reason = Some(match sr {
                             messages::StopReason::EndTurn => StopReason::Stop,
                             messages::StopReason::MaxTokens => StopReason::Length,
@@ -826,6 +862,7 @@ pub fn stream_messages<'a>(
                             // string
                             messages::StopReason::Unknown(_) => StopReason::Stop,
                         });
+                        }
                     }
                     let output_incoming = usage.output_tokens;
                     let input_incoming = usage.input_tokens.as_ref().copied();
@@ -981,7 +1018,9 @@ pub fn stream_messages<'a>(
         // L4282 (46b R3): a terminal without a stop_reason is a stream-protocol
         // error. Absent and JSON-null are indistinguishable at the DTO (A3) —
         // both are errors; the stream never completes without a typed terminal.
-        if final_stop_reason.is_none() {
+        let captured_pause = capture.is_some()
+            && matches!(final_wire_stop_reason, Some(messages::StopReason::PauseTurn));
+        if final_stop_reason.is_none() && !captured_pause {
             let err = SamplingError::StreamError {
                 error_type: "stop_reason_absent".to_owned(),
                 message: "the terminal message_delta carried no stop_reason".to_owned(),
@@ -1151,6 +1190,30 @@ pub fn stream_messages<'a>(
             stop_sequence: final_stop_sequence,
         };
 
+        if let Some(capture) = capture.as_deref_mut() {
+            match capture.finish(&response) {
+                Ok(content) => capture.completed = Some(CompletedAttempt {
+                    content,
+                    response: response.clone(),
+                    metrics: metrics.clone(),
+                }),
+                Err(error) => {
+                    capture.failure = Some(error);
+                    yield SamplingEvent::Failed {
+                        request_id: request_id.clone(),
+                        error: SamplingErrorInfo::from(&SamplingError::StreamError {
+                            error_type: "unfaithful_messages_capture".to_owned(),
+                            message: error.message().to_owned(),
+                            code: None,
+                        }),
+                    };
+                    return;
+                }
+            }
+        }
+        if captured_pause {
+            return;
+        }
         yield SamplingEvent::Completed {
             request_id: request_id.clone(),
             response: Box::new(response),

@@ -302,6 +302,8 @@ pub enum SamplingErrorKind {
     /// (apex-ayl.49 N1; the SDD F1 `Api`-kind mapping was proven unable to
     /// deliver N1 — deviation recorded in the driver report).
     UnsupportedStopControl,
+    /// A server-tool turn ended without a safe completion; never retry.
+    IncompleteTurn,
 }
 /// [`SamplingErrorKind::from_str`] error: the wire string matched no known kind (a newer peer's kind); callers degrade to untyped via `.ok()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -323,6 +325,7 @@ impl std::str::FromStr for SamplingErrorKind {
             "max_tokens_truncation" => Self::MaxTokensTruncation,
             "doom_loop_detected" => Self::DoomLoopDetected,
             "unsupported_stop_control" => Self::UnsupportedStopControl,
+            "incomplete_turn" => Self::IncompleteTurn,
             _ => return Err(UnknownSamplingErrorKind),
         })
     }
@@ -373,6 +376,9 @@ impl From<&SamplingError> for SamplingErrorInfo {
             // Local pre-HTTP cap violation: no wire status — same house
             // pattern as the other local configuration errors.
             SamplingError::RequestValidation(_) => (SamplingErrorKind::Api, None, None, None),
+            SamplingError::IncompleteTurn { .. } => {
+                (SamplingErrorKind::IncompleteTurn, None, None, None)
+            }
             // Unsupported stop control (pause_turn): a DEDICATED kind (no wire
             // status). The dedicated kind is what keeps `synthesize_from_info`
             // (request_task.rs) from collapsing this L2-synthesized terminal
@@ -622,6 +628,7 @@ mod tests {
             MaxTokensTruncation,
             DoomLoopDetected,
             UnsupportedStopControl,
+            IncompleteTurn,
         ];
         for kind in all {
             // Exhaustive match, no `_` arm: a new variant refuses to compile this test until an arm is added
@@ -631,7 +638,8 @@ mod tests {
                 Auth | Http | Api | Serialization | IdleTimeout | RateLimited | EmptyResponse
                 | MaxTokensTruncation
                 | DoomLoopDetected
-                | UnsupportedStopControl => {}
+                | UnsupportedStopControl
+                | IncompleteTurn => {}
             }
             assert_eq!(kind.as_ref().parse(), Ok(kind));
         }

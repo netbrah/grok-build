@@ -131,6 +131,19 @@ const SERIALIZATION_DISPLAY_PREFIX: &str = "serialization error: ";
 /// Sharing the const with the `#[error(...)]` template prevents drift.
 pub const MAX_TOKENS_TRUNCATION_MESSAGE: &str = "response truncated by max_tokens";
 
+/// Display headline shared by incomplete-turn errors and clients.
+pub const INCOMPLETE_TURN_MESSAGE: &str = "Server-tool turn is incomplete";
+
+/// Bounded diagnostic text, constructed only by [`SamplingError::incomplete_turn`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncompleteTurnCause(String);
+
+impl fmt::Display for IncompleteTurnCause {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum SamplingError {
     #[error("{message}")]
@@ -207,6 +220,9 @@ pub enum SamplingError {
     /// Provenance: frozen-spec@2cbc222c §6.3 L4281.
     #[error("the model requested the unsupported control `{wire_reason}`; the turn was not committed")]
     UnsupportedStopControl { wire_reason: String },
+    /// A server-tool turn could not complete safely; no retry or outer recovery is permitted.
+    #[error("{headline}: {cause}", headline = INCOMPLETE_TURN_MESSAGE)]
+    IncompleteTurn { cause: IncompleteTurnCause },
 }
 
 /// Semantic `error.code` the server stamps on invalid-image rejections, on both non-stream error bodies and mid-stream SSE error events.
@@ -304,6 +320,22 @@ pub fn is_deterministic_in_stream_message(message: &str) -> bool {
 }
 
 impl SamplingError {
+    /// Retain at most the existing user-error character cap plus its truncation marker.
+    pub fn incomplete_turn(cause: impl AsRef<str>) -> Self {
+        Self::IncompleteTurn {
+            cause: IncompleteTurnCause(truncate_user_error(cause.as_ref())),
+        }
+    }
+
+    /// Rebuild an incomplete error without duplicating its display headline.
+    pub fn incomplete_turn_from_rendered(rendered: &str) -> Self {
+        let cause = rendered
+            .strip_prefix(INCOMPLETE_TURN_MESSAGE)
+            .and_then(|rest| rest.strip_prefix(": "))
+            .unwrap_or(rendered);
+        Self::incomplete_turn(cause)
+    }
+
     /// Auth error of unknown wire provenance.
     /// Used by paths that never sent a request (config validation, cancellation, actor teardown) or that lost the provenance (legacy round trips).
     pub fn auth_unknown(message: impl Into<String>) -> Self {
@@ -679,7 +711,8 @@ impl SamplingError {
             | SamplingError::MaxTokensTruncation
             | SamplingError::DoomLoopDetected { .. }
             | SamplingError::RequestValidation(_)
-            | SamplingError::UnsupportedStopControl { .. } => false,
+            | SamplingError::UnsupportedStopControl { .. }
+            | SamplingError::IncompleteTurn { .. } => false,
         }
     }
 
@@ -701,6 +734,7 @@ impl SamplingError {
             SamplingError::RequestValidation(_) => false,
             // Unsupported stop control (pause_turn): a deterministic typed terminal, never retry.
             SamplingError::UnsupportedStopControl { .. } => false,
+            SamplingError::IncompleteTurn { .. } => false,
         }
     }
 
@@ -767,7 +801,8 @@ impl SamplingError {
             | SamplingError::MaxTokensTruncation
             | SamplingError::DoomLoopDetected { .. }
             | SamplingError::RequestValidation(_)
-            | SamplingError::UnsupportedStopControl { .. } => false,
+            | SamplingError::UnsupportedStopControl { .. }
+            | SamplingError::IncompleteTurn { .. } => false,
         }
     }
 
@@ -792,7 +827,8 @@ impl SamplingError {
             | SamplingError::MaxTokensTruncation
             | SamplingError::DoomLoopDetected { .. }
             | SamplingError::RequestValidation(_)
-            | SamplingError::UnsupportedStopControl { .. } => false,
+            | SamplingError::UnsupportedStopControl { .. }
+            | SamplingError::IncompleteTurn { .. } => false,
         }
     }
 
@@ -821,7 +857,9 @@ impl SamplingError {
     /// `x-should-retry: false`: the server says the request content caused the failure, not something transient;
     /// Context-length overflow: deterministic; re-sending the same payload always fails.
     pub fn is_retry_vetoed(&self) -> bool {
-        self.should_retry_header() == Some(false) || self.is_context_length_error()
+        matches!(self, Self::IncompleteTurn { .. })
+            || self.should_retry_header() == Some(false)
+            || self.is_context_length_error()
     }
 
     /// Deterministic in-stream failure: a `StreamError`/`EventStreamError` whose
@@ -847,7 +885,8 @@ impl SamplingError {
             | SamplingError::MaxTokensTruncation
             | SamplingError::DoomLoopDetected { .. }
             | SamplingError::RequestValidation(_)
-            | SamplingError::UnsupportedStopControl { .. } => false,
+            | SamplingError::UnsupportedStopControl { .. }
+            | SamplingError::IncompleteTurn { .. } => false,
         }
     }
 }
@@ -1090,6 +1129,59 @@ fn message_looks_overloaded(message: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incomplete_turn_is_nonretryable_under_all_policies() {
+        let causes = [
+            "continuation limit reached".to_owned(),
+            "Unauthorized (401): credential rejected".to_owned(),
+            "API error (status 500): overloaded".to_owned(),
+            "maximum context length exceeded".to_owned(),
+            "response truncated by max_tokens".to_owned(),
+            "empty response from model".to_owned(),
+            "Could not process image at .image.source.".to_owned(),
+            "encrypted content could not be decrypted or parsed".to_owned(),
+            "continuation refused: 界".repeat(40),
+        ];
+        for cause in causes {
+            let error = SamplingError::incomplete_turn(&cause);
+            assert_eq!(
+                [
+                    error.is_retryable(),
+                    error.is_auth_error(),
+                    error.is_rate_limited(),
+                    error.is_payload_too_large(),
+                    error.is_byte_size_overflow_coded(),
+                    error.is_context_length_error(),
+                    error.is_image_processing_error(),
+                    error.is_model_bound_history_error(),
+                    error.is_enc_boundary_error(),
+                    error.is_overloaded(),
+                    error.is_deterministic_in_stream_error(),
+                ],
+                [false; 11],
+                "incomplete turns must not inherit any retry or recovery classification"
+            );
+            assert!(
+                error.is_retry_vetoed(),
+                "incomplete turns veto every retry policy"
+            );
+            assert_eq!(
+                (error.retry_after(), error.should_retry_header()),
+                (None, None)
+            );
+            assert!(error.model_metadata().is_none());
+            let mut bounded: String = cause.chars().take(MAX_USER_ERROR_BODY_CHARS).collect();
+            if cause.chars().count() > MAX_USER_ERROR_BODY_CHARS {
+                bounded.push('…');
+            }
+            assert_eq!(
+                error.detail_with_causes(),
+                format!("Server-tool turn is incomplete: {bounded}"),
+                "incomplete turns preserve a bounded UTF-8 cause"
+            );
+        }
+    }
 
     #[test]
     fn overloaded_detects_stream_and_api_shapes() {

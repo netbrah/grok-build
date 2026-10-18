@@ -20,6 +20,7 @@ pub(crate) enum WireErrorType {
     Serialization,
     RateLimited,
     MaxTokensTruncation,
+    IncompleteTurn,
     Other,
 }
 
@@ -69,6 +70,7 @@ impl From<xai_grok_shell::sampling::error::SamplingErrorKind> for WireErrorType 
             K::MaxTokensTruncation => Self::MaxTokensTruncation,
             K::DoomLoopDetected => Self::Other,
             K::UnsupportedStopControl => Self::Other,
+            K::IncompleteTurn => Self::IncompleteTurn,
         }
     }
 }
@@ -160,6 +162,21 @@ pub(crate) fn format_request_failure(
     error_type: Option<WireErrorType>,
     raw: &str,
 ) -> FormattedRequestFailure {
+    use xai_grok_shell::sampling::error::{INCOMPLETE_TURN_MESSAGE, SamplingError};
+
+    if error_type == Some(WireErrorType::IncompleteTurn)
+        && let SamplingError::IncompleteTurn { cause } =
+            SamplingError::incomplete_turn_from_rendered(raw)
+    {
+        return FormattedRequestFailure {
+            status: None,
+            headline: INCOMPLETE_TURN_MESSAGE.to_owned(),
+            detail: strip_urls(&crate::app::effects::sanitize_user_error(
+                &cause.to_string(),
+            )),
+            wire: WireErrorType::IncompleteTurn,
+        };
+    }
     let untyped = error_type.is_none();
     let wire = if truncation_recovered_from_untyped_raw(error_type, raw) {
         WireErrorType::MaxTokensTruncation
@@ -634,6 +651,50 @@ fn is_noise_detail(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incomplete_turn_has_dedicated_display() {
+        for cause in [
+            "continuation limit reached",
+            "Unauthorized (401): credential rejected",
+            "maximum context length exceeded",
+            "response truncated by max_tokens; empty response",
+            "opaque replay refused: 界",
+        ] {
+            let error = xai_grok_shell::sampling::error::SamplingError::incomplete_turn(cause);
+            let kind = wire_error_kind(Some("incomplete_turn"));
+            let formatted = format_request_failure(None, kind, &error.to_string());
+            assert_eq!(
+                (
+                    formatted.status,
+                    formatted.headline.as_str(),
+                    formatted.detail.as_str()
+                ),
+                (None, "Server-tool turn is incomplete", cause),
+                "incomplete turns require their own failure headline and bounded cause"
+            );
+            assert_eq!(
+                formatted.message(),
+                format!("Server-tool turn is incomplete: {cause}"),
+            );
+            assert_eq!(
+                formatted.wire,
+                WireErrorType::parse(Some("incomplete_turn"))
+            );
+            let crate::scrollback::blocks::SessionEvent::RequestFailed {
+                status,
+                headline,
+                detail,
+            } = formatted.into_session_event()
+            else {
+                panic!("incomplete display must remain a failed session event");
+            };
+            assert_eq!(
+                (status, headline.as_str(), detail.as_str()),
+                (None, "Server-tool turn is incomplete", cause)
+            );
+        }
+    }
 
     #[test]
     fn formats_500_json_dump() {

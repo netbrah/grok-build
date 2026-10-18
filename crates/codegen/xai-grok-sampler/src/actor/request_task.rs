@@ -1013,6 +1013,9 @@ fn synthesize_from_info(info: &SamplingErrorInfo) -> SamplingError {
             }
         }
         SamplingErrorKind::MaxTokensTruncation => SamplingError::MaxTokensTruncation,
+        SamplingErrorKind::IncompleteTurn => {
+            SamplingError::incomplete_turn_from_rendered(&info.message)
+        }
         SamplingErrorKind::DoomLoopDetected => SamplingError::DoomLoopDetected {
             triggers: info.doom_loop_triggers.clone().unwrap_or_default(),
             aborted_at_chunk: info.doom_loop_aborted_at_chunk,
@@ -1142,7 +1145,8 @@ fn strip_reason_for_image_error(err: &SamplingError) -> StripReason {
         | SamplingError::DoomLoopDetected { .. }
         | SamplingError::RequestValidation(_)
         // Unsupported stop control (pause_turn) blames no image — the default label.
-        | SamplingError::UnsupportedStopControl { .. } => StripReason::PayloadHeuristic,
+        | SamplingError::UnsupportedStopControl { .. }
+        | SamplingError::IncompleteTurn { .. } => StripReason::PayloadHeuristic,
     }
 }
 
@@ -1218,6 +1222,79 @@ mod tests {
     use futures_util::stream;
     use reqwest::StatusCode;
     use xai_grok_sampling_types::ApiErrorCode;
+
+    #[test]
+    fn incomplete_turn_survives_info_synthesis_clone() {
+        for cause in [
+            "continuation limit reached".to_owned(),
+            "Unauthorized (401): maximum context length exceeded".to_owned(),
+            "opaque replay refused: 界".repeat(40),
+        ] {
+            let mut bounded: String = cause
+                .chars()
+                .take(xai_grok_sampling_types::error::MAX_USER_ERROR_BODY_CHARS)
+                .collect();
+            if cause.chars().count() > xai_grok_sampling_types::error::MAX_USER_ERROR_BODY_CHARS {
+                bounded.push('…');
+            }
+            let rendered = format!("Server-tool turn is incomplete: {bounded}");
+            let expected = serde_json::json!({
+                "kind": "IncompleteTurn",
+                "status_code": null,
+                "message": rendered,
+                "is_retryable": false,
+                "retry_after_secs": null,
+                "model_metadata": null,
+            });
+            let original = SamplingError::incomplete_turn(&cause);
+            let mut info = SamplingErrorInfo::from(&original);
+            assert_eq!(
+                serde_json::to_value(&info).unwrap(),
+                expected,
+                "incomplete identity must survive error-to-info classification"
+            );
+            assert_eq!(info.kind.as_ref(), "incomplete_turn");
+            assert_eq!(info.kind.as_ref().parse(), Ok(info.kind));
+            for _ in 0..3 {
+                info = serde_json::from_value(serde_json::to_value(&info).unwrap()).unwrap();
+                let synthesized = synthesize_from_info(&info);
+                let cloned = crate::retry::clone_error(&synthesized);
+                for error in [&synthesized, &cloned] {
+                    assert_eq!(
+                        serde_json::to_value(SamplingErrorInfo::from(error)).unwrap(),
+                        expected,
+                        "incomplete kind and bounded cause must survive synthesis and clone"
+                    );
+                    assert_eq!(error.to_string(), rendered);
+                    for retries in [0, 1, 4] {
+                        for limit in [0, 1, 15] {
+                            for threshold in [1, 2] {
+                                let crate::retry::RetryDecision::Fatal(terminal) =
+                                    crate::retry::classify_error(error, retries, limit, threshold)
+                                else {
+                                    panic!(
+                                        "incomplete turns must be fatal under every retry budget"
+                                    );
+                                };
+                                assert_eq!(
+                                    serde_json::to_value(SamplingErrorInfo::from(&terminal))
+                                        .unwrap(),
+                                    expected,
+                                    "retry classification must retain incomplete identity"
+                                );
+                            }
+                        }
+                    }
+                    assert_eq!(
+                        crate::retry::format_sampling_error(error, None),
+                        rendered,
+                        "incomplete formatting must not promise retry or success"
+                    );
+                }
+                info = SamplingErrorInfo::from(&cloned);
+            }
+        }
+    }
 
     #[test]
     fn strip_reason_invalid_image_is_server_rejected_on_api_and_stream() {
