@@ -3517,20 +3517,14 @@ impl SessionActor {
                     tools,
                 );
                 let result_count = answer.tools().len();
+                let raw_output = tool_search_answer_display(&results[..result_count]);
                 // Harness-authored definitions are not included in provider token usage.
                 self.chat_state_handle
                     .push_unreported_model_output(ConversationItem::Discovery { item: answer });
                 answered_discovery_call_ids.insert(call_id.clone());
                 answered_any = true;
-                self.handle_sampling_event(
-                    xai_grok_sampler::SamplingEvent::ToolSearchCompleted {
-                        request_id: xai_grok_sampler::RequestId::from(req_id),
-                        call_id: call_id.clone(),
-                        result_count,
-                        status: xai_grok_sampling_types::conversation::tool_search::ToolSearchStatus::Completed,
-                    },
-                )
-                .await;
+                self.send_tool_search_close(call_id, acp::ToolCallStatus::Completed, raw_output)
+                    .await;
                 tracing::info!(
                     prompt_id = %req_id,
                     call_id = %call_id,

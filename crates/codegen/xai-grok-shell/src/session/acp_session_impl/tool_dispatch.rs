@@ -808,6 +808,22 @@ mod tests {
     }
 }
 
+/// Singleton groups preserve the committed prefix's order across servers.
+pub(super) fn tool_search_answer_display(
+    results: &[xai_grok_tools::types::tool_index::ToolSearchResult],
+) -> serde_json::Value {
+    let groups: Vec<_> = results
+        .iter()
+        .map(|tool| {
+            serde_json::json!({
+                "server": tool.server_name,
+                "tools": [{"tool_name": tool.tool_name, "description": tool.description}]
+            })
+        })
+        .collect();
+    serde_json::json!({"result_count": results.len(), "status": "completed", "results": groups})
+}
+
 /// Messages reports success through its result content, not a Responses status field.
 pub(super) fn messages_search_results(
     item: &xai_grok_sampling_types::tool_search::ToolSearchItem,

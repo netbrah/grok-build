@@ -887,3 +887,558 @@ fn a_server_executed_search_is_never_answered_by_the_harness() {
         });
     });
 }
+
+struct NativeAnswerFixture {
+    actor: Arc<SessionActor>,
+    event_rx: tokio::sync::mpsc::UnboundedReceiver<SessionEvent>,
+    gateway_cards: Arc<std::sync::Mutex<Vec<acp::SessionUpdate>>>,
+}
+
+async fn native_answer_actor(server: &MockInferenceServer) -> NativeAnswerFixture {
+    let sampling_cfg = xai_grok_sampler::SamplerConfig {
+        base_url: server.url(),
+        model: "test".to_string(),
+        api_backend: xai_grok_sampler::ApiBackend::Responses,
+        context_window: 256_000,
+        max_retries: Some(0),
+        idle_timeout_secs: Some(30),
+        ..Default::default()
+    };
+    let (sampler_tx, mut sampler_rx) = tokio::sync::mpsc::unbounded_channel();
+    let sampler =
+        xai_grok_sampler::SamplerActor::spawn(sampling_cfg, sampler_no_retries(), sampler_tx);
+    let (gateway_tx, mut gateway_rx) =
+        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+    let gateway_cards = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let gateway_sink = gateway_cards.clone();
+    tokio::task::spawn_local(async move {
+        while let Some(message) = gateway_rx.recv().await {
+            if let xai_acp_lib::AcpClientMessage::SessionNotification(args) = message {
+                gateway_sink.lock().unwrap().push(args.request.update);
+                let _ = args.response_tx.send(Ok(()));
+            }
+        }
+    });
+    let (persistence_tx, persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+    super::rate_limit_backoff_tests::drain_persistence(persistence_rx);
+    let (mut actor, event_rx) =
+        super::support::create_test_actor_ex(0, 256_000, 85, gateway_tx, persistence_tx).await;
+    actor.sampler_handle = sampler;
+    actor.transient_retry_enabled = false;
+    actor.max_retries = 0;
+    let mut cfg = actor.chat_state_handle.get_sampling_config().await.unwrap();
+    cfg.base_url = server.url();
+    cfg.api_backend = xai_grok_sampling_types::ApiBackend::Responses;
+    cfg.model = "test".to_string();
+    actor.chat_state_handle.update_sampling_config(cfg);
+    let actor = Arc::new(actor);
+    let drainer = actor.clone();
+    tokio::task::spawn_local(async move {
+        while let Some(event) = sampler_rx.recv().await {
+            drainer.handle_sampling_event(event).await;
+        }
+    });
+    NativeAnswerFixture {
+        actor,
+        event_rx,
+        gateway_cards,
+    }
+}
+
+fn captured_native_answer_cards(fixture: &mut NativeAnswerFixture) -> Vec<acp::SessionUpdate> {
+    let mut cards = Vec::new();
+    while let Ok(event) = fixture.event_rx.try_recv() {
+        if let SessionEvent::Notification(SessionNotification::Acp(notification)) = event
+            && matches!(
+                notification.update,
+                acp::SessionUpdate::ToolCall(_) | acp::SessionUpdate::ToolCallUpdate(_)
+            )
+        {
+            cards.push(notification.update);
+        }
+    }
+    assert!(
+        cards.iter().any(|card| matches!(card,
+            acp::SessionUpdate::ToolCallUpdate(update)
+                if update.fields.raw_output.as_ref().is_some_and(|raw| raw.get("result_count").is_some())
+        )),
+        "anti-vacuity: capture a real search-card update from SessionEvent, not gateway ({} gateway updates)",
+        fixture.gateway_cards.lock().unwrap().len()
+    );
+    cards
+}
+
+fn streamed_native_search_response(items: &[serde_json::Value]) -> ScriptedResponse {
+    let mut events =
+        with_terminal_output_items(responses_api_completed_only_events("test"), items.to_vec());
+    let completed = events
+        .iter()
+        .position(|event| {
+            serde_json::from_str::<serde_json::Value>(&event.data)
+                .is_ok_and(|value| value["type"] == "response.completed")
+        })
+        .expect("completed response event");
+    events.splice(
+        completed..completed,
+        items.iter().enumerate().map(|(index, item)| {
+            xai_grok_test_support::SseEvent::data(
+                serde_json::json!({
+                    "type": "response.output_item.done", "output_index": index, "item": item
+                })
+                .to_string(),
+            )
+        }),
+    );
+    ScriptedResponse::sse(events)
+}
+
+// Extracted from chat_history.jsonl:11,13 (05647cb1a71399cc).
+fn recorded_pty_call() -> serde_json::Value {
+    serde_json::from_str(r###"{"type":"tool_search_call","id":"tsc_0d4193808891e64e016ace859bd6c88196b21ed9cd087f4a4f","call_id":"call_LkRJptMRHsgpsSlR7jelBihM","execution":"client","arguments":{"query":"+pty pty_spawn pty_write pty_read pty_list pty_kill pty_wait","limit":6},"status":"completed"}"###)
+        .expect("recorded client call")
+}
+
+fn recorded_pty_definitions() -> Vec<serde_json::Value> {
+    serde_json::from_str(r###"[
+        {"type":"function","name":"pty__pty_kill","description":"Stop a PTY session and optionally clean up its metadata and buffered output.","parameters":{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{"cleanup_session":{"description":"Remove the session metadata and buffered output after kill. Default: false.","type":["boolean","null"]},"session_id":{"type":"string"},"signal":{"description":"Signal to send to the PTY process. Allowed values: sigint | sigterm | sigkill. Default: sigterm.","enum":["sigint","sigterm","sigkill",null],"type":["string","null"]}},"required":["session_id"],"title":"PtyKillRequest","type":"object"}},
+        {"type":"function","name":"pty__pty_spawn","description":"Create a new PTY session without waiting for the process to finish.","parameters":{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{"args":{"description":"Argument vector passed to the spawned command.","items":{"type":"string"},"type":"array"},"capture_limit":{"description":"Maximum number of output lines to include in initial_output. This is the only switch that enables initial_output.","format":"uint","minimum":0,"type":["integer","null"]},"capture_wait_ms":{"description":"Milliseconds to wait for first output before returning initial_output. Default: 0. Only used when capture_limit is set.","format":"uint64","minimum":0,"type":["integer","null"]},"command":{"description":"Executable or shell command to start in the new PTY session.","type":"string"},"cwd":{"description":"Working directory for the spawned process.","type":["string","null"]},"description":{"description":"Optional human-readable note stored with the session. Defaults to a generated summary.","type":["string","null"]},"env":{"description":"Environment variable overrides. Values must be scalar JSON values.","items":{"additionalProperties":false,"properties":{"name":{"description":"Environment variable name.","type":"string"},"value":{"description":"Scalar value assigned to the variable.","type":["string","number","boolean"]}},"required":["name","value"],"type":"object"},"type":["array","null"]},"line_number_mode":{"description":"How to include line numbers in initial_output.text. Allowed values: none | embedded. Default: none. raw output_view cannot be combined with embedded. Providing this without capture_limit is invalid.","enum":["none","embedded",null],"type":["string","null"]},"output_view":{"description":"Read view for initial_output. Allowed values: plain | ansi | raw. Default: plain. Providing this without capture_limit is invalid.","enum":["plain","ansi","raw",null],"type":["string","null"]},"title":{"description":"Optional short title for display in session listings.","type":["string","null"]}},"required":["command"],"title":"PtySpawnRequest","type":"object"}},
+        {"type":"function","name":"pty__pty_list","description":"List known PTY sessions without returning large log payloads.","parameters":{"properties":{},"type":"object"}},
+        {"type":"function","name":"pty__pty_write","description":"Send input into a running PTY session.","parameters":{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{"data":{"type":"string"},"mode":{"description":"Write mode. Allowed values: plain | escaped. Default: plain.","enum":["plain","escaped",null],"type":["string","null"]},"session_id":{"type":"string"}},"required":["session_id","data"],"title":"PtyWriteRequest","type":"object"}},
+        {"type":"function","name":"pty__pty_wait","description":"Wait for a PTY session to exit without requiring host task support.","parameters":{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{"session_id":{"type":"string"},"timeout_ms":{"description":"Maximum time to wait before returning. If omitted, wait until the session exits.","format":"uint64","minimum":0,"type":["integer","null"]}},"required":["session_id"],"title":"PtyWaitRequest","type":"object"}},
+        {"type":"function","name":"pty__pty_read","description":"Read PTY output with pagination, optional filtering, and view selection.","parameters":{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{"ignore_case":{"description":"Whether regex matching should ignore case. Default: false.","type":["boolean","null"]},"limit":{"description":"Maximum number of lines to return. Default: server read limit.","format":"uint","minimum":0,"type":["integer","null"]},"line_number_mode":{"description":"How to include line numbers in page.text. Allowed values: none | embedded. Default: none. embedded prefixes each returned line as <line_number>\\t<text>. raw output_view cannot be combined with embedded.","enum":["none","embedded",null],"type":["string","null"]},"offset":{"description":"Zero-based starting line offset. Default: 0.","format":"uint","minimum":0,"type":["integer","null"]},"output_view":{"description":"Read view. Allowed values: plain | ansi | raw. Default: plain. raw output_view cannot be combined with embedded line_number_mode.","enum":["plain","ansi","raw",null],"type":["string","null"]},"pattern":{"description":"Optional regular expression applied after view selection.","type":["string","null"]},"session_id":{"type":"string"}},"required":["session_id"],"title":"PtyReadRequest","type":"object"}}
+    ]"###).expect("six recorded PTY definitions")
+}
+
+fn seed_native_pty_tools(actor: &SessionActor, definitions: &[serde_json::Value]) {
+    use crate::session::tool_index::{ServerMetadata, ToolMetadata};
+    let mut snapshot = actor.tool_metadata_snapshot.lock().unwrap();
+    snapshot.tools = definitions
+        .iter()
+        .map(|definition| {
+            let name = definition["name"].as_str().unwrap();
+            ToolMetadata {
+                qualified_name: name.to_string(),
+                server_name: "pty".to_string(),
+                tool_name: name.strip_prefix("pty__").unwrap().to_string(),
+                description: definition["description"].as_str().unwrap().to_string(),
+                parameters: definition["parameters"]["properties"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .cloned()
+                    .collect(),
+                input_schema: definition["parameters"].clone(),
+            }
+        })
+        .collect();
+    snapshot.servers = vec![ServerMetadata {
+        name: "pty".to_string(),
+        description: None,
+    }];
+    snapshot.mcp_initialized = true;
+}
+
+async fn exercise_native_answer_cards(
+    items: &[serde_json::Value],
+    definitions: &[serde_json::Value],
+    followup: Option<ScriptedResponse>,
+    request_id: &str,
+) -> (Vec<serde_json::Value>, Vec<acp::SessionUpdate>) {
+    let server = MockInferenceServer::start_with_models(vec![MockModelEntry::new("test")])
+        .await
+        .expect("mock inference server");
+    server.enqueue_response("/v1/responses", streamed_native_search_response(items));
+    if let Some(response) = followup {
+        server.enqueue_response("/v1/responses", response);
+    }
+    let mut fixture = native_answer_actor(&server).await;
+    seed_codex_family(&fixture.actor).await;
+    seed_native_pty_tools(&fixture.actor, definitions);
+    let outcome = run_discovery_turn(&server, &fixture.actor, request_id).await;
+    pump_local_tasks().await;
+    assert!(outcome.is_ok(), "native discovery turn completes");
+    let cards = captured_native_answer_cards(&mut fixture);
+    (second_request_input(&server), cards)
+}
+
+fn committed_native_answer<'a>(
+    input: &'a [serde_json::Value],
+    call: &serde_json::Value,
+) -> &'a serde_json::Value {
+    let call_id = call["call_id"].as_str().unwrap();
+    let call_at = input
+        .iter()
+        .position(|item| item["type"] == "tool_search_call" && item["call_id"] == call_id)
+        .expect("the real second request carries the accepted call");
+    assert_eq!(&input[call_at], call);
+    let outputs: Vec<_> = input
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item["type"] == "tool_search_output" && item["call_id"] == call_id)
+        .collect();
+    assert_eq!(outputs.len(), 1, "one committed answer per call ID");
+    let (output_at, output) = outputs[0];
+    assert!(
+        call_at < output_at,
+        "commitment preserves call-before-answer order"
+    );
+    assert_eq!(output["execution"], "client");
+    assert_eq!(output["status"], "completed");
+    assert!(
+        output.get("id").is_none(),
+        "harness answer has no invented item ID"
+    );
+    assert!(output["tools"].is_array());
+    output
+}
+
+fn assert_committed_native_card(
+    cards: &[acp::SessionUpdate],
+    call: &serde_json::Value,
+    answer: &serde_json::Value,
+    definitions: &[serde_json::Value],
+) {
+    let call_id = call["call_id"].as_str().unwrap();
+    let openings: Vec<_> = cards
+        .iter()
+        .filter_map(|card| match card {
+            acp::SessionUpdate::ToolCall(open) if open.tool_call_id.0.as_ref() == call_id => {
+                Some(open)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(openings.len(), 1, "one native search opening per call ID");
+    assert_eq!(openings[0].kind, acp::ToolKind::Search);
+    assert_eq!(openings[0].status, acp::ToolCallStatus::InProgress);
+    assert_eq!(openings[0].raw_input.as_ref(), Some(&call["arguments"]));
+    assert_eq!(
+        openings[0].meta.as_ref().unwrap().get("tool_search"),
+        Some(&serde_json::json!(true))
+    );
+    let closes: Vec<_> = cards
+        .iter()
+        .filter_map(|card| match card {
+            acp::SessionUpdate::ToolCallUpdate(close)
+                if close.tool_call_id.0.as_ref() == call_id =>
+            {
+                Some(close)
+            }
+            _ => None,
+        })
+        .collect();
+    let final_close = closes.last().expect("native search has a captured close");
+    let raw = final_close.fields.raw_output.as_ref().unwrap();
+    let committed = answer["tools"].as_array().unwrap();
+    let expected: Vec<_> = committed
+        .iter()
+        .map(|tool| {
+            let definition = definitions
+                .iter()
+                .find(|definition| definition["name"] == tool["name"])
+                .expect("committed name belongs to the seeded definitions");
+            assert_eq!(
+                tool, definition,
+                "display handoff must not change committed schemas"
+            );
+            serde_json::json!({
+                "tool_name": tool["name"], "description": tool["description"], "server": "pty"
+            })
+        })
+        .collect();
+    let groups = raw.get("results").and_then(serde_json::Value::as_array);
+    let actual: Vec<_> = groups
+        .into_iter()
+        .flatten()
+        .flat_map(|group| {
+            group["tools"].as_array().unwrap().iter().map(move |tool| {
+                serde_json::json!({
+                    "tool_name": tool["tool_name"],
+                    "description": tool["description"],
+                    "server": group["server"]
+                })
+            })
+        })
+        .collect();
+    let names = |entries: &[serde_json::Value]| {
+        entries
+            .iter()
+            .map(|entry| entry["tool_name"].clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        names(&actual),
+        names(&expected),
+        "final raw_output names must equal committed tools in order"
+    );
+    assert_eq!(
+        actual, expected,
+        "committed descriptions and server labels are retained"
+    );
+    assert_eq!(raw["result_count"], serde_json::json!(actual.len()));
+    assert_eq!(raw["status"], "completed");
+    assert_eq!(
+        final_close.fields.status,
+        Some(acp::ToolCallStatus::Completed)
+    );
+    assert_eq!(
+        closes.len(),
+        1,
+        "one enriched close, never a count-only overwrite"
+    );
+    assert_eq!(
+        raw.as_object().unwrap().len(),
+        3,
+        "only count, status and results are displayed"
+    );
+    for group in groups.unwrap() {
+        assert_eq!(
+            group.as_object().unwrap().len(),
+            2,
+            "only server and tools in a group"
+        );
+        for tool in group["tools"].as_array().unwrap() {
+            assert_eq!(
+                tool.as_object().unwrap().len(),
+                2,
+                "no schema or invented score in the card"
+            );
+        }
+    }
+}
+
+#[test]
+fn native_answer_card_matches_committed_tools() {
+    on_session_stack(|| {
+        run_paused(|| async {
+            let call = recorded_pty_call();
+            let definitions = recorded_pty_definitions();
+            let (input, cards) = exercise_native_answer_cards(
+                std::slice::from_ref(&call),
+                &definitions,
+                None,
+                "req-va0p-committed-card",
+            )
+            .await;
+            let answer = committed_native_answer(&input, &call);
+            let tools = answer["tools"].as_array().unwrap();
+            assert_eq!(
+                tools.len(),
+                6,
+                "the recorded query selects all six PTY tools"
+            );
+            for definition in &definitions {
+                assert_eq!(
+                    tools
+                        .iter()
+                        .filter(|tool| tool["name"] == definition["name"])
+                        .count(),
+                    1,
+                    "each recorded schema is committed exactly once"
+                );
+            }
+            assert_committed_native_card(&cards, &call, answer, &definitions);
+        });
+    });
+}
+
+#[test]
+fn native_answer_card_uses_byte_capped_committed_prefix() {
+    on_session_stack(|| {
+        run_paused(|| async {
+            use xai_grok_sampling_types::conversation::tool_search::{
+                MAX_DISCOVERY_ANSWER_BYTES, ToolSearchItem,
+            };
+            let call = recorded_pty_call();
+            let mut definitions = recorded_pty_definitions();
+            let (uncapped_input, _) = exercise_native_answer_cards(
+                std::slice::from_ref(&call),
+                &definitions,
+                None,
+                "req-va0p-uncapped-order",
+            )
+            .await;
+            let uncapped = committed_native_answer(&uncapped_input, &call);
+            let selected = uncapped["tools"].as_array().unwrap();
+            assert_eq!(
+                selected.len(),
+                6,
+                "the uncapped real arm selects all six tools"
+            );
+            // Schema descriptions do not enter the metadata search document.
+            for definition in &mut definitions {
+                definition["parameters"]["description"] = serde_json::json!("x".repeat(9_000));
+            }
+            let full_tools: Vec<_> = selected
+                .iter()
+                .map(|tool| {
+                    definitions
+                        .iter()
+                        .find(|definition| definition["name"] == tool["name"])
+                        .unwrap()
+                        .clone()
+                })
+                .collect();
+            let call_id = call["call_id"].as_str().unwrap();
+            let full_answer = serde_json::json!({
+                "type": "tool_search_output", "call_id": call_id, "status": "completed",
+                "execution": "client", "tools": full_tools
+            });
+            assert!(
+                serde_json::to_vec(&full_answer).unwrap().len() > MAX_DISCOVERY_ANSWER_BYTES,
+                "the actual serialized selected answer must exceed the byte cap"
+            );
+            let expected = ToolSearchItem::client_answer(call_id, full_tools);
+            let (input, cards) = exercise_native_answer_cards(
+                std::slice::from_ref(&call),
+                &definitions,
+                None,
+                "req-va0p-capped-card",
+            )
+            .await;
+            let answer = committed_native_answer(&input, &call);
+            assert_eq!(
+                answer,
+                expected.raw(),
+                "the real arm commits the client_answer prefix"
+            );
+            let kept = answer["tools"].as_array().unwrap();
+            assert!(
+                !kept.is_empty() && kept.len() < selected.len(),
+                "retain a nonempty strict prefix"
+            );
+            assert_eq!(
+                answer["tools_dropped"].as_u64(),
+                Some((selected.len() - kept.len()) as u64)
+            );
+            assert!(answer["tools_dropped"].as_u64().unwrap() > 0);
+            assert!(serde_json::to_vec(answer).unwrap().len() <= MAX_DISCOVERY_ANSWER_BYTES);
+            assert_eq!(
+                kept.iter().map(|tool| &tool["name"]).collect::<Vec<_>>(),
+                selected[..kept.len()]
+                    .iter()
+                    .map(|tool| &tool["name"])
+                    .collect::<Vec<_>>(),
+                "byte capping keeps the real selected prefix in order"
+            );
+            assert_committed_native_card(&cards, &call, answer, &definitions);
+        });
+    });
+}
+
+#[test]
+fn native_answer_card_empty_budget_and_provider_answer_preserve_semantics() {
+    on_session_stack(|| {
+        run_paused(|| async {
+            let definitions = recorded_pty_definitions();
+            let calls: Vec<_> = (0..5)
+                .map(|index| {
+                    let mut call = recorded_pty_call();
+                    call["call_id"] = serde_json::json!(format!("call_va0p_budget_{index}"));
+                    call["id"] = serde_json::json!(format!("tsc_va0p_budget_{index}"));
+                    call
+                })
+                .collect();
+            let mut redelivered = calls[0].clone();
+            redelivered["id"] = serde_json::json!("tsc_va0p_budget_redelivered");
+            let (input, cards) = exercise_native_answer_cards(
+                &calls,
+                &definitions,
+                Some(discovery_only_response(&[redelivered])),
+                "req-va0p-budget-cards",
+            )
+            .await;
+            assert_eq!(
+                input
+                    .iter()
+                    .filter(|item| item["type"] == "tool_search_output")
+                    .count(),
+                5,
+                "all five calls pair and redelivery adds no answer or continuation"
+            );
+            for (index, call) in calls.iter().enumerate() {
+                let answer = committed_native_answer(&input, call);
+                assert_eq!(
+                    answer["tools"].as_array().unwrap().len(),
+                    if index < 4 { 6 } else { 0 }
+                );
+                assert_committed_native_card(&cards, call, answer, &definitions);
+            }
+            assert_eq!(cards.len(), 10, "redelivery cannot emit a second close");
+
+            for (case, seed, query) in [
+                (
+                    "empty",
+                    Vec::new(),
+                    "+pty pty_spawn pty_write pty_read pty_list pty_kill pty_wait",
+                ),
+                ("no-match", definitions.clone(), "zzzxxyyqqnonexistent"),
+            ] {
+                let mut call = recorded_pty_call();
+                call["arguments"]["query"] = serde_json::json!(query);
+                let (input, cards) = exercise_native_answer_cards(
+                    std::slice::from_ref(&call),
+                    &seed,
+                    None,
+                    &format!("req-va0p-{case}-card"),
+                )
+                .await;
+                let answer = committed_native_answer(&input, &call);
+                assert_eq!(answer["tools"], serde_json::json!([]));
+                assert_committed_native_card(&cards, &call, answer, &seed);
+                assert_eq!(cards.len(), 2, "empty answers still open and close once");
+            }
+
+            let server = MockInferenceServer::start_with_models(vec![MockModelEntry::new("test")])
+                .await
+                .expect("mock inference server");
+            let call = lone_client_call_item("call_va0p_provider_answer");
+            let provider_answer = provider_answer_item("call_va0p_provider_answer");
+            server.enqueue_response(
+                "/v1/responses",
+                streamed_native_search_response(&[call.clone(), provider_answer.clone()]),
+            );
+            let mut fixture = native_answer_actor(&server).await;
+            seed_codex_family(&fixture.actor).await;
+            seed_native_pty_tools(&fixture.actor, &definitions);
+            let outcome =
+                run_discovery_turn(&server, &fixture.actor, "req-va0p-provider-card").await;
+            pump_local_tasks().await;
+            assert!(outcome.is_ok());
+            let cards = captured_native_answer_cards(&mut fixture);
+            assert_eq!(
+                server.request_count_for("/v1/responses"),
+                1,
+                "provider answer needs no harness continuation"
+            );
+            let items = transcript_discovery_items(&fixture.actor).await;
+            let outputs: Vec<_> = items
+                .iter()
+                .filter(|item| item["type"] == "tool_search_output")
+                .cloned()
+                .collect();
+            assert_eq!(
+                outputs,
+                vec![provider_answer],
+                "provider answer remains verbatim without a harness answer"
+            );
+            assert_eq!(cards.len(), 2, "provider path gets no new display event");
+            let acp::SessionUpdate::ToolCall(opening) = &cards[0] else {
+                panic!("provider call opens native card");
+            };
+            assert_eq!(opening.tool_call_id.0.as_ref(), "call_va0p_provider_answer");
+            assert_eq!(opening.raw_input.as_ref(), Some(&call["arguments"]));
+            assert_eq!(opening.status, acp::ToolCallStatus::InProgress);
+            let acp::SessionUpdate::ToolCallUpdate(close) = &cards[1] else {
+                panic!("provider answer closes native card");
+            };
+            assert_eq!(close.tool_call_id, opening.tool_call_id);
+            assert_eq!(close.fields.status, Some(acp::ToolCallStatus::Completed));
+            assert_eq!(
+                close.fields.raw_output,
+                Some(serde_json::json!({"result_count": 1, "status": "completed"})),
+                "provider-delivered client answers remain count-only"
+            );
+        });
+    });
+}

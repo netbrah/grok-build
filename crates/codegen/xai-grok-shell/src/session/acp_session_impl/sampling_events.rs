@@ -641,16 +641,8 @@ impl SessionActor {
                         let raw_output = result.unwrap_or_else(
                             || serde_json::json!({"result_count": 0, "status": "error"}),
                         );
-                        self.send_update(
-                            acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
-                                acp::ToolCallId::new(Arc::from(call_id)),
-                                acp::ToolCallUpdateFields::new()
-                                    .status(Some(status))
-                                    .raw_output(Some(raw_output)),
-                            )),
-                            None,
-                        )
-                        .await;
+                        self.send_tool_search_close(call_id, status, raw_output)
+                            .await;
                     }
                     ToolSearchKind::Call | ToolSearchKind::Output => {}
                 }
@@ -706,18 +698,28 @@ impl SessionActor {
                     Some(word) => serde_json::json!({"result_count": result_count, "status": word}),
                     None => serde_json::json!({"result_count": result_count}),
                 };
-                self.send_update(
-                    acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
-                        acp::ToolCallId::new(Arc::from(call_id.as_str())),
-                        acp::ToolCallUpdateFields::new()
-                            .status(Some(status))
-                            .raw_output(Some(raw_output)),
-                    )),
-                    None,
-                )
-                .await;
+                self.send_tool_search_close(&call_id, status, raw_output)
+                    .await;
             }
         }
+    }
+
+    pub(super) async fn send_tool_search_close(
+        &self,
+        call_id: &str,
+        status: acp::ToolCallStatus,
+        raw_output: serde_json::Value,
+    ) {
+        self.send_update(
+            acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+                acp::ToolCallId::new(Arc::from(call_id)),
+                acp::ToolCallUpdateFields::new()
+                    .status(Some(status))
+                    .raw_output(Some(raw_output)),
+            )),
+            None,
+        )
+        .await;
     }
 }
 
