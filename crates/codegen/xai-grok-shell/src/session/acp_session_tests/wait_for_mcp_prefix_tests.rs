@@ -834,3 +834,97 @@ async fn rebuild_pass_yields_to_a_config_change_during_its_relist() {
         })
         .await;
 }
+
+#[derive(Debug)]
+struct NativeWaitTool {
+    name: &'static str,
+    namespace_reads: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl xai_grok_tools::types::tool_metadata::ToolMetadata for NativeWaitTool {
+    fn kind(&self) -> xai_grok_tools::types::tool::ToolKind {
+        xai_grok_tools::types::tool::ToolKind::Other
+    }
+    fn tool_namespace(&self) -> xai_grok_tools::types::tool::ToolNamespace {
+        self.namespace_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        xai_grok_tools::types::tool::ToolNamespace::MCP
+    }
+    fn description_template(&self) -> &str {
+        "Final-prefix MCP fixture"
+    }
+}
+
+impl xai_tool_runtime::Tool for NativeWaitTool {
+    type Args = serde_json::Value;
+    type Output = xai_grok_tools::types::output::ToolOutput;
+    fn id(&self) -> xai_tool_protocol::ToolId {
+        xai_tool_protocol::ToolId::new(self.name).unwrap()
+    }
+    fn description(
+        &self,
+        _ctx: &xai_tool_runtime::ListToolsContext,
+    ) -> xai_tool_types::ToolDescription {
+        xai_tool_types::ToolDescription::new(self.name, "Final-prefix MCP fixture")
+    }
+    async fn run(
+        &self,
+        _ctx: xai_tool_runtime::ToolCallContext,
+        _args: serde_json::Value,
+    ) -> Result<Self::Output, xai_tool_runtime::ToolError> {
+        panic!("native wait fixtures never execute tools")
+    }
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn native_candidates_wait_for_final_mcp_prefix_snapshot() {
+    tokio::task::LocalSet::new().run_until(async {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let a = pending_linear_actor(McpInitStrategy::Progressive).await;
+        *a.delivery_tools.borrow_mut() = vec!["linear__final".into()];
+        let bridge = a.agent.borrow().tool_bridge().clone();
+        let namespace_reads = Arc::new(AtomicUsize::new(0));
+        let schema = serde_json::json!({"type":"object","properties":{"value":{"type":"string"}},"required":["value"],"additionalProperties":false});
+        bridge.register_mcp_tools("linear__early".into(), NativeWaitTool { name: "linear__early", namespace_reads: namespace_reads.clone() }, Some(schema.clone())).unwrap();
+        let before_wait = namespace_reads.load(Ordering::SeqCst);
+        {
+            let cancelled = a.prepare_native_tool_candidates_timed();
+            tokio::pin!(cancelled);
+            assert!(futures::poll!(cancelled.as_mut()).is_pending());
+            assert_eq!(namespace_reads.load(Ordering::SeqCst), before_wait, "U3 candidate snapshot must not be read before final wait publication");
+        }
+        assert!(a.mcp_state.lock().await.is_initializing(), "cancelling a preparation does not cancel its initialization owner");
+        let prepare = a.prepare_native_tool_candidates_timed();
+        tokio::pin!(prepare);
+        assert!(futures::poll!(prepare.as_mut()).is_pending());
+        assert_eq!(namespace_reads.load(Ordering::SeqCst), before_wait);
+        tokio::time::advance(ms(37)).await;
+        bridge.register_mcp_tools("linear__final".into(), NativeWaitTool { name: "linear__final", namespace_reads: namespace_reads.clone() }, Some(schema.clone())).unwrap();
+        a.mcp_state.lock().await.finish_init();
+        assert!(futures::poll!(prepare.as_mut()).is_pending(), "handshakes settling must not release the final-snapshot waiter");
+        a.refresh_mcp_snapshot_and_schedule_reminder_with_disabled(&std::collections::HashMap::new()).await;
+        assert!(!a.tool_metadata_snapshot.lock().unwrap().mcp_initialized);
+        assert!(futures::poll!(prepare.as_mut()).is_pending(), "final registry publication precedes waiter release");
+        {
+            let mut state = a.mcp_state.lock().await;
+            a.init_publication().complete(&mut state);
+        }
+        let (prepared, wait_ms) = prepare.await;
+        assert!(a.tool_metadata_snapshot.lock().unwrap().mcp_initialized);
+        assert_eq!(wait_ms, 37, "the existing full-wait budget and elapsed accounting are preserved");
+        assert!(!a.full_mcp_wait_timed_out());
+        let mut row = a.chat_state_handle.capture_transport_binding().await.unwrap().config;
+        row.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+        row.supports_search_tool = true;
+        let tools = a.turn_native_tool_candidates(&prepared.builtin_defs, &prepared.mcp_specs).select_for_row(&row);
+        let expected: Vec<_> = a.turn_base_tool_specs(&prepared.builtin_defs).into_iter().chain(
+            ["linear__early", "linear__final"].map(|name| xai_grok_sampling_types::ToolSpec {
+                name: name.into(), description: Some("Final-prefix MCP fixture".into()), parameters: schema.clone(), exposure: xai_grok_sampling_types::ToolExposure::Deferred,
+            })
+        ).collect();
+        assert_eq!(serde_json::to_value(&tools).unwrap(), serde_json::to_value(&expected).unwrap(), "U3 post-wait candidates must include the final registered qualified schema");
+        let (again, paid_again) = a.prepare_native_tool_candidates_timed().await;
+        assert_eq!(paid_again, 0, "completed initialization does not repay the wait");
+        assert_eq!(serde_json::to_value(a.turn_native_tool_candidates(&again.builtin_defs, &again.mcp_specs).select_for_row(&row)).unwrap(), serde_json::to_value(expected).unwrap());
+    }).await;
+}

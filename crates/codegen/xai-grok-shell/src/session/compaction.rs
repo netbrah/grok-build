@@ -4264,4 +4264,261 @@ mod binding_tests {
             })
             .await;
     }
+
+    async fn candidate_builtin_surface(actor: &SessionActor, two_pass: bool) -> LegacySurface {
+        let defs = actor.prepare_tool_definitions().await;
+        assert!(
+            defs.iter()
+                .any(|definition| definition.function.name == "web_search")
+        );
+        assert!(
+            !defs
+                .iter()
+                .any(|definition| definition.function.name == "mcp__u7__lookup")
+        );
+        let active = actor.backend_search_active();
+        let filtered: Vec<_> = defs
+            .into_iter()
+            .filter(|definition| !active || definition.function.name != "web_search")
+            .collect();
+        let prepared = actor.turn_base_tool_specs(&filtered);
+        let ordinary: Vec<_> = filtered.iter().cloned().map(ToolSpec::from).collect();
+        assert!(
+            prepared
+                .iter()
+                .any(|spec| spec.exposure == ToolExposure::Deferred)
+        );
+        assert!(
+            ordinary
+                .iter()
+                .all(|spec| spec.exposure == ToolExposure::Immediate)
+        );
+        assert_ne!(
+            serde_json::to_value(&prepared).unwrap(),
+            serde_json::to_value(&ordinary).unwrap(),
+            "U5 operator exposure distinguishes the two landed conversions"
+        );
+        assert_eq!(
+            ordinary.iter().any(|spec| spec.name == "web_search"),
+            !active
+        );
+        let hosted = actor.hosted_tools_for_turn();
+        assert_eq!(hosted.is_empty(), !active);
+        if two_pass {
+            LegacySurface {
+                token_kind: "specs",
+                token_input: serde_json::to_value(&prepared).unwrap(),
+                tokens: xai_chat_state::estimate_tool_specs_tokens(&prepared),
+                tools: prepared,
+                hosted,
+            }
+        } else {
+            LegacySurface {
+                token_kind: "definitions",
+                token_input: serde_json::to_value(&filtered).unwrap(),
+                tokens: xai_chat_state::estimate_tool_definitions_tokens(&filtered),
+                tools: ordinary,
+                hosted,
+            }
+        }
+    }
+
+    async fn register_compaction_candidate(actor: &SessionActor) {
+        use xai_grok_tools::types::tool::ToolNamespace;
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["query"],
+            "additionalProperties": false
+        });
+        let bridge = actor.agent.borrow().tool_bridge().clone();
+        bridge
+            .register_mcp_tools(
+                "u5__lookup".into(),
+                support::StubMcpTool("u5__lookup"),
+                Some(schema.clone()),
+            )
+            .unwrap();
+        assert!(xai_grok_mcp::servers::parse_mcp_qualified_name("u5__lookup").is_some());
+        let typed: Vec<_> = bridge
+            .toolset()
+            .tools_namespaced()
+            .into_iter()
+            .filter(|(definition, _)| definition.function.name == "u5__lookup")
+            .collect();
+        assert_eq!(typed.len(), 1);
+        assert_eq!(typed[0].1, ToolNamespace::MCP);
+        let expected = vec![ToolSpec {
+            name: "u5__lookup".into(),
+            description: Some("stub MCP tool".into()),
+            parameters: schema,
+            exposure: ToolExposure::Immediate,
+        }];
+        let (prepared, _) = actor.prepare_native_tool_candidates_timed().await;
+        assert_eq!(
+            serde_json::to_value(&prepared.mcp_specs).unwrap(),
+            serde_json::to_value(&expected).unwrap(),
+            "U5 has a real parser-qualified candidate distinct from the inherited invalid stub"
+        );
+        let mut row = actor
+            .chat_state_handle
+            .capture_transport_binding()
+            .await
+            .unwrap()
+            .config;
+        row.api_backend = ApiBackend::Messages;
+        row.supports_search_tool = true;
+        let selected = actor
+            .turn_native_tool_candidates(&prepared.builtin_defs, &prepared.mcp_specs)
+            .select_for_row(&row);
+        let selected_mcp: Vec<_> = selected
+            .into_iter()
+            .filter(|spec| spec.name == "u5__lookup")
+            .collect();
+        let mut expected = expected;
+        expected[0].exposure = ToolExposure::Deferred;
+        assert_eq!(
+            serde_json::to_value(&selected_mcp).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+    }
+
+    async fn exercise_candidate_surface(case: Case, two_pass: bool, backend_search: bool) {
+        let baseline = fixture(&case).await;
+        let candidate = fixture(&case).await;
+        for fixture in [&baseline, &candidate] {
+            fixture.actor.supports_backend_search.set(backend_search);
+        }
+        let surface = candidate_builtin_surface(&baseline.actor, two_pass).await;
+        register_compaction_candidate(&candidate.actor).await;
+        let mut baseline_wire_tools = None;
+        for (index, (fixture, interleave)) in
+            [(&baseline, false), (&candidate, false), (&candidate, true)]
+                .into_iter()
+                .enumerate()
+        {
+            fixture
+                .actor
+                .chat_state_handle
+                .install_transport_binding(fixture.a.clone())
+                .await
+                .unwrap();
+            fixture
+                .actor
+                .chat_state_handle
+                .replace_conversation(fixture.history.clone());
+            fixture.actor.chat_state_handle.get_conversation().await;
+            fixture.refresh_count.store(0, Ordering::SeqCst);
+            let config = fixture
+                .actor
+                .assemble_sampler_config_without_refresh(&fixture.a)
+                .await;
+            let guard = TraceGuard::new(
+                interleave.then(|| fixture.b.clone()),
+                fixture.refresh_count.clone(),
+            );
+            let succeeded = run_sender(fixture, &case, two_pass).await;
+            let trace = guard.take();
+            assert!(succeeded, "U5 actual local compaction send completes");
+            let inputs = trace
+                .inputs
+                .as_ref()
+                .expect("U5 actual generator boundary reached");
+            assert_eq!(
+                (serde_json::to_value(&inputs.tools).unwrap(), &inputs.hosted),
+                (
+                    serde_json::to_value(&surface.tools).unwrap(),
+                    &surface.hosted
+                ),
+                "U5 complete compaction surface equals its isolated builtin baseline"
+            );
+            assert_eq!(
+                (inputs.token_kind, &inputs.token_input, inputs.tool_tokens),
+                (surface.token_kind, &surface.token_input, surface.tokens),
+                "U5 compaction token accounting keeps its distinct builtin input"
+            );
+            assert_inputs(fixture, &case, &trace, &surface, &config, two_pass);
+            assert!(
+                fixture.server_b.requests().is_empty(),
+                "U5 sender never selects the installed B transport"
+            );
+            let requests = fixture.server_a.requests();
+            assert_eq!(requests.len(), if index == 2 { 2 } else { 1 });
+            let request = requests.last().unwrap();
+            assert_eq!(
+                request.path,
+                if case.backend == ApiBackend::Messages {
+                    "/v1/messages"
+                } else {
+                    "/v1/responses"
+                }
+            );
+            assert_eq!(request.authorization.as_deref(), Some("Bearer u7-a-key"));
+            assert_eq!(request.header("x-u7-row"), Some("a"));
+            let body = request.body.as_ref().unwrap();
+            assert_eq!(body["model"], fixture.a.config.model);
+            if let Some(expected) = &baseline_wire_tools {
+                assert_eq!(
+                    &body["tools"], expected,
+                    "U5 complete sent tools add no candidate-induced MCP or native entry"
+                );
+            } else {
+                baseline_wire_tools = Some(body["tools"].clone());
+            }
+            assert_binding(
+                &fixture
+                    .actor
+                    .chat_state_handle
+                    .capture_transport_binding()
+                    .await
+                    .unwrap(),
+                if interleave { &fixture.b } else { &fixture.a },
+            );
+        }
+    }
+
+    async fn exercise_candidate_rows(two_pass: bool) {
+        for (backend, admitted) in [
+            (ApiBackend::Messages, true),
+            (ApiBackend::Messages, false),
+            (ApiBackend::Responses, true),
+            (ApiBackend::Responses, false),
+        ] {
+            for backend_search in [false, true] {
+                exercise_candidate_surface(
+                    Case {
+                        backend: backend.clone(),
+                        admitted,
+                        session_token: false,
+                        remote: false,
+                    },
+                    two_pass,
+                    backend_search,
+                )
+                .await;
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn two_pass_candidates_do_not_change_builtin_surface() {
+        const NAME: &str = "session::acp_session::compaction::binding_tests::two_pass_candidates_do_not_change_builtin_surface";
+        if isolated(NAME) {
+            return;
+        }
+        tokio::task::LocalSet::new()
+            .run_until(exercise_candidate_rows(true))
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn full_compaction_candidates_do_not_change_builtin_surface() {
+        const NAME: &str = "session::acp_session::compaction::binding_tests::full_compaction_candidates_do_not_change_builtin_surface";
+        if isolated(NAME) {
+            return;
+        }
+        tokio::task::LocalSet::new()
+            .run_until(exercise_candidate_rows(false))
+            .await;
+    }
 }

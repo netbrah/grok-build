@@ -307,14 +307,13 @@ fn revoked_sampling_info() -> xai_grok_sampler::SamplingErrorInfo {
 thread_local! {
     static BYOK_WRITE_PROBE: std::cell::RefCell<Option<xai_chat_state::RequestTransportBinding>> = const { std::cell::RefCell::new(None) };
 }
+pub(super) struct PreparedTurnTools {
+    pub(super) builtin_defs: Vec<ToolDefinition>,
+    pub(super) mcp_specs: Vec<ToolSpec>,
+}
+
 impl SessionActor {
-    pub(super) async fn prepare_tool_definitions_timed(&self) -> (Vec<ToolDefinition>, u64) {
-        let prep_span = region::Region::from_span(tracing::info_span!(
-            "turn.tool_prep",
-            mcp_wait_ms = tracing::field::Empty,
-            total_prep_ms = tracing::field::Empty,
-            tool_count = tracing::field::Empty,
-        ));
+    async fn wait_for_tool_preparation(&self) -> u64 {
         let mcp_wait_start = tokio::time::Instant::now();
         let full_wait = self.requires_full_mcp_wait();
         if (full_wait || matches!(self.mcp_strategy.get(), McpInitStrategy::Blocking))
@@ -329,7 +328,86 @@ impl SessionActor {
                 self.wait_for_mcp_startup_grace().await;
             }
         }
-        let mcp_wait_ms = mcp_wait_start.elapsed().as_millis() as u64;
+        mcp_wait_start.elapsed().as_millis() as u64
+    }
+
+    pub(super) async fn prepare_native_tool_candidates_timed(&self) -> (PreparedTurnTools, u64) {
+        use xai_grok_tools::types::tool::ToolNamespace;
+
+        let prep_span = region::Region::from_span(tracing::info_span!(
+            "turn.tool_prep",
+            mcp_wait_ms = tracing::field::Empty,
+            total_prep_ms = tracing::field::Empty,
+            tool_count = tracing::field::Empty,
+        ));
+        let prep_start = tokio::time::Instant::now();
+        let mcp_wait_ms = self.wait_for_tool_preparation().await;
+        let bridge = self.agent.borrow().tool_bridge().clone();
+        let snapshot = bridge.toolset().tools_namespaced();
+        #[cfg(test)]
+        tests::after_native_candidate_snapshot(&snapshot).await;
+        let plan_active = self.plan_mode.lock().is_active();
+        let (builtin_entries, mcp_entries): (Vec<_>, Vec<_>) = snapshot
+            .into_iter()
+            .partition(|(_, namespace)| *namespace != ToolNamespace::MCP);
+        let builtin_defs = filter_cursor_tools_by_plan_mode(
+            builtin_entries
+                .into_iter()
+                .map(|(definition, _)| definition)
+                .collect(),
+            plan_active,
+        );
+        let mut mcp_specs: Vec<_> = filter_cursor_tools_by_plan_mode(
+            mcp_entries
+                .into_iter()
+                .map(|(definition, _)| definition)
+                .filter(|definition| {
+                    xai_grok_mcp::servers::parse_mcp_qualified_name(&definition.function.name)
+                        .is_some()
+                })
+                .collect(),
+            plan_active,
+        )
+        .into_iter()
+        .map(ToolSpec::from)
+        .collect();
+        mcp_specs.sort_by(|a, b| a.name.cmp(&b.name));
+        let tool_count = self.turn_base_tool_specs(&builtin_defs).len() + mcp_specs.len();
+        prep_span.span().record("mcp_wait_ms", mcp_wait_ms as i64);
+        prep_span
+            .span()
+            .record("total_prep_ms", prep_start.elapsed().as_millis() as i64);
+        prep_span.span().record("tool_count", tool_count as i64);
+        prep_span.close();
+        (
+            PreparedTurnTools {
+                builtin_defs,
+                mcp_specs,
+            },
+            mcp_wait_ms,
+        )
+    }
+
+    pub(super) fn turn_native_tool_candidates(
+        &self,
+        builtin_defs: &[ToolDefinition],
+        mcp_specs: &[ToolSpec],
+    ) -> xai_chat_state::NativeToolCandidates {
+        let mut specs = self.turn_base_tool_specs(builtin_defs);
+        let membership = mcp_specs.iter().map(|spec| spec.name.clone()).collect();
+        specs.extend_from_slice(mcp_specs);
+        xai_chat_state::NativeToolCandidates::with_mcp_membership(specs, membership)
+    }
+
+    pub(super) async fn prepare_tool_definitions_timed(&self) -> (Vec<ToolDefinition>, u64) {
+        let prep_span = region::Region::from_span(tracing::info_span!(
+            "turn.tool_prep",
+            mcp_wait_ms = tracing::field::Empty,
+            total_prep_ms = tracing::field::Empty,
+            tool_count = tracing::field::Empty,
+        ));
+        let mcp_wait_start = tokio::time::Instant::now();
+        let mcp_wait_ms = self.wait_for_tool_preparation().await;
 
         let defs = self.prepare_tool_definitions_inner().await;
         prep_span.span().record("mcp_wait_ms", mcp_wait_ms as i64);

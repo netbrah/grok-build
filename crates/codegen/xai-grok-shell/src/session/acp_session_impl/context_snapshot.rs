@@ -461,4 +461,71 @@ mod tests {
         assert_eq!(ev.workflows_tokens, 55);
         assert_ne!(ev.system_prompt_tokens, 8_000);
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn context_snapshot_candidates_do_not_change_builtin_text() {
+        use super::super::support;
+        use xai_grok_sampling_types::{ApiBackend, HostedTool, ToolSpec};
+        use xai_grok_tools::implementations::grok_build::{
+            update_goal::UpdateGoalTool, web_search::WebSearchTool,
+        };
+        use xai_grok_tools::registry::types::ToolConfig;
+
+        tokio::task::LocalSet::new().run_until(async {
+            for (backend, flag) in [
+                (ApiBackend::Messages, true),
+                (ApiBackend::Messages, false),
+                (ApiBackend::Responses, true),
+                (ApiBackend::Responses, false),
+            ] {
+                let baseline = support::plain_actor().await;
+                let candidate = support::plain_actor().await;
+                for actor in [&baseline, &candidate] {
+                    let agent = support::test_agent_with_tools(vec![
+                        ToolConfig::for_tool::<UpdateGoalTool>(),
+                        ToolConfig::for_tool::<WebSearchTool>(),
+                    ]).await;
+                    actor.agent.replace(xai_grok_agent::Agent::new(
+                        agent.definition().clone(), agent.prompt_context().clone(),
+                        agent.system_prompt().to_string(), agent.tool_bridge().clone(),
+                        agent.reminder_policy().clone(), agent.compaction_policy().clone(),
+                        vec![HostedTool::WebSearch { options: None }], true,
+                    ));
+                    let mut binding = actor.chat_state_handle.capture_transport_binding().await.unwrap();
+                    binding.config.api_backend = backend.clone();
+                    binding.config.supports_search_tool = flag;
+                    actor.chat_state_handle.install_transport_binding(binding).await.unwrap();
+                }
+                let schema = serde_json::json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false});
+                candidate.agent.borrow().tool_bridge().register_mcp_tools(
+                    "snapshot__lookup".into(), support::StubMcpTool("snapshot__lookup"), Some(schema.clone()),
+                ).unwrap();
+                let (prepared, _) = candidate.prepare_native_tool_candidates_timed().await;
+                let expected_mcp = vec![ToolSpec {
+                    name: "snapshot__lookup".into(), description: Some("stub MCP tool".into()),
+                    parameters: schema, exposure: xai_grok_sampling_types::ToolExposure::Immediate,
+                }];
+                assert_eq!(serde_json::to_value(prepared.mcp_specs).unwrap(), serde_json::to_value(expected_mcp).unwrap(),
+                    "U5 context fixture has a parser-qualified typed candidate");
+                for backend_search in [false, true] {
+                    for actor in [&baseline, &candidate] {
+                        actor.supports_backend_search.set(backend_search);
+                    }
+                    let defs: Vec<_> = baseline.prepare_tool_definitions_inner().await.into_iter()
+                        .filter(|definition| !backend_search || definition.function.name != "web_search")
+                        .collect();
+                    assert_eq!(defs.iter().any(|definition| definition.function.name == "web_search"), !backend_search);
+                    let expected_text = tool_definitions_text(&defs);
+                    let baseline_texts = baseline.snapshot_texts().await;
+                    let candidate_texts = candidate.snapshot_texts().await;
+                    assert_eq!((&baseline_texts.tools, baseline_texts.tool_definitions_count), (&expected_text, defs.len() as u64));
+                    assert_eq!((&candidate_texts.tools, candidate_texts.tool_definitions_count), (&expected_text, defs.len() as u64),
+                        "U5 context snapshot formats only the complete builtin definitions");
+                    let jobs: Vec<_> = candidate_texts.jobs().into_iter()
+                        .filter(|job| matches!(job.field, TokenizeField::Tools)).map(|job| job.text).collect();
+                    assert_eq!(jobs, vec![expected_text], "U5 tokenizer tool input is the builtin-only formatted text");
+                }
+            }
+        }).await;
+    }
 }

@@ -2574,7 +2574,14 @@ impl SessionActor {
         }
         let mut prompt_timing = Some(crate::session::prompt_timing::PromptTiming::start());
         let tool_prep_start = std::time::Instant::now();
-        let (tool_definitions, mcp_wait_ms) = self.prepare_tool_definitions_timed().await;
+        let (tool_definitions, prepared_mcp_specs, mcp_wait_ms) =
+            if self.forked_tool_override.is_none() {
+                let (prepared, wait_ms) = self.prepare_native_tool_candidates_timed().await;
+                (prepared.builtin_defs, Some(prepared.mcp_specs), wait_ms)
+            } else {
+                let (definitions, wait_ms) = self.prepare_tool_definitions_timed().await;
+                (definitions, None, wait_ms)
+            };
         let total_prep_ms = tool_prep_start.elapsed().as_millis() as u64;
         if let Some(ref mut pt) = prompt_timing {
             pt.record_tool_prep(mcp_wait_ms, total_prep_ms);
@@ -2793,44 +2800,21 @@ impl SessionActor {
                 backend_search_active,
                 "backend_search: turn tool resolution"
             );
-            let mut effective_tools: Vec<ToolSpec> =
-                if let Some(ref override_tools) = self.forked_tool_override {
-                    let bridge = self.agent.borrow().tool_bridge().clone();
-                    let mut tools = child_tool_projection::child_safe_tool_specs(
-                        override_tools.clone(),
-                        child_tool_projection::ChildToolProjection::VerbatimMirror,
-                        |name| bridge.tool_kind(name),
-                    );
-                    if self.startup_hints.is_subagent {
-                        crate::agent::subagent::strip_ask_user_question_tool(&mut tools);
-                        crate::agent::subagent::strip_workflow_tool(&mut tools);
-                    }
-                    tools
-                } else {
-                    let tools = self.turn_base_tool_specs(&tool_definitions);
-                    if self.startup_hints.is_subagent {
-                        let bridge = self.agent.borrow().tool_bridge().clone();
-                        child_tool_projection::child_safe_tool_specs(
-                            tools,
-                            child_tool_projection::ChildToolProjection::Rebuilt,
-                            |name| bridge.tool_kind(name),
+            let effective_tools = self.tool_candidates_for_turn(
+                prepared_mcp_specs.as_ref().map_or_else(
+                    || {
+                        xai_chat_state::NativeToolCandidates::builtins_only(
+                            self.turn_base_tool_specs(&tool_definitions),
                         )
-                    } else {
-                        tools
-                    }
-                };
-            if structured_output_tool && let Some(schema) = json_schema.clone() {
-                effective_tools.push(ToolSpec {
-                    name: STRUCTURED_OUTPUT_TOOL.to_string(),
-                    description: Some(
-                        "Return your final answer as JSON matching the required schema. \
-                         Call this exactly once, at the end."
-                            .to_string(),
-                    ),
-                    parameters: schema,
-                    exposure: ToolExposure::default(),
-                });
-            }
+                    },
+                    |mcp_specs| self.turn_native_tool_candidates(&tool_definitions, mcp_specs),
+                ),
+                if structured_output_tool {
+                    json_schema.clone()
+                } else {
+                    None
+                },
+            );
             let build_req_start = std::time::Instant::now();
             let build_request_span =
                 xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
@@ -2841,7 +2825,7 @@ impl SessionActor {
             let (request, binding) = self
                 .chat_state_handle
                 .build_request_with_binding(
-                    xai_chat_state::NativeToolCandidates::builtins_only(effective_tools),
+                    effective_tools,
                     memory_reminder,
                     self.memory.is_enabled(),
                     trace_gcs_config
@@ -4535,5 +4519,55 @@ mod last_sample_span_tests {
         );
         assert_eq!(f.bools.get("last_sample.has_tool_call"), Some(&true));
         assert_eq!(f.i64s.get("last_sample.output_tokens"), Some(&3));
+    }
+}
+
+impl SessionActor {
+    pub(super) fn tool_candidates_for_turn(
+        &self,
+        candidates: xai_chat_state::NativeToolCandidates,
+        structured_output_schema: Option<serde_json::Value>,
+    ) -> xai_chat_state::NativeToolCandidates {
+        let candidates = if let Some(ref override_tools) = self.forked_tool_override {
+            let bridge = self.agent.borrow().tool_bridge().clone();
+            let mut tools = child_tool_projection::child_safe_tool_specs(
+                override_tools.clone(),
+                child_tool_projection::ChildToolProjection::VerbatimMirror,
+                |name| bridge.tool_kind(name),
+            );
+            if self.startup_hints.is_subagent {
+                crate::agent::subagent::strip_ask_user_question_tool(&mut tools);
+                crate::agent::subagent::strip_workflow_tool(&mut tools);
+            }
+            xai_chat_state::NativeToolCandidates::builtins_only(tools)
+        } else {
+            candidates.map_specs(|tools| {
+                if self.startup_hints.is_subagent {
+                    let bridge = self.agent.borrow().tool_bridge().clone();
+                    child_tool_projection::child_safe_tool_specs(
+                        tools,
+                        child_tool_projection::ChildToolProjection::Rebuilt,
+                        |name| bridge.tool_kind(name),
+                    )
+                } else {
+                    tools
+                }
+            })
+        };
+        candidates.map_specs(|mut tools| {
+            if let Some(schema) = structured_output_schema {
+                tools.push(ToolSpec {
+                    name: STRUCTURED_OUTPUT_TOOL.to_string(),
+                    description: Some(
+                        "Return your final answer as JSON matching the required schema. \
+                         Call this exactly once, at the end."
+                            .to_string(),
+                    ),
+                    parameters: schema,
+                    exposure: ToolExposure::default(),
+                });
+            }
+            tools
+        })
     }
 }

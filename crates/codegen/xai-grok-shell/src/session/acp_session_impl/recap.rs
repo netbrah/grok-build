@@ -67,8 +67,9 @@ impl SessionActor {
         // /btw fires mid-turn, so the snapshot may end with an assistant message whose tool_calls have no matching ToolResult yet.
         crate::session::helpers::session_recap::pop_trailing_tool_run(&mut items);
 
-        let (instruction, tool_specs, hosted_tools) =
-            self.side_question_prompt_and_tools(question).await;
+        let (instruction, tool_specs, hosted_tools) = self
+            .side_question_prompt_and_tools(question, &setup.binding)
+            .await;
         items.push(instruction);
 
         let supports_search_tool = setup.binding.config.supports_search_tool;
@@ -149,6 +150,7 @@ impl SessionActor {
     async fn side_question_prompt_and_tools(
         &self,
         question: &str,
+        binding: &xai_chat_state::RequestTransportBinding,
     ) -> (
         ConversationItem,
         Vec<ToolSpec>,
@@ -174,7 +176,7 @@ impl SessionActor {
              {question}"
         ));
         // Same tools as the main turn: they serialize into the cached prefix, and a side question must not search past the active cutoff.
-        let tool_specs = self.turn_base_tool_specs(&self.prepare_tool_definitions().await);
+        let tool_specs = self.prepare_side_call_tool_specs(binding).await;
         (instruction, tool_specs, self.hosted_tools_for_turn())
     }
 

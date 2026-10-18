@@ -7367,3 +7367,315 @@ async fn bound_build_closed_actor_returns_none() {
             .is_none()
     );
 }
+
+fn bound_candidate_specs() -> (
+    Vec<xai_grok_sampling_types::ToolSpec>,
+    Vec<xai_grok_sampling_types::ToolSpec>,
+) {
+    use xai_grok_sampling_types::{ToolExposure, ToolSpec};
+
+    let mut builtins = bound_build_specs();
+    builtins[0].description = Some("Prepared immediate builtin".into());
+    builtins[1].description = None;
+    builtins[1].parameters = serde_json::json!({
+        "type": "object",
+        "properties": {"enabled": {"type": "boolean", "default": true}},
+        "required": [],
+        "additionalProperties": false,
+    });
+    let mcp = vec![
+        ToolSpec {
+            name: "alpha__lookup".into(),
+            description: Some("Prepared MCP lookup".into()),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": false,
+            }),
+            exposure: ToolExposure::Immediate,
+        },
+        ToolSpec {
+            name: "zeta__fetch".into(),
+            description: Some("Prepared MCP fetch".into()),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"url": {"type": "string"}, "limit": {"type": "integer"}},
+                "required": ["url"],
+                "additionalProperties": false,
+            }),
+            exposure: ToolExposure::Immediate,
+        },
+    ];
+    (builtins, mcp)
+}
+
+fn bound_candidate_rows() -> Vec<crate::RequestTransportBinding> {
+    use xai_grok_sampling_types::ApiBackend;
+
+    let (messages, other) = bound_build_rows();
+    [
+        (ApiBackend::Messages, true),
+        (ApiBackend::Messages, false),
+        (ApiBackend::Responses, true),
+        (ApiBackend::Responses, false),
+        (ApiBackend::ChatCompletions, true),
+        (ApiBackend::ChatCompletions, false),
+    ]
+    .into_iter()
+    .map(|(api_backend, supports_search_tool)| {
+        let mut row = if api_backend == ApiBackend::Messages {
+            messages.clone()
+        } else {
+            other.clone()
+        };
+        row.config.api_backend = api_backend;
+        row.config.supports_search_tool = supports_search_tool;
+        row
+    })
+    .collect()
+}
+
+fn bound_candidate_payload(
+    builtins: &[xai_grok_sampling_types::ToolSpec],
+    mcp: &[xai_grok_sampling_types::ToolSpec],
+) -> crate::NativeToolCandidates {
+    let mut specs = builtins.to_vec();
+    specs.extend_from_slice(mcp);
+    crate::NativeToolCandidates::with_mcp_membership(
+        specs,
+        mcp.iter().map(|tool| tool.name.clone()).collect(),
+    )
+}
+
+fn bound_candidate_body(
+    request: &xai_grok_sampling_types::ConversationRequest,
+    backend: &xai_grok_sampling_types::ApiBackend,
+) -> serde_json::Value {
+    use xai_grok_sampling_types::{ApiBackend, ChatCompletionRequest};
+
+    match backend {
+        ApiBackend::Messages => serde_json::to_value(
+            xai_grok_sampling_types::conversation::build_messages_request(request),
+        )
+        .unwrap(),
+        ApiBackend::Responses => serialize_via_public_api(request),
+        ApiBackend::ChatCompletions => {
+            serde_json::to_value(ChatCompletionRequest::from(request.clone())).unwrap()
+        }
+    }
+}
+
+#[tokio::test]
+async fn bound_build_selects_candidates_on_captured_row() {
+    use xai_grok_sampling_types::{ApiBackend, SearchAdmission, ToolExposure};
+
+    let (messages, other) = bound_build_rows();
+    let (builtins, mcp) = bound_candidate_specs();
+    for preparation in [messages, other] {
+        for current in bound_candidate_rows() {
+            let h = TestHarness::with_config(bound_build_items(), preparation.config.clone());
+            h.handle
+                .install_transport_binding(preparation.clone())
+                .await
+                .unwrap();
+            let candidates = bound_candidate_payload(&builtins, &mcp);
+            h.handle
+                .install_transport_binding(current.clone())
+                .await
+                .unwrap();
+            let mut selected = builtins.clone();
+            if current.config.api_backend == ApiBackend::Messages
+                && current.config.supports_search_tool
+            {
+                selected.extend(mcp.iter().cloned().map(|mut tool| {
+                    tool.exposure = ToolExposure::Deferred;
+                    tool
+                }));
+            }
+            let (request, binding) = h
+                .handle
+                .build_request_with_binding(
+                    candidates,
+                    None,
+                    false,
+                    None,
+                    "candidate-conv".into(),
+                    "candidate-req".into(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                (
+                    serde_json::to_value(&request.tools).unwrap(),
+                    request.search_admission,
+                    serde_json::to_value(&binding.config).unwrap(),
+                    binding.credentials,
+                ),
+                (
+                    serde_json::to_value(&selected).unwrap(),
+                    Some(SearchAdmission {
+                        supports_search_tool: current.config.supports_search_tool,
+                        has_searchable_tools: true,
+                    }),
+                    serde_json::to_value(&current.config).unwrap(),
+                    current.credentials.clone(),
+                ),
+                "captured build row owns candidate selection and transport: preparation={:?}, current={:?}",
+                preparation.config.api_backend,
+                current.config.api_backend,
+            );
+            let legacy = TestHarness::with_config(bound_build_items(), current.config.clone());
+            legacy
+                .handle
+                .install_transport_binding(current.clone())
+                .await
+                .unwrap();
+            let expected = legacy
+                .handle
+                .build_request(
+                    selected,
+                    None,
+                    false,
+                    None,
+                    "candidate-conv".into(),
+                    "candidate-req".into(),
+                )
+                .await
+                .unwrap();
+            assert_bound_request_matches_legacy(&request, &expected);
+            assert_eq!(
+                bound_candidate_body(&request, &current.config.api_backend),
+                bound_candidate_body(&expected, &current.config.api_backend),
+                "selected request body must use the current row and preserve prepared builtins",
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn bound_build_keeps_legacy_builtin_admission_and_single_builder() {
+    use xai_grok_sampling_types::{ApiBackend, SearchAdmission};
+
+    let (builtins, mcp) = bound_candidate_specs();
+    for row in bound_candidate_rows().into_iter().filter(|row| {
+        row.config.api_backend != ApiBackend::Messages && row.config.supports_search_tool
+    }) {
+        let h = TestHarness::with_config(bound_build_items(), row.config.clone());
+        h.handle
+            .install_transport_binding(row.clone())
+            .await
+            .unwrap();
+        let (request, binding) = h
+            .handle
+            .build_request_with_binding(
+                bound_candidate_payload(&[], &mcp),
+                None,
+                false,
+                None,
+                "candidate-conv".into(),
+                "candidate-req".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            request.search_admission,
+            Some(SearchAdmission {
+                supports_search_tool: true,
+                has_searchable_tools: false,
+            }),
+            "admission must use the actual selected tool surface, not the nonempty candidates",
+        );
+        assert!(request.tools.is_empty());
+        assert_eq!(
+            (
+                serde_json::to_value(&binding.config).unwrap(),
+                binding.credentials,
+            ),
+            (
+                serde_json::to_value(&row.config).unwrap(),
+                row.credentials.clone(),
+            ),
+        );
+    }
+
+    for row in bound_candidate_rows() {
+        for tools in [Vec::new(), builtins.clone()] {
+            let mut h = TestHarness::with_config(bound_build_items(), row.config.clone());
+            let mut legacy = TestHarness::with_config(bound_build_items(), row.config.clone());
+            for actor in [&mut h, &mut legacy] {
+                actor
+                    .handle
+                    .install_transport_binding(row.clone())
+                    .await
+                    .unwrap();
+                actor.drain_events();
+                actor.drain_persistence();
+            }
+            let (request, binding) = h
+                .handle
+                .build_request_with_binding(
+                    crate::NativeToolCandidates::builtins_only(tools.clone()),
+                    None,
+                    false,
+                    None,
+                    "candidate-conv".into(),
+                    "candidate-req".into(),
+                )
+                .await
+                .unwrap();
+            let expected = legacy
+                .handle
+                .build_request(
+                    tools.clone(),
+                    None,
+                    false,
+                    None,
+                    "candidate-conv".into(),
+                    "candidate-req".into(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                request.search_admission,
+                Some(SearchAdmission {
+                    supports_search_tool: row.config.supports_search_tool,
+                    has_searchable_tools: !tools.is_empty(),
+                }),
+                "builtin admission must remain the isolated legacy baseline",
+            );
+            assert_bound_request_matches_legacy(&request, &expected);
+            assert_eq!(
+                bound_candidate_body(&request, &row.config.api_backend),
+                bound_candidate_body(&expected, &row.config.api_backend),
+            );
+            assert_eq!(
+                (
+                    serde_json::to_value(&binding.config).unwrap(),
+                    binding.credentials,
+                ),
+                (
+                    serde_json::to_value(&row.config).unwrap(),
+                    row.credentials.clone(),
+                ),
+            );
+            let events = h.drain_events();
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| matches!(event, ChatStateEvent::ImageBudget { .. }))
+                    .count(),
+                1,
+                "candidate build must invoke the image-budget builder exactly once",
+            );
+            assert_eq!(
+                format!("{events:?}"),
+                format!("{:?}", legacy.drain_events())
+            );
+            assert_eq!(
+                format!("{:?}", h.drain_persistence()),
+                format!("{:?}", legacy.drain_persistence()),
+            );
+        }
+    }
+}

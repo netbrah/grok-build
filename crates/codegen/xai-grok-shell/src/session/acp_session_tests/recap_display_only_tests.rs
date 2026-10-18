@@ -2047,3 +2047,190 @@ async fn recap_client_and_request_keep_captured_row() {
         }
     }).await;
 }
+
+#[derive(Debug, Clone)]
+struct RecapMcpTool {
+    name: &'static str,
+    description: &'static str,
+}
+
+impl xai_grok_tools::types::tool_metadata::ToolMetadata for RecapMcpTool {
+    fn kind(&self) -> xai_grok_tools::types::tool::ToolKind {
+        xai_grok_tools::types::tool::ToolKind::Other
+    }
+    fn tool_namespace(&self) -> xai_grok_tools::types::tool::ToolNamespace {
+        xai_grok_tools::types::tool::ToolNamespace::MCP
+    }
+    fn description_template(&self) -> &str {
+        self.description
+    }
+}
+
+impl xai_tool_runtime::Tool for RecapMcpTool {
+    type Args = serde_json::Value;
+    type Output = xai_grok_tools::types::output::ToolOutput;
+
+    fn id(&self) -> xai_tool_protocol::ToolId {
+        xai_tool_protocol::ToolId::new(self.name).unwrap()
+    }
+    fn description(
+        &self,
+        _: &xai_tool_runtime::ListToolsContext,
+    ) -> xai_tool_types::ToolDescription {
+        xai_tool_types::ToolDescription::new(self.name, self.description)
+    }
+    async fn run(
+        &self,
+        _: xai_tool_runtime::ToolCallContext,
+        _: Self::Args,
+    ) -> Result<Self::Output, xai_tool_runtime::ToolError> {
+        panic!("recap declaration fixtures never execute tools")
+    }
+}
+
+fn register_recap_mcp(actor: &SessionActor) -> Vec<xai_grok_sampling_types::ToolSpec> {
+    let mut specs = Vec::new();
+    for (name, description, schema) in [
+        (
+            "zeta__fetch",
+            "Recap URL lookup",
+            serde_json::json!({"type":"object","properties":{"url":{"type":"string"},"limit":{"type":"integer"}},"required":["url"],"additionalProperties":false}),
+        ),
+        (
+            "alpha__lookup",
+            "Recap query lookup",
+            serde_json::json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}),
+        ),
+    ] {
+        actor
+            .agent
+            .borrow()
+            .tool_bridge()
+            .register_mcp_tools(
+                name.into(),
+                RecapMcpTool { name, description },
+                Some(schema.clone()),
+            )
+            .unwrap();
+        specs.push(xai_grok_sampling_types::ToolSpec {
+            name: name.into(),
+            description: Some(description.into()),
+            parameters: schema,
+            exposure: xai_grok_sampling_types::ToolExposure::Deferred,
+        });
+    }
+    specs.reverse();
+    specs
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn auxiliary_mcp_selection_keeps_builtin_snapshot_and_captured_row() {
+    use super::side_call::tests::{
+        AuxiliaryGuard, assert_auxiliary_binding, assert_auxiliary_wire, auxiliary_fixture,
+    };
+    use xai_grok_sampling_types::{ApiBackend, SearchAdmission, ToolExposure};
+    tokio::task::LocalSet::new().run_until(async {
+        for call in ["btw", "recap"] {
+            for (backend, flag, next_backend, next_flag) in [
+                (ApiBackend::Messages, true, ApiBackend::Messages, false),
+                (ApiBackend::Messages, true, ApiBackend::Responses, false),
+                (ApiBackend::Messages, false, ApiBackend::Messages, true),
+                (ApiBackend::Responses, true, ApiBackend::Messages, false),
+                (ApiBackend::Responses, false, ApiBackend::Messages, true),
+                (ApiBackend::ChatCompletions, true, ApiBackend::Messages, false),
+                (ApiBackend::ChatCompletions, false, ApiBackend::Messages, true),
+            ] {
+                for backend_search in [false, true] {
+                    let mut fixture = auxiliary_fixture(backend.clone(), flag).await;
+                    let mut control = auxiliary_fixture(backend.clone(), flag).await;
+                    for actor in [&fixture.actor, &control.actor] {
+                        use xai_grok_tools::implementations::grok_build::{update_goal::UpdateGoalTool, web_search::WebSearchTool};
+                        use xai_grok_tools::registry::types::ToolConfig;
+                        let agent = support::test_agent_with_tools(vec![
+                            ToolConfig::for_tool::<UpdateGoalTool>(),
+                            ToolConfig::for_tool::<WebSearchTool>(),
+                        ]).await;
+                        *actor.agent.borrow_mut() = xai_grok_agent::Agent::new(
+                            agent.definition().clone(), agent.prompt_context().clone(),
+                            agent.system_prompt().to_string(), std::sync::Arc::clone(agent.tool_bridge()),
+                            agent.reminder_policy().clone(), agent.compaction_policy().clone(),
+                            vec![xai_grok_sampling_types::HostedTool::WebSearch { options: None }], true,
+                        );
+                    }
+                    fixture.b.config.api_backend = next_backend.clone();
+                    fixture.b.config.supports_search_tool = next_flag;
+                    fixture.actor.supports_backend_search.set(backend_search);
+                    control.actor.supports_backend_search.set(backend_search);
+                    control.actor.session_info.id = fixture.actor.session_info.id.clone();
+                    let mcp = register_recap_mcp(&fixture.actor);
+                    let history = fixture.actor.chat_state_handle.get_conversation().await;
+                    let baseline_guard = AuxiliaryGuard::new(control.b.clone());
+                    match call {
+                        "btw" => { control.actor.handle_side_question("What matters?").await.unwrap(); }
+                        "recap" => control.actor.handle_recap(false).await,
+                        _ => unreachable!(),
+                    }
+                    let baseline_sends = baseline_guard.sends();
+                    assert_eq!(baseline_sends.len(), 1);
+                    assert_eq!(baseline_sends[0].0, call);
+                    let baseline = baseline_sends[0].1.clone();
+                    drop(baseline_guard);
+                    assert!(baseline.tools.iter().any(|tool| tool.exposure == ToolExposure::Deferred));
+                    assert_eq!(baseline.tools.iter().any(|tool| tool.name == "web_search"), !backend_search);
+                    assert_eq!(!baseline.hosted_tools.is_empty(), backend_search);
+                    let guard = AuxiliaryGuard::new(fixture.b.clone());
+                    match call {
+                        "btw" => { fixture.actor.handle_side_question("What matters?").await.unwrap(); }
+                        "recap" => fixture.actor.handle_recap(false).await,
+                        _ => unreachable!(),
+                    }
+                    let sends = guard.sends();
+                    assert_eq!(sends.len(), 1);
+                    assert_eq!(sends[0].0, call);
+                    let request = &sends[0].1;
+                    let eligible = backend == ApiBackend::Messages && flag;
+                    let expected_tools: Vec<_> = baseline.tools.iter().cloned()
+                        .chain(if eligible { mcp.clone() } else { Vec::new() }).collect();
+                    let non_mcp: Vec<_> = request.tools.iter().filter(|tool| !mcp.iter().any(|m| m.name == tool.name)).cloned().collect();
+                    assert_eq!((serde_json::to_value(&non_mcp).unwrap(), &request.hosted_tools),
+                        (serde_json::to_value(&baseline.tools).unwrap(), &baseline.hosted_tools),
+                        "U6 actual recap and side-question sends preserve the non-MCP preparation snapshot");
+                    assert_eq!(serde_json::to_value(&request.tools).unwrap(), serde_json::to_value(&expected_tools).unwrap(),
+                        "U6 actual auxiliary sends must select exact qualified MCP schemas using captured A");
+                    assert_eq!(request.search_admission, Some(SearchAdmission::for_row(flag, &expected_tools)),
+                        "U6 actual auxiliary admission must use captured A, not installed B or the catalog");
+                    let mut expected_request = baseline.clone();
+                    expected_request.tools = expected_tools;
+                    expected_request.x_grok_conv_id = request.x_grok_conv_id.clone();
+                    expected_request.x_grok_req_id = request.x_grok_req_id.clone();
+                    assert_eq!(format!("{request:?}"), format!("{expected_request:?}"),
+                        "U6 complete auxiliary request differs only by selected MCP and fresh request IDs");
+                    assert_auxiliary_wire(&fixture, &fixture.a.config.model);
+                    assert_auxiliary_wire(&control, &control.a.config.model);
+                    let body = fixture.server_a.requests()[0].body.clone().unwrap();
+                    let baseline_body = control.server_a.requests()[0].body.clone().unwrap();
+                    if eligible {
+                        let baseline_tools = baseline_body["tools"].as_array().unwrap();
+                        let mut expected_wire = baseline_tools.clone();
+                        expected_wire.splice(baseline.tools.len()..baseline.tools.len(), mcp.iter().map(|spec| serde_json::json!({
+                            "name": spec.name, "description": spec.description,
+                            "input_schema": spec.parameters, "defer_loading": true,
+                        })));
+                        assert_eq!(body["tools"], serde_json::to_value(expected_wire).unwrap(),
+                            "U6 actual auxiliary Messages wire preserves the builtin prefix, MCP schemas and native tail");
+                    } else {
+                        assert_eq!(body["tools"], baseline_body["tools"], "U6 auxiliary excluded rows preserve the isolated builtin wire surface");
+                    }
+                    if backend == ApiBackend::Responses {
+                        assert_rides_parent_prefix(&body, history.clone(), call, &fixture.a.config.model);
+                    }
+                    assert_eq!(request.length_policy, xai_grok_sampling_types::LengthPolicy::Fail);
+                    assert_eq!(request.prompt_cache_key.as_deref(), Some(fixture.actor.session_info.id.0.as_ref()));
+                    assert_eq!(serde_json::to_value(fixture.actor.chat_state_handle.get_conversation().await).unwrap(), serde_json::to_value(&history).unwrap(),
+                        "U6 actual auxiliary sends remain display-only");
+                    assert_auxiliary_binding(&fixture.actor.chat_state_handle.capture_transport_binding().await.unwrap(), &fixture.b);
+                }
+            }
+        }
+    }).await;
+}

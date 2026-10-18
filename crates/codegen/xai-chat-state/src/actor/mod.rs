@@ -492,10 +492,7 @@ impl ChatStateActor {
                     config: self.state.sampling_config.clone(),
                     credentials: self.state.credentials.clone(),
                 };
-                let crate::NativeToolCandidates {
-                    specs,
-                    mcp_membership: _mcp_membership,
-                } = tool_candidates;
+                let specs = tool_candidates.select_for_row(&binding.config);
                 let request = self.build_conversation_request(
                     specs,
                     memory_reminder,

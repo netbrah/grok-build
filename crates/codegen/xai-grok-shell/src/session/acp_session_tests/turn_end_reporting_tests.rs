@@ -1136,3 +1136,236 @@ async fn a_flush_leaves_the_queue_open() {
     })
     .await;
 }
+
+#[derive(Debug, Clone)]
+struct SnapshotRegisteredTool {
+    name: &'static str,
+    namespace: xai_grok_tools::types::tool::ToolNamespace,
+    kind: xai_grok_tools::types::tool::ToolKind,
+    description: &'static str,
+}
+
+impl xai_grok_tools::types::tool_metadata::ToolMetadata for SnapshotRegisteredTool {
+    fn kind(&self) -> xai_grok_tools::types::tool::ToolKind {
+        self.kind
+    }
+    fn tool_namespace(&self) -> xai_grok_tools::types::tool::ToolNamespace {
+        self.namespace
+    }
+    fn description_template(&self) -> &str {
+        self.description
+    }
+}
+
+impl xai_tool_runtime::Tool for SnapshotRegisteredTool {
+    type Args = serde_json::Value;
+    type Output = xai_grok_tools::types::output::ToolOutput;
+
+    fn id(&self) -> xai_tool_protocol::ToolId {
+        xai_tool_protocol::ToolId::new(self.name).unwrap()
+    }
+    fn description(
+        &self,
+        _ctx: &xai_tool_runtime::ListToolsContext,
+    ) -> xai_tool_types::ToolDescription {
+        xai_tool_types::ToolDescription::new(self.name, self.description)
+    }
+    async fn run(
+        &self,
+        _ctx: xai_tool_runtime::ToolCallContext,
+        _args: serde_json::Value,
+    ) -> Result<Self::Output, xai_tool_runtime::ToolError> {
+        panic!("snapshot declaration fixtures never execute tools")
+    }
+}
+
+fn register_snapshot_fixture(
+    actor: &SessionActor,
+    tool: SnapshotRegisteredTool,
+    schema: serde_json::Value,
+) -> xai_grok_sampling_types::ToolSpec {
+    let spec = xai_grok_sampling_types::ToolSpec {
+        name: tool.name.into(),
+        description: Some(tool.description.into()),
+        parameters: schema.clone(),
+        exposure: xai_grok_sampling_types::ToolExposure::Immediate,
+    };
+    actor
+        .agent
+        .borrow()
+        .tool_bridge()
+        .register_mcp_tools(tool.name.into(), tool, Some(schema))
+        .unwrap();
+    spec
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn fork_snapshot_and_children_exclude_registered_mcp() {
+    use std::collections::BTreeSet;
+    use xai_chat_state::NativeToolCandidates;
+    use xai_grok_sampling_types::{ApiBackend, ToolExposure, ToolSpec};
+    use xai_grok_test_support::{MockInferenceServer, MockModelEntry, ScriptedResponse};
+    use xai_grok_tools::types::tool::{ToolKind, ToolNamespace};
+
+    run(async {
+        let mut parent = Harness::new().await;
+        parent.actor.agent.replace(test_agent_backend_search(Vec::new()).await);
+        parent.actor.supports_backend_search.set(true);
+        parent.actor.models_manager.insert_test_entry("snapshot-parent",
+            entry_with_deferred_tools("snapshot-parent", true, &["z_parent"]));
+        parent.actor.models_manager.set_current_model_id(acp::ModelId::new("snapshot-parent"));
+        let mut expected_snapshot = Vec::new();
+        for (name, kind) in [
+            ("z_parent", ToolKind::Other),
+            ("builtin__renamed", ToolKind::Other),
+            ("root_message", ToolKind::ActiveAgentMessage),
+            ("web_search", ToolKind::Other),
+            ("ask_user_question", ToolKind::Other),
+            ("workflow", ToolKind::Workflow),
+        ] {
+            let mut spec = register_snapshot_fixture(&parent.actor, SnapshotRegisteredTool {
+                name, namespace: ToolNamespace::GrokBuild, kind, description: name,
+            }, serde_json::json!({"type":"object","properties":{"value":{"type":"string","description":name}},"required":["value"],"additionalProperties":false}));
+            if name == "z_parent" { spec.exposure = ToolExposure::Deferred; }
+            if !["root_message", "web_search"].contains(&name) { expected_snapshot.push(spec); }
+        }
+        let parent_mcp = register_snapshot_fixture(&parent.actor, SnapshotRegisteredTool {
+            name: "parent__fetch", namespace: ToolNamespace::MCP, kind: ToolKind::Other,
+            description: "Parent MCP with a parent-only schema",
+        }, serde_json::json!({"type":"object","properties":{"parent":{"type":"boolean"}},"required":["parent"],"additionalProperties":false}));
+        let (commands, _) = parent.spawn_loop().await;
+        let mut snapshot = Vec::new();
+        for plan_active in [false, true] {
+            if plan_active { assert!(parent.actor.plan_mode.lock().activate_from_tool()); }
+            let (respond_to, reply) = tokio::sync::oneshot::channel();
+            commands.send(SessionCommand::SnapshotToolDefinitions { respond_to }).unwrap();
+            snapshot = tokio::time::timeout(std::time::Duration::from_secs(5), reply).await.unwrap().unwrap();
+            assert_eq!(serde_json::to_value(&snapshot).unwrap(), serde_json::to_value(&expected_snapshot).unwrap(),
+                "U4 actual parent snapshot keeps exact projected builtins and excludes registered MCP");
+        }
+        let structured = ToolSpec {
+            name: "StructuredOutput".into(),
+            description: Some("Return your final answer as JSON matching the required schema. Call this exactly once, at the end.".into()),
+            parameters: serde_json::json!({"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}),
+            exposure: ToolExposure::Immediate,
+        };
+        for (flag, is_subagent) in [(true, true), (false, true), (true, false), (false, false)] {
+            let server = MockInferenceServer::start_with_models(vec![MockModelEntry::new("snapshot-child")]).await.unwrap();
+            server.enqueue_response("/v1/messages", ScriptedResponse::sse(
+                xai_grok_test_support::sse::messages_api_tool_use_events(
+                    "fork-output", "StructuredOutput", r#"{"answer":"done"}"#, "snapshot-child",
+                ),
+            ));
+            let (gateway_tx, gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (persistence_tx, persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+            super::rate_limit_backoff_tests::drain_gateway(gateway_rx);
+            super::rate_limit_backoff_tests::drain_persistence(persistence_rx);
+            let mut child = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            child.agent.replace(test_agent_with_tools(Vec::new()).await);
+            child.startup_hints.is_subagent = is_subagent;
+            child.startup_hints.subagent_type = is_subagent.then(|| "explore".into());
+            child.forked_tool_override = Some(snapshot.clone());
+            let (manager, _home) = manager_with_entries();
+            manager.insert_test_entry("snapshot-child", entry_with_deferred_tools(
+                "snapshot-child", flag, &["builtin__renamed"],
+            ));
+            manager.set_current_model_id(acp::ModelId::new("snapshot-child"));
+            child.models_manager = manager;
+            let local_mcp = register_snapshot_fixture(&child, SnapshotRegisteredTool {
+                name: "local__lookup", namespace: ToolNamespace::MCP, kind: ToolKind::Other,
+                description: "Child MCP with a local-only schema",
+            }, serde_json::json!({"type":"object","properties":{"local":{"type":"integer"}},"required":["local"],"additionalProperties":false}));
+            assert_ne!(local_mcp.parameters, parent_mcp.parameters);
+            let mut binding = child.chat_state_handle.capture_transport_binding().await.unwrap();
+            binding.config.model = "snapshot-child".into();
+            binding.config.base_url = server.url();
+            binding.config.api_backend = ApiBackend::Messages;
+            binding.config.supports_search_tool = flag;
+            binding.config.max_retries = Some(0);
+            binding.credentials.auth_type = xai_chat_state::AuthType::ApiKey;
+            binding.credentials.api_key = Some("snapshot-child-fixture-key".into());
+            child.chat_state_handle.install_transport_binding(binding.clone()).await.unwrap();
+            child.chat_state_handle.replace_conversation(vec![ConversationItem::user("return the fork answer")]);
+            let expected: Vec<_> = snapshot.iter().filter(|spec| {
+                !is_subagent || !["ask_user_question", "workflow"].contains(&spec.name.as_str())
+            }).cloned().chain([structured.clone()]).collect();
+            let (prepared, _) = child.prepare_native_tool_candidates_timed().await;
+            assert_eq!(serde_json::to_value(&prepared.mcp_specs).unwrap(), serde_json::to_value([&local_mcp]).unwrap());
+            let candidates: NativeToolCandidates = child.tool_candidates_for_turn(
+                child.turn_native_tool_candidates(&prepared.builtin_defs, &prepared.mcp_specs),
+                Some(structured.parameters.clone()),
+            );
+            let mut row = binding.config.clone();
+            row.api_backend = ApiBackend::Messages;
+            row.supports_search_tool = true;
+            let admitted = candidates.clone().select_for_row(&row);
+            row.api_backend = ApiBackend::Responses;
+            let excluded = candidates.clone().select_for_row(&row);
+            let excluded_names: BTreeSet<_> = excluded.iter().map(|spec| spec.name.as_str()).collect();
+            let dropped: BTreeSet<_> = admitted.iter().map(|spec| spec.name.as_str())
+                .filter(|name| !excluded_names.contains(name)).collect();
+            let operator_deferred: BTreeSet<_> = expected.iter()
+                .filter(|spec| spec.exposure == ToolExposure::Deferred).map(|spec| spec.name.as_str()).collect();
+            let deferred: BTreeSet<_> = admitted.iter().filter(|spec| spec.exposure == ToolExposure::Deferred)
+                .map(|spec| spec.name.as_str()).filter(|name| !operator_deferred.contains(name)).collect();
+            assert!(dropped.is_empty() && deferred.is_empty(),
+                "U4 bare overrides have empty membership even for delimiter-renamed builtins");
+            for actual in [&admitted, &excluded] {
+                assert_eq!(serde_json::to_value(actual).unwrap(), serde_json::to_value(&expected).unwrap(),
+                    "U4 bare override surface excludes parent and child registry unions");
+            }
+            let (request, actual_binding) = child.chat_state_handle.build_request_with_binding(
+                candidates, None, false, None, child.session_id_string(), "fork-bound".into(),
+            ).await.unwrap();
+            assert_eq!(serde_json::to_value(&request.tools).unwrap(), serde_json::to_value(&expected).unwrap(),
+                "U4 forked bound build preserves the authoritative bare override");
+            assert_eq!(serde_json::to_value(&actual_binding.config).unwrap(), serde_json::to_value(&binding.config).unwrap());
+            assert_eq!(actual_binding.credentials, binding.credentials);
+            assert_eq!(request.search_admission.unwrap().admitted(), flag);
+            let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+            child.sampler_handle = xai_grok_sampler::SamplerActor::spawn(
+                child.turn_sampler_config_from_binding(&binding).await,
+                xai_grok_sampler::RetryPolicy { max_retries: 0, ..Default::default() }, event_tx,
+            );
+            child.workspace_ops.bind_local_session(
+                &child.session_id_string(), child.tool_context.cwd.as_path().to_path_buf(),
+                child.tool_context.hunk_tracker_handle.clone(), child.agent.borrow().tool_bridge().toolset(), None,
+            ).unwrap();
+            let child = Arc::new(child);
+            let drainer = child.clone();
+            let drain_task = tokio::task::spawn_local(async move {
+                while let Some(event) = event_rx.recv().await { drainer.handle_sampling_event(event).await; }
+            });
+            let mut salvage = super::length_salvage::LengthSalvage::new(None);
+            let mut sampling = Default::default();
+            let outcome = tokio::time::timeout(std::time::Duration::from_secs(300),
+                child.process_conversation_turn_with_recovery(
+                    "snapshot-child", None, None, Some(structured.parameters.clone()), &mut salvage, &mut sampling,
+                ),
+            ).await.expect("forked child turn completes");
+            drain_task.abort();
+            let _ = drain_task.await;
+            assert!(outcome.is_ok(), "forked turn must complete: {:?}", outcome.err());
+            assert_eq!(server.messages_request_count(), 1);
+            let sent = server.requests().into_iter().find(|sent| sent.path == "/v1/messages").unwrap();
+            assert_eq!(sent.authorization.as_deref(), Some("Bearer snapshot-child-fixture-key"));
+            let body = sent.body.unwrap();
+            let expected_body = serde_json::to_value(
+                xai_grok_sampling_types::conversation::build_messages_request(&request),
+            ).unwrap();
+            assert_eq!(body["tools"], expected_body["tools"],
+                "U4 actual forked send retains the bare builtin surface and structured output");
+            let tools = body["tools"].as_array().unwrap();
+            assert!(tools.iter().all(|tool| tool["name"] != parent_mcp.name && tool["name"] != local_mcp.name));
+            let structured_wire: Vec<_> = tools.iter().filter(|tool| tool["name"] == "StructuredOutput").collect();
+            assert_eq!(structured_wire, vec![&serde_json::json!({
+                "name": structured.name, "description": structured.description, "input_schema": structured.parameters,
+            })], "U4 fork structured output never acquires MCP membership");
+            assert_eq!(serde_json::to_value(child.forked_tool_override.as_ref().unwrap()).unwrap(),
+                serde_json::to_value(&snapshot).unwrap(), "bare fork carrier is unchanged");
+        }
+        commands.send(SessionCommand::Shutdown(crate::session::ShutdownKind::Graceful)).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), commands.closed()).await.unwrap();
+        parent.chat.take();
+    }).await;
+}
