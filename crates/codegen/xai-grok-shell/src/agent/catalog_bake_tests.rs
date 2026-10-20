@@ -78,7 +78,7 @@ fn bundled_catalog_parses_rich_rows() {
     );
 
     // Overlay (O/H) values ride the rows — overlay wins over generated.
-    let sol = &entries["gpt-5.6-sol"].info;
+    let sol = &entries["gpt-6.1-sol"].info;
     assert_eq!(sol.api_backend, ApiBackend::Responses);
     assert!(sol.strict_responses_input, "sol: strict responses pin from the overlay");
     assert_eq!(sol.multi_agent_v2, Some(true), "sol: v2 multi-agent gate");
@@ -107,32 +107,43 @@ fn bundled_catalog_parses_rich_rows() {
     // ... while the generated output cap survives (the overlay is
     // C-class-free by design).
     assert_eq!(sol.max_completion_tokens, Some(128_000));
-    assert_eq!(sol.name.as_deref(), Some("GPT-5.6 Sol"), "sol: seed name migrated");
-    assert_eq!(sol.auto_compact_threshold_percent, Some(80), "sol: seed compaction curation");
+    assert_eq!(
+        sol.name.as_deref(),
+        Some("GPT-6.1 Sol"),
+        "sol: seed name migrated"
+    );
+    assert_eq!(
+        sol.auto_compact_threshold_percent,
+        Some(80),
+        "sol: seed compaction curation"
+    );
 
-    // grok-4.6: the overlay cures what the old seed did not own —
+    // grok-4.7: the overlay cures what the old seed did not own —
     // supports_backend_search flips true -> false (config.toml rule).
-    let grok = &entries["grok-4.6"].info;
-    assert!(!grok.supports_backend_search, "grok-4.6: overlay backend_search=false");
+    let grok = &entries["grok-4.7"].info;
+    assert!(
+        !grok.supports_backend_search,
+        "grok-4.7: overlay backend_search=false"
+    );
     assert_eq!(
         grok.context_window,
         NonZeroU64::new(524_288).unwrap(),
-        "grok-4.6: generated cw (proxy truth moved 500000 -> 524288 at the 2026-09-22 recapture)"
+        "grok-4.7: qualified U0 Grok 4.7 input cap"
     );
     assert_eq!(
         grok.max_completion_tokens,
         Some(524_288),
-        "grok-4.6: generated max_output survives (2026-09-22 recapture)"
+        "grok-4.7: qualified U0 Grok 4.7 output cap"
     );
     assert_eq!(
         grok.reasoning_efforts.iter().map(|o| o.value.as_str()).collect::<Vec<_>>(),
         ["xhigh", "ultra", "high", "medium", "low"],
-        "grok-4.6: seed menu survives + kb6 ultra after the top tier (xhigh)"
+        "grok-4.7: seed menu survives + kb6 ultra after the top tier (xhigh)"
     );
 
     // Anthropic pinned to messages + 1h cache + family — never left to
     // inference.
-    let sonnet5 = &entries["claude-sonnet-5"].info;
+    let sonnet5 = &entries["claude-sonnet-5.5"].info;
     assert_eq!(sonnet5.api_backend, ApiBackend::Messages);
     assert_eq!(sonnet5.cache_ttl.as_deref(), Some("1h"));
     assert_eq!(sonnet5.multi_agent_v2, Some(true));
@@ -165,59 +176,67 @@ fn bundled_catalog_parses_rich_rows() {
 
 #[test]
 fn pre_bake_seed_rows_keep_the_head_donor_contract() {
+    let historical = grok_bake_is_historical();
     let entries = default_model_entries(&EndpointsConfig::default());
-    // The surviving pre-bake keys ride the curated menu; grok-4.5 was
-    // cut from the menu at apex-ayl.129 — the PRE_BAKE_SEED_KEYS filter
-    // tolerates its absence (a donor that no longer ships simply donates
-    // nothing).
     for key in PRE_BAKE_SEED_KEYS {
-        match key {
-            "grok-4.5" => assert!(
-                !entries.contains_key(key),
-                "{key}: cut from the zero-config menu (apex-ayl.129)"
-            ),
-            _ => assert!(entries.contains_key(key), "{key}: pre-bake key rides the catalog"),
-        }
+        assert_eq!(
+            entries.contains_key(key),
+            historical && key == "grok-4.6",
+            "{key}: only the guarded historical bake retains a donor"
+        );
     }
-    // The donor fields (context_window / api_backend): grok-4.6's cw is
-    // the generated (proxy-truth) 524288 post the 2026-09-22 recapture
-    // (no curated overlay cw); sol's cw is the curated fleet window
-    // 262144 (v6 / apex-1k7: the overlay beats the generated 922000). A
-    // future curation drift that changes what a pre-bake row donates to
-    // a live row must fail here.
     let donor_fields = |key: &str| {
         let info = &entries[key].info;
         (info.api_backend.clone(), info.context_window.get())
     };
-    assert_eq!(donor_fields("grok-4.6"), (ApiBackend::Responses, 524_288));
-    assert_eq!(donor_fields("gpt-5.6-sol"), (ApiBackend::Responses, 262_144));
+    if historical {
+        assert_eq!(donor_fields("grok-4.6"), (ApiBackend::Responses, 524_288));
+    } else {
+        assert!(!PRE_BAKE_SEED_KEYS.contains(&"grok-4.7"));
+        assert_eq!(donor_fields("grok-4.7"), (ApiBackend::Responses, 524_288));
+    }
 }
 
 #[test]
 fn donor_map_is_pre_bake_seed_keys_only() {
+    let historical = grok_bake_is_historical();
     let mut prefetched = IndexMap::new();
-    prefetched.insert("gpt-5.6-sol".to_string(), live_row("gpt-5.6-sol"));
-    prefetched.insert("claude-sonnet-5".to_string(), live_row("claude-sonnet-5"));
+    prefetched.insert("grok-4.6".to_string(), live_row("grok-4.6"));
+    prefetched.insert("grok-4.7".to_string(), live_row("grok-4.7"));
+    prefetched.insert(
+        "claude-sonnet-5.5".to_string(),
+        live_row("claude-sonnet-5.5"),
+    );
     let resolved = resolve_model_list(&Config::default(), Some(prefetched));
-
-    // The pre-bake key donates the bundled row's values: the live sol row
-    // at the hydration placeholder inherits the curated fleet window
-    // cw 262144 (v6 / apex-1k7) + the responses wire.
-    let sol = &resolved["gpt-5.6-sol"];
+    let grok = &resolved["grok-4.6"];
+    if historical {
+        assert_eq!(
+            grok.info.context_window,
+            NonZeroU64::new(524_288).unwrap(),
+            "pre-bake donor inherits the generated context_window"
+        );
+        assert_eq!(
+            grok.info.api_backend,
+            ApiBackend::Responses,
+            "pre-bake donor inherits the api_backend"
+        );
+    } else {
+        assert_eq!(
+            grok.info.context_window,
+            NonZeroU64::new(256_000).unwrap(),
+            "retired donor leaves the raw hydration placeholder"
+        );
+    }
+    for key in ["grok-4.6", "grok-4.7"] {
+        assert_eq!(resolved[key].info.api_backend, ApiBackend::Responses);
+        assert_eq!(resolved[key].info.model_family.as_deref(), Some("xai"));
+    }
     assert_eq!(
-        sol.info.context_window,
-        NonZeroU64::new(262_144).unwrap(),
-        "pre-bake donor inherits the generated context_window"
+        resolved["grok-4.7"].info.context_window,
+        NonZeroU64::new(256_000).unwrap(),
+        "Grok 4.7 is never a pre-bake donor"
     );
-    assert_eq!(
-        sol.info.api_backend,
-        ApiBackend::Responses,
-        "pre-bake donor inherits the api_backend"
-    );
-
-    // Non-pre-bake rows never donate. The live Claude context stays at
-    // the placeholder; its missing backend infers Messages from its family.
-    let claude = &resolved["claude-sonnet-5"];
+    let claude = &resolved["claude-sonnet-5.5"];
     assert_eq!(
         claude.info.context_window,
         NonZeroU64::new(256_000).unwrap(),
@@ -233,11 +252,11 @@ fn donor_map_is_pre_bake_seed_keys_only() {
 
 #[test]
 fn non_seed_claude_with_xai_family_does_not_inherit_bundled_messages() {
-    let mut row = live_row("claude-sonnet-5");
+    let mut row = live_row("claude-sonnet-5.5");
     row.info.model_family = Some("xai".to_string());
-    let prefetched = IndexMap::from([("claude-sonnet-5".to_string(), row)]);
+    let prefetched = IndexMap::from([("claude-sonnet-5.5".to_string(), row)]);
     let resolved = resolve_model_list(&Config::default(), Some(prefetched));
-    let claude = &resolved["claude-sonnet-5"];
+    let claude = &resolved["claude-sonnet-5.5"];
     assert_eq!(
         claude.info.context_window,
         NonZeroU64::new(256_000).unwrap()
@@ -267,7 +286,9 @@ fn fallback_path_seams_run_on_all_bundled_rows() {
         "curated responses pin survives the seams"
     );
     assert_eq!(g5c.info.model_family.as_deref(), Some("codex"));
-    let gpt4 = resolved.get("claude-sonnet-5").expect("claude-sonnet-5 rides the fallback");
+    let gpt4 = resolved
+        .get("claude-sonnet-5.5")
+        .expect("claude-sonnet-5.5 rides the fallback");
     assert_eq!(
         gpt4.info.api_backend,
         ApiBackend::Messages,
@@ -288,9 +309,14 @@ fn fallback_path_seams_run_on_all_bundled_rows() {
     // seam-invisible — the seams run on them too, apex-b0f);
     // kb6 inserts ultra after the top tier in each. grok-4.5 left the
     // menu at the apex-ayl.129 cut.
-    let grok46 = resolved.get("grok-4.6").expect("grok-4.6 rides the fallback");
-    assert_eq!(grok46.info.reasoning_efforts.len(), 5);
-    assert!(!grok46.info.supports_backend_search, "overlay curation rides the fallback row");
+    let grok47 = resolved
+        .get("grok-4.7")
+        .expect("grok-4.7 rides the fallback");
+    assert_eq!(grok47.info.reasoning_efforts.len(), 5);
+    assert!(
+        !grok47.info.supports_backend_search,
+        "overlay curation rides the fallback row"
+    );
 }
 
 /// ZC-PREBAKE-SEAM-1 (apex-b0f): the row-aware seams run on ALL bundled
@@ -304,17 +330,31 @@ fn fallback_path_seams_run_on_all_bundled_rows() {
 /// worked. The donor contract stays pre-bake-only (separate pin).
 #[test]
 fn fallback_path_seams_run_on_pre_bake_rows_too() {
+    let historical = grok_bake_is_historical();
     let mut cfg = Config::default();
     cfg.endpoints.default_env_key = Some(EnvKeys::single("PROXY_TEST_KEY"));
     let resolved = resolve_model_list(&cfg, None);
-    for key in ["gpt-5.6-sol", "grok-4.6"] {
+    assert!(!resolved.contains_key("gpt-5.6-sol"));
+    assert!(!resolved.contains_key("grok-4.5"));
+    let keys = if historical {
+        vec!["grok-4.6"]
+    } else {
+        assert!(!resolved.contains_key("grok-4.6"));
+        assert!(
+            PRE_BAKE_SEED_KEYS
+                .into_iter()
+                .all(|key| !resolved.contains_key(key))
+        );
+        vec!["gpt-6.1-sol", "grok-4.7"]
+    };
+    for key in keys {
         let entry = resolved
             .get(key)
             .unwrap_or_else(|| panic!("{key} must ride the bundled fallback"));
         assert_eq!(
             entry.env_key.as_ref().map(|k| k.names()),
             Some(vec!["PROXY_TEST_KEY"]),
-            "{key}: pre-bake bundled rows must receive the endpoint default_env_key fill"
+            "{key}: bundled rows must receive the endpoint default_env_key fill"
         );
     }
 }
@@ -361,7 +401,7 @@ fn role_pins_come_from_the_baked_file() {
     // overlay, written by the gate); the crate accessors read them.
     // Operator ruling 2026-09-22 (mid apex-ayl.129): all four pins
     // moved grok-4.6 -> gpt-5.6-terra (Vertex grok-4.6 deployment
-    // broken; the grok-4.6 row stays in the menu for /model use).
+    // broken; the role pins are independent of the current Grok menu row).
     assert_eq!(crate::models::default_model(), "gpt-5.6-terra");
     assert_eq!(crate::models::default_web_search_model(), "gpt-5.6-terra");
     assert_eq!(crate::models::default_image_description_model(), "gpt-5.6-terra");
@@ -380,4 +420,38 @@ fn role_pins_come_from_the_baked_file() {
         Some(BUNDLED_ROW_COUNT),
         "the models array is the merged catalog"
     );
+}
+
+fn grok_bake_is_historical() -> bool {
+    let entries = default_model_entries(&EndpointsConfig::default());
+    let active: Vec<_> = PRE_BAKE_SEED_KEYS
+        .into_iter()
+        .filter(|key| entries.contains_key(*key))
+        .collect();
+    let historical = match active.as_slice() {
+        ["grok-4.6"] => true,
+        [] => false,
+        _ => panic!("unexpected embedded donor intersection: {active:?}"),
+    };
+    let mut expected = vec![
+        "claude-opus-5.5",
+        "claude-opus-5.5-1m",
+        "claude-sonnet-5.5",
+        "claude-sonnet-5.5-1m",
+        "gemini-3.1-pro-preview",
+        "gemini-3.8-flash",
+        "gpt-5.6-terra",
+        "gpt-5.6-terra-1m",
+        "gpt-6-luna",
+        "gpt-6.1-sol",
+        "gpt-6.1-sol-1m",
+        if historical { "grok-4.6" } else { "grok-4.7" },
+    ];
+    expected.sort_unstable();
+    assert_eq!(
+        entries.keys().map(String::as_str).collect::<Vec<_>>(),
+        expected,
+        "historical replay and final retirement are the only accepted twelve-row states"
+    );
+    historical
 }

@@ -421,8 +421,9 @@ def test_d_committed_artifacts():
     gen = json.load(open(os.path.join(MODELS_DIR, "catalog_generated.json")))
     ov = json.load(open(os.path.join(MODELS_DIR, "catalog_overlay.json")))
     merged = json.load(open(os.path.join(MODELS_DIR, "default_models.json")))
-    check("generated: 76 models",
-          gen["model_count"] == 76 and len(gen["models"]) == 76)
+    _check_row_swap_artifact()
+    check("generated: 85 models",
+          gen["model_count"] == 85 and len(gen["models"]) == 85)
     # D1 upstream shape: four role pins + a models array.
     check("merged carries the four role pins",
           all(merged.get(p) == "gpt-5.6-terra" for p in
@@ -431,8 +432,8 @@ def test_d_committed_artifacts():
     check("merged models is an array", isinstance(rows, list))
     by_id = {r["id"]: r for r in rows}
     # apex-ayl.136 (CTXWIN-1M-1M): the menu is now 8 base rows + 4
-    # 1M-twin rows (claude-opus-5-1m / claude-sonnet-5-1m /
-    # gpt-5.6-sol-1m / gpt-5.6-terra-1m) — 12 merged rows.
+    # 1M-twin rows (claude-opus-5.5-1m / claude-sonnet-5.5-1m /
+    # gpt-6.1-sol-1m / gpt-5.6-terra-1m) — 12 merged rows.
     check("12 merged rows (the 8-row curated menu, apex-ayl.129, + the "
           "four 1M twin rows, apex-ayl.136)",
           len(rows) == 12, f"got {len(rows)}")
@@ -441,20 +442,20 @@ def test_d_committed_artifacts():
           set(by_id) == gate.bake_row_ids(gen["models"], ov["models"],
                                           ov.get("bake", [])))
     check("twin rows ride: id = row key, model = base wire slug",
-          by_id["claude-opus-5-1m"]["model"] == "claude-opus-5"
-          and by_id["claude-sonnet-5-1m"]["model"] == "claude-sonnet-5"
-          and by_id["gpt-5.6-sol-1m"]["model"] == "gpt-5.6-sol"
+          by_id["claude-opus-5.5-1m"]["model"] == "claude-opus-5.5"
+          and by_id["claude-sonnet-5.5-1m"]["model"] == "claude-sonnet-5.5"
+          and by_id["gpt-6.1-sol-1m"]["model"] == "gpt-6.1-sol"
           and by_id["gpt-5.6-terra-1m"]["model"] == "gpt-5.6-terra")
     check("twin rows carry the curated fleet window (v6 / apex-1k7: "
           "1048576; the 1M pair is only meaningful if the windows "
           "differ; mct stays the generated proxy truth 128000)",
-          by_id["claude-opus-5-1m"]["context_window"] == 1048576
-          and by_id["claude-sonnet-5-1m"]["context_window"] == 1048576
-          and by_id["gpt-5.6-sol-1m"]["context_window"] == 1048576
+          by_id["claude-opus-5.5-1m"]["context_window"] == 1048576
+          and by_id["claude-sonnet-5.5-1m"]["context_window"] == 1048576
+          and by_id["gpt-6.1-sol-1m"]["context_window"] == 1048576
           and by_id["gpt-5.6-terra-1m"]["context_window"] == 1048576
-          and all(by_id[t]["max_completion_tokens"] == 128000
-                  for t in ("claude-opus-5-1m", "claude-sonnet-5-1m",
-                            "gpt-5.6-sol-1m", "gpt-5.6-terra-1m")))
+          and all(by_id[t]["max_completion_tokens"] == _ROW_SWAP_CAPS[by_id[t]["model"]][1]
+                  for t in ("claude-opus-5.5-1m", "claude-sonnet-5.5-1m",
+                            "gpt-6.1-sol-1m", "gpt-5.6-terra-1m")))
     check("rows sorted by id", [r["id"] for r in rows] == sorted(by_id))
     check("gemma-4-31b absent from the menu (its overlay row was cut "
           "with the 8-row curation)",
@@ -476,25 +477,25 @@ def test_d_committed_artifacts():
           "max_completion_tokens only)",
           gate.find_forbidden_caps(gen["models"], ov["models"]) == [])
     # Seed migration invariants (the pre-bake rows, byte-for-value).
-    g46 = by_id["grok-4.6"]
-    check("grok-4.6: overlay backend_search=false beats the seed's true",
-          g46["supports_backend_search"] is False)
-    check("grok-4.6: seed name/label survive the migration",
-          g46["name"] == "Grok 4.6" and g46["system_prompt_label"] == "Grok 4.6")
-    check("grok-4.6: caps (generated cw + generated max_output — the "
+    g47 = by_id["grok-4.7"]
+    check("grok-4.7: overlay backend_search=false beats the seed's true",
+          g47["supports_backend_search"] is False)
+    check("grok-4.7: seed name/label survive the migration",
+          g47["name"] == "Grok 4.7" and g47["system_prompt_label"] == "Grok 4.7")
+    check("grok-4.7: caps (generated cw + generated max_output — the "
           "overlay no longer carries them, C-class; the 2026-09-22 "
           "recapture moved the proxy truth 500000 -> 524288)",
-          g46["context_window"] == 524288 and g46["max_completion_tokens"] == 524288)
+          (g47["context_window"], g47["max_completion_tokens"]) == _GROK_47_CAPS)
     # kb6 (A5' OPTION 1): the seed menu survives and gains ultra
     # immediately after the top tier (xhigh) — 5 items, high default.
-    check("grok-4.6: seed menu survives (5 items incl. ultra, high default)",
-          [m["value"] for m in g46["reasoning_efforts"]] == ["xhigh", "ultra", "high", "medium", "low"]
-          and g46["reasoning_efforts"][2]["default"] is True)
+    check("grok-4.7: seed menu survives (5 items incl. ultra, high default)",
+          [m["value"] for m in g47["reasoning_efforts"]] == ["xhigh", "ultra", "high", "medium", "low"]
+          and g47["reasoning_efforts"][2]["default"] is True)
     check("grok-4.5: cut from the zero-config menu (apex-ayl.129 — the "
           "overlay row and the bake-list entry are gone)",
           "grok-4.5" not in by_id
           and "grok-4.5" not in set(ov["models"]) | set(ov.get("bake", [])))
-    sol = by_id["gpt-5.6-sol"]
+    sol = by_id["gpt-6.1-sol"]
     check("sol: cw 262144 from the curated overlay (v6 / apex-1k7: the "
           "fleet runtime window beats the generated 922000 — the baked "
           "no-endpoint tier is the fleet's only config surface)",
@@ -502,10 +503,10 @@ def test_d_committed_artifacts():
     check("v6: paired base rows carry the config-tier fleet windows "
           "(apex-1k7: sol/opus 262144, terra/sonnet 500000)",
           by_id["gpt-5.6-terra"]["context_window"] == 500000
-          and by_id["claude-sonnet-5"]["context_window"] == 500000
-          and by_id["claude-opus-5"]["context_window"] == 262144)
-    check("sol: generated mct 128000 survives",
-          sol["max_completion_tokens"] == 128000)
+          and by_id["claude-sonnet-5.5"]["context_window"] == 500000
+          and by_id["claude-opus-5.5"]["context_window"] == 262144)
+    check("sol: captured output cap survives",
+          sol["max_completion_tokens"] == _ROW_SWAP_CAPS["gpt-6.1-sol"][1])
     check("sol: overlay menu wins (5 items, no xhigh)",
           [m["value"] for m in sol["reasoning_efforts"]] == ["low", "medium", "high", "max", "ultra"])
     check("sol: curated wire pins (ZC-EAST2-UNPIN-1 / apex-ayl.126.6: the "
@@ -516,18 +517,18 @@ def test_d_committed_artifacts():
     check("sol: seed single-effort survives (low)", sol["reasoning_effort"] == "low")
     # Curation spot-checks (the D3 ruling table).
     check("claude pinned messages + anthropic + 1h cache",
-          by_id["claude-sonnet-5"]["api_backend"] == "messages"
-          and by_id["claude-sonnet-5"]["model_family"] == "anthropic"
-          and by_id["claude-sonnet-5"]["cache_ttl"] == "1h")
+          by_id["claude-sonnet-5.5"]["api_backend"] == "messages"
+          and by_id["claude-sonnet-5.5"]["model_family"] == "anthropic"
+          and by_id["claude-sonnet-5.5"]["cache_ttl"] == "1h")
     check("frontier gpt-5.6-terra: responses + codex",
           by_id["gpt-5.6-terra"]["api_backend"] == "responses"
           and by_id["gpt-5.6-terra"]["model_family"] == "codex")
     check("gemini 3.8-flash: responses + google",
           by_id["gemini-3.8-flash"]["api_backend"] == "responses"
           and by_id["gemini-3.8-flash"]["model_family"] == "google")
-    check("xai frontier grok-4.6: responses + xai",
-          by_id["grok-4.6"]["api_backend"] == "responses"
-          and by_id["grok-4.6"]["model_family"] == "xai")
+    check("xai frontier grok-4.7: responses + xai",
+          by_id["grok-4.7"]["api_backend"] == "responses"
+          and by_id["grok-4.7"]["model_family"] == "xai")
     check("menu rows carry a context_window + max_completion_tokens "
           "(v6 / apex-1k7: the curated overlay cw rides where present, "
           "generated truth otherwise; the embedding rows left the menu)",
@@ -549,8 +550,8 @@ def test_d_committed_artifacts():
     # overlay the merge output must be deterministic and
     # BYTE-IDENTICAL to the freshly baked in-tree artifact (merged=12,
     # the 8-row curated zero-config menu + the four 1M twin rows,
-    # apex-ayl.136; drift=curated:8/skipped:68/
-    # unlisted:0/removed:0/skip_stale:0 — apex-ayl.129 curation cut,
+    # apex-ayl.136; drift=curated:8/skipped:73/
+    # unlisted:4/removed:0/skip_stale:0 — apex-ayl.129 curation cut,
     # 2026-09-22; the old invariant pinned the 77-row .128 pre-cut
     # baseline against git HEAD). Re-bake to a temp out and cmp
     # against the committed default_models.json.
@@ -565,7 +566,7 @@ def test_d_committed_artifacts():
         check("F1 baseline invariant: the exact baseline OK line",
               last.startswith(
                   "OK merged=12 overlay_entries=12 schema_errors=0 warns=0 "
-                  "drift=curated:8/skipped:68/unlisted:0/removed:0/"
+                  "drift=curated:8/skipped:73/unlisted:4/removed:0/"
                   "skip_stale:0 out="),
               last)
         with open(os.path.join(MODELS_DIR, "default_models.json"), "rb") as f:
@@ -611,8 +612,11 @@ def test_d_committed_artifacts():
           and (report["effort_advisory"].get("source") is not None
                or report["effort_advisory"].get("skip_reason")),
           json.dumps(report["effort_advisory"])[:300])
-    check("drift report: zero unlisted at this cut -> no scaffolds",
-          cls["new_unlisted"] == [] and report["scaffolds"] == [])
+    unlisted = ["claude-opus-5-5", "claude-sonnet-5-5", "gpt-6-sol",
+                "qwen3.8-flash-next"]
+    check("drift report: qualified out-of-swap additions stay alerted",
+          cls["new_unlisted"] == unlisted
+          and [entry["model"] for entry in report["scaffolds"]] == unlisted)
     # Redaction: no key material in any artifact.
     for name, doc in [("generated", gen), ("overlay", ov), ("merged", merged),
                       ("drift report", report)]:
@@ -1688,6 +1692,234 @@ def test_r_twin_rows():
               and "max_completion_tokens" in proc.stderr, proc.stderr)
 
 
+# U0 capture sha256 920f469beda2c5195d63ab3647dbec0a02d0574839efc404b92c2db26b839121.
+_ROW_SWAP_CAPS = {
+    "claude-opus-5.5": (1000000, 128000),
+    "claude-sonnet-5.5": (1000000, 128000),
+    "gpt-6.1-sol": (922000, 128000),
+    "gpt-6-luna": (922000, 128000),
+    "gpt-5.6-terra": (922000, 128000),
+    "grok-4.7": (524288, 524288),
+    "gemini-3.1-pro-preview": (1048576, 65536),
+    "gemini-3.8-flash": (1048576, 65536),
+}
+_ROW_SWAP_REPLACEMENTS = (
+    "claude-opus-5.5", "claude-opus-5.5-1m",
+    "claude-sonnet-5.5", "claude-sonnet-5.5-1m",
+    "gpt-6.1-sol", "gpt-6.1-sol-1m", "gpt-6-luna", "grok-4.7",
+)
+_ROW_SWAP_BETA = (
+    "claude-code-20250219", "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13", "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05", "mid-conversation-system-2026-04-07",
+    "mid-conversation-tool-changes-2026-07-01", "advisor-tool-2026-03-01",
+    "effort-2025-11-24", "fallback-credit-2026-06-01",
+)
+
+
+def _row_swap_menu(values, default):
+    return [{"id": v, "value": v, "label": v.capitalize() + " Effort",
+             "default": v == default} for v in values.split()]
+
+
+def _row_swap_expected_rows():
+    """Independent complete-row oracle for spec r5's approved deltas."""
+    rows = {}
+    for model, label, window, multi_agent in (
+        ("claude-opus-5.5", "Claude Opus 5.5", 262144, False),
+        ("claude-sonnet-5.5", "Claude Sonnet 5.5", 500000, True),
+    ):
+        for suffix, context_window in (("", window), ("-1m", 1048576)):
+            mid = model + suffix
+            rows[mid] = full_entry(
+                mid, "messages", "anthropic",
+                _row_swap_menu("low medium high xhigh max", "medium"),
+                id=mid, model=model, name=label + (" (1M)" if suffix else ""),
+                system_prompt_label=label, context_window=context_window,
+                max_completion_tokens=_ROW_SWAP_CAPS[model][1], cache_ttl="1h",
+                multi_agent_v2=multi_agent, supports_search_tool=False,
+                extra_headers={"anthropic-beta": ",".join(_ROW_SWAP_BETA)})
+    for model, label, window, default in (
+        ("gpt-6.1-sol", "GPT-6.1 Sol", 262144, "low"),
+        ("gpt-6-luna", "GPT-6 Luna", _ROW_SWAP_CAPS["gpt-6-luna"][0], "low"),
+        ("gpt-5.6-terra", "GPT-5.6 Terra", 500000, "high"),
+    ):
+        variants = [("", window)]
+        if model != "gpt-6-luna":
+            variants.append(("-1m", 1048576))
+        for suffix, context_window in variants:
+            mid = model + suffix
+            row = full_entry(
+                mid, "responses", "codex",
+                _row_swap_menu("low medium high max ultra", default),
+                id=mid, model=model, name=label + (" (1M)" if suffix else ""),
+                system_prompt_label=label, context_window=context_window,
+                max_completion_tokens=_ROW_SWAP_CAPS[model][1],
+                multi_agent_v2=True, strict_responses_input=True,
+                use_responses_lite=True)
+            if model == "gpt-5.6-terra":
+                if not suffix:
+                    row["supports_search_tool"] = True
+            else:
+                row["supports_search_tool"] = False
+            if model == "gpt-6.1-sol":
+                row["description"] = "Latest frontier agentic coding model"
+            rows[mid] = row
+    for model, label, values in (
+        ("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview", "high ultra medium low"),
+        ("gemini-3.8-flash", "Gemini 3.8 Flash", "low medium high ultra"),
+    ):
+        rows[model] = full_entry(
+            model, "responses", "google", _row_swap_menu(values, "medium"),
+            id=model, model=model, name=label, system_prompt_label=label,
+            context_window=_ROW_SWAP_CAPS[model][0],
+            max_completion_tokens=_ROW_SWAP_CAPS[model][1])
+    grok_menu = _row_swap_menu("xhigh ultra high medium low", "high")
+    grok_menu[0]["label"] = "Extra High Effort"
+    descriptions = {
+        "xhigh": "Highest effort and reasoning level",
+        "high": "Higher implementation quality with extensive reasoning",
+        "medium": "Balanced effort with standard implementation and testing",
+        "low": "Quick, fast implementations",
+    }
+    for effort in grok_menu:
+        if effort["value"] in descriptions:
+            effort["description"] = descriptions[effort["value"]]
+    rows["grok-4.7"] = full_entry(
+        "grok-4.7", "responses", "xai", grok_menu,
+        id="grok-4.7", model="grok-4.7", name="Grok 4.7",
+        system_prompt_label="Grok 4.7", description="SpaceXAI's latest frontier model",
+        context_window=_ROW_SWAP_CAPS["grok-4.7"][0],
+        max_completion_tokens=_ROW_SWAP_CAPS["grok-4.7"][1], supports_search_tool=False)
+    return rows
+
+
+def _check_row_swap_artifact(candidate_path=None):
+    """The candidate seam must read the regenerated mutant, not the embedded bake."""
+    path = candidate_path or os.path.join(MODELS_DIR, "default_models.json")
+    with open(path) as stream:
+        candidate = json.load(stream)
+    expected = _row_swap_expected_rows()
+    rows = candidate.get("models")
+    check("row swap: models array", isinstance(rows, list))
+    check("row swap: exact twelve-row identities",
+          [r.get("id") for r in rows] == sorted(expected),
+          repr([r.get("id") for r in rows]))
+    by_id = {r["id"]: r for r in rows}
+    for mid in _ROW_SWAP_REPLACEMENTS:
+        check(f"row swap: {mid} explicitly search-off",
+              by_id[mid].get("supports_search_tool") is False)
+        if mid.startswith("claude-"):
+            check(f"row swap: {mid} ten retained beta tokens in order",
+                  by_id[mid].get("extra_headers", {}).get("anthropic-beta", "")
+                  == ",".join(_ROW_SWAP_BETA))
+    for mid, row in expected.items():
+        check(f"row swap: {mid} complete approved row", by_id[mid] == row,
+              repr(sorted(k for k in set(row) | set(by_id[mid])
+                          if k not in row or k not in by_id[mid]
+                          or row[k] != by_id[mid][k])))
+    expected_doc = {pin: "gpt-5.6-terra" for pin in
+                    ("default", "web_search", "image_description", "session_summary")}
+    expected_doc["models"] = [expected[mid] for mid in sorted(expected)]
+    check("row swap: whole artifact and role pins", candidate == expected_doc)
+
+
+def test_s_row_swap_artifact_contract(candidate_path=None):
+    """(s) Eight renamed rows; every undeclared field is preserved."""
+    print("s) row swap artifact contract")
+    _check_row_swap_artifact(candidate_path)
+
+
+# Grok 4.7 caps independently read from the qualified U0 capture named above.
+_GROK_47_CAPS = (524288, 524288)
+_GROK_47_IDS = (
+    "claude-opus-5.5", "claude-opus-5.5-1m",
+    "claude-sonnet-5.5", "claude-sonnet-5.5-1m",
+    "gemini-3.1-pro-preview", "gemini-3.8-flash",
+    "gpt-5.6-terra", "gpt-5.6-terra-1m", "gpt-6-luna",
+    "gpt-6.1-sol", "gpt-6.1-sol-1m", "grok-4.7",
+)
+
+
+def _grok_47_expected_row():
+    menu = _row_swap_menu("xhigh ultra high medium low", "high")
+    menu[0]["label"] = "Extra High Effort"
+    descriptions = {
+        "xhigh": "Highest effort and reasoning level",
+        "high": "Higher implementation quality with extensive reasoning",
+        "medium": "Balanced effort with standard implementation and testing",
+        "low": "Quick, fast implementations",
+    }
+    for effort in menu:
+        if effort["value"] in descriptions:
+            effort["description"] = descriptions[effort["value"]]
+    return full_entry(
+        "grok-4.7", "responses", "xai", menu,
+        id="grok-4.7", model="grok-4.7", name="Grok 4.7",
+        system_prompt_label="Grok 4.7", description="SpaceXAI's latest frontier model",
+        context_window=_GROK_47_CAPS[0], max_completion_tokens=_GROK_47_CAPS[1],
+        supports_search_tool=False)
+
+
+def test_t_grok_47_artifact_contract(candidate_path=None, overlay_path=None,
+                                    generated_path=None):
+    """(t) The eighth rename preserves policy without retaining a donor or alias."""
+    print("t) Grok 4.7 artifact contract")
+    source_overlay = overlay_path or os.path.join(MODELS_DIR, "catalog_overlay.json")
+    source_generated = generated_path or os.path.join(MODELS_DIR, "catalog_generated.json")
+    with tempfile.TemporaryDirectory() as td:
+        output = os.path.join(td, "default_models.json")
+        proc = run_gate(source_generated, source_overlay, output, schema=SCHEMA_PATH)
+        check("grok 4.7: gate accepts candidate inputs", proc.returncode == 0,
+              f"rc={proc.returncode} err={proc.stderr}")
+        check("grok 4.7: gate wrote fresh output", os.path.isfile(output))
+        with open(candidate_path or output) as stream:
+            candidate = json.load(stream)
+        check("grok 4.7: candidate is the actual gate output",
+              candidate == json.load(open(output)))
+        if candidate_path is None and overlay_path is None and generated_path is None:
+            check("grok 4.7: embedded bytes equal regenerated bytes",
+                  open(output, "rb").read()
+                  == open(os.path.join(MODELS_DIR, "default_models.json"), "rb").read())
+        rows = candidate.get("models")
+        check("grok 4.7: models array", isinstance(rows, list))
+        check("grok 4.7: exact final identities without old alias",
+              [row.get("id") for row in rows] == list(_GROK_47_IDS),
+              repr([row.get("id") for row in rows]))
+        by_id = {row["id"]: row for row in rows}
+        renamed = [mid for mid in _GROK_47_IDS
+                   if mid.startswith(("claude-", "gpt-6", "grok-"))]
+        check("grok 4.7: eight renamed rows explicitly search-off",
+              len(renamed) == 8
+              and all(by_id[mid].get("supports_search_tool") is False for mid in renamed))
+        grok = by_id["grok-4.7"]
+        check("grok 4.7: immutable captured caps",
+              (grok.get("context_window"), grok.get("max_completion_tokens")) == _GROK_47_CAPS)
+        check("grok 4.7: complete carried class policy",
+              grok == _grok_47_expected_row())
+        other_rows = {key: row for key, row in _row_swap_expected_rows().items()
+                      if key not in ("grok-4.6", "grok-4.7")}
+        check("grok 4.7: eleven reviewed post-U3 rows unchanged",
+              len(other_rows) == 11
+              and {key: row for key, row in by_id.items() if key != "grok-4.7"} == other_rows)
+        check("grok 4.7: four Terra role pins and no extra root fields",
+              {key: value for key, value in candidate.items() if key != "models"}
+              == {pin: "gpt-5.6-terra" for pin in
+                  ("default", "web_search", "image_description", "session_summary")})
+        overlay = json.load(open(source_overlay))
+        check("grok 4.7: no forced bake or explicit base model alias",
+              overlay.get("bake") == []
+              and "grok-4.6" not in overlay["models"]
+              and "model" not in overlay["models"]["grok-4.7"])
+        skip = [entry for entry in overlay["skip"]
+                if entry["model"] in ("grok-4.6", "grok-4.7")]
+        check("grok 4.7: predecessor skipped with exact reason",
+              skip == [{"model": "grok-4.6", "reason": "superseded by grok-4.7"}])
+        generated = json.load(open(source_generated))
+        check("grok 4.7: distinct old and new proxy records remain",
+              all(key in generated["models"] for key in ("grok-4.6", "grok-4.7")))
+
+
 if __name__ == "__main__":
     test_a_merge_precedence_and_row_shape()
     test_b_subset_drift_coverage()
@@ -1707,4 +1939,6 @@ if __name__ == "__main__":
     test_p_exit_code_contract()
     test_q_round2_microfixes()
     test_r_twin_rows()
+    test_s_row_swap_artifact_contract()
+    test_t_grok_47_artifact_contract()
     print(f"ALL PASS ({PASS} checks)")

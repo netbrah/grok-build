@@ -3607,18 +3607,11 @@ fn fill_from_endpoint_defaults(entry: &mut ModelEntry, endpoints: &EndpointsConf
         );
     }
 }
-/// CATALOG-BAKE-1 (apex-071): the model keys the bundled seed carried
-/// before the catalog bake (the rich rows of `default_models.json` at
-/// fc7d64a). Their pre-bake role survives as the DONOR contract only:
-/// they are the ONLY donors for prefetched rows. ZC-PREBAKE-SEAM-1
-/// (apex-b0f, operator ruling 2026-09-24): the resolution-seam
-/// exemption is RETIRED — the row-aware seams run on every bundled row,
-/// so the apex-deploy built-in `default_env_key` (CODEX -> APEX pair)
-/// reaches `gpt-5.6-sol` and no no-endpoint model switch fails closed
-/// while its non-pre-bake sibling (`gpt-5.6-sol-1m`) works. Every other
-/// bundled row is a generated+overlay addition — fallback + drift
-/// baseline only, never a donor (baked rows never donate to live rows;
-/// live fetch wins when present).
+/// Model keys from the pre-bake seed (fc7d64a). Surviving bundled entries
+/// in this set donate context, agent type and backend to prefetched rows.
+/// No historical seed key remains in the current bake. The replacements
+/// grok-4.7 and gpt-6.1-sol are not donors. Endpoint defaults still reach every
+/// bundled row; header-key donation is a separate mechanism.
 pub(crate) const PRE_BAKE_SEED_KEYS: [&str; 3] = ["grok-4.6", "grok-4.5", "gpt-5.6-sol"];
 
 /// Assemble the final model map. Priority (highest wins):

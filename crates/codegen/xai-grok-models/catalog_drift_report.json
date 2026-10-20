@@ -1,39 +1,36 @@
 {
  "schema_version": 1,
- "generated_at": "2026-10-01T16:14:36Z",
+ "generated_at": "2026-10-20T02:05:49Z",
  "gate": "scripts/catalog_gate.py (apex-ayl.128 ZC-SUBSET-DRIFT-1)",
  "inputs": {
   "generated": {
-   "path": "/Users/palanisd/Projects/upstream/wt/apex-ayl-hosted-tool-search/crates/codegen/xai-grok-models/catalog_generated.json",
-   "generated_at": "2026-09-22T19:21:54.296168+00:00"
+   "path": "crates/codegen/xai-grok-models/catalog_generated.json",
+   "generated_at": "2026-10-19T21:00:21.116268+00:00"
   },
-  "overlay": "/Users/palanisd/Projects/upstream/wt/apex-ayl-hosted-tool-search/crates/codegen/xai-grok-models/catalog_overlay.json",
-  "schema": "/Users/palanisd/Projects/upstream/wt/apex-ayl-hosted-tool-search/crates/codegen/xai-grok-shell/config.schema.json",
-  "digest": {
-   "path": "/Users/palanisd/Projects/upstream/grok/plans/model/data/catalog-digest.json",
-   "captured_at": "2026-09-18T23:37:16.832488+00:00"
-  }
+  "overlay": "crates/codegen/xai-grok-models/catalog_overlay.json",
+  "schema": "crates/codegen/xai-grok-shell/config.schema.json",
+  "digest": null
  },
  "counts": {
-  "on_proxy": 76,
+  "on_proxy": 85,
   "overlay_rows": 12,
   "curated": 8,
-  "skipped": 68,
-  "new_unlisted": 0,
+  "skipped": 73,
+  "new_unlisted": 4,
   "removed_but_curated": 0,
   "skip_stale": 0,
   "bake_listed_off_proxy": 0
  },
  "classification": {
   "curated": [
-   "claude-opus-5",
-   "claude-sonnet-5",
+   "claude-opus-5.5",
+   "claude-sonnet-5.5",
    "gemini-3.1-pro-preview",
    "gemini-3.8-flash",
-   "gpt-5.6-luna",
-   "gpt-5.6-sol",
    "gpt-5.6-terra",
-   "grok-4.6"
+   "gpt-6-luna",
+   "gpt-6.1-sol",
+   "grok-4.7"
   ],
   "skipped": [
    {
@@ -89,6 +86,10 @@
     "reason": "superseded \u2014 frontier row kept"
    },
    {
+    "model": "claude-opus-5",
+    "reason": "superseded by claude-opus-5.5"
+   },
+   {
     "model": "claude-sonnet-4-5",
     "reason": "superseded \u2014 frontier row kept"
    },
@@ -103,6 +104,10 @@
    {
     "model": "claude-sonnet-4.6",
     "reason": "superseded \u2014 frontier row kept"
+   },
+   {
+    "model": "claude-sonnet-5",
+    "reason": "superseded by claude-sonnet-5.5"
    },
    {
     "model": "gemini-3-flash-preview",
@@ -269,6 +274,18 @@
     "reason": "superseded legacy"
    },
    {
+    "model": "gpt-5.6-luna",
+    "reason": "superseded by gpt-6-luna"
+   },
+   {
+    "model": "gpt-5.6-sol",
+    "reason": "superseded by gpt-6.1-sol"
+   },
+   {
+    "model": "grok-4.6",
+    "reason": "superseded by grok-4.7"
+   },
+   {
     "model": "o1",
     "reason": "superseded legacy"
    },
@@ -309,161 +326,338 @@
     "reason": "embedding/non-chat \u2014 not a harness menu row"
    }
   ],
-  "new_unlisted": [],
+  "new_unlisted": [
+   "claude-opus-5-5",
+   "claude-sonnet-5-5",
+   "gpt-6-sol",
+   "qwen3.8-flash-next"
+  ],
   "removed_but_curated": [],
   "skip_stale": [],
   "bake_listed_off_proxy": []
  },
  "effort_advisory": {
-  "status": "ok",
-  "source": "/Users/palanisd/Projects/upstream/grok/plans/model/data/catalog-digest.json",
-  "skip_reason": null,
-  "advisories": [
-   {
-    "model": "claude-opus-5",
-    "live_hint": [
-     "high",
-     "low",
-     "max",
-     "medium",
-     "minimal",
-     "none",
-     "xhigh"
-    ],
-    "curated": [
-     "high",
-     "low",
-     "max",
-     "medium",
-     "xhigh"
-    ],
-    "live_only": [
-     "minimal",
-     "none"
-    ],
-    "curated_only": []
-   },
-   {
-    "model": "claude-sonnet-5",
-    "live_hint": [
-     "high",
-     "low",
-     "max",
-     "medium",
-     "minimal",
-     "none",
-     "xhigh"
-    ],
-    "curated": [
-     "high",
-     "low",
-     "max",
-     "medium",
-     "xhigh"
-    ],
-    "live_only": [
-     "minimal",
-     "none"
-    ],
-    "curated_only": []
-   },
-   {
-    "model": "gemini-3.8-flash",
-    "live_hint": [
-     "high",
-     "low",
-     "medium",
-     "none"
-    ],
-    "curated": [
-     "high",
-     "low",
-     "medium",
-     "ultra"
-    ],
-    "live_only": [
-     "none"
-    ],
-    "curated_only": [
-     "ultra"
-    ]
-   },
-   {
-    "model": "gpt-5.6-luna",
-    "live_hint": [
-     "high",
-     "low",
-     "medium",
-     "none",
-     "xhigh"
-    ],
-    "curated": [
-     "high",
-     "low",
-     "max",
-     "medium",
-     "ultra"
-    ],
-    "live_only": [
-     "none",
-     "xhigh"
-    ],
-    "curated_only": [
-     "max",
-     "ultra"
-    ]
-   },
-   {
-    "model": "gpt-5.6-sol",
-    "live_hint": [
-     "high",
-     "low",
-     "medium",
-     "none",
-     "xhigh"
-    ],
-    "curated": [
-     "high",
-     "low",
-     "max",
-     "medium",
-     "ultra"
-    ],
-    "live_only": [
-     "none",
-     "xhigh"
-    ],
-    "curated_only": [
-     "max",
-     "ultra"
-    ]
-   },
-   {
-    "model": "gpt-5.6-terra",
-    "live_hint": [
-     "high",
-     "low",
-     "medium",
-     "none",
-     "xhigh"
-    ],
-    "curated": [
-     "high",
-     "low",
-     "max",
-     "medium",
-     "ultra"
-    ],
-    "live_only": [
-     "none",
-     "xhigh"
-    ],
-    "curated_only": [
-     "max",
-     "ultra"
-    ]
-   }
-  ]
+  "status": "skipped",
+  "source": null,
+  "skip_reason": "catalog-digest.json not found (searched the documented candidate paths) \u2014 effort advisory skipped; the bake proceeds without it",
+  "searched": [
+   "/Users/palanisd/Projects/upstream/wt/grok-hts-rows/grok/plans/model/data/catalog-digest.json",
+   "/Users/palanisd/Projects/upstream/wt/grok/plans/model/data/catalog-digest.json",
+   "/Users/palanisd/.grok/catalog-digest.json"
+  ],
+  "advisories": []
  },
- "scaffolds": []
+ "scaffolds": [
+  {
+   "model": "claude-opus-5-5",
+   "evidence": {
+    "mode": "chat",
+    "providers": [
+     "vertex_ai"
+    ],
+    "max_input_tokens": 1000000,
+    "max_output_tokens": 128000,
+    "input_cost_per_token": 4e-06,
+    "output_cost_per_token": 2e-05,
+    "supported_reasoning_efforts": [
+     "none",
+     "minimal",
+     "low",
+     "medium",
+     "high",
+     "xhigh",
+     "max"
+    ]
+   },
+   "overlay_row": {
+    "api_backend": null,
+    "model_family": "anthropic",
+    "name": null,
+    "reasoning_efforts": [
+     {
+      "id": "none",
+      "value": "none",
+      "label": "None",
+      "default": false
+     },
+     {
+      "id": "minimal",
+      "value": "minimal",
+      "label": "Minimal",
+      "default": false
+     },
+     {
+      "id": "low",
+      "value": "low",
+      "label": "Low",
+      "default": false
+     },
+     {
+      "id": "medium",
+      "value": "medium",
+      "label": "Medium",
+      "default": false
+     },
+     {
+      "id": "high",
+      "value": "high",
+      "label": "High",
+      "default": false
+     },
+     {
+      "id": "xhigh",
+      "value": "xhigh",
+      "label": "Xhigh",
+      "default": false
+     },
+     {
+      "id": "max",
+      "value": "max",
+      "label": "Max",
+      "default": false
+     }
+    ],
+    "supports_reasoning_effort": true,
+    "reasoning_effort": null,
+    "cache_ttl": null,
+    "multi_agent_v2": null,
+    "supports_backend_search": null,
+    "strict_responses_input": null,
+    "extra_headers": {},
+    "auto_compact_threshold_percent": 80,
+    "compaction_at_tokens": true,
+    "compactions_remaining": 1,
+    "system_prompt_label": null
+   },
+   "todo_fields": [
+    "api_backend",
+    "name",
+    "reasoning_effort",
+    "reasoning_efforts.default",
+    "multi_agent_v2",
+    "supports_backend_search",
+    "strict_responses_input",
+    "system_prompt_label"
+   ],
+   "note": "Paste into catalog_overlay.json under models.\"<id>\", fill the nulled TODO fields, and (when the menu is non-empty) mark one reasoning_efforts entry default:true with reasoning_effort = its value. The gate stays fail-closed until the row is complete."
+  },
+  {
+   "model": "claude-sonnet-5-5",
+   "evidence": {
+    "mode": "chat",
+    "providers": [
+     "vertex_ai"
+    ],
+    "max_input_tokens": 1000000,
+    "max_output_tokens": 128000,
+    "input_cost_per_token": 2e-06,
+    "output_cost_per_token": 1e-05,
+    "supported_reasoning_efforts": [
+     "none",
+     "minimal",
+     "low",
+     "medium",
+     "high",
+     "xhigh",
+     "max"
+    ]
+   },
+   "overlay_row": {
+    "api_backend": null,
+    "model_family": "anthropic",
+    "name": null,
+    "reasoning_efforts": [
+     {
+      "id": "none",
+      "value": "none",
+      "label": "None",
+      "default": false
+     },
+     {
+      "id": "minimal",
+      "value": "minimal",
+      "label": "Minimal",
+      "default": false
+     },
+     {
+      "id": "low",
+      "value": "low",
+      "label": "Low",
+      "default": false
+     },
+     {
+      "id": "medium",
+      "value": "medium",
+      "label": "Medium",
+      "default": false
+     },
+     {
+      "id": "high",
+      "value": "high",
+      "label": "High",
+      "default": false
+     },
+     {
+      "id": "xhigh",
+      "value": "xhigh",
+      "label": "Xhigh",
+      "default": false
+     },
+     {
+      "id": "max",
+      "value": "max",
+      "label": "Max",
+      "default": false
+     }
+    ],
+    "supports_reasoning_effort": true,
+    "reasoning_effort": null,
+    "cache_ttl": null,
+    "multi_agent_v2": null,
+    "supports_backend_search": null,
+    "strict_responses_input": null,
+    "extra_headers": {},
+    "auto_compact_threshold_percent": 80,
+    "compaction_at_tokens": true,
+    "compactions_remaining": 1,
+    "system_prompt_label": null
+   },
+   "todo_fields": [
+    "api_backend",
+    "name",
+    "reasoning_effort",
+    "reasoning_efforts.default",
+    "multi_agent_v2",
+    "supports_backend_search",
+    "strict_responses_input",
+    "system_prompt_label"
+   ],
+   "note": "Paste into catalog_overlay.json under models.\"<id>\", fill the nulled TODO fields, and (when the menu is non-empty) mark one reasoning_efforts entry default:true with reasoning_effort = its value. The gate stays fail-closed until the row is complete."
+  },
+  {
+   "model": "gpt-6-sol",
+   "evidence": {
+    "mode": "chat",
+    "providers": [
+     "azure"
+    ],
+    "max_input_tokens": 922000,
+    "max_output_tokens": 128000,
+    "input_cost_per_token": 2e-06,
+    "output_cost_per_token": 1e-05,
+    "supported_reasoning_efforts": [
+     "none",
+     "low",
+     "medium",
+     "high",
+     "xhigh",
+     "max"
+    ]
+   },
+   "overlay_row": {
+    "api_backend": "responses",
+    "model_family": "codex",
+    "name": null,
+    "reasoning_efforts": [
+     {
+      "id": "none",
+      "value": "none",
+      "label": "None",
+      "default": false
+     },
+     {
+      "id": "low",
+      "value": "low",
+      "label": "Low",
+      "default": false
+     },
+     {
+      "id": "medium",
+      "value": "medium",
+      "label": "Medium",
+      "default": false
+     },
+     {
+      "id": "high",
+      "value": "high",
+      "label": "High",
+      "default": false
+     },
+     {
+      "id": "xhigh",
+      "value": "xhigh",
+      "label": "Xhigh",
+      "default": false
+     },
+     {
+      "id": "max",
+      "value": "max",
+      "label": "Max",
+      "default": false
+     }
+    ],
+    "supports_reasoning_effort": true,
+    "reasoning_effort": null,
+    "cache_ttl": null,
+    "multi_agent_v2": null,
+    "supports_backend_search": null,
+    "strict_responses_input": null,
+    "extra_headers": {},
+    "auto_compact_threshold_percent": 80,
+    "compaction_at_tokens": true,
+    "compactions_remaining": 1,
+    "system_prompt_label": null
+   },
+   "todo_fields": [
+    "name",
+    "reasoning_effort",
+    "reasoning_efforts.default",
+    "multi_agent_v2",
+    "supports_backend_search",
+    "strict_responses_input",
+    "system_prompt_label"
+   ],
+   "note": "Paste into catalog_overlay.json under models.\"<id>\", fill the nulled TODO fields, and (when the menu is non-empty) mark one reasoning_efforts entry default:true with reasoning_effort = its value. The gate stays fail-closed until the row is complete."
+  },
+  {
+   "model": "qwen3.8-flash-next",
+   "evidence": {
+    "mode": "chat",
+    "providers": [
+     "openai"
+    ],
+    "max_input_tokens": 262144,
+    "max_output_tokens": 128000,
+    "input_cost_per_token": 0,
+    "output_cost_per_token": 0
+   },
+   "overlay_row": {
+    "api_backend": null,
+    "model_family": null,
+    "name": null,
+    "reasoning_efforts": [],
+    "supports_reasoning_effort": false,
+    "reasoning_effort": null,
+    "cache_ttl": null,
+    "multi_agent_v2": null,
+    "supports_backend_search": null,
+    "strict_responses_input": null,
+    "extra_headers": {},
+    "auto_compact_threshold_percent": 80,
+    "compaction_at_tokens": true,
+    "compactions_remaining": 1,
+    "system_prompt_label": null
+   },
+   "todo_fields": [
+    "api_backend",
+    "model_family",
+    "name",
+    "multi_agent_v2",
+    "supports_backend_search",
+    "strict_responses_input",
+    "system_prompt_label"
+   ],
+   "note": "Paste into catalog_overlay.json under models.\"<id>\", fill the nulled TODO fields, and (when the menu is non-empty) mark one reasoning_efforts entry default:true with reasoning_effort = its value. The gate stays fail-closed until the row is complete."
+  }
+ ]
 }

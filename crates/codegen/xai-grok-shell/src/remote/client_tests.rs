@@ -1204,3 +1204,124 @@ fn q36i_baked_search_observations_preserve_none_false_true() {
         );
     }
 }
+
+#[test]
+fn row_swap_search_observation_matrix() {
+    let replacements = [
+        ("claude-opus-5", "claude-opus-5.5"),
+        ("claude-opus-5-1m", "claude-opus-5.5-1m"),
+        ("claude-sonnet-5", "claude-sonnet-5.5"),
+        ("claude-sonnet-5-1m", "claude-sonnet-5.5-1m"),
+        ("gpt-5.6-luna", "gpt-6-luna"),
+        ("gpt-5.6-sol", "gpt-6.1-sol"),
+        ("gpt-5.6-sol-1m", "gpt-6.1-sol-1m"),
+        ("grok-4.6", "grok-4.7"),
+    ];
+    let required = replacements.map(|(_, key)| key);
+    let rows: Vec<_> = crate::models::default_model_rows()
+        .iter()
+        .filter(|row| required.contains(&row.id.as_deref().unwrap_or(&row.model)))
+        .collect();
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.id.as_deref().unwrap_or(&row.model))
+            .collect::<Vec<_>>(),
+        required,
+        "every replacement base and twin must participate, including false Claude rows"
+    );
+    let actual_baked = baked_cap_rows();
+    let mut cfg = crate::agent::config::Config::default();
+    cfg.endpoints.models_base_url = None;
+    cfg.endpoints.models_list_url = None;
+    cfg.endpoints.default_api_backend = None;
+    cfg.endpoints.default_model_family = None;
+    cfg.config_models.clear();
+    for ((old, key), row) in replacements.into_iter().zip(rows) {
+        assert_eq!(row.supports_search_tool, Some(false), "{key}: actual bake");
+        assert_eq!(actual_baked[key], baked_cap_row_from_entry(row));
+        assert!(!actual_baked.contains_key(old), "{old}: removed exact key");
+        for observed in [None, Some(false), Some(true)] {
+            let hypothetical = crate::models::DefaultModelEntry {
+                supports_search_tool: observed,
+                ..row.clone()
+            };
+            let cap = baked_cap_row_from_entry(&hypothetical);
+            assert_eq!(cap.supports_search_tool, observed);
+            let table = [(key.to_owned(), cap)].into_iter().collect();
+            for selected_id in [key, old] {
+                for alias in ["supportsSearchTool", "supports_search_tool"] {
+                    for (value, live_observed) in [
+                        (None, None),
+                        (Some(serde_json::Value::Null), None),
+                        (Some(serde_json::json!(false)), Some(false)),
+                        (Some(serde_json::json!(true)), Some(true)),
+                        (Some(serde_json::json!("true")), None),
+                    ] {
+                        let mut live = serde_json::json!({"id": selected_id, "model": row.model});
+                        if let Some(value) = value {
+                            live[alias] = value;
+                        }
+                        let expected = live_observed
+                            .or(if selected_id == key { observed } else { None })
+                            .unwrap_or(false);
+                        let parsed =
+                            parse_remote_model_value(&live, "https://catalog.example/v1", &table)
+                                .unwrap();
+                        assert_eq!(parsed.supports_search_tool, expected, "{live}/{observed:?}");
+                        let prefetched = crate::agent::remote_config::fetch::build_prefetched_map(
+                            vec![parsed],
+                            None,
+                        );
+                        assert_eq!(
+                            prefetched.keys().map(String::as_str).collect::<Vec<_>>(),
+                            [selected_id]
+                        );
+                        let resolved =
+                            crate::agent::config::resolve_model_list(&cfg, Some(prefetched));
+                        assert_eq!(
+                            resolved[selected_id].info.supports_search_tool, expected,
+                            "{live}/{observed:?}"
+                        );
+                        assert_eq!(resolved[selected_id].info.model, row.model);
+                    }
+                }
+            }
+            for (primary, secondary, expected) in [
+                (serde_json::json!(false), true, false),
+                (serde_json::json!(true), false, true),
+                (serde_json::Value::Null, true, observed.unwrap_or(false)),
+                (
+                    serde_json::json!("invalid"),
+                    false,
+                    observed.unwrap_or(false),
+                ),
+            ] {
+                let live = serde_json::json!({"id": key, "model": row.model,
+                    "supportsSearchTool": primary, "supports_search_tool": secondary});
+                let parsed =
+                    parse_remote_model_value(&live, "https://catalog.example/v1", &table).unwrap();
+                let prefetched =
+                    crate::agent::remote_config::fetch::build_prefetched_map(vec![parsed], None);
+                let resolved = crate::agent::config::resolve_model_list(&cfg, Some(prefetched));
+                assert_eq!(
+                    resolved[key].info.supports_search_tool, expected,
+                    "{key}: selected camel alias"
+                );
+            }
+            let parsed = parse_remote_model_value(
+                &serde_json::json!({"model": key}),
+                "https://catalog.example/v1",
+                &table,
+            )
+            .unwrap();
+            let prefetched =
+                crate::agent::remote_config::fetch::build_prefetched_map(vec![parsed], None);
+            let resolved = crate::agent::config::resolve_model_list(&cfg, Some(prefetched));
+            assert_eq!(
+                resolved[key].info.supports_search_tool,
+                observed.unwrap_or(false),
+                "{key}: model-only exact lookup"
+            );
+        }
+    }
+}

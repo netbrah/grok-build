@@ -274,9 +274,11 @@ Credential resolution: `api_key` > `env_key` > signed-in session token > `XAI_AP
 To override a built-in model, use its name as the section key and set only the fields you need:
 
 ```toml
-[model.grok-4.6]
+[model.grok-4.7]
 api_key = "my-api-key"
 ```
+
+Grok 4.7 replaces Grok 4.6 in the bundled menu; explicit old live/config rows are not renamed.
 
 ### MCP servers
 

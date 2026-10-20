@@ -122,36 +122,90 @@ fn offline_bundled_row_fields_are_bundled_row_authority() {
 #[test]
 fn pre_bake_donor_contract_unchanged_by_bundled_row_tier() {
     let cfg = Config::default();
-    let mut prefetched = IndexMap::new();
-    prefetched.insert("grok-4.6".to_string(), live_row("grok-4.6"));
+    let seed = crate::agent::config::default_model_entries(&cfg.endpoints);
+    let active: Vec<_> = crate::agent::config::PRE_BAKE_SEED_KEYS
+        .into_iter()
+        .filter(|key| seed.contains_key(*key))
+        .collect();
+    let historical = match active.as_slice() {
+        ["grok-4.6"] => true,
+        [] => false,
+        _ => panic!("unexpected embedded donor intersection: {active:?}"),
+    };
+    let mut expected = vec![
+        "claude-opus-5.5",
+        "claude-opus-5.5-1m",
+        "claude-sonnet-5.5",
+        "claude-sonnet-5.5-1m",
+        "gemini-3.1-pro-preview",
+        "gemini-3.8-flash",
+        "gpt-5.6-terra",
+        "gpt-5.6-terra-1m",
+        "gpt-6-luna",
+        "gpt-6.1-sol",
+        "gpt-6.1-sol-1m",
+        if historical { "grok-4.6" } else { "grok-4.7" },
+    ];
+    expected.sort_unstable();
+    assert_eq!(
+        seed.keys().map(String::as_str).collect::<Vec<_>>(),
+        expected
+    );
+    let prefetched = IndexMap::from([("grok-4.6".to_string(), live_row("grok-4.6"))]);
+    let resolved = resolve_model_list(&cfg, Some(prefetched.clone()));
     let view = bind_messages_wire_model(&cfg, Some(prefetched), "grok-4.6")
         .expect("prefetched grok-4.6 binds");
-    assert!(
-        matches!(view.context_window.source, FieldSource::Donor),
-        "prefetched donor cw inheritance unchanged, got: {:?}",
-        view.context_window.source
+    assert_eq!(
+        view.context_window.value,
+        resolved["grok-4.6"].info.context_window
     );
-    assert!(
-        matches!(view.api_backend.source, FieldSource::Donor),
-        "prefetched donor api_backend inheritance unchanged, got: {:?}",
-        view.api_backend.source
+    assert_eq!(
+        view.api_backend.value,
+        resolved["grok-4.6"].info.api_backend
     );
-
-    // Offline: the pre-bake row is its own bundled row (seam-exempt, no
-    // donation) — its explicit fields carry BundledRow authority.
-    let view = bind_messages_wire_model(&cfg, None, "grok-4.6")
-        .expect("offline grok-4.6 binds");
+    if historical {
+        assert_eq!(
+            view.context_window.source,
+            FieldSource::Donor,
+            "prefetched donor cw inheritance unchanged"
+        );
+        assert_eq!(
+            view.api_backend.source,
+            FieldSource::Donor,
+            "prefetched donor api_backend inheritance unchanged"
+        );
+        assert_eq!(view.context_window.value.get(), 524_288);
+    } else {
+        assert_eq!(
+            (view.context_window.value.get(), view.context_window.source),
+            (256_000, FieldSource::BuiltIn)
+        );
+        assert_eq!(
+            (view.api_backend.value, view.api_backend.source),
+            (ApiBackend::Responses, FieldSource::CatalogInference)
+        );
+    }
+    let offline = resolve_model_list(&cfg, None);
+    let key = if historical {
+        "grok-4.6"
+    } else {
+        assert!(!offline.contains_key("grok-4.6"));
+        "grok-4.7"
+    };
+    let view = bind_messages_wire_model(&cfg, None, key).expect("offline Grok binds");
+    assert_eq!(view.api_backend.value, offline[key].info.api_backend);
+    assert_eq!(view.context_window.value, offline[key].info.context_window);
     assert_eq!(view.api_backend.value, ApiBackend::Responses);
-    assert!(
-        matches!(view.api_backend.source, FieldSource::BundledRow),
-        "offline pre-bake explicit backend is BundledRow (not Donor), got: {:?}",
-        view.api_backend.source
+    assert_eq!(
+        view.api_backend.source,
+        FieldSource::BundledRow,
+        "offline explicit backend is BundledRow, not Donor"
     );
     assert_eq!(view.context_window.value, NonZeroU64::new(524_288).unwrap());
-    assert!(
-        matches!(view.context_window.source, FieldSource::BundledRow),
-        "offline pre-bake cw 524288 is BundledRow, got: {:?}",
-        view.context_window.source
+    assert_eq!(
+        view.context_window.source,
+        FieldSource::BundledRow,
+        "offline Grok context is BundledRow"
     );
 }
 

@@ -106,7 +106,7 @@ fn openai_responses_slug(model_id: &str) -> bool {
 /// advertise effort" (legacy chat models, embeddings, Claude until Messages).
 pub fn infer_reasoning_efforts(model_id: &str) -> Vec<ReasoningEffortOption> {
     // (menu, default) per family. The OpenAI menu is only advertised on the
-    // Responses wire; the Grok menu mirrors the baked grok-4.6 catalog row.
+    // Responses wire; Grok uses a four-tier family fallback when no menu is supplied.
     let (menu, default): ([ReasoningEffort; 4], ReasoningEffort) = match catalog_family(model_id) {
         CatalogFamily::Xai => (
             [
@@ -198,6 +198,7 @@ mod tests {
     #[test]
     fn grok_and_openai_agent_models_use_responses() {
         for id in [
+            "grok-4.7",
             "grok-4.6",
             "grok-4.5",
             "gpt-5",
@@ -293,26 +294,26 @@ mod tests {
         assert!(infer_reasoning_efforts("text-embedding-3-small").is_empty());
     }
 
-    /// The inferred Grok menu mirrors the baked `grok-4.6` catalog row
-    /// (xai-grok-models/default_models.json) so live-hydrated Grok rows
-    /// advertise the same tiers in the same order.
+    /// The Grok family fallback is independent of the explicit five-tier baked menu.
     #[test]
-    fn grok_menu_mirrors_baked_grok_4_6_row() {
-        let grok = infer_reasoning_efforts("grok-4.6");
-        let values: Vec<_> = grok.iter().map(|o| o.value).collect();
-        assert_eq!(
-            values,
-            [
-                ReasoningEffort::Xhigh,
-                ReasoningEffort::High,
-                ReasoningEffort::Medium,
-                ReasoningEffort::Low,
-            ]
-        );
-        assert!(
-            grok.iter()
-                .any(|o| o.default && o.value == ReasoningEffort::High)
-        );
+    fn grok_family_fallback_menu_preserves_inferred_tiers() {
+        for id in ["grok-4.7", "grok-4.6"] {
+            let grok = infer_reasoning_efforts(id);
+            let values: Vec<_> = grok.iter().map(|o| o.value).collect();
+            assert_eq!(
+                values,
+                [
+                    ReasoningEffort::Xhigh,
+                    ReasoningEffort::High,
+                    ReasoningEffort::Medium,
+                    ReasoningEffort::Low,
+                ]
+            );
+            assert!(
+                grok.iter()
+                    .any(|o| o.default && o.value == ReasoningEffort::High)
+            );
+        }
     }
     // ==================== P2.0: row-aware resolvers ====================
     // The resolve_* trio consults the row's explicit field before any slug

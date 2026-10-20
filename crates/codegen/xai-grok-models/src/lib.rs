@@ -174,26 +174,44 @@ mod tests {
             ids.sort_unstable();
             ids
         };
-        assert_eq!(
-            ids_on(|e| e.supports_search_tool),
-            ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]
-        );
+        assert_eq!(ids_on(|e| e.supports_search_tool), ["gpt-5.6-terra"]);
         assert_eq!(
             ids_on(|e| e.use_responses_lite),
             [
-                "gpt-5.6-luna",
-                "gpt-5.6-sol",
-                "gpt-5.6-sol-1m",
                 "gpt-5.6-terra",
-                "gpt-5.6-terra-1m"
+                "gpt-5.6-terra-1m",
+                "gpt-6-luna",
+                "gpt-6.1-sol",
+                "gpt-6.1-sol-1m"
             ]
         );
-        // the one menu row that curates the flag OFF parses Some(false)
+        for id in [
+            "claude-opus-5.5",
+            "claude-opus-5.5-1m",
+            "claude-sonnet-5.5",
+            "claude-sonnet-5.5-1m",
+            "gpt-6.1-sol",
+            "gpt-6.1-sol-1m",
+            "gpt-6-luna",
+            "grok-4.7",
+        ] {
+            let row = m
+                .models
+                .iter()
+                .find(|e| e.id.as_deref() == Some(id))
+                .unwrap();
+            assert_eq!(
+                row.supports_search_tool,
+                Some(false),
+                "{id}: preparation is search-off"
+            );
+        }
+        // The renamed Grok row remains explicitly off.
         let off_row = m
             .models
             .iter()
-            .find(|e| e.id.as_deref() == Some("grok-4.6"))
-            .expect("the grok-4.6 row");
+            .find(|e| e.id.as_deref() == Some("grok-4.7"))
+            .expect("the grok-4.7 row");
         assert_eq!(off_row.supports_search_tool, Some(false));
         // absent-on-row = off by default: the 1M twin curates
         // `use_responses_lite` but not the search-tool flag, so that flag
@@ -202,8 +220,8 @@ mod tests {
         let absent_row = m
             .models
             .iter()
-            .find(|e| e.id.as_deref() == Some("gpt-5.6-sol-1m"))
-            .expect("the sol 1M twin row");
+            .find(|e| e.id.as_deref() == Some("gpt-5.6-terra-1m"))
+            .expect("the terra 1M twin row");
         assert_eq!(absent_row.supports_search_tool, None);
     }
 

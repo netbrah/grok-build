@@ -565,8 +565,8 @@ fn baked_cap_rows_carry_observations_not_folds() {
     let table = crate::remote::client::baked_cap_rows();
     assert!(!table.is_empty(), "the baked catalog is embedded in the binary");
     assert!(
-        table.contains_key("gpt-5.6-sol"),
-        "a frontier id must be keyable (ties to the 93d fixture)"
+        table.contains_key("gpt-6.1-sol"),
+        "the replacement frontier id must be keyable"
     );
 }
 

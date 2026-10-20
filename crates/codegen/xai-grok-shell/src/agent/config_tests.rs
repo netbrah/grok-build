@@ -7777,25 +7777,25 @@ fn global_extra_headers_apply_to_prefetched_model() {
 #[test]
 fn bundled_extra_headers_donate_to_prefetched_row_with_empty_map() {
     // The proxy-served shape: extra_headers PRESENT but empty.
-    let entry = prefetch_model_entry("claude-sonnet-5", 200_000, ApiBackend::Messages);
+    let entry = prefetch_model_entry("claude-sonnet-5.5", 200_000, ApiBackend::Messages);
     assert!(
         entry.info.extra_headers.is_empty(),
         "fixture must model the proxy's present-but-empty extra_headers"
     );
     let mut prefetched = IndexMap::new();
-    prefetched.insert("claude-sonnet-5".to_owned(), entry);
+    prefetched.insert("claude-sonnet-5.5".to_owned(), entry);
     let (cfg, resolved) = resolve_models_from_toml("", Some(prefetched));
     let seed_entries = default_model_entries(&cfg.endpoints);
     let seed = seed_entries
-        .get("claude-sonnet-5")
-        .expect("bundled catalog must carry the claude-sonnet-5 row");
+        .get("claude-sonnet-5.5")
+        .expect("bundled catalog must carry the claude-sonnet-5.5 row");
     let expected = seed
         .info
         .extra_headers
         .get("anthropic-beta")
         .expect("bundled catalog row must bake the anthropic-beta header (catalog overlay)");
     let resolved_row = resolved
-        .get("claude-sonnet-5")
+        .get("claude-sonnet-5.5")
         .expect("prefetched row must survive resolution");
     assert_eq!(
         resolved_row.info.extra_headers.get("anthropic-beta").map(String::as_str),
@@ -7808,16 +7808,16 @@ fn prefetched_extra_header_key_wins_over_bundled_donation() {
     // The live row's own key wins per-key: donation fills only keys the
     // prefetched row does not already carry (case-insensitive), never
     // wholesale-replaces.
-    let mut entry = prefetch_model_entry("claude-sonnet-5", 200_000, ApiBackend::Messages);
+    let mut entry = prefetch_model_entry("claude-sonnet-5.5", 200_000, ApiBackend::Messages);
     entry
         .info
         .extra_headers
         .insert("anthropic-beta".to_owned(), "live-wins".to_owned());
     let mut prefetched = IndexMap::new();
-    prefetched.insert("claude-sonnet-5".to_owned(), entry);
+    prefetched.insert("claude-sonnet-5.5".to_owned(), entry);
     let (_, resolved) = resolve_models_from_toml("", Some(prefetched));
     let resolved_row = resolved
-        .get("claude-sonnet-5")
+        .get("claude-sonnet-5.5")
         .expect("prefetched row must survive resolution");
     assert_eq!(
         resolved_row.info.extra_headers.get("anthropic-beta").map(String::as_str),
@@ -7830,18 +7830,18 @@ fn config_extra_headers_subtable_still_wins_wholesale_over_donation() {
     // The config tier keeps last word: a non-empty [model.<key>]
     // extra_headers replaces the subtable wholesale — donation and
     // prefetched values both lose (regression pin on `apply`).
-    let entry = prefetch_model_entry("claude-sonnet-5", 200_000, ApiBackend::Messages);
+    let entry = prefetch_model_entry("claude-sonnet-5.5", 200_000, ApiBackend::Messages);
     let mut prefetched = IndexMap::new();
-    prefetched.insert("claude-sonnet-5".to_owned(), entry);
+    prefetched.insert("claude-sonnet-5.5".to_owned(), entry);
     let (_, resolved) = resolve_models_from_toml(
         r#"
-            [model."claude-sonnet-5"]
+            [model."claude-sonnet-5.5"]
             extra_headers = { "X-Team" = "platform" }
             "#,
         Some(prefetched),
     );
     let resolved_row = resolved
-        .get("claude-sonnet-5")
+        .get("claude-sonnet-5.5")
         .expect("config row must resolve");
     assert_eq!(
         resolved_row.info.extra_headers.get("X-Team").map(String::as_str),
@@ -7861,10 +7861,10 @@ fn offline_resolution_keeps_bundled_extra_headers_intact() {
     let (cfg, resolved) = resolve_models_from_toml("", None);
     let seed = default_model_entries(&cfg.endpoints);
     for key in [
-        "claude-sonnet-5",
-        "claude-sonnet-5-1m",
-        "claude-opus-5",
-        "claude-opus-5-1m",
+        "claude-sonnet-5.5",
+        "claude-sonnet-5.5-1m",
+        "claude-opus-5.5",
+        "claude-opus-5.5-1m",
     ] {
         let seed_row = seed.get(key).expect("bundled row must exist: {key}");
         let resolved_row =
@@ -8070,11 +8070,8 @@ fn resolve_model_list_config_reasoning_efforts_beats_remote() {
 }
 #[test]
 fn resolve_model_list_inherits_context_window_from_default_when_prefetched_has_fallback() {
+    let historical = grok_bake_is_historical();
     let cfg = Config::default();
-    // Operator ruling 2026-09-22 (mid apex-ayl.129): the default role
-    // pin moved to gpt-5.6-terra (a NON-pre-bake key — donor cw
-    // inheritance is pre-bake-only). Pin the pre-bake seed key so the
-    // donor-cw inheritance contract keeps its representative.
     let dm = "grok-4.6";
     let default_cw = DEFAULT_CONTEXT_WINDOW;
     let entry = prefetch_model_entry(dm, default_cw, ApiBackend::default());
@@ -8082,11 +8079,20 @@ fn resolve_model_list_inherits_context_window_from_default_when_prefetched_has_f
     prefetched.insert(dm.to_owned(), entry);
     let resolved = resolve_model_list(&cfg, Some(prefetched));
     let entry = resolved.get(dm).expect("model must exist");
-    assert_ne!(
-        entry.info.context_window.get(),
-        default_cw,
-        "context_window should have been inherited from hardcoded default, not left at DEFAULT_CONTEXT_WINDOW"
-    );
+    if historical {
+        assert_ne!(
+            entry.info.context_window.get(),
+            default_cw,
+            "context_window should have been inherited from hardcoded default, not left at DEFAULT_CONTEXT_WINDOW"
+        );
+        assert_eq!(entry.info.context_window.get(), 524_288);
+    } else {
+        assert_eq!(
+            entry.info.context_window.get(),
+            default_cw,
+            "removed donor leaves the hydration placeholder"
+        );
+    }
 }
 #[test]
 fn resolve_model_list_does_not_override_explicitly_set_context_window() {
@@ -8748,9 +8754,8 @@ fn p1_route_matrix_baked_model_unchanged_without_endpoint_defaults() {
     // Operator ruling 2026-09-22 (mid apex-ayl.129): the default role
     // pin moved grok-4.6 -> gpt-5.6-terra. This matrix item is about
     // the baked xAI row (family xai + ambient XAI key last resort), so
-    // it pins that row explicitly; the caps re-pin to the 2026-09-22
-    // recapture proxy truth (500000 -> 524288).
-    let dm = "grok-4.6";
+    // it pins Grok 4.7 explicitly with the qualified U0 caps.
+    let dm = "grok-4.7";
     let entry = resolved.get(dm).expect("baked model must exist");
     assert_eq!(entry.info.api_backend, ApiBackend::Responses);
     assert_eq!(entry.info.context_window.get(), 524_288);
@@ -9001,6 +9006,7 @@ fn endpoint_default_model_family_non_codex_still_fills() {
 /// can apply — the pre-P2.0 expectation (endpoint default fills family) is gone.
 #[test]
 fn p1_route_matrix_donor_wins_over_endpoint_defaults() {
+    let historical = grok_bake_is_historical();
     let raw: toml::Value = toml::from_str(
         r#"
             [endpoints]
@@ -9013,39 +9019,47 @@ fn p1_route_matrix_donor_wins_over_endpoint_defaults() {
     )
     .unwrap();
     let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
-    // Operator ruling 2026-09-22 (mid apex-ayl.129): the default role
-    // pin moved to gpt-5.6-terra (a NON-pre-bake key — no donor). The
-    // donor matrix item pins the pre-bake seed key explicitly so the
-    // donor-inheritance contract keeps its representative.
-    let dm = "grok-4.6";
-    let mut prefetched = IndexMap::new();
-    // Stock mode (no custom endpoint), so the baked donor for `dm` exists.
-    prefetched.insert(
-        dm.to_owned(),
-        prefetch_model_entry(dm, DEFAULT_CONTEXT_WINDOW, ApiBackend::default()),
-    );
-    let resolved = resolve_model_list(&cfg, Some(prefetched));
-    let entry = resolved.get(dm).expect("model must exist");
-    assert_eq!(
-        entry.info.context_window.get(),
-        524_288,
-        "donor (baked) context_window wins over the endpoint default"
-    );
-    assert_eq!(
-        entry.info.api_backend,
-        ApiBackend::Responses,
-        "donor (baked) api_backend wins over the endpoint default (messages)"
-    );
-    assert_eq!(
-        entry.info.model_family.as_deref(),
-        Some("xai"),
-        "donor does not cover model_family; P2.0 catalog inference (grok slug) fills it before the endpoint default"
-    );
-    assert_eq!(
-        entry.env_key.as_ref().map(|k| k.names()),
-        Some(vec!["PROXY_TEST_KEY"]),
-        "donor does not cover env_key; endpoint default fills it"
-    );
+    for dm in ["grok-4.6", "grok-4.7"] {
+        let prefetched = IndexMap::from([(
+            dm.to_owned(),
+            prefetch_model_entry(dm, DEFAULT_CONTEXT_WINDOW, ApiBackend::default()),
+        )]);
+        let resolved = resolve_model_list(&cfg, Some(prefetched));
+        let entry = resolved.get(dm).expect("model must exist");
+        if historical && dm == "grok-4.6" {
+            assert_eq!(
+                entry.info.context_window.get(),
+                524_288,
+                "donor (baked) context_window wins over the endpoint default"
+            );
+            assert_eq!(
+                entry.info.api_backend,
+                ApiBackend::Responses,
+                "donor (baked) api_backend wins over the endpoint default (messages)"
+            );
+        } else {
+            assert_eq!(
+                entry.info.context_window.get(),
+                777_777,
+                "no donor: endpoint context fills the raw placeholder"
+            );
+            assert_eq!(
+                entry.info.api_backend,
+                ApiBackend::Responses,
+                "Grok slug inference still wins over the Messages endpoint default"
+            );
+        }
+        assert_eq!(
+            entry.info.model_family.as_deref(),
+            Some("xai"),
+            "donor does not cover model_family; catalog inference fills it before the endpoint default"
+        );
+        assert_eq!(
+            entry.env_key.as_ref().map(|k| k.names()),
+            Some(vec!["PROXY_TEST_KEY"]),
+            "donor does not cover env_key; endpoint default fills it"
+        );
+    }
 }
 /// Route matrix #5: `ModelEntry::fallback` applies the endpoint defaults; the context
 /// window applies unconditionally because `ModelInfo::fallback` hardcodes a 200k
@@ -9711,6 +9725,7 @@ fn exact_slug_binding_match() {
 /// RED-2 red pins (the stub labels everything BuiltIn).
 #[test]
 fn per_field_precedence_table() {
+    let historical = grok_bake_is_historical();
     let toml_src = r#"
 [endpoints]
 default_api_backend = "responses"
@@ -9733,9 +9748,8 @@ cache_ttl = "1h"
     proxy.info.context_window = NonZeroU64::new(313_000).unwrap();
     proxy.info.api_backend = ApiBackend::Responses;
     proxy.info.max_completion_tokens = Some(5_000);
-    // Donor tier: baked grok-4.6 (Responses, 500000) — the row sits at the
-    // remote-hydration 256k placeholder so the donor seam fires (the
-    // ModelInfo::fallback 200k placeholder would not).
+    // Historical replay reaches the donor; final data retires it.
+    // The raw 256k hydration placeholder remains eligible for endpoint fills.
     let mut donor_row = prefetched_row("grok-4.6");
     donor_row.info.context_window = NonZeroU64::new(256_000).unwrap();
     // EndpointDefaults tier: Other-family slug at built-in defaults; 256k
@@ -9816,8 +9830,26 @@ cache_ttl = "1h"
 
     let donor_view = bind_messages_wire_model(&cfg, Some(prefetched.clone()), "grok-4.6")
         .expect("grok-4.6 binds");
-    assert!(matches!(donor_view.context_window.source, FieldSource::Donor));
-    assert!(matches!(donor_view.api_backend.source, FieldSource::Donor));
+    if historical {
+        assert!(matches!(
+            donor_view.context_window.source,
+            FieldSource::Donor
+        ));
+        assert!(matches!(donor_view.api_backend.source, FieldSource::Donor));
+        assert_eq!(donor_view.context_window.value.get(), 524_288);
+    } else {
+        assert_eq!(
+            (
+                donor_view.context_window.value.get(),
+                donor_view.context_window.source
+            ),
+            (777_000, FieldSource::EndpointDefaults)
+        );
+        assert_eq!(
+            (donor_view.api_backend.value, donor_view.api_backend.source),
+            (ApiBackend::Responses, FieldSource::CatalogInference)
+        );
+    }
     assert!(matches!(donor_view.model_family.source, FieldSource::CatalogInference));
     assert!(matches!(donor_view.max_completion_tokens.source, FieldSource::BuiltIn));
     assert!(matches!(donor_view.cache_ttl.source, FieldSource::BuiltIn));
@@ -10761,7 +10793,13 @@ fn q36i_selected_alias_and_exact_key_resolution() {
         .iter()
         .filter(|r| r.model.starts_with("gpt-") && r.supports_search_tool == Some(true))
         .collect();
-    assert!(admitting.len() >= 2);
+    assert_eq!(
+        admitting
+            .iter()
+            .map(|row| row.id.as_deref().unwrap_or(&row.model))
+            .collect::<Vec<_>>(),
+        ["gpt-5.6-terra"]
+    );
     for row in admitting {
         let key = row.id.as_deref().unwrap_or(&row.model);
         for (primary, secondary, expected) in [
@@ -10916,8 +10954,27 @@ fn b5ixm_missing_claude_resolves_messages_and_inference_authority() {
 
 #[test]
 fn b5ixm_explicit_feed_backends_survive_donor_catalog_and_endpoint_fills() {
+    let historical = grok_bake_is_historical();
+    let donor_id = "grok-4.6";
+    let seed = default_model_entries(&b5ixm_config().endpoints);
+    if historical {
+        assert!(
+            PRE_BAKE_SEED_KEYS.contains(&donor_id) && seed.contains_key(donor_id),
+            "the sole donor fixture must be a real bundled donor"
+        );
+        assert_eq!(seed[donor_id].info.api_backend, ApiBackend::Responses);
+    } else {
+        assert!(
+            PRE_BAKE_SEED_KEYS
+                .into_iter()
+                .all(|key| !seed.contains_key(key))
+        );
+        assert!(!seed.contains_key(donor_id));
+        assert!(seed.contains_key("grok-4.7"));
+    }
     for id in [
-        "gpt-5.6-sol",
+        donor_id,
+        "grok-4.7",
         "gpt-5.6-b5ixm",
         "claude-b5ixm-explicit",
         "b5ixm-other",
@@ -11412,4 +11469,846 @@ fn resolved_credentials_retain_backend_provenance() {
             "credential resolution must retain the actual backend along with URL/key provenance"
         );
     }
+}
+
+fn row_swap_replacement_rows() -> Vec<&'static crate::models::DefaultModelEntry> {
+    let required = [
+        "claude-opus-5.5",
+        "claude-opus-5.5-1m",
+        "claude-sonnet-5.5",
+        "claude-sonnet-5.5-1m",
+        "gpt-6-luna",
+        "gpt-6.1-sol",
+        "gpt-6.1-sol-1m",
+        "grok-4.7",
+    ];
+    let rows: Vec<_> = crate::models::default_model_rows()
+        .iter()
+        .filter(|row| required.contains(&row.id.as_deref().unwrap_or(&row.model)))
+        .collect();
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.id.as_deref().unwrap_or(&row.model))
+            .collect::<Vec<_>>(),
+        required,
+        "the matrix must cover every replacement base and twin"
+    );
+    rows
+}
+
+fn row_swap_config(source: &str) -> Config {
+    let raw = toml::from_str(source).expect("row-swap config fixture parses");
+    let mut cfg = Config::new_from_toml_cfg(&raw).expect("row-swap config resolves");
+    cfg.endpoints.models_base_url = None;
+    cfg.endpoints.models_list_url = None;
+    cfg.endpoints.default_api_backend = None;
+    cfg.endpoints.default_model_family = None;
+    cfg
+}
+
+fn row_swap_prefetched(
+    live: &serde_json::Value,
+    baked: &IndexMap<String, crate::remote::client::BakedCapRow>,
+) -> IndexMap<String, ModelEntry> {
+    let parsed =
+        crate::remote::client::parse_remote_model_value(live, "https://catalog.example/v1", baked)
+            .expect("row-swap live fixture parses");
+    crate::agent::remote_config::fetch::build_prefetched_map(vec![parsed], None)
+}
+
+#[test]
+fn row_swap_q36i_all_replacements_resolve() {
+    let actual_baked = crate::remote::client::baked_cap_rows();
+    let rows = row_swap_replacement_rows();
+    let cfg = row_swap_config("");
+    let offline = resolve_model_list(&cfg, None);
+    for row in &rows {
+        let key = row.id.as_deref().unwrap_or(&row.model);
+        assert_eq!(row.supports_search_tool, Some(false), "{key}: actual bake");
+        assert_eq!(actual_baked[key].supports_search_tool, Some(false));
+        assert!(
+            !offline[key].info.supports_search_tool,
+            "{key}: offline preparation"
+        );
+        let live = serde_json::json!({"id": key, "model": row.model});
+        let resolved = resolve_model_list(&cfg, Some(row_swap_prefetched(&live, &actual_baked)));
+        assert!(
+            !resolved[key].info.supports_search_tool,
+            "{key}: actual q36i default"
+        );
+        assert_eq!(
+            resolved[key].info.context_window,
+            actual_baked[key].context_window.unwrap()
+        );
+        assert_eq!(
+            resolved[key].info.max_completion_tokens,
+            actual_baked[key].max_completion_tokens
+        );
+        assert_eq!(
+            (
+                resolved[key].info.feed_max_input_tokens,
+                resolved[key].info.feed_max_output_tokens
+            ),
+            (None, None)
+        );
+        for configured in [None, Some(false), Some(true)] {
+            let source = configured.map_or_else(String::new, |flag| {
+                format!("[model.\"{key}\"]\nsupports_search_tool = {flag}\n")
+            });
+            let cfg = row_swap_config(&source);
+            assert_eq!(
+                cfg.config_models
+                    .get(key)
+                    .and_then(|entry| entry.supports_search_tool),
+                configured
+            );
+            assert_eq!(
+                resolve_model_list(&cfg, None)[key]
+                    .info
+                    .supports_search_tool,
+                configured.unwrap_or(false)
+            );
+            for observed in [None, Some(false), Some(true)] {
+                let table = [(
+                    key.to_owned(),
+                    crate::remote::client::BakedCapRow {
+                        supports_search_tool: observed,
+                        ..actual_baked[key]
+                    },
+                )]
+                .into_iter()
+                .collect();
+                for alias in ["supportsSearchTool", "supports_search_tool"] {
+                    for (value, live_observed) in [
+                        (None, None),
+                        (Some(serde_json::Value::Null), None),
+                        (Some(serde_json::json!(false)), Some(false)),
+                        (Some(serde_json::json!(true)), Some(true)),
+                        (Some(serde_json::json!("false")), None),
+                    ] {
+                        let mut live = serde_json::json!({"id": key, "model": row.model});
+                        if let Some(value) = value {
+                            live[alias] = value;
+                        }
+                        let prefetched = row_swap_prefetched(&live, &table);
+                        let parsed_expected = live_observed.or(observed).unwrap_or(false);
+                        assert_eq!(prefetched[key].info.supports_search_tool, parsed_expected);
+                        let resolved = resolve_model_list(&cfg, Some(prefetched));
+                        assert_eq!(
+                            resolved[key].info.supports_search_tool,
+                            configured.unwrap_or(parsed_expected),
+                            "{key}/{alias}/{live_observed:?}/{observed:?}/{configured:?}"
+                        );
+                        assert_eq!(resolved[key].info.model, row.model);
+                    }
+                }
+            }
+        }
+    }
+    let twin_id = "gpt-6.1-sol-1m";
+    let twin = rows
+        .iter()
+        .find(|row| row.id.as_deref() == Some(twin_id))
+        .unwrap();
+    assert_ne!(twin_id, twin.model);
+    let table_key = twin_id;
+    let table = [(
+        table_key.to_owned(),
+        crate::remote::client::BakedCapRow {
+            supports_search_tool: Some(true),
+            ..actual_baked[twin_id]
+        },
+    )]
+    .into_iter()
+    .collect();
+    let live = serde_json::json!({"id": twin_id, "model": twin.model});
+    let resolved = resolve_model_list(&cfg, Some(row_swap_prefetched(&live, &table)));
+    assert!(
+        resolved[twin_id].info.supports_search_tool,
+        "selected twin id must inherit hypothetical baked true"
+    );
+    assert_eq!(resolved[twin_id].info.model, twin.model);
+}
+
+#[test]
+fn row_swap_header_precedence_preserves_omissions() {
+    use std::collections::BTreeMap;
+
+    let rows: Vec<_> = row_swap_replacement_rows()
+        .into_iter()
+        .filter(|row| row.model.starts_with("claude-"))
+        .collect();
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.id.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "claude-opus-5.5",
+            "claude-opus-5.5-1m",
+            "claude-sonnet-5.5",
+            "claude-sonnet-5.5-1m"
+        ]
+    );
+    let baked = crate::remote::client::baked_cap_rows();
+    let cfg = row_swap_config("");
+    let seed = default_model_entries(&cfg.endpoints);
+    for row in rows {
+        let key = row.id.as_deref().unwrap();
+        let baked_beta = seed[key].info.extra_headers["anthropic-beta"].as_str();
+        for (live_case, live_headers) in [
+            ("absent", None),
+            ("empty", Some(serde_json::json!({}))),
+            ("other", Some(serde_json::json!({"X-Live": "live-only"}))),
+            (
+                "beta",
+                Some(serde_json::json!({"Anthropic-Beta": "live-beta", "X-Live": "live-only"})),
+            ),
+        ] {
+            for (model_case, model_source) in [
+                ("absent", String::new()),
+                ("empty", format!("[model.\"{key}\".extra_headers]\n")),
+                (
+                    "other",
+                    format!("[model.\"{key}\".extra_headers]\n\"X-Model\" = \"model-only\"\n"),
+                ),
+                (
+                    "beta",
+                    format!(
+                        "[model.\"{key}\".extra_headers]\n\"aNtHrOpIc-BeTa\" = \"config-beta\"\n\"X-Model\" = \"model-only\"\n"
+                    ),
+                ),
+            ] {
+                for global in [false, true] {
+                    let global_source = if global {
+                        "[models.extra_headers]\n\"ANTHROPIC-BETA\" = \"global-beta\"\n\"x-live\" = \"global-live\"\n\"x-model\" = \"global-model\"\n\"X-Global\" = \"global-only\"\n"
+                    } else {
+                        ""
+                    };
+                    let cfg = row_swap_config(&format!("{model_source}\n{global_source}"));
+                    assert!(!cfg.endpoints.has_custom_endpoint());
+                    let mut live = serde_json::json!({"id": key, "model": row.model});
+                    if let Some(headers) = &live_headers {
+                        live["extraHeaders"] = headers.clone();
+                    }
+                    let prefetched = row_swap_prefetched(&live, &baked);
+                    assert_eq!(
+                        prefetched[key].info.extra_headers.is_empty(),
+                        matches!(live_case, "absent" | "empty")
+                    );
+                    let resolved = resolve_model_list(&cfg, Some(prefetched));
+                    let effective = &resolved[key].info.extra_headers;
+                    assert!(
+                        effective.values().all(|value| !value.trim().is_empty()),
+                        "{key}: no empty effective header"
+                    );
+                    for (_, value) in effective
+                        .iter()
+                        .filter(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+                    {
+                        for excluded in [
+                            "tool-search-tool-2025-10-19",
+                            "advanced-tool-use-2025-11-20",
+                        ] {
+                            assert!(
+                                !value
+                                    .split(',')
+                                    .map(str::trim)
+                                    .any(|token| token == excluded),
+                                "effective bundled donation must omit removed search beta: {key}/{live_case}/{model_case}/{global}"
+                            );
+                        }
+                    }
+                    let normalized: BTreeMap<_, _> = effective
+                        .iter()
+                        .map(|(name, value)| (name.to_ascii_lowercase(), value.clone()))
+                        .collect();
+                    assert_eq!(
+                        normalized.len(),
+                        effective.len(),
+                        "{key}: no case-variant duplicates"
+                    );
+                    let inherited = matches!(model_case, "absent" | "empty");
+                    let expected_beta = match model_case {
+                        "absent" | "empty" if live_case == "beta" => Some("live-beta"),
+                        "absent" | "empty" => Some(baked_beta),
+                        "beta" => Some("config-beta"),
+                        "other" if global => Some("global-beta"),
+                        "other" => None,
+                        _ => unreachable!("closed model-header cases"),
+                    };
+                    let expected_live = if inherited && matches!(live_case, "other" | "beta") {
+                        Some("live-only")
+                    } else if global {
+                        Some("global-live")
+                    } else {
+                        None
+                    };
+                    let expected_model = if !inherited {
+                        Some("model-only")
+                    } else if global {
+                        Some("global-model")
+                    } else {
+                        None
+                    };
+                    let expected: BTreeMap<_, _> = [
+                        ("anthropic-beta", expected_beta),
+                        ("x-live", expected_live),
+                        ("x-model", expected_model),
+                        ("x-global", global.then_some("global-only")),
+                    ]
+                    .into_iter()
+                    .filter_map(|(name, value)| {
+                        value.map(|value| (name.to_owned(), value.to_owned()))
+                    })
+                    .collect();
+                    assert_eq!(
+                        normalized, expected,
+                        "{key}/{live_case}/{model_case}/{global}: whole maps and strings, not token union"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn row_swap_sol_non_donor_keeps_wire_semantics() {
+    let baked = crate::remote::client::baked_cap_rows();
+    let empty = IndexMap::new();
+    let cfg = row_swap_config("");
+    let seed = default_model_entries(&cfg.endpoints);
+    for key in ["gpt-6.1-sol", "gpt-6.1-sol-1m"] {
+        assert!(seed.contains_key(key), "{key}: real bundled row");
+        assert!(
+            !PRE_BAKE_SEED_KEYS.contains(&key),
+            "{key}: not a seed donor"
+        );
+        for table in [&baked, &empty] {
+            let live = serde_json::json!({"id": key, "model": "gpt-6.1-sol"});
+            let prefetched = row_swap_prefetched(&live, table);
+            let resolved = resolve_model_list(&cfg, Some(prefetched.clone()));
+            let entry = &resolved[key];
+            assert_eq!(
+                (
+                    entry.info.model_family.as_deref(),
+                    entry.info.api_backend.clone()
+                ),
+                (Some("codex"), ApiBackend::Responses)
+            );
+            assert!(!entry.info.supports_search_tool);
+            assert_eq!(
+                entry.info.context_window.get(),
+                table
+                    .get(key)
+                    .and_then(|row| row.context_window)
+                    .map_or(DEFAULT_CONTEXT_WINDOW, |value| value.get()),
+                "{key}: q36i supplies caps; bundled non-donors cannot fill an empty table"
+            );
+            assert_eq!(
+                entry.info.max_completion_tokens,
+                table.get(key).and_then(|row| row.max_completion_tokens)
+            );
+            let view = model_authority_view(&cfg, key, &Some(prefetched), entry);
+            assert_eq!(
+                (view.api_backend.value, view.api_backend.source),
+                (ApiBackend::Responses, FieldSource::CatalogInference)
+            );
+            let sampler = sampling_config_for_model(
+                entry,
+                ResolvedCredentials {
+                    api_backend: entry.info.api_backend.clone(),
+                    api_key: None,
+                    base_url: "https://catalog.example/v1".to_owned(),
+                    auth_type: xai_chat_state::AuthType::ApiKey,
+                    auth_scheme: AuthScheme::default(),
+                },
+                None,
+                None,
+                None,
+                None,
+            );
+            assert_eq!(sampler.model_family.as_deref(), Some("codex"));
+            assert_eq!(sampler.api_backend, ApiBackend::Responses);
+            assert_eq!(sampler.model, "gpt-6.1-sol");
+            let mut body =
+                serde_json::json!({"store": false, "input": [], "tools": [{"type": "web_search"}]});
+            xai_grok_sampler::provider::patch_responses_request(
+                &mut body,
+                sampler.model_family.as_deref(),
+                sampler.reasoning_effort,
+                sampler.normalize_content_types,
+                sampler.ultra_wire_effort,
+                &mut xai_grok_sampler::provider::DAnchorState::default(),
+            );
+            assert_eq!(
+                body["tools"],
+                serde_json::json!([{"type": "web_search", "external_web_access": true}]),
+                "{key}: resolved family must select the Codex wire dialect"
+            );
+        }
+    }
+    for (old, wire) in [
+        ("claude-opus-5", "claude-opus-5.5"),
+        ("claude-opus-5-1m", "claude-opus-5.5"),
+        ("claude-sonnet-5", "claude-sonnet-5.5"),
+        ("claude-sonnet-5-1m", "claude-sonnet-5.5"),
+        ("gpt-5.6-luna", "gpt-6-luna"),
+        ("gpt-5.6-sol", "gpt-6.1-sol"),
+        ("gpt-5.6-sol-1m", "gpt-6.1-sol"),
+        ("grok-4.6", "grok-4.7"),
+    ] {
+        assert!(
+            !baked.contains_key(old) && !seed.contains_key(old),
+            "{old}: no baked alias"
+        );
+        for configured in [None, Some(false), Some(true)] {
+            let source = configured.map_or_else(String::new, |flag| {
+                format!("[model.\"{old}\"]\nsupports_search_tool = {flag}\n")
+            });
+            let cfg = row_swap_config(&source);
+            for live_flag in [None, Some(false), Some(true)] {
+                let mut live = serde_json::json!({"id": old, "model": wire});
+                if let Some(flag) = live_flag {
+                    live["supportsSearchTool"] = flag.into();
+                }
+                let resolved = resolve_model_list(&cfg, Some(row_swap_prefetched(&live, &baked)));
+                assert_eq!(
+                    resolved[old].info.supports_search_tool,
+                    configured.or(live_flag).unwrap_or(false),
+                    "{old}: missing baked key stays off unless live/config explicitly enables it"
+                );
+                assert!(
+                    resolved[old].info.extra_headers.is_empty(),
+                    "{old}: no removed-row header donation"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn grok_47_baked_and_live_paths_keep_class_policy() {
+    let cfg = row_swap_config("");
+    let seed = default_model_entries(&cfg.endpoints);
+    let row = crate::models::default_model_rows()
+        .iter()
+        .find(|row| row.id.as_deref() == Some("grok-4.7"))
+        .expect("Grok 4.7 must ride the embedded catalog");
+    assert!(!seed.contains_key("grok-4.6"), "no predecessor alias");
+    assert!(!PRE_BAKE_SEED_KEYS.contains(&"grok-4.7"));
+    let expected_efforts: Vec<_> = [
+        (
+            ReasoningEffort::Xhigh,
+            "Extra High Effort",
+            Some("Highest effort and reasoning level"),
+        ),
+        (ReasoningEffort::Ultra, "Ultra Effort", None),
+        (
+            ReasoningEffort::High,
+            "High Effort",
+            Some("Higher implementation quality with extensive reasoning"),
+        ),
+        (
+            ReasoningEffort::Medium,
+            "Medium Effort",
+            Some("Balanced effort with standard implementation and testing"),
+        ),
+        (
+            ReasoningEffort::Low,
+            "Low Effort",
+            Some("Quick, fast implementations"),
+        ),
+    ]
+    .into_iter()
+    .map(|(value, label, description)| ReasoningEffortOption {
+        id: value.as_str().to_owned(),
+        value,
+        label: label.to_owned(),
+        description: description.map(str::to_owned),
+        default: value == ReasoningEffort::High,
+    })
+    .collect();
+    assert_eq!(
+        row.reasoning_efforts.as_deref(),
+        Some(expected_efforts.as_slice())
+    );
+    assert_eq!(
+        (row.supports_search_tool, row.use_responses_lite),
+        (Some(false), None)
+    );
+    let offline = resolve_model_list(&cfg, None);
+    for entry in [&seed["grok-4.7"], &offline["grok-4.7"]] {
+        let info = &entry.info;
+        assert_eq!(
+            (
+                &info.model,
+                info.name.as_deref(),
+                info.system_prompt_label.as_deref()
+            ),
+            (&"grok-4.7".to_owned(), Some("Grok 4.7"), Some("Grok 4.7"))
+        );
+        assert_eq!(
+            (info.context_window.get(), info.max_completion_tokens),
+            (524_288, Some(524_288))
+        );
+        assert_eq!(
+            (info.api_backend.clone(), info.model_family.as_deref()),
+            (ApiBackend::Responses, Some("xai"))
+        );
+        assert_eq!(info.reasoning_efforts, expected_efforts);
+        assert_eq!(
+            (info.supports_reasoning_effort, info.reasoning_effort),
+            (true, Some(ReasoningEffort::High))
+        );
+        assert_eq!(
+            (
+                info.multi_agent_v2,
+                info.strict_responses_input,
+                info.supports_search_tool,
+                info.supports_backend_search,
+                info.use_responses_lite
+            ),
+            (Some(false), false, false, false, false)
+        );
+        assert!(info.extra_headers.is_empty());
+        assert_eq!(info.cache_ttl, None);
+        assert_eq!(info.auto_compact_threshold_percent, Some(80));
+        assert_eq!(info.compaction_at_tokens, row.compaction_at_tokens);
+        assert_eq!(info.compactions_remaining, row.compactions_remaining);
+    }
+    let baked = crate::remote::client::baked_cap_rows();
+    let live = serde_json::json!({"id": "grok-4.7"});
+    let prefetched = row_swap_prefetched(&live, &baked);
+    let resolved = resolve_model_list(&cfg, Some(prefetched.clone()));
+    let entry = &resolved["grok-4.7"];
+    assert_eq!(
+        (
+            entry.info.context_window.get(),
+            entry.info.max_completion_tokens
+        ),
+        (524_288, Some(524_288))
+    );
+    assert_eq!(
+        (
+            entry.info.feed_max_input_tokens,
+            entry.info.feed_max_output_tokens
+        ),
+        (None, None)
+    );
+    assert_eq!(
+        (
+            entry.info.api_backend.clone(),
+            entry.info.model_family.as_deref()
+        ),
+        (ApiBackend::Responses, Some("xai"))
+    );
+    assert!(!entry.info.supports_search_tool);
+    assert_eq!(
+        entry.info.reasoning_efforts,
+        xai_grok_sampling_types::catalog_wire::infer_reasoning_efforts("grok-4.7")
+    );
+    assert_eq!(
+        entry
+            .info
+            .reasoning_efforts
+            .iter()
+            .map(|effort| effort.value)
+            .collect::<Vec<_>>(),
+        [
+            ReasoningEffort::Xhigh,
+            ReasoningEffort::High,
+            ReasoningEffort::Medium,
+            ReasoningEffort::Low
+        ]
+    );
+    let view = model_authority_view(&cfg, "grok-4.7", &Some(prefetched), entry);
+    assert_eq!(view.api_backend.source, FieldSource::CatalogInference);
+    assert_ne!(view.context_window.source, FieldSource::Donor);
+    assert_eq!(view.context_window.value, entry.info.context_window);
+    // The shared matrix exercises every tri-state, alias and config override for this eighth row.
+    assert!(
+        row_swap_replacement_rows()
+            .iter()
+            .any(|row| row.id.as_deref() == Some("grok-4.7"))
+    );
+    row_swap_q36i_all_replacements_resolve();
+}
+
+#[test]
+fn grok_47_rename_retires_all_baked_donors() {
+    let mut cfg = row_swap_config("");
+    let seed = default_model_entries(&cfg.endpoints);
+    let active: Vec<_> = PRE_BAKE_SEED_KEYS
+        .into_iter()
+        .filter(|key| seed.contains_key(*key))
+        .collect();
+    assert!(
+        active.is_empty(),
+        "final bake must retire every historical donor: {active:?}"
+    );
+    assert!(seed.contains_key("grok-4.7"));
+    for key in PRE_BAKE_SEED_KEYS {
+        assert!(!seed.contains_key(key), "{key}: historical seed is absent");
+    }
+    for endpoint in [None, Some(777_777)] {
+        cfg.endpoints.default_context_window = endpoint;
+        cfg.endpoints.default_api_backend = Some(ApiBackend::Messages);
+        for key in ["grok-4.6", "grok-4.7"] {
+            let rows = IndexMap::from([(
+                key.to_owned(),
+                prefetch_model_entry(key, DEFAULT_CONTEXT_WINDOW, ApiBackend::default()),
+            )]);
+            let resolved = resolve_model_list(&cfg, Some(rows.clone()));
+            let entry = &resolved[key];
+            let view = model_authority_view(&cfg, key, &Some(rows), entry);
+            assert_eq!(
+                (
+                    entry.info.context_window.get(),
+                    view.context_window.value.get(),
+                    view.context_window.source
+                ),
+                (
+                    endpoint.unwrap_or(256_000),
+                    endpoint.unwrap_or(256_000),
+                    if endpoint.is_some() {
+                        FieldSource::EndpointDefaults
+                    } else {
+                        FieldSource::BuiltIn
+                    }
+                )
+            );
+            assert_eq!(
+                (
+                    entry.info.api_backend.clone(),
+                    view.api_backend.value,
+                    view.api_backend.source
+                ),
+                (
+                    ApiBackend::Responses,
+                    ApiBackend::Responses,
+                    FieldSource::CatalogInference
+                )
+            );
+            assert_eq!(entry.info.model_family.as_deref(), Some("xai"));
+        }
+        let baked = crate::remote::client::baked_cap_rows();
+        assert!(!baked.contains_key("grok-4.6"));
+        let parsed = row_swap_prefetched(&serde_json::json!({"id": "grok-4.7"}), &baked);
+        let resolved = resolve_model_list(&cfg, Some(parsed));
+        assert_eq!(
+            resolved["grok-4.7"].info.context_window.get(),
+            524_288,
+            "actual q36i backfill is distinct from raw placeholder donation"
+        );
+    }
+}
+
+#[test]
+#[serial]
+fn grok_47_rename_keeps_auxiliary_defaults_and_catalog_guard() {
+    use crate::config::{ModelOverrideConfig, PromptSuggestModelPin as Pin};
+    use crate::session::helpers::prompt_suggest::effective_suggest_model;
+
+    let _env: Vec<_> = [
+        "GROK_WEB_SEARCH_MODEL",
+        "GROK_SESSION_SUMMARY_MODEL",
+        "GROK_IMAGE_DESCRIPTION_MODEL",
+        "GROK_PROMPT_SUGGESTIONS_MODEL",
+    ]
+    .into_iter()
+    .map(EnvGuard::unset)
+    .collect();
+    let raw: toml::Value = toml::from_str("").unwrap();
+    let defaults = ModelOverrideConfig::resolve(None, None, &raw, None);
+    assert_eq!(
+        crate::models::default_image_description_model(),
+        "gpt-5.6-terra"
+    );
+    assert_eq!(defaults.image_description.as_deref(), Some("gpt-5.6-terra"));
+    assert_eq!(defaults.prompt_suggestion, Pin::Unpinned);
+    let cfg = row_swap_config("");
+    let catalog = resolve_model_list(&cfg, None);
+    let in_catalog = |key: &str| catalog.contains_key(key);
+    for off in [false, true] {
+        for pin in [Pin::Env("grok-4.6".into()), Pin::Pinned("grok-4.6".into())] {
+            assert_eq!(
+                effective_suggest_model(
+                    &pin,
+                    Some("grok-4.7"),
+                    Some("gpt-5.6-terra"),
+                    off,
+                    in_catalog
+                ),
+                None,
+                "removed explicit Grok prompt pin must not alias or fall back"
+            );
+        }
+        assert_eq!(
+            effective_suggest_model(
+                &Pin::Unpinned,
+                Some("grok-4.6"),
+                Some("grok-4.7"),
+                off,
+                in_catalog
+            ),
+            None,
+            "removed client hint must not alias or fall back"
+        );
+        for pin in [Pin::Env("grok-4.7".into()), Pin::Pinned("grok-4.7".into())] {
+            assert_eq!(
+                effective_suggest_model(&pin, Some("gpt-5.6-terra"), None, off, in_catalog)
+                    .as_deref(),
+                Some("grok-4.7")
+            );
+        }
+        assert_eq!(
+            effective_suggest_model(
+                &Pin::Unpinned,
+                Some("grok-4.7"),
+                Some("gpt-5.6-terra"),
+                off,
+                in_catalog
+            )
+            .as_deref(),
+            Some("grok-4.7")
+        );
+        for session in ["gpt-5.6-terra", "grok-4.7"] {
+            assert_eq!(
+                effective_suggest_model(&Pin::Unpinned, None, Some(session), off, in_catalog)
+                    .as_deref(),
+                Some(session)
+            );
+        }
+        for session in [None, Some("grok-4.6"), Some("not-catalogued")] {
+            assert_eq!(
+                effective_suggest_model(&Pin::Unpinned, None, session, off, in_catalog),
+                None
+            );
+        }
+    }
+    let remote = crate::util::config::RemoteSettings {
+        image_description_model: Some("grok-4.6".into()),
+        prompt_suggestion_model: Some("grok-4.6".into()),
+        ..Default::default()
+    };
+    let remote_only = ModelOverrideConfig::resolve(None, None, &raw, Some(&remote));
+    assert_eq!(remote_only.image_description.as_deref(), Some("grok-4.6"));
+    assert_eq!(
+        remote_only.prompt_suggestion,
+        Pin::Pinned("grok-4.6".into())
+    );
+    assert_eq!(
+        effective_suggest_model(
+            &remote_only.prompt_suggestion,
+            None,
+            Some("gpt-5.6-terra"),
+            false,
+            in_catalog
+        ),
+        None
+    );
+    let local: toml::Value = toml::from_str(
+        "[models]\nimage_description = 'grok-4.7'\nprompt_suggestion = 'grok-4.7'\n",
+    )
+    .unwrap();
+    let local_wins = ModelOverrideConfig::resolve(None, None, &local, Some(&remote));
+    assert_eq!(local_wins.image_description.as_deref(), Some("grok-4.7"));
+    assert_eq!(local_wins.prompt_suggestion, Pin::Pinned("grok-4.7".into()));
+    assert_eq!(
+        effective_suggest_model(&local_wins.prompt_suggestion, None, None, false, in_catalog)
+            .as_deref(),
+        Some("grok-4.7")
+    );
+    {
+        let _image = EnvGuard::set("GROK_IMAGE_DESCRIPTION_MODEL", "grok-4.6");
+        let _prompt = EnvGuard::set("GROK_PROMPT_SUGGESTIONS_MODEL", "grok-4.6");
+        let env_wins = ModelOverrideConfig::resolve(None, None, &local, Some(&remote));
+        assert_eq!(
+            env_wins.image_description.as_deref(),
+            Some("grok-4.6"),
+            "explicit image pins are not catalog-guarded or migrated"
+        );
+        assert_eq!(env_wins.prompt_suggestion, Pin::Env("grok-4.6".into()));
+        assert_eq!(
+            effective_suggest_model(
+                &env_wins.prompt_suggestion,
+                None,
+                Some("grok-4.7"),
+                false,
+                in_catalog
+            ),
+            None
+        );
+    }
+    let old_local: toml::Value = toml::from_str(
+        "[models]\nimage_description = 'grok-4.6'\nprompt_suggestion = 'grok-4.6'\n",
+    )
+    .unwrap();
+    let explicit_old = ModelOverrideConfig::resolve(None, None, &old_local, None);
+    assert_eq!(explicit_old.image_description.as_deref(), Some("grok-4.6"));
+    assert_eq!(
+        effective_suggest_model(
+            &explicit_old.prompt_suggestion,
+            None,
+            Some("grok-4.7"),
+            false,
+            in_catalog
+        ),
+        None
+    );
+    let alias = crate::util::config::NON_REASONING_PROMPT_SUGGEST_MODEL;
+    assert!(!catalog.contains_key(alias));
+    let alias_cfg = row_swap_config(&format!("[model.\"{alias}\"]\nmodel = '{alias}'\n"));
+    let with_alias = resolve_model_list(&alias_cfg, None);
+    assert_eq!(
+        effective_suggest_model(&Pin::Unpinned, None, Some("gpt-5.6-terra"), true, |key| {
+            with_alias.contains_key(key)
+        })
+        .as_deref(),
+        Some(alias)
+    );
+    // An explicit old live/config row remains selectable; removal is not a provider ban.
+    let old_cfg = row_swap_config("[model.\"grok-4.6\"]\nmodel = 'grok-4.6'\n");
+    let with_old = resolve_model_list(&old_cfg, None);
+    assert_eq!(
+        effective_suggest_model(&Pin::Pinned("grok-4.6".into()), None, None, false, |key| {
+            with_old.contains_key(key)
+        })
+        .as_deref(),
+        Some("grok-4.6")
+    );
+}
+
+fn grok_bake_is_historical() -> bool {
+    let entries = default_model_entries(&EndpointsConfig::default());
+    let active: Vec<_> = PRE_BAKE_SEED_KEYS
+        .into_iter()
+        .filter(|key| entries.contains_key(*key))
+        .collect();
+    let historical = match active.as_slice() {
+        ["grok-4.6"] => true,
+        [] => false,
+        _ => panic!("unexpected embedded donor intersection: {active:?}"),
+    };
+    let mut expected = vec![
+        "claude-opus-5.5",
+        "claude-opus-5.5-1m",
+        "claude-sonnet-5.5",
+        "claude-sonnet-5.5-1m",
+        "gemini-3.1-pro-preview",
+        "gemini-3.8-flash",
+        "gpt-5.6-terra",
+        "gpt-5.6-terra-1m",
+        "gpt-6-luna",
+        "gpt-6.1-sol",
+        "gpt-6.1-sol-1m",
+        if historical { "grok-4.6" } else { "grok-4.7" },
+    ];
+    expected.sort_unstable();
+    assert_eq!(
+        entries.keys().map(String::as_str).collect::<Vec<_>>(),
+        expected,
+        "historical replay and final retirement are the only accepted twelve-row states"
+    );
+    historical
 }
