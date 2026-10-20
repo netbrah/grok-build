@@ -1016,12 +1016,11 @@ mod tests {
     // ------------------------------------------------------------------
 
     fn deps_dir() -> std::path::PathBuf {
-        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        // `cfg!(release)` is never set by cargo (hence the unexpected-cfg
-        // warning); the profile is observable via debug_assertions — release
-        // builds disable it, so map to the matching target/<profile>/deps.
-        let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
-        manifest.join(format!("../../../target/{profile}/deps"))
+        let exe =
+            std::env::current_exe().unwrap_or_else(|e| panic!("D-6 harness: current_exe: {e}"));
+        exe.parent()
+            .unwrap_or_else(|| panic!("D-6 harness: no deps dir for {}", exe.display()))
+            .to_path_buf()
     }
 
     fn newest_rlib(stem: &str) -> std::path::PathBuf {
@@ -1087,6 +1086,38 @@ mod tests {
         assert!(
             stderr.contains(expected_code),
             "D-6 harness ({name}): expected {expected_code}; rustc stderr:\n{stderr}"
+        );
+    }
+
+    /// The D-6 harness must use this build, even with stale in-tree artifacts.
+    #[test]
+    fn harness_deps_dir_holds_the_running_test_binary() {
+        let exe =
+            std::env::current_exe().unwrap_or_else(|e| panic!("D-6 harness: current_exe: {e}"));
+        let own_dir = exe
+            .parent()
+            .unwrap_or_else(|| panic!("D-6 harness: no parent for {}", exe.display()))
+            .to_path_buf();
+        // Check identity before rlib lookup so a missing directory fails here.
+        let dir = deps_dir();
+        assert_eq!(
+            dir,
+            own_dir,
+            "D-6 harness: deps dir {} is not the directory of the running test binary {}",
+            dir.display(),
+            exe.display()
+        );
+        // Keep the --extern input tied to this build if rlib lookup changes.
+        let rlib = newest_rlib("xai_grok_sampling_types");
+        let rlib_dir = rlib
+            .parent()
+            .unwrap_or_else(|| panic!("D-6 harness: no parent for {}", rlib.display()));
+        assert_eq!(
+            rlib_dir,
+            own_dir.as_path(),
+            "D-6 harness: --extern rlib {} is not in the running build's deps dir {}",
+            rlib.display(),
+            own_dir.display()
         );
     }
 
