@@ -311,6 +311,179 @@ async fn complete_load(
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct EvictionAckTimeout {
+    seen: Vec<String>,
+    missing: Vec<String>,
+    inspected: usize,
+}
+
+fn evict_ack_method() -> String {
+    let payload = internal_notification(InternalMethod::EvictSessions, serde_json::json!({}));
+    pv(&payload)["method"]
+        .as_str()
+        .expect("eviction builder must emit a method")
+        .to_string()
+}
+
+/// Consumes agent payloads until every wanted detach is acknowledged within one budget.
+async fn wait_for_eviction(
+    acp_rx: &mut mpsc::UnboundedReceiver<String>,
+    want: &[&str],
+    budget: Duration,
+) -> Result<Vec<String>, EvictionAckTimeout> {
+    let method = evict_ack_method();
+    let deadline = tokio::time::Instant::now() + budget;
+    let mut seen: Vec<String> = Vec::new();
+    let mut inspected = 0;
+    loop {
+        let missing: Vec<String> = want
+            .iter()
+            .copied()
+            .filter(|id| !seen.iter().any(|seen_id| seen_id.as_str() == *id))
+            .map(str::to_string)
+            .collect();
+        if missing.is_empty() {
+            return Ok(seen);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(EvictionAckTimeout {
+                seen,
+                missing,
+                inspected,
+            });
+        }
+        let Ok(Some(payload)) = tokio::time::timeout_at(deadline, acp_rx.recv()).await else {
+            return Err(EvictionAckTimeout {
+                seen,
+                missing,
+                inspected,
+            });
+        };
+        inspected += 1;
+        let Ok(payload) = serde_json::from_str::<serde_json::Value>(&payload) else {
+            continue;
+        };
+        if payload["method"].as_str() != Some(method.as_str()) {
+            continue;
+        }
+        let Some(ids) = payload["params"]["sessionIds"].as_array() else {
+            continue;
+        };
+        if !ids.iter().all(serde_json::Value::is_string) {
+            continue;
+        }
+        for id in ids.iter().filter_map(serde_json::Value::as_str) {
+            if !seen.iter().any(|seen_id| seen_id == id) {
+                seen.push(id.to_string());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn wait_for_eviction_completes_on_the_evict_sessions_ack() {
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    tx.send(internal_notification(
+        InternalMethod::EvictSessions,
+        serde_json::json!({"sessionIds": ["sess-ack", "child-ack"]}),
+    ))
+    .unwrap();
+
+    let mut ids = wait_for_eviction(
+        &mut rx,
+        &["sess-ack", "child-ack"],
+        Duration::from_millis(50),
+    )
+    .await
+    .expect("the emitted eviction acknowledgement must cover both sessions");
+    ids.sort();
+    assert_eq!(ids, ["child-ack", "sess-ack"]);
+}
+
+#[tokio::test]
+async fn wait_for_eviction_ignores_traffic_that_carries_the_ids() {
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    tx.send(
+        r#"{"jsonrpc":"2.0","method":"session/load","id":1,"params":{"sessionId":"sess-ack"}}"#
+            .to_string(),
+    )
+    .unwrap();
+    tx.send(internal_notification(
+        InternalMethod::ReloadModels,
+        serde_json::json!({}),
+    ))
+    .unwrap();
+    // Constructed plural-id traffic, not an observed client notification.
+    tx.send(r#"{"jsonrpc":"2.0","method":"x.ai/session/close","params":{"sessionIds":["sess-ack","child-ack"]}}"#.to_string()).unwrap();
+
+    let timeout = wait_for_eviction(
+        &mut rx,
+        &["sess-ack", "child-ack"],
+        Duration::from_millis(50),
+    )
+    .await
+    .expect_err("non-eviction traffic must not satisfy the acknowledgement barrier");
+    assert_eq!(
+        timeout,
+        EvictionAckTimeout {
+            seen: Vec::new(),
+            missing: vec!["sess-ack".to_string(), "child-ack".to_string()],
+            inspected: 3,
+        }
+    );
+}
+
+#[tokio::test]
+async fn wait_for_eviction_requires_every_wanted_session() {
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    tx.send(internal_notification(
+        InternalMethod::EvictSessions,
+        serde_json::json!({"sessionIds": ["sess-ack"]}),
+    ))
+    .unwrap();
+
+    let timeout = wait_for_eviction(
+        &mut rx,
+        &["sess-ack", "child-ack"],
+        Duration::from_millis(50),
+    )
+    .await
+    .expect_err("partial eviction coverage must not satisfy the acknowledgement barrier");
+    assert_eq!(
+        timeout,
+        EvictionAckTimeout {
+            seen: vec!["sess-ack".to_string()],
+            missing: vec!["child-ack".to_string()],
+            inspected: 1,
+        }
+    );
+}
+
+#[tokio::test]
+async fn wait_for_eviction_requires_the_wire_spelled_method() {
+    assert_eq!(evict_ack_method(), "_x.ai/internal/evict_sessions");
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    // The leader's eviction builder (protocol.rs:396-410) never emits the bare spelling.
+    tx.send(r#"{"jsonrpc":"2.0","method":"x.ai/internal/evict_sessions","params":{"sessionIds":["sess-ack","child-ack"]}}"#.to_string()).unwrap();
+
+    let timeout = wait_for_eviction(
+        &mut rx,
+        &["sess-ack", "child-ack"],
+        Duration::from_millis(50),
+    )
+    .await
+    .expect_err("the bare eviction spelling must not satisfy the acknowledgement barrier");
+    assert_eq!(
+        timeout,
+        EvictionAckTimeout {
+            seen: Vec::new(),
+            missing: vec!["sess-ack".to_string(), "child-ack".to_string()],
+            inspected: 1,
+        }
+    );
+}
+
 /// Connect and register a client, returning the split stream.
 async fn connect_and_register(
     sock_path: &std::path::Path,
@@ -3556,7 +3729,108 @@ async fn connect_register_get_id(
     (reader, writer, ClientId(client_id))
 }
 
-/// A client that reattaches AFTER a subagent spawned is backfilled into the child route when its parent `session/load` response lands.
+/// A late attacher receives child broadcasts without replacing the connected driver.
+#[tokio::test]
+async fn child_reverse_request_routes_to_the_stale_driver_not_the_late_attacher() {
+    let temp = TempDir::new().unwrap();
+    let (sock_path, cancel, response_tx, mut acp_rx) =
+        setup_persistent_server_with_agent(&temp).await;
+
+    let (mut reader_a, mut writer_a) = connect_and_register(&sock_path, "client-a").await;
+    load_session(&mut writer_a, "sess-stale").await;
+    complete_load(&mut acp_rx, &response_tx).await;
+    let _ = next_acp_payload(&mut reader_a).await;
+
+    let spawned = r#"{"jsonrpc":"2.0","method":"x.ai/session_notification","params":{"sessionId":"sess-stale","update":{"sessionUpdate":"subagent_spawned","child_session_id":"child-stale"}}}"#;
+    response_tx.send(spawned.to_string()).unwrap();
+    assert!(
+        next_acp_payload_matching(&mut reader_a, "subagent_spawned")
+            .await
+            .is_some(),
+        "A must receive the live spawn before A2 attaches"
+    );
+
+    let (mut reader_a2, mut writer_a2) = connect_and_register(&sock_path, "client-a2").await;
+    load_session(&mut writer_a2, "sess-stale").await;
+    complete_load(&mut acp_rx, &response_tx).await;
+    let _ = next_acp_payload(&mut reader_a2).await;
+
+    let delta = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"child-stale","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"STALE_CHILD_DELTA"}}}}"#;
+    response_tx.send(delta.to_string()).unwrap();
+    assert!(
+        next_acp_payload_matching(&mut reader_a2, "STALE_CHILD_DELTA")
+            .await
+            .is_some(),
+        "A2 must receive child broadcasts even while A remains the driver"
+    );
+
+    let reverse = r#"{"jsonrpc":"2.0","id":901,"method":"x.ai/child_thing","params":{"sessionId":"child-stale"}}"#;
+    response_tx.send(reverse.to_string()).unwrap();
+    assert!(
+        next_acp_payload_matching(&mut reader_a, "child_thing")
+            .await
+            .is_some(),
+        "the connected stale driver A must receive the child reverse-request"
+    );
+    assert!(
+        next_acp_payload_matching(&mut reader_a2, "child_thing")
+            .await
+            .is_none(),
+        "the late attacher A2 must not receive the driver-only child reverse-request"
+    );
+
+    cancel.cancel();
+}
+
+/// A sole subscriber's detach acknowledgement makes reattachment seed the child driver.
+#[tokio::test]
+async fn child_reverse_request_routes_to_the_client_reattached_after_the_eviction_ack() {
+    let temp = TempDir::new().unwrap();
+    let (sock_path, cancel, response_tx, mut acp_rx) =
+        setup_persistent_server_with_agent(&temp).await;
+
+    let (mut reader_a, mut writer_a) = connect_and_register(&sock_path, "client-a").await;
+    load_session(&mut writer_a, "sess-ack").await;
+    complete_load(&mut acp_rx, &response_tx).await;
+    let _ = next_acp_payload(&mut reader_a).await;
+
+    let spawned = r#"{"jsonrpc":"2.0","method":"x.ai/session_notification","params":{"sessionId":"sess-ack","update":{"sessionUpdate":"subagent_spawned","child_session_id":"child-ack"}}}"#;
+    response_tx.send(spawned.to_string()).unwrap();
+    assert!(
+        next_acp_payload_matching(&mut reader_a, "subagent_spawned")
+            .await
+            .is_some(),
+        "A must receive the live spawn as the sole subscriber"
+    );
+
+    drop(reader_a);
+    drop(writer_a);
+    wait_for_eviction(
+        &mut acp_rx,
+        &["sess-ack", "child-ack"],
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap_or_else(|timeout| panic!("sole-subscriber detach must be acknowledged: {timeout:?}"));
+
+    let (mut reader_a2, mut writer_a2) = connect_and_register(&sock_path, "client-a2").await;
+    load_session(&mut writer_a2, "sess-ack").await;
+    complete_load(&mut acp_rx, &response_tx).await;
+    let _ = next_acp_payload(&mut reader_a2).await;
+
+    let reverse = r#"{"jsonrpc":"2.0","id":902,"method":"x.ai/child_thing","params":{"sessionId":"child-ack"}}"#;
+    response_tx.send(reverse.to_string()).unwrap();
+    assert!(
+        next_acp_payload_matching(&mut reader_a2, "child_thing")
+            .await
+            .is_some(),
+        "the client reattached after the detach acknowledgement must receive the child reverse-request"
+    );
+
+    cancel.cancel();
+}
+
+/// A client that reattaches AFTER a subagent spawned is backfilled into the child route after the detach acknowledgement and its parent load request.
 /// The parent-to-child index survives the disconnect eviction, which only empties subscriber sets. Live child updates therefore resume without a replayed spawn line.
 /// Driver inheritance is pinned too: a driver-only child reverse-request must reach the reattached client.
 #[tokio::test]
@@ -3568,9 +3842,9 @@ async fn reattached_client_backfilled_into_child_routes() {
     // A attaches and a subagent spawns LIVE: the child route is the snapshot {A}, and the index gains the edge sess-sub to child-sub
     let (mut reader_a, mut writer_a) = connect_and_register(&sock_path, "client-a").await;
     load_session(&mut writer_a, "sess-sub").await;
+    // The forwarded load certifies subscription; drain its response before the live spawn.
     complete_load(&mut acp_rx, &response_tx).await;
     let _ = next_acp_payload(&mut reader_a).await;
-    tokio::time::sleep(Duration::from_millis(30)).await;
 
     let spawned_live = r#"{"jsonrpc":"2.0","method":"x.ai/session_notification","params":{"sessionId":"sess-sub","update":{"sessionUpdate":"subagent_spawned","child_session_id":"child-sub"}}}"#;
     response_tx.send(spawned_live.to_string()).unwrap();
@@ -3581,18 +3855,24 @@ async fn reattached_client_backfilled_into_child_routes() {
         "sanity: A receives the live spawn"
     );
 
-    // A disconnects: subscriber sets are emptied and evicted; the index edge stays
+    // The detach ack certifies empty routes and removed drivers before A2 exists.
     drop(reader_a);
     drop(writer_a);
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_for_eviction(
+        &mut acp_rx,
+        &["sess-sub", "child-sub"],
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap_or_else(|timeout| panic!("parent and child detach must be acknowledged: {timeout:?}"));
 
     // A2 reconnects and reloads the parent
-    // No replayed spawn line is sent, so receiving child updates proves the response-time BACKFILL (not replay registration)
+    // No replayed spawn line is sent; child updates therefore prove request-path backfill.
     let (mut reader_a2, mut writer_a2) = connect_and_register(&sock_path, "client-a").await;
     load_session(&mut writer_a2, "sess-sub").await;
+    // The forwarded load certifies descendant backfill; drain its response before live traffic.
     complete_load(&mut acp_rx, &response_tx).await;
     let _ = next_acp_payload(&mut reader_a2).await;
-    tokio::time::sleep(Duration::from_millis(30)).await;
 
     let child_live = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"child-sub","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"CHILD_LIVE_DELTA"}}}}"#;
     response_tx.send(child_live.to_string()).unwrap();
