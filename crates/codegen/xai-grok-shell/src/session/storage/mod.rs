@@ -1506,6 +1506,21 @@ pub trait StorageAdapter: Send + Sync {
     /// Copy the on-disk chat history before a destructive image-strip rewrite (first backup wins), mirroring the `*.corrupt` quarantine.
     /// Required, not defaulted: a new adapter must choose explicitly how its data stays recoverable.
     async fn backup_chat_history_before_strip(&self, info: &Info) -> io::Result<()>;
+    async fn read_native_history(
+        &self,
+        info: &Info,
+    ) -> Result<
+        xai_chat_state::persistence::native::NativeRead,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    >;
+    async fn persist_native_generation_and_ack(
+        &self,
+        info: &Info,
+        write: xai_chat_state::persistence::native::NativeWrite,
+    ) -> Result<
+        xai_chat_state::persistence::native::NativeAppendAck,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    >;
 
     /// Copy session data from source to target, transforming session IDs
     async fn copy_session_data(

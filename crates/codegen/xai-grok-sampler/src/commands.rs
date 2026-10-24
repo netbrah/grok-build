@@ -22,6 +22,13 @@ pub(crate) enum SamplerCommand {
         completion_tx: Option<oneshot::Sender<CollectedSamplingResult>>,
     },
 
+    SubmitNativeCapture {
+        request_id: RequestId,
+        request: Box<ConversationRequest>,
+        config: Option<Box<SamplerConfig>>,
+        completion_tx: Option<oneshot::Sender<CollectedSamplingResult>>,
+        lease: crate::actor::request_task::NativeCaptureSubmission,
+    },
     Cancel {
         request_id: RequestId,
     },

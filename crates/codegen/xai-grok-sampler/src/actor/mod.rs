@@ -90,33 +90,35 @@ impl SamplerActor {
         self.tasks.shutdown().await;
     }
 
-    fn handle_command(&mut self, cmd: SamplerCommand) {
-        match cmd {
-            SamplerCommand::Submit {
-                request_id,
-                request,
-                config,
-                completion_tx,
-            } => {
-                let cancel_token = CancellationToken::new();
-                let active = ActiveRequest {
-                    cancel_token: cancel_token.clone(),
-                };
-                if let Some(prev) = self.state.register(request_id.clone(), active) {
-                    // Caller submitted a duplicate id; cancel the previous one so we don't leak its task
-                    prev.cancel_token.cancel();
-                }
-                let effective_config = config
-                    .map(|b| *b)
-                    .unwrap_or_else(|| self.state.config.clone());
-                // STABLE-REMINDER-1 (apex-ayl.110): the task owns a clone of the
-                // per-session `<multi_agent_mode>` anchor; its write-back on join is
-                // authoritative (in-memory only, never persisted).
-                let multi_agent_mode_anchor = self.state.multi_agent_mode_anchor.clone();
-                let event_tx = self.event_tx.clone();
-                let retry_policy = self.state.retry_policy.clone();
-                let request_inner = *request;
-                self.tasks.spawn(request_task::run_request_task(
+    fn start_request(
+        &mut self,
+        request_id: RequestId,
+        request: Box<xai_grok_sampling_types::ConversationRequest>,
+        config: Option<Box<SamplerConfig>>,
+        completion_tx: Option<tokio::sync::oneshot::Sender<crate::handle::CollectedSamplingResult>>,
+        native: Option<request_task::NativeCaptureSubmission>,
+    ) {
+        let cancel_token = CancellationToken::new();
+        let active = ActiveRequest {
+            cancel_token: cancel_token.clone(),
+        };
+        if let Some(prev) = self.state.register(request_id.clone(), active) {
+            // Caller submitted a duplicate id; cancel the previous one so we don't leak its task
+            prev.cancel_token.cancel();
+        }
+        let effective_config = config
+            .map(|b| *b)
+            .unwrap_or_else(|| self.state.config.clone());
+        // STABLE-REMINDER-1 (apex-ayl.110): the task owns a clone of the
+        // per-session `<multi_agent_mode>` anchor; its write-back on join is
+        // authoritative (in-memory only, never persisted).
+        let multi_agent_mode_anchor = self.state.multi_agent_mode_anchor.clone();
+        let event_tx = self.event_tx.clone();
+        let retry_policy = self.state.retry_policy.clone();
+        let request_inner = *request;
+        match native {
+            Some(mut submission) => self.tasks.spawn(async move {
+                request_task::run_request_task_with_native_capture(
                     request_id,
                     request_inner,
                     effective_config,
@@ -125,7 +127,41 @@ impl SamplerActor {
                     cancel_token,
                     completion_tx,
                     multi_agent_mode_anchor,
-                ));
+                    submission.lease.take(),
+                )
+                .await
+            }),
+            None => self.tasks.spawn(request_task::run_request_task(
+                request_id,
+                request_inner,
+                effective_config,
+                retry_policy,
+                event_tx,
+                cancel_token,
+                completion_tx,
+                multi_agent_mode_anchor,
+            )),
+        };
+    }
+
+    fn handle_command(&mut self, cmd: SamplerCommand) {
+        match cmd {
+            SamplerCommand::Submit {
+                request_id,
+                request,
+                config,
+                completion_tx,
+            } => {
+                self.start_request(request_id, request, config, completion_tx, None);
+            }
+            SamplerCommand::SubmitNativeCapture {
+                request_id,
+                request,
+                config,
+                completion_tx,
+                lease,
+            } => {
+                self.start_request(request_id, request, config, completion_tx, Some(lease));
             }
             SamplerCommand::Cancel { request_id } => {
                 self.state.cancel(&request_id);

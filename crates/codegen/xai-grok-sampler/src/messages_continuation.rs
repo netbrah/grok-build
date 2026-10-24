@@ -116,7 +116,228 @@ impl CapturedBlock {
         Ok(())
     }
 
-    fn apply_delta(&mut self, delta: &StreamDelta, raw_delta: &Value) -> Result<(), CaptureError> {
+    fn native_delta_growth(&self, delta: &StreamDelta) -> Result<u64, CaptureError> {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let (fragment, extra) = match delta {
+            StreamDelta::TextDelta { text } => (text.as_str(), 0),
+            StreamDelta::ThinkingDelta { thinking } => (thinking.as_str(), 0),
+            StreamDelta::SignatureDelta { signature } => (
+                signature.as_str(),
+                if self.raw.get("signature").is_none() {
+                    b",\"signature\":\"\"".len() as u64
+                } else {
+                    0
+                },
+            ),
+            StreamDelta::InputJsonDelta { partial_json } => (
+                partial_json.as_str(),
+                u64::from(self.raw_json.is_empty() && !partial_json.is_empty()) * 2,
+            ),
+            _ => return Ok(0),
+        };
+        native_encoded_len(&fragment, NATIVE_BLOCK_BYTES)
+            .map_err(|_| CaptureError::LimitExceeded)?
+            .checked_sub(2)
+            .and_then(|n| n.checked_add(extra))
+            .ok_or(CaptureError::LimitExceeded)
+    }
+
+    fn native_retained_bytes(&self) -> Result<u64, CaptureError> {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let raw = native_encoded_len(&self.raw, NATIVE_BLOCK_BYTES)
+            .map_err(|_| CaptureError::LimitExceeded)?;
+        let partial = if self.raw_json.is_empty() {
+            0
+        } else {
+            native_encoded_len(&self.raw_json, NATIVE_BLOCK_BYTES)
+                .map_err(|_| CaptureError::LimitExceeded)?
+        };
+        raw.checked_add(partial)
+            .filter(|bytes| *bytes <= NATIVE_BLOCK_BYTES)
+            .ok_or(CaptureError::LimitExceeded)
+    }
+
+    fn native_materialized_input(&self) -> Result<Option<u64>, CaptureError> {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        if matches!(
+            self.raw["type"].as_str(),
+            Some("tool_use" | "server_tool_use")
+        ) && self.raw["input"]
+            .as_object()
+            .is_some_and(|object| object.is_empty())
+            && !self.raw_json.is_empty()
+        {
+            let bytes =
+                native_json_encoded_len(&self.raw_json, NATIVE_BLOCK_BYTES).map_err(|reason| {
+                    if reason == NativeUnavailable::Capacity {
+                        CaptureError::LimitExceeded
+                    } else {
+                        CaptureError::InvalidInput
+                    }
+                })?;
+            Ok(Some(bytes))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn native_retained_sizes(&self) -> Result<NativeCaptureSizes, CaptureError> {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let raw = native_encoded_json_string_len(&self.raw, NATIVE_RESPONSE_BYTES)
+            .map_err(|_| CaptureError::LimitExceeded)?;
+        let partial = if self.raw_json.is_empty() {
+            4
+        } else {
+            native_encoded_len(&self.raw_json, NATIVE_RESPONSE_BYTES)
+                .map_err(|_| CaptureError::LimitExceeded)?
+        };
+        Ok(NativeCaptureSizes {
+            stored: self.native_retained_bytes()?,
+            envelope: raw
+                .checked_add(partial)
+                .ok_or(CaptureError::LimitExceeded)?,
+        })
+    }
+
+    fn native_delta_sizes(&self, delta: &StreamDelta) -> Result<NativeCaptureSizes, CaptureError> {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let envelope = match delta {
+            StreamDelta::InputJsonDelta { partial_json } => {
+                let bytes = native_encoded_len(partial_json, NATIVE_RESPONSE_BYTES)
+                    .map_err(|_| CaptureError::LimitExceeded)?;
+                bytes.saturating_sub(if self.raw_json.is_empty() { 4 } else { 2 })
+            }
+            StreamDelta::TextDelta { text }
+            | StreamDelta::ThinkingDelta { thinking: text }
+            | StreamDelta::SignatureDelta { signature: text } => {
+                let extra = if matches!(delta, StreamDelta::SignatureDelta { .. })
+                    && self.raw.get("signature").is_none()
+                {
+                    native_encoded_len(&",\"signature\":\"\"", NATIVE_RESPONSE_BYTES)
+                        .map_err(|_| CaptureError::LimitExceeded)?
+                        - 2
+                } else {
+                    0
+                };
+                native_encoded_json_string_len(text, NATIVE_RESPONSE_BYTES)
+                    .map_err(|_| CaptureError::LimitExceeded)?
+                    .checked_sub(6)
+                    .and_then(|bytes| bytes.checked_add(extra))
+                    .ok_or(CaptureError::LimitExceeded)?
+            }
+        };
+        Ok(NativeCaptureSizes {
+            stored: self.native_delta_growth(delta)?,
+            envelope,
+        })
+    }
+
+    fn native_closed_sizes(&self) -> Result<NativeCaptureSizes, CaptureError> {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let raw = native_encoded_len(&self.raw, NATIVE_BLOCK_BYTES)
+            .map_err(|_| CaptureError::LimitExceeded)?;
+        let encoded = native_encoded_json_string_len(&self.raw, NATIVE_RESPONSE_BYTES)
+            .map_err(|_| CaptureError::LimitExceeded)?;
+        let input = self.native_materialized_input()?;
+        let input_encoded = if input.is_some() {
+            native_json_string_encoded_len(&self.raw_json, NATIVE_RESPONSE_BYTES)
+                .map_err(|reason| {
+                    if reason == NativeUnavailable::Capacity {
+                        CaptureError::LimitExceeded
+                    } else {
+                        CaptureError::InvalidInput
+                    }
+                })?
+                .saturating_sub(4)
+        } else {
+            0
+        };
+        Ok(NativeCaptureSizes {
+            stored: raw
+                .checked_add(input.map_or(0, |bytes| bytes.saturating_sub(2)))
+                .ok_or(CaptureError::LimitExceeded)?,
+            envelope: encoded
+                .checked_add(input_encoded)
+                .and_then(|bytes| bytes.checked_add(4))
+                .ok_or(CaptureError::LimitExceeded)?,
+        })
+    }
+
+    fn reserve_native_delta(
+        &self,
+        delta: &StreamDelta,
+        lease: &xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+    ) -> Result<(), CaptureError> {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let bytes = self.native_retained_bytes()?;
+        if bytes
+            .checked_add(self.native_delta_growth(delta)?)
+            .filter(|n| *n <= NATIVE_BLOCK_BYTES)
+            .is_none()
+        {
+            return Err(CaptureError::LimitExceeded);
+        }
+        let growth = match delta {
+            StreamDelta::TextDelta { text } => text.len(),
+            StreamDelta::ThinkingDelta { thinking } => thinking.len(),
+            StreamDelta::SignatureDelta { signature } => signature.len(),
+            StreamDelta::InputJsonDelta { partial_json } => {
+                if self
+                    .raw_json
+                    .len()
+                    .checked_add(partial_json.len())
+                    .filter(|n| *n as u64 <= MAX_ENCODED_MESSAGES_REQUEST_BYTES)
+                    .is_none()
+                {
+                    return Err(CaptureError::LimitExceeded);
+                }
+                partial_json.len()
+            }
+            _ => 0,
+        };
+        lease
+            .reserve(
+                (growth as u64)
+                    .checked_mul(2)
+                    .ok_or(CaptureError::LimitExceeded)?,
+            )
+            .map_err(|_| CaptureError::LimitExceeded)
+    }
+
+    fn reserve_native_close(
+        &self,
+        lease: &xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+    ) -> Result<(), CaptureError> {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let bytes = native_encoded_len(&self.raw, NATIVE_BLOCK_BYTES)
+            .map_err(|_| CaptureError::LimitExceeded)?;
+        let input = self.native_materialized_input()?;
+        if bytes
+            .checked_add(input.map_or(0, |n| n.saturating_sub(2)))
+            .filter(|n| *n <= NATIVE_BLOCK_BYTES)
+            .is_none()
+        {
+            return Err(CaptureError::LimitExceeded);
+        }
+        if let Some(input) = input {
+            lease
+                .reserve(input.checked_mul(2).ok_or(CaptureError::LimitExceeded)?)
+                .map_err(|_| CaptureError::LimitExceeded)?;
+        }
+        Ok(())
+    }
+
+    fn apply_delta(
+        &mut self,
+        delta: &StreamDelta,
+        raw_delta: &Value,
+        native: Option<
+            &xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        >,
+    ) -> Result<(), CaptureError> {
+        if let Some(lease) = native {
+            self.reserve_native_delta(delta, lease)?;
+        }
         match (&mut self.typed, delta) {
             (ContentBlock::Text { text, .. }, StreamDelta::TextDelta { text: fragment }) => {
                 text.push_str(fragment);
@@ -169,7 +390,15 @@ impl CapturedBlock {
         Ok(())
     }
 
-    fn close(&mut self) -> Result<(), CaptureError> {
+    fn close(
+        &mut self,
+        native: Option<
+            &xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        >,
+    ) -> Result<(), CaptureError> {
+        if let Some(lease) = native {
+            self.reserve_native_close(lease)?;
+        }
         if let ContentBlock::ToolUse { input, .. } | ContentBlock::ServerToolUse { input, .. } =
             &mut self.typed
             && input.as_object().is_some_and(|object| object.is_empty())
@@ -213,13 +442,601 @@ pub(crate) struct AttemptCapture {
     retained_wire_bytes: u64,
     pub(crate) completed: Option<CompletedAttempt>,
     pub(crate) failure: Option<CaptureError>,
+    native:
+        Option<xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease>,
+    native_admitted: bool,
+    native_started: bool,
+    native_id: Option<Value>,
+    native_stop: Option<String>,
+    native_paused: bool,
+    native_usage: std::collections::BTreeMap<String, Value>,
+    native_coordinates: Vec<u32>,
+    native_failure_block: Option<u32>,
+    native_starts: u64,
+    native_reasoning: Option<u32>,
+    native_reserved_response_bytes: u64,
+    native_generation_funded: bool,
+}
+
+#[derive(Clone, Copy)]
+struct NativeCaptureSizes {
+    stored: u64,
+    envelope: u64,
+}
+
+impl NativeCaptureSizes {
+    fn add(self, growth: Self) -> Result<Self, CaptureError> {
+        Ok(Self {
+            stored: self
+                .stored
+                .checked_add(growth.stored)
+                .ok_or(CaptureError::LimitExceeded)?,
+            envelope: self
+                .envelope
+                .checked_add(growth.envelope)
+                .ok_or(CaptureError::LimitExceeded)?,
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct NativeMetadataSizes {
+    id: u64,
+    stop: u64,
+    usage: u64,
 }
 
 impl AttemptCapture {
+    pub(crate) fn passive(
+        lease: xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+    ) -> Self {
+        let native_generation_funded = match lease.reserve_generation() {
+            Ok(()) => true,
+            Err(reason) => {
+                lease.unavailable(reason);
+                false
+            }
+        };
+        let mut capture = Self {
+            native: Some(lease),
+            native_generation_funded,
+            ..Self::default()
+        };
+        if !native_generation_funded {
+            capture.failure = Some(CaptureError::LimitExceeded);
+            return capture;
+        }
+        if capture
+            .native_metadata_sizes()
+            .and_then(|metadata| capture.reserve_native_response(None, metadata))
+            .is_err()
+        {
+            capture.failure = Some(CaptureError::LimitExceeded);
+        }
+        capture
+    }
+
+    pub(crate) fn is_passive(&self) -> bool {
+        self.native.is_some()
+    }
+
+    pub(crate) fn passive_exhausted(&self) -> bool {
+        self.is_passive() && self.failure == Some(CaptureError::LimitExceeded)
+    }
+
+    pub(crate) fn observed_pause(&self) -> bool {
+        self.native_paused
+    }
+
+    fn native_reserve(&mut self, bytes: u64) -> Result<(), CaptureError> {
+        if let Some(lease) = &self.native {
+            lease
+                .reserve(bytes)
+                .map_err(|_| CaptureError::LimitExceeded)?;
+        }
+        Ok(())
+    }
+
+    fn native_usage_replacement_size(
+        &self,
+        category: &str,
+        value: &Value,
+    ) -> Result<u64, CaptureError> {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let size = |value: &Value| {
+            native_encoded_len(value, NATIVE_RESPONSE_BYTES)
+                .map_err(|_| CaptureError::LimitExceeded)
+        };
+        let current = native_encoded_len(&self.native_usage, NATIVE_RESPONSE_BYTES)
+            .map_err(|_| CaptureError::LimitExceeded)?;
+        let previous = self.native_usage.get(category);
+        let old = previous.map(size).transpose()?.unwrap_or(0);
+        let mut replacement = size(value)?;
+        if category == "cache_creation"
+            && let Some(old_map) = previous.and_then(Value::as_object)
+            && let Some(new_map) = value.as_object()
+        {
+            replacement = old;
+            let mut count = old_map.len();
+            for (key, value) in new_map {
+                let old_value = old_map.get(key);
+                let remove = old_value.map(size).transpose()?.unwrap_or(0);
+                let key_bytes = if old_value.is_none() {
+                    let bytes = native_encoded_len(key, NATIVE_RESPONSE_BYTES)
+                        .map_err(|_| CaptureError::LimitExceeded)?;
+                    let cost = bytes + 1 + u64::from(count > 0);
+                    count += 1;
+                    cost
+                } else {
+                    0
+                };
+                replacement = replacement
+                    .checked_sub(remove)
+                    .and_then(|n| n.checked_add(key_bytes))
+                    .and_then(|n| n.checked_add(size(value).ok()?))
+                    .ok_or(CaptureError::LimitExceeded)?;
+            }
+        }
+        let key_bytes = if previous.is_none() {
+            native_encoded_len(&category, NATIVE_RESPONSE_BYTES)
+                .map_err(|_| CaptureError::LimitExceeded)?
+                + 1
+                + u64::from(!self.native_usage.is_empty())
+        } else {
+            0
+        };
+        current
+            .checked_sub(old)
+            .and_then(|n| n.checked_add(replacement))
+            .and_then(|n| n.checked_add(key_bytes))
+            .filter(|n| *n <= NATIVE_RESPONSE_BYTES)
+            .ok_or(CaptureError::LimitExceeded)
+    }
+
+    fn observe_native_metadata(&mut self, frame: &MessagesStreamFrame) -> Result<(), CaptureError> {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        if self.native.is_none() {
+            return Ok(());
+        }
+        if let MessageStreamEvent::MessageDelta { delta, .. } = &frame.event {
+            self.native_paused |= matches!(
+                delta.stop_reason,
+                Some(xai_grok_sampling_types::messages::StopReason::PauseTurn)
+            );
+        }
+        if !self.native_generation_funded {
+            return Ok(());
+        }
+        if let MessageStreamEvent::ContentBlockStart { index, .. } = &frame.event {
+            self.native_starts = self
+                .native_starts
+                .checked_add(1)
+                .ok_or(CaptureError::LimitExceeded)?;
+            if self.failure.is_none() {
+                self.native_failure_block = Some(*index);
+            }
+        }
+        let Some(raw) = &frame.raw else {
+            return Ok(());
+        };
+        if let MessageStreamEvent::ContentBlockStart { .. } = &frame.event {
+            self.native_admitted |= raw
+                .get("content_block")
+                .and_then(|b| b.get("type"))
+                .and_then(Value::as_str)
+                .and_then(xai_grok_sampling_types::tool_search::ToolSearchKind::from_item_type)
+                .is_some();
+        }
+        let usage = match &frame.event {
+            MessageStreamEvent::MessageStart { .. } => {
+                self.native_started = true;
+                if let Some(id) = raw.get("message").and_then(|message| message.get("id")) {
+                    let size = native_encoded_len(id, NATIVE_RESPONSE_BYTES)
+                        .map_err(|_| CaptureError::LimitExceeded)?;
+                    let mut metadata = self.native_metadata_sizes()?;
+                    metadata.id = size;
+                    self.reserve_native_response(None, metadata)?;
+                    self.native_reserve(size)?;
+                    self.native_id = Some(id.clone());
+                }
+                raw.get("message").and_then(|message| message.get("usage"))
+            }
+            MessageStreamEvent::MessageDelta { delta, .. } => {
+                if let Some(stop) = &delta.stop_reason {
+                    if !matches!(
+                        stop,
+                        xai_grok_sampling_types::messages::StopReason::Unknown(_)
+                    ) || !self.passive_exhausted()
+                    {
+                        let stop = stop.wire_str();
+                        let mut metadata = self.native_metadata_sizes()?;
+                        metadata.stop = native_encoded_len(&stop, NATIVE_RESPONSE_BYTES)
+                            .map_err(|_| CaptureError::LimitExceeded)?;
+                        self.reserve_native_response(None, metadata)?;
+                        self.native_stop = Some(stop);
+                    }
+                }
+                raw.get("usage")
+            }
+            _ => None,
+        };
+        if let Some(usage) = usage.and_then(Value::as_object) {
+            for (category, value) in usage {
+                let size = native_encoded_len(value, NATIVE_RESPONSE_BYTES)
+                    .map_err(|_| CaptureError::LimitExceeded)?;
+                let mut metadata = self.native_metadata_sizes()?;
+                metadata.usage = self.native_usage_replacement_size(category, value)?;
+                self.reserve_native_response(None, metadata)?;
+                if !self.passive_exhausted() {
+                    self.native_reserve(size + category.len() as u64)?;
+                }
+                if category == "cache_creation"
+                    && let Some(old) = self
+                        .native_usage
+                        .get_mut(category)
+                        .and_then(Value::as_object_mut)
+                    && let Some(new) = value.as_object()
+                {
+                    old.extend(new.iter().map(|(key, value)| (key.clone(), value.clone())));
+                } else {
+                    self.native_usage.insert(category.clone(), value.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn native_metadata_sizes(&self) -> Result<NativeMetadataSizes, CaptureError> {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        Ok(NativeMetadataSizes {
+            id: native_encoded_len(&self.native_id, NATIVE_RESPONSE_BYTES)
+                .map_err(|_| CaptureError::LimitExceeded)?,
+            stop: native_encoded_len(&self.native_stop, NATIVE_RESPONSE_BYTES)
+                .map_err(|_| CaptureError::LimitExceeded)?,
+            usage: native_encoded_len(&self.native_usage, NATIVE_RESPONSE_BYTES)
+                .map_err(|_| CaptureError::LimitExceeded)?,
+        })
+    }
+
+    fn reserve_native_response(
+        &mut self,
+        replacement: Option<(u32, NativeCaptureSizes)>,
+        metadata: NativeMetadataSizes,
+    ) -> Result<(), CaptureError> {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let Some(lease) = &self.native else {
+            return Ok(());
+        };
+        fn len<T: serde::Serialize>(value: &T) -> Result<u64, CaptureError> {
+            xai_grok_sampling_types::conversation::native_search_history::native_encoded_len(
+                value,
+                xai_grok_sampling_types::conversation::native_search_history::NATIVE_RESPONSE_BYTES,
+            )
+            .map_err(|_| CaptureError::LimitExceeded)
+        }
+        // Reserve terminal forms and maximum-width coordinates before retaining content.
+        let status =
+            NativeResponseStatus::PartialTerminal(NativeUnavailable::ConflictingObservation);
+        let stop = metadata.stop.max(len(
+            &xai_grok_sampling_types::messages::StopReason::ModelContextWindowExceeded,
+        )?);
+        let usage = metadata.usage.max(len(&serde_json::json!({
+            "input_tokens":u64::MAX,"output_tokens":u64::MAX,"thinking_tokens":u64::MAX,
+            "cache_read_input_tokens":u64::MAX,"cache_creation_input_tokens":u64::MAX,
+            "cache_creation":{"ephemeral_5m_input_tokens":u64::MAX,"ephemeral_1h_input_tokens":u64::MAX},
+            "output_tokens_details":{"thinking_tokens":u64::MAX}
+        }))?);
+        let header = NativeAttemptEvidence {
+            attempt: u64::MAX,
+            admitted: false,
+            response_started: false,
+            provider_response_id: None,
+            source_stop_reason: None,
+            stream_complete: false,
+            status,
+            blocks: Vec::new(),
+            usage: Default::default(),
+            latency_ms: Some(u64::MAX),
+            http_dispatches: u64::MAX,
+            observed_bytes: u64::MAX,
+            failed_block: Some(u32::MAX),
+            view_roles: Vec::new(),
+            view_digests: Vec::new(),
+        };
+        let mut envelope = len(&header)? + metadata.id.max(4) - 4 + stop - 4 + usage - 2;
+        let response = NativeResponseBoundary {
+            occurrence: u64::MAX,
+            request: lease.request().into(),
+            lease: lease.ordinal(),
+            attempt: u64::MAX,
+            continuation: 0,
+            provider_response_id: Some(Value::Null),
+            source_stop_reason: None,
+            block_start: u64::MAX,
+            block_end: u64::MAX,
+            stream_complete: false,
+            status,
+        };
+        let mut stored = len(&response)? + metadata.id.max(4) - 4 + stop - 4;
+        let digest = "0".repeat(64);
+        let view_bytes = len(&Some((u64::MAX, "Discovery")))? + len(&digest)?;
+        let reference = |kind: &str| NativeBlobRef {
+            kind: kind.into(),
+            byte_len: NATIVE_BLOCK_BYTES,
+            digest: digest.clone(),
+        };
+        let mut count = 0u64;
+        let mut add = |index: u32, sizes: NativeCaptureSizes| -> Result<(), CaptureError> {
+            let block = NativeRawBlock {
+                coordinates: NativeSourceCoordinate {
+                    lineage: lease.lineage().into(),
+                    producing_binding: lease.request().into(),
+                    turn: lease.turn(),
+                    item: u64::MAX,
+                    response: u64::MAX,
+                    block: u64::MAX,
+                    submember: None,
+                    occurrence: u64::MAX,
+                },
+                wire_index: index,
+                arrival_ordinal: u64::MAX,
+                block: reference("raw_block"),
+                partial: Some(reference("partial_input_json")),
+                state: NativeBlockState::Unavailable(NativeUnavailable::Incomplete),
+                eligible_ref: None,
+                eligible_unavailable: Some(NativeUnavailable::UnknownIdentity),
+            };
+            let bytes = NativeResource::BlockBytes
+                .admit(sizes.stored, len(&block)?)
+                .map_err(|_| CaptureError::LimitExceeded)?;
+            stored = NativeResource::ResponseBytes
+                .admit(stored, bytes)
+                .map_err(|_| CaptureError::LimitExceeded)?;
+            let captured = NativeCapturedBlock {
+                wire_index: index,
+                arrival_ordinal: u64::MAX,
+                raw: String::new(),
+                partial_json: None,
+                state: NativeBlockState::Unavailable(NativeUnavailable::Incomplete),
+            };
+            let extra = len(&captured)? - 6 + view_bytes + u64::from(count > 0) * 3;
+            envelope = envelope
+                .checked_add(sizes.envelope)
+                .and_then(|bytes| bytes.checked_add(extra))
+                .filter(|bytes| *bytes <= NATIVE_RESPONSE_BYTES)
+                .ok_or(CaptureError::LimitExceeded)?;
+            count = NativeResource::ResponseBlocks
+                .admit(count, 1)
+                .map_err(|_| CaptureError::LimitExceeded)?;
+            Ok(())
+        };
+        for (index, block) in &self.blocks {
+            let sizes = if let Some((changed, sizes)) = replacement
+                && changed == *index
+            {
+                sizes
+            } else {
+                block.native_retained_sizes()?
+            };
+            add(*index, sizes)?;
+        }
+        if let Some((index, sizes)) = replacement
+            && !self.blocks.contains_key(&index)
+        {
+            add(index, sizes)?;
+        }
+        let accounting = NativeResponseAccounting {
+            request: lease.request().into(),
+            lease: lease.ordinal(),
+            attempt: u64::MAX,
+            response_occurrence: Some(u64::MAX),
+            continuation: 0,
+            observed: Default::default(),
+            source_stop_reason: None,
+            outcome: status,
+            latency_ms: Some(u64::MAX),
+            http_dispatches: 1,
+        };
+        let terminal = NativeTerminalMarker {
+            outcome: NativeUnavailable::Capacity,
+            last_accepted_response: Some(u64::MAX),
+            observed_bytes: u64::MAX,
+            failed_block: Some(u32::MAX),
+        };
+        let reserved = stored
+            .checked_add(envelope)
+            .and_then(|bytes| bytes.checked_add(len(&accounting).ok()? + usage - 2 + stop - 4))
+            .and_then(|bytes| bytes.checked_add(len(&terminal).ok()?))
+            .ok_or(CaptureError::LimitExceeded)?;
+        if stored > NATIVE_RESPONSE_BYTES || envelope > NATIVE_RESPONSE_BYTES {
+            return Err(CaptureError::LimitExceeded);
+        }
+        if reserved > self.native_reserved_response_bytes {
+            lease
+                .reserve(reserved - self.native_reserved_response_bytes)
+                .map_err(|_| CaptureError::LimitExceeded)?;
+            self.native_reserved_response_bytes = reserved;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn seal_native(
+        &mut self,
+        attempt: u64,
+        outcome: xai_grok_sampling_types::conversation::native_search_history::NativeResponseStatus,
+        dispatched: bool,
+        latency_ms: u64,
+        mint_tag: Option<&str>,
+    ) -> Option<xai_grok_sampling_types::conversation::native_search_history::NativeAttemptEvidence>
+    {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        self.native.as_ref()?;
+        if !self.native_generation_funded || self.observed_pause() {
+            return None;
+        }
+        let mut blocks = Vec::new();
+        let mut view_roles = Vec::new();
+        let mut view_digests = Vec::new();
+        let mut stream_complete = self.phase == CapturePhase::Stopped;
+        let mut status = if self.failure == Some(CaptureError::LimitExceeded) {
+            NativeResponseStatus::PartialTerminal(NativeUnavailable::Capacity)
+        } else if self.failure.is_some() {
+            NativeResponseStatus::PartialTerminal(NativeUnavailable::Fidelity)
+        } else {
+            outcome
+        };
+        if let Some(mut completed) = self.completed.take() {
+            use sha2::Digest;
+            struct ViewHasher(sha2::Sha256);
+            impl std::io::Write for ViewHasher {
+                fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                    self.0.update(bytes);
+                    Ok(bytes.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    Ok(())
+                }
+            }
+            let digest_bytes = (completed.response.items.len() as u64)
+                .checked_mul(67)?
+                .checked_add(2)?;
+            if self.native_reserve(digest_bytes).is_ok() {
+                // Match the mint stamp on the ordinary committed response.
+                xai_grok_sampling_types::stamp_reasoning_mint_tag(
+                    &mut completed.response.items,
+                    mint_tag,
+                );
+                for item in &completed.response.items {
+                    let mut writer = ViewHasher(sha2::Sha256::new());
+                    serde_json::to_writer(&mut writer, std::slice::from_ref(item)).ok()?;
+                    view_digests.push(format!("{:x}", writer.0.finalize()));
+                }
+            } else {
+                self.failure = Some(CaptureError::LimitExceeded);
+                status = NativeResponseStatus::PartialTerminal(NativeUnavailable::Capacity);
+                self.native
+                    .as_ref()?
+                    .unavailable(NativeUnavailable::Capacity);
+            }
+            let reasoning = completed.response.items.iter().position(|item| {
+                matches!(
+                    item,
+                    xai_grok_sampling_types::ConversationItem::Reasoning(_)
+                )
+            });
+            let assistant = completed.response.items.iter().position(|item| {
+                matches!(
+                    item,
+                    xai_grok_sampling_types::ConversationItem::Assistant(_)
+                )
+            });
+            let mut discovery =
+                completed
+                    .response
+                    .items
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, item)| {
+                        matches!(
+                            item,
+                            xai_grok_sampling_types::ConversationItem::Discovery { .. }
+                        )
+                        .then_some(index)
+                    });
+            for (ordinal, raw) in completed.content.into_iter().enumerate() {
+                let role = match raw.get("type").and_then(Value::as_str) {
+                    Some("thinking")
+                        if self.native_coordinates.get(ordinal).copied()
+                            == self.native_reasoning =>
+                    {
+                        reasoning.map(|item| (item as u64, "Reasoning"))
+                    }
+                    Some("thinking" | "redacted_thinking") => None,
+                    Some("server_tool_use" | "tool_search_tool_result") => {
+                        discovery.next().map(|item| (item as u64, "Discovery"))
+                    }
+                    Some("tool_use") => assistant.map(|item| (item as u64, "Client")),
+                    Some("text")
+                        if raw
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .is_some_and(|text| !text.is_empty()) =>
+                    {
+                        assistant.map(|item| (item as u64, "Text"))
+                    }
+                    _ => None,
+                };
+                let bytes = encode_native(&raw, NATIVE_BLOCK_BYTES).ok()?;
+                blocks.push(NativeCapturedBlock {
+                    wire_index: *self.native_coordinates.get(ordinal)?,
+                    arrival_ordinal: ordinal as u64,
+                    raw: String::from_utf8(bytes).ok()?,
+                    partial_json: None,
+                    state: NativeBlockState::ClosedFaithful,
+                });
+                view_roles.push(role.map(|(item, role)| (item, role.into())));
+            }
+        } else {
+            stream_complete = false;
+            for (ordinal, (wire_index, block)) in
+                std::mem::take(&mut self.blocks).into_iter().enumerate()
+            {
+                let faithful = block.closed
+                    && serde_json::to_value(&block.typed).ok().as_ref() == Some(&block.raw);
+                let bytes = encode_native(&block.raw, NATIVE_BLOCK_BYTES).ok()?;
+                blocks.push(NativeCapturedBlock {
+                    wire_index,
+                    arrival_ordinal: ordinal as u64,
+                    raw: String::from_utf8(bytes).ok()?,
+                    partial_json: (!block.raw_json.is_empty()).then_some(block.raw_json),
+                    state: if faithful {
+                        NativeBlockState::ClosedFaithful
+                    } else {
+                        NativeBlockState::Unavailable(
+                            if self.failure == Some(CaptureError::LimitExceeded) {
+                                NativeUnavailable::Capacity
+                            } else {
+                                NativeUnavailable::Incomplete
+                            },
+                        )
+                    },
+                });
+            }
+        }
+        Some(NativeAttemptEvidence {
+            attempt,
+            admitted: self.native_admitted,
+            response_started: self.native_started,
+            provider_response_id: self.native_id.take(),
+            source_stop_reason: self.native_stop.take(),
+            stream_complete,
+            status,
+            blocks,
+            usage: std::mem::take(&mut self.native_usage),
+            latency_ms: Some(latency_ms),
+            http_dispatches: u64::from(dispatched),
+            observed_bytes: self.retained_wire_bytes,
+            failed_block: self.failure.and(self.native_failure_block),
+            view_roles,
+            view_digests,
+        })
+    }
+
     pub(crate) fn observe(&mut self, frame: &MessagesStreamFrame) -> Result<(), CaptureError> {
         self.retained_wire_bytes = self
             .retained_wire_bytes
-            .saturating_add(frame.wire_bytes as u64);
+            .checked_add(frame.wire_bytes as u64)
+            .unwrap_or(u64::MAX);
+        self.observe_native_metadata(frame)?;
+        if self.is_passive()
+            && let Some(error) = self.failure
+            && error != CaptureError::LimitExceeded
+        {
+            return Err(error);
+        }
+        if self.passive_exhausted() {
+            return Err(CaptureError::LimitExceeded);
+        }
         if self.retained_wire_bytes > MAX_ENCODED_MESSAGES_REQUEST_BYTES {
             return Err(CaptureError::LimitExceeded);
         }
@@ -260,6 +1077,25 @@ impl AttemptCapture {
                 {
                     return Err(CaptureError::InvalidInput);
                 }
+                if self.is_passive() {
+                    use xai_grok_sampling_types::conversation::native_search_history::*;
+                    if self.blocks.len() as u64 >= NATIVE_RESPONSE_BLOCKS {
+                        return Err(CaptureError::LimitExceeded);
+                    }
+                    let bytes = native_encoded_len(raw_block, NATIVE_BLOCK_BYTES)
+                        .map_err(|_| CaptureError::LimitExceeded)?;
+                    let sizes = NativeCaptureSizes {
+                        stored: bytes,
+                        envelope: native_encoded_json_string_len(raw_block, NATIVE_RESPONSE_BYTES)
+                            .map_err(|_| CaptureError::LimitExceeded)?
+                            + 4,
+                    };
+                    self.reserve_native_response(
+                        Some((*index, sizes)),
+                        self.native_metadata_sizes()?,
+                    )?;
+                    self.native_reserve(bytes.checked_mul(2).ok_or(CaptureError::LimitExceeded)?)?;
+                }
                 self.blocks.insert(
                     *index,
                     CapturedBlock {
@@ -281,23 +1117,51 @@ impl AttemptCapture {
                 if raw_delta != &serialized {
                     return Err(CaptureError::UnfaithfulDelta);
                 }
-                let block = self
-                    .blocks
-                    .get_mut(index)
-                    .filter(|block| !block.closed)
-                    .ok_or(CaptureError::InvalidStream)?;
-                block.apply_delta(delta, raw_delta)?;
-            }
-            MessageStreamEvent::ContentBlockStop { index } => {
-                if self.phase != CapturePhase::Content {
-                    return Err(CaptureError::InvalidStream);
+                if self.is_passive() {
+                    self.native_failure_block = Some(*index);
+                    let block = self.blocks.get(index).ok_or(CaptureError::InvalidStream)?;
+                    let sizes = block
+                        .native_retained_sizes()?
+                        .add(block.native_delta_sizes(delta)?)?;
+                    self.reserve_native_response(
+                        Some((*index, sizes)),
+                        self.native_metadata_sizes()?,
+                    )?;
                 }
                 let block = self
                     .blocks
                     .get_mut(index)
                     .filter(|block| !block.closed)
                     .ok_or(CaptureError::InvalidStream)?;
-                block.close()?;
+                block.apply_delta(delta, raw_delta, self.native.as_ref())?;
+            }
+            MessageStreamEvent::ContentBlockStop { index } => {
+                if self.phase != CapturePhase::Content {
+                    return Err(CaptureError::InvalidStream);
+                }
+                if self.is_passive() {
+                    self.native_failure_block = Some(*index);
+                    let sizes = self
+                        .blocks
+                        .get(index)
+                        .ok_or(CaptureError::InvalidStream)?
+                        .native_closed_sizes()?;
+                    self.reserve_native_response(
+                        Some((*index, sizes)),
+                        self.native_metadata_sizes()?,
+                    )?;
+                }
+                let block = self
+                    .blocks
+                    .get_mut(index)
+                    .filter(|block| !block.closed)
+                    .ok_or(CaptureError::InvalidStream)?;
+                block.close(self.native.as_ref())?;
+                if matches!(&block.typed, ContentBlock::Thinking { thinking, signature }
+                    if !thinking.is_empty() || !signature.is_empty())
+                {
+                    self.native_reasoning = Some(*index);
+                }
             }
             MessageStreamEvent::MessageDelta { delta, .. } => {
                 if self.phase != CapturePhase::Content
@@ -328,6 +1192,7 @@ impl AttemptCapture {
                 Some("content_block_delta") => return Err(CaptureError::UnfaithfulDelta),
                 _ => return Err(CaptureError::UnknownEvent),
             },
+            MessageStreamEvent::Error { .. } if self.is_passive() => {}
             MessageStreamEvent::Error { .. } => return Err(CaptureError::IncompleteStream),
         }
         Ok(())
@@ -346,8 +1211,7 @@ impl AttemptCapture {
             return Err(CaptureError::IncompleteStream);
         }
         let paused = response.raw_stop_reason.as_deref() == Some("pause_turn");
-        let mut content = Vec::with_capacity(self.blocks.len());
-        for (_, block) in std::mem::take(&mut self.blocks) {
+        for block in self.blocks.values() {
             let serialized =
                 serde_json::to_value(&block.typed).map_err(|_| CaptureError::CompletedMismatch)?;
             // Completed blocks have no decoder-default equivalence exceptions.
@@ -357,9 +1221,14 @@ impl AttemptCapture {
             if paused && matches!(block.typed, ContentBlock::ToolUse { .. }) {
                 return Err(CaptureError::WaitingClientTool);
             }
-            content.push(block.raw);
         }
-        Ok(content)
+        if self.is_passive() {
+            self.native_coordinates = self.blocks.keys().copied().collect();
+        }
+        Ok(std::mem::take(&mut self.blocks)
+            .into_values()
+            .map(|block| block.raw)
+            .collect())
     }
 }
 

@@ -95,6 +95,7 @@ impl ChatStateActor {
 
     /// Main actor loop — processes commands until shutdown or cancellation.
     async fn run(mut self) {
+        self.bootstrap_native_history().await;
         loop {
             tokio::select! {
                 biased;
@@ -173,6 +174,50 @@ impl ChatStateActor {
                 if let Some(authoritative) = authoritative {
                     self.converge_working_directory_switch(generation, authoritative.clone());
                 }
+                let _ = reply.send(result);
+            }
+            ChatStateCommand::BeginNativeCapture {
+                lineage,
+                request,
+                turn,
+                reply,
+            } => {
+                let result = self
+                    .begin_native_capture(lineage, request, turn)
+                    .map(|lease| crate::persistence::native::NativeCaptureReply {
+                        lease: Some(lease),
+                    });
+                if let Err(Ok(mut abandoned)) = reply.send(result)
+                    && let Some(lease) = abandoned.lease.take()
+                {
+                    lease.finish();
+                    self.state.native.leases.remove(&lease.ordinal());
+                }
+            }
+            ChatStateCommand::AppendNativeEvidence {
+                request,
+                lease,
+                event,
+                reply,
+            } => {
+                let result = self.append_native_evidence(request, lease, event).await;
+                let _ = reply.send(result);
+            }
+            ChatStateCommand::ReadNativeHistory { reply } => {
+                let result = if let Some(reason) = self.state.native.unavailable {
+                    Err(reason)
+                } else if let Some(checkpoint) = &self.state.native.checkpoint
+                    && let Err(reason) = checkpoint.matches_history(&self.state.conversation)
+                {
+                    Err(reason)
+                } else if let Some(lineage) = &self.state.native.lineage {
+                    Ok(crate::persistence::native::NativeRead {
+                        lineage: lineage.clone(),
+                        checkpoint: self.state.native.checkpoint.clone(),
+                    })
+                } else {
+                    Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence)
+                };
                 let _ = reply.send(result);
             }
             ChatStateCommand::PushUserMessageWithRepairReason { item, reason } => {

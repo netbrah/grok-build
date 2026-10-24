@@ -7679,3 +7679,1602 @@ async fn bound_build_keeps_legacy_builtin_admission_and_single_builder() {
         }
     }
 }
+
+#[tokio::test]
+async fn persisted_versioned_native_record() {
+    let mut h = TestHarness::new();
+    let raw = serde_json::json!({
+        "type":"server_tool_use","id":"srvtoolu_actor_native","name":"tool_search_tool_regex",
+        "input":{"query":"account"}
+    });
+    let item = xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(raw).unwrap();
+    let output = ConversationItem::Discovery { item };
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let lease = h
+        .handle
+        .begin_native_capture("mock".into(), "actor-request".into(), 1)
+        .await
+        .unwrap();
+    let captured = NativeAttemptEvidence {
+        attempt: 1, admitted: true, response_started: true,
+        provider_response_id: Some(serde_json::json!("msg_actor_native")), source_stop_reason: Some("end_turn".into()),
+        stream_complete: true, status: NativeResponseStatus::Accepted,
+        blocks: vec![NativeCapturedBlock {
+            wire_index: 0, arrival_ordinal: 0, raw: serde_json::json!({
+                "type":"server_tool_use","id":"srvtoolu_actor_native","name":"tool_search_tool_regex","input":{"query":"account"}
+            }).to_string(), partial_json: None, state: NativeBlockState::ClosedFaithful,
+        }],
+        usage: std::collections::BTreeMap::from([("input_tokens".into(), serde_json::json!(10)), ("output_tokens".into(), serde_json::json!(0))]),
+        latency_ms: Some(1), http_dispatches: 1, observed_bytes: 100, failed_block: None,
+        view_roles: vec![Some((0, "Discovery".into()))],
+        view_digests: vec![crate::persistence::native::history_boundary(std::slice::from_ref(&output)).unwrap().digest],
+    };
+    h.handle
+        .append_native_evidence(
+            "actor-request".into(),
+            lease,
+            NativeEvidenceEvent::Attempt(std::sync::Arc::new(captured)),
+        )
+        .await
+        .unwrap();
+    h.handle.push_model_output(output);
+    h.handle.get_conversation().await;
+    let records: Vec<serde_json::Value> = h
+        .drain_persistence()
+        .into_iter()
+        .filter_map(|record| match record {
+            PersistenceRecord::Message(item) => Some(serde_json::to_value(item).unwrap()),
+            PersistenceRecord::NativeGeneration(checkpoint) => {
+                Some(serde_json::from_slice(&checkpoint.bytes).unwrap())
+            }
+            _ => None,
+        })
+        .collect();
+    let native = records
+        .iter()
+        .find(|record| record.get("schema_version").is_some());
+    assert!(
+        native.is_some(),
+        "W00: serialized actor commit must retain the versioned native record"
+    );
+    assert_eq!(native.unwrap()["schema_version"], 1);
+    let stored = h
+        .handle
+        .read_native_history()
+        .await
+        .unwrap()
+        .checkpoint
+        .unwrap();
+    assert_eq!(stored.source.responses.len(), 1);
+    assert_eq!(
+        stored.source.producing_bindings[0].origin["status"],
+        "Unknown"
+    );
+    assert!(stored.source.producing_bindings[0].generation.is_none());
+    assert_eq!(stored.ledger.usage.len(), 1);
+    assert_eq!(stored.ledger.usage[0].observed["output_tokens"], 0);
+}
+
+fn u2_native_attempt(
+    attempt: u64,
+    payload: String,
+) -> xai_grok_sampling_types::conversation::native_search_history::NativeAttemptEvidence {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let raw = serde_json::json!({"type":"server_tool_use","id":format!("srv_u2_{attempt}"),"name":"tool_search_tool_regex","input":{"query":payload}});
+    let output = ConversationItem::Discovery {
+        item: xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(raw.clone()).unwrap(),
+    };
+    NativeAttemptEvidence {
+        attempt,
+        admitted: true,
+        response_started: true,
+        provider_response_id: Some(serde_json::json!("msg_u2")),
+        source_stop_reason: Some("end_turn".into()),
+        stream_complete: true,
+        status: NativeResponseStatus::Accepted,
+        blocks: vec![NativeCapturedBlock {
+            wire_index: 0,
+            arrival_ordinal: 0,
+            raw: raw.to_string(),
+            partial_json: None,
+            state: NativeBlockState::ClosedFaithful,
+        }],
+        usage: std::collections::BTreeMap::from([("input_tokens".into(), serde_json::json!(1))]),
+        latency_ms: Some(1),
+        http_dispatches: 1,
+        observed_bytes: 200,
+        failed_block: None,
+        view_roles: vec![Some((0, "Discovery".into()))],
+        view_digests: vec![
+            crate::persistence::native::history_boundary(std::slice::from_ref(&output))
+                .unwrap()
+                .digest,
+        ],
+    }
+}
+
+fn u2_native_output(
+    evidence: &xai_grok_sampling_types::conversation::native_search_history::NativeAttemptEvidence,
+) -> ConversationItem {
+    ConversationItem::Discovery {
+        item: xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(
+            serde_json::from_str(&evidence.blocks[0].raw).unwrap(),
+        )
+        .unwrap(),
+    }
+}
+
+struct U2ControlledPersistence {
+    native: mpsc::UnboundedSender<(
+        crate::persistence::native::NativeWrite,
+        tokio::sync::oneshot::Sender<
+            Result<
+                crate::persistence::native::NativeAppendAck,
+                xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+            >,
+        >,
+    )>,
+}
+
+impl crate::ChatPersistence for U2ControlledPersistence {
+    fn persist_message(&mut self, _: &ConversationItem) {}
+    fn persist_working_directory_switch_and_ack(
+        &mut self,
+        _: &ConversationItem,
+    ) -> tokio::sync::oneshot::Receiver<Result<crate::StrictAppendAck, crate::StrictAppendError>>
+    {
+        let (_, rx) = tokio::sync::oneshot::channel();
+        rx
+    }
+    fn replace_history(&mut self, _: &[ConversationItem]) {}
+    fn replace_history_for_strip_and_ack(
+        &mut self,
+        _: &[ConversationItem],
+    ) -> tokio::sync::oneshot::Receiver<std::io::Result<()>> {
+        let (_, rx) = tokio::sync::oneshot::channel();
+        rx
+    }
+    fn flush(&mut self) {}
+    fn read_native_history(
+        &mut self,
+    ) -> tokio::sync::oneshot::Receiver<
+        Result<
+            crate::persistence::native::NativeRead,
+            xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+        >,
+    > {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tx.send(Ok(crate::persistence::native::NativeRead {
+            lineage: "mock".into(),
+            checkpoint: None,
+        }))
+        .unwrap();
+        rx
+    }
+    fn persist_native_generation_and_ack(
+        &mut self,
+        write: crate::persistence::native::NativeWrite,
+    ) -> tokio::sync::oneshot::Receiver<
+        Result<
+            crate::persistence::native::NativeAppendAck,
+            xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+        >,
+    > {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.native.send((write, tx)).unwrap();
+        rx
+    }
+}
+
+#[tokio::test]
+async fn native_history_compound_ack_is_atomic() {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let (native, mut writes) = mpsc::unbounded_channel();
+    let (events, _) = mpsc::unbounded_channel();
+    let stop = tokio_util::sync::CancellationToken::new();
+    let handle = ChatStateActor::spawn(
+        Vec::new(),
+        test_config(),
+        Box::new(U2ControlledPersistence { native }),
+        events,
+        stop.clone(),
+    );
+    let lease = handle
+        .begin_native_capture("mock".into(), "u2-atomic".into(), 1)
+        .await
+        .unwrap();
+    let send = handle.clone();
+    let capability = lease.clone();
+    let first = tokio::spawn(async move {
+        send.append_native_evidence(
+            "u2-atomic".into(),
+            capability,
+            NativeEvidenceEvent::Attempt(std::sync::Arc::new(u2_native_attempt(1, "first".into()))),
+        )
+        .await
+    });
+    let (write, reply) = writes.recv().await.unwrap();
+    assert!(
+        write
+            .checkpoint
+            .record
+            .capacity
+            .get("reserved_staging_bytes")
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "U2: the compound candidate must carry its pre-write role reservation"
+    );
+    assert!(
+        !first.is_finished(),
+        "actor publication waits for the persistence acknowledgement"
+    );
+    reply
+        .send(Ok(crate::persistence::native::NativeAppendAck::Applied {
+            generation: write.checkpoint.record.generation,
+            digest: crate::persistence::native::digest(&write.checkpoint.bytes),
+        }))
+        .unwrap();
+    first.await.unwrap().unwrap();
+    handle.push_model_output(u2_native_output(&u2_native_attempt(1, "first".into())));
+    let before = handle
+        .read_native_history()
+        .await
+        .unwrap()
+        .checkpoint
+        .unwrap();
+    let mut usage_only = u2_native_attempt(2, String::new());
+    usage_only.blocks.clear();
+    usage_only.view_roles.clear();
+    usage_only.response_started = false;
+    usage_only.provider_response_id = None;
+    usage_only.status = NativeResponseStatus::PartialTerminal(NativeUnavailable::Failed);
+    let send = handle.clone();
+    let second = tokio::spawn(async move {
+        send.append_native_evidence(
+            "u2-atomic".into(),
+            lease,
+            NativeEvidenceEvent::Attempt(std::sync::Arc::new(usage_only)),
+        )
+        .await
+    });
+    let (write, reply) = writes.recv().await.unwrap();
+    assert_eq!(write.previous_generation, before.record.generation);
+    assert_eq!(
+        write.checkpoint.source.responses.len(),
+        before.source.responses.len()
+    );
+    assert_eq!(write.checkpoint.ledger.usage.len(), 2);
+    assert!(
+        !second.is_finished(),
+        "metadata/usage-only changes also require a real acknowledgement"
+    );
+    drop(reply);
+    assert_eq!(second.await.unwrap(), Err(NativeUnavailable::Indeterminate));
+    assert!(handle.read_native_history().await.is_err());
+    stop.cancel();
+}
+
+#[tokio::test]
+async fn native_history_retention_and_reader_limits() {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let h = TestHarness::new();
+    let mut refused = false;
+    for ordinal in 1..=NATIVE_SOURCE_RESPONSES {
+        let request = format!("u2-source-{ordinal}");
+        let lease = match h
+            .handle
+            .begin_native_capture("mock".into(), request.clone(), ordinal)
+            .await
+        {
+            Ok(lease) => lease,
+            Err(NativeUnavailable::Capacity) => {
+                refused = true;
+                break;
+            }
+            Err(reason) => panic!("unexpected admission refusal: {reason:?}"),
+        };
+        let available = lease
+            .ceiling()
+            .unwrap()
+            .checked_sub(lease.charged().unwrap())
+            .unwrap();
+        let payload = 490_000usize.min((available / 4).saturating_sub(4096) as usize);
+        let attempt = u2_native_attempt(1, format!("{ordinal}:{}", "x".repeat(payload)));
+        let encoded = native_encoded_len(&attempt, NATIVE_RESPONSE_BYTES).unwrap();
+        lease.reserve_generation().unwrap();
+        lease
+            .reserve(encoded)
+            .expect("the witness evidence is inside the issued lease");
+        let output = u2_native_output(&attempt);
+        let result = h
+            .handle
+            .append_native_evidence(
+                request.clone(),
+                lease.clone(),
+                NativeEvidenceEvent::Attempt(std::sync::Arc::new(attempt)),
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "R21: an issued lease must retain its admitted evidence; append returned {result:?}; ordinal={ordinal}, ceiling={:?}, charged={:?}",
+            lease.ceiling(),
+            lease.charged()
+        );
+        h.handle.push_model_output(output);
+        let stored = h
+            .handle
+            .read_native_history()
+            .await
+            .unwrap()
+            .checkpoint
+            .unwrap();
+        assert!(
+            stored.record.capacity["source_bytes"] <= NATIVE_SOURCE_BYTES,
+            "U2: reserve retained source bytes before admitting an occurrence"
+        );
+        assert_eq!(
+            stored.source.responses.len() as u64,
+            ordinal,
+            "U2: every admitted occurrence is retained without silent truncation"
+        );
+        h.handle
+            .append_native_evidence(request, lease, NativeEvidenceEvent::End)
+            .await
+            .unwrap();
+    }
+    assert!(
+        refused,
+        "U2: retained raw payload and source metadata must stop at the real source byte ceiling"
+    );
+    u2_nonqueue_capacity_matrix();
+    u2_reader_count_boundaries();
+    u2_reader_metadata_and_snapshots();
+    u2_group_exchange_and_terminal_reservations();
+    let h = TestHarness::new();
+    let first = h
+        .handle
+        .begin_native_capture("mock".into(), "u2-owner-a".into(), 1)
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            h.handle
+                .begin_native_capture("mock".into(), "u2-owner-b".into(), 2)
+                .await,
+            Err(NativeUnavailable::Capacity)
+        ),
+        "U2: concurrent leases cannot overbook the same allowance"
+    );
+    h.handle
+        .append_native_evidence("u2-owner-a".into(), first, NativeEvidenceEvent::End)
+        .await
+        .unwrap();
+    assert!(
+        h.handle
+            .begin_native_capture("mock".into(), "u2-owner-b".into(), 2)
+            .await
+            .is_ok(),
+        "U2: the end control releases its finite allowance once"
+    );
+}
+
+fn u2_nonqueue_capacity_matrix() {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let resources = [
+        NativeResource::BlockBytes,
+        NativeResource::ResponseBytes,
+        NativeResource::ResponseBlocks,
+        NativeResource::GroupBytes,
+        NativeResource::GroupMembers,
+        NativeResource::ExchangeBytes,
+        NativeResource::SnapshotPayloadBytes,
+        NativeResource::SnapshotBytes,
+        NativeResource::SourceBytes,
+        NativeResource::SourceResponses,
+        NativeResource::SourceBlocks,
+        NativeResource::SourceGroups,
+        NativeResource::ActiveBytes,
+        NativeResource::LedgerBytes,
+        NativeResource::LedgerMembers,
+        NativeResource::LedgerGroups,
+        NativeResource::CurrentBytes,
+        NativeResource::StagingBytes,
+        NativeResource::BackupBytes,
+        NativeResource::ControlBytes,
+        NativeResource::LineageBytes,
+    ];
+    let ceilings = [
+        NATIVE_BLOCK_BYTES,
+        NATIVE_RESPONSE_BYTES,
+        NATIVE_RESPONSE_BLOCKS,
+        NATIVE_GROUP_BYTES,
+        NATIVE_GROUP_MEMBERS,
+        NATIVE_EXCHANGE_BYTES,
+        NATIVE_SNAPSHOT_PAYLOAD_BYTES,
+        NATIVE_SNAPSHOT_BYTES,
+        NATIVE_SOURCE_BYTES,
+        NATIVE_SOURCE_RESPONSES,
+        NATIVE_SOURCE_BLOCKS,
+        NATIVE_SOURCE_GROUPS,
+        NATIVE_ACTIVE_BYTES,
+        NATIVE_LEDGER_BYTES,
+        NATIVE_LEDGER_MEMBERS,
+        NATIVE_LEDGER_GROUPS,
+        NATIVE_ROLE_BYTES,
+        NATIVE_ROLE_BYTES,
+        NATIVE_ROLE_BYTES,
+        NATIVE_CONTROL_BYTES,
+        NATIVE_LINEAGE_BYTES,
+    ];
+    for (resource, limit) in resources.into_iter().zip(ceilings) {
+        assert_eq!(
+            resource.admit(limit, 0),
+            Ok(limit),
+            "U2: {resource:?} is inclusive"
+        );
+        assert_eq!(
+            resource.admit(limit - 1, 1),
+            Ok(limit),
+            "U2: {resource:?} reserves the final unit"
+        );
+        assert_eq!(
+            resource.admit(limit, 1),
+            Err(NativeUnavailable::Capacity),
+            "U2: {resource:?} refuses before growth"
+        );
+        assert_eq!(
+            resource.admit(u64::MAX, 1),
+            Err(NativeUnavailable::Capacity),
+            "U2: checked {resource:?} overflow"
+        );
+    }
+    let mut encoded_limits = std::collections::BTreeSet::new();
+    for resource in [
+        NativeResource::BlockBytes,
+        NativeResource::ResponseBytes,
+        NativeResource::GroupBytes,
+        NativeResource::ExchangeBytes,
+        NativeResource::SnapshotPayloadBytes,
+        NativeResource::SnapshotBytes,
+        NativeResource::SourceBytes,
+        NativeResource::ActiveBytes,
+        NativeResource::LedgerBytes,
+        NativeResource::CurrentBytes,
+        NativeResource::ControlBytes,
+        NativeResource::LineageBytes,
+    ] {
+        let limit = resource.ceiling();
+        if !encoded_limits.insert(limit) {
+            continue;
+        }
+        let mut text = "\u{1}".repeat(((limit - 2) / 6) as usize);
+        text.push_str(&"x".repeat(((limit - 2) % 6) as usize));
+        let measured = native_encoded_len(&text, limit).unwrap();
+        assert_eq!(
+            measured, limit,
+            "U2: compact UTF-8 escaping is charged at {resource:?}"
+        );
+        assert_eq!(resource.admit(measured, 0), Ok(limit));
+        text.push('x');
+        assert_eq!(
+            native_encoded_len(&text, limit),
+            Err(NativeUnavailable::Capacity),
+            "U2: serialization refuses the first excess byte"
+        );
+    }
+    let full = NativeRoleReservation {
+        snapshot_bytes: NATIVE_SNAPSHOT_BYTES,
+        source_bytes: NATIVE_SOURCE_BYTES,
+        active_bytes: NATIVE_ACTIVE_BYTES,
+        ledger_bytes: NATIVE_LEDGER_BYTES,
+    };
+    let reservation = NativeGenerationReservation {
+        current: full.clone(),
+        staging: full.clone(),
+        backup: full,
+        control_bytes: NATIVE_CONTROL_BYTES,
+    };
+    assert_eq!(
+        reservation.validate(),
+        Ok(NATIVE_LINEAGE_BYTES),
+        "U2: three complete roles and shared control fit together"
+    );
+    for role in 0..3 {
+        for partition in 0..4 {
+            let mut over = reservation.clone();
+            let target = match role {
+                0 => &mut over.current,
+                1 => &mut over.staging,
+                _ => &mut over.backup,
+            };
+            match partition {
+                0 => target.snapshot_bytes += 1,
+                1 => target.source_bytes += 1,
+                2 => target.active_bytes += 1,
+                _ => target.ledger_bytes += 1,
+            }
+            assert_eq!(
+                over.validate(),
+                Err(NativeUnavailable::Capacity),
+                "U2: role {role} partition {partition} cannot borrow another envelope"
+            );
+        }
+    }
+    let mut control = reservation;
+    control.control_bytes += 1;
+    assert_eq!(control.validate(), Err(NativeUnavailable::Capacity));
+}
+
+fn u2_partial_blocks(
+    attempt: u64,
+    blocks: usize,
+    all_native: bool,
+) -> xai_grok_sampling_types::conversation::native_search_history::NativeAttemptEvidence {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let mut evidence = u2_native_attempt(attempt, String::new());
+    evidence.status = NativeResponseStatus::PartialTerminal(NativeUnavailable::Failed);
+    evidence.stream_complete = false;
+    evidence.view_roles.clear();
+    evidence.blocks = (0..blocks).map(|index| NativeCapturedBlock {
+        wire_index: index as u32, arrival_ordinal: index as u64,
+        raw: if all_native || index == 0 { serde_json::json!({"type":"server_tool_use","id":format!("srv_count_{attempt}_{index}"),
+            "name":"tool_search_tool_regex","input":{}}).to_string() }
+            else { serde_json::json!({"type":"text","text":"x"}).to_string() },
+        partial_json: None, state: NativeBlockState::ClosedFaithful,
+    }).collect();
+    evidence
+}
+
+fn u2_reader_count_boundaries() {
+    use crate::persistence::native::NativeCheckpoint;
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let lease =
+        NativeCaptureLease::issue("mock".into(), "u2-counts".into(), 1, 1, NATIVE_SOURCE_BYTES);
+    let build = |attempts: Vec<NativeAttemptEvidence>| {
+        NativeCheckpoint::append(
+            None,
+            &lease,
+            &attempts
+                .into_iter()
+                .map(std::sync::Arc::new)
+                .collect::<Vec<_>>(),
+            &[],
+        )
+    };
+    let one = build(vec![u2_partial_blocks(
+        1,
+        NATIVE_RESPONSE_BLOCKS as usize,
+        false,
+    )])
+    .unwrap();
+    assert_eq!(
+        one.source.ordered_blocks.len() as u64,
+        NATIVE_RESPONSE_BLOCKS
+    );
+    assert!(matches!(
+        build(vec![u2_partial_blocks(
+            1,
+            NATIVE_RESPONSE_BLOCKS as usize + 1,
+            false
+        )]),
+        Err(NativeUnavailable::Capacity)
+    ));
+    let responses: Vec<_> = (1..=NATIVE_SOURCE_RESPONSES)
+        .map(|ordinal| u2_partial_blocks(ordinal, 0, false))
+        .collect();
+    let fit = build(responses.clone()).unwrap();
+    assert_eq!(
+        fit.source.responses.len() as u64,
+        NATIVE_SOURCE_RESPONSES,
+        "U2: partial zero-block responses consume real slots"
+    );
+    let mut over = responses;
+    over.push(u2_partial_blocks(NATIVE_SOURCE_RESPONSES + 1, 0, false));
+    assert!(matches!(build(over), Err(NativeUnavailable::Capacity)));
+    let blocks: Vec<_> = (1..=NATIVE_SOURCE_BLOCKS / NATIVE_RESPONSE_BLOCKS)
+        .map(|ordinal| u2_partial_blocks(ordinal, NATIVE_RESPONSE_BLOCKS as usize, false))
+        .collect();
+    let fit = build(blocks.clone()).unwrap();
+    assert_eq!(
+        fit.source.ordered_blocks.len() as u64,
+        NATIVE_SOURCE_BLOCKS,
+        "U2: repeated text still consumes source occurrences"
+    );
+    let mut over = blocks;
+    over.push(u2_partial_blocks(65, 1, false));
+    assert!(matches!(build(over), Err(NativeUnavailable::Capacity)));
+    let groups: Vec<_> = (1..=NATIVE_SOURCE_GROUPS / NATIVE_RESPONSE_BLOCKS)
+        .map(|ordinal| u2_partial_blocks(ordinal, NATIVE_RESPONSE_BLOCKS as usize, true))
+        .collect();
+    let fit = build(groups.clone()).unwrap();
+    assert_eq!(fit.ledger.groups.len() as u64, NATIVE_SOURCE_GROUPS);
+    assert_eq!(fit.record.capacity["ledger_groups"], NATIVE_LEDGER_GROUPS);
+    let mut over = groups;
+    over.push(u2_partial_blocks(17, 1, true));
+    assert!(matches!(build(over), Err(NativeUnavailable::Capacity)));
+}
+
+fn u2_reseal_reader_fixture(
+    mut checkpoint: crate::persistence::native::NativeCheckpoint,
+) -> Result<
+    crate::persistence::native::NativeCheckpoint,
+    xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+> {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    // This is a fresh standalone fixture, not a rewrite of any persisted generation.
+    checkpoint.blobs.retain(|key, _| {
+        !matches!(
+            checkpoint.blob_kinds[key].as_str(),
+            "source" | "active" | "ledger" | "checkpoint"
+        )
+    });
+    checkpoint
+        .blob_kinds
+        .retain(|key, _| checkpoint.blobs.contains_key(key));
+    fn put<T: serde::Serialize>(
+        checkpoint: &mut crate::persistence::native::NativeCheckpoint,
+        kind: &str,
+        payload: &T,
+    ) -> NativeBlobRef {
+        let bytes = serde_json::to_vec(payload).unwrap();
+        let digest = crate::persistence::native::digest(&bytes);
+        checkpoint
+            .blobs
+            .insert(digest.clone(), bytes.clone().into());
+        checkpoint.blob_kinds.insert(digest.clone(), kind.into());
+        NativeBlobRef {
+            kind: kind.into(),
+            byte_len: bytes.len() as u64,
+            digest,
+        }
+    }
+    checkpoint.record.previous_checkpoint = None;
+    checkpoint.source.source_revision = 1;
+    checkpoint.source.older_sources.clear();
+    checkpoint.record.lineage.source_revision = 1;
+    checkpoint.record.generation = 1;
+    checkpoint.record.high_water = 1;
+    let source = checkpoint.source.clone();
+    checkpoint.record.source = put(&mut checkpoint, "source", &source);
+    checkpoint.record.lineage.source_digest = checkpoint.record.source.digest.clone();
+    for link in &mut checkpoint.ledger.accounting {
+        link.source_digest = checkpoint.record.source.digest.clone();
+    }
+    for link in &mut checkpoint.active.view_links {
+        link.source_digest = checkpoint.record.source.digest.clone();
+    }
+    let active = checkpoint.active.clone();
+    checkpoint.record.active = put(&mut checkpoint, "active", &active);
+    checkpoint.ledger.source_digest = checkpoint.record.source.digest.clone();
+    checkpoint.ledger.active_digest = checkpoint.record.active.digest.clone();
+    let ledger = checkpoint.ledger.clone();
+    checkpoint.record.ledger = put(&mut checkpoint, "ledger", &ledger);
+    checkpoint.seal_capacity()?;
+    Ok(checkpoint)
+}
+
+fn u2_reader_metadata_and_snapshots() {
+    use crate::persistence::native::NativeCheckpoint;
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let lease =
+        NativeCaptureLease::issue("mock".into(), "u2-reader".into(), 1, 1, NATIVE_SOURCE_BYTES);
+    let base = NativeCheckpoint::append(
+        None,
+        &lease,
+        &[std::sync::Arc::new(u2_partial_blocks(1, 1, true))],
+        &[],
+    )
+    .expect("U2: partial evidence preserves mandatory terminal state");
+    let decode = |checkpoint: &NativeCheckpoint| {
+        NativeCheckpoint::decode(checkpoint.bytes.to_vec(), |reference| {
+            checkpoint
+                .blobs
+                .get(&reference.digest)
+                .map(|bytes| bytes.to_vec())
+                .ok_or(NativeUnavailable::InvalidReference)
+        })
+    };
+    let loaded = decode(&base).expect("U2: compatible records remain independently readable");
+    assert_eq!(
+        loaded.source.producing_bindings[0].origin["status"], "Unknown",
+        "U2: legacy provenance must not be inferred"
+    );
+    for field in [
+        "schema_version",
+        "policy_revision",
+        "reader_floor",
+        "limits_revision",
+    ] {
+        let mut record: serde_json::Value = serde_json::from_slice(&base.bytes).unwrap();
+        record[field] = serde_json::json!(2);
+        let result = NativeCheckpoint::decode(serde_json::to_vec(&record).unwrap(), |reference| {
+            Ok(base.blobs[&reference.digest].to_vec())
+        });
+        assert!(
+            matches!(result, Err(NativeUnavailable::UnsupportedVersion)),
+            "U2: unsupported {field} must refuse"
+        );
+    }
+    let mut damaged = base.clone();
+    damaged
+        .blobs
+        .insert(damaged.record.ledger.digest.clone(), b"{}".to_vec().into());
+    assert!(
+        decode(&damaged).is_err(),
+        "U2: a missing or changed ledger is not an empty success"
+    );
+    let after = NativeCheckpoint::append(
+        Some(&base),
+        &lease,
+        &[std::sync::Arc::new(u2_partial_blocks(2, 1, true))],
+        &[],
+    )
+    .expect("U2: a later attempt preserves the first terminal tombstone");
+    let after =
+        decode(&after).expect("U2: terminal tombstones survive independent generation reload");
+    assert!(
+        base.ledger.lifecycle.terminal.contains_key("u2-reader:1"),
+        "U2: the first terminal tombstone is retained"
+    );
+    assert_eq!(
+        after.ledger.lifecycle.terminal.get("u2-reader:1"),
+        base.ledger.lifecycle.terminal.get("u2-reader:1"),
+        "U2: terminal tombstones survive later generations"
+    );
+    assert!(after.source.responses.starts_with(&base.source.responses));
+    assert_eq!(
+        after.source.responses.len(),
+        2,
+        "U2: identical provider IDs are distinct host occurrences"
+    );
+    let mut no_ledger = base.clone();
+    no_ledger.ledger.accounting.clear();
+    assert!(
+        decode(&u2_reseal_reader_fixture(no_ledger).unwrap()).is_err(),
+        "U2: ledger conservation cannot disappear"
+    );
+
+    let mut members = base.clone();
+    let occupied = members.ledger.accounting.len()
+        + members.ledger.usage.len()
+        + members.ledger.observations.len()
+        + members.ledger.lifecycle.waiting_clients.len()
+        + members.ledger.lifecycle.terminal.len();
+    members.ledger.transitions.resize(
+        NATIVE_LEDGER_MEMBERS as usize - occupied,
+        serde_json::Value::Null,
+    );
+    let fit = u2_reseal_reader_fixture(members.clone()).unwrap();
+    assert!(
+        decode(&fit).is_ok(),
+        "U2: all actual serialized ledger records fit at the member boundary"
+    );
+    members.ledger.transitions.push(serde_json::Value::Null);
+    assert!(
+        matches!(
+            u2_reseal_reader_fixture(members),
+            Err(NativeUnavailable::Capacity)
+        ),
+        "U2: extra accounting records cannot evade the member cap"
+    );
+
+    let mut group = NativeCheckpoint::append(
+        None,
+        &lease,
+        &[
+            std::sync::Arc::new(u2_partial_blocks(1, 128, true)),
+            std::sync::Arc::new(u2_partial_blocks(2, 128, true)),
+            std::sync::Arc::new(u2_partial_blocks(3, 1, true)),
+        ],
+        &[],
+    )
+    .unwrap();
+    let mut joined = group.ledger.groups[0].clone();
+    joined.validated_join = None;
+    joined.members = group.source.ordered_blocks[..256]
+        .iter()
+        .map(|block| block.coordinates.clone())
+        .collect();
+    group.ledger.groups = vec![joined.clone()];
+    group.ledger.lifecycle.groups =
+        std::collections::BTreeMap::from([(joined.key.clone(), joined.state.clone())]);
+    assert!(
+        decode(&u2_reseal_reader_fixture(group.clone()).unwrap()).is_ok(),
+        "U2: a group may span response boundaries at 256 members"
+    );
+    group.ledger.groups[0]
+        .members
+        .push(group.source.ordered_blocks[256].coordinates.clone());
+    assert!(
+        decode(&u2_reseal_reader_fixture(group).unwrap()).is_err(),
+        "U2: a group cannot split to evade its member cap"
+    );
+
+    let binding = base.source.producing_bindings[0].origin_ref.clone();
+    for tools in [
+        "",
+        ",\"tools\":null",
+        ",\"tools\":[]",
+        ",\"tools\":[{\"name\":\"x\"}]",
+    ] {
+        let body = format!("{{\"messages\":[]{tools}}}");
+        let snapshot = base
+            .with_snapshot(body.as_bytes(), binding.clone())
+            .unwrap();
+        let loaded = decode(&snapshot).unwrap();
+        let descriptor = loaded.record.exchange_snapshot.as_ref().unwrap();
+        let descriptor: NativeSnapshot =
+            serde_json::from_slice(&loaded.blobs[&descriptor.digest]).unwrap();
+        assert_eq!(
+            loaded.blobs[&descriptor.body.digest].as_ref(),
+            body.as_bytes(),
+            "U2: snapshot payload is the exact encoded body"
+        );
+        assert_eq!(
+            descriptor.tools.is_some(),
+            !tools.is_empty(),
+            "U2: tools absence differs from null and empty"
+        );
+        if let Some(tools) = &descriptor.tools {
+            let start = tools.offset as usize;
+            assert_eq!(
+                crate::persistence::native::digest(
+                    &body.as_bytes()[start..start + tools.byte_len as usize]
+                ),
+                tools.digest
+            );
+        }
+    }
+    let prefix = "{\"messages\":[],\"padding\":\"";
+    let suffix = "\"}";
+    let mut body = prefix.to_owned();
+    body.push_str(
+        &"x".repeat(NATIVE_SNAPSHOT_PAYLOAD_BYTES as usize - prefix.len() - suffix.len()),
+    );
+    body.push_str(suffix);
+    let snapshot = base
+        .with_snapshot(body.as_bytes(), binding.clone())
+        .unwrap();
+    assert!(
+        decode(&snapshot).is_ok(),
+        "U2: a maximum-N2 payload has descriptor headroom"
+    );
+    body.insert(body.len() - 2, 'x');
+    assert!(matches!(
+        base.with_snapshot(body.as_bytes(), binding.clone()),
+        Err(NativeUnavailable::Capacity)
+    ));
+    let other = serde_json::json!({"padding":"y".repeat(2 * 1024 * 1024)}).to_string();
+    assert!(
+        matches!(
+            snapshot.with_snapshot(other.as_bytes(), binding),
+            Err(NativeUnavailable::Capacity)
+        ),
+        "U2: retained snapshot copies cannot reset their physical envelope"
+    );
+}
+
+fn u2_group_exchange_and_terminal_reservations() {
+    use crate::persistence::native::NativeCheckpoint;
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let lease = NativeCaptureLease::issue(
+        "mock".into(),
+        "u2-payloads".into(),
+        1,
+        1,
+        NATIVE_SOURCE_BYTES,
+    );
+    let attempts = |count: usize, accepted: bool| -> Vec<std::sync::Arc<NativeAttemptEvidence>> {
+        (0..count)
+            .map(|index| {
+                let mut attempt = u2_native_attempt(index as u64 + 1, "x".repeat(390_000));
+                attempt.view_roles.clear();
+                attempt.source_stop_reason = Some("tool_use".into());
+                if !accepted {
+                    attempt.status =
+                        NativeResponseStatus::PartialTerminal(NativeUnavailable::Failed);
+                    attempt.stream_complete = false;
+                }
+                std::sync::Arc::new(attempt)
+            })
+            .collect()
+    };
+    let merged_group = |count| {
+        let mut checkpoint =
+            NativeCheckpoint::append(None, &lease, &attempts(count, false), &[]).unwrap();
+        let mut group = checkpoint.ledger.groups[0].clone();
+        group.validated_join = None;
+        group.members = checkpoint
+            .source
+            .ordered_blocks
+            .iter()
+            .map(|block| block.coordinates.clone())
+            .collect();
+        checkpoint.ledger.groups = vec![group.clone()];
+        checkpoint.ledger.lifecycle.groups =
+            std::collections::BTreeMap::from([(group.key.clone(), group.state.clone())]);
+        u2_reseal_reader_fixture(checkpoint).unwrap()
+    };
+    assert!(
+        merged_group(5).validate().is_ok(),
+        "U2: multi-response group bytes fit independently of response and block caps"
+    );
+    assert!(
+        matches!(merged_group(6).validate(), Err(NativeUnavailable::Capacity)),
+        "U2: group byte growth cannot evade the retained-group limit"
+    );
+    assert!(
+        NativeCheckpoint::append(None, &lease, &attempts(10, true), &[]).is_ok(),
+        "U2: accepted exchange counts all response content"
+    );
+    assert!(
+        matches!(
+            NativeCheckpoint::append(None, &lease, &attempts(11, true), &[]),
+            Err(NativeUnavailable::Capacity)
+        ),
+        "U2: exchange accepted bytes do not reset at a response boundary"
+    );
+    let pending = NativeCheckpoint::append(None, &lease, &attempts(3, true), &[]).unwrap();
+    let reservation = pending.reservation().unwrap();
+    assert!(
+        reservation.current.ledger_bytes > pending.record.capacity["ledger_bytes"],
+        "U2: every pending group and usage entry has encoded terminal capacity"
+    );
+    assert!(
+        reservation.current.active_bytes > pending.record.capacity["active_bytes"],
+        "U2: terminal invalidations also reserve the active partition"
+    );
+    assert_eq!(reservation.current, reservation.staging);
+    assert_eq!(reservation.staging, reservation.backup);
+    assert_eq!(pending.ledger.groups.len(), 3);
+}
+
+#[test]
+fn native_history_retained_identity_reservations() {
+    use crate::persistence::native::{NativeCheckpoint, digest};
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let lease = NativeCaptureLease::issue(
+        "mock".into(),
+        "u2-identity".into(),
+        1,
+        1,
+        NATIVE_SOURCE_BYTES,
+    );
+    let base = NativeCheckpoint::append(
+        None,
+        &lease,
+        &[std::sync::Arc::new(u2_partial_blocks(1, 1, true))],
+        &[],
+    )
+    .unwrap();
+    let with_identity = |description: &str| {
+        let mut checkpoint = base.clone();
+        let schema = serde_json::to_vec(&serde_json::json!({"type":"object","properties":{
+            "account":{"type":"string","description":description,"default":"exact default"}},"required":["account"]})).unwrap();
+        let schema_ref = NativeBlobRef {
+            kind: "eligible_schema".into(),
+            byte_len: schema.len() as u64,
+            digest: digest(&schema),
+        };
+        checkpoint
+            .blobs
+            .insert(schema_ref.digest.clone(), schema.into());
+        checkpoint
+            .blob_kinds
+            .insert(schema_ref.digest.clone(), schema_ref.kind.clone());
+        let identity = NativeEligibleSnapshot {
+            version: 1,
+            namespace_kind: NativeNamespaceKind::Mcp,
+            qualified_namespace: "mcp.accounts".into(),
+            child_name: "lookup".into(),
+            schema: schema_ref.clone(),
+            binding: checkpoint.source.producing_bindings[0].origin_ref.clone(),
+        };
+        let payload = serde_json::to_vec(&identity).unwrap();
+        let identity_ref = NativeBlobRef {
+            kind: "eligible_snapshot".into(),
+            byte_len: payload.len() as u64,
+            digest: digest(&payload),
+        };
+        checkpoint
+            .blobs
+            .insert(identity_ref.digest.clone(), payload.into());
+        checkpoint
+            .blob_kinds
+            .insert(identity_ref.digest.clone(), identity_ref.kind.clone());
+        checkpoint
+            .source
+            .eligible_snapshots
+            .push(identity_ref.clone());
+        checkpoint.source.ordered_blocks[0].eligible_ref = Some(identity_ref);
+        (checkpoint, identity, schema_ref)
+    };
+    let description = "é\n\"quoted\"\\schema".repeat(4096);
+    let (checkpoint, identity, schema_ref) = with_identity(&description);
+    let fixture = u2_reseal_reader_fixture(checkpoint).unwrap();
+    let loaded = NativeCheckpoint::decode(fixture.bytes.to_vec(), |reference| {
+        fixture
+            .blobs
+            .get(&reference.digest)
+            .map(|bytes| bytes.to_vec())
+            .ok_or(NativeUnavailable::InvalidReference)
+    })
+    .unwrap();
+    let retained = &loaded.source.eligible_snapshots[0];
+    assert_eq!(
+        serde_json::from_slice::<NativeEligibleSnapshot>(&loaded.blobs[&retained.digest]).unwrap(),
+        identity,
+        "U2: typed namespace, exact child name and the complete schema reference survive the real reader"
+    );
+    let schema: serde_json::Value =
+        serde_json::from_slice(&loaded.blobs[&schema_ref.digest]).unwrap();
+    assert_eq!(schema["properties"]["account"]["description"], description);
+    assert_eq!(schema["properties"]["account"]["default"], "exact default");
+    assert_eq!(
+        loaded.source.ordered_blocks[0].eligible_ref.as_ref(),
+        Some(retained)
+    );
+    assert!(
+        loaded.record.capacity["source_bytes"]
+            > base.record.capacity["source_bytes"] + schema_ref.byte_len,
+        "U2: identity descriptors, references, metadata and escaped schema bytes all consume source capacity"
+    );
+    let mut repeated = fixture.clone();
+    repeated.source.eligible_snapshots.push(retained.clone());
+    let repeated = u2_reseal_reader_fixture(repeated).unwrap();
+    assert!(repeated.record.capacity["source_bytes"] > fixture.record.capacity["source_bytes"]);
+    assert!(
+        repeated.record.capacity["source_bytes"] - fixture.record.capacity["source_bytes"]
+            < schema_ref.byte_len,
+        "U2: repeated identity references are charged without duplicating the shared immutable schema payload"
+    );
+    let (too_large, _, _) = with_identity(&"x".repeat(NATIVE_SOURCE_BYTES as usize));
+    assert!(
+        matches!(
+            u2_reseal_reader_fixture(too_large),
+            Err(NativeUnavailable::Capacity)
+        ),
+        "U2: retained eligible schemas cannot bypass the source envelope"
+    );
+    let mut missing = fixture.clone();
+    missing.blobs.remove(&schema_ref.digest);
+    assert!(
+        NativeCheckpoint::decode(missing.bytes.to_vec(), |reference| {
+            missing
+                .blobs
+                .get(&reference.digest)
+                .map(|bytes| bytes.to_vec())
+                .ok_or(NativeUnavailable::InvalidReference)
+        })
+        .is_err(),
+        "U2: a digest without its retained schema is unavailable, not backing"
+    );
+}
+
+#[derive(Clone, Copy)]
+enum NativeLeaseReplyLoss {
+    Cancelled,
+    TimedOut,
+    DeliveredThenCancelled,
+}
+
+async fn native_capture_reply_loss(loss: NativeLeaseReplyLoss) {
+    use std::future::Future;
+    use std::task::Poll;
+
+    let mut h = TestHarness::with_manual_persistence_ack(vec![]);
+    let blocked_handle = h.handle.clone();
+    let blocked = tokio::spawn(async move {
+        blocked_handle
+            .append_working_directory_switch_and_ack(
+                "queue barrier".into(),
+                NonZeroU64::new(1).unwrap(),
+            )
+            .await
+    });
+    let barrier = h.persistence_rx.next_persistence_ack().await.unwrap();
+    let mut begin = Box::pin(
+        h.handle
+            .begin_native_capture("mock".into(), "abandoned".into(), 1),
+    );
+    std::future::poll_fn(|cx| {
+        assert!(
+            begin.as_mut().poll(cx).is_pending(),
+            "the real actor is blocked before lease issuance"
+        );
+        Poll::Ready(())
+    })
+    .await;
+    match loss {
+        NativeLeaseReplyLoss::Cancelled => drop(begin),
+        NativeLeaseReplyLoss::TimedOut => {
+            assert!(tokio::time::timeout(Duration::ZERO, begin).await.is_err());
+        }
+        NativeLeaseReplyLoss::DeliveredThenCancelled => {
+            barrier.send(Ok(StrictAppendAck::Appended)).unwrap();
+            blocked.await.unwrap().unwrap();
+            h.handle.get_conversation_len().await;
+            drop(begin);
+            native_capture_after_reply_loss(&h).await;
+            return;
+        }
+    }
+    barrier.send(Ok(StrictAppendAck::Appended)).unwrap();
+    blocked.await.unwrap().unwrap();
+    h.handle.get_conversation_len().await;
+    native_capture_after_reply_loss(&h).await;
+}
+
+async fn native_capture_after_reply_loss(h: &TestHarness) {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let later = h
+        .handle
+        .begin_native_capture("mock".into(), "later".into(), 2)
+        .await;
+    assert!(
+        later.is_ok(),
+        "R10 F2: an abandoned reply must not reserve later capture capacity: {later:?}"
+    );
+    let later = later.unwrap();
+    let metadata = serde_json::json!({"lineage":"mock","request":"later","turn":2});
+    assert_eq!(later.ceiling().unwrap(), {
+        let fresh = TestHarness::with_manual_persistence_ack(vec![]);
+        fresh
+            .handle
+            .begin_native_capture("mock".into(), "later".into(), 2)
+            .await
+            .unwrap()
+            .ceiling()
+            .unwrap()
+    });
+    assert_eq!(
+        later.charged().unwrap(),
+        encode_native(&metadata, NATIVE_CONTROL_BYTES)
+            .unwrap()
+            .len() as u64
+    );
+    assert_eq!(
+        h.handle
+            .append_native_evidence("later".into(), later.clone(), NativeEvidenceEvent::End)
+            .await
+            .unwrap(),
+        crate::persistence::native::NativeAppendAck::Released
+    );
+    assert!(later.is_finished());
+    let same_request = h
+        .handle
+        .begin_native_capture("mock".into(), "abandoned".into(), 3)
+        .await;
+    assert!(
+        same_request.is_ok(),
+        "R10 F2: abandoned capability and control entry must both be reclaimed"
+    );
+    let same_request = same_request.unwrap();
+    h.handle
+        .append_native_evidence("abandoned".into(), same_request, NativeEvidenceEvent::End)
+        .await
+        .unwrap();
+    assert!(
+        h.handle
+            .read_native_history()
+            .await
+            .unwrap()
+            .checkpoint
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn native_history_cancelled_lease_reply_reclaims_reservation() {
+    native_capture_reply_loss(NativeLeaseReplyLoss::Cancelled).await;
+}
+
+#[tokio::test]
+async fn native_history_timed_out_lease_reply_reclaims_reservation() {
+    native_capture_reply_loss(NativeLeaseReplyLoss::TimedOut).await;
+}
+
+#[tokio::test]
+async fn native_history_delivered_lease_reply_drop_reclaims_reservation() {
+    native_capture_reply_loss(NativeLeaseReplyLoss::DeliveredThenCancelled).await;
+}
+
+#[tokio::test]
+async fn native_history_lost_reply_reclaims_in_actor_step() {
+    use std::future::Future;
+    use std::task::Poll;
+    let (commands, received) = mpsc::unbounded_channel();
+    let handle = crate::handle::ChatStateHandle::new(commands);
+    let (events, _received_events) = mpsc::unbounded_channel();
+    let (persistence, _records) = MockChatPersistence::new();
+    let mut actor = ChatStateActor {
+        state: crate::actor::state::ChatState::new(vec![], test_config()),
+        pruning_config: crate::types::PruningConfig::default(),
+        persistence: Box::new(persistence),
+        cmd_rx: received,
+        event_tx: events,
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+    };
+    actor.bootstrap_native_history().await;
+    let mut begin = Box::pin(handle.begin_native_capture("mock".into(), "unreceived".into(), 1));
+    std::future::poll_fn(|cx| {
+        assert!(begin.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(begin);
+    let queued = actor.cmd_rx.recv().await.unwrap();
+    actor.handle_command(queued).await;
+    assert!(
+        actor.state.native.leases.is_empty(),
+        "R10 F2: failed reply delivery reclaims in the allocating actor step"
+    );
+    assert_eq!(
+        actor
+            .state
+            .native
+            .leases
+            .values()
+            .map(|owner| owner.reserved_bytes)
+            .sum::<u64>(),
+        0
+    );
+}
+
+use crate as r10_chat_state;
+
+type R10Checkpoint = r10_chat_state::persistence::native::NativeCheckpoint;
+
+fn r10_blob_ref(
+    kind: &str,
+    bytes: &[u8],
+) -> xai_grok_sampling_types::conversation::native_search_history::NativeBlobRef {
+    xai_grok_sampling_types::conversation::native_search_history::NativeBlobRef {
+        kind: kind.into(),
+        byte_len: bytes.len() as u64,
+        digest: r10_chat_state::persistence::native::digest(bytes),
+    }
+}
+
+fn r10_put_blob(
+    checkpoint: &mut R10Checkpoint,
+    kind: &str,
+    bytes: Vec<u8>,
+) -> xai_grok_sampling_types::conversation::native_search_history::NativeBlobRef {
+    let reference = r10_blob_ref(kind, &bytes);
+    checkpoint
+        .blob_kinds
+        .insert(reference.digest.clone(), kind.into());
+    checkpoint
+        .blobs
+        .insert(reference.digest.clone(), bytes.into());
+    reference
+}
+
+fn r10_partition_bytes(checkpoint: &R10Checkpoint, partition: &str) -> u64 {
+    checkpoint
+        .blobs
+        .iter()
+        .filter(|(key, _)| {
+            let kind = checkpoint.blob_kinds[*key].as_str();
+            match partition {
+                "source" => matches!(
+                    kind,
+                    "raw_block"
+                        | "partial_input_json"
+                        | "producing_binding"
+                        | "eligible_schema"
+                        | "eligible_snapshot"
+                        | "source"
+                ),
+                "snapshot" => matches!(kind, "snapshot" | "snapshot_body"),
+                _ => kind == partition,
+            }
+        })
+        .map(|(_, bytes)| bytes.len() as u64)
+        .sum()
+}
+
+fn r10_snapshot_body(bytes: usize) -> Vec<u8> {
+    let mut body = serde_json::json!({"messages":[],"tools":[],"padding":""});
+    let overhead = serde_json::to_vec(&body).unwrap().len();
+    body["padding"] = serde_json::json!("x".repeat(bytes - overhead));
+    let encoded = serde_json::to_vec(&body).unwrap();
+    assert_eq!(encoded.len(), bytes);
+    encoded
+}
+
+fn r10_snapshot_pair(seed: &R10Checkpoint) -> Vec<R10Checkpoint> {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let binding = seed.source.producing_bindings[0].origin_ref.clone();
+    let big = r10_snapshot_body(NATIVE_SNAPSHOT_PAYLOAD_BYTES as usize);
+    let big_descriptor = NativeSnapshot {
+        body: r10_blob_ref("snapshot_body", &big),
+        tools: Some(NativeToolsRange {
+            offset: 0,
+            byte_len: 2,
+            digest: r10_chat_state::persistence::native::digest(b"[]"),
+        }),
+        binding: binding.clone(),
+    };
+    let mut small_len = (NATIVE_SNAPSHOT_BYTES - NATIVE_SNAPSHOT_PAYLOAD_BYTES - 1024) as usize;
+    for _ in 0..8 {
+        let small = r10_snapshot_body(small_len);
+        let first = seed.with_snapshot(&small, binding.clone()).unwrap();
+        let mut second_descriptor = big_descriptor.clone();
+        let tools_start = big
+            .windows(b"\"tools\":[]".len())
+            .position(|window| window == b"\"tools\":[]")
+            .unwrap()
+            + b"\"tools\":".len();
+        second_descriptor.tools.as_mut().unwrap().offset = tools_start as u64;
+        let predicted = r10_partition_bytes(&first, "snapshot")
+            + big.len() as u64
+            + serde_json::to_vec(&second_descriptor).unwrap().len() as u64;
+        if predicted == NATIVE_SNAPSHOT_BYTES {
+            let second = first.with_snapshot(&big, binding).unwrap();
+            assert_eq!(
+                r10_partition_bytes(&second, "snapshot"),
+                NATIVE_SNAPSHOT_BYTES
+            );
+            return vec![first, second];
+        }
+        small_len =
+            usize::try_from(small_len as i64 + NATIVE_SNAPSHOT_BYTES as i64 - predicted as i64)
+                .unwrap();
+    }
+    panic!("snapshot fixture sizing did not converge");
+}
+
+fn r10_expand_source(checkpoint: &mut R10Checkpoint, target: u64) {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let existing = r10_partition_bytes(checkpoint, "source");
+    let mut padding = usize::try_from(target - existing - 4096).unwrap();
+    for _ in 0..8 {
+        let schema = serde_json::to_vec(&serde_json::json!({"type":"object","description":format!("é\n\"\\schema:{}", "x".repeat(padding)),"properties":{}})).unwrap();
+        let identity = NativeEligibleSnapshot {
+            version: 1,
+            namespace_kind: NativeNamespaceKind::Mcp,
+            qualified_namespace: "mcp.capacity".into(),
+            child_name: "boundary".into(),
+            schema: r10_blob_ref("eligible_schema", &schema),
+            binding: checkpoint.source.producing_bindings[0].origin_ref.clone(),
+        };
+        let identity_bytes = serde_json::to_vec(&identity).unwrap();
+        let mut source = checkpoint.source.clone();
+        source.source_revision += 1;
+        source.older_sources.push(checkpoint.record.source.clone());
+        source
+            .eligible_snapshots
+            .push(r10_blob_ref("eligible_snapshot", &identity_bytes));
+        let source_bytes = serde_json::to_vec(&source).unwrap();
+        let measured = existing
+            + schema.len() as u64
+            + identity_bytes.len() as u64
+            + source_bytes.len() as u64;
+        if measured == target {
+            r10_put_blob(checkpoint, "eligible_schema", schema);
+            r10_put_blob(checkpoint, "eligible_snapshot", identity_bytes);
+            checkpoint.record.source = r10_put_blob(checkpoint, "source", source_bytes);
+            checkpoint.record.lineage.source_digest = checkpoint.record.source.digest.clone();
+            checkpoint.record.lineage.source_revision = source.source_revision;
+            checkpoint.source = source;
+            return;
+        }
+        padding = usize::try_from(padding as i64 + target as i64 - measured as i64).unwrap();
+    }
+    panic!("source fixture sizing did not converge");
+}
+
+fn r10_quota_candidate(
+    seed: &R10Checkpoint,
+    source_bytes: Option<u64>,
+    active_bytes: Option<u64>,
+    ledger_bytes: Option<u64>,
+) -> R10Checkpoint {
+    let mut checkpoint = seed.clone();
+    checkpoint.record.previous_checkpoint = Some(r10_put_blob(
+        &mut checkpoint,
+        "checkpoint",
+        seed.bytes.to_vec(),
+    ));
+    checkpoint.record.generation += 1;
+    checkpoint.record.high_water = checkpoint.record.generation;
+    if let Some(target) = source_bytes {
+        r10_expand_source(&mut checkpoint, target);
+    }
+    if let Some(target) = active_bytes {
+        let existing = r10_partition_bytes(&checkpoint, "active");
+        checkpoint
+            .active
+            .loaded_invalidations
+            .push("é\n\"\\invalidated:".into());
+        let overhead = serde_json::to_vec(&checkpoint.active).unwrap().len() as u64;
+        checkpoint
+            .active
+            .loaded_invalidations
+            .last_mut()
+            .unwrap()
+            .push_str(&"x".repeat((target - existing - overhead) as usize));
+        let bytes = serde_json::to_vec(&checkpoint.active).unwrap();
+        checkpoint.record.active = r10_put_blob(&mut checkpoint, "active", bytes);
+        assert_eq!(r10_partition_bytes(&checkpoint, "active"), target);
+    }
+    checkpoint.ledger.source_digest = checkpoint.record.source.digest.clone();
+    checkpoint.ledger.active_digest = checkpoint.record.active.digest.clone();
+    if let Some(target) = ledger_bytes {
+        let existing = r10_partition_bytes(&checkpoint, "ledger");
+        checkpoint
+            .ledger
+            .transitions
+            .push(serde_json::json!({"reason":"capacity fixture","detail":"é\n\"\\transition:"}));
+        let overhead = serde_json::to_vec(&checkpoint.ledger).unwrap().len() as u64;
+        checkpoint.ledger.transitions.last_mut().unwrap()["detail"] = serde_json::json!(format!(
+            "é\n\"\\transition:{}",
+            "x".repeat((target - existing - overhead) as usize)
+        ));
+    }
+    let ledger = serde_json::to_vec(&checkpoint.ledger).unwrap();
+    checkpoint.record.ledger = r10_put_blob(&mut checkpoint, "ledger", ledger);
+    if let Some(target) = ledger_bytes {
+        assert_eq!(r10_partition_bytes(&checkpoint, "ledger"), target);
+    }
+    checkpoint.record.capacity.clear();
+    checkpoint.bytes = serde_json::to_vec(&checkpoint.record).unwrap().into();
+    checkpoint
+}
+
+fn r10_decode_checkpoint(
+    checkpoint: &R10Checkpoint,
+) -> Result<
+    R10Checkpoint,
+    xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+> {
+    use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+    R10Checkpoint::decode(checkpoint.bytes.to_vec(), |reference| {
+        checkpoint
+            .blobs
+            .get(&reference.digest)
+            .map(|bytes| bytes.to_vec())
+            .ok_or(NativeUnavailable::InvalidReference)
+    })
+}
+
+fn r10_assert_partition_charges(checkpoint: &R10Checkpoint) {
+    for name in ["source", "active", "ledger", "snapshot"] {
+        assert_eq!(
+            checkpoint.record.capacity[&format!("{name}_bytes")],
+            r10_partition_bytes(checkpoint, name),
+            "R10 F3: production charges the actual serialized {name} partition"
+        );
+    }
+    let actual_role: u64 = ["source", "active", "ledger", "snapshot"]
+        .into_iter()
+        .map(|name| r10_partition_bytes(checkpoint, name))
+        .sum();
+    let reserved = checkpoint.reservation().unwrap();
+    for (name, role) in [
+        ("current", &reserved.current),
+        ("staging", &reserved.staging),
+        ("backup", &reserved.backup),
+    ] {
+        assert_eq!(
+            role.bytes().unwrap(),
+            actual_role,
+            "R10 F3: {name} reserves every actual encoded partition"
+        );
+        assert_eq!(
+            checkpoint.record.capacity[&format!("reserved_{name}_bytes")],
+            actual_role
+        );
+    }
+    assert_eq!(
+        reserved.validate().unwrap(),
+        actual_role * 3
+            + xai_grok_sampling_types::conversation::native_search_history::NATIVE_CONTROL_BYTES
+    );
+}
+
+fn r10_actor_quota_seed() -> R10Checkpoint {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let lease =
+        NativeCaptureLease::issue("mock".into(), "r10-quota".into(), 1, 1, NATIVE_SOURCE_BYTES);
+    R10Checkpoint::append(
+        None,
+        &lease,
+        &[std::sync::Arc::new(u2_partial_blocks(1, 1, true))],
+        &[],
+    )
+    .unwrap()
+}
+
+fn r10_partition_boundary(partition: &str) {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let seed = r10_actor_quota_seed();
+    let ceiling = if partition == "active" {
+        NATIVE_ACTIVE_BYTES
+    } else {
+        NATIVE_LEDGER_BYTES
+    };
+    let build = |extra| {
+        r10_quota_candidate(
+            &seed,
+            None,
+            (partition == "active").then_some(ceiling + extra),
+            (partition == "ledger").then_some(ceiling + extra),
+        )
+    };
+    let mut fit = build(0);
+    fit.seal_capacity()
+        .expect("R10 F3: exact serialized partition ceiling fits");
+    fit.validate().unwrap();
+    let loaded = r10_decode_checkpoint(&fit).unwrap();
+    assert_eq!(r10_partition_bytes(&loaded, partition), ceiling);
+    r10_assert_partition_charges(&loaded);
+    let mut over = build(1);
+    assert_eq!(
+        over.seal_capacity(),
+        Err(NativeUnavailable::Capacity),
+        "R10 F3: first serialized byte beyond the {partition} ceiling refuses"
+    );
+    assert!(
+        matches!(
+            r10_decode_checkpoint(&over),
+            Err(NativeUnavailable::Capacity)
+        ),
+        "R10 F3: reader independently enforces the {partition} byte ceiling"
+    );
+}
+
+#[test]
+fn native_history_serialized_active_partition_boundary() {
+    r10_partition_boundary("active");
+}
+
+#[test]
+fn native_history_serialized_ledger_partition_boundary() {
+    r10_partition_boundary("ledger");
+}
+
+#[test]
+fn native_history_serialized_three_role_boundary() {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let seed = r10_actor_quota_seed();
+    let snapshots = r10_snapshot_pair(&seed);
+    let seed = snapshots.last().unwrap();
+    let mut fit = r10_quota_candidate(
+        seed,
+        Some(NATIVE_SOURCE_BYTES),
+        Some(NATIVE_ACTIVE_BYTES),
+        Some(NATIVE_LEDGER_BYTES),
+    );
+    fit.seal_capacity()
+        .expect("R10 F3: simultaneous encoded partition maxima fit their three roles");
+    fit.validate().unwrap();
+    let loaded = r10_decode_checkpoint(&fit).unwrap();
+    r10_assert_partition_charges(&loaded);
+    assert_eq!(
+        loaded.record.capacity["reserved_lineage_bytes"], NATIVE_LINEAGE_BYTES,
+        "R10 F3: real encoded maximum partitions reserve all three roles plus control"
+    );
+    assert_eq!(
+        loaded.reservation().unwrap().current.bytes().unwrap(),
+        NATIVE_ROLE_BYTES
+    );
+    let mut over = r10_quota_candidate(
+        seed,
+        Some(NATIVE_SOURCE_BYTES),
+        Some(NATIVE_ACTIVE_BYTES),
+        Some(NATIVE_LEDGER_BYTES + 1),
+    );
+    assert_eq!(
+        over.seal_capacity(),
+        Err(NativeUnavailable::Capacity),
+        "R10 F3: the first extra serialized byte cannot enter any of the three full roles"
+    );
+    assert!(matches!(
+        r10_decode_checkpoint(&over),
+        Err(NativeUnavailable::Capacity)
+    ));
+}

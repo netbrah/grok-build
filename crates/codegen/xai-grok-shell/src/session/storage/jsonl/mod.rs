@@ -210,6 +210,15 @@ impl JsonlStorageAdapter {
         }
         let chat_file = self.chat_file(info);
         if std::fs::metadata(&chat_file).map(|m| m.len()).unwrap_or(0) == 0 {
+            if !matches!(
+                Self::native_generation_sync(&self.session_dir(info).join("native_history")),
+                Ok(None)
+            ) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "required native history cannot be rebuilt from ACP updates",
+                ));
+            }
             super::chat_rebuild::rebuild_chat_history(&self.session_dir(info))?;
         }
         Ok(())
@@ -949,11 +958,39 @@ impl JsonlStorageAdapter {
         path: PathBuf,
         chat_format_version: u8,
     ) -> io::Result<Vec<ConversationItem>> {
+        let invalid = || {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "required native generation is unavailable",
+            )
+        };
+        let native = path
+            .parent()
+            .map(|parent| Self::native_generation_sync(&parent.join("native_history")))
+            .transpose()
+            .map_err(|_| invalid())?
+            .flatten();
         if !path.exists() {
-            return Ok(Vec::new());
+            return if native.is_some() {
+                Err(invalid())
+            } else {
+                Ok(Vec::new())
+            };
         }
         let contents = std::fs::read(&path)?;
         let load = parse_chat_history_lines(&contents, chat_format_version);
+        if let Some((_, checkpoint)) = native
+            && let Err(reason) = checkpoint.matches_history(&load.items)
+        {
+            if reason != xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::StaleHistory {
+                return Err(invalid());
+            }
+            // Ordinary rewrites do not update the separate native checkpoint.
+            // The native reader still rejects these stale coordinates.
+            tracing::debug!(
+                "native history coordinates unavailable after ordinary history rewrite"
+            );
+        }
         let ChatHistoryLoad {
             items,
             upgraded_reasoning_count,
@@ -1682,6 +1719,244 @@ impl StorageAdapter for JsonlStorageAdapter {
         .await
         .map_err(io::Error::other)?
     }
+    async fn read_native_history(
+        &self,
+        info: &Info,
+    ) -> Result<
+        xai_chat_state::persistence::native::NativeRead,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let adapter = self.clone();
+        let info = info.clone();
+        tokio::task::spawn_blocking(move || {
+            let lineage = info.id.to_string();
+            let checkpoint =
+                Self::native_generation_sync(&adapter.session_dir(&info).join("native_history"))?;
+            if let Some((_, checkpoint)) = checkpoint {
+                if checkpoint.record.lineage.id != lineage {
+                    return Err(NativeUnavailable::StaleHistory);
+                }
+                let history = adapter
+                    .read_chat_history_sync(adapter.chat_file(&info), CHAT_FORMAT_VERSION)
+                    .map_err(|_| NativeUnavailable::StaleHistory)?;
+                checkpoint.matches_history(&history)?;
+                Ok(xai_chat_state::persistence::native::NativeRead {
+                    lineage,
+                    checkpoint: Some(std::sync::Arc::new(checkpoint)),
+                })
+            } else {
+                Ok(xai_chat_state::persistence::native::NativeRead {
+                    lineage,
+                    checkpoint: None,
+                })
+            }
+        })
+        .await
+        .map_err(|_| NativeUnavailable::Indeterminate)?
+    }
+
+    async fn persist_native_generation_and_ack(
+        &self,
+        info: &Info,
+        write: xai_chat_state::persistence::native::NativeWrite,
+    ) -> Result<
+        xai_chat_state::persistence::native::NativeAppendAck,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let adapter = self.clone();
+        let info = info.clone();
+        tokio::task::spawn_blocking(move || {
+            use xai_chat_state::persistence::native::{NativeAppendAck, digest};
+            struct NativeTransactionLock(std::fs::File);
+
+            impl Drop for NativeTransactionLock {
+                fn drop(&mut self) {
+                    // Close alone leaves the lock held by a child between fork and exec.
+                    if let Err(error) = fs2::FileExt::unlock(&self.0) {
+                        tracing::warn!(%error, "failed to release native history transaction lock");
+                    }
+                }
+            }
+
+            let checkpoint = &write.checkpoint;
+            checkpoint.validate()?;
+            if checkpoint.record.lineage.id != info.id.to_string() || write.transaction.is_empty() {
+                return Err(NativeUnavailable::StaleHistory);
+            }
+            let session = adapter
+                .create_session_dir_owner_only(&info)
+                .map_err(|_| NativeUnavailable::Persistence)?;
+            let directory = session.join("native_history");
+            super::create_dir_all_durable(
+                &directory,
+                crate::util::grok_home::create_dir_all_owner_only,
+            )
+            .map_err(|_| NativeUnavailable::Persistence)?;
+            let mut options = OpenOptions::new();
+            options.read(true).write(true).create(true).truncate(false);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+            }
+            let lock = options
+                .open(directory.join("transaction.lock"))
+                .map_err(|_| NativeUnavailable::Persistence)?;
+            fs2::FileExt::try_lock_exclusive(&lock)
+                .map_err(|_| NativeUnavailable::Indeterminate)?;
+            let _lock = NativeTransactionLock(lock);
+            let authority_path = directory.join("authority.json");
+            let previous = Self::native_generation_sync(&directory)?;
+            let candidate_digest = digest(&checkpoint.bytes);
+            if let Some((authority, stored)) = &previous {
+                if authority.transaction == write.transaction
+                    && authority.checkpoint.digest == candidate_digest
+                {
+                    let file = std::fs::File::open(&authority_path)
+                        .map_err(|_| NativeUnavailable::Indeterminate)?;
+                    super::sync_file_durable(&file)
+                        .and_then(|()| super::sync_dir_durable(&directory))
+                        .map_err(|_| NativeUnavailable::Indeterminate)?;
+                    Self::reserve_native_disk(
+                        &directory,
+                        checkpoint,
+                        encode_native(authority, NATIVE_CONTROL_BYTES)?.len() as u64,
+                    )?;
+                    Self::ensure_native_authority_marker(&directory)?;
+                    super::write_bytes_atomic(&directory.join("current.json"), &checkpoint.bytes)
+                        .map_err(|_| NativeUnavailable::Indeterminate)?;
+                    return Ok(NativeAppendAck::Applied {
+                        generation: authority.high_water,
+                        digest: candidate_digest,
+                    });
+                }
+                if authority.high_water != write.previous_generation {
+                    return Err(NativeUnavailable::StaleHistory);
+                }
+                checkpoint.extends(stored)?;
+            } else if write.previous_generation != 0 || checkpoint.record.generation != 1 {
+                return Err(NativeUnavailable::StaleHistory);
+            }
+            let validate_history = || -> Result<(), NativeUnavailable> {
+                let path = adapter.chat_file(&info);
+                let contents = match std::fs::read(path) {
+                    Ok(bytes) => bytes,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+                    Err(_) => return Err(NativeUnavailable::StaleHistory),
+                };
+                let history = parse_chat_history_lines(&contents, CHAT_FORMAT_VERSION);
+                if history.first_skipped.is_some() || history.stripped > 0 {
+                    return Err(NativeUnavailable::StaleHistory);
+                }
+                checkpoint.matches_pending_history(&history.items)
+            };
+            validate_history()?;
+            let authority = NativeGenerationAuthority {
+                schema_version: NATIVE_SCHEMA_VERSION,
+                lineage: info.id.to_string(),
+                high_water: checkpoint.record.high_water,
+                checkpoint: NativeBlobRef {
+                    kind: "checkpoint".into(),
+                    byte_len: checkpoint.bytes.len() as u64,
+                    digest: candidate_digest.clone(),
+                },
+                transaction: write.transaction,
+            };
+            let authority_bytes = encode_native(&authority, NATIVE_CONTROL_BYTES)?;
+            Self::reserve_native_disk(&directory, checkpoint, authority_bytes.len() as u64)?;
+            let blobs = directory.join("blobs");
+            super::create_dir_all_durable(
+                &blobs,
+                crate::util::grok_home::create_dir_all_owner_only,
+            )
+            .map_err(|_| NativeUnavailable::Persistence)?;
+            let write_durable = |path: &Path, bytes: &[u8]| {
+                super::write_bytes_atomic_with(
+                    path,
+                    bytes,
+                    |file| {
+                        #[cfg(test)]
+                        if let Some(probe) = &adapter.file_sync_probe {
+                            probe()?;
+                        }
+                        super::sync_file_durable(file)
+                    },
+                    || {
+                        #[cfg(test)]
+                        if let Some(probe) = &adapter.parent_sync_probe {
+                            probe()?;
+                        }
+                        super::sync_parent_dir_durable(path)
+                    },
+                )
+            };
+            if let Some((_, previous)) = &previous {
+                write_durable(&directory.join("backup.json"), &previous.bytes)
+                    .map_err(|_| NativeUnavailable::Persistence)?;
+            }
+            for (hash, bytes) in checkpoint
+                .blobs
+                .iter()
+                .map(|(hash, bytes)| (hash.as_str(), bytes.as_ref()))
+                .chain(std::iter::once((
+                    candidate_digest.as_str(),
+                    checkpoint.bytes.as_ref(),
+                )))
+            {
+                let path = blobs.join(format!("{hash}.json"));
+                if path.exists() {
+                    let stored = crate::session::workflow::store::read_bounded_nofollow(
+                        &path,
+                        bytes.len() as u64,
+                    )
+                    .map_err(|_| NativeUnavailable::InvalidReference)?;
+                    if stored != bytes {
+                        return Err(NativeUnavailable::InvalidReference);
+                    }
+                    let mut options = OpenOptions::new();
+                    options.read(true);
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::OpenOptionsExt;
+                        options.custom_flags(libc::O_NOFOLLOW);
+                    }
+                    let file = options
+                        .open(&path)
+                        .map_err(|_| NativeUnavailable::Persistence)?;
+                    #[cfg(test)]
+                    if let Some(probe) = &adapter.file_sync_probe {
+                        probe().map_err(|_| NativeUnavailable::Persistence)?;
+                    }
+                    super::sync_file_durable(&file).map_err(|_| NativeUnavailable::Persistence)?;
+                    #[cfg(test)]
+                    if let Some(probe) = &adapter.parent_sync_probe {
+                        probe().map_err(|_| NativeUnavailable::Persistence)?;
+                    }
+                    super::sync_parent_dir_durable(&path)
+                        .map_err(|_| NativeUnavailable::Persistence)?;
+                } else {
+                    write_durable(&path, bytes).map_err(|_| NativeUnavailable::Persistence)?;
+                }
+            }
+            write_durable(&directory.join("staging.json"), &checkpoint.bytes)
+                .map_err(|_| NativeUnavailable::Persistence)?;
+            validate_history()?;
+            // Only the authority publishes a generation; current and backup are recoverable mirrors.
+            write_durable(&authority_path, &authority_bytes)
+                .map_err(|_| NativeUnavailable::Indeterminate)?;
+            Self::ensure_native_authority_marker(&directory)?;
+            write_durable(&directory.join("current.json"), &checkpoint.bytes)
+                .map_err(|_| NativeUnavailable::Indeterminate)?;
+            Ok(NativeAppendAck::Applied {
+                generation: checkpoint.record.generation,
+                digest: candidate_digest,
+            })
+        })
+        .await
+        .map_err(|_| NativeUnavailable::Indeterminate)?
+    }
     async fn backup_chat_history_before_strip(&self, info: &Info) -> io::Result<()> {
         let path = self.chat_file(info);
         let backup = path.with_extension("jsonl.pre-strip");
@@ -2000,6 +2275,240 @@ pub(super) fn raw_line_is_discovery_row(line: &[u8]) -> bool {
     DISCOVERY_ROW_HEADS
         .iter()
         .any(|head| line.starts_with(*head))
+}
+
+impl JsonlStorageAdapter {
+    fn ensure_native_authority_marker(
+        directory: &Path,
+    ) -> Result<(), xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable>
+    {
+        use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+        let marker = directory.join("authority.required");
+        match crate::session::workflow::store::read_bounded_nofollow(&marker, 1) {
+            Ok(bytes) if bytes == b"1" => {
+                let mut options = OpenOptions::new();
+                options.read(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.custom_flags(libc::O_NOFOLLOW);
+                }
+                let file = options
+                    .open(&marker)
+                    .map_err(|_| NativeUnavailable::Indeterminate)?;
+                super::sync_file_durable(&file)
+                    .and_then(|()| super::sync_parent_dir_durable(&marker))
+                    .map_err(|_| NativeUnavailable::Indeterminate)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                // Written only after authority publication; interrupted first writes stay ordinary-loadable.
+                super::write_bytes_atomic(&marker, b"1")
+                    .map_err(|_| NativeUnavailable::Indeterminate)
+            }
+            _ => Err(NativeUnavailable::InvalidReference),
+        }
+    }
+
+    fn native_generation_sync(
+        directory: &Path,
+    ) -> Result<
+        Option<(
+            xai_grok_sampling_types::conversation::native_search_history::NativeGenerationAuthority,
+            xai_chat_state::persistence::native::NativeCheckpoint,
+        )>,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_chat_state::persistence::native::{NativeCheckpoint, digest};
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        match std::fs::symlink_metadata(directory) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            _ => return Err(NativeUnavailable::InvalidReference),
+        }
+        let authority_bytes = match crate::session::workflow::store::read_bounded_nofollow(
+            &directory.join("authority.json"),
+            NATIVE_CONTROL_BYTES,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                for published in ["authority.required", "current.json", "backup.json"] {
+                    match std::fs::symlink_metadata(directory.join(published)) {
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                        _ => return Err(NativeUnavailable::InvalidReference),
+                    }
+                }
+                return Ok(None);
+            }
+            Err(_) => return Err(NativeUnavailable::InvalidReference),
+        };
+        let authority: NativeGenerationAuthority = serde_json::from_slice(&authority_bytes)
+            .map_err(|_| NativeUnavailable::InvalidReference)?;
+        if authority.schema_version != NATIVE_SCHEMA_VERSION
+            || authority.high_water == 0
+            || authority.lineage.is_empty()
+            || authority.transaction.is_empty()
+            || authority.checkpoint.kind != "checkpoint"
+            || authority.checkpoint.digest.len() != 64
+            || !authority
+                .checkpoint
+                .digest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        let blobs = directory.join("blobs");
+        if std::fs::symlink_metadata(&blobs)
+            .map_err(|_| NativeUnavailable::InvalidReference)?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        let checkpoint_bytes = crate::session::workflow::store::read_bounded_nofollow(
+            &blobs.join(format!("{}.json", authority.checkpoint.digest)),
+            authority.checkpoint.byte_len.min(NATIVE_CONTROL_BYTES),
+        )
+        .map_err(|_| NativeUnavailable::InvalidReference)?;
+        if checkpoint_bytes.len() as u64 != authority.checkpoint.byte_len
+            || digest(&checkpoint_bytes) != authority.checkpoint.digest
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        let checkpoint = NativeCheckpoint::decode(checkpoint_bytes, |reference| {
+            crate::session::workflow::store::read_bounded_nofollow(
+                &blobs.join(format!("{}.json", reference.digest)),
+                reference.byte_len,
+            )
+            .map_err(|_| NativeUnavailable::InvalidReference)
+        })?;
+        if checkpoint.record.lineage.id != authority.lineage
+            || checkpoint.record.high_water != authority.high_water
+            || checkpoint.record.generation != authority.high_water
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        Ok(Some((authority, checkpoint)))
+    }
+
+    fn reserve_native_disk(
+        directory: &Path,
+        checkpoint: &xai_chat_state::persistence::native::NativeCheckpoint,
+        authority_bytes: u64,
+    ) -> Result<(), xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable>
+    {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let mut role = NativeRoleReservation::default();
+        let mut control = 0u64;
+        let mut present = std::collections::BTreeSet::new();
+        let charge = |role: &mut NativeRoleReservation,
+                      control: &mut u64,
+                      kind: &str,
+                      bytes: u64|
+         -> Result<(), NativeUnavailable> {
+            let (resource, used) = match kind {
+                "active" => (NativeResource::ActiveBytes, &mut role.active_bytes),
+                "ledger" => (NativeResource::LedgerBytes, &mut role.ledger_bytes),
+                "snapshot" | "snapshot_body" => {
+                    (NativeResource::SnapshotBytes, &mut role.snapshot_bytes)
+                }
+                "checkpoint" | "control" => (NativeResource::ControlBytes, control),
+                _ => (NativeResource::SourceBytes, &mut role.source_bytes),
+            };
+            *used = resource.admit(*used, bytes)?;
+            Ok(())
+        };
+        if directory.exists() {
+            for entry in std::fs::read_dir(directory).map_err(|_| NativeUnavailable::Persistence)? {
+                let entry = entry.map_err(|_| NativeUnavailable::Persistence)?;
+                let metadata = std::fs::symlink_metadata(entry.path())
+                    .map_err(|_| NativeUnavailable::Persistence)?;
+                if metadata.file_type().is_symlink() {
+                    return Err(NativeUnavailable::InvalidReference);
+                }
+                if metadata.is_dir() && entry.file_name() == "blobs" {
+                    for blob in std::fs::read_dir(entry.path())
+                        .map_err(|_| NativeUnavailable::Persistence)?
+                    {
+                        let blob = blob.map_err(|_| NativeUnavailable::Persistence)?;
+                        let metadata = std::fs::symlink_metadata(blob.path())
+                            .map_err(|_| NativeUnavailable::Persistence)?;
+                        if !metadata.is_file() || metadata.file_type().is_symlink() {
+                            return Err(NativeUnavailable::InvalidReference);
+                        }
+                        let name = blob.file_name().to_string_lossy().into_owned();
+                        let hash = name.strip_suffix(".json").unwrap_or(&name).to_owned();
+                        let kind = if hash
+                            == xai_chat_state::persistence::native::digest(&checkpoint.bytes)
+                        {
+                            "checkpoint"
+                        } else {
+                            checkpoint
+                                .blob_kinds
+                                .get(&hash)
+                                .map_or("orphan", String::as_str)
+                        };
+                        charge(&mut role, &mut control, kind, metadata.len())?;
+                        present.insert(hash);
+                    }
+                } else if metadata.is_file() {
+                    charge(&mut role, &mut control, "control", metadata.len())?;
+                } else {
+                    return Err(NativeUnavailable::InvalidReference);
+                }
+            }
+        }
+        for (hash, bytes) in &checkpoint.blobs {
+            if !present.contains(hash) {
+                charge(
+                    &mut role,
+                    &mut control,
+                    checkpoint
+                        .blob_kinds
+                        .get(hash)
+                        .ok_or(NativeUnavailable::InvalidReference)?,
+                    bytes.len() as u64,
+                )?;
+            }
+        }
+        if !directory.join("authority.required").exists() {
+            control = NativeResource::ControlBytes.admit(control, 1)?;
+        }
+        let checkpoint_copies = (checkpoint.bytes.len() as u64)
+            .checked_mul(4)
+            .ok_or(NativeUnavailable::Capacity)?;
+        control = NativeResource::ControlBytes.admit(control, checkpoint_copies)?;
+        control = NativeResource::ControlBytes.admit(
+            control,
+            authority_bytes
+                .checked_mul(2)
+                .ok_or(NativeUnavailable::Capacity)?,
+        )?;
+        let terminal_active = checkpoint
+            .record
+            .capacity
+            .get("terminal_active_bytes")
+            .copied()
+            .ok_or(NativeUnavailable::InvalidReference)?;
+        let terminal_ledger = checkpoint
+            .record
+            .capacity
+            .get("terminal_ledger_bytes")
+            .copied()
+            .ok_or(NativeUnavailable::InvalidReference)?;
+        role.active_bytes =
+            NativeResource::ActiveBytes.admit(role.active_bytes, terminal_active)?;
+        role.ledger_bytes =
+            NativeResource::LedgerBytes.admit(role.ledger_bytes, terminal_ledger)?;
+        NativeGenerationReservation {
+            current: role.clone(),
+            staging: role.clone(),
+            backup: role,
+            control_bytes: control,
+        }
+        .validate()?;
+        Ok(())
+    }
 }
 
 /// Parse `chat_history.jsonl` into items, skipping what cannot be read.

@@ -160,7 +160,8 @@ impl SessionActor {
         ) {
             self.close_stream_apply_span(event.request_id());
         }
-        if !request_owned && !closes_visible_card && !resolves_pending_strip {
+        let native_evidence = matches!(&event, SamplingEvent::NativeAttemptEvidence { .. });
+        if !request_owned && !closes_visible_card && !resolves_pending_strip && !native_evidence {
             return;
         }
 
@@ -491,6 +492,36 @@ impl SessionActor {
                     },
                 ))
                 .await;
+            }
+            SamplingEvent::NativeAttemptEvidence {
+                request_id,
+                lease,
+                evidence,
+            } => {
+                use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+                if !request_owned {
+                    lease.revoke_view();
+                }
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(6),
+                    self.chat_state_handle.append_native_evidence(
+                        request_id.as_str().to_owned(),
+                        lease.clone(),
+                        evidence,
+                    ),
+                )
+                .await;
+                match result {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(reason)) => {
+                        lease.unavailable(reason);
+                        tracing::warn!(?reason, "passive native evidence was not acknowledged");
+                    }
+                    Err(_) => {
+                        lease.unavailable(NativeUnavailable::Indeterminate);
+                        tracing::warn!("passive native evidence acknowledgement timed out");
+                    }
+                }
             }
             SamplingEvent::Failed { request_id, error } => {
                 // Persist before releasing the drain waiter / waking the turn.

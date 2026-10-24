@@ -6392,3 +6392,357 @@ fn lk0d_f_the_r6_marker_and_defer_loading_can_land_on_one_static_entry() {
          suppress-or-lint ruling is booked as apex-y6wu.1): {tools:#?}"
     );
 }
+
+use crate as k0_types;
+
+fn k0_no_plan_requests() -> Vec<(&'static str, k0_types::ConversationRequest)> {
+    use k0_types::{ConversationItem as Item, ConversationRequest, ToolSpec};
+    use serde_json::json;
+
+    let discovery = |raw| Item::Discovery {
+        item: k0_types::conversation::tool_search::ToolSearchItem::from_wire(raw)
+            .expect("valid discovery fixture"),
+    };
+    let server_call = || {
+        discovery(json!({
+            "type": "server_tool_use", "id": "srvtoolu_k0", "name": "tool_search_tool_regex",
+            "input": {"query": "lookup account"}
+        }))
+    };
+    let server_result = |references| {
+        discovery(json!({
+            "type": "tool_search_tool_result", "tool_use_id": "srvtoolu_k0",
+            "content": {"type": "tool_search_tool_search_result", "tool_references": references}
+        }))
+    };
+    let references = || {
+        json!([
+            {"type": "tool_reference", "tool_name": "lookup"},
+            {"type": "tool_reference", "tool_name": "read_account"}
+        ])
+    };
+    let responses_call = || {
+        discovery(json!({
+            "type": "tool_search_call", "id": "tsc_k0", "call_id": "call_k0",
+            "status": "completed", "execution": "client",
+            "arguments": {"query": "select:lookup,read_account", "limit": 2}
+        }))
+    };
+    let responses_output = || {
+        discovery(json!({
+            "type": "tool_search_output", "id": "tso_k0", "call_id": "call_k0",
+            "status": "completed", "execution": "client", "tools": [
+                {"type": "function", "name": "lookup", "description": "Lookup an account",
+                 "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}},
+                {"type": "function", "name": "read_account", "description": "Read an account",
+                 "parameters": {"type": "object", "properties": {"id": {"type": "string"}}}}
+            ]
+        }))
+    };
+    let mut ordinary_call = Item::assistant("checking the account");
+    if let Item::Assistant(assistant) = &mut ordinary_call {
+        assistant.tool_calls.push(k0_types::ToolCall {
+            id: "client_k0".into(),
+            name: "lookup".into(),
+            arguments: "{\"query\":\"account\"}".into(),
+        });
+    }
+    let shapes = vec![
+        (
+            "native-completed",
+            vec![server_call(), server_result(references())],
+        ),
+        ("native-pending", vec![server_call()]),
+        ("native-unpaired-result", vec![server_result(references())]),
+        (
+            "native-empty",
+            vec![server_call(), server_result(json!([]))],
+        ),
+        (
+            "native-error",
+            vec![
+                server_call(),
+                discovery(json!({
+                    "type": "tool_search_tool_result", "tool_use_id": "srvtoolu_k0",
+                    "content": {"type": "tool_search_tool_result_error", "error_code": "too_many_requests"}
+                })),
+            ],
+        ),
+        (
+            "native-unbacked",
+            vec![
+                server_call(),
+                server_result(json!([
+                    {"type": "tool_reference", "tool_name": "departed_account"}
+                ])),
+            ],
+        ),
+        (
+            "native-split",
+            vec![
+                server_call(),
+                ordinary_call.clone(),
+                Item::tool_result("client_k0", "account found"),
+                server_result(references()),
+            ],
+        ),
+        (
+            "native-pending-handoff",
+            vec![
+                server_call(),
+                ordinary_call.clone(),
+                Item::tool_result("client_k0", "account found"),
+            ],
+        ),
+        (
+            "responses-only-completed",
+            vec![responses_call(), responses_output()],
+        ),
+        ("responses-only-pending", vec![responses_call()]),
+        ("responses-only-unpaired-output", vec![responses_output()]),
+        (
+            "responses-only-empty",
+            vec![
+                responses_call(),
+                discovery(json!({
+                    "type": "tool_search_output", "call_id": "call_k0", "status": "completed",
+                    "execution": "client", "tools": []
+                })),
+            ],
+        ),
+        (
+            "responses-only-error",
+            vec![
+                responses_call(),
+                discovery(json!({
+                    "type": "tool_search_output", "call_id": "call_k0", "status": "error",
+                    "execution": "client", "tools": [], "error": "search unavailable"
+                })),
+            ],
+        ),
+        (
+            "responses-only-split",
+            vec![
+                responses_call(),
+                ordinary_call.clone(),
+                Item::tool_result("client_k0", "account found"),
+                responses_output(),
+            ],
+        ),
+        (
+            "mixed-families",
+            vec![
+                server_call(),
+                server_result(references()),
+                Item::assistant("search again"),
+                responses_call(),
+                responses_output(),
+            ],
+        ),
+        (
+            "no-discovery",
+            vec![
+                ordinary_call,
+                Item::tool_result("client_k0", "account found"),
+            ],
+        ),
+    ];
+    shapes
+        .into_iter()
+        .map(|(name, middle)| {
+            let mut items = vec![
+                Item::system("Use the account tools."),
+                Item::user("Find my account."),
+            ];
+            items.extend(middle);
+            items.push(Item::user("Continue with the account."));
+            let tools = [
+                "search_tool",
+                "tool_search_tool_regex",
+                "lookup",
+                "read_account",
+            ]
+            .into_iter()
+            .map(|name| ToolSpec {
+                name: name.into(),
+                description: Some(format!("{name} description")),
+                parameters: json!({"type": "object", "properties": {"query": {"type": "string"}}}),
+                exposure: k0_types::ToolExposure::default(),
+            })
+            .collect();
+            let mut request = ConversationRequest::from_items(items).with_tools(tools);
+            request.cache_ttl = Some("1h".into());
+            request.tool_cache_breakpoint = Some(k0_types::ToolCacheBreakpoint::Last);
+            (name, request)
+        })
+        .collect()
+}
+
+#[test]
+fn messages_no_plan_preserves_pin_body() {
+    let observed: Vec<_> = k0_no_plan_requests()
+        .into_iter()
+        .map(|(name, request)| {
+            let body = build_messages_request(&request);
+            (name, serde_json::to_string(&body).unwrap())
+        })
+        .collect();
+    // Frozen from bb3a3f50 production before any counterfactual.
+    let expected = [
+        (
+            "native-completed",
+            r###"{"model":"","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"tool_use","id":"srvtoolu_k0","name":"tool_search_tool_regex","input":{"query":"lookup account"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"srvtoolu_k0","content":[{"type":"tool_reference","tool_name":"lookup"},{"type":"tool_reference","tool_name":"read_account"}]},{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}]}"###,
+        ),
+        (
+            "native-pending",
+            r###"{"model":"","messages":[{"role":"user","content":[{"type":"text","text":"Find my account."}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}]}"###,
+        ),
+        (
+            "native-unpaired-result",
+            r###"{"model":"","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search results] 2 tools"}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}]}"###,
+        ),
+        (
+            "native-empty",
+            r###"{"model":"","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search results] 0 tools"}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}]}"###,
+        ),
+        (
+            "native-error",
+            r###"{"model":"","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search results] 0 tools"}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}]}"###,
+        ),
+        (
+            "native-unbacked",
+            r###"{"model":"","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search results] 1 tool"}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}]}"###,
+        ),
+        (
+            "native-split",
+            r###"{"model":"","messages":[{"role":"user","content":[{"type":"text","text":"Find my account."}]},{"role":"assistant","content":[{"type":"text","text":"checking the account"},{"type":"tool_use","id":"client_k0","name":"lookup","input":{"query":"account"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"client_k0","content":"account found","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search results] 2 tools"}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}]}"###,
+        ),
+        (
+            "native-pending-handoff",
+            r###"{"model":"","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"checking the account"},{"type":"tool_use","id":"client_k0","name":"lookup","input":{"query":"account"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"client_k0","content":"account found"},{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}]}"###,
+        ),
+        (
+            "responses-only-completed",
+            r###"{"model":"","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"tool_use","id":"call_k0","name":"search_tool","input":{"query":"select:lookup,read_account","limit":2}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_k0","content":[{"type":"tool_reference","tool_name":"lookup"},{"type":"tool_reference","tool_name":"read_account"}]},{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}]}"###,
+        ),
+        (
+            "responses-only-pending",
+            r###"{"model":"","messages":[{"role":"user","content":[{"type":"text","text":"Find my account."}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}]}"###,
+        ),
+        (
+            "responses-only-unpaired-output",
+            r###"{"model":"","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search results] 2 tools"}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}]}"###,
+        ),
+        (
+            "responses-only-empty",
+            r###"{"model":"","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search results] 0 tools"}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}]}"###,
+        ),
+        (
+            "responses-only-error",
+            r###"{"model":"","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search results] 0 tools"}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}]}"###,
+        ),
+        (
+            "responses-only-split",
+            r###"{"model":"","messages":[{"role":"user","content":[{"type":"text","text":"Find my account."}]},{"role":"assistant","content":[{"type":"text","text":"checking the account"},{"type":"tool_use","id":"client_k0","name":"lookup","input":{"query":"account"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"client_k0","content":"account found","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search results] 2 tools"}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}]}"###,
+        ),
+        (
+            "mixed-families",
+            r###"{"model":"","messages":[{"role":"user","content":[{"type":"text","text":"Find my account."}]},{"role":"assistant","content":[{"type":"tool_use","id":"srvtoolu_k0","name":"tool_search_tool_regex","input":{"query":"lookup account"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"srvtoolu_k0","content":[{"type":"tool_reference","tool_name":"lookup"},{"type":"tool_reference","tool_name":"read_account"}],"cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"search again"},{"type":"tool_use","id":"call_k0","name":"search_tool","input":{"query":"select:lookup,read_account","limit":2}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_k0","content":[{"type":"tool_reference","tool_name":"lookup"},{"type":"tool_reference","tool_name":"read_account"}]},{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}]}"###,
+        ),
+        (
+            "no-discovery",
+            r###"{"model":"","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"checking the account"},{"type":"tool_use","id":"client_k0","name":"lookup","input":{"query":"account"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"client_k0","content":"account found"},{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":0,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}]}"###,
+        ),
+    ];
+    assert_eq!(observed.len(), expected.len());
+    for ((name, body), (expected_name, expected_body)) in observed.iter().zip(expected) {
+        assert_eq!(*name, expected_name);
+        assert_eq!(body, expected_body, "K0 T parent lowering parity: {name}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(body).unwrap(),
+            serde_json::from_str::<serde_json::Value>(expected_body).unwrap()
+        );
+    }
+}
+
+#[test]
+fn messages_ordinary_orphan_cleanup_unchanged() {
+    let mut assistant = ConversationItem::assistant("surviving assistant text");
+    if let ConversationItem::Assistant(item) = &mut assistant {
+        item.tool_calls.push(mk_call("unanswered-client"));
+    }
+    for orphan in [
+        vec![assistant],
+        vec![ConversationItem::tool_result(
+            "unmatched-client",
+            "orphan result",
+        )],
+    ] {
+        let mut items = vec![ConversationItem::user("surviving user text")];
+        let has_assistant = matches!(orphan[0], ConversationItem::Assistant(_));
+        items.extend(orphan);
+        items.push(ConversationItem::user("continue"));
+        let mut request = ConversationRequest::from_items(items).with_model("test-model");
+        request.max_output_tokens = Some(4096);
+        let body = build_messages_request(&request);
+        let encoded = crate::request_validation::validate_and_encode_messages_request(&body)
+            .expect("K0 repaired ordinary history must still encode");
+        let mut expected_items = vec![ConversationItem::user("surviving user text")];
+        if has_assistant {
+            expected_items.push(ConversationItem::assistant("surviving assistant text"));
+        }
+        expected_items.push(ConversationItem::user("continue"));
+        let mut expected_request =
+            ConversationRequest::from_items(expected_items).with_model("test-model");
+        expected_request.max_output_tokens = Some(4096);
+        let expected = build_messages_request(&expected_request);
+        assert_eq!(
+            serde_json::to_value(&body).unwrap(),
+            serde_json::to_value(&expected).unwrap(),
+            "K0 ordinary cleanup preserves all surviving text and removes only orphan blocks"
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(encoded.as_bytes()).unwrap(),
+            serde_json::to_value(&body).unwrap()
+        );
+    }
+}
+
+#[test]
+fn messages_surviving_duplicate_client_result_rejected() {
+    let call = ConversationItem::assistant_tool_calls(vec![mk_call("client-duplicate")]);
+    let result = ConversationItem::tool_result("client-duplicate", "first result");
+    let mut legal = ConversationRequest::from_items(vec![
+        ConversationItem::user("run the client tool"),
+        call,
+        result,
+    ])
+    .with_model("test-model");
+    legal.max_output_tokens = Some(4096);
+    let legal_body = build_messages_request(&legal);
+    crate::request_validation::validate_and_encode_messages_request(&legal_body)
+        .expect("K0 legal client pair must encode");
+    let mut duplicate = legal.clone();
+    duplicate.items.push(ConversationItem::tool_result(
+        "client-duplicate",
+        "second result",
+    ));
+    let body = build_messages_request(&duplicate);
+    let actual = serde_json::to_value(&body).unwrap();
+    let mut expected = serde_json::to_value(&legal_body).unwrap();
+    expected["messages"][2]["content"] = serde_json::json!([
+        {"type":"tool_result","tool_use_id":"client-duplicate","content":"first result"},
+        {"type":"tool_result","tool_use_id":"client-duplicate","content":"second result","cache_control":{"type":"ephemeral"}}
+    ]);
+    assert_eq!(
+        actual, expected,
+        "K0 duplicate client result survives set-based cleanup"
+    );
+    assert!(
+        matches!(
+            crate::request_validation::validate_and_encode_messages_request(&body),
+            Err(crate::request_validation::RequestValidationError::UnpairedToolResult { id }) if id == "client-duplicate"
+        ),
+        "K0 surviving duplicate client result must fail final pairing"
+    );
+}

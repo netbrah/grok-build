@@ -2293,6 +2293,56 @@ async fn append_chat_message_no_spurious_newlines_on_clean_tail() {
         .unwrap();
     assert_eq!(user_text(&items), vec!["one", "two"]);
 }
+async fn recv_with_native_history_reads(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::session::persistence::PersistenceMsg>,
+    storage: &JsonlStorageAdapter,
+    info: &Info,
+) -> Option<crate::session::persistence::PersistenceMsg> {
+    loop {
+        match rx.recv().await {
+            Some(crate::session::persistence::PersistenceMsg::ReadNativeHistory { respond_to }) => {
+                let _ = respond_to.send(storage.read_native_history(info).await);
+            }
+            message => return message,
+        }
+    }
+}
+
+#[tokio::test]
+async fn legacy_persistence_receiver_native_read_matches_storage() {
+    let temp_dir = TempDir::new().unwrap();
+    let info = create_test_info();
+    let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
+    adapter
+        .init_session(&info, default_model_id())
+        .await
+        .unwrap();
+    adapter
+        .append_chat_message(&info, &ConversationItem::user("legacy history"))
+        .await
+        .unwrap();
+    let before = std::fs::read(adapter.chat_file(&info)).unwrap();
+    let expected = adapter.read_native_history(&info).await.unwrap();
+    assert_eq!(expected.lineage, info.id.to_string());
+    assert!(expected.checkpoint.is_none());
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut persistence = crate::session::chat_persistence::ChannelChatPersistence::new(tx);
+    let pending = xai_chat_state::ChatPersistence::read_native_history(&mut persistence);
+    drop(persistence);
+    let (message, native) = tokio::join!(
+        recv_with_native_history_reads(&mut rx, &adapter, &info),
+        pending
+    );
+    assert!(message.is_none());
+    let native = native.unwrap().unwrap();
+    assert_eq!(
+        (native.lineage, native.checkpoint.is_none()),
+        (expected.lineage, expected.checkpoint.is_none())
+    );
+    assert_eq!(std::fs::read(adapter.chat_file(&info)).unwrap(), before);
+}
+
 #[tokio::test]
 async fn retry_after_lost_ack_converges_memory_and_disk_to_authoritative_item() {
     let temp_dir = TempDir::new().unwrap();
@@ -2309,7 +2359,7 @@ async fn retry_after_lost_ack_converges_memory_and_disk_to_authoritative_item() 
                 item,
                 respond_to,
             },
-        ) = rx.recv().await
+        ) = recv_with_native_history_reads(&mut rx, &storage, &actor_info).await
         {
             let result = storage
                 .append_cwd_switch_commit_aware(&actor_info, &item)

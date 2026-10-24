@@ -3305,8 +3305,9 @@ impl SamplingClient {
         &self,
         request: MessagesRequestWrapper,
         carrier: Option<EncodedMessagesRequest>,
+        dispatch: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<(
-        BoxStream<'static, Result<messages::MessageStreamEvent>>,
+        BoxStream<'static, Result<crate::messages_continuation::MessagesStreamFrame>>,
         Option<ResponseModelMetadata>,
     )> {
         let region = crate::span_timing::stream_span!(
@@ -3315,10 +3316,11 @@ impl SamplingClient {
             model_id = request.inner.model(),
         );
         if region.span().is_disabled() {
-            self.create_message_stream_inner(request, carrier, region).await
+            self.create_message_stream_inner(request, carrier, dispatch, region)
+                .await
         } else {
             let span = region.span().clone();
-            self.create_message_stream_inner(request, carrier, region)
+            self.create_message_stream_inner(request, carrier, dispatch, region)
                 .instrument(span)
                 .await
         }
@@ -3331,16 +3333,23 @@ impl SamplingClient {
         BoxStream<'static, Result<messages::MessageStreamEvent>>,
         Option<ResponseModelMetadata>,
     )> {
-        self.create_message_stream_with_carrier(request, None).await
+        let (frames, metadata) = self
+            .create_message_stream_with_carrier(request, None, None)
+            .await?;
+        Ok((
+            frames.map(|result| result.map(|frame| frame.event)).boxed(),
+            metadata,
+        ))
     }
 
     async fn create_message_stream_inner(
         &self,
         mut request: MessagesRequestWrapper,
         carrier: Option<EncodedMessagesRequest>,
+        dispatch: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
         region: crate::span_timing::Region,
     ) -> Result<(
-        BoxStream<'static, Result<messages::MessageStreamEvent>>,
+        BoxStream<'static, Result<crate::messages_continuation::MessagesStreamFrame>>,
         Option<ResponseModelMetadata>,
     )> {
         let mut span_timing = StreamSpanTiming::start(region);
@@ -3413,6 +3422,9 @@ impl SamplingClient {
             "Sending messages API stream request"
         );
         Self::log_request_headers(&built_request, "messages");
+        if let Some(dispatch) = dispatch {
+            dispatch.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         let response = self
             .execute_stream_request(built_request, &mut span_timing)
             .await?;
@@ -3478,6 +3490,9 @@ impl SamplingClient {
         });
 
         let event_stream = byte_stream.eventsource();
+        let message_event_class = |frame: &crate::messages_continuation::MessagesStreamFrame| {
+            message_event_class(&frame.event)
+        };
 
         // Map SSE events into MessageStreamEvent.
         // Uses `scan` so transport errors terminate the stream after the first error (same pattern as `chat_completion_stream`)
@@ -3500,7 +3515,7 @@ impl SamplingClient {
                             data = %data,
                         );
 
-                        Some(parse_messages_stream_event(data).map(|frame| frame.event))
+                        Some(parse_messages_stream_event(data))
                     }
                     Err(e) => {
                         *had_transport_error = true;
@@ -3786,9 +3801,26 @@ impl SamplingClient {
     /// Send a conversation request using the Anthropic Messages API (streaming).
     pub async fn conversation_stream_messages(
         &self,
-        mut request: ConversationRequest,
+        request: ConversationRequest,
     ) -> Result<(
         BoxStream<'static, Result<messages::MessageStreamEvent>>,
+        Option<ResponseModelMetadata>,
+    )> {
+        let (frames, metadata) = self
+            .conversation_stream_messages_frames(request, None)
+            .await?;
+        Ok((
+            frames.map(|result| result.map(|frame| frame.event)).boxed(),
+            metadata,
+        ))
+    }
+
+    pub(crate) async fn conversation_stream_messages_frames(
+        &self,
+        mut request: ConversationRequest,
+        dispatch: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Result<(
+        BoxStream<'static, Result<crate::messages_continuation::MessagesStreamFrame>>,
         Option<ResponseModelMetadata>,
     )> {
         self.apply_conversation_defaults(&mut request)?;
@@ -3820,7 +3852,8 @@ impl SamplingClient {
             wrapper.trace = Some(trace);
         }
 
-        self.create_message_stream_with_carrier(wrapper, carrier).await
+        self.create_message_stream_with_carrier(wrapper, carrier, dispatch)
+            .await
     }
 
     /// Send a conversation request using the Anthropic Messages API (non-streaming).
@@ -3954,6 +3987,340 @@ fn stream_collect_error(info: SamplingErrorInfo) -> SamplingError {
 
 #[cfg(test)]
 mod tests {
+    use xai_grok_sampling_types as k0_types;
+
+    fn k0_no_plan_requests() -> Vec<(&'static str, k0_types::ConversationRequest)> {
+        use k0_types::{ConversationItem as Item, ConversationRequest, ToolSpec};
+        use serde_json::json;
+
+        let discovery = |raw| Item::Discovery {
+            item: k0_types::conversation::tool_search::ToolSearchItem::from_wire(raw)
+                .expect("valid discovery fixture"),
+        };
+        let server_call = || {
+            discovery(json!({
+                "type": "server_tool_use", "id": "srvtoolu_k0", "name": "tool_search_tool_regex",
+                "input": {"query": "lookup account"}
+            }))
+        };
+        let server_result = |references| {
+            discovery(json!({
+                "type": "tool_search_tool_result", "tool_use_id": "srvtoolu_k0",
+                "content": {"type": "tool_search_tool_search_result", "tool_references": references}
+            }))
+        };
+        let references = || {
+            json!([
+                {"type": "tool_reference", "tool_name": "lookup"},
+                {"type": "tool_reference", "tool_name": "read_account"}
+            ])
+        };
+        let responses_call = || {
+            discovery(json!({
+                "type": "tool_search_call", "id": "tsc_k0", "call_id": "call_k0",
+                "status": "completed", "execution": "client",
+                "arguments": {"query": "select:lookup,read_account", "limit": 2}
+            }))
+        };
+        let responses_output = || {
+            discovery(json!({
+                "type": "tool_search_output", "id": "tso_k0", "call_id": "call_k0",
+                "status": "completed", "execution": "client", "tools": [
+                    {"type": "function", "name": "lookup", "description": "Lookup an account",
+                     "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}},
+                    {"type": "function", "name": "read_account", "description": "Read an account",
+                     "parameters": {"type": "object", "properties": {"id": {"type": "string"}}}}
+                ]
+            }))
+        };
+        let mut ordinary_call = Item::assistant("checking the account");
+        if let Item::Assistant(assistant) = &mut ordinary_call {
+            assistant.tool_calls.push(k0_types::ToolCall {
+                id: "client_k0".into(),
+                name: "lookup".into(),
+                arguments: "{\"query\":\"account\"}".into(),
+            });
+        }
+        let shapes = vec![
+            (
+                "native-completed",
+                vec![server_call(), server_result(references())],
+            ),
+            ("native-pending", vec![server_call()]),
+            ("native-unpaired-result", vec![server_result(references())]),
+            (
+                "native-empty",
+                vec![server_call(), server_result(json!([]))],
+            ),
+            (
+                "native-error",
+                vec![
+                    server_call(),
+                    discovery(json!({
+                        "type": "tool_search_tool_result", "tool_use_id": "srvtoolu_k0",
+                        "content": {"type": "tool_search_tool_result_error", "error_code": "too_many_requests"}
+                    })),
+                ],
+            ),
+            (
+                "native-unbacked",
+                vec![
+                    server_call(),
+                    server_result(json!([
+                        {"type": "tool_reference", "tool_name": "departed_account"}
+                    ])),
+                ],
+            ),
+            (
+                "native-split",
+                vec![
+                    server_call(),
+                    ordinary_call.clone(),
+                    Item::tool_result("client_k0", "account found"),
+                    server_result(references()),
+                ],
+            ),
+            (
+                "native-pending-handoff",
+                vec![
+                    server_call(),
+                    ordinary_call.clone(),
+                    Item::tool_result("client_k0", "account found"),
+                ],
+            ),
+            (
+                "responses-only-completed",
+                vec![responses_call(), responses_output()],
+            ),
+            ("responses-only-pending", vec![responses_call()]),
+            ("responses-only-unpaired-output", vec![responses_output()]),
+            (
+                "responses-only-empty",
+                vec![
+                    responses_call(),
+                    discovery(json!({
+                        "type": "tool_search_output", "call_id": "call_k0", "status": "completed",
+                        "execution": "client", "tools": []
+                    })),
+                ],
+            ),
+            (
+                "responses-only-error",
+                vec![
+                    responses_call(),
+                    discovery(json!({
+                        "type": "tool_search_output", "call_id": "call_k0", "status": "error",
+                        "execution": "client", "tools": [], "error": "search unavailable"
+                    })),
+                ],
+            ),
+            (
+                "responses-only-split",
+                vec![
+                    responses_call(),
+                    ordinary_call.clone(),
+                    Item::tool_result("client_k0", "account found"),
+                    responses_output(),
+                ],
+            ),
+            (
+                "mixed-families",
+                vec![
+                    server_call(),
+                    server_result(references()),
+                    Item::assistant("search again"),
+                    responses_call(),
+                    responses_output(),
+                ],
+            ),
+            (
+                "no-discovery",
+                vec![
+                    ordinary_call,
+                    Item::tool_result("client_k0", "account found"),
+                ],
+            ),
+        ];
+        shapes.into_iter().map(|(name, middle)| {
+            let mut items = vec![Item::system("Use the account tools."), Item::user("Find my account.")];
+            items.extend(middle);
+            items.push(Item::user("Continue with the account."));
+            let tools = ["search_tool", "tool_search_tool_regex", "lookup", "read_account"]
+                .into_iter().map(|name| ToolSpec {
+                    name: name.into(), description: Some(format!("{name} description")),
+                    parameters: json!({"type": "object", "properties": {"query": {"type": "string"}}}),
+                    exposure: k0_types::ToolExposure::default(),
+                }).collect();
+            let mut request = ConversationRequest::from_items(items).with_tools(tools);
+            request.cache_ttl = Some("1h".into());
+            request.tool_cache_breakpoint = Some(k0_types::ToolCacheBreakpoint::Last);
+            (name, request)
+        }).collect()
+    }
+
+    async fn k0_pin_carrier_observations() -> Vec<(&'static str, [String; 3])> {
+        let (body_tx, mut body_rx) = tokio::sync::mpsc::channel::<Bytes>(1);
+        let app = Router::new().route(
+            "/v1/messages",
+            post(move |body: Bytes| {
+                let body_tx = body_tx.clone();
+                async move {
+                    body_tx
+                        .send(body)
+                        .await
+                        .expect("capture receiver remains open");
+                    axum::response::Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(axum::body::Body::from(
+                            "data: {\"type\":\"message_stop\"}\n\n",
+                        ))
+                        .unwrap()
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = SamplingClient::new(SamplerConfig {
+            base_url: format!("http://{addr}/v1"),
+            api_backend: ApiBackend::Messages,
+            model: "k0-messages".into(),
+            max_completion_tokens: Some(4096),
+            temperature: Some(0.25),
+            top_p: Some(0.75),
+            max_retries: Some(0),
+            ..minimal_config()
+        })
+        .unwrap();
+        let mut observed = Vec::new();
+        for (name, request) in k0_no_plan_requests() {
+            let encoded = client
+                .encode_conversation_messages(&request)
+                .unwrap_or_else(|error| {
+                    panic!("no-plan existing history must encode for {name}: {error}")
+                });
+            let mut banked_request = request.clone();
+            banked_request.encoded = Some(encoded.clone());
+            let mut submitted = Vec::new();
+            for send_request in [banked_request, request] {
+                let (mut stream, _) = client
+                    .conversation_stream_messages(send_request)
+                    .await
+                    .unwrap_or_else(|error| {
+                        panic!("no-plan existing history must send for {name}: {error}")
+                    });
+                while let Some(event) = stream.next().await {
+                    event.expect("scripted Messages stream decodes");
+                }
+                let bytes =
+                    tokio::time::timeout(std::time::Duration::from_secs(10), body_rx.recv())
+                        .await
+                        .expect("submission reaches controlled transport")
+                        .expect("body captured");
+                assert_eq!(
+                    bytes.as_ref(),
+                    encoded.as_bytes(),
+                    "carrier/direct parity for {name}"
+                );
+                submitted.push(String::from_utf8(bytes.to_vec()).unwrap());
+            }
+            observed.push((
+                name,
+                [
+                    String::from_utf8(encoded.as_bytes().to_vec()).unwrap(),
+                    submitted.remove(0),
+                    submitted.remove(0),
+                ],
+            ));
+        }
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+        observed
+    }
+
+    #[tokio::test]
+    async fn messages_no_plan_preserves_pin_carrier() {
+        let observed = k0_pin_carrier_observations().await;
+        // Frozen from bb3a3f50 production before any counterfactual.
+        let expected = [
+            (
+                "native-completed",
+                r###"{"model":"k0-messages","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"tool_use","id":"srvtoolu_k0","name":"tool_search_tool_regex","input":{"query":"lookup account"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"srvtoolu_k0","content":[{"type":"tool_reference","tool_name":"lookup"},{"type":"tool_reference","tool_name":"read_account"}]},{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":4096,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}],"temperature":0.25,"top_p":0.75,"stream":true}"###,
+            ),
+            (
+                "native-pending",
+                r###"{"model":"k0-messages","messages":[{"role":"user","content":[{"type":"text","text":"Find my account."}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":4096,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}],"temperature":0.25,"top_p":0.75,"stream":true}"###,
+            ),
+            (
+                "native-unpaired-result",
+                r###"{"model":"k0-messages","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search results] 2 tools"}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":4096,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}],"temperature":0.25,"top_p":0.75,"stream":true}"###,
+            ),
+            (
+                "native-empty",
+                r###"{"model":"k0-messages","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search results] 0 tools"}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":4096,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}],"temperature":0.25,"top_p":0.75,"stream":true}"###,
+            ),
+            (
+                "native-error",
+                r###"{"model":"k0-messages","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search results] 0 tools"}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":4096,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}],"temperature":0.25,"top_p":0.75,"stream":true}"###,
+            ),
+            (
+                "native-unbacked",
+                r###"{"model":"k0-messages","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search results] 1 tool"}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":4096,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}],"temperature":0.25,"top_p":0.75,"stream":true}"###,
+            ),
+            (
+                "native-split",
+                r###"{"model":"k0-messages","messages":[{"role":"user","content":[{"type":"text","text":"Find my account."}]},{"role":"assistant","content":[{"type":"text","text":"checking the account"},{"type":"tool_use","id":"client_k0","name":"lookup","input":{"query":"account"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"client_k0","content":"account found","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search results] 2 tools"}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":4096,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}],"temperature":0.25,"top_p":0.75,"stream":true}"###,
+            ),
+            (
+                "native-pending-handoff",
+                r###"{"model":"k0-messages","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"checking the account"},{"type":"tool_use","id":"client_k0","name":"lookup","input":{"query":"account"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"client_k0","content":"account found"},{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":4096,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}],"temperature":0.25,"top_p":0.75,"stream":true}"###,
+            ),
+            (
+                "responses-only-completed",
+                r###"{"model":"k0-messages","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"tool_use","id":"call_k0","name":"search_tool","input":{"query":"select:lookup,read_account","limit":2}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_k0","content":[{"type":"tool_reference","tool_name":"lookup"},{"type":"tool_reference","tool_name":"read_account"}]},{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":4096,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}],"temperature":0.25,"top_p":0.75,"stream":true}"###,
+            ),
+            (
+                "responses-only-pending",
+                r###"{"model":"k0-messages","messages":[{"role":"user","content":[{"type":"text","text":"Find my account."}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":4096,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}],"temperature":0.25,"top_p":0.75,"stream":true}"###,
+            ),
+            (
+                "responses-only-unpaired-output",
+                r###"{"model":"k0-messages","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search results] 2 tools"}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":4096,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}],"temperature":0.25,"top_p":0.75,"stream":true}"###,
+            ),
+            (
+                "responses-only-empty",
+                r###"{"model":"k0-messages","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search results] 0 tools"}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":4096,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}],"temperature":0.25,"top_p":0.75,"stream":true}"###,
+            ),
+            (
+                "responses-only-error",
+                r###"{"model":"k0-messages","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search results] 0 tools"}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":4096,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}],"temperature":0.25,"top_p":0.75,"stream":true}"###,
+            ),
+            (
+                "responses-only-split",
+                r###"{"model":"k0-messages","messages":[{"role":"user","content":[{"type":"text","text":"Find my account."}]},{"role":"assistant","content":[{"type":"text","text":"checking the account"},{"type":"tool_use","id":"client_k0","name":"lookup","input":{"query":"account"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"client_k0","content":"account found","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search results] 2 tools"}]},{"role":"user","content":[{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":4096,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}],"temperature":0.25,"top_p":0.75,"stream":true}"###,
+            ),
+            (
+                "mixed-families",
+                r###"{"model":"k0-messages","messages":[{"role":"user","content":[{"type":"text","text":"Find my account."}]},{"role":"assistant","content":[{"type":"tool_use","id":"srvtoolu_k0","name":"tool_search_tool_regex","input":{"query":"lookup account"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"srvtoolu_k0","content":[{"type":"tool_reference","tool_name":"lookup"},{"type":"tool_reference","tool_name":"read_account"}],"cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"search again"},{"type":"tool_use","id":"call_k0","name":"search_tool","input":{"query":"select:lookup,read_account","limit":2}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_k0","content":[{"type":"tool_reference","tool_name":"lookup"},{"type":"tool_reference","tool_name":"read_account"}]},{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":4096,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}],"temperature":0.25,"top_p":0.75,"stream":true}"###,
+            ),
+            (
+                "no-discovery",
+                r###"{"model":"k0-messages","messages":[{"role":"user","content":[{"type":"text","text":"Find my account.","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"checking the account"},{"type":"tool_use","id":"client_k0","name":"lookup","input":{"query":"account"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"client_k0","content":"account found"},{"type":"text","text":"Continue with the account.","cache_control":{"type":"ephemeral"}}]}],"max_tokens":4096,"system":[{"type":"text","text":"Use the account tools.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"search_tool","description":"search_tool description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"tool_search_tool_regex","description":"tool_search_tool_regex description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"lookup","description":"lookup description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"read_account","description":"read_account description","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}],"temperature":0.25,"top_p":0.75,"stream":true}"###,
+            ),
+        ];
+        assert_eq!(observed.len(), expected.len());
+        for ((name, routes), (expected_name, expected_body)) in observed.iter().zip(expected) {
+            assert_eq!(*name, expected_name);
+            for body in routes {
+                assert_eq!(body, expected_body, "K0 P parent encoded parity: {name}");
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(body).unwrap(),
+                    serde_json::from_str::<serde_json::Value>(expected_body).unwrap()
+                );
+            }
+        }
+    }
+
     #[cfg(test)]
     mod raw_input_replay_tests {
         include!("client_raw_input_replay_tests.rs");

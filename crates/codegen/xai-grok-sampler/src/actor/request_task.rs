@@ -44,6 +44,134 @@ const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300;
 /// Public result returned by `SamplerHandle::submit_and_collect`.
 pub type CompletionResult = Result<(ConversationResponse, InferenceLatencyStats), SamplingError>;
 
+struct AttemptReport {
+    outcome: AttemptOutcome,
+    evidence:
+        Option<xai_grok_sampling_types::conversation::native_search_history::NativeAttemptEvidence>,
+}
+
+impl From<AttemptOutcome> for AttemptReport {
+    fn from(outcome: AttemptOutcome) -> Self {
+        Self {
+            outcome,
+            evidence: None,
+        }
+    }
+}
+
+pub(crate) struct NativeCaptureSubmission {
+    pub(crate) lease:
+        Option<xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease>,
+}
+
+impl Drop for NativeCaptureSubmission {
+    fn drop(&mut self) {
+        if let Some(lease) = &self.lease {
+            lease.finish();
+        }
+    }
+}
+
+struct NativeRequestGuard {
+    request_id: RequestId,
+    lease: Option<xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease>,
+    events: mpsc::UnboundedSender<SamplingEvent>,
+    admitted: bool,
+    report_bytes: u64,
+}
+
+impl NativeRequestGuard {
+    fn emit(
+        &mut self,
+        mut evidence: xai_grok_sampling_types::conversation::native_search_history::NativeAttemptEvidence,
+    ) {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let Some(lease) = &self.lease else {
+            return;
+        };
+        if lease.request() != self.request_id.as_str() {
+            return;
+        }
+        self.admitted |= evidence.admitted;
+        evidence.admitted |= self.admitted;
+        if !evidence.admitted {
+            evidence.blocks.clear();
+            evidence.view_roles.clear();
+            evidence.view_digests.clear();
+        }
+        let Ok(bytes) = native_encoded_len(&evidence, NATIVE_CONTROL_BYTES) else {
+            lease.unavailable(NativeUnavailable::Capacity);
+            return;
+        };
+        let Some(total) = self
+            .report_bytes
+            .checked_add(bytes)
+            .filter(|n| lease.ceiling().is_ok_and(|ceiling| *n <= ceiling))
+        else {
+            lease.unavailable(NativeUnavailable::Capacity);
+            return;
+        };
+        self.report_bytes = total;
+        if self
+            .events
+            .send(SamplingEvent::NativeAttemptEvidence {
+                request_id: self.request_id.clone(),
+                lease: lease.clone(),
+                evidence: NativeEvidenceEvent::Attempt(Arc::new(evidence)),
+            })
+            .is_err()
+        {
+            lease.unavailable(NativeUnavailable::Indeterminate);
+        }
+    }
+
+    fn init_failed(&mut self, attempt: Option<u64>) {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        if self.lease.is_none() {
+            return;
+        }
+        let Some(attempt) = attempt else {
+            return;
+        };
+        if let Some(lease) = &self.lease
+            && let Err(reason) = lease.reserve_generation()
+        {
+            lease.unavailable(reason);
+            return;
+        }
+        self.emit(NativeAttemptEvidence {
+            attempt,
+            admitted: self.admitted,
+            response_started: false,
+            provider_response_id: None,
+            source_stop_reason: None,
+            stream_complete: false,
+            status: NativeResponseStatus::PartialTerminal(NativeUnavailable::Failed),
+            blocks: Vec::new(),
+            usage: std::collections::BTreeMap::new(),
+            latency_ms: None,
+            http_dispatches: 0,
+            observed_bytes: 0,
+            failed_block: None,
+            view_roles: Vec::new(),
+            view_digests: Vec::new(),
+        });
+    }
+}
+
+impl Drop for NativeRequestGuard {
+    fn drop(&mut self) {
+        if let Some(lease) = &self.lease
+            && self.events.send(SamplingEvent::NativeAttemptEvidence {
+                request_id: self.request_id.clone(), lease: lease.clone(),
+                evidence: xai_grok_sampling_types::conversation::native_search_history::NativeEvidenceEvent::End,
+            }).is_err()
+        {
+            lease.finish();
+        }
+    }
+}
+
 #[derive(Debug)]
 enum AttemptOutcome {
     /// Stream emitted [`SamplingEvent::Completed`] with a non-empty response.
@@ -89,6 +217,40 @@ pub(crate) async fn run_request_task(
     completion: Option<oneshot::Sender<CollectedSamplingResult>>,
     multi_agent_mode_anchor: Option<MultiAgentModeAnchor>,
 ) -> (RequestId, Option<MultiAgentModeAnchor>) {
+    run_request_task_with_native_capture(
+        request_id,
+        request,
+        config,
+        retry_policy,
+        event_tx,
+        cancel_token,
+        completion,
+        multi_agent_mode_anchor,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn run_request_task_with_native_capture(
+    request_id: RequestId,
+    request: ConversationRequest,
+    config: SamplerConfig,
+    retry_policy: RetryPolicy,
+    event_tx: mpsc::UnboundedSender<SamplingEvent>,
+    cancel_token: CancellationToken,
+    completion: Option<oneshot::Sender<CollectedSamplingResult>>,
+    multi_agent_mode_anchor: Option<MultiAgentModeAnchor>,
+    native: Option<
+        xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+    >,
+) -> (RequestId, Option<MultiAgentModeAnchor>) {
+    let mut native_guard = NativeRequestGuard {
+        request_id: request_id.clone(),
+        lease: native,
+        events: event_tx.clone(),
+        admitted: false,
+        report_bytes: 0,
+    };
     // STABLE-REMINDER-1 (apex-ayl.110): the per-session `<multi_agent_mode>`
     // anchor, cloned from the actor state at Submit; the responses egress
     // may update it, and it is returned for the actor's write-back.
@@ -129,6 +291,7 @@ pub(crate) async fn run_request_task(
     }
 
     let mut request = request;
+    let mut native_attempt = 0u64;
     let mut retry_count: u32 = 0;
     // Doom-loop recovery keeps its own resample budget, independent of the transport/empty budget above
     let doom_policy = config.doom_loop_recovery;
@@ -145,6 +308,10 @@ pub(crate) async fn run_request_task(
             handle_cancellation(&event_tx, &request_id, &mut completion);
             return (request_id, d_anchor);
         }
+        let native_ordinal = native_attempt.checked_add(1);
+        if let Some(ordinal) = native_ordinal {
+            native_attempt = ordinal;
+        }
 
         // REQVALID-1 47b (D-5, SP-2): the retry loop owns the messages-wire
         // encode across the attempt boundary — encode once (pre-HTTP
@@ -157,6 +324,7 @@ pub(crate) async fn run_request_task(
             match client.encode_conversation_messages(&request) {
                 Ok(carrier) => request.encoded = Some(carrier),
                 Err(err) => {
+                    native_guard.init_failed(native_ordinal);
                     let terminal_event_queued = emit_failed(&event_tx, &request_id, &err);
                     send_completion(&mut completion, Err(err), terminal_event_queued);
                     return (request_id, d_anchor);
@@ -176,6 +344,16 @@ pub(crate) async fn run_request_task(
             doom_check,
             Arc::clone(&output_observed),
             &mut d_anchor,
+            native_guard
+                .lease
+                .clone()
+                .filter(|_| native_ordinal.is_some()),
+            native_ordinal.unwrap_or(0),
+            config
+                .extra_headers
+                .get(xai_grok_sampling_types::ENC_AFFINITY_PIN_HEADER)
+                .map(|value| value.as_str())
+                .filter(|value| !value.is_empty()),
         )
         .instrument(sampling_span.clone())
         .await;
@@ -187,6 +365,10 @@ pub(crate) async fn run_request_task(
                 max_retries
             };
 
+        let AttemptReport { outcome, evidence } = outcome;
+        if let Some(evidence) = evidence {
+            native_guard.emit(evidence);
+        }
         match outcome {
             AttemptOutcome::Completed {
                 mut response,
@@ -672,13 +854,18 @@ async fn run_one_attempt(
     doom_check: Option<xai_grok_sampling_types::DoomLoopRecoveryPolicy>,
     output_observed: Arc<AtomicBool>,
     d_anchor: &mut Option<MultiAgentModeAnchor>,
-) -> AttemptOutcome {
+    native_capture: Option<
+        xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+    >,
+    native_ordinal: u64,
+    native_mint_tag: Option<&str>,
+) -> AttemptReport {
     let length_policy = request.length_policy;
     match client.api_backend() {
         ApiBackend::ChatCompletions => {
             let (raw, metadata) = match client.conversation_stream(request).await {
                 Ok(pair) => pair,
-                Err(e) => return AttemptOutcome::InitFailed { error: e },
+                Err(e) => return AttemptOutcome::InitFailed { error: e }.into(),
             };
             let (teed, captured) = tee_errors(raw);
             let l2 = stream_chat_completions(teed, metadata, request_id.clone(), idle_timeout);
@@ -694,13 +881,16 @@ async fn run_one_attempt(
                 length_policy,
             )
             .await
+            .into()
         }
         ApiBackend::Responses => {
-            let (raw, metadata, doom_loop) =
-                match client.conversation_stream_responses(request, d_anchor).await {
-                    Ok(parts) => parts,
-                    Err(e) => return AttemptOutcome::InitFailed { error: e },
-                };
+            let (raw, metadata, doom_loop) = match client
+                .conversation_stream_responses(request, d_anchor)
+                .await
+            {
+                Ok(parts) => parts,
+                Err(e) => return AttemptOutcome::InitFailed { error: e }.into(),
+            };
             if doom_check.is_none()
                 && let Some(collector) = &doom_loop
             {
@@ -734,26 +924,96 @@ async fn run_one_attempt(
                 length_policy,
             )
             .await
+            .into()
         }
         ApiBackend::Messages => {
-            let (raw, metadata) = match client.conversation_stream_messages(request).await {
-                Ok(pair) => pair,
-                Err(e) => return AttemptOutcome::InitFailed { error: e },
+            let Some(lease) = native_capture else {
+                let (raw, metadata) = match client.conversation_stream_messages(request).await {
+                    Ok(pair) => pair,
+                    Err(e) => return AttemptOutcome::InitFailed { error: e }.into(),
+                };
+                let (teed, captured) = tee_errors(raw);
+                let l2 = stream_messages(teed, metadata, request_id.clone(), idle_timeout);
+                return drive_l2(
+                    l2,
+                    request_id,
+                    event_tx,
+                    cancel_token,
+                    captured,
+                    None,
+                    FailedResponseCapture::default(),
+                    output_observed,
+                    length_policy,
+                )
+                .await
+                .into();
             };
-            let (teed, captured) = tee_errors(raw);
-            let l2 = stream_messages(teed, metadata, request_id.clone(), idle_timeout);
-            drive_l2(
-                l2,
-                request_id,
-                event_tx,
-                cancel_token,
-                captured,
-                None,
-                FailedResponseCapture::default(),
-                output_observed,
-                length_policy,
-            )
-            .await
+            use xai_grok_sampling_types::conversation::native_search_history::{
+                NativeResponseStatus, NativeUnavailable,
+            };
+            let mut capture = crate::messages_continuation::AttemptCapture::passive(lease);
+            let dispatch = Arc::new(AtomicBool::new(false));
+            let started = std::time::Instant::now();
+            let outcome = match client
+                .conversation_stream_messages_frames(request, Some(dispatch.clone()))
+                .await
+            {
+                Ok((raw, metadata)) => {
+                    let (teed, captured) = tee_errors(raw);
+                    let l2 = crate::stream::messages::stream_messages_tracked(
+                        teed,
+                        metadata,
+                        request_id.clone(),
+                        idle_timeout,
+                        Some(&mut capture),
+                    );
+                    drive_l2(
+                        l2,
+                        request_id,
+                        event_tx,
+                        cancel_token,
+                        captured,
+                        None,
+                        FailedResponseCapture::default(),
+                        output_observed,
+                        length_policy,
+                    )
+                    .await
+                }
+                Err(error) => AttemptOutcome::InitFailed { error },
+            };
+            let outcome =
+                if capture.observed_pause() && !matches!(outcome, AttemptOutcome::Cancelled) {
+                    AttemptOutcome::Failed {
+                        error: SamplingError::UnsupportedStopControl {
+                            wire_reason: "pause_turn".into(),
+                        },
+                        doom_loop_signals: Vec::new(),
+                        recovery_items: Vec::new(),
+                    }
+                } else {
+                    outcome
+                };
+            let status = match &outcome {
+                AttemptOutcome::Completed { .. } => NativeResponseStatus::Accepted,
+                AttemptOutcome::Cancelled => {
+                    NativeResponseStatus::PartialTerminal(NativeUnavailable::Cancelled)
+                }
+                AttemptOutcome::Empty { .. } => {
+                    NativeResponseStatus::PartialTerminal(NativeUnavailable::Incomplete)
+                }
+                AttemptOutcome::Failed { .. } | AttemptOutcome::InitFailed { .. } => {
+                    NativeResponseStatus::PartialTerminal(NativeUnavailable::Failed)
+                }
+            };
+            let evidence = capture.seal_native(
+                native_ordinal,
+                status,
+                dispatch.load(Ordering::SeqCst),
+                u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                native_mint_tag,
+            );
+            AttemptReport { outcome, evidence }
         }
     }
 }
@@ -1219,6 +1479,1054 @@ fn send_completion(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_history_unfunded_init_failure_reports_capacity() {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let request_id = RequestId::random();
+        let lease = NativeCaptureLease::issue(
+            "r21e-init".into(),
+            request_id.as_str().into(),
+            1,
+            1,
+            NATIVE_CONTROL_BYTES,
+        );
+        lease.fund_generations(NATIVE_CONTROL_BYTES, 1).unwrap();
+        let (events, mut received) = mpsc::unbounded_channel();
+        let mut guard = NativeRequestGuard {
+            request_id,
+            lease: Some(lease.clone()),
+            events,
+            admitted: true,
+            report_bytes: 0,
+        };
+        guard.init_failed(Some(1));
+        guard.init_failed(Some(2));
+        let observed: Vec<_> = std::iter::from_fn(|| received.try_recv().ok()).collect();
+        assert_eq!(
+            native_attempts(&observed).len(),
+            1,
+            "R21e: an unfunded pre-encode failure emits no second envelope"
+        );
+        assert_eq!(
+            lease.reserve(0),
+            Err(NativeUnavailable::Capacity),
+            "R21e: refused pre-encode generation reports capture capacity unavailability"
+        );
+    }
+
+    async fn assert_native_passive_tolerates(frames: Vec<serde_json::Value>, case: &str) {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let server = xai_grok_test_support::MockInferenceServer::start()
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            server.enqueue_response(
+                "/v1/messages",
+                xai_grok_test_support::ScriptedResponse::sse(
+                    frames
+                        .iter()
+                        .map(|frame| xai_grok_test_support::SseEvent::data(frame.to_string()))
+                        .collect(),
+                ),
+            );
+        }
+        let config = SamplerConfig {
+            base_url: server.url(),
+            model: "test".into(),
+            api_key: Some("test-key".into()),
+            api_backend: ApiBackend::Messages,
+            max_retries: Some(0),
+            max_completion_tokens: Some(4096),
+            ..Default::default()
+        };
+        let (events, mut received) = mpsc::unbounded_channel();
+        let sampler = crate::actor::SamplerActor::spawn(
+            config.clone(),
+            RetryPolicy {
+                max_retries: 0,
+                ..Default::default()
+            },
+            events,
+        );
+        let request = ConversationRequest {
+            items: vec![xai_grok_sampling_types::ConversationItem::user(
+                "find the account",
+            )],
+            ..Default::default()
+        };
+        let ordinary = tokio::time::timeout(
+            Duration::from_secs(30),
+            sampler.submit_and_collect_with_config(
+                RequestId::random(),
+                request.clone(),
+                config.clone(),
+            ),
+        )
+        .await
+        .unwrap()
+        .result
+        .expect("D3 unleased control completes")
+        .0;
+        while received.try_recv().is_ok() {}
+        let id = RequestId::random();
+        let lease = NativeCaptureLease::issue(
+            "r17-tolerated".into(),
+            id.as_str().into(),
+            1,
+            1,
+            NATIVE_SOURCE_BYTES,
+        );
+        let captured = tokio::time::timeout(
+            Duration::from_secs(30),
+            sampler.submit_and_collect_with_native_capture(id, request, config, lease.clone()),
+        )
+        .await
+        .unwrap();
+        let mut observed = Vec::new();
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(5), received.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let end = matches!(
+                &event,
+                SamplingEvent::NativeAttemptEvidence {
+                    evidence: NativeEvidenceEvent::End,
+                    ..
+                }
+            );
+            observed.push(event);
+            if end {
+                break;
+            }
+        }
+        assert!(
+            captured.result.is_ok(),
+            "R16 Opus-F1: passive capture must preserve D3 completion for {case}; error={:?}",
+            captured.result.as_ref().err()
+        );
+        let tracked = captured.result.unwrap().0;
+        let output = |response: &ConversationResponse| {
+            serde_json::json!({
+                "items": response.items, "usage": response.usage, "stop_reason": response.stop_reason,
+                "message_id": response.message_id, "raw_stop_reason": response.raw_stop_reason,
+                "stop_message": response.stop_message, "stop_sequence": response.stop_sequence,
+                "cost_usd_ticks": response.cost_usd_ticks, "message_chunks_emitted": response.message_chunks_emitted,
+            })
+        };
+        assert_eq!(
+            output(&tracked),
+            output(&ordinary),
+            "R16 Opus-F1: ordinary output is unchanged for {case}"
+        );
+        assert_eq!(server.messages_request_count(), 2);
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|event| matches!(event, SamplingEvent::Completed { .. }))
+                .count(),
+            1
+        );
+        assert!(!observed.iter().any(|event| matches!(
+            event,
+            SamplingEvent::Failed { .. } | SamplingEvent::Retrying { .. }
+        )));
+        let attempts = native_attempts(&observed);
+        assert_eq!(
+            attempts.len(),
+            1,
+            "R19: unknown input retains a sealed partial envelope for {case}"
+        );
+        let attempt = attempts[0];
+        assert!(attempt.admitted && !attempt.stream_complete);
+        assert_eq!(
+            attempt.status,
+            NativeResponseStatus::PartialTerminal(NativeUnavailable::Fidelity)
+        );
+        assert!(attempt.view_roles.is_empty() && attempt.view_digests.is_empty());
+        assert_eq!(attempt.http_dispatches, 1);
+        assert_eq!(attempt.usage["input_tokens"], 10);
+        assert_eq!(attempt.usage["output_tokens"], 5);
+        assert_eq!(attempt.usage["cache_creation_input_tokens"], 0);
+    }
+
+    #[tokio::test]
+    async fn native_history_passive_unknown_blocks_preserve_pin() {
+        use serde_json::json;
+        for kind in ["future_block", "web_search_tool_result"] {
+            for position in [1, 6] {
+                let mut frames = native_fixture_frames(NativeFixtureEnd::Complete);
+                frames.splice(position..position, [
+                    json!({"type":"content_block_start","index":9,"content_block":{"type":kind,"tool_use_id":"srvtoolu_web","content":[]}}),
+                    json!({"type":"content_block_stop","index":9}),
+                ]);
+                assert_native_passive_tolerates(frames, kind).await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn native_history_passive_unknown_stop_preserves_pin() {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let mut frames = native_fixture_frames(NativeFixtureEnd::Complete);
+        frames[6]["delta"]["stop_reason"] = serde_json::json!("future_stop");
+        let server = xai_grok_test_support::MockInferenceServer::start()
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            server.enqueue_response(
+                "/v1/messages",
+                xai_grok_test_support::ScriptedResponse::sse(
+                    frames
+                        .iter()
+                        .map(|frame| xai_grok_test_support::SseEvent::data(frame.to_string()))
+                        .collect(),
+                ),
+            );
+        }
+        let config = SamplerConfig {
+            base_url: server.url(),
+            model: "test".into(),
+            api_key: Some("test-key".into()),
+            api_backend: ApiBackend::Messages,
+            max_retries: Some(0),
+            max_completion_tokens: Some(4096),
+            ..Default::default()
+        };
+        let (events, mut received) = mpsc::unbounded_channel();
+        let sampler = crate::actor::SamplerActor::spawn(
+            config.clone(),
+            RetryPolicy {
+                max_retries: 0,
+                ..Default::default()
+            },
+            events,
+        );
+        let request = ConversationRequest {
+            items: vec![xai_grok_sampling_types::ConversationItem::user(
+                "find the account",
+            )],
+            ..Default::default()
+        };
+        let ordinary = tokio::time::timeout(
+            Duration::from_secs(30),
+            sampler.submit_and_collect_with_config(
+                RequestId::random(),
+                request.clone(),
+                config.clone(),
+            ),
+        )
+        .await
+        .unwrap();
+        let base_error = ordinary.result.unwrap_err();
+        assert!(base_error.to_string().contains("stop_reason_unknown"));
+        assert!(base_error.to_string().contains("future_stop"));
+        while received.try_recv().is_ok() {}
+        let id = RequestId::random();
+        let lease = NativeCaptureLease::issue(
+            "r18-unknown-stop".into(),
+            id.as_str().into(),
+            1,
+            1,
+            NATIVE_SOURCE_BYTES,
+        );
+        let captured = tokio::time::timeout(
+            Duration::from_secs(30),
+            sampler.submit_and_collect_with_native_capture(id, request, config, lease.clone()),
+        )
+        .await
+        .unwrap();
+        let captured_error = captured
+            .result
+            .expect_err("unknown terminal stop cannot become completion");
+        assert_eq!(
+            serde_json::to_value(SamplingErrorInfo::from(&captured_error)).unwrap(),
+            serde_json::to_value(SamplingErrorInfo::from(&base_error)).unwrap(),
+            "R18 Opus-F1: passive capture must preserve the base stop_reason_unknown failure"
+        );
+        let mut observed = Vec::new();
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(5), received.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let end = matches!(
+                &event,
+                SamplingEvent::NativeAttemptEvidence {
+                    evidence: NativeEvidenceEvent::End,
+                    ..
+                }
+            );
+            observed.push(event);
+            if end {
+                break;
+            }
+        }
+        assert_eq!(server.messages_request_count(), 2);
+        assert_eq!(
+            observed
+                .iter()
+                .filter(|event| matches!(event, SamplingEvent::Failed { .. }))
+                .count(),
+            1
+        );
+        assert!(!observed.iter().any(|event| matches!(
+            event,
+            SamplingEvent::Completed { .. } | SamplingEvent::Retrying { .. }
+        )));
+        let attempts = native_attempts(&observed);
+        assert_eq!(
+            attempts.len(),
+            1,
+            "R19: unknown terminal stop retains a sealed partial envelope"
+        );
+        let attempt = attempts[0];
+        assert!(attempt.admitted && !attempt.stream_complete);
+        assert_eq!(
+            attempt.status,
+            NativeResponseStatus::PartialTerminal(NativeUnavailable::Fidelity)
+        );
+        assert!(attempt.view_roles.is_empty() && attempt.view_digests.is_empty());
+        assert_eq!(attempt.source_stop_reason.as_deref(), Some("future_stop"));
+        assert_eq!(attempt.http_dispatches, 1);
+        assert_eq!(attempt.usage["input_tokens"], 10);
+        assert_eq!(attempt.usage["output_tokens"], 5);
+    }
+
+    #[tokio::test]
+    async fn native_history_passive_unknown_event_preserves_pin() {
+        for position in [1, 6] {
+            let mut frames = native_fixture_frames(NativeFixtureEnd::Complete);
+            frames.insert(
+                position,
+                serde_json::json!({"type":"future_event","value":"liveness"}),
+            );
+            assert_native_passive_tolerates(frames, "future_event").await;
+        }
+    }
+
+    #[tokio::test]
+    async fn native_history_passive_unknown_delta_preserves_pin() {
+        for kind in ["citations_delta", "future_delta"] {
+            let mut frames = native_fixture_frames(NativeFixtureEnd::Complete);
+            frames.insert(2, serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":kind,"citation":{"type":"web_search_result_location","url":"https://example.invalid/evidence"}}}));
+            assert_native_passive_tolerates(frames, kind).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn native_history_passive_capacity_keeps_pin_terminal() {
+        use serde_json::json;
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let mut frames = native_fixture_frames(NativeFixtureEnd::Complete);
+        frames.splice(6..6, [
+            json!({"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}),
+            json!({"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"x".repeat((NATIVE_BLOCK_BYTES - 2) as usize)}}),
+            json!({"type":"content_block_stop","index":2}),
+        ]);
+        let reply = xai_grok_test_support::ScriptedResponse::sse(
+            frames
+                .into_iter()
+                .map(|frame| xai_grok_test_support::SseEvent::data(frame.to_string()))
+                .collect(),
+        );
+        let (result, events, requests) = run_native_fixture(vec![reply], 0).await;
+        assert!(
+            result.result.is_ok(),
+            "R5: passive capacity exhaustion must not terminate ordinary PIN output"
+        );
+        assert_eq!(requests, 1);
+        let attempts = native_attempts(&events);
+        assert_eq!(
+            attempts.len(),
+            1,
+            "capacity loss must retain a bounded unavailable record"
+        );
+        assert_eq!(
+            attempts[0].status,
+            NativeResponseStatus::PartialTerminal(NativeUnavailable::Capacity)
+        );
+        assert_eq!(
+            attempts[0].usage["output_tokens"], 5,
+            "R6: usage observation continues after content exhaustion"
+        );
+        assert!(
+            attempts[0]
+                .blocks
+                .iter()
+                .all(|block| block.raw.len() as u64 <= NATIVE_BLOCK_BYTES)
+        );
+        assert!(
+            attempts[0]
+                .blocks
+                .iter()
+                .any(|block| matches!(block.state, NativeBlockState::Unavailable(_)))
+        );
+    }
+
+    #[tokio::test]
+    async fn native_history_close_reserves_before_materialization() {
+        use serde_json::json;
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let start = native_fixture_frames(NativeFixtureEnd::Complete)[0].clone();
+        let block = json!({"type":"server_tool_use","id":"srvtoolu_close","name":"tool_search_tool_regex","input":{}});
+        let input = json!({"query":"close reservation"});
+        let partial = input.to_string();
+        let frames = vec![
+            start,
+            json!({"type":"content_block_start","index":0,"content_block":block}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":partial}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":"complete"}}),
+            json!({"type":"content_block_stop","index":1}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}),
+            json!({"type":"message_stop"}),
+        ];
+        // Include envelope, checkpoint metadata and terminal/usage reservations.
+        let lease = NativeCaptureLease::issue(
+            "native-sampler-fixture".into(),
+            RequestId::random().as_str().into(),
+            1,
+            1,
+            NATIVE_SOURCE_BYTES,
+        );
+        let mut capture = crate::messages_continuation::AttemptCapture::passive(lease.clone());
+        for frame in frames.iter().take(3) {
+            capture
+                .observe(&crate::client::parse_messages_stream_event(&frame.to_string()).unwrap())
+                .unwrap();
+        }
+        let before_close = lease.charged().unwrap();
+        let materialized = (input.to_string().len() * 2) as u64;
+        let remaining = before_close + materialized - 1;
+        let reply = xai_grok_test_support::ScriptedResponse::sse(
+            frames
+                .into_iter()
+                .map(|frame| xai_grok_test_support::SseEvent::data(frame.to_string()))
+                .collect(),
+        );
+        let (result, events, requests) =
+            run_native_fixture_precharged(vec![reply], 0, NATIVE_SOURCE_BYTES - remaining).await;
+        assert!(
+            result.result.is_ok(),
+            "close-time native exhaustion preserves PIN completion"
+        );
+        assert_eq!(requests, 1);
+        let attempts = native_attempts(&events);
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].status,
+            NativeResponseStatus::PartialTerminal(NativeUnavailable::Capacity)
+        );
+        assert_eq!(
+            attempts[0].blocks[0].state,
+            NativeBlockState::Unavailable(NativeUnavailable::Capacity)
+        );
+        let kept: serde_json::Value = serde_json::from_str(&attempts[0].blocks[0].raw).unwrap();
+        assert_eq!(
+            kept["input"],
+            json!({}),
+            "N01 must reserve before replacing the accepted start object"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_history_pre_http_failure_has_no_dispatch() {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let server = xai_grok_test_support::MockInferenceServer::start()
+            .await
+            .unwrap();
+        let config = SamplerConfig {
+            base_url: server.url(),
+            model: "test".into(),
+            api_key: Some("test-key".into()),
+            api_backend: ApiBackend::Messages,
+            max_retries: Some(0),
+            max_completion_tokens: Some(4096),
+            ..Default::default()
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sampler = crate::actor::SamplerActor::spawn(
+            config.clone(),
+            RetryPolicy {
+                max_retries: 0,
+                ..Default::default()
+            },
+            tx,
+        );
+        let id = RequestId::random();
+        let lease = NativeCaptureLease::issue(
+            "pre-http-fixture".into(),
+            id.as_str().into(),
+            1,
+            1,
+            NATIVE_SOURCE_BYTES,
+        );
+        let request = ConversationRequest {
+            items: vec![xai_grok_sampling_types::ConversationItem::user(
+                "x".repeat(400_004),
+            )],
+            ..Default::default()
+        };
+        let result = sampler
+            .submit_and_collect_with_native_capture(id, request, config, lease)
+            .await;
+        assert!(matches!(
+            result.result,
+            Err(SamplingError::RequestValidation(_))
+        ));
+        assert_eq!(server.messages_request_count(), 0);
+        let mut evidence = Vec::new();
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            match event {
+                SamplingEvent::NativeAttemptEvidence {
+                    evidence: NativeEvidenceEvent::Attempt(attempt),
+                    ..
+                } => evidence.push(attempt),
+                SamplingEvent::NativeAttemptEvidence {
+                    evidence: NativeEvidenceEvent::End,
+                    ..
+                } => break,
+                _ => {}
+            }
+        }
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].http_dispatches, 0);
+        assert!(!evidence[0].response_started);
+        assert!(
+            evidence[0].provider_response_id.is_none()
+                && evidence[0].usage.is_empty()
+                && evidence[0].blocks.is_empty()
+        );
+    }
+
+    #[derive(Clone, Copy)]
+    enum NativeFixtureEnd {
+        Complete,
+        Failed,
+        Disconnected,
+        Pause,
+    }
+
+    fn native_fixture_frames(end: NativeFixtureEnd) -> Vec<serde_json::Value> {
+        use serde_json::json;
+        let mut frames = vec![
+            json!({"type":"message_start","message":{"id":"msg_repeat","type":"message","role":"assistant","model":"test","content":[],"stop_reason":null,
+                "usage":{"input_tokens":10,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":3,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":"before"}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_repeat","name":"tool_search_tool_regex","input":{}}}),
+            json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"account\"}"}}),
+            json!({"type":"content_block_stop","index":1}),
+        ];
+        match end {
+            NativeFixtureEnd::Complete | NativeFixtureEnd::Pause => {
+                frames.push(json!({"type":"message_delta","delta":{"stop_reason":if matches!(end, NativeFixtureEnd::Pause) { "pause_turn" } else { "end_turn" }},
+                    "usage":{"input_tokens":10,"output_tokens":5,"thinking_tokens":0,"cache_read_input_tokens":3}}));
+                frames.push(json!({"type":"message_stop"}));
+            }
+            NativeFixtureEnd::Failed => frames.push(json!({"type":"error","error":{"type":"invalid_request_error","message":"native fixture failure"}})),
+            NativeFixtureEnd::Disconnected => {}
+        }
+        frames
+    }
+
+    async fn run_native_fixture(
+        replies: Vec<xai_grok_test_support::ScriptedResponse>,
+        retries: u32,
+    ) -> (
+        crate::handle::CollectedSamplingResult,
+        Vec<SamplingEvent>,
+        usize,
+    ) {
+        run_native_fixture_precharged(replies, retries, 0).await
+    }
+
+    async fn run_native_fixture_precharged(
+        replies: Vec<xai_grok_test_support::ScriptedResponse>,
+        retries: u32,
+        precharge: u64,
+    ) -> (
+        crate::handle::CollectedSamplingResult,
+        Vec<SamplingEvent>,
+        usize,
+    ) {
+        let server = xai_grok_test_support::MockInferenceServer::start()
+            .await
+            .unwrap();
+        for reply in replies {
+            server.enqueue_response("/v1/messages", reply);
+        }
+        let config = SamplerConfig {
+            base_url: server.url(),
+            model: "test".into(),
+            api_key: Some("test-key".into()),
+            api_backend: ApiBackend::Messages,
+            max_retries: Some(retries),
+            max_completion_tokens: Some(4096),
+            ..Default::default()
+        };
+        let (events, mut received) = mpsc::unbounded_channel();
+        let sampler = crate::actor::SamplerActor::spawn(
+            config.clone(),
+            RetryPolicy {
+                max_retries: retries,
+                retry_only_before_output: false,
+                ..Default::default()
+            },
+            events,
+        );
+        let request_id = RequestId::random();
+        let lease =
+            xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease::issue(
+                "native-sampler-fixture".into(),
+                request_id.as_str().into(),
+                1,
+                1,
+                xai_grok_sampling_types::conversation::native_search_history::NATIVE_SOURCE_BYTES,
+            );
+        lease.reserve(precharge).unwrap();
+        let request = ConversationRequest {
+            items: vec![xai_grok_sampling_types::ConversationItem::user(
+                "find the account",
+            )],
+            ..Default::default()
+        };
+        let result = tokio::time::timeout(
+            Duration::from_secs(30),
+            sampler.submit_and_collect_with_native_capture(request_id, request, config, lease),
+        )
+        .await
+        .unwrap();
+        // The task enqueues its end control before returning to the actor's JoinSet.
+        let mut captured = Vec::new();
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(5), received.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let end = matches!(&event, SamplingEvent::NativeAttemptEvidence {
+                evidence: xai_grok_sampling_types::conversation::native_search_history::NativeEvidenceEvent::End, ..
+            });
+            captured.push(event);
+            if end {
+                break;
+            }
+        }
+        (result, captured, server.messages_request_count())
+    }
+
+    fn native_script(end: NativeFixtureEnd) -> xai_grok_test_support::ScriptedResponse {
+        xai_grok_test_support::ScriptedResponse::sse(
+            native_fixture_frames(end)
+                .into_iter()
+                .map(|value| xai_grok_test_support::SseEvent::data(value.to_string()))
+                .collect(),
+        )
+    }
+
+    fn native_attempts(
+        events: &[SamplingEvent],
+    ) -> Vec<&xai_grok_sampling_types::conversation::native_search_history::NativeAttemptEvidence>
+    {
+        events.iter().filter_map(|event| match event {
+            SamplingEvent::NativeAttemptEvidence { evidence: xai_grok_sampling_types::conversation::native_search_history::NativeEvidenceEvent::Attempt(attempt), .. } => Some(attempt.as_ref()),
+            _ => None,
+        }).collect()
+    }
+
+    #[tokio::test]
+    async fn native_history_capture_handoff_retains_usage_once() {
+        let (result, events, requests) =
+            run_native_fixture(vec![native_script(NativeFixtureEnd::Complete)], 0).await;
+        let (response, metrics) = result.result.unwrap();
+        assert_eq!(requests, 1);
+        assert_eq!(metrics.attempts, 1);
+        assert_eq!(response.usage.unwrap().completion_tokens, 5);
+        let attempts = native_attempts(&events);
+        assert_eq!(
+            attempts.len(),
+            1,
+            "one native occurrence per actual completed attempt"
+        );
+        let attempt = attempts[0];
+        assert_eq!(attempt.attempt, 1);
+        assert_eq!(attempt.http_dispatches, 1);
+        assert_eq!(attempt.usage["input_tokens"], 10);
+        assert_eq!(attempt.usage["output_tokens"], 5);
+        assert_eq!(attempt.usage["cache_creation_input_tokens"], 0);
+        assert_eq!(attempt.usage["thinking_tokens"], 0);
+        assert!(attempt.stream_complete && attempt.admitted);
+        assert_eq!(attempt.blocks.len(), 2);
+        let raw: serde_json::Value = serde_json::from_str(&attempt.blocks[1].raw).unwrap();
+        assert_eq!(raw["input"], serde_json::json!({"query":"account"}));
+    }
+
+    #[tokio::test]
+    async fn native_history_failed_attempt_preserves_terminal_and_usage() {
+        for end in [NativeFixtureEnd::Failed, NativeFixtureEnd::Disconnected] {
+            let (result, events, requests) = run_native_fixture(vec![native_script(end)], 0).await;
+            assert!(result.result.is_err());
+            assert_eq!(requests, 1);
+            let attempts = native_attempts(&events);
+            assert_eq!(
+                attempts.len(),
+                1,
+                "failed attempt evidence must precede the unchanged failure"
+            );
+            assert_eq!(attempts[0].usage["input_tokens"], 10);
+            assert_eq!(attempts[0].usage["output_tokens"], 0);
+            assert_eq!(attempts[0].usage["cache_creation_input_tokens"], 0);
+            assert_eq!(attempts[0].http_dispatches, 1);
+            assert!(matches!(attempts[0].status, xai_grok_sampling_types::conversation::native_search_history::NativeResponseStatus::PartialTerminal(_)));
+            assert!(!attempts[0].stream_complete);
+            let evidence_index = events.iter().position(|e| matches!(e, SamplingEvent::NativeAttemptEvidence { evidence: xai_grok_sampling_types::conversation::native_search_history::NativeEvidenceEvent::Attempt(_), .. })).unwrap();
+            let failure_index = events
+                .iter()
+                .position(|e| matches!(e, SamplingEvent::Failed { .. }))
+                .unwrap();
+            assert!(evidence_index < failure_index);
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, SamplingEvent::Completed { .. }))
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn native_history_retry_preserves_distinct_attempts() {
+        let _retry_env = xai_grok_test_support::EnvGuard::unset("GROK_MAX_RETRIES");
+        for last in [NativeFixtureEnd::Complete, NativeFixtureEnd::Failed] {
+            let (result, events, requests) = run_native_fixture(
+                vec![native_script(NativeFixtureEnd::Failed), native_script(last)],
+                2,
+            )
+            .await;
+            assert_eq!(requests, 2);
+            assert_eq!(
+                result.result.is_ok(),
+                matches!(last, NativeFixtureEnd::Complete)
+            );
+            let attempts = native_attempts(&events);
+            assert_eq!(attempts.len(), 2);
+            assert_eq!(
+                attempts.iter().map(|a| a.attempt).collect::<Vec<_>>(),
+                vec![1, 2]
+            );
+            assert_eq!(attempts.iter().map(|a| a.http_dispatches).sum::<u64>(), 2);
+            assert_eq!(
+                attempts[0].provider_response_id,
+                attempts[1].provider_response_id
+            );
+            assert_eq!(attempts[0].usage["output_tokens"], 0);
+            assert_eq!(
+                attempts[1].usage["output_tokens"],
+                if matches!(last, NativeFixtureEnd::Complete) {
+                    5
+                } else {
+                    0
+                }
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| matches!(e, SamplingEvent::Completed { .. }))
+                    .count(),
+                usize::from(matches!(last, NativeFixtureEnd::Complete))
+            );
+        }
+    }
+
+    fn native_history_parent_pause_frames() -> Vec<serde_json::Value> {
+        serde_json::json!([{"type": "message_start", "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": [], "model": "messages-compatible-model", "stop_reason": null, "usage": {"input_tokens": 10, "output_tokens": 0}}}, {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}, {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "partial answer"}}, {"type": "content_block_stop", "index": 0}, {"type": "message_delta", "delta": {"stop_reason": "pause_turn"}, "usage": {"output_tokens": 5, "input_tokens": 10}}, {"type": "message_stop"}]).as_array().unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn native_history_capture_preserves_pause_turn_failure() {
+        let reply = xai_grok_test_support::ScriptedResponse::sse(
+            native_history_parent_pause_frames()
+                .into_iter()
+                .map(|frame| xai_grok_test_support::SseEvent::data(frame.to_string()))
+                .collect(),
+        );
+        let (result, events, requests) = run_native_fixture(vec![reply], 2).await;
+        assert_eq!(requests, 1);
+        assert!(
+            matches!(result.result, Err(SamplingError::UnsupportedStopControl { ref wire_reason }) if wire_reason == "pause_turn")
+        );
+        let failures: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                SamplingEvent::Failed { error, .. } => Some(error),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(failures.len(), 1);
+        let expected = SamplingErrorInfo::from(&SamplingError::UnsupportedStopControl {
+            wire_reason: "pause_turn".into(),
+        });
+        assert_eq!(failures[0].kind, expected.kind);
+        assert_eq!(failures[0].message, expected.message);
+        assert!(!failures[0].is_retryable);
+        assert!(
+            native_attempts(&events).is_empty(),
+            "R10 F4: the exact ordinary pause fixture creates no U1 evidence"
+        );
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            SamplingEvent::Completed { .. } | SamplingEvent::Retrying { .. }
+        )));
+        let (result, events, requests) =
+            run_native_fixture(vec![native_script(NativeFixtureEnd::Pause)], 2).await;
+        assert_eq!(requests, 1);
+        assert!(
+            matches!(result.result, Err(SamplingError::UnsupportedStopControl { ref wire_reason }) if wire_reason == "pause_turn")
+        );
+        assert!(
+            native_attempts(&events).is_empty(),
+            "paused capture and usage must not reach persistence"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, SamplingEvent::Failed { .. }))
+                .count(),
+            1
+        );
+        assert!(!events.iter().any(|e| matches!(
+            e,
+            SamplingEvent::Completed { .. } | SamplingEvent::Retrying { .. }
+        )));
+        let mut frames = native_fixture_frames(NativeFixtureEnd::Pause);
+        frames.splice(6..6, [
+            serde_json::json!({"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}),
+            serde_json::json!({"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"x".repeat(512 * 1024)}}),
+            serde_json::json!({"type":"content_block_stop","index":2}),
+        ]);
+        let reply = xai_grok_test_support::ScriptedResponse::sse(
+            frames
+                .into_iter()
+                .map(|frame| xai_grok_test_support::SseEvent::data(frame.to_string()))
+                .collect(),
+        );
+        let (result, events, requests) = run_native_fixture(vec![reply], 2).await;
+        assert_eq!(requests, 1);
+        assert!(
+            matches!(result.result, Err(SamplingError::UnsupportedStopControl { ref wire_reason }) if wire_reason == "pause_turn")
+        );
+        assert!(
+            native_attempts(&events).is_empty(),
+            "exhausted paused capture still produces no persistence record"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_history_cancelled_queued_submit_releases_lease() {
+        use std::future::Future;
+        use std::task::Poll;
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let (commands, mut received) = mpsc::unbounded_channel();
+        let sampler = crate::handle::SamplerHandle::new(commands);
+        let id = RequestId::random();
+        let lease = NativeCaptureLease::issue(
+            "queued-cancel".into(),
+            id.as_str().into(),
+            1,
+            1,
+            NATIVE_SOURCE_BYTES,
+        );
+        let mut submission = Box::pin(sampler.submit_and_collect_with_native_capture(
+            id.clone(),
+            ConversationRequest::default(),
+            SamplerConfig::default(),
+            lease.clone(),
+        ));
+        std::future::poll_fn(|cx| {
+            assert!(submission.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(submission);
+        let queued = received.recv().await.unwrap();
+        assert!(matches!(
+            &queued,
+            crate::commands::SamplerCommand::SubmitNativeCapture { .. }
+        ));
+        let cancellation = received.recv().await.unwrap();
+        assert!(
+            matches!(cancellation, crate::commands::SamplerCommand::Cancel { request_id } if request_id == id)
+        );
+        drop(queued);
+        assert!(
+            lease.is_finished(),
+            "R10 F2: a cancelled caller cannot strand its queued native lease"
+        );
+        assert_eq!(lease.reserve(0), Err(NativeUnavailable::StaleHistory));
+    }
+
+    #[tokio::test]
+    async fn native_history_unpolled_sampler_task_releases_lease() {
+        use std::future::Future;
+        use std::task::Poll;
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let (commands, received) = mpsc::unbounded_channel();
+        let sampler = crate::handle::SamplerHandle::new(commands);
+        let (events, mut event_rx) = mpsc::unbounded_channel();
+        let mut actor = crate::actor::SamplerActor {
+            cmd_rx: received,
+            event_tx: events,
+            state: crate::actor::state::ActorState::new(
+                SamplerConfig::default(),
+                RetryPolicy::default(),
+            ),
+            tasks: tokio::task::JoinSet::new(),
+        };
+        let id = RequestId::random();
+        let lease = NativeCaptureLease::issue(
+            "unpolled".into(),
+            id.as_str().into(),
+            1,
+            1,
+            NATIVE_SOURCE_BYTES,
+        );
+        let mut submission = Box::pin(sampler.submit_and_collect_with_native_capture(
+            id,
+            ConversationRequest::default(),
+            SamplerConfig::default(),
+            lease.clone(),
+        ));
+        std::future::poll_fn(|cx| {
+            assert!(submission.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        let queued = actor.cmd_rx.recv().await.unwrap();
+        actor.handle_command(queued);
+        drop(submission);
+        actor.tasks.shutdown().await;
+        assert!(
+            event_rx.try_recv().is_err(),
+            "the task must be aborted before its first poll"
+        );
+        assert!(
+            lease.is_finished(),
+            "R10 F2: an unpolled sampler task still owns and releases its native lease"
+        );
+        assert_eq!(lease.reserve(0), Err(NativeUnavailable::StaleHistory));
+    }
+
+    #[tokio::test]
+    async fn native_history_rejected_submit_releases_lease() {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let sampler = crate::handle::SamplerHandle::noop();
+        let id = RequestId::random();
+        let lease = NativeCaptureLease::issue(
+            "rejected".into(),
+            id.as_str().into(),
+            1,
+            1,
+            NATIVE_SOURCE_BYTES,
+        );
+        let result = sampler
+            .submit_and_collect_with_native_capture(
+                id,
+                ConversationRequest::default(),
+                SamplerConfig::default(),
+                lease.clone(),
+            )
+            .await;
+        assert!(result.result.is_err());
+        assert!(
+            lease.is_finished(),
+            "R10 F2: rejected sampler submission releases its abandoned lease"
+        );
+        assert_eq!(lease.reserve(0), Err(NativeUnavailable::StaleHistory));
+    }
+
+    #[tokio::test]
+    async fn native_history_dropped_submit_releases_lease() {
+        use std::future::Future;
+        use std::task::Poll;
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let (commands, mut received) = mpsc::unbounded_channel();
+        let sampler = crate::handle::SamplerHandle::new(commands);
+        let id = RequestId::random();
+        let lease = NativeCaptureLease::issue(
+            "dropped".into(),
+            id.as_str().into(),
+            1,
+            1,
+            NATIVE_SOURCE_BYTES,
+        );
+        let mut submission = Box::pin(sampler.submit_and_collect_with_native_capture(
+            id,
+            ConversationRequest::default(),
+            SamplerConfig::default(),
+            lease.clone(),
+        ));
+        std::future::poll_fn(|cx| {
+            assert!(submission.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        let queued = received.recv().await.unwrap();
+        assert!(matches!(
+            &queued,
+            crate::commands::SamplerCommand::SubmitNativeCapture { .. }
+        ));
+        drop(queued);
+        assert!(submission.await.result.is_err());
+        assert!(
+            lease.is_finished(),
+            "R10 F2: a queued submission discarded before task start releases its lease"
+        );
+        assert_eq!(lease.reserve(0), Err(NativeUnavailable::StaleHistory));
+    }
+
+    #[tokio::test]
+    async fn native_history_closed_end_receiver_releases_lease() {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let (events, received) = mpsc::unbounded_channel();
+        drop(received);
+        let id = RequestId::random();
+        let lease = NativeCaptureLease::issue(
+            "closed-events".into(),
+            id.as_str().into(),
+            1,
+            1,
+            NATIVE_SOURCE_BYTES,
+        );
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        run_request_task_with_native_capture(
+            id,
+            ConversationRequest::default(),
+            SamplerConfig {
+                base_url: "http://127.0.0.1:1".into(),
+                ..Default::default()
+            },
+            RetryPolicy::default(),
+            events,
+            cancellation,
+            None,
+            None,
+            Some(lease.clone()),
+        )
+        .await;
+        assert!(
+            lease.is_finished(),
+            "R10 F2: undeliverable request-end control releases its lease"
+        );
+        assert_eq!(lease.reserve(0), Err(NativeUnavailable::StaleHistory));
+    }
+
     use futures_util::stream;
     use reqwest::StatusCode;
     use xai_grok_sampling_types::ApiErrorCode;

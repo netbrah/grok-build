@@ -718,6 +718,40 @@ impl ChatStateHandle {
         self.query("Snapshot", |reply| ChatStateCommand::Snapshot { reply })
             .await
     }
+    pub async fn begin_native_capture(
+        &self,
+        lineage: String,
+        request: String,
+        turn: u64,
+    ) -> Result<
+        xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        self.query("BeginNativeCapture", |reply| ChatStateCommand::BeginNativeCapture { lineage, request, turn, reply })
+            .await.unwrap_or(Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence))
+            .and_then(|mut reply| reply.lease.take().ok_or(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Indeterminate))
+    }
+    pub async fn append_native_evidence(
+        &self,
+        request: String,
+        lease: xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        event: xai_grok_sampling_types::conversation::native_search_history::NativeEvidenceEvent,
+    ) -> Result<
+        crate::persistence::native::NativeAppendAck,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        self.query("AppendNativeEvidence", |reply| ChatStateCommand::AppendNativeEvidence { request, lease, event, reply })
+            .await.unwrap_or(Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence))
+    }
+    pub async fn read_native_history(
+        &self,
+    ) -> Result<
+        crate::persistence::native::NativeRead,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        self.query("ReadNativeHistory", |reply| ChatStateCommand::ReadNativeHistory { reply })
+            .await.unwrap_or(Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence))
+    }
 
     /// Truncate conversation to a target prompt index (for rewind).
     pub async fn truncate_to_prompt_index(&self, target: usize) {

@@ -127,7 +127,7 @@ impl SamplerHandle {
         request_id: RequestId,
         request: ConversationRequest,
     ) -> CollectedSamplingResult {
-        self.submit_and_collect_inner(request_id, request, None)
+        self.submit_and_collect_inner(request_id, request, None, None)
             .await
     }
 
@@ -138,7 +138,18 @@ impl SamplerHandle {
         request: ConversationRequest,
         config: SamplerConfig,
     ) -> CollectedSamplingResult {
-        self.submit_and_collect_inner(request_id, request, Some(config))
+        self.submit_and_collect_inner(request_id, request, Some(config), None)
+            .await
+    }
+
+    pub async fn submit_and_collect_with_native_capture(
+        &self,
+        request_id: RequestId,
+        request: ConversationRequest,
+        config: SamplerConfig,
+        lease: xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+    ) -> CollectedSamplingResult {
+        self.submit_and_collect_inner(request_id, request, Some(config), Some(lease))
             .await
     }
 
@@ -147,6 +158,9 @@ impl SamplerHandle {
         request_id: RequestId,
         request: ConversationRequest,
         config: Option<SamplerConfig>,
+        native: Option<
+            xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        >,
     ) -> CollectedSamplingResult {
         // RAII guard: when this future is dropped (cancel, panic, or normal return), tell the sampler actor to cancel the in-flight request_id
         // No-op if the actor already finished and removed it from its active set
@@ -168,11 +182,22 @@ impl SamplerHandle {
         // Only create the guard if Submit actually reached the actor
         let _guard = self
             .cmd_tx
-            .send(SamplerCommand::Submit {
-                request_id,
-                request: Box::new(request),
-                config: config.map(Box::new),
-                completion_tx: Some(completion_tx),
+            .send(match native {
+                Some(lease) => SamplerCommand::SubmitNativeCapture {
+                    request_id,
+                    request: Box::new(request),
+                    config: config.map(Box::new),
+                    completion_tx: Some(completion_tx),
+                    lease: crate::actor::request_task::NativeCaptureSubmission {
+                        lease: Some(lease),
+                    },
+                },
+                None => SamplerCommand::Submit {
+                    request_id,
+                    request: Box::new(request),
+                    config: config.map(Box::new),
+                    completion_tx: Some(completion_tx),
+                },
             })
             .ok()
             .map(|_| CancelOnDrop {

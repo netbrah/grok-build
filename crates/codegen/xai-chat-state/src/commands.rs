@@ -354,6 +354,36 @@ pub enum ChatStateCommand {
     Snapshot {
         reply: oneshot::Sender<ChatStateSnapshot>,
     },
+    BeginNativeCapture {
+        lineage: String,
+        request: String,
+        turn: u64,
+        reply: oneshot::Sender<
+            Result<
+                crate::persistence::native::NativeCaptureReply,
+                xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+            >,
+        >,
+    },
+    AppendNativeEvidence {
+        request: String,
+        lease: xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        event: xai_grok_sampling_types::conversation::native_search_history::NativeEvidenceEvent,
+        reply: oneshot::Sender<
+            Result<
+                crate::persistence::native::NativeAppendAck,
+                xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+            >,
+        >,
+    },
+    ReadNativeHistory {
+        reply: oneshot::Sender<
+            Result<
+                crate::persistence::native::NativeRead,
+                xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+            >,
+        >,
+    },
 
     /// Truncate conversation to a target prompt index (for rewind).
     TruncateToPromptIndex {

@@ -3411,7 +3411,7 @@ impl SessionActor {
                 stop_reason == Some(xai_grok_sampling_types::StopReason::ContextWindowExceeded);
             let refusal_explanation = response.stop_message.clone();
             let final_answer_text = json_schema.is_some().then(|| response.assistant_text());
-            match length_salvage_streak.on_sample(
+            let inject_length_reminder = match length_salvage_streak.on_sample(
                 stop_reason == Some(xai_grok_sampling_types::StopReason::Length)
                     && !tool_calls.is_empty(),
             ) {
@@ -3424,13 +3424,9 @@ impl SessionActor {
                     self.tool_context.fail_task_output_usage_closed();
                     return Err(self.fail_turn_length_salvage_exhausted().await);
                 }
-                LengthSalvageAction::Proceed { inject_reminder } => {
-                    if inject_reminder {
-                        self.push_system_reminder(OUTPUT_TOKEN_LIMIT_REMINDER);
-                    }
-                }
-                LengthSalvageAction::NotSalvage => {}
-            }
+                LengthSalvageAction::Proceed { inject_reminder } => inject_reminder,
+                LengthSalvageAction::NotSalvage => false,
+            };
             // Spec L4278/L4284-85 (SDD G4, apex-ayl.49): a refused or context-full
             // terminal carrying tool calls is REJECTED before commit — the
             // provisional deltas may already have been shown, but no durable item
@@ -3534,6 +3530,15 @@ impl SessionActor {
             self.record_response_items(response.items, usage_reported)
                 .await;
             record_response_span.close();
+            if inject_length_reminder {
+                // Flush after tool results so the reminder cannot split their pairing run.
+                self.pending_skill_reminders
+                    .lock()
+                    .push(super::reminders::wrap_in_reminder_tag(
+                        OUTPUT_TOKEN_LIMIT_REMINDER,
+                        "system-reminder",
+                    ));
+            }
             answered_discovery_call_ids.extend(answered_in_response);
             // Pair committed client calls before Length retry or ordinary-tool dispatch.
             let mut answered_any = false;

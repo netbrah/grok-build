@@ -147,6 +147,7 @@ pub fn estimate_messages_tokens(items: &[ConversationItem]) -> u64 {
 pub(crate) struct ChatState {
     /// The full conversation history.
     pub conversation: Vec<ConversationItem>,
+    pub(super) native: crate::persistence::native::NativeActorState,
     /// Current sampling configuration (model, context window, etc.).
     pub sampling_config: SamplingConfig,
     /// Current prompt index (incremented per user turn).
@@ -239,6 +240,7 @@ impl ChatState {
 
         Self {
             conversation,
+            native: crate::persistence::native::NativeActorState::default(),
             sampling_config,
             prompt_index: 0,
             prompt_texts: Vec::new(),

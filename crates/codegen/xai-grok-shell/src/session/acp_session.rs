@@ -1982,6 +1982,9 @@ mod media_gen_auth_retry_tests;
 #[path = "acp_session_tests/media_gen_batch_limit_tests.rs"]
 mod media_gen_batch_limit_tests;
 #[cfg(test)]
+#[path = "acp_session_tests/native_history_policy_tests.rs"]
+mod native_history_policy_tests;
+#[cfg(test)]
 #[path = "acp_session_tests/memory_config_tests.rs"]
 mod memory_config_tests;
 #[cfg(test)]
@@ -2021,6 +2024,9 @@ mod turn_end_guard_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/turn_end_reporting_tests.rs"]
 mod turn_end_reporting_tests;
+#[cfg(test)]
+#[path = "acp_session_tests/native_messages_replay_tests.rs"]
+mod native_messages_replay_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/wait_for_mcp_prefix_tests.rs"]
 mod wait_for_mcp_prefix_tests;

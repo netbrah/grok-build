@@ -2937,3 +2937,260 @@ async fn messages_native_display_preserves_discovery_and_ordinary_calls() {
         );
     }
 }
+
+#[tokio::test]
+async fn native_history_capture_handoff_preserves_boundaries() {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    use xai_grok_test_support::{MockInferenceServer, ScriptedResponse, SseEvent};
+    let server = MockInferenceServer::start().await.unwrap();
+    let raw_blocks = vec![
+        serde_json::json!({"type":"text","text":"before"}),
+        serde_json::json!({"type":"server_tool_use","id":"srvtoolu_ordered","name":"tool_search_tool_regex","input":{"query":"account"}}),
+        serde_json::json!({"type":"text","text":"after"}),
+    ];
+    let mut frames = vec![serde_json::json!({"type":"message_start","message":{
+        "id":"msg_ordered","type":"message","role":"assistant","model":"test","content":[],"stop_reason":null,"usage":{"input_tokens":1,"output_tokens":0}}})];
+    for (index, block) in raw_blocks.iter().enumerate() {
+        frames.push(
+            serde_json::json!({"type":"content_block_start","index":index,"content_block":block}),
+        );
+        frames.push(serde_json::json!({"type":"content_block_stop","index":index}));
+    }
+    frames.push(serde_json::json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}));
+    frames.push(serde_json::json!({"type":"message_stop"}));
+    server.enqueue_response(
+        "/v1/messages",
+        ScriptedResponse::sse(
+            frames
+                .iter()
+                .map(|frame| SseEvent::data(frame.to_string()))
+                .collect(),
+        ),
+    );
+    let config = crate::config::SamplerConfig {
+        base_url: server.url(),
+        model: "test".into(),
+        api_key: Some("test-key".into()),
+        api_backend: crate::client::ApiBackend::Messages,
+        max_completion_tokens: Some(4096),
+        max_retries: Some(0),
+        ..Default::default()
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let sampler = crate::actor::SamplerActor::spawn(
+        config.clone(),
+        crate::config::RetryPolicy {
+            max_retries: 0,
+            ..Default::default()
+        },
+        tx,
+    );
+    let id = crate::types::RequestId::random();
+    let lease = NativeCaptureLease::issue(
+        "ordered-fixture".into(),
+        id.as_str().into(),
+        1,
+        1,
+        NATIVE_SOURCE_BYTES,
+    );
+    let request = xai_grok_sampling_types::ConversationRequest {
+        items: vec![xai_grok_sampling_types::ConversationItem::user(
+            "find the account",
+        )],
+        ..Default::default()
+    };
+    let ordinary = sampler
+        .submit_and_collect_with_config(
+            crate::types::RequestId::random(),
+            request.clone(),
+            config.clone(),
+        )
+        .await
+        .result
+        .expect("R10 F4: ordinary typed output remains intact")
+        .0;
+    assert_eq!(ordinary.assistant_text(), "before\nafter");
+    assert_eq!(ordinary.usage.as_ref().unwrap().completion_tokens, 2);
+    let output = |response: &xai_grok_sampling_types::ConversationResponse| {
+        serde_json::json!({
+            "items": response.items, "usage": response.usage, "stop_reason": response.stop_reason,
+            "message_id": response.message_id, "raw_stop_reason": response.raw_stop_reason,
+            "stop_message": response.stop_message, "stop_sequence": response.stop_sequence,
+            "cost_usd_ticks": response.cost_usd_ticks, "message_chunks_emitted": response.message_chunks_emitted,
+        })
+    };
+    let ordinary = output(&ordinary);
+    server.enqueue_response(
+        "/v1/messages",
+        ScriptedResponse::sse(
+            frames
+                .iter()
+                .map(|frame| SseEvent::data(frame.to_string()))
+                .collect(),
+        ),
+    );
+    let result = tokio::time::timeout(
+        Duration::from_secs(30),
+        sampler.submit_and_collect_with_native_capture(id, request, config, lease),
+    )
+    .await
+    .unwrap();
+    let tracked_output = result
+        .result
+        .as_ref()
+        .ok()
+        .map(|(response, _)| output(response));
+    if let Some(tracked_output) = &tracked_output {
+        assert_eq!(
+            tracked_output, &ordinary,
+            "R10 F4: capture must leave every ordinary output field intact"
+        );
+    }
+    eprintln!("R10 F4: ordinary typed output and usage intact before handoff capture assertion");
+    assert_eq!(server.messages_request_count(), 2);
+    let mut attempts = Vec::new();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match event {
+            SamplingEvent::NativeAttemptEvidence {
+                evidence: NativeEvidenceEvent::Attempt(attempt),
+                ..
+            } => attempts.push(attempt),
+            SamplingEvent::NativeAttemptEvidence {
+                evidence: NativeEvidenceEvent::End,
+                ..
+            } => break,
+            _ => {}
+        }
+    }
+    assert_eq!(attempts.len(), 1);
+    let attempt = &attempts[0];
+    assert!(
+        attempt.admitted && attempt.response_started && attempt.stream_complete,
+        "R10 F4: ordinary output survives but ordered capture linkage is missing"
+    );
+    assert_eq!(
+        attempt.provider_response_id,
+        Some(serde_json::json!("msg_ordered"))
+    );
+    assert_eq!(attempt.source_stop_reason.as_deref(), Some("end_turn"));
+    assert_eq!(attempt.blocks.len(), 3);
+    assert_eq!(
+        attempt.view_roles.len(),
+        3,
+        "R10 F4: the source-to-view boundary must survive handoff"
+    );
+    let recorded: Vec<serde_json::Value> = attempt
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(index, block)| {
+            assert_eq!(block.wire_index as usize, index);
+            assert_eq!(block.arrival_ordinal as usize, index);
+            assert_eq!(block.state, NativeBlockState::ClosedFaithful);
+            serde_json::from_str(&block.raw).unwrap()
+        })
+        .collect();
+    assert_eq!(
+        recorded, raw_blocks,
+        "whole ordered response must survive pre-flatten handoff"
+    );
+    assert_eq!(
+        tracked_output,
+        Some(ordinary),
+        "R10 F4: faithful captured output equals the untracked typed control"
+    );
+}
+
+#[test]
+fn native_history_transient_capture_limits() {
+    use crate::messages_continuation::{AttemptCapture, CaptureError, MessagesStreamFrame};
+    use xai_grok_sampling_types::messages::MessageStreamEvent;
+    use xai_grok_sampling_types::request_validation::{
+        MAX_ENCODED_MESSAGES_REQUEST_BYTES, MAX_MESSAGES_REQUEST_ITEMS,
+    };
+    let ping = "{\"type\":\"ping\"}";
+    for over in [0, 1] {
+        let mut capture = AttemptCapture::default();
+        let mut first = ping.to_owned();
+        first.push_str(
+            &" ".repeat(MAX_ENCODED_MESSAGES_REQUEST_BYTES as usize - 2 * ping.len() + over),
+        );
+        capture
+            .observe(&MessagesStreamFrame::decoded(MessageStreamEvent::Ping, &first).unwrap())
+            .unwrap();
+        let result =
+            capture.observe(&MessagesStreamFrame::decoded(MessageStreamEvent::Ping, ping).unwrap());
+        assert_eq!(
+            result,
+            if over == 0 {
+                Ok(())
+            } else {
+                Err(CaptureError::LimitExceeded)
+            },
+            "U2: actual observed event-data bytes include whitespace and refuse the first excess byte"
+        );
+    }
+    let frame = |value: serde_json::Value| {
+        let data = value.to_string();
+        MessagesStreamFrame::decoded(
+            serde_json::from_str::<MessageStreamEvent>(&data).unwrap(),
+            &data,
+        )
+        .unwrap()
+    };
+    let start = frame(serde_json::json!({"type":"message_start","message":{
+        "id":"msg_count","type":"message","role":"assistant","model":"test","content":[],
+        "stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}));
+    let mut capture = AttemptCapture::default();
+    capture.observe(&start).unwrap();
+    for index in 0..MAX_MESSAGES_REQUEST_ITEMS {
+        capture
+            .observe(&frame(
+                serde_json::json!({"type":"content_block_start","index":index,
+            "content_block":{"type":"text","text":""}}),
+            ))
+            .unwrap();
+        capture
+            .observe(&frame(
+                serde_json::json!({"type":"content_block_stop","index":index}),
+            ))
+            .unwrap();
+    }
+    assert_eq!(
+        capture.observe(&frame(
+            serde_json::json!({"type":"content_block_start","index":MAX_MESSAGES_REQUEST_ITEMS,
+        "content_block":{"type":"text","text":""}})
+        )),
+        Err(CaptureError::LimitExceeded),
+        "U2: transient block starts do not reset when earlier blocks close"
+    );
+}
+
+fn native_history_parent_pause_frames() -> Vec<serde_json::Value> {
+    serde_json::json!([{"type": "message_start", "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": [], "model": "messages-compatible-model", "stop_reason": null, "usage": {"input_tokens": 10, "output_tokens": 0}}}, {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}, {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "partial answer"}}, {"type": "content_block_stop", "index": 0}, {"type": "message_delta", "delta": {"stop_reason": "pause_turn"}, "usage": {"output_tokens": 5, "input_tokens": 10}}, {"type": "message_stop"}]).as_array().unwrap().clone()
+}
+
+#[test]
+fn native_history_parent_pause_fixture_matches_transport() {
+    let parent = vec![
+        message_start(),
+        text_block_start(0),
+        text_delta(0, "partial answer"),
+        block_stop(0),
+        message_delta_with_stop(messages::StopReason::PauseTurn),
+        MessageStreamEvent::MessageStop,
+    ];
+    let actual: Vec<_> = parent
+        .into_iter()
+        .map(|frame| serde_json::to_value(frame).unwrap())
+        .collect();
+    assert_eq!(
+        actual,
+        native_history_parent_pause_frames(),
+        "R10 F4: actor transport uses the exact unchanged parent pause fixture"
+    );
+}

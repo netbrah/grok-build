@@ -222,6 +222,23 @@ pub enum PersistenceMsg {
     },
     /// Replace the entire chat history (used for compaction)
     ReplaceChatHistory(Vec<ConversationItem>),
+    ReadNativeHistory {
+        respond_to: tokio::sync::oneshot::Sender<
+            Result<
+                xai_chat_state::persistence::native::NativeRead,
+                xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+            >,
+        >,
+    },
+    PersistNativeGenerationAndAck {
+        write: xai_chat_state::persistence::native::NativeWrite,
+        respond_to: tokio::sync::oneshot::Sender<
+            Result<
+                xai_chat_state::persistence::native::NativeAppendAck,
+                xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+            >,
+        >,
+    },
     /// Destructive image-strip rewrite: back up the on-disk history first, and only rewrite if the backup landed.
     /// Acks the combined disk outcome.
     ReplaceChatHistoryForStripAndAck {
@@ -2050,6 +2067,17 @@ impl SessionPersistence {
                     if let Err(e) = result {
                         tracing::warn!(?e, "failed to replace chat history");
                     }
+                }
+                PersistenceMsg::ReadNativeHistory { respond_to } => {
+                    let result = self.storage.read_native_history(&self.info).await;
+                    let _ = respond_to.send(result);
+                }
+                PersistenceMsg::PersistNativeGenerationAndAck { write, respond_to } => {
+                    let result = match self.flush_and_sync().await {
+                        Ok(()) => self.storage.persist_native_generation_and_ack(&self.info, write).await,
+                        Err(_) => Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence),
+                    };
+                    let _ = respond_to.send(result);
                 }
                 PersistenceMsg::ReplaceChatHistoryForStripAndAck {
                     messages,

@@ -97,12 +97,12 @@ impl ChatStateActor {
         usize,
         Option<tokio::sync::oneshot::Receiver<std::io::Result<()>>>,
     ) {
-        let snapshots_capture =
-            matches!(
-                kind,
-                HistoryRewrite::IntegrityRepair | HistoryRewrite::ModelBoundStrip
-                    | HistoryRewrite::SwitchProjection
-            );
+        let snapshots_capture = matches!(
+            kind,
+            HistoryRewrite::IntegrityRepair
+                | HistoryRewrite::ModelBoundStrip
+                | HistoryRewrite::SwitchProjection
+        );
         if snapshots_capture {
             self.snapshot_turn_slice();
         }
@@ -113,7 +113,8 @@ impl ChatStateActor {
                 HistoryRewrite::IntegrityRepair | HistoryRewrite::RetainedPrune => {
                     self.persistence.replace_history(&self.state.conversation);
                 }
-                HistoryRewrite::ImageStrip | HistoryRewrite::ModelBoundStrip
+                HistoryRewrite::ImageStrip
+                | HistoryRewrite::ModelBoundStrip
                 | HistoryRewrite::SwitchProjection => {
                     disk_ack = Some(
                         self.persistence
@@ -126,6 +127,269 @@ impl ChatStateActor {
             self.rebase_turn_capture_offset();
         }
         (changed, disk_ack)
+    }
+    pub(super) async fn bootstrap_native_history(&mut self) {
+        use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.persistence.read_native_history(),
+        )
+        .await;
+        match result {
+            Ok(Ok(Ok(read))) => {
+                if let Some(checkpoint) = &read.checkpoint
+                    && let Err(reason) = checkpoint.matches_history(&self.state.conversation)
+                {
+                    self.state.native.unavailable = Some(reason);
+                }
+                self.state.native.lineage = Some(read.lineage);
+                self.state.native.checkpoint = read.checkpoint;
+            }
+            Ok(Ok(Err(reason))) => self.state.native.unavailable = Some(reason),
+            _ => self.state.native.unavailable = Some(NativeUnavailable::Indeterminate),
+        }
+    }
+
+    pub(super) fn begin_native_capture(
+        &mut self,
+        lineage: String,
+        request: String,
+        turn: u64,
+    ) -> Result<
+        xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        if let Some(reason) = self.state.native.unavailable {
+            return Err(reason);
+        }
+        self.state
+            .native
+            .leases
+            .retain(|_, owner| owner.admitted || !owner.capability.is_finished());
+        if lineage.is_empty()
+            || request.is_empty()
+            || self.state.native.lineage.as_deref() != Some(&lineage)
+        {
+            return Err(NativeUnavailable::StaleHistory);
+        }
+        if self
+            .state
+            .native
+            .leases
+            .values()
+            .any(|lease| lease.capability.request() == request)
+        {
+            return Err(NativeUnavailable::ConflictingObservation);
+        }
+        if let Some(checkpoint) = &self.state.native.checkpoint {
+            checkpoint.matches_history(&self.state.conversation)?;
+        }
+        let metadata = serde_json::json!({"lineage":lineage,"request":request,"turn":turn});
+        let bytes = encode_native(&metadata, NATIVE_CONTROL_BYTES)?.len() as u64;
+        let controls = self.state.native.leases.values().try_fold(bytes, |total, lease| {
+            let metadata = serde_json::json!({"lineage":lease.capability.lineage(),"request":lease.capability.request(),"turn":lease.capability.turn()});
+            let size = native_encoded_len(&metadata, NATIVE_CONTROL_BYTES)?;
+            NativeResource::ControlBytes.admit(total, size)
+        })?;
+        if controls > NATIVE_CONTROL_BYTES {
+            return Err(NativeUnavailable::Capacity);
+        }
+        let ordinal = self
+            .state
+            .native
+            .next_lease
+            .checked_add(1)
+            .ok_or(NativeUnavailable::Capacity)?;
+        let probe = NativeCaptureLease::issue(
+            lineage.clone(),
+            request.clone(),
+            turn,
+            ordinal,
+            NATIVE_SOURCE_BYTES,
+        );
+        let (available, copies, minimum) =
+            crate::persistence::native::NativeCheckpoint::capture_allocation(
+                self.state.native.checkpoint.as_deref(),
+                &probe,
+                &self.state.conversation,
+            )?;
+        let reserved = self
+            .state
+            .native
+            .leases
+            .values()
+            .filter(|lease| !lease.capability.is_finished())
+            .try_fold(0u64, |total, lease| {
+                total
+                    .checked_add(lease.reserved_bytes)
+                    .ok_or(NativeUnavailable::Capacity)
+            })?;
+        let ceiling = available
+            .checked_sub(reserved)
+            .filter(|bytes| *bytes > controls)
+            .ok_or(NativeUnavailable::Capacity)?;
+        let lease = NativeCaptureLease::issue(lineage, request, turn, ordinal, ceiling);
+        lease.reserve(bytes)?;
+        lease.fund_generations(copies, minimum)?;
+        self.state.native.next_lease = ordinal;
+        self.state.native.leases.insert(
+            ordinal,
+            crate::persistence::native::NativeActorLease {
+                capability: lease.clone(),
+                pending: Vec::new(),
+                admitted: false,
+                reserved_bytes: ceiling,
+            },
+        );
+        Ok(lease)
+    }
+
+    pub(super) async fn append_native_evidence(
+        &mut self,
+        request: String,
+        lease: xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        event: xai_grok_sampling_types::conversation::native_search_history::NativeEvidenceEvent,
+    ) -> Result<
+        crate::persistence::native::NativeAppendAck,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use crate::persistence::native::{NativeAppendAck, NativeCheckpoint, NativeWrite, digest};
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let owner = self
+            .state
+            .native
+            .leases
+            .get_mut(&lease.ordinal())
+            .ok_or(NativeUnavailable::StaleHistory)?;
+        if request != lease.request()
+            || !owner.capability.same_lease(&lease)
+            || self.state.native.lineage.as_deref() != Some(lease.lineage())
+        {
+            return Err(NativeUnavailable::StaleHistory);
+        }
+        let NativeEvidenceEvent::Attempt(attempt) = event else {
+            lease.finish();
+            if !owner.admitted {
+                self.state.native.leases.remove(&lease.ordinal());
+            }
+            return Ok(NativeAppendAck::Released);
+        };
+        let encoded = encode_native(attempt.as_ref(), NATIVE_RESPONSE_BYTES)?;
+        let observation_digest = digest(&encoded);
+        if let Some(checkpoint) = &self.state.native.checkpoint
+            && let Some(old) = checkpoint.ledger.observations.iter().find(|old| {
+                old.request == request
+                    && old.lease == lease.ordinal()
+                    && old.attempt == attempt.attempt
+            })
+        {
+            if old.digest == observation_digest {
+                return Ok(NativeAppendAck::Unchanged);
+            }
+            lease.unavailable(NativeUnavailable::ConflictingObservation);
+            return Err(NativeUnavailable::ConflictingObservation);
+        }
+        if lease.is_finished() {
+            return Err(NativeUnavailable::StaleHistory);
+        }
+        if let Some(old) = owner
+            .pending
+            .iter()
+            .find(|old| old.attempt == attempt.attempt)
+        {
+            if encode_native(old.as_ref(), NATIVE_RESPONSE_BYTES)? == encoded {
+                return Ok(NativeAppendAck::Unchanged);
+            }
+            lease.unavailable(NativeUnavailable::ConflictingObservation);
+            return Err(NativeUnavailable::ConflictingObservation);
+        }
+        if !attempt.admitted && !owner.admitted {
+            let pending_bytes = owner
+                .pending
+                .iter()
+                .try_fold(encoded.len() as u64, |total, item| {
+                    total.checked_add(
+                        encode_native(item.as_ref(), NATIVE_RESPONSE_BYTES)
+                            .ok()?
+                            .len() as u64,
+                    )
+                })
+                .ok_or(NativeUnavailable::Capacity)?;
+            if pending_bytes > NATIVE_CONTROL_BYTES {
+                return Err(NativeUnavailable::Capacity);
+            }
+            owner.pending.push(attempt);
+            return Ok(NativeAppendAck::Unchanged);
+        }
+        let mut attempts = owner.pending.clone();
+        attempts.push(attempt);
+        let previous_generation = self
+            .state
+            .native
+            .checkpoint
+            .as_ref()
+            .map_or(0, |p| p.record.generation);
+        let candidate = match NativeCheckpoint::append(
+            self.state.native.checkpoint.as_deref(),
+            &lease,
+            &attempts,
+            &self.state.conversation,
+        ) {
+            Ok(candidate) => {
+                owner.admitted = true;
+                owner.pending.clear();
+                std::sync::Arc::new(candidate)
+            }
+            Err(reason) => {
+                lease.unavailable(reason);
+                self.state.native.unavailable = Some(reason);
+                return Err(reason);
+            }
+        };
+        let expected_digest = digest(&candidate.bytes);
+        let write = NativeWrite {
+            previous_generation,
+            transaction: format!(
+                "{}:{}:{}",
+                lease.request(),
+                lease.ordinal(),
+                candidate.record.generation
+            ),
+            checkpoint: candidate.clone(),
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.persistence.persist_native_generation_and_ack(write),
+        )
+        .await;
+        match result {
+            Ok(Ok(Ok(NativeAppendAck::Applied { generation, digest })))
+                if generation == candidate.record.generation && digest == expected_digest =>
+            {
+                let copies = candidate
+                    .record
+                    .source
+                    .byte_len
+                    .max(candidate.record.active.byte_len)
+                    .max(candidate.record.ledger.byte_len)
+                    .max(candidate.bytes.len() as u64);
+                lease
+                    .limit_generations(candidate.available_capture_bytes().unwrap_or(0), copies)?;
+                self.state.native.checkpoint = Some(candidate);
+                Ok(NativeAppendAck::Applied { generation, digest })
+            }
+            Ok(Ok(Err(reason))) => {
+                self.state.native.unavailable = Some(reason);
+                lease.unavailable(reason);
+                Err(reason)
+            }
+            _ => {
+                self.state.native.unavailable = Some(NativeUnavailable::Indeterminate);
+                lease.unavailable(NativeUnavailable::Indeterminate);
+                Err(NativeUnavailable::Indeterminate)
+            }
+        }
     }
 
     /// Repair dangling tool calls (assistant call IDs with no `ToolResult`) and persist.

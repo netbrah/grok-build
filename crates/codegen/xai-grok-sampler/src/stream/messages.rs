@@ -250,15 +250,17 @@ pub(crate) fn stream_messages_tracked<'a>(
                 && let Err(error) = capture.observe(&event)
             {
                 capture.failure = Some(error);
-                yield SamplingEvent::Failed {
-                    request_id: request_id.clone(),
-                    error: SamplingErrorInfo::from(&SamplingError::StreamError {
-                        error_type: "unfaithful_messages_capture".to_owned(),
-                        message: error.message().to_owned(),
-                        code: None,
-                    }),
-                };
-                return;
+                if !capture.is_passive() {
+                    yield SamplingEvent::Failed {
+                        request_id: request_id.clone(),
+                        error: SamplingErrorInfo::from(&SamplingError::StreamError {
+                            error_type: "unfaithful_messages_capture".to_owned(),
+                            message: error.message().to_owned(),
+                            code: None,
+                        }),
+                    };
+                    return;
+                }
             }
             let event = event.event;
             let event_has_content = messages_event_has_meaningful_content(&event);
@@ -1190,13 +1192,17 @@ pub(crate) fn stream_messages_tracked<'a>(
             stop_sequence: final_stop_sequence,
         };
 
-        if let Some(capture) = capture.as_deref_mut() {
+        if let Some(capture) = capture.as_deref_mut()
+            && (!capture.is_passive() || capture.failure.is_none()) {
             match capture.finish(&response) {
                 Ok(content) => capture.completed = Some(CompletedAttempt {
                     content,
                     response: response.clone(),
                     metrics: metrics.clone(),
                 }),
+                Err(error) if capture.is_passive() => {
+                    capture.failure = Some(error);
+                }
                 Err(error) => {
                     capture.failure = Some(error);
                     yield SamplingEvent::Failed {

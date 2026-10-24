@@ -146,6 +146,11 @@ pub enum SamplingEvent {
         doom_loop_aborted_at_chunk: Option<u64>,
     },
 
+    NativeAttemptEvidence {
+        request_id: RequestId,
+        lease: xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        evidence: xai_grok_sampling_types::conversation::native_search_history::NativeEvidenceEvent,
+    },
     /// Request failed (after exhausting retries or non-retryable error).
     Failed {
         request_id: RequestId,
@@ -229,6 +234,7 @@ impl SamplingEvent {
             | Self::ModelBoundStateStripped { request_id, .. }
             | Self::Retrying { request_id, .. }
             | Self::Failed { request_id, .. }
+            | Self::NativeAttemptEvidence { request_id, .. }
             | Self::ModelMetadata { request_id, .. }
             | Self::BackendToolCallStarted { request_id, .. }
             | Self::BackendToolCallCompleted { request_id, .. }

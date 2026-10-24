@@ -2201,6 +2201,7 @@ impl SessionActor {
         prepared_config: Option<SamplingConfig>,
     ) -> Result<SamplerTurnOutcome, xai_grok_sampler::SamplingErrorInfo> {
         let request_id = xai_grok_sampler::RequestId::random();
+        let native_turn = self.current_turn_number.get();
         self.turn_phases.record_sampling_request();
         let _sampling_phase = self.turn_phases.begin_sampling();
         let stream_drained_rx = {
@@ -2225,9 +2226,47 @@ impl SessionActor {
                 Some(config) => config,
                 None => self.turn_sampler_config_from_binding(binding).await,
             };
-            self.sampler_handle
-                .submit_and_collect_with_config(request_id.clone(), request, sampler_config)
+            let native = if sampler_config.api_backend == xai_grok_sampler::ApiBackend::Messages {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    self.chat_state_handle.begin_native_capture(
+                        self.session_id_string(),
+                        request_id.as_str().to_owned(),
+                        native_turn,
+                    ),
+                )
                 .await
+                {
+                    Ok(Ok(lease)) => Some(lease),
+                    Ok(Err(reason)) => {
+                        tracing::debug!(?reason, "passive native capture unavailable");
+                        None
+                    }
+                    Err(_) => {
+                        tracing::warn!("passive native capture lease timed out");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            match native {
+                Some(lease) => {
+                    self.sampler_handle
+                        .submit_and_collect_with_native_capture(
+                            request_id.clone(),
+                            request,
+                            sampler_config,
+                            lease,
+                        )
+                        .await
+                }
+                None => {
+                    self.sampler_handle
+                        .submit_and_collect_with_config(request_id.clone(), request, sampler_config)
+                        .await
+                }
+            }
         };
         let terminal_event_queued = collected.terminal_event_queued;
         let recovery_attempts = collected.doom_loop_recovery_attempts;

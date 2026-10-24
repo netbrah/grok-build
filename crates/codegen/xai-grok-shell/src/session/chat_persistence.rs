@@ -18,6 +18,35 @@ impl ChannelChatPersistence {
 }
 
 impl ChatPersistence for ChannelChatPersistence {
+    fn read_native_history(
+        &mut self,
+    ) -> oneshot::Receiver<
+        Result<
+            xai_chat_state::persistence::native::NativeRead,
+            xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+        >,
+    > {
+        let (respond_to, receiver) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(PersistenceMsg::ReadNativeHistory { respond_to });
+        receiver
+    }
+    fn persist_native_generation_and_ack(
+        &mut self,
+        write: xai_chat_state::persistence::native::NativeWrite,
+    ) -> oneshot::Receiver<
+        Result<
+            xai_chat_state::persistence::native::NativeAppendAck,
+            xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+        >,
+    > {
+        let (respond_to, receiver) = oneshot::channel();
+        let _ = self
+            .tx
+            .send(PersistenceMsg::PersistNativeGenerationAndAck { write, respond_to });
+        receiver
+    }
     fn persist_message(&mut self, item: &ConversationItem) {
         let _ = self.tx.send(PersistenceMsg::Chat(item.clone()));
     }
