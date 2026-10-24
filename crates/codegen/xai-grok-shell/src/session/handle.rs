@@ -473,6 +473,28 @@ impl SessionHandle {
             Vec::new()
         })
     }
+    /// Snapshot parent specs and their ephemeral registered identities together.
+    pub(crate) fn snapshot_tool_definitions_with_identity(
+        &self,
+    ) -> impl std::future::Future<Output = super::ToolSpecBundle> {
+        let (tx, rx) = oneshot::channel();
+        let sent = self
+            .cmd_tx
+            .send(SessionCommand::SnapshotToolDefinitionsWithIdentity { respond_to: tx })
+            .is_ok();
+        futures::FutureExt::map(rx, move |reply| {
+            if !sent {
+                tracing::warn!(
+                    "snapshot_tool_definitions_with_identity: session actor gone; fork child inherits no parent tools"
+                );
+                return super::ToolSpecBundle::default();
+            }
+            reply.unwrap_or_else(|_| {
+                tracing::warn!("snapshot_tool_definitions_with_identity: reply dropped; fork child inherits no parent tools");
+                super::ToolSpecBundle::default()
+            })
+        })
+    }
     pub(crate) async fn workflow_catalog_state(&self) -> (bool, bool) {
         let (tx, rx) = oneshot::channel();
         if self

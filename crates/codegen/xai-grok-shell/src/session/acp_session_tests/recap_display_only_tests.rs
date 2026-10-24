@@ -1833,7 +1833,7 @@ async fn parent_cached_request_pins_fail_length_policy() {
     let (actor, _gateway_rx) = local.run_until(build_actor()).await;
     let request = actor.parent_cached_request(super::side_call::AuxCall {
         items: Vec::new(),
-        tools: Vec::new(),
+        tools: super::ToolSpecBundle::default(),
         hosted_tools: Vec::new(),
         model: "test-model".to_string(),
         supports_search_tool: false,
@@ -2233,4 +2233,701 @@ async fn auxiliary_mcp_selection_keeps_builtin_snapshot_and_captured_row() {
             }
         }
     }).await;
+}
+
+// The config home is process-cached; isolate before any actor reads it.
+fn parent_golden_isolated(name: &str) -> bool {
+    const CHILD: &str = "GROK_TEST_3V1S_PARENT_ISOLATED";
+    if std::env::var(CHILD).as_deref() == Ok(name) {
+        return false;
+    }
+    let home = tempfile::tempdir().unwrap();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", home.path())
+        .env("GROK_HOME", home.path().join("grok"))
+        .env("TMPDIR", home.path())
+        .env("RUST_MIN_STACK", "67108864")
+        .env(CHILD, name)
+        .args(["--exact", name, "--nocapture"])
+        .stdin(std::process::Stdio::null());
+    for variable in ["GROK_TOOLS_BUNDLE_RG_PATH", "GROK_SHELL_BUNDLE_RG_PATH"] {
+        if let Some(value) = std::env::var_os(variable) {
+            command.env(variable, value);
+        }
+    }
+    xai_tty_utils::detach_std_command(&mut command);
+    let output = command.output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(stdout.matches("running 1 test").count(), 1, "{stdout}");
+    assert!(
+        output.status.success(),
+        "isolated parent witness failed: {stdout}\n{stderr}"
+    );
+    assert!(stdout.contains(&format!("test {name} ... ok")), "{stdout}");
+    true
+}
+
+#[derive(Clone)]
+struct ParentGoldenExchange {
+    path: String,
+    request_id: Option<String>,
+    headers: Vec<(String, bool)>,
+    raw_body: Vec<u8>,
+    parsed_body: serde_json::Value,
+    response_body: String,
+}
+
+struct ParentGoldenWire {
+    url: String,
+    exchanges: std::rc::Rc<std::cell::RefCell<Vec<ParentGoldenExchange>>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for ParentGoldenWire {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+impl ParentGoldenWire {
+    async fn start() -> Self {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let exchanges = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured = exchanges.clone();
+        let task = tokio::task::spawn_local(async move {
+            for _ in 0..8 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut received = Vec::new();
+                let mut buffer = [0; 8192];
+                let header_end = loop {
+                    let n = socket.read(&mut buffer).await.unwrap();
+                    assert_ne!(n, 0, "complete HTTP headers required");
+                    received.extend_from_slice(&buffer[..n]);
+                    assert!(received.len() <= 2 * 1024 * 1024);
+                    if let Some(index) = received.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+                    {
+                        break index + 4;
+                    }
+                };
+                let headers = std::str::from_utf8(&received[..header_end]).unwrap();
+                let mut lines = headers.lines();
+                let first = lines.next().unwrap();
+                let mut request_line = first.split_whitespace();
+                assert_eq!(request_line.next(), Some("POST"));
+                let path = request_line.next().unwrap().to_owned();
+                let mut length = None;
+                let mut request_id = None;
+                let mut header_flags = Vec::new();
+                for line in lines.filter(|line| !line.is_empty()) {
+                    let (name, value) = line.split_once(':').unwrap();
+                    header_flags.push((name.to_ascii_lowercase(), value.trim().is_empty()));
+                    if name.eq_ignore_ascii_case("content-length") {
+                        length = Some(value.trim().parse::<usize>().unwrap());
+                    }
+                    if name.eq_ignore_ascii_case("x-grok-req-id") {
+                        request_id = Some(value.trim().to_owned());
+                    }
+                    assert!(!name.eq_ignore_ascii_case("transfer-encoding"));
+                }
+                let length = length.expect("encoded request has a Content-Length");
+                assert!(length <= 2 * 1024 * 1024);
+                while received.len() < header_end + length {
+                    let n = socket.read(&mut buffer).await.unwrap();
+                    assert_ne!(n, 0, "complete HTTP body required");
+                    received.extend_from_slice(&buffer[..n]);
+                }
+                // Keep exactly the received entity bytes before any JSON parsing.
+                let raw_body = received[header_end..header_end + length].to_vec();
+                let parsed_body: serde_json::Value = serde_json::from_slice(&raw_body).unwrap();
+                let response_body = parent_golden_response(&path, &parsed_body);
+                captured.borrow_mut().push(ParentGoldenExchange {
+                    path,
+                    request_id,
+                    headers: header_flags,
+                    raw_body,
+                    parsed_body,
+                    response_body: response_body.clone(),
+                });
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\nx-request-id: parent-capture-response\r\n\r\n{response_body}",
+                    response_body.len(),
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+                socket.shutdown().await.unwrap();
+            }
+        });
+        Self {
+            url,
+            exchanges,
+            task,
+        }
+    }
+}
+
+fn parent_golden_response(path: &str, body: &serde_json::Value) -> String {
+    let model = body["model"].as_str().unwrap();
+    if path == "/v1/responses" {
+        return xai_grok_test_support::sse::responses_api_script_exact(
+            "Parent capture complete",
+            model,
+        )
+        .into_iter()
+        .map(|event| format!("data: {}\n\n", event.data))
+        .collect();
+    }
+    assert_eq!(path, "/v1/messages");
+    let events = vec![
+        serde_json::json!({"type":"message_start","message":{"id":"msg_parent_capture","type":"message","role":"assistant","content":[],"model":model,"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}),
+        serde_json::json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+        serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Parent capture complete"}}),
+        serde_json::json!({"type":"content_block_stop","index":0}),
+        serde_json::json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5,"input_tokens":10}}),
+        serde_json::json!({"type":"message_stop"}),
+    ];
+    events
+        .into_iter()
+        .map(|event| format!("data: {event}\n\n"))
+        .collect()
+}
+
+fn parent_golden_record(case: &str, value: serde_json::Value) {
+    let frozen = &value["frozen"];
+    let expected_raw = match case {
+        "recap/chat-admission-off"
+        | "recap/chat-admission-on"
+        | "recap/messages-admission-off"
+        | "recap/responses-admission-off"
+        | "recap/responses-admission-on"
+        | "recap/same-bound-row" => Some(
+            r####"{"model":"r12-parent","messages":[{"role":"user","content":[{"type":"text","text":"Find the parent schema"}]},{"role":"assistant","content":[{"type":"tool_use","id":"call_parent_capture","name":"search_tool","input":{"query":"parent schema"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_parent_capture","content":[{"type":"tool_reference","tool_name":"historic__lookup"}]}]},{"role":"assistant","content":[{"type":"tool_use","id":"srvtoolu_parent_capture","name":"tool_search_tool_bm25","input":{"query":"server schema"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"srvtoolu_parent_capture","content":[{"type":"tool_reference","tool_name":"alpha__lookup"}]}]},{"role":"assistant","content":[{"type":"text","text":"Found both schema families"}]},{"role":"user","content":[{"type":"text","text":"Check the second step"}]},{"role":"assistant","content":[{"type":"text","text":"Second step complete"}]},{"role":"user","content":[{"type":"text","text":"Check the third step","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"Third step complete"}]},{"role":"user","content":[{"type":"text","text":"<system-reminder>Write ONE sentence recap body for a user returning from idle. Output ONLY the body (the UI adds the \"Recap —\" label). Do NOT call any tools — respond with plain text only.\n\nLANGUAGE: write the body in the language the user's own chat messages are written in (ignore reminder-tagged turns like this one; user instructions such as AGENTS.md may override). Keep code identifiers verbatim.\n\nLead with agency:\n- \"You asked …\" if the session was mainly questions, walkthroughs, or review with no landed change.\n- \"We <past-tense verb> …\" if the agent implemented, fixed, merged, or changed code/config/docs (e.g. \"We fixed …\", \"We merged …\", \"We wired …\" — not \"We did fix\" / \"We did merge\").\n- If almost nothing happened: \"You had just begun this session.\"\n\nShape: <lead>: <concrete specifics — crate/file/flag/behavior/endpoint>. ~25–40 words.\n\nSynthetic examples (style only — adapt to THIS session, do not copy):\n\nYou asked how retries work in the payment client: exponential backoff in `billing/retry.rs`, max 5 attempts, 429s only.\n\nYou asked for a walkthrough of the auth middleware change: warn-only mode in the API layer, no hard fail on missing claims.\n\nWe fixed the flaky integration test: race in `queue_worker` shutdown by awaiting the drain channel before exit.\n\nWe merged the feature branch: kept the new telemetry hooks, dropped the obsolete feature flag in `config/flags.toml`.\n\nBad (never):\n- Start with Recap / Session recap / extra labels\n- English recap for a non-English session\n- Quote or restate this reminder or any system prompt\n- Bullets, markdown, code fences, extra sentences\n- Call tools or emit tool/function calls\n- Invent work not reflected in the session</system-reminder>","cache_control":{"type":"ephemeral"}}]}],"max_tokens":512,"system":[{"type":"text","text":"Parent capture system"},{"type":"text","text":"The following deferred tools are now available via search_tool. Their schemas are NOT loaded — calling them directly will fail with InputValidationError. Use search_tool with query \"select:<name>[,<name>...]\" to load tool schemas before calling them:\nhistoric__lookup","cache_control":{"type":"ephemeral"}}],"tools":[{"name":"search_tool","description":"Fetches full schema definitions for deferred tools so they can be called.\n\nDeferred tools appear by name in <system-reminder> messages. Until fetched, only the name is known — there is no parameter schema, so the tool cannot be invoked. This tool takes a query, matches it against the deferred tool list, and returns the matched tools' complete JSONSchema definitions inside a <functions> block. Once a tool's schema appears in that result, it is callable exactly like any tool defined at the top of the prompt.\n\nResult format: each matched tool appears as one <function>{\"description\": \"...\", \"name\": \"...\", \"parameters\": {...}}</function> line inside the <functions> block — the same encoding as the tool list at the top of this prompt.\n\nQuery forms:\n- \"select:Read,Edit,Grep\" — fetch these exact tools by name\n- \"notebook jupyter\" — keyword search, up to max_results best matches\n- \"+slack send\" — require \"slack\" in the name, rank by remaining terms","input_schema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"query":{"description":"Query to find deferred tools. Use \"select:<tool_name>\" for direct selection, or keywords to search.","type":"string"},"max_results":{"description":"Maximum number of results to return (default: 5)","default":5,"type":"number"}},"required":["query","max_results"],"additionalProperties":false}},{"name":"use_tool","description":"Call an MCP integration tool.\n\nThe `tool_name` must be the qualified `server__tool` name (e.g., `linear__save_issue`). The `tool_input` must conform exactly to the tool's input schema as returned by `search_tool`.","input_schema":{"$schema":"http://json-schema.org/draft-07/schema#","required":["tool_name","tool_input"],"properties":{"tool_name":{"description":"The qualified name of the integration tool to call (e.g., \"linear__save_issue\").\nMust be a tool previously discovered via `search_tool`.","type":"string"},"tool_input":{"description":"The arguments to pass to the tool, as a JSON object.\nUse the parameter schema returned by `search_tool` to construct this.","type":"object","additionalProperties":true}},"type":"object"}},{"name":"z_builtin","description":"z_builtin","input_schema":{"type":"object","properties":{"value":{"type":"string","description":"z_builtin"}},"required":["value"],"additionalProperties":false},"defer_loading":true},{"name":"builtin__renamed","description":"builtin__renamed","input_schema":{"type":"object","properties":{"value":{"type":"string","description":"builtin__renamed"}},"required":["value"],"additionalProperties":false}},{"name":"policy__root_message","description":"policy__root_message","input_schema":{"type":"object","properties":{"value":{"type":"string","description":"policy__root_message"}},"required":["value"],"additionalProperties":false}},{"name":"alpha__lookup","description":"alpha__lookup","input_schema":{"type":"object","properties":{"value":{"type":"string","description":"alpha__lookup"}},"required":["value"],"additionalProperties":false},"defer_loading":true},{"name":"zeta__fetch","description":"zeta__fetch","input_schema":{"type":"object","properties":{"value":{"type":"string","description":"zeta__fetch"}},"required":["value"],"additionalProperties":false},"defer_loading":true},{"name":"DeferredToolPlaceholder","description":"Reserved placeholder that keeps deferred tool loading active; never call this tool.","input_schema":{"type":"object","properties":{}},"defer_loading":true},{"name":"historic__lookup","description":"Frozen historical lookup","input_schema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false},"defer_loading":true},{"type":"tool_search_tool_bm25_20251119","name":"tool_search_tool_bm25"}],"stream":true}"####,
+        ),
+        _ => None,
+    };
+    if let Some(expected_raw) = expected_raw {
+        let expected: serde_json::Value = serde_json::from_str(expected_raw).unwrap();
+        assert_eq!(
+            frozen["raw_body"].as_str(),
+            Some(expected_raw),
+            "frozen parent encoded body: {case}"
+        );
+        assert_eq!(
+            frozen["parsed_body"], expected,
+            "frozen parent parsed body: {case}"
+        );
+        return;
+    }
+    let expected = match case {
+        _ => panic!("no valid frozen parent outcome for {case}"),
+    };
+    let expected: serde_json::Value = serde_json::from_str(expected).unwrap();
+    assert_eq!(*frozen, expected, "frozen parent lifecycle outcome: {case}");
+}
+
+#[derive(Clone, Debug)]
+struct ParentGoldenTool {
+    name: &'static str,
+    namespace: xai_grok_tools::types::tool::ToolNamespace,
+    kind: xai_grok_tools::types::tool::ToolKind,
+}
+
+impl xai_grok_tools::types::tool_metadata::ToolMetadata for ParentGoldenTool {
+    fn kind(&self) -> xai_grok_tools::types::tool::ToolKind {
+        self.kind
+    }
+    fn tool_namespace(&self) -> xai_grok_tools::types::tool::ToolNamespace {
+        self.namespace
+    }
+    fn description_template(&self) -> &str {
+        self.name
+    }
+}
+
+impl xai_tool_runtime::Tool for ParentGoldenTool {
+    type Args = serde_json::Value;
+    type Output = xai_grok_tools::types::output::ToolOutput;
+    fn id(&self) -> xai_tool_protocol::ToolId {
+        xai_tool_protocol::ToolId::new(self.name).unwrap()
+    }
+    fn description(
+        &self,
+        _: &xai_tool_runtime::ListToolsContext,
+    ) -> xai_tool_types::ToolDescription {
+        xai_tool_types::ToolDescription::new(self.name, self.name)
+    }
+    async fn run(
+        &self,
+        _: xai_tool_runtime::ToolCallContext,
+        _: Self::Args,
+    ) -> Result<Self::Output, xai_tool_runtime::ToolError> {
+        panic!("parent capture never executes a declared fixture tool")
+    }
+}
+
+fn parent_golden_register(
+    actor: &crate::session::acp_session::SessionActor,
+    name: &'static str,
+    namespace: xai_grok_tools::types::tool::ToolNamespace,
+    kind: xai_grok_tools::types::tool::ToolKind,
+) {
+    let schema = serde_json::json!({"type":"object","properties":{"value":{"type":"string","description":name}},"required":["value"],"additionalProperties":false});
+    actor
+        .agent
+        .borrow()
+        .tool_bridge()
+        .register_mcp_tools(
+            name.into(),
+            ParentGoldenTool {
+                name,
+                namespace,
+                kind,
+            },
+            Some(schema),
+        )
+        .unwrap();
+}
+
+fn parent_golden_history() -> Vec<xai_grok_sampling_types::ConversationItem> {
+    use xai_grok_sampling_types::ConversationItem;
+    use xai_grok_sampling_types::conversation::tool_search::ToolSearchItem;
+    let raw = vec![
+        serde_json::json!({"type":"tool_search_call","id":"tsc_parent_capture","call_id":"call_parent_capture","execution":"client","status":"completed","arguments":{"query":"parent schema"}}),
+        serde_json::json!({"type":"tool_search_output","id":"tso_parent_capture","call_id":"call_parent_capture","execution":"client","status":"completed","tools":[{"type":"function","name":"historic__lookup","description":"Frozen historical lookup","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}}]}),
+        serde_json::json!({"type":"server_tool_use","id":"srvtoolu_parent_capture","name":"tool_search_tool_bm25","input":{"query":"server schema"},"status":"completed"}),
+        serde_json::json!({"type":"tool_search_tool_result","tool_use_id":"srvtoolu_parent_capture","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"alpha__lookup"}]},"status":"completed"}),
+    ];
+    let discovery: Vec<_> = raw
+        .into_iter()
+        .map(|raw| ToolSearchItem::from_wire(raw).unwrap())
+        .collect();
+    assert_eq!(
+        xai_grok_sampling_types::conversation::tool_search::partner_indices(&discovery),
+        vec![Some(1), Some(0), Some(3), Some(2)]
+    );
+    let mut history = vec![
+        ConversationItem::system("Parent capture system"),
+        ConversationItem::user("Find the parent schema"),
+    ];
+    history.extend(
+        discovery
+            .into_iter()
+            .map(|item| ConversationItem::Discovery { item }),
+    );
+    history.extend([
+        ConversationItem::assistant("Found both schema families"),
+        ConversationItem::user("Check the second step"),
+        ConversationItem::assistant("Second step complete"),
+        ConversationItem::user("Check the third step"),
+        ConversationItem::assistant("Third step complete"),
+    ]);
+    history
+}
+
+struct ParentGoldenFixture {
+    actor: std::sync::Arc<crate::session::acp_session::SessionActor>,
+    binding: xai_chat_state::RequestTransportBinding,
+    wire: ParentGoldenWire,
+    live_wire: ParentGoldenWire,
+    history: Vec<xai_grok_sampling_types::ConversationItem>,
+    _home: tempfile::TempDir,
+}
+
+async fn parent_golden_fixture(
+    backend: xai_grok_sampling_types::ApiBackend,
+) -> ParentGoldenFixture {
+    use crate::session::acp_session::support;
+    use xai_grok_tools::types::tool::{ToolKind, ToolNamespace};
+    let wire = ParentGoldenWire::start().await;
+    let live_wire = ParentGoldenWire::start().await;
+    let (gateway_tx, gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (persistence_tx, persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+    support::drain_gateway(gateway_rx);
+    support::drain_persistence(persistence_rx);
+    let mut actor = support::create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+    actor.auth_method_id = support::test_auth_method_id("xai.api_key");
+    actor.agent.replace(
+        support::test_agent_with_tools(vec![
+            xai_grok_tools::registry::types::ToolConfig::for_tool::<
+                xai_grok_tools::implementations::search_tool::SearchTool,
+            >(),
+            xai_grok_tools::registry::types::ToolConfig::for_tool::<
+                xai_grok_tools::implementations::use_tool::UseTool,
+            >(),
+        ])
+        .await,
+    );
+    for (name, namespace, kind) in [
+        ("z_builtin", ToolNamespace::GrokBuild, ToolKind::Other),
+        (
+            "builtin__renamed",
+            ToolNamespace::GrokBuild,
+            ToolKind::Other,
+        ),
+        (
+            "policy__root_message",
+            ToolNamespace::GrokBuild,
+            ToolKind::ActiveAgentMessage,
+        ),
+        ("zeta__fetch", ToolNamespace::MCP, ToolKind::Other),
+        ("alpha__lookup", ToolNamespace::MCP, ToolKind::Other),
+    ] {
+        parent_golden_register(&actor, name, namespace, kind);
+    }
+    let (manager, home) = support::manager_with_entries();
+    for model in ["r12-parent", "r12-live"] {
+        manager.insert_test_entry(
+            model,
+            support::entry_with_deferred_tools(model, true, &["z_builtin"]),
+        );
+    }
+    manager.set_current_model_id(agent_client_protocol::ModelId::new("r12-parent"));
+    actor.models_manager = manager;
+    let mut binding = actor
+        .chat_state_handle
+        .capture_transport_binding()
+        .await
+        .unwrap();
+    binding.config.model = "r12-parent".into();
+    binding.config.base_url = wire.url.clone();
+    binding.config.api_backend = backend;
+    binding.config.supports_search_tool = true;
+    binding.config.max_retries = Some(0);
+    binding.config.max_completion_tokens = Some(512);
+    binding.config.extra_headers.clear();
+    binding.credentials = xai_chat_state::Credentials {
+        api_key: Some("parent-capture-fixture".into()),
+        auth_type: xai_chat_state::AuthType::ApiKey,
+        alpha_test_key: None,
+        client_version: None,
+    };
+    actor
+        .chat_state_handle
+        .install_transport_binding(binding.clone())
+        .await
+        .unwrap();
+    let history = parent_golden_history();
+    actor
+        .chat_state_handle
+        .replace_conversation(history.clone());
+    assert_eq!(
+        serde_json::to_value(actor.chat_state_handle.get_conversation().await).unwrap(),
+        serde_json::to_value(&history).unwrap()
+    );
+    ParentGoldenFixture {
+        actor: std::sync::Arc::new(actor),
+        binding,
+        wire,
+        live_wire,
+        history,
+        _home: home,
+    }
+}
+
+fn parent_golden_variants() -> [(&'static str, xai_grok_sampling_types::ApiBackend, bool); 6] {
+    use xai_grok_sampling_types::ApiBackend;
+    [
+        ("same-bound-row", ApiBackend::Messages, true),
+        ("messages-admission-off", ApiBackend::Messages, false),
+        ("responses-admission-on", ApiBackend::Responses, true),
+        ("responses-admission-off", ApiBackend::Responses, false),
+        ("chat-admission-on", ApiBackend::ChatCompletions, true),
+        ("chat-admission-off", ApiBackend::ChatCompletions, false),
+    ]
+}
+
+fn parent_golden_live_binding(
+    fixture: &ParentGoldenFixture,
+    scenario: &str,
+    backend: xai_grok_sampling_types::ApiBackend,
+    flag: bool,
+) -> xai_chat_state::RequestTransportBinding {
+    if scenario == "same-bound-row" {
+        return fixture.binding.clone();
+    }
+    let mut live = fixture.binding.clone();
+    live.config.model = "r12-live".into();
+    live.config.base_url = fixture.live_wire.url.clone();
+    live.config.api_backend = backend;
+    live.config.supports_search_tool = flag;
+    live.credentials.api_key = Some("live-capture-fixture".into());
+    live
+}
+
+fn parent_golden_registry(actor: &crate::session::acp_session::SessionActor) -> serde_json::Value {
+    let bridge = actor.agent.borrow().tool_bridge().clone();
+    let inventory: Vec<_> = bridge.toolset().tools_namespaced().into_iter().enumerate()
+        .map(|(coordinate, (definition, namespace))| serde_json::json!({
+            "coordinate":coordinate, "kind":format!("{:?}", bridge.tool_kind(&definition.function.name)),
+            "namespace":format!("{namespace:?}"), "definition":definition,
+        })).collect();
+    serde_json::to_value(inventory).unwrap()
+}
+
+fn parent_golden_capture_body(
+    case: &str,
+    fixture: &ParentGoldenFixture,
+    request: &xai_grok_sampling_types::ConversationRequest,
+    selected_from: &str,
+    parent_registry: serde_json::Value,
+) {
+    assert!(
+        fixture.live_wire.exchanges.borrow().is_empty(),
+        "installed B must receive no submission"
+    );
+    let exchanges = fixture.wire.exchanges.borrow();
+    assert_eq!(exchanges.len(), 1, "exactly one actual surface send");
+    let exchange = &exchanges[0];
+    let expected_path = match fixture.binding.config.api_backend {
+        xai_grok_sampling_types::ApiBackend::Messages => "/v1/messages",
+        xai_grok_sampling_types::ApiBackend::Responses => "/v1/responses",
+        xai_grok_sampling_types::ApiBackend::ChatCompletions => "/v1/chat/completions",
+    };
+    assert_eq!(exchange.path, expected_path);
+    assert_eq!(exchange.parsed_body["model"], fixture.binding.config.model);
+    assert_eq!(
+        request.model.as_deref(),
+        Some(fixture.binding.config.model.as_str())
+    );
+    if case.starts_with("title-") {
+        assert!(request.tools.is_empty());
+        assert!(request.hosted_tools.is_empty());
+        assert!(!request.search_admission.unwrap().admitted());
+    } else {
+        assert!(request.search_admission.unwrap().admitted());
+        let tools = exchange.parsed_body["tools"].as_array().unwrap();
+        for name in [
+            "search_tool",
+            "use_tool",
+            "historic__lookup",
+            "tool_search_tool_bm25",
+        ] {
+            assert!(
+                tools.iter().any(|tool| tool["name"] == name),
+                "parent declaration missing: {name}"
+            );
+        }
+        let contents: Vec<_> = exchange.parsed_body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|message| message["content"].as_array().unwrap().iter())
+            .collect();
+        assert!(
+            contents
+                .iter()
+                .any(|block| block["type"] == "tool_use" && block["name"] == "search_tool"),
+            "full canonical D2 bridge call must be present"
+        );
+        assert!(
+            contents.iter().any(|block| block["type"] == "tool_result"
+                && block["tool_use_id"] == "call_parent_capture"),
+            "full canonical D2 result must be present"
+        );
+        if !case.starts_with("fork/") {
+            let mcp: Vec<_> = request
+                .tools
+                .iter()
+                .filter(|tool| ["alpha__lookup", "zeta__fetch"].contains(&tool.name.as_str()))
+                .collect();
+            assert_eq!(mcp.len(), 2);
+            for spec in mcp {
+                assert_eq!(
+                    spec.exposure,
+                    xai_grok_sampling_types::ToolExposure::Deferred
+                );
+                let client = tools.iter().find(|tool| tool["name"] == spec.name).unwrap();
+                assert_eq!(client["input_schema"], spec.parameters);
+                assert_eq!(client["defer_loading"], true);
+            }
+        } else {
+            assert!(!request.tools.iter().any(|tool| {
+                ["alpha__lookup", "zeta__fetch", "child__lookup"].contains(&tool.name.as_str())
+            }));
+        }
+    }
+    if fixture.binding.config.api_backend == xai_grok_sampling_types::ApiBackend::Responses {
+        assert_eq!(exchange.parsed_body["store"], false);
+    }
+    parent_golden_record(
+        case,
+        serde_json::json!({
+            "frozen": {"raw_body":String::from_utf8(exchange.raw_body.clone()).unwrap(), "parsed_body":exchange.parsed_body},
+            "provenance": {
+                "binding_config":fixture.binding.config,
+                "backend":fixture.binding.config.api_backend,
+                "dialect":format!("{:?}", fixture.binding.config.api_backend),
+                "admission":request.search_admission.map(|a| serde_json::json!({"supports_search_tool":a.supports_search_tool,"has_searchable_tools":a.has_searchable_tools})),
+                "input_history":fixture.history,
+                "request_items":request.items,
+                "selected_specs":request.tools,
+                "selected_hosted_tools":format!("{:?}", request.hosted_tools),
+                "selected_specs_observation":selected_from,
+                "parent_registry":parent_registry,
+                "request_path":exchange.path,
+                "request_id":exchange.request_id,
+                "header_flags":exchange.headers,
+                "response_id":"parent-capture-response",
+                "response_body":exchange.response_body,
+                "submission_count":exchanges.len(),
+                "normalization_mapping":[],
+                "normalization_note":"No body normalization. Request correlation IDs exist only in headers and are retained separately.",
+            }
+        }),
+    );
+}
+
+async fn parent_golden_auxiliary(surface: &str, backend: xai_grok_sampling_types::ApiBackend) {
+    use crate::session::acp_session::side_call::tests::AuxiliaryGuard;
+    for (scenario, installed_backend, flag) in parent_golden_variants() {
+        let mut fixture = parent_golden_fixture(backend.clone()).await;
+        let actor = std::sync::Arc::get_mut(&mut fixture.actor).unwrap();
+        actor.turn_summary_enabled = true;
+        actor.title_refresh_enabled = true;
+        let registry = parent_golden_registry(actor);
+        let selected = if surface == "title" {
+            Vec::new()
+        } else {
+            actor
+                .prepare_side_call_tool_specs(&fixture.binding)
+                .await
+                .specs
+        };
+        let original_admission = xai_grok_sampling_types::SearchAdmission::for_row(true, &selected);
+        let live = parent_golden_live_binding(&fixture, scenario, installed_backend, flag);
+        let guard = AuxiliaryGuard::new(live.clone());
+        match surface {
+            "btw" => assert_eq!(
+                fixture
+                    .actor
+                    .handle_side_question("What remains after discovery?")
+                    .await
+                    .unwrap(),
+                "Parent capture complete"
+            ),
+            "recap" => {
+                fixture.actor.handle_recap(false).await;
+                assert!(
+                    fixture.actor.last_recap_main_turn.get() > 0,
+                    "actual recap commits its watermark"
+                );
+            }
+            "turn-summary" => {
+                fixture
+                    .actor
+                    .restart_turn_summary("parent-summary-prompt".into());
+                assert!(fixture.actor.turn_summary_task.borrow().is_some());
+                tokio::time::timeout(std::time::Duration::from_secs(60), async {
+                    while fixture.actor.turn_summary_task.borrow().is_some() {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("independently entered turn summary completes");
+            }
+            "title" => {
+                fixture.actor.maybe_refresh_title();
+                assert!(fixture.actor.title_refresh_task.borrow().is_some());
+                tokio::time::timeout(std::time::Duration::from_secs(60), async {
+                    while fixture.actor.title_refresh_task.borrow().is_some() {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("actual title lifecycle completes");
+                assert!(fixture.actor.next_title_refresh_idx.get() > 0);
+            }
+            _ => unreachable!(),
+        }
+        let sends = guard.sends();
+        let (request, source) = if surface == "turn-summary" {
+            assert!(
+                sends.is_empty(),
+                "the parent has no summary request observation hook"
+            );
+            // This metadata is not a second request build; the actual summary is captured at HTTP.
+            (
+                xai_grok_sampling_types::ConversationRequest {
+                    tools: selected.clone(),
+                    hosted_tools: fixture.actor.hosted_tools_for_turn(),
+                    search_admission: Some(original_admission),
+                    model: Some(fixture.binding.config.model.clone()),
+                    ..Default::default()
+                },
+                "same immutable registered inventory through the production captured-row selector, validated against the actual summary HTTP body; no pre-lowering request hook exists",
+            )
+        } else {
+            assert_eq!(sends.len(), 1);
+            assert_eq!(sends[0].0, surface);
+            (
+                sends[0].1.clone(),
+                "actual auxiliary request observation before send",
+            )
+        };
+        assert_eq!(
+            serde_json::to_value(&request.tools).unwrap(),
+            serde_json::to_value(&selected).unwrap()
+        );
+        assert_eq!(request.search_admission, Some(original_admission));
+        assert_eq!(
+            serde_json::to_value(fixture.actor.chat_state_handle.get_conversation().await).unwrap(),
+            serde_json::to_value(&fixture.history).unwrap(),
+            "auxiliary entry is display-only"
+        );
+        let installed = fixture
+            .actor
+            .chat_state_handle
+            .capture_transport_binding()
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&installed.config).unwrap(),
+            serde_json::to_value(&live.config).unwrap()
+        );
+        assert_eq!(installed.credentials, live.credentials);
+        let label = if surface == "title" {
+            format!("title-{backend:?}")
+        } else {
+            surface.to_owned()
+        };
+        parent_golden_capture_body(
+            &format!("{label}/{scenario}"),
+            &fixture,
+            &request,
+            source,
+            registry,
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn interim_messages_recap_matches_committed_parent() {
+    const NAME: &str = "session::acp_session::recap_display_only_tests::interim_messages_recap_matches_committed_parent";
+    if parent_golden_isolated(NAME) {
+        return;
+    }
+    tokio::task::LocalSet::new()
+        .run_until(parent_golden_auxiliary(
+            "recap",
+            xai_grok_sampling_types::ApiBackend::Messages,
+        ))
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn responses_recap_bridge_cutover() {
+    const NAME: &str =
+        "session::acp_session::recap_display_only_tests::responses_recap_bridge_cutover";
+    if parent_golden_isolated(NAME) {
+        return;
+    }
+    tokio::task::LocalSet::new()
+        .run_until(super::side_call::tests::a3_auxiliary_surface("recap"))
+        .await;
 }

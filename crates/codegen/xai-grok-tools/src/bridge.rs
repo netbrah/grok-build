@@ -112,6 +112,13 @@ impl ToolBridge {
         self.registry.get_tool_metadata(tool_name).map(|m| m.kind())
     }
 
+    /// Clone one registered definition/namespace/kind inventory.
+    pub fn tools_with_identity(
+        &self,
+    ) -> Vec<(ToolDefinition, crate::types::tool::ToolNamespace, ToolKind)> {
+        self.registry.tools_with_identity()
+    }
+
     /// Get only built-in tool definitions (exclude MCP tools).
     pub async fn tool_definitions_builtins_only(&self) -> Vec<ToolDefinition> {
         self.registry.tool_definitions_builtins_only()

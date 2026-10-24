@@ -153,7 +153,7 @@ impl SessionActor {
         binding: &xai_chat_state::RequestTransportBinding,
     ) -> (
         ConversationItem,
-        Vec<ToolSpec>,
+        ToolSpecBundle,
         Vec<xai_grok_sampling_types::HostedTool>,
     ) {
         let tag = self.reminder_wrapper_tag();

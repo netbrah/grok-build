@@ -147,13 +147,13 @@ impl coordinator::ChildRunner for ShellChildRunner {
                 let (pool, hooks, mut definitions) = tokio::join!(
                     handle.snapshot_mcp_pool(),
                     handle.snapshot_client_hooks(),
-                    handle.snapshot_tool_definitions()
+                    handle.snapshot_tool_definitions_with_identity()
                 );
                 ctx.parent_mcp_pool = pool;
                 ctx.client_hooks = hooks;
-                super::strip_ask_user_question_tool(&mut definitions);
-                super::strip_workflow_tool(&mut definitions);
-                ctx.parent_tool_definitions = (!definitions.is_empty()).then_some(definitions);
+                definitions = definitions.filter_for_subagent();
+                ctx.parent_tool_definitions =
+                    (!definitions.specs.is_empty()).then_some(definitions);
             }
             if let Some(spawner) = spawner_session_id.as_deref() {
                 if this.is_resident(&acp::SessionId::new(spawner)) {

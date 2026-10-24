@@ -1280,6 +1280,22 @@ impl FinalizedToolset {
             .map(|tool| (tool.definition.clone(), tool.metadata.tool_namespace()))
             .collect()
     }
+    /// Clone definitions with their registered namespace and kind under one lock.
+    pub fn tools_with_identity(&self) -> Vec<(ToolDefinition, ToolNamespace, ToolKind)> {
+        let tools = self.tools.read();
+        #[cfg(test)]
+        tests::bridge_inventory_read_barrier();
+        tools
+            .iter()
+            .map(|tool| {
+                (
+                    tool.definition.clone(),
+                    tool.metadata.tool_namespace(),
+                    tool.metadata.kind(),
+                )
+            })
+            .collect()
+    }
     /// Client-facing name of the (first) enabled tool of `kind`, honoring `name_override` / preset
     /// renames — `None` if no tool of that kind is enabled. Mirrors `${{ tools.by_kind.<kind> }}`
     /// template resolution; used
@@ -5564,6 +5580,162 @@ mod tests {
                 .get_contract_version("read_file__namespace")
                 .as_deref(),
             Some("current")
+        );
+    }
+
+    thread_local! {
+        static BRIDGE_INVENTORY_BARRIER: std::cell::RefCell<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>> = const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn bridge_inventory_read_barrier() {
+        BRIDGE_INVENTORY_BARRIER.with(|slot| {
+            if let Some((start, reached)) = slot.borrow_mut().take() {
+                start.send(()).unwrap();
+                reached
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap();
+            }
+        });
+    }
+
+    #[derive(Debug, Clone)]
+    struct BridgeInventoryFixture {
+        kind: ToolKind,
+        namespace: ToolNamespace,
+        description: &'static str,
+    }
+
+    impl ToolMetadata for BridgeInventoryFixture {
+        fn kind(&self) -> ToolKind {
+            self.kind
+        }
+        fn tool_namespace(&self) -> ToolNamespace {
+            self.namespace
+        }
+        fn description_template(&self) -> &str {
+            self.description
+        }
+    }
+
+    impl xai_tool_runtime::Tool for BridgeInventoryFixture {
+        type Args = serde_json::Value;
+        type Output = ToolOutput;
+
+        fn id(&self) -> xai_tool_protocol::ToolId {
+            xai_tool_protocol::ToolId::new("identity_fixture").unwrap()
+        }
+        fn description(
+            &self,
+            _ctx: &xai_tool_runtime::ListToolsContext,
+        ) -> xai_tool_types::ToolDescription {
+            xai_tool_types::ToolDescription::new("identity_fixture", self.description)
+        }
+        async fn run(
+            &self,
+            _ctx: xai_tool_runtime::ToolCallContext,
+            _args: Self::Args,
+        ) -> Result<Self::Output, xai_tool_runtime::ToolError> {
+            panic!("inventory fixtures do not execute")
+        }
+    }
+
+    #[test]
+    fn bridge_identity_snapshot_is_one_inventory() {
+        let toolset = Arc::new(FinalizedToolset::empty_for_test());
+        let old_schema = serde_json::json!({"type":"object","properties":{"generation":{"const":"old"}},"required":["generation"],"additionalProperties":false});
+        let new_schema = serde_json::json!({"type":"object","properties":{"generation":{"const":"new"}},"required":["generation"],"additionalProperties":false});
+        toolset
+            .register_tool(
+                "renamed__bridge".into(),
+                BridgeInventoryFixture {
+                    kind: ToolKind::SearchTool,
+                    namespace: ToolNamespace::GrokBuild,
+                    description: "old generation",
+                },
+                Some(old_schema.clone()),
+            )
+            .unwrap();
+        let old = vec![(
+            ToolDefinition::function("renamed__bridge", Some("old generation"), old_schema),
+            ToolNamespace::GrokBuild,
+            ToolKind::SearchTool,
+        )];
+        assert_eq!(
+            serde_json::to_value(toolset.tools_with_identity()).unwrap(),
+            serde_json::to_value(&old).unwrap()
+        );
+        let (start, wait_start) = std::sync::mpsc::channel();
+        let (reached, wait_reached) = std::sync::mpsc::channel();
+        let writer_toolset = toolset.clone();
+        let writer_schema = new_schema.clone();
+        let writer = std::thread::spawn(move || {
+            wait_start
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            let locked = writer_toolset.tools.try_write().is_none();
+            if locked {
+                reached.send(()).unwrap();
+            }
+            assert!(writer_toolset.unregister_tool_by_name("renamed__bridge"));
+            writer_toolset
+                .register_tool(
+                    "renamed__bridge".into(),
+                    BridgeInventoryFixture {
+                        kind: ToolKind::UseTool,
+                        namespace: ToolNamespace::MCP,
+                        description: "new generation",
+                    },
+                    Some(writer_schema),
+                )
+                .unwrap();
+            writer_toolset
+                .register_tool(
+                    "new_member".into(),
+                    BridgeInventoryFixture {
+                        kind: ToolKind::Other,
+                        namespace: ToolNamespace::Codex,
+                        description: "new member",
+                    },
+                    Some(serde_json::json!({"type":"object"})),
+                )
+                .unwrap();
+            if !locked {
+                reached.send(()).unwrap();
+            }
+        });
+        BRIDGE_INVENTORY_BARRIER.with(|slot| *slot.borrow_mut() = Some((start, wait_reached)));
+        let captured = toolset.tools_with_identity();
+        writer.join().unwrap();
+        assert_eq!(
+            serde_json::to_value(&captured).unwrap(),
+            serde_json::to_value(&old).unwrap(),
+            "A1 coherent inventory generation and schema"
+        );
+        let new = vec![
+            (
+                ToolDefinition::function("renamed__bridge", Some("new generation"), new_schema),
+                ToolNamespace::MCP,
+                ToolKind::UseTool,
+            ),
+            (
+                ToolDefinition::function(
+                    "new_member",
+                    Some("new member"),
+                    serde_json::json!({"type":"object"}),
+                ),
+                ToolNamespace::Codex,
+                ToolKind::Other,
+            ),
+        ];
+        assert_eq!(
+            serde_json::to_value(toolset.tools_with_identity()).unwrap(),
+            serde_json::to_value(&new).unwrap(),
+            "later inventory sees complete replacement and registration"
+        );
+        assert_eq!(
+            serde_json::to_value(&captured).unwrap(),
+            serde_json::to_value(&old).unwrap(),
+            "owned snapshot survives replacement"
         );
     }
 }

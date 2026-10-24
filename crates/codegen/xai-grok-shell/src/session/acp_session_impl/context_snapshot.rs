@@ -5,6 +5,41 @@
 
 use super::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BoundProjectionSurface {
+    Main,
+    RebuiltChild,
+    Fork,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct LastBoundProjectionSummary {
+    pub(super) model: String,
+    pub(super) backend: xai_grok_sampling_types::ApiBackend,
+    pub(super) admission: Option<xai_grok_sampling_types::SearchAdmission>,
+    pub(super) surface: BoundProjectionSurface,
+    pub(super) selected_functions: usize,
+    pub(super) removed_functions: usize,
+    pub(super) retained_functions: usize,
+    pub(super) declaration_view: String,
+    pub(super) declaration_view_truncated: bool,
+    pub(super) vendor_entries: Option<usize>,
+    pub(super) system_bytes: usize,
+    pub(super) history_bytes: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum LastBoundProjectionState {
+    NotCaptured,
+    LastBound(LastBoundProjectionSummary),
+    StaleCapturedRow(LastBoundProjectionSummary),
+}
+
+#[derive(Clone, Default)]
+pub(super) struct LastBoundProjectionSlot(
+    pub(super) std::sync::Arc<parking_lot::Mutex<Option<LastBoundProjectionSummary>>>,
+);
+
 impl SessionActor {
     /// Record itemized context occupancy for this session.
     /// No-op when session metrics are disabled or there is no credential for the tokenizer endpoint.
@@ -64,6 +99,90 @@ impl SessionActor {
             .await
             .api_key
             .filter(|key| !key.is_empty())
+    }
+
+    pub(super) async fn last_bound_projection_slot(&self) -> LastBoundProjectionSlot {
+        let resources = self
+            .agent
+            .borrow()
+            .tool_bridge()
+            .toolset()
+            .resources
+            .clone();
+        let slot = resources
+            .lock()
+            .await
+            .get_or_default::<LastBoundProjectionSlot>()
+            .clone();
+        slot
+    }
+
+    pub(super) async fn last_bound_projection(&self) -> LastBoundProjectionState {
+        let slot = self.last_bound_projection_slot().await;
+        let Some(summary) = slot.0.lock().clone() else {
+            return LastBoundProjectionState::NotCaptured;
+        };
+        let current = self.chat_state_handle.get_sampling_config().await;
+        if current.is_some_and(|current| {
+            current.model == summary.model && current.api_backend == summary.backend
+        }) {
+            LastBoundProjectionState::LastBound(summary)
+        } else {
+            LastBoundProjectionState::StaleCapturedRow(summary)
+        }
+    }
+
+    pub(super) async fn publish_bound_projection(
+        &self,
+        request: &ConversationRequest,
+        binding: &xai_chat_state::RequestTransportBinding,
+        selected_functions: usize,
+    ) {
+        let surface = if self.forked_tool_override.is_some() {
+            BoundProjectionSurface::Fork
+        } else if self.startup_hints.is_subagent {
+            BoundProjectionSurface::RebuiltChild
+        } else {
+            BoundProjectionSurface::Main
+        };
+        let mut declaration_view = String::new();
+        let mut declaration_view_truncated = false;
+        let limit = xai_grok_telemetry::external::truncate::MAX_TOOL_INPUT_JSON_BYTES;
+        for spec in &request.tools {
+            let bytes = spec.name.len() + 1;
+            if declaration_view.len().saturating_add(bytes) > limit {
+                declaration_view_truncated = true;
+                break;
+            }
+            declaration_view.push_str(&spec.name);
+            declaration_view.push('\n');
+        }
+        let mut system_bytes = 0;
+        let mut history_bytes = 0;
+        for item in &request.items {
+            let bytes = item.text_content().len();
+            if matches!(item, ConversationItem::System(_)) {
+                system_bytes += bytes;
+            } else {
+                history_bytes += bytes;
+            }
+        }
+        let summary = LastBoundProjectionSummary {
+            model: binding.config.model.clone(),
+            backend: binding.config.api_backend.clone(),
+            admission: request.search_admission,
+            surface,
+            selected_functions,
+            removed_functions: selected_functions.saturating_sub(request.tools.len()),
+            retained_functions: request.tools.len(),
+            declaration_view,
+            declaration_view_truncated,
+            vendor_entries: None,
+            system_bytes,
+            history_bytes,
+        };
+        let slot = self.last_bound_projection_slot().await;
+        *slot.0.lock() = Some(summary);
     }
 
     async fn snapshot_texts(&self) -> SnapshotTexts {

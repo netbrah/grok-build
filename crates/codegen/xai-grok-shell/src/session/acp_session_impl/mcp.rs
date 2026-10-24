@@ -306,7 +306,22 @@ impl SessionActor {
         );
         Ok(arc)
     }
+    pub(super) async fn retry_native_mcp_auth(
+        &self,
+        opportunity: &mut super::turn::NativeMcpRecoveryOpportunity,
+    ) {
+        if opportunity.consume() {
+            #[cfg(test)]
+            self.a5_observe_consumed(opportunity.is_consumed());
+            self.retry_auth_required_servers().await;
+        }
+    }
+
     pub(super) async fn retry_auth_required_servers(&self) {
+        #[cfg(test)]
+        if self.a5_observe_mcp_recovery().await {
+            return;
+        }
         let servers_to_retry: Vec<String> = {
             let state = self.mcp_state.lock().await;
             state.auth_required.iter().cloned().collect()
@@ -1503,6 +1518,7 @@ impl SessionActor {
         }
         Some(McpAnnouncementSnapshot {
             text,
+            accounting_scope: "full-list estimate; not exact persisted Delta history or next-request bytes",
             server_count: server_summaries.len(),
         })
     }
@@ -1510,6 +1526,7 @@ impl SessionActor {
 /// The MCP server announcement as rendered by `mcp_announcement_snapshot`.
 /// The MCP counterpart of `SkillListingSnapshot`.
 pub(super) struct McpAnnouncementSnapshot {
+    pub(super) accounting_scope: &'static str,
     /// The announcement body: server listing plus the tool usage hint.
     pub(super) text: String,
     pub(super) server_count: usize,

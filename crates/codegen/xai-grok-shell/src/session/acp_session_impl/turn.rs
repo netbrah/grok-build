@@ -249,7 +249,46 @@ pub(super) struct TurnSampling {
     pub(super) input_tokens: u64,
     pub(super) output_tokens: u64,
     pub(super) cache_read_tokens: u64,
+    native_mcp_recovery: NativeMcpRecoveryOpportunity,
 }
+
+#[derive(Default)]
+pub(super) struct NativeMcpRecoveryOpportunity {
+    consumed: bool,
+}
+
+impl NativeMcpRecoveryOpportunity {
+    pub(super) fn consume(&mut self) -> bool {
+        !std::mem::replace(&mut self.consumed, true)
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_consumed(&self) -> bool {
+        self.consumed
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NativeMcpRecoveryPolicy {
+    Legacy,
+    Responses,
+}
+
+impl NativeMcpRecoveryPolicy {
+    fn for_bound_request(
+        backend: &xai_grok_sampling_types::ApiBackend,
+        admission: Option<xai_grok_sampling_types::SearchAdmission>,
+    ) -> Self {
+        if *backend == xai_grok_sampling_types::ApiBackend::Responses
+            && admission.is_some_and(|value| value.admitted())
+        {
+            Self::Responses
+        } else {
+            Self::Legacy
+        }
+    }
+}
+
 impl TurnSampling {
     /// Takes the round by value: a late interjection continues the loop after bookkeeping, and
     /// the next fold must see only the new samples.
@@ -2574,14 +2613,14 @@ impl SessionActor {
         }
         let mut prompt_timing = Some(crate::session::prompt_timing::PromptTiming::start());
         let tool_prep_start = std::time::Instant::now();
-        let (tool_definitions, prepared_mcp_specs, mcp_wait_ms) =
-            if self.forked_tool_override.is_none() {
-                let (prepared, wait_ms) = self.prepare_native_tool_candidates_timed().await;
-                (prepared.builtin_defs, Some(prepared.mcp_specs), wait_ms)
-            } else {
-                let (definitions, wait_ms) = self.prepare_tool_definitions_timed().await;
-                (definitions, None, wait_ms)
-            };
+        let (tool_definitions, prepared_tools, mcp_wait_ms) = if self.forked_tool_override.is_none()
+        {
+            let (prepared, wait_ms) = self.prepare_native_tool_candidates_timed().await;
+            (prepared.builtin_defs.clone(), Some(prepared), wait_ms)
+        } else {
+            let (definitions, wait_ms) = self.prepare_tool_definitions_timed().await;
+            (definitions, None, wait_ms)
+        };
         let total_prep_ms = tool_prep_start.elapsed().as_millis() as u64;
         if let Some(ref mut pt) = prompt_timing {
             pt.record_tool_prep(mcp_wait_ms, total_prep_ms);
@@ -2800,20 +2839,21 @@ impl SessionActor {
                 backend_search_active,
                 "backend_search: turn tool resolution"
             );
-            let effective_tools = self.tool_candidates_for_turn(
-                prepared_mcp_specs.as_ref().map_or_else(
-                    || {
+            let structured_schema = structured_output_tool
+                .then(|| json_schema.clone())
+                .flatten();
+            let bridge_projection =
+                self.bridge_projection_for_turn(prepared_tools.as_ref(), structured_schema.clone());
+            let effective_tools = bridge_projection.as_ref().map_or_else(
+                || {
+                    self.tool_candidates_for_turn(
                         xai_chat_state::NativeToolCandidates::builtins_only(
                             self.turn_base_tool_specs(&tool_definitions),
-                        )
-                    },
-                    |mcp_specs| self.turn_native_tool_candidates(&tool_definitions, mcp_specs),
-                ),
-                if structured_output_tool {
-                    json_schema.clone()
-                } else {
-                    None
+                        ),
+                        structured_schema,
+                    )
                 },
+                BridgeDeclarationProjection::candidates,
             );
             let build_req_start = std::time::Instant::now();
             let build_request_span =
@@ -2843,6 +2883,10 @@ impl SessionActor {
                 .expect("chat state actor should be alive");
             #[cfg(test)]
             self.observe_outer_bound_build(&request, &binding).await;
+            let recovery_policy = NativeMcpRecoveryPolicy::for_bound_request(
+                &binding.config.api_backend,
+                request.search_admission,
+            );
             build_request_span.span().record(
                 "build_request_ms",
                 build_req_start.elapsed().as_millis() as i64,
@@ -2875,6 +2919,13 @@ impl SessionActor {
                 request.json_schema = json_schema.clone();
             }
             request.hosted_tools = self.hosted_tools_for_turn();
+            let selected_functions = request.tools.len();
+            if let Some(projection) = &bridge_projection {
+                self.project_bound_bridge_declarations(&mut request, &binding, projection)
+                    .map_err(crate::sampling::error::map_sampling_err_to_acp)?;
+            }
+            self.publish_bound_projection(&request, &binding, selected_functions)
+                .await;
             // ANTHROPIC-WIRE-2 (cut 4): once the escalation fired, every
             // continuation sample carries the bumped cap — max(64K, the
             // alias-aware R5 table row). Applied BEFORE the workflow
@@ -3493,6 +3544,10 @@ impl SessionActor {
                 let results = if discovery_searches_this_turn < MAX_DISCOVERY_SEARCHES_PER_TURN {
                     discovery_searches_this_turn += 1;
                     let capped = (*limit).min(DISCOVERY_ANSWER_TOOL_CEILING) as usize;
+                    if recovery_policy == NativeMcpRecoveryPolicy::Responses {
+                        self.retry_native_mcp_auth(&mut turn_sampling.native_mcp_recovery)
+                            .await;
+                    }
                     self.tool_search_results(query, capped)
                 } else {
                     Vec::new()
@@ -3859,7 +3914,12 @@ impl SessionActor {
                 .await;
             let execute_tool_calls_result = {
                 let _tool_phase = turn_phases.begin_tool_blocking();
-                self.execute_tool_calls(tool_call_responses).await
+                self.execute_tool_calls_with_native_recovery(
+                    tool_call_responses,
+                    (recovery_policy == NativeMcpRecoveryPolicy::Responses)
+                        .then_some(&mut turn_sampling.native_mcp_recovery),
+                )
+                .await
             };
             match execute_tool_calls_result {
                 Ok(ToolLoop::PermissionReject { tool_name, reason }) => {
@@ -4525,7 +4585,7 @@ impl SessionActor {
         let candidates = if let Some(ref override_tools) = self.forked_tool_override {
             let bridge = self.agent.borrow().tool_bridge().clone();
             let mut tools = child_tool_projection::child_safe_tool_specs(
-                override_tools.clone(),
+                override_tools.specs.clone(),
                 child_tool_projection::ChildToolProjection::VerbatimMirror,
                 |name| bridge.tool_kind(name),
             );
@@ -4563,5 +4623,53 @@ impl SessionActor {
             }
             tools
         })
+    }
+
+    fn bridge_projection_for_turn(
+        &self,
+        prepared: Option<&PreparedTurnTools>,
+        structured_output_schema: Option<serde_json::Value>,
+    ) -> Option<BridgeDeclarationProjection> {
+        let mut projection = if let Some(override_tools) = &self.forked_tool_override {
+            let bridge = self.agent.borrow().tool_bridge().clone();
+            let mut bundle = override_tools.clone().filter_specs(|tools| {
+                *tools = child_tool_projection::child_safe_tool_specs(
+                    std::mem::take(tools),
+                    child_tool_projection::ChildToolProjection::VerbatimMirror,
+                    |name| bridge.tool_kind(name),
+                );
+            });
+            if self.startup_hints.is_subagent {
+                bundle = bundle.filter_for_subagent();
+            }
+            BridgeDeclarationProjection::fork(bundle)
+        } else {
+            let prepared = prepared?;
+            let mut bundle = self.prepared_tool_bundle(prepared);
+            if self.startup_hints.is_subagent {
+                bundle = bundle.child_safe(child_tool_projection::ChildToolProjection::Rebuilt);
+            }
+            BridgeDeclarationProjection::prepared(
+                bundle,
+                prepared
+                    .mcp_specs
+                    .iter()
+                    .map(|spec| spec.name.clone())
+                    .collect(),
+            )
+        };
+        if let Some(schema) = structured_output_schema {
+            projection.append_builtin(ToolSpec {
+                name: STRUCTURED_OUTPUT_TOOL.to_string(),
+                description: Some(
+                    "Return your final answer as JSON matching the required schema. \
+                     Call this exactly once, at the end."
+                        .to_string(),
+                ),
+                parameters: schema,
+                exposure: ToolExposure::default(),
+            });
+        }
+        Some(projection)
     }
 }

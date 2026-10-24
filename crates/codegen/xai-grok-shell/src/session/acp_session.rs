@@ -176,6 +176,7 @@ mod session_mode;
 use session_mode::*;
 #[path = "acp_session_impl/child_tool_projection.rs"]
 mod child_tool_projection;
+pub(crate) use child_tool_projection::ToolSpecBundle;
 #[path = "acp_session_impl/length_salvage.rs"]
 mod length_salvage;
 #[path = "acp_session_impl/sampler_turn.rs"]
@@ -815,7 +816,7 @@ pub(crate) struct SessionActor {
     /// Verbatim mirror-fork override: when `Some`, every turn sends this exact parent tool schema instead of the locally-built toolset.
     /// That keeps the child's request prefix byte-identical to the parent for radix cache reuse.
     /// `None` for all non-fork (and summarized-fork) sessions.
-    pub(crate) forked_tool_override: Option<Vec<ToolSpec>>,
+    pub(crate) forked_tool_override: Option<ToolSpecBundle>,
     /// Compaction configuration and runtime state.
     pub(crate) compaction: super::compaction_config::CompactionConfig,
     /// Memory subsystem: storage, flush config, injection state, telemetry.

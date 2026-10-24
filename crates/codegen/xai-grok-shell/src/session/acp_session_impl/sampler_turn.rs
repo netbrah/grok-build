@@ -311,6 +311,150 @@ thread_local! {
 pub(super) struct PreparedTurnTools {
     pub(super) builtin_defs: Vec<ToolDefinition>,
     pub(super) mcp_specs: Vec<ToolSpec>,
+    pub(super) inventory: child_tool_projection::ToolIdentityInventory,
+    pub(super) builtin_coordinates: Vec<usize>,
+    pub(super) mcp_coordinates: Vec<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BridgeDeclarationSource {
+    Prepared,
+    Fork,
+}
+
+#[derive(Clone)]
+pub(super) struct BridgeDeclarationProjection {
+    bundle: ToolSpecBundle,
+    mcp_membership: std::collections::BTreeSet<String>,
+    appended: Vec<ToolSpec>,
+    source: BridgeDeclarationSource,
+}
+
+impl BridgeDeclarationProjection {
+    pub(super) fn prepared(
+        bundle: ToolSpecBundle,
+        mcp_membership: std::collections::BTreeSet<String>,
+    ) -> Self {
+        Self {
+            bundle,
+            mcp_membership,
+            appended: Vec::new(),
+            source: BridgeDeclarationSource::Prepared,
+        }
+    }
+
+    pub(super) fn fork(bundle: ToolSpecBundle) -> Self {
+        Self {
+            bundle,
+            mcp_membership: std::collections::BTreeSet::new(),
+            appended: Vec::new(),
+            source: BridgeDeclarationSource::Fork,
+        }
+    }
+
+    pub(super) fn append_builtin(&mut self, spec: ToolSpec) {
+        self.appended.push(spec);
+    }
+
+    pub(super) fn candidates(&self) -> xai_chat_state::NativeToolCandidates {
+        let specs = self
+            .bundle
+            .specs
+            .iter()
+            .chain(&self.appended)
+            .cloned()
+            .collect();
+        xai_chat_state::NativeToolCandidates::with_mcp_membership(
+            specs,
+            self.mcp_membership.clone(),
+        )
+    }
+}
+
+impl SessionActor {
+    pub(super) fn project_bound_bridge_declarations(
+        &self,
+        request: &mut ConversationRequest,
+        binding: &xai_chat_state::RequestTransportBinding,
+        projection: &BridgeDeclarationProjection,
+    ) -> Result<(), crate::sampling::error::SamplingError> {
+        self.project_bridge_declarations(request, &binding.config.api_backend, projection)
+    }
+
+    pub(super) fn project_bridge_declarations(
+        &self,
+        request: &mut ConversationRequest,
+        backend: &xai_grok_sampling_types::ApiBackend,
+        projection: &BridgeDeclarationProjection,
+    ) -> Result<(), crate::sampling::error::SamplingError> {
+        let admitted = request
+            .search_admission
+            .is_some_and(xai_grok_sampling_types::SearchAdmission::admitted);
+        if *backend == xai_grok_sampling_types::ApiBackend::ChatCompletions && admitted {
+            tracing::debug!(
+                "Chat Completions native admission is unsupported; bridge declarations retained"
+            );
+        }
+        if *backend != xai_grok_sampling_types::ApiBackend::Responses || !admitted {
+            return Ok(());
+        }
+        let invalid_identity = || {
+            crate::sampling::error::SamplingError::InvalidConfiguration(match projection.source {
+                BridgeDeclarationSource::Prepared => {
+                    "prepared bridge identity is unavailable or mismatched"
+                }
+                BridgeDeclarationSource::Fork => {
+                    "fork bridge identity is unavailable or mismatched"
+                }
+            })
+        };
+        if !projection.bundle.has_valid_identity() {
+            return Err(invalid_identity());
+        }
+        let companion = projection
+            .bundle
+            .companion
+            .as_ref()
+            .ok_or_else(invalid_identity)?;
+        // The actor's Responses selector only removes the recorded MCP members.
+        let selected: Vec<_> = projection
+            .bundle
+            .specs
+            .iter()
+            .zip(&companion.coordinates)
+            .filter(|(spec, _)| !projection.mcp_membership.contains(&spec.name))
+            .map(|(spec, coordinate)| (spec, Some(companion.inventory[*coordinate].2)))
+            .chain(projection.appended.iter().map(|spec| (spec, None)))
+            .collect();
+        if request.tools.len() != selected.len()
+            || request
+                .tools
+                .iter()
+                .zip(&selected)
+                .any(|(actual, (expected, _))| {
+                    actual.name != expected.name
+                        || actual.description != expected.description
+                        || actual.parameters != expected.parameters
+                        || actual.exposure != expected.exposure
+                })
+        {
+            return Err(invalid_identity());
+        }
+        let mut position = 0;
+        request.tools.retain(|_| {
+            let kind = selected[position].1;
+            position += 1;
+            let is_bridge = matches!(
+                kind,
+                Some(
+                    xai_grok_tools::types::tool::ToolKind::SearchTool
+                        | xai_grok_tools::types::tool::ToolKind::UseTool
+                )
+            );
+            !is_bridge
+        });
+        Ok(())
+    }
 }
 
 impl SessionActor {
@@ -344,35 +488,43 @@ impl SessionActor {
         let prep_start = tokio::time::Instant::now();
         let mcp_wait_ms = self.wait_for_tool_preparation().await;
         let bridge = self.agent.borrow().tool_bridge().clone();
-        let snapshot = bridge.toolset().tools_namespaced();
+        let snapshot = bridge.tools_with_identity();
         #[cfg(test)]
-        tests::after_native_candidate_snapshot(&snapshot).await;
-        let plan_active = self.plan_mode.lock().is_active();
-        let (builtin_entries, mcp_entries): (Vec<_>, Vec<_>) = snapshot
-            .into_iter()
-            .partition(|(_, namespace)| *namespace != ToolNamespace::MCP);
-        let builtin_defs = filter_cursor_tools_by_plan_mode(
-            builtin_entries
-                .into_iter()
-                .map(|(definition, _)| definition)
-                .collect(),
-            plan_active,
-        );
-        let mut mcp_specs: Vec<_> = filter_cursor_tools_by_plan_mode(
-            mcp_entries
-                .into_iter()
-                .map(|(definition, _)| definition)
-                .filter(|definition| {
-                    xai_grok_mcp::servers::parse_mcp_qualified_name(&definition.function.name)
-                        .is_some()
-                })
-                .collect(),
-            plan_active,
+        tests::after_native_candidate_snapshot(
+            &snapshot
+                .iter()
+                .map(|(definition, namespace, _)| (definition.clone(), *namespace))
+                .collect::<Vec<_>>(),
         )
-        .into_iter()
-        .map(ToolSpec::from)
-        .collect();
-        mcp_specs.sort_by(|a, b| a.name.cmp(&b.name));
+        .await;
+        let inventory: child_tool_projection::ToolIdentityInventory = snapshot.into();
+        let plan_active = self.plan_mode.lock().is_active();
+        let (builtin_entries, mcp_entries): (Vec<_>, Vec<_>) = inventory
+            .iter()
+            .cloned()
+            .enumerate()
+            .partition(|(_, (_, namespace, _))| *namespace != ToolNamespace::MCP);
+        let (builtin_coordinates, builtin_defs): (Vec<_>, Vec<_>) = builtin_entries
+            .into_iter()
+            .flat_map(|(coordinate, (definition, _, _))| {
+                filter_cursor_tools_by_plan_mode(vec![definition], plan_active)
+                    .into_iter()
+                    .map(move |definition| (coordinate, definition))
+            })
+            .unzip();
+        let mut mcp_entries: Vec<_> = mcp_entries
+            .into_iter()
+            .filter(|(_, (definition, _, _))| {
+                xai_grok_mcp::servers::parse_mcp_qualified_name(&definition.function.name).is_some()
+            })
+            .flat_map(|(coordinate, (definition, _, _))| {
+                filter_cursor_tools_by_plan_mode(vec![definition], plan_active)
+                    .into_iter()
+                    .map(move |definition| (coordinate, ToolSpec::from(definition)))
+            })
+            .collect();
+        mcp_entries.sort_by(|a, b| a.1.name.cmp(&b.1.name));
+        let (mcp_coordinates, mcp_specs): (Vec<_>, Vec<_>) = mcp_entries.into_iter().unzip();
         let tool_count = self.turn_base_tool_specs(&builtin_defs).len() + mcp_specs.len();
         prep_span.span().record("mcp_wait_ms", mcp_wait_ms as i64);
         prep_span
@@ -384,9 +536,30 @@ impl SessionActor {
             PreparedTurnTools {
                 builtin_defs,
                 mcp_specs,
+                inventory,
+                builtin_coordinates,
+                mcp_coordinates,
             },
             mcp_wait_ms,
         )
+    }
+
+    pub(super) fn prepared_tool_bundle(&self, prepared: &PreparedTurnTools) -> ToolSpecBundle {
+        let builtins = prepared
+            .builtin_coordinates
+            .iter()
+            .zip(&prepared.builtin_defs)
+            .flat_map(|(coordinate, definition)| {
+                self.turn_base_tool_specs(std::slice::from_ref(definition))
+                    .into_iter()
+                    .map(move |spec| (*coordinate, spec))
+            });
+        let mcp = prepared
+            .mcp_coordinates
+            .iter()
+            .copied()
+            .zip(prepared.mcp_specs.iter().cloned());
+        ToolSpecBundle::from_selected(prepared.inventory.clone(), builtins.chain(mcp))
     }
 
     pub(super) fn turn_native_tool_candidates(
@@ -530,6 +703,28 @@ impl SessionActor {
 
         let plan_active = self.plan_mode.lock().is_active();
         filter_cursor_tools_by_plan_mode(defs, plan_active)
+    }
+
+    pub(super) fn prepare_parent_tool_bundle(&self) -> ToolSpecBundle {
+        let bridge = self.agent.borrow().tool_bridge().clone();
+        let inventory: child_tool_projection::ToolIdentityInventory =
+            bridge.tools_with_identity().into();
+        let plan_active = self.plan_mode.lock().is_active();
+        let selected = inventory
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, namespace, _))| {
+                *namespace != xai_grok_tools::types::tool::ToolNamespace::MCP
+            })
+            .flat_map(|(coordinate, (definition, _, _))| {
+                let definitions =
+                    filter_cursor_tools_by_plan_mode(vec![definition.clone()], plan_active);
+                self.turn_base_tool_specs(&definitions)
+                    .into_iter()
+                    .map(move |spec| (coordinate, spec))
+            });
+        ToolSpecBundle::from_selected(inventory.clone(), selected)
+            .child_safe(child_tool_projection::ChildToolProjection::VerbatimMirror)
     }
 
     pub(super) fn model_auth_facts(&self, model_id: &str) -> crate::agent::config::ModelAuthFacts {

@@ -1887,6 +1887,9 @@ pub(super) async fn run_session(
                             );
                             let _ = respond_to.send(specs);
                         }
+                        SessionCommand::SnapshotToolDefinitionsWithIdentity { respond_to } => {
+                            let _ = respond_to.send(session.prepare_parent_tool_bundle());
+                        }
                         SessionCommand::SetClientHooks { hooks } => {
                             *session.client_hooks.borrow_mut() = hooks;
                         }

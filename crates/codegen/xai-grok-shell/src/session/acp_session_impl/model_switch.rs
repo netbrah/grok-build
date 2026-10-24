@@ -414,6 +414,11 @@ impl SessionActor {
         let mut new_prompt_context = new_agent.prompt_context().clone();
         new_prompt_context.normalize_for_persistence();
         self.abort_and_clear_prefire().await;
+        let projection_slot = self.last_bound_projection_slot().await;
+        new_agent
+            .tool_bridge()
+            .update_resource(projection_slot)
+            .await;
         *self.agent.borrow_mut() = new_agent;
         *self.active_agent_type.lock() = Some(new_agent_name.clone());
         self.emit_resolved_tool_overrides();

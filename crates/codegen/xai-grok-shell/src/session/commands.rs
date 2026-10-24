@@ -602,6 +602,10 @@ pub enum SessionCommand {
     SnapshotToolDefinitions {
         respond_to: oneshot::Sender<Vec<xai_grok_sampling_types::ToolSpec>>,
     },
+    /// Snapshot parent tool specs with their nonserialized identity companion.
+    SnapshotToolDefinitionsWithIdentity {
+        respond_to: oneshot::Sender<crate::session::ToolSpecBundle>,
+    },
     /// Replace the session's client-registered hooks.
     /// Sent on `load_session` reconnect to a live actor so a client can re-register (or clear) its hooks without a fresh session.
     SetClientHooks {

@@ -387,6 +387,15 @@ impl SessionActor {
         &self,
         tool_calls: Vec<crate::sampling::types::ToolCallResponse>,
     ) -> Result<ToolLoop, acp::Error> {
+        self.execute_tool_calls_with_native_recovery(tool_calls, None)
+            .await
+    }
+
+    pub(super) async fn execute_tool_calls_with_native_recovery(
+        &self,
+        tool_calls: Vec<crate::sampling::types::ToolCallResponse>,
+        mut recovery: Option<&mut super::turn::NativeMcpRecoveryOpportunity>,
+    ) -> Result<ToolLoop, acp::Error> {
         if let Some(cfg) = self.chat_state_handle.get_sampling_config().await {
             tracing::Span::current().record("model_id", cfg.model.as_str());
         }
@@ -398,18 +407,29 @@ impl SessionActor {
                 let kind_of = |name: &str| self.agent.borrow().tool_bridge().tool_kind(name);
                 let (body, tail) = split_exit_plan_tail(tool_calls, kind_of);
                 if !body.is_empty() {
-                    self.execute_tool_calls_batch(body, &mut deferred_followups, &mut final_result)
-                        .await?;
+                    self.execute_tool_calls_batch(
+                        body,
+                        &mut deferred_followups,
+                        &mut final_result,
+                        recovery.as_deref_mut(),
+                    )
+                    .await?;
                 }
                 if !tail.is_empty() {
-                    self.execute_tool_calls_batch(tail, &mut deferred_followups, &mut final_result)
-                        .await?;
+                    self.execute_tool_calls_batch(
+                        tail,
+                        &mut deferred_followups,
+                        &mut final_result,
+                        recovery.as_deref_mut(),
+                    )
+                    .await?;
                 }
             } else {
                 self.execute_tool_calls_batch(
                     tool_calls,
                     &mut deferred_followups,
                     &mut final_result,
+                    recovery.as_deref_mut(),
                 )
                 .await?;
             }
@@ -525,6 +545,7 @@ impl SessionActor {
         tool_calls: Vec<crate::sampling::types::ToolCallResponse>,
         deferred_followups: &mut Vec<ConversationItem>,
         final_result: &mut Option<ToolLoop>,
+        recovery: Option<&mut super::turn::NativeMcpRecoveryOpportunity>,
     ) -> Result<(), acp::Error> {
         if self.permissions.is_auto_mode() {
             let conversation = self.chat_state_handle.get_conversation().await;
@@ -629,7 +650,11 @@ impl SessionActor {
             }
         }
         if approved.iter().any(|p| p.tool_name == "search_tool") {
-            self.retry_auth_required_servers().await;
+            if let Some(opportunity) = recovery {
+                self.retry_native_mcp_auth(opportunity).await;
+            } else {
+                self.retry_auth_required_servers().await;
+            }
         }
         if mcp_surface_requested {
             self.retry_unreachable_servers().await;

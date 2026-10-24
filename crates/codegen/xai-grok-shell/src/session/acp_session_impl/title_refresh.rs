@@ -133,7 +133,7 @@ impl SessionActor {
         // (The conversation prefix still shares the parent prompt-cache key.)
         let request = self.parent_cached_request(AuxCall {
             items,
-            tools: Vec::new(),
+            tools: ToolSpecBundle::default(),
             hosted_tools: Vec::new(),
             model: setup.model.clone(),
             supports_search_tool: setup.binding.config.supports_search_tool,
