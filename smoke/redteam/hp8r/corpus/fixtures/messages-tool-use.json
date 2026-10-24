@@ -1,0 +1,30 @@
+{
+  "model": "claude-opus-5",
+  "id": "msg_vrtx_011CfPgXnYWjbxqhLKHypDRx",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_vrtx_01VAAdi4a9MfeYDvmWjdse4q",
+      "name": "lookup_shipping_eta",
+      "input": {
+        "order_id": "order_probe_42"
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "usage": {
+    "input_tokens": 643,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 39,
+    "output_tokens_details": {
+      "thinking_tokens": 0
+    }
+  }
+}

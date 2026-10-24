@@ -1,0 +1,51 @@
+{
+  "model": "gpt-5.6-sol",
+  "object": "response",
+  "status": "incomplete",
+  "output": [
+    {
+      "id": "tsc_0ce980d5c6afd41f016ab61423e6ec81908939d7d041618fb1",
+      "arguments": {
+        "paths": [
+          "lookup_shipping_eta"
+        ]
+      },
+      "call_id": null,
+      "execution": "server",
+      "status": "completed",
+      "type": "tool_search_call",
+      "created_by": null
+    },
+    {
+      "id": "tso_0ce980d5c6afd41f016ab61424031481908982e2c788dcc429",
+      "call_id": null,
+      "execution": "server",
+      "status": "completed",
+      "tools": [
+        {
+          "name": "lookup_shipping_eta",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "order_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "order_id"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": true,
+          "description": "Look up the shipping ETA for an order ID.",
+          "output_schema": null
+        }
+      ],
+      "type": "tool_search_output",
+      "created_by": null
+    }
+  ]
+}

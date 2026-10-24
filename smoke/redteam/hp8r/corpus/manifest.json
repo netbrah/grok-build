@@ -1,0 +1,1276 @@
+{
+  "schema_version": "hp8r-manifest/1",
+  "corpus_version": "hp8r-corpus/10",
+  "assertion_version": "hp8r-assertions/10",
+  "policy_version": "RAT-20261014",
+  "reader_versions": {
+    "local": 1,
+    "ordered": 1,
+    "origin": 1,
+    "projection": 1,
+    "ledger": 1,
+    "migration": 1
+  },
+  "capture_corpus": {
+    "path": "/Users/palanisd/hts-native-declaration-evidence/implementation-lane3-S2/batch-1-U1/R14-corpus-index-final.json",
+    "sha256": "f29c9706627fc2bd820b73fdcc21adffb9e220f9531fd8aa695406c029f0b4f6",
+    "schema_version": "hp8r-capture-corpus/4",
+    "field_classifications": [
+      {
+        "path": "/Users/palanisd/hts-native-declaration-evidence/implementation-lane3-S2/batch-1-U1/R14-field-classification.json",
+        "sha256": "2b47e207e50de53bb331eb507a5595ec5e2f0c8a14d97eab1893b31bb27cd919"
+      },
+      {
+        "path": "/Users/palanisd/hts-native-declaration-evidence/implementation-lane3-S2/batch-1-U1/R9-error-field-classification.json",
+        "sha256": "c1d8eb43d0abeae1110b1ca2b99bc8a721b34958077966d21b375da032e8d07c"
+      },
+      {
+        "path": "/Users/palanisd/hts-native-declaration-evidence/implementation-lane3-S2/batch-1-U1/R10-field-classification.json",
+        "sha256": "e3f44b688562eaf77201ffc3987f60172a52885f3271104fae7f05e9851122b6"
+      },
+      {
+        "path": "/Users/palanisd/hts-native-declaration-evidence/implementation-lane3-S2/batch-1-U1/R12-field-classification.json",
+        "sha256": "e41bd7b339312266988ba51fdda4163a2da6d1c9a8f902d4cbd5819a78eb0259"
+      },
+      {
+        "path": "/Users/palanisd/hts-native-declaration-evidence/implementation-lane3-S2/batch-1-U1/R12-derived-capture-dispositions.json",
+        "sha256": "d64061c41ba014a3231b6fb1c022b20be00a8f66984973bca23cadec7982ec65"
+      }
+    ]
+  },
+  "normalization": [],
+  "tooling_only": true,
+  "released_shapes": [],
+  "source_base": "2fcd97294a23cfb19b1d6e4c1a788840a17dc569",
+  "authority": "L3S2-R14 recursive ciphertext grammar and representation matrix; L3S2-R13 Messages signatures and UTC receipt identity; L3S2-R12 exact legacy reasons; R11 request identifiers and derived dispositions; L3S2-R10 non-streaming and opaque-identifier projection; R9 typed failures; R8 legacy corruption; R7 opaque projection; R6 systematic corpus derivation; R5/R4/R3/R2/R1; L3S2-C1..C3; tasks-r5 U1; OR-1",
+  "approved_read_roots": [
+    "/Users/palanisd/hts-native-declaration-evidence",
+    "/Users/palanisd/Projects/upstream/grok/plans/harness/hosted-tool-search/captures/2026-09-25-wire-grounding",
+    "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/redteam/report",
+    "/Users/palanisd/Projects/upstream/wt/grok-build-responses/smoke/wstream/report"
+  ],
+  "sources": [
+    {
+      "id": "vertex-terminal.sse",
+      "path": "fixtures/vertex-terminal.sse",
+      "source_path": "/Users/palanisd/hts-native-declaration-evidence/cc-toolsearch-wire-20261020/existing/vertex-native-search/A3-tst.resp.raw",
+      "source_class": "screened-provider-capture",
+      "sha256": "141d031a9ee6a757657ad5fc5aa26a9579e6ae64cb3d846d647ec6bb115138c7",
+      "hash_domain": "screened protocol payload only; excludes headers/config/cache identities",
+      "transformations": [],
+      "redaction": "structurally screened before write and hashing",
+      "raw_key_sweep_exit": 1,
+      "facts": {
+        "model": "claude-opus-5",
+        "stop_reasons": [
+          "tool_use"
+        ],
+        "block_types": [
+          "server_tool_use",
+          "tool_search_tool_result",
+          "tool_use"
+        ]
+      },
+      "product_credit": false
+    },
+    {
+      "id": "responses-keyless.json",
+      "path": "fixtures/responses-keyless.json",
+      "source_path": "/Users/palanisd/Projects/upstream/grok/plans/harness/hosted-tool-search/captures/2026-09-25-wire-grounding/wire_resp_20260925T062640Z_R1_SOL_HOSTED.json",
+      "source_class": "screened-provider-capture",
+      "sha256": "b7ccb9da1d7722a19bdda3797d317a37c48a041c1bb972176617d6e04f73e555",
+      "hash_domain": "screened protocol payload only; excludes headers/config/cache identities",
+      "transformations": [
+        {
+          "retain_top_level": [
+            "model",
+            "object",
+            "status",
+            "output"
+          ]
+        },
+        {
+          "retain_output_types": [
+            "tool_search_call",
+            "tool_search_output"
+          ]
+        }
+      ],
+      "redaction": "structurally screened before write and hashing",
+      "raw_key_sweep_exit": 1,
+      "facts": {
+        "model": "gpt-5.6-sol",
+        "protocol_types": [
+          "tool_search_call",
+          "tool_search_output"
+        ],
+        "call_id_presence": [
+          "null",
+          "null"
+        ]
+      },
+      "product_credit": false
+    },
+    {
+      "id": "messages-tool-use.json",
+      "path": "fixtures/messages-tool-use.json",
+      "source_path": "/Users/palanisd/Projects/upstream/grok/plans/harness/hosted-tool-search/captures/2026-09-25-wire-grounding/wire_resp_20260925T062640Z_A1_OPUS_BASELINE.json",
+      "source_class": "screened-provider-capture",
+      "sha256": "5c2a28df3a0cd80ab63f33da9b5cb998a9ebb35254b46c13a9e912b8c7a3fbd2",
+      "hash_domain": "screened protocol payload only; excludes headers/config/cache identities",
+      "transformations": [
+        {
+          "retain_top_level": [
+            "model",
+            "id",
+            "type",
+            "role",
+            "content",
+            "stop_reason",
+            "usage"
+          ]
+        }
+      ],
+      "redaction": "structurally screened before write and hashing",
+      "raw_key_sweep_exit": 1,
+      "facts": {
+        "model": "claude-opus-5",
+        "protocol_types": [
+          "tool_use"
+        ]
+      },
+      "product_credit": false
+    }
+  ],
+  "unavailable_witnesses": [
+    {
+      "id": "operator-client-six-definitions-absent-output-id-intervening-assistant",
+      "status": "BLOCKED",
+      "reason": "Design witness under prohibited home; no approved equivalent asserted."
+    },
+    {
+      "id": "current-vertex-pause",
+      "status": "UNVERIFIED",
+      "reason": "Historical Claude-5 terminal tool_use is neither pause nor current Claude-5.5 qualification."
+    },
+    {
+      "id": "bridge-and-direct-mcp-runtime",
+      "status": "BLOCKED",
+      "reason": "Synthetic ordinary-history controls only; real binary/producer hand-back not supplied."
+    },
+    {
+      "id": "W-U1a-ordered-producer-disk",
+      "status": "BLOCKED",
+      "reason": "Private P1 capture and model_switch_publishes_complete_pair are not runtime producer proof."
+    },
+    {
+      "id": "SC2-product-pre-and-post-checkpoints",
+      "status": "BLOCKED",
+      "reason": "Distinct synthetic checkpoints test the validator, not owner-produced persistence."
+    }
+  ],
+  "binary_arms": {
+    "dac96d87-native": {
+      "applicability": "N/A",
+      "reason": "native-schema-incompatible"
+    },
+    "native-candidate": {
+      "applicability": "BLOCKED",
+      "reason": "no build-time provenance"
+    },
+    "native-restored": {
+      "applicability": "BLOCKED",
+      "reason": "no build-time provenance"
+    },
+    "native-pre-fix": {
+      "applicability": "BLOCKED",
+      "reason": "no build-time provenance"
+    }
+  },
+  "cases": {
+    "tooling-f": {
+      "execution": "tooling-validation",
+      "source_class": "synthetic-mutation",
+      "product_credit": false,
+      "layers": [
+        "L0"
+      ],
+      "shape": "native-client-six-definition",
+      "action": "F",
+      "control": "positive",
+      "rat_clause": "RAT section 3",
+      "native_schema": true,
+      "arms": {
+        "dac96d87": {
+          "applicability": "N/A",
+          "reason": "Native schema or no demonstrated compatible seam"
+        },
+        "synthetic": {
+          "applicability": "APPLICABLE",
+          "kind": "synthetic-mutation",
+          "seam": "tooling-validator"
+        }
+      },
+      "H": [
+        "H1",
+        "H2",
+        "H3",
+        "H4",
+        "H5",
+        "H8",
+        "H9"
+      ],
+      "budget": "single",
+      "source_id": "client-six",
+      "required_events": [
+        "producer",
+        "pre_reload",
+        "plan",
+        "splice",
+        "backup",
+        "projection_write",
+        "projection_ack",
+        "Applied",
+        "post_reload",
+        "readiness",
+        "send",
+        "response",
+        "dispatch",
+        "result",
+        "automatic_next",
+        "later_user",
+        "observation_barrier"
+      ],
+      "forbidden_events": [],
+      "route": {
+        "backend": "Responses",
+        "dialect": "Codex",
+        "model": "fixture-R",
+        "row": "fixture-R",
+        "provider": "synthetic-loopback",
+        "deployment": "fixture",
+        "revision": "1",
+        "endpoint": {
+          "scheme": "http",
+          "authority": "127.0.0.1:1",
+          "path": "/codex/v1/responses"
+        },
+        "principal_scope": "public-fixture",
+        "admission": true,
+        "execution": "client"
+      },
+      "producer_mechanism": "synthetic-contract-chain"
+    },
+    "tooling-keep": {
+      "execution": "tooling-validation",
+      "source_class": "synthetic-mutation",
+      "product_credit": false,
+      "layers": [
+        "L0"
+      ],
+      "shape": "native-client-six-definition",
+      "action": "KEEP",
+      "control": "no-change",
+      "rat_clause": "RAT section 2",
+      "native_schema": true,
+      "arms": {
+        "dac96d87": {
+          "applicability": "N/A",
+          "reason": "Native schema or no demonstrated compatible seam"
+        },
+        "synthetic": {
+          "applicability": "APPLICABLE",
+          "kind": "synthetic-mutation",
+          "seam": "tooling-validator"
+        }
+      },
+      "H": [
+        "H5"
+      ],
+      "budget": "single",
+      "source_id": "client-six",
+      "required_events": [
+        "producer",
+        "pre_reload",
+        "plan",
+        "splice",
+        "post_reload",
+        "readiness",
+        "send",
+        "response",
+        "dispatch",
+        "result",
+        "automatic_next",
+        "later_user",
+        "observation_barrier"
+      ],
+      "forbidden_events": [
+        "projection_write",
+        "projection_ack",
+        "Applied"
+      ],
+      "route": {
+        "backend": "Responses",
+        "dialect": "Codex",
+        "model": "fixture-R",
+        "row": "fixture-R",
+        "provider": "synthetic-loopback",
+        "deployment": "fixture",
+        "revision": "1",
+        "endpoint": {
+          "scheme": "http",
+          "authority": "127.0.0.1:1",
+          "path": "/codex/v1/responses"
+        },
+        "principal_scope": "public-fixture",
+        "admission": true,
+        "execution": "client"
+      },
+      "producer_mechanism": "synthetic-contract-chain"
+    },
+    "tooling-auxiliary": {
+      "execution": "tooling-validation",
+      "source_class": "synthetic-mutation",
+      "product_credit": false,
+      "layers": [
+        "L0"
+      ],
+      "shape": "native-client-six-definition",
+      "action": "F",
+      "control": "auxiliary",
+      "rat_clause": "RAT section 3",
+      "native_schema": true,
+      "arms": {
+        "dac96d87": {
+          "applicability": "N/A",
+          "reason": "Native schema or no demonstrated compatible seam"
+        },
+        "synthetic": {
+          "applicability": "APPLICABLE",
+          "kind": "synthetic-mutation",
+          "seam": "tooling-validator"
+        }
+      },
+      "H": [
+        "H5"
+      ],
+      "budget": "single",
+      "source_id": "client-six",
+      "required_events": [
+        "pre_reload",
+        "plan",
+        "splice",
+        "post_reload",
+        "readiness",
+        "send",
+        "response",
+        "observation_barrier"
+      ],
+      "forbidden_events": [
+        "projection_write",
+        "projection_ack",
+        "Applied",
+        "dispatch",
+        "result",
+        "automatic_next",
+        "later_user"
+      ],
+      "route": {
+        "backend": "Responses",
+        "dialect": "Codex",
+        "model": "fixture-R",
+        "row": "fixture-R",
+        "provider": "synthetic-loopback",
+        "deployment": "fixture",
+        "revision": "1",
+        "endpoint": {
+          "scheme": "http",
+          "authority": "127.0.0.1:1",
+          "path": "/codex/v1/responses"
+        },
+        "principal_scope": "public-fixture",
+        "admission": true,
+        "execution": "client"
+      },
+      "producer_mechanism": "synthetic-contract-chain"
+    },
+    "tooling-refusal": {
+      "execution": "tooling-validation",
+      "source_class": "synthetic-mutation",
+      "product_credit": false,
+      "layers": [
+        "L0"
+      ],
+      "shape": "native-client-six-definition",
+      "action": "REFUSE",
+      "control": "refusal",
+      "rat_clause": "RAT section 2",
+      "native_schema": true,
+      "arms": {
+        "dac96d87": {
+          "applicability": "N/A",
+          "reason": "Native schema or no demonstrated compatible seam"
+        },
+        "synthetic": {
+          "applicability": "APPLICABLE",
+          "kind": "synthetic-mutation",
+          "seam": "tooling-validator"
+        }
+      },
+      "H": [
+        "H5"
+      ],
+      "budget": "single",
+      "source_id": "client-six",
+      "required_events": [
+        "pre_reload",
+        "retained_evidence",
+        "refusal",
+        "observation_barrier"
+      ],
+      "forbidden_events": [
+        "projection_write",
+        "projection_ack",
+        "Applied",
+        "dispatch",
+        "result",
+        "automatic_next",
+        "later_user",
+        "send",
+        "response"
+      ],
+      "route": {
+        "backend": "Responses",
+        "dialect": "Codex",
+        "model": "fixture-R",
+        "row": "fixture-R",
+        "provider": "synthetic-loopback",
+        "deployment": "fixture",
+        "revision": "1",
+        "endpoint": {
+          "scheme": "http",
+          "authority": "127.0.0.1:1",
+          "path": "/codex/v1/responses"
+        },
+        "principal_scope": "public-fixture",
+        "admission": true,
+        "execution": "client"
+      },
+      "producer_mechanism": "synthetic-contract-chain"
+    },
+    "tooling-ordinary": {
+      "execution": "tooling-validation",
+      "source_class": "synthetic-mutation",
+      "product_credit": false,
+      "layers": [
+        "L0"
+      ],
+      "shape": "bridge-and-direct-client",
+      "action": "H",
+      "control": "ordinary",
+      "rat_clause": "RAT section 2",
+      "native_schema": false,
+      "arms": {
+        "dac96d87": {
+          "applicability": "N/A",
+          "reason": "Native schema or no demonstrated compatible seam"
+        },
+        "synthetic": {
+          "applicability": "APPLICABLE",
+          "kind": "synthetic-mutation",
+          "seam": "tooling-validator"
+        }
+      },
+      "H": [
+        "H6"
+      ],
+      "budget": "single",
+      "source_id": "ordinary",
+      "required_events": [
+        "producer",
+        "pre_reload",
+        "post_reload",
+        "ordinary_history",
+        "readiness",
+        "send",
+        "response",
+        "dispatch",
+        "result",
+        "automatic_next",
+        "later_user",
+        "observation_barrier"
+      ],
+      "forbidden_events": [
+        "projection_write",
+        "projection_ack",
+        "Applied"
+      ],
+      "route": {
+        "backend": "Responses",
+        "dialect": "Codex",
+        "model": "fixture-R",
+        "row": "fixture-R",
+        "provider": "synthetic-loopback",
+        "deployment": "fixture",
+        "revision": "1",
+        "endpoint": {
+          "scheme": "http",
+          "authority": "127.0.0.1:1",
+          "path": "/codex/v1/responses"
+        },
+        "principal_scope": "public-fixture",
+        "admission": true,
+        "execution": "client"
+      },
+      "producer_mechanism": "synthetic-contract-chain"
+    },
+    "tooling-omit": {
+      "execution": "tooling-validation",
+      "source_class": "synthetic-mutation",
+      "product_credit": false,
+      "layers": [
+        "L0"
+      ],
+      "shape": "abandoned-responses-server",
+      "action": "OMIT",
+      "control": "omission",
+      "rat_clause": "RAT section 3",
+      "native_schema": true,
+      "arms": {
+        "dac96d87": {
+          "applicability": "N/A",
+          "reason": "Native schema or no demonstrated compatible seam"
+        },
+        "synthetic": {
+          "applicability": "APPLICABLE",
+          "kind": "synthetic-mutation",
+          "seam": "tooling-validator"
+        }
+      },
+      "H": [
+        "H5"
+      ],
+      "budget": "single",
+      "source_id": "pending",
+      "required_events": [
+        "producer",
+        "pre_reload",
+        "terminal",
+        "plan",
+        "splice",
+        "omission",
+        "post_reload",
+        "readiness",
+        "send",
+        "response",
+        "observation_barrier"
+      ],
+      "forbidden_events": [
+        "projection_write",
+        "projection_ack",
+        "Applied",
+        "dispatch",
+        "result",
+        "automatic_next",
+        "later_user"
+      ],
+      "route": {
+        "backend": "Responses",
+        "dialect": "Codex",
+        "model": "fixture-R",
+        "row": "fixture-R",
+        "provider": "synthetic-loopback",
+        "deployment": "fixture",
+        "revision": "1",
+        "endpoint": {
+          "scheme": "http",
+          "authority": "127.0.0.1:1",
+          "path": "/codex/v1/responses"
+        },
+        "principal_scope": "public-fixture",
+        "admission": true,
+        "execution": "client"
+      },
+      "producer_mechanism": "synthetic-contract-chain"
+    },
+    "tooling-f-other": {
+      "execution": "tooling-validation",
+      "source_class": "synthetic-mutation",
+      "product_credit": false,
+      "layers": [
+        "L0"
+      ],
+      "shape": "native-client-six-definition",
+      "action": "F",
+      "control": "positive",
+      "rat_clause": "RAT section 3",
+      "native_schema": true,
+      "arms": {
+        "dac96d87": {
+          "applicability": "N/A",
+          "reason": "Native schema or no demonstrated compatible seam"
+        },
+        "synthetic": {
+          "applicability": "APPLICABLE",
+          "kind": "synthetic-mutation",
+          "seam": "tooling-validator"
+        }
+      },
+      "H": [
+        "H1",
+        "H2",
+        "H3",
+        "H4",
+        "H5",
+        "H8",
+        "H9"
+      ],
+      "budget": "single",
+      "source_id": "client-six",
+      "required_events": [
+        "producer",
+        "pre_reload",
+        "plan",
+        "splice",
+        "backup",
+        "projection_write",
+        "projection_ack",
+        "Applied",
+        "post_reload",
+        "readiness",
+        "send",
+        "response",
+        "dispatch",
+        "result",
+        "automatic_next",
+        "later_user",
+        "observation_barrier"
+      ],
+      "forbidden_events": [],
+      "route": {
+        "backend": "Responses",
+        "dialect": "Other",
+        "model": "fixture-R",
+        "row": "fixture-R",
+        "provider": "synthetic-loopback",
+        "deployment": "fixture",
+        "revision": "1",
+        "endpoint": {
+          "scheme": "http",
+          "authority": "127.0.0.1:1",
+          "path": "/other/v1/responses"
+        },
+        "principal_scope": "public-fixture",
+        "admission": true,
+        "execution": "client"
+      },
+      "producer_mechanism": "synthetic-contract-chain"
+    },
+    "tooling-live-reload": {
+      "execution": "tooling-validation",
+      "source_class": "synthetic-mutation",
+      "product_credit": false,
+      "layers": [
+        "L0"
+      ],
+      "shape": "live-mixed-handoff-preterminal-reload",
+      "action": "KEEP",
+      "control": "live-reload",
+      "rat_clause": "RAT section 3; SC2-C1",
+      "native_schema": true,
+      "arms": {
+        "dac96d87": {
+          "applicability": "N/A",
+          "reason": "Native schema or no demonstrated compatible seam"
+        },
+        "synthetic": {
+          "applicability": "APPLICABLE",
+          "kind": "synthetic-mutation",
+          "seam": "tooling-validator"
+        }
+      },
+      "H": [
+        "H1",
+        "H2",
+        "H7",
+        "H8"
+      ],
+      "budget": "single",
+      "source_id": "live-mixed",
+      "required_events": [
+        "producer",
+        "pre_reload",
+        "post_reload",
+        "readiness",
+        "observation_barrier"
+      ],
+      "forbidden_events": [
+        "projection_write",
+        "projection_ack",
+        "Applied",
+        "send",
+        "response",
+        "dispatch",
+        "result",
+        "automatic_next",
+        "later_user",
+        "terminal"
+      ],
+      "route": {
+        "backend": "Messages",
+        "dialect": "Messages",
+        "model": "fixture-M",
+        "row": "fixture-M",
+        "provider": "synthetic-loopback",
+        "deployment": "fixture",
+        "revision": "1",
+        "endpoint": {
+          "scheme": "http",
+          "authority": "127.0.0.1:1",
+          "path": "/v1/messages"
+        },
+        "principal_scope": "public-fixture",
+        "admission": true,
+        "execution": "server"
+      },
+      "producer_mechanism": "synthetic-contract-chain"
+    }
+  },
+  "synthetic_sources": {
+    "client-six": {
+      "source_class": "synthetic-mutation",
+      "items": [
+        {
+          "type": "tool_search_call",
+          "id": "ts_fixture",
+          "call_id": "client_join",
+          "execution": "client",
+          "status": "completed",
+          "arguments": {
+            "query": "read status"
+          }
+        },
+        {
+          "type": "message",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "intervening assistant"
+            }
+          ]
+        },
+        {
+          "type": "tool_search_output",
+          "call_id": "client_join",
+          "execution": "client",
+          "status": "completed",
+          "tools": [
+            {
+              "type": "function",
+              "name": "read_fixture_0",
+              "strict": true,
+              "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            },
+            {
+              "type": "function",
+              "name": "read_fixture_1",
+              "strict": true,
+              "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            },
+            {
+              "type": "function",
+              "name": "read_fixture_2",
+              "strict": true,
+              "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            },
+            {
+              "type": "function",
+              "name": "read_fixture_3",
+              "strict": true,
+              "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            },
+            {
+              "type": "function",
+              "name": "read_fixture_4",
+              "strict": true,
+              "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            },
+            {
+              "type": "function",
+              "name": "read_fixture_5",
+              "strict": true,
+              "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            }
+          ]
+        }
+      ],
+      "transformations": [
+        "authored synthetic contract fixture; not operator witness"
+      ],
+      "groups": [
+        {
+          "key": "group-0",
+          "members": [
+            0,
+            2
+          ],
+          "duplicate_links": []
+        }
+      ],
+      "eligible_snapshots": [
+        {
+          "source": 2,
+          "definition": 0,
+          "namespace": "fixture_builtin",
+          "name": "read_fixture_0",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          },
+          "eligible": true
+        },
+        {
+          "source": 2,
+          "definition": 1,
+          "namespace": "fixture_builtin",
+          "name": "read_fixture_1",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          },
+          "eligible": true
+        },
+        {
+          "source": 2,
+          "definition": 2,
+          "namespace": "fixture_builtin",
+          "name": "read_fixture_2",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          },
+          "eligible": true
+        },
+        {
+          "source": 2,
+          "definition": 3,
+          "namespace": "fixture_builtin",
+          "name": "read_fixture_3",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          },
+          "eligible": true
+        },
+        {
+          "source": 2,
+          "definition": 4,
+          "namespace": "fixture_builtin",
+          "name": "read_fixture_4",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          },
+          "eligible": true
+        },
+        {
+          "source": 2,
+          "definition": 5,
+          "namespace": "fixture_builtin",
+          "name": "read_fixture_5",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          },
+          "eligible": true
+        }
+      ]
+    },
+    "ordinary": {
+      "source_class": "synthetic-mutation",
+      "items": [
+        {
+          "type": "function_call",
+          "id": "fc_fixture",
+          "call_id": "ordinary_join",
+          "name": "search_tool",
+          "arguments": "{\"query\":\"status\"}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "ordinary_join",
+          "output": "historical bridge result"
+        },
+        {
+          "type": "function_call",
+          "id": "fc_direct",
+          "call_id": "direct_join",
+          "name": "read_fixture_0",
+          "namespace": "fixture_mcp",
+          "arguments": "{}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "direct_join",
+          "output": "historical direct result"
+        }
+      ],
+      "transformations": [
+        "authored bridge/direct-MCP history; no execution claim"
+      ],
+      "groups": [
+        {
+          "key": "bridge",
+          "members": [
+            0,
+            1
+          ],
+          "duplicate_links": []
+        },
+        {
+          "key": "direct",
+          "members": [
+            2,
+            3
+          ],
+          "duplicate_links": []
+        }
+      ]
+    },
+    "pending": {
+      "source_class": "synthetic-mutation",
+      "items": [
+        {
+          "type": "tool_search_call",
+          "id": "ts_pending",
+          "execution": "server",
+          "call_id": null,
+          "status": "in_progress",
+          "arguments": {}
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "fresh input"
+            }
+          ]
+        }
+      ],
+      "transformations": [
+        "authored abandoned-tail control; not observed pause"
+      ],
+      "groups": [
+        {
+          "key": "group-0",
+          "members": [
+            0
+          ],
+          "duplicate_links": []
+        }
+      ]
+    },
+    "live-mixed": {
+      "source_class": "synthetic-mutation",
+      "items": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "server_tool_use",
+              "id": "server-complete",
+              "name": "tool_search_tool_bm25",
+              "input": {
+                "query": "status"
+              }
+            },
+            {
+              "type": "tool_search_tool_result",
+              "tool_use_id": "server-complete",
+              "content": {
+                "type": "tool_search_tool_search_result",
+                "tool_references": []
+              }
+            },
+            {
+              "type": "server_tool_use",
+              "id": "server-live",
+              "name": "tool_search_tool_bm25",
+              "input": {
+                "query": "read"
+              }
+            },
+            {
+              "type": "tool_use",
+              "id": "client-a",
+              "name": "read_fixture_0",
+              "input": {}
+            },
+            {
+              "type": "text",
+              "text": "intervening assistant"
+            },
+            {
+              "type": "tool_use",
+              "id": "client-b",
+              "name": "read_fixture_1",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "server_tool_use",
+              "id": "server-live",
+              "name": "tool_search_tool_bm25",
+              "input": {
+                "query": "read"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "client-a",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "first result"
+                }
+              ]
+            },
+            {
+              "type": "tool_result",
+              "tool_use_id": "client-b",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "second result"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "groups": [
+        {
+          "key": "group-0",
+          "family": "Messages",
+          "execution": "server",
+          "origin_ref": "fixture-M-origin",
+          "validation": {
+            "kind": "messages-id",
+            "join": "server-complete"
+          },
+          "members": [
+            {
+              "item": 0,
+              "block": 0
+            },
+            {
+              "item": 0,
+              "block": 1
+            }
+          ],
+          "duplicate_links": []
+        },
+        {
+          "key": "group-1",
+          "family": "Messages",
+          "execution": "server",
+          "origin_ref": "fixture-M-origin",
+          "validation": {
+            "kind": "messages-id",
+            "join": "server-live"
+          },
+          "members": [
+            {
+              "item": 0,
+              "block": 2
+            },
+            {
+              "item": 1,
+              "block": 0
+            }
+          ],
+          "duplicate_links": [
+            {
+              "source": {
+                "item": 1,
+                "block": 0
+              },
+              "canonical": {
+                "item": 0,
+                "block": 2
+              }
+            }
+          ]
+        }
+      ],
+      "transformations": [
+        "authored pre-terminal mixed handoff with an explicit duplicate observation; not a provider or product checkpoint"
+      ]
+    }
+  },
+  "synthetic_note": "All synthetic checkpoint files are hp8r observations of the SC semantic fields, not a product checkpoint writer or a claimed NativeSearchHistoryV1 serialization.",
+  "vertex_bank_inventory": [
+    {
+      "source_path": "/Users/palanisd/hts-native-declaration-evidence/cc-toolsearch-wire-20261020/existing/vertex-native-search/A0-baseline.resp.raw",
+      "source_class": "screened-provider-capture",
+      "used_as_product_coverage": false,
+      "raw_key_sweep_exit": 1,
+      "stop_reasons": [
+        "tool_use"
+      ],
+      "format": "SSE",
+      "status": "screened-historical-only",
+      "sha256": "c9462cda2ae16e3d89d11c1363d2b1b9605e25208f73db42bd634f7c1601f8bc",
+      "bytes": 3589,
+      "transformations": []
+    },
+    {
+      "source_path": "/Users/palanisd/hts-native-declaration-evidence/cc-toolsearch-wire-20261020/existing/vertex-native-search/A1-nobeta.resp.raw",
+      "source_class": "screened-provider-capture",
+      "used_as_product_coverage": false,
+      "raw_key_sweep_exit": 1,
+      "stop_reasons": [
+        "tool_use"
+      ],
+      "format": "SSE",
+      "status": "screened-historical-only",
+      "sha256": "03df7bed73969951d9940a090eef2d2e939a1cec19f2f6b342e98d90c691e1fc",
+      "bytes": 3588,
+      "transformations": []
+    },
+    {
+      "source_path": "/Users/palanisd/hts-native-declaration-evidence/cc-toolsearch-wire-20261020/existing/vertex-native-search/A2-adv.resp.raw",
+      "source_class": "screened-provider-capture",
+      "used_as_product_coverage": false,
+      "raw_key_sweep_exit": 1,
+      "stop_reasons": [
+        "tool_use"
+      ],
+      "format": "SSE",
+      "status": "screened-historical-only",
+      "sha256": "a42a35da2fd80dffc8a1250204d218470b1c3ff762157d753c0edc920c1621e3",
+      "bytes": 3577,
+      "transformations": []
+    },
+    {
+      "source_path": "/Users/palanisd/hts-native-declaration-evidence/cc-toolsearch-wire-20261020/existing/vertex-native-search/A3-tst.resp.raw",
+      "source_class": "screened-provider-capture",
+      "used_as_product_coverage": false,
+      "raw_key_sweep_exit": 1,
+      "stop_reasons": [
+        "tool_use"
+      ],
+      "format": "SSE",
+      "status": "screened-historical-only",
+      "sha256": "141d031a9ee6a757657ad5fc5aa26a9579e6ae64cb3d846d647ec6bb115138c7",
+      "bytes": 3602,
+      "transformations": []
+    },
+    {
+      "source_path": "/Users/palanisd/hts-native-declaration-evidence/cc-toolsearch-wire-20261020/existing/vertex-native-search/A4-both.resp.raw",
+      "source_class": "screened-provider-capture",
+      "used_as_product_coverage": false,
+      "raw_key_sweep_exit": 1,
+      "stop_reasons": [
+        "tool_use"
+      ],
+      "format": "SSE",
+      "status": "screened-historical-only",
+      "sha256": "97b09d9e27f548b53f5e1beec7008b4354e3f5d33c1fba5d96c425a227a3fd85",
+      "bytes": 3555,
+      "transformations": []
+    },
+    {
+      "source_path": "/Users/palanisd/hts-native-declaration-evidence/cc-toolsearch-wire-20261020/existing/vertex-native-search/A5-sonnet.resp.raw",
+      "source_class": "screened-provider-capture",
+      "used_as_product_coverage": false,
+      "raw_key_sweep_exit": 1,
+      "stop_reasons": [
+        "tool_use"
+      ],
+      "format": "SSE",
+      "status": "screened-historical-only",
+      "sha256": "56e9f1e49ea095eb2432376dc886ce41dac4d78519e3676aff0154c458077c41",
+      "bytes": 4318,
+      "transformations": []
+    },
+    {
+      "source_path": "/Users/palanisd/hts-native-declaration-evidence/cc-toolsearch-wire-20261020/existing/vertex-native-search/N1-all-deferred.resp.raw",
+      "source_class": "screened-provider-capture",
+      "used_as_product_coverage": false,
+      "raw_key_sweep_exit": 1,
+      "format": "JSON",
+      "stop_reasons": [],
+      "status": "screened-historical-only",
+      "sha256": "275708ae6619513b8b65e020ac9e715bbe303ce59eca57303b436c0760af4e7b",
+      "bytes": 421,
+      "transformations": []
+    },
+    {
+      "source_path": "/Users/palanisd/hts-native-declaration-evidence/cc-toolsearch-wire-20261020/existing/vertex-native-search/N2-cc-on-deferred.resp.raw",
+      "source_class": "screened-provider-capture",
+      "used_as_product_coverage": false,
+      "raw_key_sweep_exit": 1,
+      "format": "JSON",
+      "stop_reasons": [],
+      "status": "screened-historical-only",
+      "sha256": "e26905d1750715d5f9b5076c1c7ee1f535cb36141891b41e5bc1f540f7a23e21",
+      "bytes": 475,
+      "transformations": []
+    }
+  ]
+}
