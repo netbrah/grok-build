@@ -136,7 +136,7 @@ const RESPONSES_KNOWN_EVENT_TYPES: [&str; 49] = [
     "error",
 ];
 
-/// Per-request `x-grok-*` headers. Optional fields are skipped when empty/`None`.
+/// Per-request `x-grok-*` headers. Empty values and absent optional fields are omitted.
 struct GrokRequestHeaders<'a> {
     conv_id: &'a str,
     req_id: &'a str,
@@ -152,16 +152,22 @@ struct GrokRequestHeaders<'a> {
 
 impl GrokRequestHeaders<'_> {
     fn apply(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        let mut b = builder
-            .header("x-grok-conv-id", self.conv_id)
-            .header("x-grok-req-id", self.req_id)
-            .header("x-grok-model-override", self.model_id)
-            .header("x-grok-session-id", self.session_id)
-            .header("x-grok-agent-id", self.agent_id);
-        if let Some(idx) = self.turn_idx {
+        let mut b = builder;
+        for (name, value) in [
+            ("x-grok-conv-id", self.conv_id),
+            ("x-grok-req-id", self.req_id),
+            ("x-grok-model-override", self.model_id),
+            ("x-grok-session-id", self.session_id),
+            ("x-grok-agent-id", self.agent_id),
+        ] {
+            if !value.is_empty() {
+                b = b.header(name, value);
+            }
+        }
+        if let Some(idx) = self.turn_idx.filter(|s| !s.is_empty()) {
             b = b.header("x-grok-turn-idx", idx);
         }
-        if let Some(attempt) = self.transient_retry {
+        if let Some(attempt) = self.transient_retry.filter(|s| !s.is_empty()) {
             b = b.header("x-grok-transient-retry", attempt);
         }
         if let Some(id) = self.deployment_id.filter(|s| !s.is_empty()) {
@@ -1861,6 +1867,27 @@ impl SamplingClient {
         let sent_bearer = Self::sent_fragment_from_headers(&headers, &self.defaults.auth_scheme);
         if let Some(injector) = &self.header_injector {
             injector.inject(&mut headers);
+        }
+        let empty_grok_names: Vec<_> = headers
+            .keys()
+            .filter(|name| {
+                name.as_str().starts_with("x-grok-")
+                    && headers.get_all(*name).iter().any(HeaderValue::is_empty)
+            })
+            .cloned()
+            .collect();
+        for name in empty_grok_names {
+            let nonempty: Vec<_> = headers
+                .get_all(&name)
+                .iter()
+                .filter(|value| !value.is_empty())
+                .cloned()
+                .collect();
+            // Removing a name must not discard its nonempty siblings.
+            headers.remove(&name);
+            for value in nonempty {
+                headers.append(name.clone(), value);
+            }
         }
         SentRequest {
             builder: self.http.post(url).headers(headers),
@@ -3941,6 +3968,1355 @@ mod tests {
     use tokio::sync::oneshot;
     use xai_grok_sampling_types::ApiErrorCode;
     use xai_grok_sampling_types::types::ChatRequestMessage;
+
+    #[tokio::test]
+    #[serial]
+    async fn default_x_grok_headers_omit_empty_values_on_both_wires() {
+        let _ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "false");
+        let observations = v3n5_capture_cases(Some(V3n5Group::Defaults)).await;
+        assert_eq!(observations.len(), 24);
+        v3n5_assert_candidate_headers(&observations);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn injected_x_grok_headers_filter_empty_values_without_dropping_siblings() {
+        let _ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "false");
+        let observations = v3n5_capture_cases(Some(V3n5Group::Injected)).await;
+        assert_eq!(observations.len(), 3);
+        for observed in &observations {
+            let values: Vec<_> = observed.received[0]
+                .headers
+                .get_all("x-grok-sibling")
+                .iter()
+                .map(|value| value.to_str().expect("synthetic ASCII header"))
+                .collect();
+            assert_eq!(
+                values,
+                vec!["first", "second"],
+                "V3N5_F1_TWO_SURVIVORS: {}",
+                observed.name
+            );
+        }
+        v3n5_assert_candidate_headers(&observations);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn default_identity_and_auth_headers_preserve_nonempty_values() {
+        let _ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "false");
+        let observations = v3n5_capture_cases(Some(V3n5Group::Identity)).await;
+        assert_eq!(observations.len(), 9);
+        for observed in &observations {
+            if observed.name.ends_with("/identifier-empty") {
+                assert!(
+                    !observed.received[0]
+                        .headers
+                        .contains_key("x-grok-client-identifier"),
+                    "V3N5_OMISSION_IDENTIFIER: {}",
+                    observed.name
+                );
+            }
+        }
+        v3n5_assert_candidate_headers(&observations);
+    }
+
+    fn v3n5_assert_candidate_headers(observations: &[V3n5Observed]) {
+        use std::io::Write;
+        v3n5_assert_parent_preservation(observations);
+        let mut failures = Vec::new();
+        for observed in observations {
+            let mut mismatches = Vec::new();
+            if observed.expected_completion == V3n5Completion::Success {
+                let received = &observed.received[0];
+                let (_, index) = v3n5_parent_indexes(&observed.name);
+                let expected = v3n5_nonempty_grok_values(v3n5_parent_headers(index));
+                let actual = v3n5_fixed_headers(&received.headers);
+                // HeaderMap canonicalizes names; only zero-byte x-grok values are forbidden.
+                for (name, value) in &received.headers {
+                    if name.as_str().starts_with("x-grok-") && value.is_empty() {
+                        mismatches.push(serde_json::json!({"header":name.as_str(),"reason":"zero-length x-grok value"}));
+                    }
+                }
+                let names: std::collections::BTreeSet<_> =
+                    expected.keys().chain(actual.keys()).collect();
+                for name in names {
+                    let wanted = expected.get(name).cloned().unwrap_or_default();
+                    let values: Vec<_> = received
+                        .headers
+                        .get_all(name.as_str())
+                        .iter()
+                        .map(|value| {
+                            String::from_utf8(value.as_bytes().to_vec())
+                                .expect("synthetic ASCII header")
+                        })
+                        .collect();
+                    let present = received.headers.contains_key(name.as_str());
+                    if values != wanted || (wanted.is_empty() && present) {
+                        mismatches.push(serde_json::json!({"header":name,"expected":wanted,"received":values,"present":present}));
+                    }
+                }
+            }
+            writeln!(
+                std::io::stdout().lock(),
+                "V3N5_ORACLE {}",
+                serde_json::json!({
+                    "case":observed.name,"violations":mismatches,"passed":mismatches.is_empty()
+                })
+            )
+            .expect("write receiver verdict");
+            if !mismatches.is_empty() {
+                failures.push((observed.name.clone(), mismatches));
+            }
+        }
+        assert!(failures.is_empty(), "V3N5_OMISSION: {failures:?}");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn request_headers_omit_absent_ids_on_all_send_paths() {
+        let _ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "false");
+        let observations = v3n5_capture_cases(Some(V3n5Group::Absent)).await;
+        assert_eq!(observations.len(), 10);
+        v3n5_assert_candidate_headers(&observations);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn request_headers_omit_explicit_empty_values_on_all_send_paths() {
+        let _ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "false");
+        let observations = v3n5_capture_cases(Some(V3n5Group::ExplicitEmpty)).await;
+        assert_eq!(observations.len(), 9);
+        v3n5_assert_candidate_headers(&observations);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn empty_model_override_is_omitted_without_rewriting_the_body() {
+        let _ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "false");
+        let observations = v3n5_capture_cases(Some(V3n5Group::EmptyModel)).await;
+        assert_eq!(observations.len(), 12);
+        v3n5_assert_candidate_headers(&observations);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn request_headers_preserve_nonempty_values_and_wire_bodies() {
+        let _ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "false");
+        let observations = v3n5_capture_cases(Some(V3n5Group::Preserve)).await;
+        assert_eq!(observations.len(), 63);
+        v3n5_assert_candidate_headers(&observations);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn auxiliary_collect_omits_absent_ids_on_responses_and_messages() {
+        let _ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "false");
+        let observations = v3n5_capture_cases(Some(V3n5Group::Auxiliary)).await;
+        assert_eq!(observations.len(), 3);
+        v3n5_assert_candidate_headers(&observations);
+    }
+
+    // Frozen from passive egress on 2fcd97294a23, before either production hunk changed.
+    const V3N5_PARENT_BODIES: &[&str] = &[
+        r####"{"model":"gpt-5.6-sol","messages":[{"role":"system","content":"v3n5 fixed system"},{"role":"user","content":"v3n5 fixed user history"}],"max_tokens":128,"tools":[{"type":"function","function":{"name":"v3n5_lookup","description":"Fixed local test tool","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}}}]}"####,
+        r####"{"model":"","messages":[{"role":"system","content":"v3n5 fixed system"},{"role":"user","content":"v3n5 fixed user history"}],"max_tokens":128,"tools":[{"type":"function","function":{"name":"v3n5_lookup","description":"Fixed local test tool","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}}}]}"####,
+        r####"{"model":"gpt-5.6-sol","messages":[{"role":"system","content":"v3n5 fixed system"},{"role":"user","content":"v3n5 fixed user history"}],"max_tokens":128,"tools":[{"type":"function","function":{"name":"v3n5_lookup","description":"Fixed local test tool","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}}}],"stream":true,"stream_options":{"include_usage":true}}"####,
+        r####"{"model":"","messages":[{"role":"system","content":"v3n5 fixed system"},{"role":"user","content":"v3n5 fixed user history"}],"max_tokens":128,"tools":[{"type":"function","function":{"name":"v3n5_lookup","description":"Fixed local test tool","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}}}],"stream":true,"stream_options":{"include_usage":true}}"####,
+        r####"{"include":["reasoning.encrypted_content","no_inline_citations"],"input":[{"type":"message","role":"system","content":"v3n5 fixed system"},{"type":"message","role":"developer","content":[{"type":"input_text","text":"<multi_agent_mode>Multi-agent mode: explicit_request_only — subagents may be spawned only when the user explicitly requests.</multi_agent_mode>"}]},{"type":"message","role":"user","content":"v3n5 fixed user history"}],"max_output_tokens":128,"model":"gpt-5.6-sol","reasoning":{"summary":"concise"},"store":false,"tools":[{"type":"function","name":"v3n5_lookup","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false},"description":"Fixed local test tool"}]}"####,
+        r####"{"include":["reasoning.encrypted_content","no_inline_citations"],"input":[{"type":"message","role":"system","content":"v3n5 fixed system"},{"type":"message","role":"developer","content":[{"type":"input_text","text":"<multi_agent_mode>Multi-agent mode: explicit_request_only — subagents may be spawned only when the user explicitly requests.</multi_agent_mode>"}]},{"type":"message","role":"user","content":"v3n5 fixed user history"}],"max_output_tokens":128,"model":"gpt-5.6-sol","prompt_cache_key":"","reasoning":{"summary":"concise"},"store":false,"tools":[{"type":"function","name":"v3n5_lookup","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false},"description":"Fixed local test tool"}]}"####,
+        r####"{"include":["reasoning.encrypted_content","no_inline_citations"],"input":[{"type":"message","role":"system","content":"v3n5 fixed system"},{"type":"message","role":"developer","content":[{"type":"input_text","text":"<multi_agent_mode>Multi-agent mode: explicit_request_only — subagents may be spawned only when the user explicitly requests.</multi_agent_mode>"}]},{"type":"message","role":"user","content":"v3n5 fixed user history"}],"max_output_tokens":128,"model":"gpt-5.6-sol","prompt_cache_key":"v3n5-conv","reasoning":{"summary":"concise"},"store":false,"tools":[{"type":"function","name":"v3n5_lookup","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false},"description":"Fixed local test tool"}]}"####,
+        r####"{"include":["reasoning.encrypted_content","no_inline_citations"],"input":[{"type":"message","role":"system","content":"v3n5 fixed system"},{"type":"message","role":"developer","content":[{"type":"input_text","text":"<multi_agent_mode>Multi-agent mode: explicit_request_only — subagents may be spawned only when the user explicitly requests.</multi_agent_mode>"}]},{"type":"message","role":"user","content":"v3n5 fixed user history"}],"max_output_tokens":128,"model":"","reasoning":{"summary":"concise"},"store":false,"tools":[{"type":"function","name":"v3n5_lookup","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false},"description":"Fixed local test tool"}]}"####,
+        r####"{"include":["reasoning.encrypted_content","no_inline_citations"],"input":[{"type":"message","role":"system","content":"v3n5 fixed system"},{"type":"message","role":"developer","content":[{"type":"input_text","text":"<multi_agent_mode>Multi-agent mode: explicit_request_only — subagents may be spawned only when the user explicitly requests.</multi_agent_mode>"}]},{"type":"message","role":"user","content":"v3n5 fixed user history"}],"max_output_tokens":128,"model":"gpt-5.6-sol","reasoning":{"summary":"concise"},"store":false,"stream":true,"tools":[{"type":"function","name":"v3n5_lookup","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false},"description":"Fixed local test tool"}]}"####,
+        r####"{"include":["reasoning.encrypted_content","no_inline_citations"],"input":[{"type":"message","role":"system","content":"v3n5 fixed system"},{"type":"message","role":"developer","content":[{"type":"input_text","text":"<multi_agent_mode>Multi-agent mode: explicit_request_only — subagents may be spawned only when the user explicitly requests.</multi_agent_mode>"}]},{"type":"message","role":"user","content":"v3n5 fixed user history"}],"max_output_tokens":128,"model":"gpt-5.6-sol","prompt_cache_key":"","reasoning":{"summary":"concise"},"store":false,"stream":true,"tools":[{"type":"function","name":"v3n5_lookup","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false},"description":"Fixed local test tool"}]}"####,
+        r####"{"include":["reasoning.encrypted_content","no_inline_citations"],"input":[{"type":"message","role":"system","content":"v3n5 fixed system"},{"type":"message","role":"developer","content":[{"type":"input_text","text":"<multi_agent_mode>Multi-agent mode: explicit_request_only — subagents may be spawned only when the user explicitly requests.</multi_agent_mode>"}]},{"type":"message","role":"user","content":"v3n5 fixed user history"}],"max_output_tokens":128,"model":"gpt-5.6-sol","prompt_cache_key":"v3n5-conv","reasoning":{"summary":"concise"},"store":false,"stream":true,"tools":[{"type":"function","name":"v3n5_lookup","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false},"description":"Fixed local test tool"}]}"####,
+        r####"{"include":["reasoning.encrypted_content","no_inline_citations"],"input":[{"type":"message","role":"system","content":"v3n5 fixed system"},{"type":"message","role":"developer","content":[{"type":"input_text","text":"<multi_agent_mode>Multi-agent mode: explicit_request_only — subagents may be spawned only when the user explicitly requests.</multi_agent_mode>"}]},{"type":"message","role":"user","content":"v3n5 fixed user history"}],"max_output_tokens":128,"model":"","reasoning":{"summary":"concise"},"store":false,"stream":true,"tools":[{"type":"function","name":"v3n5_lookup","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false},"description":"Fixed local test tool"}]}"####,
+        r####"{"include":["reasoning.encrypted_content"],"input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"<multi_agent_mode>explicit_request_only</multi_agent_mode>"}]},{"type":"message","role":"user","content":"v3n5 fixed user history"},{"type":"compaction_trigger"}],"instructions":"v3n5 fixed compaction instructions","model":"gpt-5.6-sol","parallel_tool_calls":true,"prompt_cache_key":"v3n5-cache-affinity","reasoning":{"summary":"concise"},"store":false,"stream":true,"tools":[{"type":"function","name":"v3n5_lookup","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false},"description":"Fixed local test tool"}],"tool_choice":"auto"}"####,
+        r####"{"model":"claude-opus-5","messages":[{"role":"user","content":[{"type":"text","text":"v3n5 fixed user history","cache_control":{"type":"ephemeral"}}]}],"max_tokens":128,"system":[{"type":"text","text":"v3n5 fixed system","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"v3n5_lookup","description":"Fixed local test tool","input_schema":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}}],"metadata":{"user_id":"v3n5-metadata-user"}}"####,
+        r####"{"model":"claude-opus-5","messages":[{"role":"user","content":[{"type":"text","text":"v3n5 fixed user history","cache_control":{"type":"ephemeral"}}]}],"max_tokens":128,"system":[{"type":"text","text":"v3n5 fixed system","cache_control":{"type":"ephemeral","ttl":"1h"}}],"tools":[{"name":"v3n5_lookup","description":"Fixed local test tool","input_schema":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}}],"stream":true,"metadata":{"user_id":"v3n5-metadata-user"}}"####,
+    ];
+
+    const V3N5_PARENT_HEADERS: &[&str] = &[
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["373"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":[""],"x-grok-session-id":[""]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["373"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":[""],"x-grok-session-id":[""],"x-grok-transient-retry":[""],"x-grok-turn-idx":[""]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["373"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["373"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["373"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":[""],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["373"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":[""],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["373"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["373"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-configured-conv",""],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["373"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-configured-conv","v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["362"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":[""],"x-grok-req-id":[""],"x-grok-session-id":[""]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["427"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":[""],"x-grok-session-id":[""]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["427"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":[""],"x-grok-session-id":[""],"x-grok-transient-retry":[""],"x-grok-turn-idx":[""]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["427"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["427"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["427"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":[""],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["427"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":[""],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["427"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["427"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-configured-conv",""],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["427"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-configured-conv","v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["416"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":[""],"x-grok-req-id":[""],"x-grok-session-id":[""]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["737"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":[""],"x-grok-session-id":[""]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["759"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":[""],"x-grok-session-id":[""],"x-grok-transient-retry":[""],"x-grok-turn-idx":[""]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["768"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["759"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["768"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":[""],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["768"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":[""],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["768"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["737"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-configured-conv",""],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["768"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-configured-conv","v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["726"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":[""],"x-grok-req-id":[""],"x-grok-session-id":[""]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["751"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":[""],"x-grok-session-id":[""]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["773"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":[""],"x-grok-session-id":[""],"x-grok-transient-retry":[""],"x-grok-turn-idx":[""]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["782"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["773"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["782"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":[""],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["782"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":[""],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["782"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["751"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-configured-conv",""],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["782"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-configured-conv","v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["740"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":[""],"x-grok-req-id":[""],"x-grok-session-id":[""]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["724"],"content-type":["application/json"],"x-codex-beta-features":["remote_compaction_v2"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":[""],"x-grok-session-id":[""]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["724"],"content-type":["application/json"],"x-codex-beta-features":["remote_compaction_v2"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":[""],"x-grok-session-id":[""],"x-grok-transient-retry":[""],"x-grok-turn-idx":[""]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["724"],"content-type":["application/json"],"x-codex-beta-features":["remote_compaction_v2"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["724"],"content-type":["application/json"],"x-codex-beta-features":["remote_compaction_v2"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["724"],"content-type":["application/json"],"x-codex-beta-features":["remote_compaction_v2"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":[""],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["724"],"content-type":["application/json"],"x-codex-beta-features":["remote_compaction_v2"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":[""],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["724"],"content-type":["application/json"],"x-codex-beta-features":["remote_compaction_v2"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["724"],"content-type":["application/json"],"x-codex-beta-features":["remote_compaction_v2"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-configured-conv",""],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["724"],"content-type":["application/json"],"x-codex-beta-features":["remote_compaction_v2"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-configured-conv","v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":[""],"x-grok-session-id":[""]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":[""],"x-grok-session-id":[""],"x-grok-transient-retry":[""],"x-grok-turn-idx":[""]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":[""],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":[""],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-configured-conv",""],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-configured-conv","v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":[""],"x-grok-session-id":[""]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":[""],"x-grok-session-id":[""],"x-grok-transient-retry":[""],"x-grok-turn-idx":[""]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":[""],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":[""],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-configured-conv",""],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-configured-conv","v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["520"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":[""],"x-grok-session-id":[""]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["520"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":[""],"x-grok-session-id":[""],"x-grok-transient-retry":[""],"x-grok-turn-idx":[""]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["520"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["520"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["520"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":[""],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["520"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":[""],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["520"],"content-type":["application/json"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["520"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-configured-conv",""],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["520"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-configured-conv","v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"content-length":["520"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":[""],"x-grok-session-id":[""]}"####,
+        r####"{"accept":["text/event-stream"],"content-length":["520"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":[""],"x-grok-session-id":[""],"x-grok-transient-retry":[""],"x-grok-turn-idx":[""]}"####,
+        r####"{"accept":["text/event-stream"],"content-length":["520"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"content-length":["520"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"content-length":["520"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":[""],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"content-length":["520"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":[""],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"content-length":["520"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"content-length":["520"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-configured-conv",""],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"content-length":["520"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-configured-conv","v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["text/event-stream"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["724"],"content-type":["application/json"],"x-codex-beta-features":["remote_compaction_v2"],"x-grok-agent-id":[""],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":[""],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":[""],"x-grok-session-id":["v3n5-session"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["768"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-client-version":[""],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["768"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":[""],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["768"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-group-id":[""],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["768"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["","v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["768"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["","v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["768"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-mixed-empty":[""],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["","v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["768"],"content-type":["application/json"],"traceparent":["00-11111111111111111111111111111111-2222222222222222-01"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-empty-only":[""],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-sibling":["first","","second"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"],"x-v3n5-control":["injected-control"],"x-v3n5-empty-control":[""]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["768"],"content-type":["application/json"],"traceparent":["00-11111111111111111111111111111111-2222222222222222-01"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["v3n5-identifier"],"x-grok-client-version":["v3n5-version"],"x-grok-conv-group-id":["v3n5-group"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-configured-deployment","v3n5-request-deployment"],"x-grok-extra":["v3n5-extra"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-configured-user","v3n5-request-user"],"x-v3n5-control":["configured-control","injected-control"],"x-v3n5-empty-control":[""]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["768"],"content-type":["application/json"],"traceparent":["00-11111111111111111111111111111111-2222222222222222-01"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-client-version":["v3n5-version"],"x-grok-conv-group-id":["v3n5-group"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-configured-deployment","v3n5-request-deployment"],"x-grok-extra":["v3n5-extra"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-configured-user","v3n5-request-user"],"x-v3n5-control":["configured-control","injected-control"],"x-v3n5-empty-control":[""]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["768"],"content-type":["application/json"],"traceparent":["00-11111111111111111111111111111111-2222222222222222-01"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":[""],"x-grok-client-version":["v3n5-version"],"x-grok-conv-group-id":["v3n5-group"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-configured-deployment","v3n5-request-deployment"],"x-grok-extra":["v3n5-extra"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-configured-user","v3n5-request-user"],"x-v3n5-control":["configured-control","injected-control"],"x-v3n5-empty-control":[""]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-client-version":[""],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":[""],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-group-id":[""],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["","v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["","v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-mixed-empty":[""],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["","v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"traceparent":["00-11111111111111111111111111111111-2222222222222222-01"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-empty-only":[""],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-sibling":["first","","second"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"],"x-v3n5-control":["injected-control"],"x-v3n5-empty-control":[""]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"traceparent":["00-11111111111111111111111111111111-2222222222222222-01"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["v3n5-identifier"],"x-grok-client-version":["v3n5-version"],"x-grok-conv-group-id":["v3n5-group"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-configured-deployment","v3n5-request-deployment"],"x-grok-extra":["v3n5-extra"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-configured-user","v3n5-request-user"],"x-v3n5-control":["configured-control","injected-control"],"x-v3n5-empty-control":[""]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"traceparent":["00-11111111111111111111111111111111-2222222222222222-01"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-client-version":["v3n5-version"],"x-grok-conv-group-id":["v3n5-group"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-configured-deployment","v3n5-request-deployment"],"x-grok-extra":["v3n5-extra"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-configured-user","v3n5-request-user"],"x-v3n5-control":["configured-control","injected-control"],"x-v3n5-empty-control":[""]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["506"],"content-type":["application/json"],"traceparent":["00-11111111111111111111111111111111-2222222222222222-01"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":[""],"x-grok-client-version":["v3n5-version"],"x-grok-conv-group-id":["v3n5-group"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-configured-deployment","v3n5-request-deployment"],"x-grok-extra":["v3n5-extra"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-configured-user","v3n5-request-user"],"x-v3n5-control":["configured-control","injected-control"],"x-v3n5-empty-control":[""]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-client-version":[""],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":[""],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-group-id":[""],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["","v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["","v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-mixed-empty":[""],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["","v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"traceparent":["00-11111111111111111111111111111111-2222222222222222-01"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-empty-only":[""],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-sibling":["first","","second"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"],"x-v3n5-control":["injected-control"],"x-v3n5-empty-control":[""]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"traceparent":["00-11111111111111111111111111111111-2222222222222222-01"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["v3n5-identifier"],"x-grok-client-version":["v3n5-version"],"x-grok-conv-group-id":["v3n5-group"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-configured-deployment","v3n5-request-deployment"],"x-grok-extra":["v3n5-extra"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-configured-user","v3n5-request-user"],"x-v3n5-control":["configured-control","injected-control"],"x-v3n5-empty-control":[""]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"traceparent":["00-11111111111111111111111111111111-2222222222222222-01"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-client-version":["v3n5-version"],"x-grok-conv-group-id":["v3n5-group"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-configured-deployment","v3n5-request-deployment"],"x-grok-extra":["v3n5-extra"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-configured-user","v3n5-request-user"],"x-v3n5-control":["configured-control","injected-control"],"x-v3n5-empty-control":[""]}"####,
+        r####"{"accept":["*/*"],"content-length":["506"],"content-type":["application/json"],"traceparent":["00-11111111111111111111111111111111-2222222222222222-01"],"x-api-key":["v3n5-synthetic-credential"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":[""],"x-grok-client-version":["v3n5-version"],"x-grok-conv-group-id":["v3n5-group"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-configured-deployment","v3n5-request-deployment"],"x-grok-extra":["v3n5-extra"],"x-grok-model-override":["claude-opus-5"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-configured-user","v3n5-request-user"],"x-v3n5-control":["configured-control","injected-control"],"x-v3n5-empty-control":[""]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["373"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-client-version":[""],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["373"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":[""],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["373"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-group-id":[""],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["373"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["","v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["373"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["","v3n5-request-user"]}"####,
+        r####"{"accept":["*/*"],"authorization":["Bearer v3n5-synthetic-credential"],"content-length":["373"],"content-type":["application/json"],"x-grok-agent-id":["v3n5-agent"],"x-grok-client-identifier":["grok-shell"],"x-grok-conv-id":["v3n5-conv"],"x-grok-deployment-id":["v3n5-request-deployment"],"x-grok-mixed-empty":[""],"x-grok-model-override":["gpt-5.6-sol"],"x-grok-req-id":["","v3n5-request"],"x-grok-session-id":["v3n5-session"],"x-grok-transient-retry":["3"],"x-grok-turn-idx":["0"],"x-grok-user-id":["v3n5-request-user"]}"####,
+    ];
+
+    const V3N5_PARENT_CASES: &[(&str, usize, usize)] = &[
+        ("Absent/Chat/Bearer/none", 0, 0),
+        ("ExplicitEmpty/Chat/Bearer/all-empty", 0, 1),
+        ("Preserve/Chat/Bearer/populated", 0, 2),
+        ("Preserve/Chat/Bearer/x-grok-conv-id", 0, 3),
+        ("Preserve/Chat/Bearer/x-grok-req-id", 0, 4),
+        ("Preserve/Chat/Bearer/x-grok-session-id", 0, 5),
+        ("Preserve/Chat/Bearer/x-grok-agent-id", 0, 6),
+        ("Preserve/Chat/Bearer/configured-only", 0, 7),
+        ("Preserve/Chat/Bearer/configured-and-request", 0, 8),
+        ("EmptyModel/Chat/Bearer/empty-request-model", 1, 9),
+        ("Absent/ChatStream/Bearer/none", 2, 10),
+        ("ExplicitEmpty/ChatStream/Bearer/all-empty", 2, 11),
+        ("Preserve/ChatStream/Bearer/populated", 2, 12),
+        ("Preserve/ChatStream/Bearer/x-grok-conv-id", 2, 13),
+        ("Preserve/ChatStream/Bearer/x-grok-req-id", 2, 14),
+        ("Preserve/ChatStream/Bearer/x-grok-session-id", 2, 15),
+        ("Preserve/ChatStream/Bearer/x-grok-agent-id", 2, 16),
+        ("Preserve/ChatStream/Bearer/configured-only", 2, 17),
+        ("Preserve/ChatStream/Bearer/configured-and-request", 2, 18),
+        ("EmptyModel/ChatStream/Bearer/empty-request-model", 3, 19),
+        ("Absent/Responses/Bearer/none", 4, 20),
+        ("ExplicitEmpty/Responses/Bearer/all-empty", 5, 21),
+        ("Preserve/Responses/Bearer/populated", 6, 22),
+        ("Preserve/Responses/Bearer/x-grok-conv-id", 5, 23),
+        ("Preserve/Responses/Bearer/x-grok-req-id", 6, 24),
+        ("Preserve/Responses/Bearer/x-grok-session-id", 6, 25),
+        ("Preserve/Responses/Bearer/x-grok-agent-id", 6, 26),
+        ("Preserve/Responses/Bearer/configured-only", 4, 27),
+        ("Preserve/Responses/Bearer/configured-and-request", 6, 28),
+        ("EmptyModel/Responses/Bearer/empty-request-model", 7, 29),
+        ("Absent/ResponsesStream/Bearer/none", 8, 30),
+        ("ExplicitEmpty/ResponsesStream/Bearer/all-empty", 9, 31),
+        ("Preserve/ResponsesStream/Bearer/populated", 10, 32),
+        ("Preserve/ResponsesStream/Bearer/x-grok-conv-id", 9, 33),
+        ("Preserve/ResponsesStream/Bearer/x-grok-req-id", 10, 34),
+        ("Preserve/ResponsesStream/Bearer/x-grok-session-id", 10, 35),
+        ("Preserve/ResponsesStream/Bearer/x-grok-agent-id", 10, 36),
+        ("Preserve/ResponsesStream/Bearer/configured-only", 8, 37),
+        (
+            "Preserve/ResponsesStream/Bearer/configured-and-request",
+            10,
+            38,
+        ),
+        (
+            "EmptyModel/ResponsesStream/Bearer/empty-request-model",
+            11,
+            39,
+        ),
+        ("Absent/RemoteV2/Bearer/none", 12, 40),
+        ("ExplicitEmpty/RemoteV2/Bearer/all-empty", 12, 41),
+        ("Preserve/RemoteV2/Bearer/populated", 12, 42),
+        ("Preserve/RemoteV2/Bearer/x-grok-conv-id", 12, 43),
+        ("Preserve/RemoteV2/Bearer/x-grok-req-id", 12, 44),
+        ("Preserve/RemoteV2/Bearer/x-grok-session-id", 12, 45),
+        ("Preserve/RemoteV2/Bearer/x-grok-agent-id", 12, 46),
+        ("Preserve/RemoteV2/Bearer/configured-only", 12, 47),
+        ("Preserve/RemoteV2/Bearer/configured-and-request", 12, 48),
+        ("Absent/Messages/Bearer/none", 13, 49),
+        ("ExplicitEmpty/Messages/Bearer/all-empty", 13, 50),
+        ("Preserve/Messages/Bearer/populated", 13, 51),
+        ("Preserve/Messages/Bearer/x-grok-conv-id", 13, 52),
+        ("Preserve/Messages/Bearer/x-grok-req-id", 13, 53),
+        ("Preserve/Messages/Bearer/x-grok-session-id", 13, 54),
+        ("Preserve/Messages/Bearer/x-grok-agent-id", 13, 55),
+        ("Preserve/Messages/Bearer/configured-only", 13, 56),
+        ("Preserve/Messages/Bearer/configured-and-request", 13, 57),
+        ("EmptyModel/Messages/Bearer/empty-request-model", 13, 49),
+        ("Absent/Messages/XApiKey/none", 13, 58),
+        ("ExplicitEmpty/Messages/XApiKey/all-empty", 13, 59),
+        ("Preserve/Messages/XApiKey/populated", 13, 60),
+        ("Preserve/Messages/XApiKey/x-grok-conv-id", 13, 61),
+        ("Preserve/Messages/XApiKey/x-grok-req-id", 13, 62),
+        ("Preserve/Messages/XApiKey/x-grok-session-id", 13, 63),
+        ("Preserve/Messages/XApiKey/x-grok-agent-id", 13, 64),
+        ("Preserve/Messages/XApiKey/configured-only", 13, 65),
+        ("Preserve/Messages/XApiKey/configured-and-request", 13, 66),
+        ("EmptyModel/Messages/XApiKey/empty-request-model", 13, 58),
+        ("Absent/MessagesStream/Bearer/none", 14, 67),
+        ("ExplicitEmpty/MessagesStream/Bearer/all-empty", 14, 68),
+        ("Preserve/MessagesStream/Bearer/populated", 14, 69),
+        ("Preserve/MessagesStream/Bearer/x-grok-conv-id", 14, 70),
+        ("Preserve/MessagesStream/Bearer/x-grok-req-id", 14, 71),
+        ("Preserve/MessagesStream/Bearer/x-grok-session-id", 14, 72),
+        ("Preserve/MessagesStream/Bearer/x-grok-agent-id", 14, 73),
+        ("Preserve/MessagesStream/Bearer/configured-only", 14, 74),
+        (
+            "Preserve/MessagesStream/Bearer/configured-and-request",
+            14,
+            75,
+        ),
+        (
+            "EmptyModel/MessagesStream/Bearer/empty-request-model",
+            14,
+            67,
+        ),
+        ("Absent/MessagesStream/XApiKey/none", 14, 76),
+        ("ExplicitEmpty/MessagesStream/XApiKey/all-empty", 14, 77),
+        ("Preserve/MessagesStream/XApiKey/populated", 14, 78),
+        ("Preserve/MessagesStream/XApiKey/x-grok-conv-id", 14, 79),
+        ("Preserve/MessagesStream/XApiKey/x-grok-req-id", 14, 80),
+        ("Preserve/MessagesStream/XApiKey/x-grok-session-id", 14, 81),
+        ("Preserve/MessagesStream/XApiKey/x-grok-agent-id", 14, 82),
+        ("Preserve/MessagesStream/XApiKey/configured-only", 14, 83),
+        (
+            "Preserve/MessagesStream/XApiKey/configured-and-request",
+            14,
+            84,
+        ),
+        (
+            "EmptyModel/MessagesStream/XApiKey/empty-request-model",
+            14,
+            76,
+        ),
+        ("Absent/RemoteV2/Bearer/session-only", 12, 85),
+        (
+            "Auxiliary/CollectResponses/Bearer/from-items-id-free",
+            8,
+            30,
+        ),
+        (
+            "Auxiliary/CollectMessages/Bearer/from-items-id-free",
+            14,
+            67,
+        ),
+        (
+            "Auxiliary/CollectMessages/XApiKey/from-items-id-free",
+            14,
+            76,
+        ),
+        ("Defaults/Responses/Bearer/version", 6, 86),
+        ("Defaults/Responses/Bearer/identifier", 6, 87),
+        ("Defaults/Responses/Bearer/group", 6, 88),
+        ("Defaults/Responses/Bearer/deployment", 6, 89),
+        ("Defaults/Responses/Bearer/user", 6, 90),
+        ("Defaults/Responses/Bearer/extra", 6, 91),
+        ("Injected/Responses/Bearer/two-survivors-and-empty", 6, 92),
+        ("Identity/Responses/Bearer/populated", 6, 93),
+        ("Identity/Responses/Bearer/identifier-none", 6, 94),
+        ("Identity/Responses/Bearer/identifier-empty", 6, 95),
+        ("Defaults/Messages/Bearer/version", 13, 96),
+        ("Defaults/Messages/Bearer/identifier", 13, 97),
+        ("Defaults/Messages/Bearer/group", 13, 98),
+        ("Defaults/Messages/Bearer/deployment", 13, 99),
+        ("Defaults/Messages/Bearer/user", 13, 100),
+        ("Defaults/Messages/Bearer/extra", 13, 101),
+        ("Injected/Messages/Bearer/two-survivors-and-empty", 13, 102),
+        ("Identity/Messages/Bearer/populated", 13, 103),
+        ("Identity/Messages/Bearer/identifier-none", 13, 104),
+        ("Identity/Messages/Bearer/identifier-empty", 13, 105),
+        ("Defaults/Messages/XApiKey/version", 13, 106),
+        ("Defaults/Messages/XApiKey/identifier", 13, 107),
+        ("Defaults/Messages/XApiKey/group", 13, 108),
+        ("Defaults/Messages/XApiKey/deployment", 13, 109),
+        ("Defaults/Messages/XApiKey/user", 13, 110),
+        ("Defaults/Messages/XApiKey/extra", 13, 111),
+        ("Injected/Messages/XApiKey/two-survivors-and-empty", 13, 112),
+        ("Identity/Messages/XApiKey/populated", 13, 113),
+        ("Identity/Messages/XApiKey/identifier-none", 13, 114),
+        ("Identity/Messages/XApiKey/identifier-empty", 13, 115),
+        ("Defaults/Chat/Bearer/version", 0, 116),
+        ("Defaults/Chat/Bearer/identifier", 0, 117),
+        ("Defaults/Chat/Bearer/group", 0, 118),
+        ("Defaults/Chat/Bearer/deployment", 0, 119),
+        ("Defaults/Chat/Bearer/user", 0, 120),
+        ("Defaults/Chat/Bearer/extra", 0, 121),
+    ];
+
+    fn v3n5_fixed_headers(headers: &HeaderMap) -> std::collections::BTreeMap<String, Vec<String>> {
+        let mut values = v3n5_header_values(headers);
+        // Exact controls retain x-grok-*, authorization/x-api-key, content-type, accept,
+        // beta headers and all other default/injected names, including empty non-x-grok values.
+        // Host and User-Agent are checked exactly at receipt against the listener/configuration.
+        values.remove("host");
+        values.remove("user-agent");
+        // Reqwest compression features change this header; compare it within each test below.
+        values.remove("accept-encoding");
+        values
+    }
+
+    fn v3n5_parent_indexes(name: &str) -> (usize, usize) {
+        V3N5_PARENT_CASES
+            .iter()
+            .find_map(|&(case, body, headers)| (case == name).then_some((body, headers)))
+            .expect("fixed input has frozen parent controls")
+    }
+
+    fn v3n5_parent_headers(index: usize) -> std::collections::BTreeMap<String, Vec<String>> {
+        serde_json::from_str(V3N5_PARENT_HEADERS[index]).expect("frozen parent multimap")
+    }
+
+    fn v3n5_nonempty_grok_values(
+        mut headers: std::collections::BTreeMap<String, Vec<String>>,
+    ) -> std::collections::BTreeMap<String, Vec<String>> {
+        headers.retain(|name, values| {
+            if name.starts_with("x-grok-") {
+                values.retain(|value| !value.is_empty());
+            }
+            !values.is_empty()
+        });
+        headers
+    }
+
+    fn v3n5_assert_parent_preservation(observations: &[V3n5Observed]) {
+        let mut accept_encoding = None;
+        for observed in observations {
+            if observed.expected_completion == V3n5Completion::InvalidModel {
+                continue;
+            }
+            let received = &observed.received[0];
+            let values: Vec<_> = received
+                .headers
+                .get_all("accept-encoding")
+                .iter()
+                .map(HeaderValue::as_bytes)
+                .collect();
+            if let Some(expected) = &accept_encoding {
+                assert_eq!(
+                    &values, expected,
+                    "V3N5_TRANSPORT_PRESERVATION: {}",
+                    observed.name
+                );
+            } else {
+                accept_encoding = Some(values);
+            }
+            let (body_index, header_index) = v3n5_parent_indexes(&observed.name);
+            assert_eq!(
+                received.body.as_ref(),
+                V3N5_PARENT_BODIES[body_index].as_bytes(),
+                "V3N5_BODY_PRESERVATION: {}",
+                observed.name
+            );
+            // Parent empty x-grok values are observations, not a candidate preservation contract.
+            assert_eq!(
+                v3n5_nonempty_grok_values(v3n5_fixed_headers(&received.headers)),
+                v3n5_nonempty_grok_values(v3n5_parent_headers(header_index)),
+                "V3N5_NONEMPTY_PRESERVATION: {}",
+                observed.name
+            );
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum V3n5Path {
+        Chat,
+        ChatStream,
+        Responses,
+        ResponsesStream,
+        RemoteV2,
+        Messages,
+        MessagesStream,
+        CollectResponses,
+        CollectMessages,
+    }
+
+    impl V3n5Path {
+        fn backend(self) -> ApiBackend {
+            match self {
+                Self::Chat | Self::ChatStream => ApiBackend::ChatCompletions,
+                Self::Responses
+                | Self::ResponsesStream
+                | Self::RemoteV2
+                | Self::CollectResponses => ApiBackend::Responses,
+                Self::Messages | Self::MessagesStream | Self::CollectMessages => {
+                    ApiBackend::Messages
+                }
+            }
+        }
+
+        fn path(self) -> &'static str {
+            match self.backend() {
+                ApiBackend::ChatCompletions => "/v1/chat/completions",
+                ApiBackend::Responses => "/v1/responses",
+                ApiBackend::Messages => "/v1/messages",
+            }
+        }
+
+        fn streaming(self) -> bool {
+            !matches!(self, Self::Chat | Self::Responses | Self::Messages)
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum V3n5Group {
+        Absent,
+        ExplicitEmpty,
+        EmptyModel,
+        Preserve,
+        Auxiliary,
+        Defaults,
+        Injected,
+        Identity,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum V3n5Completion {
+        Success,
+        InvalidModel,
+    }
+
+    struct V3n5Case {
+        name: String,
+        group: V3n5Group,
+        path: V3n5Path,
+        config: SamplerConfig,
+        request: ConversationRequest,
+        completion: V3n5Completion,
+    }
+
+    const V3N5_HEADER_NAMES: [&str; 8] = [
+        "x-grok-conv-id",
+        "x-grok-req-id",
+        "x-grok-session-id",
+        "x-grok-agent-id",
+        "x-grok-turn-idx",
+        "x-grok-transient-retry",
+        "x-grok-deployment-id",
+        "x-grok-user-id",
+    ];
+    const V3N5_IDS: [&str; 8] = [
+        "v3n5-conv",
+        "v3n5-request",
+        "v3n5-session",
+        "v3n5-agent",
+        "0",
+        "3",
+        "v3n5-request-deployment",
+        "v3n5-request-user",
+    ];
+
+    fn v3n5_set_ids(request: &mut ConversationRequest, values: [Option<&str>; 8]) {
+        let [conv, req, session, agent, turn, retry, deployment, user] =
+            values.map(|v| v.map(str::to_owned));
+        request.x_grok_conv_id = conv;
+        request.x_grok_req_id = req;
+        request.x_grok_session_id = session;
+        request.x_grok_agent_id = agent;
+        request.x_grok_turn_idx = turn;
+        request.x_grok_transient_retry = retry;
+        request.x_grok_deployment_id = deployment;
+        request.x_grok_user_id = user;
+    }
+
+    fn v3n5_case(group: V3n5Group, label: &str, path: V3n5Path, auth: AuthScheme) -> V3n5Case {
+        let model = if path.backend() == ApiBackend::Messages {
+            "claude-opus-5"
+        } else {
+            "gpt-5.6-sol"
+        };
+        let mut request = ConversationRequest::from_items(vec![
+            xai_grok_sampling_types::ConversationItem::system("v3n5 fixed system"),
+            xai_grok_sampling_types::ConversationItem::user("v3n5 fixed user history"),
+        ]);
+        request.model = Some(model.to_owned());
+        request.max_output_tokens = Some(128);
+        request.user_id = Some("v3n5-metadata-user".to_owned());
+        request.cache_ttl = Some("1h".to_owned());
+        request.tools = vec![xai_grok_sampling_types::ToolSpec {
+            name: "v3n5_lookup".to_owned(),
+            description: Some("Fixed local test tool".to_owned()),
+            parameters: serde_json::json!({"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}),
+            exposure: xai_grok_sampling_types::ToolExposure::default(),
+        }];
+        if path == V3n5Path::RemoteV2 {
+            request.prompt_cache_key = Some("v3n5-cache-affinity".to_owned());
+        }
+        V3n5Case {
+            name: format!("{group:?}/{path:?}/{auth:?}/{label}"),
+            group,
+            path,
+            request,
+            completion: V3n5Completion::Success,
+            config: SamplerConfig {
+                model: model.to_owned(),
+                api_backend: path.backend(),
+                auth_scheme: auth,
+                api_key: Some("v3n5-synthetic-credential".to_owned()),
+                origin_client: Some(OriginClientInfo {
+                    product: "v3n5-test".to_owned(),
+                    version: Some("1".to_owned()),
+                }),
+                model_family: (path == V3n5Path::RemoteV2).then(|| "codex".to_owned()),
+                extra_response_includes: vec!["no_inline_citations".to_owned()],
+                ..minimal_config()
+            },
+        }
+    }
+
+    #[derive(Debug)]
+    struct V3n5Injector {
+        empty_siblings: bool,
+    }
+
+    impl crate::config::HeaderInjector for V3n5Injector {
+        fn inject(&self, headers: &mut HeaderMap) {
+            if self.empty_siblings {
+                headers.append("x-grok-sibling", HeaderValue::from_static(""));
+                headers.append("x-grok-sibling", HeaderValue::from_static("second"));
+                headers.append("x-grok-empty-only", HeaderValue::from_static(""));
+            }
+            headers.append(
+                "traceparent",
+                HeaderValue::from_static("00-11111111111111111111111111111111-2222222222222222-01"),
+            );
+            headers.append(
+                "x-v3n5-control",
+                HeaderValue::from_static("injected-control"),
+            );
+            headers.append("x-v3n5-empty-control", HeaderValue::from_static(""));
+        }
+    }
+
+    fn v3n5_cases() -> Vec<V3n5Case> {
+        use V3n5Group::*;
+        use V3n5Path::*;
+        let mut cases = Vec::new();
+        let senders = [
+            Chat,
+            ChatStream,
+            Responses,
+            ResponsesStream,
+            RemoteV2,
+            Messages,
+            MessagesStream,
+        ];
+        for path in senders {
+            let schemes: &[AuthScheme] = if path.backend() == ApiBackend::Messages {
+                &[AuthScheme::Bearer, AuthScheme::XApiKey]
+            } else {
+                &[AuthScheme::Bearer]
+            };
+            for &auth in schemes {
+                cases.push(v3n5_case(Absent, "none", path, auth));
+                let mut empty = v3n5_case(ExplicitEmpty, "all-empty", path, auth);
+                v3n5_set_ids(&mut empty.request, [Some(""); 8]);
+                cases.push(empty);
+                let mut populated = v3n5_case(Preserve, "populated", path, auth);
+                v3n5_set_ids(&mut populated.request, V3N5_IDS.map(Some));
+                cases.push(populated);
+                for field in 0..4 {
+                    let mut mixed = v3n5_case(Preserve, V3N5_HEADER_NAMES[field], path, auth);
+                    let mut values = V3N5_IDS.map(Some);
+                    values[field] = Some("");
+                    v3n5_set_ids(&mut mixed.request, values);
+                    cases.push(mixed);
+                }
+                for label in ["configured-only", "configured-and-request"] {
+                    let mut defaults = v3n5_case(Preserve, label, path, auth);
+                    v3n5_set_ids(&mut defaults.request, V3N5_IDS.map(Some));
+                    if label == "configured-only" {
+                        defaults.request.x_grok_conv_id = None;
+                    }
+                    defaults.config.extra_headers.insert(
+                        "X-Grok-Conv-Id".to_owned(),
+                        "v3n5-configured-conv".to_owned(),
+                    );
+                    cases.push(defaults);
+                }
+                if path != RemoteV2 {
+                    let mut empty_model = v3n5_case(EmptyModel, "empty-request-model", path, auth);
+                    empty_model.request.model = Some(String::new());
+                    cases.push(empty_model);
+                    if path.backend() == ApiBackend::Messages {
+                        let mut invalid =
+                            v3n5_case(EmptyModel, "invalid-default-model", path, auth);
+                        invalid.request.model = Some(String::new());
+                        invalid.config.model.clear();
+                        invalid.completion = V3n5Completion::InvalidModel;
+                        cases.push(invalid);
+                    }
+                }
+            }
+        }
+        let mut remote = v3n5_case(Absent, "session-only", RemoteV2, AuthScheme::Bearer);
+        remote.request.x_grok_session_id = Some(V3N5_IDS[2].to_owned());
+        cases.push(remote);
+        for (path, auth) in [
+            (CollectResponses, AuthScheme::Bearer),
+            (CollectMessages, AuthScheme::Bearer),
+            (CollectMessages, AuthScheme::XApiKey),
+        ] {
+            cases.push(v3n5_case(Auxiliary, "from-items-id-free", path, auth));
+        }
+        for (path, auth) in [
+            (Responses, AuthScheme::Bearer),
+            (Messages, AuthScheme::Bearer),
+            (Messages, AuthScheme::XApiKey),
+            (Chat, AuthScheme::Bearer),
+        ] {
+            for field in [
+                "version",
+                "identifier",
+                "group",
+                "deployment",
+                "user",
+                "extra",
+            ] {
+                let mut case = v3n5_case(Defaults, field, path, auth);
+                v3n5_set_ids(&mut case.request, V3N5_IDS.map(Some));
+                match field {
+                    "version" => case.config.client_version = Some(String::new()),
+                    "identifier" => case.config.client_identifier = Some(String::new()),
+                    "group" => case.config.conversation_group_id = Some(String::new().into()),
+                    "deployment" => case.config.deployment_id = Some(String::new()),
+                    "user" => case.config.user_id = Some(String::new()),
+                    "extra" => {
+                        case.config
+                            .extra_headers
+                            .insert("X-GrOk-Mixed-Empty".to_owned(), String::new());
+                        case.config
+                            .extra_headers
+                            .insert("X-gRoK-Req-ID".to_owned(), String::new());
+                    }
+                    _ => unreachable!(),
+                }
+                cases.push(case);
+            }
+            if path == Chat {
+                continue;
+            }
+            let mut injected = v3n5_case(Injected, "two-survivors-and-empty", path, auth);
+            v3n5_set_ids(&mut injected.request, V3N5_IDS.map(Some));
+            injected
+                .config
+                .extra_headers
+                .insert("X-GrOk-Sibling".to_owned(), "first".to_owned());
+            injected.config.header_injector = Some(Arc::new(V3n5Injector {
+                empty_siblings: true,
+            }));
+            cases.push(injected);
+            for label in ["populated", "identifier-none", "identifier-empty"] {
+                let mut case = v3n5_case(Identity, label, path, auth);
+                v3n5_set_ids(&mut case.request, V3N5_IDS.map(Some));
+                case.config.client_version = Some("v3n5-version".to_owned());
+                case.config.client_identifier = match label {
+                    "identifier-none" => None,
+                    "identifier-empty" => Some(String::new()),
+                    _ => Some("v3n5-identifier".to_owned()),
+                };
+                case.config.conversation_group_id = Some("v3n5-group".to_owned().into());
+                case.config.deployment_id = Some("v3n5-configured-deployment".to_owned());
+                case.config.user_id = Some("v3n5-configured-user".to_owned());
+                case.config
+                    .extra_headers
+                    .insert("X-GrOk-Extra".to_owned(), "v3n5-extra".to_owned());
+                case.config
+                    .extra_headers
+                    .insert("x-v3n5-control".to_owned(), "configured-control".to_owned());
+                case.config.header_injector = Some(Arc::new(V3n5Injector {
+                    empty_siblings: false,
+                }));
+                cases.push(case);
+            }
+        }
+        cases
+    }
+
+    fn v3n5_success_reply(path: V3n5Path) -> (&'static str, String) {
+        let message = serde_json::json!({
+            "id":"msg-v3n5","type":"message","role":"assistant","model":"claude-opus-5",
+            "content":[{"type":"text","text":"v3n5-ok"}],"stop_reason":"end_turn",
+            "stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":3}
+        });
+        let output = serde_json::json!({
+            "type":"message","id":"msg-v3n5","status":"completed","role":"assistant",
+            "content":[{"type":"output_text","text":"v3n5-ok","annotations":[],"logprobs":[]}]
+        });
+        let response = serde_json::json!({
+            "id":"resp-v3n5","object":"response","created_at":0,"model":"gpt-5.6-sol",
+            "status":"completed","output":[output.clone()],
+            "usage":{"input_tokens":5,"input_tokens_details":{"cached_tokens":0},"output_tokens":3,
+                     "output_tokens_details":{"reasoning_tokens":0},"total_tokens":8}
+        });
+        if !path.streaming() {
+            let body = match path.backend() {
+                ApiBackend::ChatCompletions => serde_json::json!({
+                    "id":"chat-v3n5","object":"chat.completion","created":0,"model":"gpt-5.6-sol",
+                    "choices":[{"index":0,"message":{"role":"assistant","content":"v3n5-ok"},"finish_reason":"stop"}],
+                    "usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}
+                }),
+                ApiBackend::Responses => response,
+                ApiBackend::Messages => message,
+            };
+            return ("application/json", body.to_string());
+        }
+        let events = if path == V3n5Path::RemoteV2 {
+            vec![
+                serde_json::json!({"type":"response.output_item.done","sequence_number":0,"output_index":0,
+                    "item":{"type":"compaction","encrypted_content":"v3n5-opaque"}}),
+                serde_json::json!({"type":"response.completed","sequence_number":1,
+                    "response":{"id":"resp-v3n5","usage":{"input_tokens":5,"output_tokens":3}}}),
+            ]
+        } else {
+            match path.backend() {
+                ApiBackend::ChatCompletions => vec![serde_json::json!({
+                    "id":"chat-v3n5","object":"chat.completion.chunk","created":0,"model":"gpt-5.6-sol",
+                    "choices":[{"index":0,"delta":{"role":"assistant","content":"v3n5-ok"},"finish_reason":"stop"}],
+                    "usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}
+                })],
+                ApiBackend::Responses => {
+                    let mut started = response.clone();
+                    started["status"] = serde_json::json!("in_progress");
+                    started["output"] = serde_json::json!([]);
+                    vec![
+                        serde_json::json!({"type":"response.created","sequence_number":0,"response":started}),
+                        serde_json::json!({"type":"response.output_item.added","sequence_number":1,"output_index":0,
+                            "item":{"type":"message","id":"msg-v3n5","status":"in_progress","role":"assistant","content":[]}}),
+                        serde_json::json!({"type":"response.content_part.added","sequence_number":2,"item_id":"msg-v3n5","output_index":0,"content_index":0,
+                            "part":{"type":"output_text","text":"","annotations":[],"logprobs":[]}}),
+                        serde_json::json!({"type":"response.output_text.delta","sequence_number":3,"item_id":"msg-v3n5","output_index":0,"content_index":0,"delta":"v3n5-ok","logprobs":[]}),
+                        serde_json::json!({"type":"response.output_text.done","sequence_number":4,"item_id":"msg-v3n5","output_index":0,"content_index":0,"text":"v3n5-ok","logprobs":[]}),
+                        serde_json::json!({"type":"response.content_part.done","sequence_number":5,"item_id":"msg-v3n5","output_index":0,"content_index":0,"part":output["content"][0].clone()}),
+                        serde_json::json!({"type":"response.output_item.done","sequence_number":6,"output_index":0,"item":output}),
+                        serde_json::json!({"type":"response.completed","sequence_number":7,"response":response}),
+                    ]
+                }
+                ApiBackend::Messages => {
+                    let mut started = message;
+                    started["content"] = serde_json::json!([]);
+                    started["stop_reason"] = serde_json::Value::Null;
+                    vec![
+                        serde_json::json!({"type":"message_start","message":started}),
+                        serde_json::json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+                        serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"v3n5-ok"}}),
+                        serde_json::json!({"type":"content_block_stop","index":0}),
+                        serde_json::json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":3}}),
+                        serde_json::json!({"type":"message_stop"}),
+                    ]
+                }
+            }
+        };
+        let mut body = String::new();
+        for event in events {
+            body.push_str(&format!("data: {event}\n\n"));
+        }
+        if path.backend() == ApiBackend::ChatCompletions {
+            body.push_str("data: [DONE]\n\n");
+        }
+        ("text/event-stream", body)
+    }
+
+    fn v3n5_responses_wrapper(request: &ConversationRequest) -> CreateResponseWrapper {
+        CreateResponseWrapper {
+            inner: request.into(),
+            x_grok_conv_id: request.x_grok_conv_id.clone(),
+            x_grok_req_id: request.x_grok_req_id.clone(),
+            x_grok_session_id: request.x_grok_session_id.clone(),
+            x_grok_agent_id: request.x_grok_agent_id.clone(),
+            x_grok_turn_idx: request.x_grok_turn_idx.clone(),
+            x_grok_transient_retry: request.x_grok_transient_retry.clone(),
+            x_grok_deployment_id: request.x_grok_deployment_id.clone(),
+            x_grok_user_id: request.x_grok_user_id.clone(),
+            ..Default::default()
+        }
+    }
+
+    fn v3n5_messages_wrapper(request: &ConversationRequest) -> MessagesRequestWrapper {
+        MessagesRequestWrapper {
+            inner: build_messages_request(request),
+            x_grok_conv_id: request.x_grok_conv_id.clone(),
+            x_grok_req_id: request.x_grok_req_id.clone(),
+            x_grok_session_id: request.x_grok_session_id.clone(),
+            x_grok_agent_id: request.x_grok_agent_id.clone(),
+            x_grok_turn_idx: request.x_grok_turn_idx.clone(),
+            x_grok_transient_retry: request.x_grok_transient_retry.clone(),
+            x_grok_deployment_id: request.x_grok_deployment_id.clone(),
+            x_grok_user_id: request.x_grok_user_id.clone(),
+            ..Default::default()
+        }
+    }
+
+    async fn v3n5_send(
+        client: &SamplingClient,
+        case: &V3n5Case,
+    ) -> std::result::Result<serde_json::Value, String> {
+        use V3n5Path::*;
+        let mut text = String::new();
+        let mut terminal = false;
+        match case.path {
+            Chat => {
+                let response = client
+                    .chat_completion(case.request.clone().into())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let value = serde_json::to_value(response).map_err(|e| e.to_string())?;
+                return Ok(
+                    serde_json::json!({"text":value["choices"][0]["message"]["content"], "terminal":value["choices"][0]["finish_reason"] == "stop"}),
+                );
+            }
+            ChatStream => {
+                let (mut stream, _) = client
+                    .chat_completion_stream(case.request.clone().into())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                while let Some(chunk) = stream.next().await {
+                    for choice in chunk.map_err(|e| e.to_string())?.choices {
+                        if let Some(part) = choice.delta.content {
+                            text.push_str(&part);
+                        }
+                        terminal |= choice.finish_reason
+                            == Some(xai_grok_sampling_types::FinishReason::Stop);
+                    }
+                }
+            }
+            Responses => {
+                let response = client
+                    .create_response(
+                        v3n5_responses_wrapper(&case.request),
+                        &mut DAnchorState::default(),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let value = serde_json::to_value(response).map_err(|e| e.to_string())?;
+                return Ok(
+                    serde_json::json!({"text":value["output"][0]["content"][0]["text"], "terminal":value["status"] == "completed"}),
+                );
+            }
+            ResponsesStream => {
+                let (mut stream, _, _) = client
+                    .create_response_stream(
+                        v3n5_responses_wrapper(&case.request),
+                        &mut DAnchorState::default(),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                while let Some(event) = stream.next().await {
+                    match event.map_err(|e| e.to_string())? {
+                        ResponsesStreamItem::Event(
+                            rs::ResponseStreamEvent::ResponseOutputTextDelta(delta),
+                        ) => text.push_str(&delta.delta),
+                        ResponsesStreamItem::Event(rs::ResponseStreamEvent::ResponseCompleted(
+                            done,
+                        )) => {
+                            terminal = serde_json::to_value(done.response)
+                                .map_err(|e| e.to_string())?["status"]
+                                == "completed";
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            RemoteV2 => {
+                let response = client
+                    .compact_codex_conversation_v2(
+                        case.request.clone(),
+                        "v3n5 fixed compaction instructions",
+                        true,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let request = ConversationRequest::from_items(vec![response.compaction_item]);
+                let replay = request.raw_responses_input_replacements(
+                    xai_grok_sampling_types::ResponsesReplayDialect::Codex,
+                );
+                return Ok(
+                    serde_json::json!({"response_id":response.response_id,"compaction":replay.first().map(|item| &item.value),"total_tokens":response.usage.map(|usage| usage.total_tokens)}),
+                );
+            }
+            Messages => {
+                let response = client
+                    .create_message(v3n5_messages_wrapper(&case.request))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let value = serde_json::to_value(response).map_err(|e| e.to_string())?;
+                return Ok(
+                    serde_json::json!({"text":value["content"][0]["text"], "terminal":value["stop_reason"] == "end_turn"}),
+                );
+            }
+            MessagesStream => {
+                let (mut stream, _) = client
+                    .create_message_stream(v3n5_messages_wrapper(&case.request))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let mut end_turn = false;
+                while let Some(event) = stream.next().await {
+                    match event.map_err(|e| e.to_string())? {
+                        messages::MessageStreamEvent::ContentBlockDelta {
+                            delta: messages::StreamDelta::TextDelta { text: part },
+                            ..
+                        } => text.push_str(&part),
+                        messages::MessageStreamEvent::MessageDelta { delta, .. } => {
+                            end_turn = serde_json::to_value(delta).map_err(|e| e.to_string())?["stop_reason"]
+                                == "end_turn";
+                        }
+                        messages::MessageStreamEvent::MessageStop => terminal = true,
+                        _ => {}
+                    }
+                }
+                terminal &= end_turn;
+            }
+            CollectResponses | CollectMessages => {
+                let response = client
+                    .conversation_collect(case.request.clone())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                text = response.assistant_text();
+                terminal = response.stop_reason == Some(xai_grok_sampling_types::StopReason::Stop);
+            }
+        }
+        Ok(serde_json::json!({"text":text,"terminal":terminal}))
+    }
+
+    #[derive(Debug)]
+    struct V3n5Received {
+        method: String,
+        path: String,
+        headers: HeaderMap,
+        body: Bytes,
+    }
+
+    #[derive(Debug)]
+    struct V3n5Observed {
+        name: String,
+        group: V3n5Group,
+        path: V3n5Path,
+        expected_completion: V3n5Completion,
+        expected_host: String,
+        expected_ua: String,
+        completion: std::result::Result<serde_json::Value, String>,
+        received: Vec<V3n5Received>,
+        request_count: usize,
+        dropped_captures: usize,
+        server_joined: bool,
+    }
+
+    fn v3n5_header_values(headers: &HeaderMap) -> std::collections::BTreeMap<String, Vec<String>> {
+        headers
+            .keys()
+            .map(|name| {
+                let values = headers
+                    .get_all(name)
+                    .iter()
+                    .map(|value| {
+                        String::from_utf8(value.as_bytes().to_vec())
+                            .expect("synthetic ASCII headers")
+                    })
+                    .collect();
+                (name.as_str().to_owned(), values)
+            })
+            .collect()
+    }
+
+    async fn v3n5_exchange(case: &V3n5Case) -> std::result::Result<V3n5Observed, String> {
+        use futures_util::FutureExt;
+        use std::sync::atomic::AtomicUsize;
+        use std::time::Duration;
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| e.to_string())?;
+        let addr = listener.local_addr().map_err(|e| e.to_string())?;
+        let mut config = case.config.clone();
+        config.base_url = format!("http://{addr}/v1");
+        let expected_ua = user_agent_string_for(
+            config
+                .origin_client
+                .as_ref()
+                .ok_or("missing fixed test origin")?,
+        );
+        let client = SamplingClient::new(config).map_err(|e| e.to_string())?;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let count = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let handler_count = count.clone();
+        let handler_dropped = dropped.clone();
+        let (content_type, reply) = v3n5_success_reply(case.path);
+        let app = Router::new().route(
+            case.path.path(),
+            post(
+                move |method: axum::http::Method,
+                      uri: axum::http::Uri,
+                      headers: HeaderMap,
+                      body: Bytes| {
+                    let tx = tx.clone();
+                    let count = handler_count.clone();
+                    let dropped = handler_dropped.clone();
+                    let reply = reply.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        let received = V3n5Received {
+                            method: method.to_string(),
+                            path: uri.to_string(),
+                            headers,
+                            body,
+                        };
+                        if tx.try_send(received).is_err() {
+                            dropped.fetch_add(1, Ordering::SeqCst);
+                        }
+                        ([("content-type", content_type)], reply)
+                    }
+                },
+            ),
+        );
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let mut server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = stop_rx.await;
+                })
+                .await
+        });
+        let completion = match tokio::time::timeout(
+            Duration::from_secs(15),
+            std::panic::AssertUnwindSafe(v3n5_send(&client, case)).catch_unwind(),
+        )
+        .await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("client panicked".to_owned()),
+            Err(_) => Err("client completion deadline".to_owned()),
+        };
+        let _ = stop_tx.send(());
+        let server_joined = match tokio::time::timeout(Duration::from_secs(5), &mut server).await {
+            Ok(Ok(Ok(()))) => true,
+            Ok(_) => false,
+            Err(_) => {
+                server.abort();
+                let _ = server.await;
+                false
+            }
+        };
+        let mut received = Vec::new();
+        while let Ok(request) = rx.try_recv() {
+            received.push(request);
+        }
+        Ok(V3n5Observed {
+            name: case.name.clone(),
+            group: case.group,
+            path: case.path,
+            expected_completion: case.completion,
+            expected_host: addr.to_string(),
+            expected_ua,
+            completion,
+            received,
+            request_count: count.load(Ordering::SeqCst),
+            dropped_captures: dropped.load(Ordering::SeqCst),
+            server_joined,
+        })
+    }
+
+    async fn v3n5_capture_cases(group: Option<V3n5Group>) -> Vec<V3n5Observed> {
+        use std::io::Write;
+        let mut observations = Vec::new();
+        let mut setup_errors = Vec::new();
+        for case in v3n5_cases()
+            .into_iter()
+            .filter(|case| group.is_none_or(|group| case.group == group))
+        {
+            match v3n5_exchange(&case).await {
+                Ok(observed) => {
+                    let requests: Vec<_> = observed.received.iter().map(|request| serde_json::json!({
+                        "method":request.method,"path":request.path,"headers":v3n5_header_values(&request.headers),
+                        "raw_body":String::from_utf8(request.body.to_vec()).expect("synthetic JSON body")
+                    })).collect();
+                    // Direct stdout keeps passive evidence visible under libtest's default capture.
+                    writeln!(std::io::stdout().lock(), "V3N5_CAPTURE {}", serde_json::json!({
+                        "case":observed.name,"group":format!("{:?}",observed.group),"sender":format!("{:?}",observed.path),
+                        "expected_completion":format!("{:?}",observed.expected_completion),"completion":observed.completion,
+                        "request_count":observed.request_count,"dropped_captures":observed.dropped_captures,
+                        "server_joined":observed.server_joined,"requests":requests
+                    })).expect("write synthetic capture evidence");
+                    observations.push(observed);
+                }
+                Err(error) => setup_errors.push(format!("{}: {error}", case.name)),
+            }
+        }
+        assert!(
+            setup_errors.is_empty(),
+            "V3N5_SETUP_FAILURE: {setup_errors:?}"
+        );
+        for observed in &observations {
+            assert!(
+                observed.server_joined && observed.dropped_captures == 0,
+                "V3N5_SETUP_FAILURE: {observed:?}"
+            );
+            match observed.expected_completion {
+                V3n5Completion::InvalidModel => {
+                    assert_eq!(
+                        observed.request_count, 0,
+                        "invalid model must not submit: {}",
+                        observed.name
+                    );
+                    let error = observed
+                        .completion
+                        .as_ref()
+                        .expect_err("invalid model must be rejected");
+                    assert_eq!(
+                        error,
+                        "request validation failed: messages request is missing required field 'model' (non-retryable, local)",
+                        "wrong validation failure"
+                    );
+                }
+                V3n5Completion::Success => {
+                    assert_eq!(
+                        observed.request_count, 1,
+                        "V3N5_SETUP_FAILURE: {}",
+                        observed.name
+                    );
+                    assert_eq!(
+                        observed.received.len(),
+                        1,
+                        "V3N5_SETUP_FAILURE: {}",
+                        observed.name
+                    );
+                    let result = observed
+                        .completion
+                        .as_ref()
+                        .expect("successful client completion before any header assertion");
+                    if observed.path == V3n5Path::RemoteV2 {
+                        assert_eq!(result["response_id"], "resp-v3n5");
+                        assert_eq!(result["compaction"]["encrypted_content"], "v3n5-opaque");
+                        assert_eq!(result["total_tokens"], 8);
+                    } else {
+                        assert_eq!(
+                            result,
+                            &serde_json::json!({"text":"v3n5-ok","terminal":true}),
+                            "V3N5_SETUP_FAILURE: {}",
+                            observed.name
+                        );
+                    }
+                    let received = &observed.received[0];
+                    assert_eq!(
+                        (&*received.method, &*received.path),
+                        ("POST", observed.path.path())
+                    );
+                    assert_eq!(
+                        received
+                            .headers
+                            .get_all("host")
+                            .iter()
+                            .map(HeaderValue::as_bytes)
+                            .collect::<Vec<_>>(),
+                        vec![observed.expected_host.as_bytes()]
+                    );
+                    assert_eq!(
+                        received
+                            .headers
+                            .get_all(USER_AGENT)
+                            .iter()
+                            .map(HeaderValue::as_bytes)
+                            .collect::<Vec<_>>(),
+                        vec![observed.expected_ua.as_bytes()]
+                    );
+                }
+            }
+        }
+        observations
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn v3n5_parent_transport_controls() {
+        let _ua = xai_grok_test_support::EnvGuard::set("APEX_UA", "false");
+        let observations = v3n5_capture_cases(None).await;
+        assert_eq!(observations.len(), 133);
+        v3n5_assert_parent_preservation(&observations);
+    }
 
     /// Provenance: hyper-grok-build@45e984f3 — packages/ai/xai-grok-sampler/src/pi_messages.rs :: decode_done_unknown_and_crlf_multidata_payload (re-expressed; row 8 on the Anthropic SSE framing: the eventsource adapter the messages decode loop uses below delivers CRLF-terminated and multi-`data:` events intact, and `[DONE]` arrives as a data payload — the loop's clean-end condition is `data == "[DONE]"` in this file; unknown event TYPES are the serde-level R1 half, sampling-types)
     #[tokio::test]
