@@ -48,6 +48,507 @@ use xai_grok_auth::bearer_suffix;
 
 pub use xai_grok_sampling_types::ApiBackend;
 
+const STOP_EXTENSION_DIAGNOSTIC: &[u8] = b"\"[REDACTED_STOP_EXTENSION]\"";
+const UNPROJECTABLE_STOP_DIAGNOSTIC: &str = "[UNAVAILABLE: unprojectable sensitive stop metadata]";
+
+enum MessageDiagnostic<'a> {
+    Unchanged(&'a [u8]),
+    Masked(Vec<u8>),
+    Unprojectable(&'static str),
+}
+
+impl MessageDiagnostic<'_> {
+    fn unavailable_reason(&self) -> Option<&'static str> {
+        match self {
+            Self::Unchanged(_) | Self::Masked(_) => None,
+            Self::Unprojectable(reason) => Some(reason),
+        }
+    }
+}
+
+impl std::fmt::Display for MessageDiagnostic<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut bytes = match self {
+            Self::Unchanged(bytes) => *bytes,
+            Self::Masked(bytes) => bytes.as_slice(),
+            Self::Unprojectable(_) => return formatter.write_str(UNPROJECTABLE_STOP_DIAGNOSTIC),
+        };
+        loop {
+            match std::str::from_utf8(bytes) {
+                Ok(text) => return formatter.write_str(text),
+                Err(error) => {
+                    let valid = bytes.get(..error.valid_up_to()).ok_or(std::fmt::Error)?;
+                    formatter
+                        .write_str(std::str::from_utf8(valid).map_err(|_| std::fmt::Error)?)?;
+                    formatter.write_str("\u{fffd}")?;
+                    let Some(invalid_len) = error.error_len() else {
+                        return Ok(());
+                    };
+                    let next = error
+                        .valid_up_to()
+                        .checked_add(invalid_len)
+                        .ok_or(std::fmt::Error)?;
+                    bytes = bytes.get(next..).ok_or(std::fmt::Error)?;
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DiagnosticPath {
+    Root,
+    Envelope,
+    StopDetails,
+}
+
+impl DiagnosticPath {
+    fn relevant_keys(self) -> &'static [&'static str] {
+        match self {
+            Self::Root => &["message", "delta", "stop_details"],
+            Self::Envelope => &["stop_details"],
+            Self::StopDetails => &["fallback_credit_token"],
+        }
+    }
+
+    fn child(self, key: &str) -> Option<Self> {
+        match (self, key) {
+            (Self::Root, "message" | "delta") => Some(Self::Envelope),
+            (Self::Root | Self::Envelope, "stop_details") => Some(Self::StopDetails),
+            _ => None,
+        }
+    }
+}
+
+type DiagnosticScanResult<T> = std::result::Result<T, &'static str>;
+
+#[derive(PartialEq, Eq)]
+enum DiagnosticExtent {
+    Complete,
+    Truncated,
+}
+
+struct DiagnosticSpanScanner<'a> {
+    input: &'a [u8],
+    offset: usize,
+    spans: Vec<std::ops::Range<usize>>,
+}
+
+fn diagnostic_key_may_match(raw: &[u8], keys: &[&str]) -> bool {
+    let mut remaining = raw.get(1..).unwrap_or_default();
+    let mut prefix = Vec::new();
+    while let Some((&byte, rest)) = remaining.split_first() {
+        remaining = rest;
+        let decoded = match byte {
+            b'"' => return keys.iter().any(|key| key.as_bytes() == prefix),
+            b'\\' => {
+                let Some((&escape, rest)) = remaining.split_first() else {
+                    return true;
+                };
+                remaining = rest;
+                match escape {
+                    b'u' => {
+                        let Some(digits) = remaining.get(..4) else {
+                            return true;
+                        };
+                        let mut code = 0_u16;
+                        for digit in digits {
+                            let Some(value) = char::from(*digit).to_digit(16) else {
+                                return true;
+                            };
+                            code = (code << 4) | value as u16;
+                        }
+                        remaining = &remaining[4..];
+                        if code > 0x7f {
+                            return false;
+                        }
+                        code as u8
+                    }
+                    b'"' | b'\\' | b'/' => escape,
+                    b'b' => 8,
+                    b'f' => 12,
+                    b'n' => b'\n',
+                    b'r' => b'\r',
+                    b't' => b'\t',
+                    _ => return true,
+                }
+            }
+            0x80..=0xff => return true,
+            byte => byte,
+        };
+        prefix.push(decoded);
+        if !keys.iter().any(|key| key.as_bytes().starts_with(&prefix)) {
+            return false;
+        }
+    }
+    true
+}
+
+impl DiagnosticSpanScanner<'_> {
+    fn skip_space(&mut self) {
+        while self
+            .input
+            .get(self.offset)
+            .is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+        {
+            self.offset += 1;
+        }
+    }
+
+    fn skip_string(&mut self) -> DiagnosticExtent {
+        self.offset += 1;
+        while let Some(byte) = self.input.get(self.offset) {
+            self.offset += 1;
+            match byte {
+                b'"' => return DiagnosticExtent::Complete,
+                b'\\' if self.offset < self.input.len() => self.offset += 1,
+                _ => {}
+            }
+        }
+        DiagnosticExtent::Truncated
+    }
+
+    fn skip_value(&mut self) -> DiagnosticScanResult<DiagnosticExtent> {
+        match self.input.get(self.offset) {
+            Some(b'"') => Ok(self.skip_string()),
+            Some(b'{' | b'[') => {
+                let mut closes = [0_u8; 128];
+                let mut depth = 0;
+                while let Some(byte) = self.input.get(self.offset) {
+                    match byte {
+                        b'"' => {
+                            if self.skip_string() == DiagnosticExtent::Truncated {
+                                return Ok(DiagnosticExtent::Truncated);
+                            }
+                            continue;
+                        }
+                        b'{' | b'[' => {
+                            let slot = closes.get_mut(depth).ok_or("container_depth_unresolved")?;
+                            *slot = if *byte == b'{' { b'}' } else { b']' };
+                            depth += 1;
+                        }
+                        b'}' | b']' => {
+                            let next = depth.checked_sub(1).ok_or("unbalanced_container")?;
+                            if closes[next] != *byte {
+                                return Err("unbalanced_container");
+                            }
+                            depth = next;
+                            if depth == 0 {
+                                self.offset += 1;
+                                return Ok(DiagnosticExtent::Complete);
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.offset += 1;
+                }
+                Ok(DiagnosticExtent::Truncated)
+            }
+            _ => {
+                while let Some(byte) = self.input.get(self.offset) {
+                    match byte {
+                        b' ' | b'\t' | b'\r' | b'\n' | b',' | b'}' | b']' => break,
+                        b'"' | b'{' | b'[' => return Err("ambiguous_value_boundary"),
+                        _ => self.offset += 1,
+                    }
+                }
+                Ok(DiagnosticExtent::Complete)
+            }
+        }
+    }
+}
+
+impl DiagnosticSpanScanner<'_> {
+    // Only the three protocol envelope levels recurse; other subtrees are skipped.
+    fn scan_object(&mut self, path: DiagnosticPath) -> DiagnosticScanResult<()> {
+        self.offset += 1;
+        loop {
+            self.skip_space();
+            match self.input.get(self.offset) {
+                None => return Ok(()),
+                Some(b'}') => {
+                    self.offset += 1;
+                    return Ok(());
+                }
+                Some(b',') => {
+                    self.offset += 1;
+                    continue;
+                }
+                Some(b'"') => {}
+                _ => return Err("ambiguous_object_member"),
+            }
+            let key_start = self.offset;
+            self.skip_string();
+            let raw_key = self
+                .input
+                .get(key_start..self.offset)
+                .ok_or("invalid_key_offset")?;
+            let key = match serde_json::from_slice::<String>(raw_key) {
+                Ok(key) => key,
+                Err(_) if !diagnostic_key_may_match(raw_key, path.relevant_keys()) => String::new(),
+                Err(_) => {
+                    return Err(if std::str::from_utf8(raw_key).is_err() {
+                        "invalid_relevant_key_utf8"
+                    } else {
+                        "ambiguous_relevant_key"
+                    });
+                }
+            };
+            self.skip_space();
+            match self.input.get(self.offset) {
+                Some(b':') => self.offset += 1,
+                None => return Ok(()),
+                _ if matches!(path, DiagnosticPath::StopDetails)
+                    && key == "fallback_credit_token" =>
+                {
+                    return Err("ambiguous_selected_member_separator");
+                }
+                _ => return Err("ambiguous_member_separator"),
+            }
+            self.skip_space();
+            let start = self.offset;
+            if matches!(path, DiagnosticPath::StopDetails) && key == "fallback_credit_token" {
+                let extent = self.skip_value().map_err(|reason| match reason {
+                    "unbalanced_container" => "unbalanced_selected_value",
+                    "container_depth_unresolved" => "selected_container_depth_unresolved",
+                    "ambiguous_value_boundary" => "ambiguous_selected_value",
+                    reason => reason,
+                })?;
+                if extent == DiagnosticExtent::Truncated || start == self.offset {
+                    return Err("truncated_selected_value");
+                }
+                let end = self.offset;
+                self.skip_space();
+                let value = self.input.get(start..end).ok_or("invalid_value_offset")?;
+                if !matches!(value.first(), Some(b'"' | b'{' | b'['))
+                    && !matches!(self.input.get(self.offset), None | Some(b',' | b'}' | b']'))
+                    && serde_json::from_slice::<serde::de::IgnoredAny>(value).is_err()
+                {
+                    return Err("ambiguous_selected_value");
+                }
+                if value != b"null" {
+                    self.spans
+                        .try_reserve(1)
+                        .map_err(|_| "projection_capacity")?;
+                    self.spans.push(start..end);
+                }
+            } else if let Some(child) = path.child(&key)
+                && self.input.get(self.offset) == Some(&b'{')
+            {
+                self.scan_object(child)?;
+            } else {
+                self.skip_value()?;
+            }
+            self.skip_space();
+            match self.input.get(self.offset) {
+                Some(b',' | b'}' | b'"') | None => {}
+                _ => return Err("ambiguous_object_boundary"),
+            }
+        }
+    }
+}
+
+impl<'a> DiagnosticSpanScanner<'a> {
+    fn project(mut self) -> DiagnosticScanResult<MessageDiagnostic<'a>> {
+        self.skip_space();
+        let scanned = if self.input.get(self.offset) == Some(&b'{') {
+            self.scan_object(DiagnosticPath::Root)
+        } else {
+            self.skip_value().map(|_| ())
+        };
+        let scanned = scanned.and_then(|()| {
+            self.skip_space();
+            if self.offset == self.input.len() {
+                Ok(())
+            } else {
+                Err("ambiguous_trailing_input")
+            }
+        });
+        if let Err(reason) = scanned {
+            let ordinary_structure = matches!(
+                reason,
+                "ambiguous_object_member"
+                    | "ambiguous_member_separator"
+                    | "ambiguous_object_boundary"
+                    | "unbalanced_container"
+                    | "container_depth_unresolved"
+                    | "ambiguous_value_boundary"
+                    | "ambiguous_trailing_input"
+            );
+            if !ordinary_structure || self.remainder_may_contain_stop_token() {
+                return Err(reason);
+            }
+        }
+        if self.spans.is_empty() {
+            return Ok(MessageDiagnostic::Unchanged(self.input));
+        }
+        let mut length = self.input.len();
+        for span in &self.spans {
+            length = length
+                .checked_sub(span.len())
+                .and_then(|length| length.checked_add(STOP_EXTENSION_DIAGNOSTIC.len()))
+                .ok_or("projection_size_overflow")?;
+        }
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(length)
+            .map_err(|_| "projection_capacity")?;
+        let mut copied = 0;
+        for span in self.spans {
+            output.extend_from_slice(
+                self.input
+                    .get(copied..span.start)
+                    .ok_or("invalid_copy_offset")?,
+            );
+            output.extend_from_slice(STOP_EXTENSION_DIAGNOSTIC);
+            copied = span.end;
+        }
+        output.extend_from_slice(self.input.get(copied..).ok_or("invalid_copy_offset")?);
+        Ok(MessageDiagnostic::Masked(output))
+    }
+}
+
+fn message_diagnostic(input: &[u8]) -> MessageDiagnostic<'_> {
+    DiagnosticSpanScanner {
+        input,
+        offset: 0,
+        spans: Vec::new(),
+    }
+    .project()
+    .unwrap_or_else(MessageDiagnostic::Unprojectable)
+}
+
+impl DiagnosticSpanScanner<'_> {
+    // After an ordinary structural error, only the unindexed suffix remains uncertain.
+    fn remainder_may_contain_stop_token(&mut self) -> bool {
+        const KEY: &[u8] = b"fallback_credit_token";
+        while let Some(byte) = self.input.get(self.offset) {
+            if *byte == b'"' {
+                let start = self.offset;
+                self.skip_string();
+                let Some(raw) = self.input.get(start..self.offset) else {
+                    return true;
+                };
+                if diagnostic_key_may_match(raw, &["fallback_credit_token"]) {
+                    return true;
+                }
+            } else if byte.is_ascii_alphanumeric() || *byte == b'_' {
+                let start = self.offset;
+                while self
+                    .input
+                    .get(self.offset)
+                    .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+                {
+                    self.offset += 1;
+                }
+                let Some(atom) = self.input.get(start..self.offset) else {
+                    return true;
+                };
+                if KEY.starts_with(atom) {
+                    return true;
+                }
+            } else if *byte == b'\\' || !byte.is_ascii() {
+                return true;
+            } else {
+                self.offset += 1;
+            }
+        }
+        false
+    }
+}
+
+fn serde_diagnostic_detail(error: &serde_json::Error) -> String {
+    let rendered = error.to_string();
+    let location = format!(" at line {} column {}", error.line(), error.column());
+    rendered
+        .strip_suffix(&location)
+        .unwrap_or(&rendered)
+        .to_owned()
+}
+
+fn fixed_serde_diagnostic_detail(detail: &str) -> Option<&'static str> {
+    // These serde syntax/EOF reasons contain no payload-derived value detail.
+    const REASONS: &[&str] = &[
+        "EOF while parsing a list",
+        "EOF while parsing an object",
+        "EOF while parsing a string",
+        "EOF while parsing a value",
+        "expected `:`",
+        "expected `,` or `]`",
+        "expected `,` or `}`",
+        "expected ident",
+        "expected value",
+        "invalid escape",
+        "invalid number",
+        "number out of range",
+        "invalid unicode code point",
+        "control character (\\u0000-\\u001F) found while parsing a string",
+        "key must be a string",
+        "lone leading surrogate in hex escape",
+        "unexpected end of hex escape",
+        "trailing characters",
+        "trailing comma",
+        "recursion limit exceeded",
+    ];
+    REASONS.iter().copied().find(|reason| *reason == detail)
+}
+
+fn reflected_serde_diagnostic_detail(primary: &str, safe: &str) -> Option<String> {
+    let (_, primary_expected) = primary.rsplit_once(", expected ")?;
+    let (_, safe_expected) = safe.rsplit_once(", expected ")?;
+    if primary_expected != safe_expected || !safe.contains("[REDACTED_STOP_EXTENSION]") {
+        return None;
+    }
+    [
+        "invalid type: string ",
+        "invalid value: string ",
+        "unknown variant ",
+    ]
+    .into_iter()
+    .any(|prefix| primary.starts_with(prefix) && safe.starts_with(prefix))
+    .then(|| safe.to_owned())
+}
+
+impl MessageDiagnostic<'_> {
+    fn error_view<T: serde::de::DeserializeOwned>(&self, primary: &serde_json::Error) -> String {
+        if matches!(self, Self::Unchanged(_)) {
+            return primary.to_string();
+        }
+        let primary_detail = serde_diagnostic_detail(primary);
+        let safe_detail = match self {
+            Self::Masked(bytes) => serde_json::from_slice::<T>(bytes).err().and_then(|safe| {
+                if safe.classify() != primary.classify() {
+                    return None;
+                }
+                let detail = serde_diagnostic_detail(&safe);
+                if detail == primary_detail {
+                    Some(detail)
+                } else {
+                    reflected_serde_diagnostic_detail(&primary_detail, &detail)
+                }
+            }),
+            Self::Unchanged(_) | Self::Unprojectable(_) => None,
+        };
+        let detail = safe_detail
+            .or_else(|| fixed_serde_diagnostic_detail(&primary_detail).map(str::to_owned))
+            .unwrap_or_else(|| {
+                format!(
+                    "[UNAVAILABLE: sensitive stop-metadata error detail] ({:?})",
+                    primary.classify()
+                )
+            });
+        if primary.line() == 0 && primary.column() == 0 {
+            detail
+        } else {
+            format!(
+                "{detail} at line {} column {}",
+                primary.line(),
+                primary.column()
+            )
+        }
+    }
+}
+
 pub(crate) fn parse_messages_stream_event(
     data: &str,
 ) -> Result<crate::messages_continuation::MessagesStreamFrame> {
@@ -55,11 +556,16 @@ pub(crate) fn parse_messages_stream_event(
         return Err(stream_error);
     }
     let event = serde_json::from_str::<messages::MessageStreamEvent>(data).map_err(|e| {
-        tracing::error!(
-            error = %e,
-            raw_data = %data,
-            "Failed to deserialize MessageStreamEvent from stream"
-        );
+        if tracing::enabled!(tracing::Level::ERROR) {
+            let diagnostic = message_diagnostic(data.as_bytes());
+            let error = diagnostic.error_view::<messages::MessageStreamEvent>(&e);
+            tracing::error!(
+                error = %error,
+                raw_data = %diagnostic,
+                stop_metadata_projection = diagnostic.unavailable_reason(),
+                "Failed to deserialize MessageStreamEvent from stream"
+            );
+        }
         SamplingError::Serialization(e)
     })?;
     crate::messages_continuation::MessagesStreamFrame::decoded(event, data)
@@ -3285,12 +3791,16 @@ impl SamplingClient {
 
         let response_obj =
             serde_json::from_slice::<messages::MessagesResponse>(&bytes).map_err(|e| {
-                let raw_body = String::from_utf8_lossy(&bytes);
-                tracing::error!(
-                    error = %e,
-                    raw_body = %raw_body,
-                    "Failed to deserialize MessagesResponse"
-                );
+                if tracing::enabled!(tracing::Level::ERROR) {
+                    let diagnostic = message_diagnostic(&bytes);
+                    let error = diagnostic.error_view::<messages::MessagesResponse>(&e);
+                    tracing::error!(
+                        error = %error,
+                        raw_body = %diagnostic,
+                        stop_metadata_projection = diagnostic.unavailable_reason(),
+                        "Failed to deserialize MessagesResponse"
+                    );
+                }
                 SamplingError::Serialization(e)
             })?;
         Ok(response_obj)
@@ -3508,12 +4018,19 @@ impl SamplingClient {
                             return std::future::ready(None);
                         }
 
-                        tracing::info!(
+                        if tracing::enabled!(
                             target: crate::sampling_log::TARGET,
-                            event = "sse_chunk",
-                            backend = "messages",
-                            data = %data,
-                        );
+                            tracing::Level::INFO
+                        ) {
+                            let diagnostic = message_diagnostic(data.as_bytes());
+                            tracing::info!(
+                                target: crate::sampling_log::TARGET,
+                                event = "sse_chunk",
+                                backend = "messages",
+                                data = %diagnostic,
+                                stop_metadata_projection = diagnostic.unavailable_reason(),
+                            );
+                        }
 
                         Some(parse_messages_stream_event(data))
                     }
@@ -9027,5 +9544,1344 @@ mod tests {
             saw_namespace_tool,
             "captures no longer carry an echoed namespace tool; re-pin the capture"
         );
+    }
+
+    const MDS_SECRET: &str = "MSS_STOP_EXTENSION_SENTINEL";
+    const MDS_ORDINARY: &str = "MSS_ORDINARY_DIAG_SENTINEL";
+
+    struct MdsSuccessCase {
+        name: &'static str,
+        frames: Vec<(String, String)>,
+    }
+
+    fn mds_start(details: &str) -> String {
+        format!(
+            r#"{{"type":"message_start","message":{{"id":"mds-message","type":"message","role":"assistant","model":"mds-model","content":[],"usage":{{"input_tokens":17,"output_tokens":0}}{details}}}}}"#
+        )
+    }
+
+    fn mds_terminal(details: &str, extra: &str) -> String {
+        format!(
+            r#"{{"type":"message_delta","delta":{{"stop_reason":"refusal","stop_sequence":"ordinary-end"{details}}},"usage":{{"input_tokens":19,"output_tokens":23,"cache_read_input_tokens":11,"cache_creation_input_tokens":13}}{extra}}}"#
+        )
+    }
+
+    fn mds_success_cases() -> Vec<MdsSuccessCase> {
+        const DETAILS: &str = r#","stop_details":{"type":"refusal","category":"ordinary-category","explanation":"MSS_ORDINARY_DIAG_SENTINEL","fallback_has_prefill_claim":true,"resumable":false}"#;
+        const TOKEN: &str = r#","stop_details":{"type":"refusal","category":"ordinary-category","explanation":"MSS_ORDINARY_DIAG_SENTINEL","fallback_credit_token":"MSS_STOP_EXTENSION_SENTINEL","resumable":false}"#;
+        const MASKED: &str = r#","stop_details":{"type":"refusal","category":"ordinary-category","explanation":"MSS_ORDINARY_DIAG_SENTINEL","fallback_credit_token":"[REDACTED_STOP_EXTENSION]","resumable":false}"#;
+        const ESCAPED: &str = r#", "stop\u005fdetails" : {"fallback_credit_\u0074oken" : "MSS_STOP_EXTENSION_SEN\u0054INEL", "explanation":"MSS_ORDINARY_DIAG_SENTINEL"}"#;
+        const ESCAPED_MASKED: &str = r#", "stop\u005fdetails" : {"fallback_credit_\u0074oken" : "[REDACTED_STOP_EXTENSION]", "explanation":"MSS_ORDINARY_DIAG_SENTINEL"}"#;
+        const DUPLICATES: &str = r#","stop_details":{"fallback_credit_token":"MSS_STOP_EXTENSION_SENTINEL","n":1e+02,"n":-0,"fallback_credit_token":{"nested":["MSS_STOP_EXTENSION_SENTINEL",false]},"explanation":"MSS_ORDINARY_DIAG_SENTINEL"}"#;
+        const DUPLICATES_MASKED: &str = r#","stop_details":{"fallback_credit_token":"[REDACTED_STOP_EXTENSION]","n":1e+02,"n":-0,"fallback_credit_token":"[REDACTED_STOP_EXTENSION]","explanation":"MSS_ORDINARY_DIAG_SENTINEL"}"#;
+        const UNRELATED: &str = r#","tool_input":{"stop_details":{"fallback_credit_token":"MSS_ORDINARY_DIAG_SENTINEL"}},"text":"fallback_credit_token stop_details","number":1.2300e+02,"number":-0,"escaped":"\u0061\/b""#;
+        let variants = [
+            ("ordinary", "", "", DETAILS, DETAILS, UNRELATED, UNRELATED),
+            (
+                "null-details",
+                ",\"stop_details\":null",
+                ",\"stop_details\":null",
+                ",\"stop_details\":null",
+                ",\"stop_details\":null",
+                "",
+                "",
+            ),
+            (
+                "null-token",
+                "",
+                "",
+                r#","stop_details":{"fallback_credit_token":null}"#,
+                r#","stop_details":{"fallback_credit_token":null}"#,
+                "",
+                "",
+            ),
+            ("start-token", TOKEN, MASKED, DETAILS, DETAILS, "", ""),
+            (
+                "terminal-token",
+                "",
+                "",
+                TOKEN,
+                MASKED,
+                UNRELATED,
+                UNRELATED,
+            ),
+            (
+                "escaped-selected",
+                ESCAPED,
+                ESCAPED_MASKED,
+                ESCAPED,
+                ESCAPED_MASKED,
+                "",
+                "",
+            ),
+            (
+                "duplicate-selected",
+                "",
+                "",
+                DUPLICATES,
+                DUPLICATES_MASKED,
+                "",
+                "",
+            ),
+            (
+                "top-level-selected",
+                "",
+                "",
+                DETAILS,
+                DETAILS,
+                TOKEN,
+                MASKED,
+            ),
+            (
+                "empty-token",
+                "",
+                "",
+                r#","stop_details":{"fallback_credit_token":""}"#,
+                r#","stop_details":{"fallback_credit_token":"[REDACTED_STOP_EXTENSION]"}"#,
+                "",
+                "",
+            ),
+            (
+                "boolean-token",
+                "",
+                "",
+                r#","stop_details":{"fallback_credit_token":false}"#,
+                r#","stop_details":{"fallback_credit_token":"[REDACTED_STOP_EXTENSION]"}"#,
+                "",
+                "",
+            ),
+            (
+                "numeric-token",
+                "",
+                "",
+                r#","stop_details":{"fallback_credit_token":-0.00e+2}"#,
+                r#","stop_details":{"fallback_credit_token":"[REDACTED_STOP_EXTENSION]"}"#,
+                "",
+                "",
+            ),
+        ];
+        variants
+            .into_iter()
+            .map(|(name, start, start_view, terminal, terminal_view, extra, extra_view)| {
+                let mut frames = vec![(mds_start(start), mds_start(start_view))];
+                for raw in [
+                    r#"{"type":"content_block_start","index":7,"content_block":{"type":"text","text":""}}"#,
+                    r#"{ "type":"content_block_delta", "index":7, "delta":{"type":"text_delta","text":"MSS_ORDINARY_DIAG_SENTINEL"}, "ordinary":1e+02, "ordinary":-0 }"#,
+                    r#"{"type":"content_block_stop","index":7}"#,
+                ] {
+                    frames.push((raw.to_owned(), raw.to_owned()));
+                }
+                frames.push((mds_terminal(terminal, extra), mds_terminal(terminal_view, extra_view)));
+                frames.push((r#"{"type":"message_stop"}"#.to_owned(), r#"{"type":"message_stop"}"#.to_owned()));
+                MdsSuccessCase { name, frames }
+            })
+            .collect()
+    }
+
+    #[derive(Clone, Default)]
+    struct MdsLog(std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>);
+
+    struct MdsRecordWriter {
+        log: MdsLog,
+        bytes: Vec<u8>,
+    }
+
+    impl std::io::Write for MdsRecordWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Drop for MdsRecordWriter {
+        fn drop(&mut self) {
+            self.log
+                .0
+                .lock()
+                .unwrap()
+                .push(std::mem::take(&mut self.bytes));
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for MdsLog {
+        type Writer = MdsRecordWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            MdsRecordWriter {
+                log: self.clone(),
+                bytes: Vec::new(),
+            }
+        }
+    }
+
+    struct MdsOutput {
+        text: String,
+        records: Vec<String>,
+    }
+
+    impl MdsLog {
+        fn output(&self, observations: &[MdsObservation]) -> MdsOutput {
+            let records: Vec<_> = self
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|bytes| {
+                    let text = String::from_utf8(bytes.clone()).unwrap();
+                    mds_normalize_endpoints(text, observations)
+                })
+                .collect();
+            let text = records.concat();
+            MdsOutput { text, records }
+        }
+    }
+
+    struct MdsServer {
+        base_url: String,
+        shutdown: tokio::sync::oneshot::Sender<()>,
+        task: tokio::task::JoinHandle<()>,
+        requests: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    }
+
+    impl MdsServer {
+        async fn finish(mut self) -> Vec<serde_json::Value> {
+            let _ = self.shutdown.send(());
+            match tokio::time::timeout(std::time::Duration::from_secs(10), &mut self.task).await {
+                Ok(result) => result.expect("MDS_HTTP_SERVER_COMPLETED"),
+                Err(_) => {
+                    self.task.abort();
+                    let _ = self.task.await;
+                    panic!("MDS_HTTP_SHUTDOWN_DEADLINE");
+                }
+            }
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    async fn mds_server(body: Vec<u8>, content_type: &'static str) -> MdsServer {
+        let marker = body
+            .windows(18)
+            .position(|w| w == &MDS_SECRET.as_bytes()[..18]);
+        let cut = marker
+            .map_or(body.len() / 2, |offset| offset + 9)
+            .max(3)
+            .min(body.len());
+        let chunks = [body[..cut].to_vec(), body[cut..].to_vec()];
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = requests.clone();
+        let app = axum::Router::new().route(
+            "/v1/messages",
+            axum::routing::post(move |request: axum::body::Bytes| {
+                let chunks = chunks.clone();
+                let captured = captured.clone();
+                async move {
+                    captured
+                        .lock()
+                        .unwrap()
+                        .push(serde_json::from_slice(&request).unwrap());
+                    let stream =
+                        futures_util::stream::iter(chunks.into_iter().map(Ok::<_, std::io::Error>));
+                    axum::response::Response::builder()
+                        .status(200)
+                        .header("content-type", content_type)
+                        .body(axum::body::Body::from_stream(stream))
+                        .unwrap()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = stopped.await;
+                })
+                .await
+                .unwrap();
+        });
+        MdsServer {
+            base_url,
+            shutdown,
+            task,
+            requests,
+        }
+    }
+
+    fn mds_sse(frames: &[(String, String)]) -> Vec<u8> {
+        let mut wire = String::from("\u{feff}");
+        for (raw, _) in frames {
+            for line in raw.split('\n') {
+                wire.push_str("data: ");
+                wire.push_str(line);
+                wire.push_str("\r\n");
+            }
+            wire.push_str("\r\n");
+        }
+        wire.push_str("data: [DONE]\r\n\r\n");
+        wire.into_bytes()
+    }
+
+    fn mds_config(base_url: &str) -> SamplerConfig {
+        SamplerConfig {
+            api_key: Some("mds-synthetic-test-key".to_owned()),
+            base_url: base_url.to_owned(),
+            model: "mds-model".to_owned(),
+            api_backend: ApiBackend::Messages,
+            auth_scheme: AuthScheme::Bearer,
+            max_completion_tokens: Some(128),
+            max_retries: Some(0),
+            ..SamplerConfig::default()
+        }
+    }
+
+    struct MdsObservation {
+        name: &'static str,
+        base_url: String,
+        outcome: serde_json::Value,
+    }
+
+    // Infer the public request type without a sampler-types dependency in telemetry.
+    fn mds_default_request<T: Default, R>(_: impl FnOnce(T) -> R) -> T {
+        T::default()
+    }
+
+    fn mds_success_observations(dispatch: &tracing::Dispatch) -> Vec<MdsObservation> {
+        tracing::dispatcher::with_default(dispatch, || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let mut observations = Vec::new();
+                for case in mds_success_cases() {
+                    let span = tracing::info_span!(target: "sampling_log", "mds_diagnostic", case = case.name);
+                    let observed = async {
+                        let server = mds_server(mds_sse(&case.frames), "text/event-stream").await;
+                        let base_url = server.base_url.clone();
+                        let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                            let client = SamplingClient::new(mds_config(&base_url)).map_err(|e| e.to_string())?;
+                            let mut request = mds_default_request(|r| client.conversation_messages(r));
+                            request.items.push(serde_json::from_value(serde_json::json!({
+                                "type": "user", "content": [{"type": "text", "text": "diagnostic request"}]
+                            })).map_err(|e| e.to_string())?);
+                            let response = client.conversation_collect_with_idle_timeout(
+                                request, std::time::Duration::from_secs(5),
+                            ).await.map_err(|e| e.to_string())?;
+                            Ok::<_, String>(serde_json::json!({
+                                "text": response.assistant().map(|a| a.content.as_ref()),
+                                "stop_reason": response.stop_reason,
+                                "usage": response.usage,
+                                "raw_stop_reason": response.raw_stop_reason,
+                                "stop_sequence": response.stop_sequence,
+                                "message_id": response.message_id,
+                                "stop_message": response.stop_message,
+                            }))
+                        }).await;
+                        let requests = server.finish().await;
+                        assert_eq!(requests.len(), 1, "MDS_HTTP_REQUEST_COUNT: {} result={result:?}", case.name);
+                        assert_eq!(requests[0]["model"], "mds-model");
+                        assert_eq!(requests[0]["stream"], true);
+                        let outcome = result.expect("MDS_HTTP_DEADLINE").expect("MDS_STRICT_PARSER_SUCCESS");
+                        let terminal: serde_json::Value = serde_json::from_str(&case.frames[4].0).unwrap();
+                        assert_eq!(outcome, serde_json::json!({
+                            "text": MDS_ORDINARY,
+                            "stop_reason": "content_filter",
+                            "usage": {
+                                "prompt_tokens": 43, "completion_tokens": 23, "total_tokens": 66,
+                                "reasoning_tokens": 0, "cached_prompt_tokens": 11,
+                                "cache_creation_prompt_tokens": 13, "cache_creation_5m_input_tokens": 0,
+                                "cache_creation_1h_input_tokens": 0,
+                            },
+                            "raw_stop_reason": "refusal", "stop_sequence": "ordinary-end",
+                            "message_id": "mds-message",
+                            "stop_message": terminal.pointer("/delta/stop_details/explanation"),
+                        }), "MDS_SUCCESS_OUTCOME: {}", case.name);
+                        MdsObservation { name: case.name, base_url, outcome }
+                    }.instrument(span).await;
+                    observations.push(observed);
+                }
+                observations
+            })
+        })
+    }
+
+    fn mds_normalize_endpoints(mut output: String, observations: &[MdsObservation]) -> String {
+        for observation in observations {
+            output = output.replace(&observation.base_url, "http://127.0.0.1:PORT/v1");
+        }
+        output
+    }
+
+    fn mds_ordinary_success() -> (MdsOutput, Vec<MdsObservation>) {
+        let buffer = MdsLog::default();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(buffer.clone())
+            .finish();
+        let observations = mds_success_observations(&tracing::Dispatch::new(subscriber));
+        (buffer.output(&observations), observations)
+    }
+    fn mds_expected_ordinary_success() -> Vec<String> {
+        let mut records = Vec::new();
+        for case in mds_success_cases() {
+            let prefix = format!(
+                " INFO mds_diagnostic{{case=\"{}\"}}: sampling_log: ",
+                case.name
+            );
+            records.push(format!("{prefix}event=\"client_new\" base_url=http://127.0.0.1:PORT/v1 model=mds-model api_backend=Messages auth_scheme=Bearer reasoning_effort=\"unset\" has_api_key=true has_bearer_resolver=false has_authorization_header=true has_x_api_key_header=false\n"));
+            for (_, view) in case.frames {
+                records.push(format!(
+                    "{prefix}event=\"sse_chunk\" backend=\"messages\" data={view}\n"
+                ));
+            }
+        }
+        records
+    }
+
+    fn mds_assert_ordinary_success(output: &MdsOutput, observations: &[MdsObservation]) {
+        let records: Vec<_> = output
+            .records
+            .iter()
+            .filter(|record| {
+                record.contains("event=\"client_new\"") || record.contains("event=\"sse_chunk\"")
+            })
+            .cloned()
+            .collect();
+        println!(
+            "MDS_SUCCESS_OBSERVATION {}",
+            serde_json::json!({
+                "mode": "ordinary", "records": records, "output": output.text,
+                "cases": observations.iter().map(|o| serde_json::json!({
+                    "name": o.name, "outcome": o.outcome, "status": 200,
+                })).collect::<Vec<_>>(),
+            })
+        );
+        let expected = mds_expected_ordinary_success();
+        assert_eq!(
+            records.len(),
+            expected.len(),
+            "MDS_ORDINARY_LIVE_RECORD_COUNT"
+        );
+        assert_eq!(
+            &records[..21],
+            &expected[..21],
+            "MDS_ORDINARY_SSE_PRESERVATION"
+        );
+        println!("MDS_ORDINARY_PRESERVATION_PASSED cases=3 records=21");
+        assert!(
+            !output.text.contains("MSS_STOP_EXTENSION_"),
+            "MDS_SSE_MARKER_ABSENCE ordinary output"
+        );
+        assert_eq!(records, expected, "MDS_SELECTIVE_SSE_PRESERVATION");
+        println!(
+            "MDS_SUCCESS_ASSERTIONS_PASSED mode=ordinary cases={}",
+            observations.len()
+        );
+    }
+
+    #[test]
+    fn mss_u4_stop_extension_not_in_success_sse_logs() {
+        let (output, observations) = mds_ordinary_success();
+        mds_assert_ordinary_success(&output, &observations);
+    }
+
+    const MDS_UNAVAILABLE: &str = "[UNAVAILABLE: unprojectable sensitive stop metadata]";
+
+    struct MdsStreamErrorCase {
+        name: &'static str,
+        raw: String,
+        view: String,
+        required_error: &'static str,
+        projection_reason: Option<&'static str>,
+    }
+
+    fn mds_error_delta(details: &str, usage: &str) -> String {
+        format!(
+            r#"{{"type":"message_delta","delta":{{"stop_reason":"refusal","stop_sequence":"ordinary-end"{details}}},"usage":{usage},"ordinary":1e+02,"ordinary":-0}}"#
+        )
+    }
+
+    fn mds_stream_error_cases() -> Vec<MdsStreamErrorCase> {
+        const ORDINARY: &str = r#","stop_details":{"type":"refusal","category":"ordinary-category","explanation":"MSS_ORDINARY_DIAG_SENTINEL","resumable":false}"#;
+        const SECRET: &str = r#","stop_details":{"type":"refusal","category":"ordinary-category","explanation":"MSS_ORDINARY_DIAG_SENTINEL","fallback_credit_token":"MSS_STOP_EXTENSION_SENTINEL","resumable":false}"#;
+        const MASKED: &str = r#","stop_details":{"type":"refusal","category":"ordinary-category","explanation":"MSS_ORDINARY_DIAG_SENTINEL","fallback_credit_token":"[REDACTED_STOP_EXTENSION]","resumable":false}"#;
+        const ESCAPED: &str = r#", "stop\u005fdetails" : {"explanation":"MSS_ORDINARY_DIAG_SENTINEL", "fallback_credit_\u0074oken":"MSS_STOP_EXTENSION_SEN\u0054INEL"}"#;
+        const ESCAPED_VIEW: &str = r#", "stop\u005fdetails" : {"explanation":"MSS_ORDINARY_DIAG_SENTINEL", "fallback_credit_\u0074oken":"[REDACTED_STOP_EXTENSION]"}"#;
+        const WRONG: &str = r#"{"output_tokens":"MSS_ORDINARY_DIAG_SENTINEL"}"#;
+        const MISSING: &str = "missing field `output_tokens`";
+        const WRONG_REASON: &str =
+            "invalid type: string \"MSS_ORDINARY_DIAG_SENTINEL\", expected u32";
+        let ordinary_cases = [
+            ("stream-ordinary-missing", ORDINARY, ORDINARY, "{}", MISSING),
+            (
+                "stream-ordinary-wrong-type",
+                ORDINARY,
+                ORDINARY,
+                WRONG,
+                WRONG_REASON,
+            ),
+            ("stream-mixed-missing", SECRET, MASKED, "{}", MISSING),
+            (
+                "stream-mixed-wrong-type",
+                SECRET,
+                MASKED,
+                WRONG,
+                WRONG_REASON,
+            ),
+            (
+                "stream-escaped-selected",
+                ESCAPED,
+                ESCAPED_VIEW,
+                "{}",
+                MISSING,
+            ),
+            (
+                "stream-null-selected",
+                r#","stop_details":{"fallback_credit_token":null}"#,
+                r#","stop_details":{"fallback_credit_token":null}"#,
+                "{}",
+                MISSING,
+            ),
+            (
+                "stream-structured-selected",
+                r#","stop_details":{"fallback_credit_token":{"nested":["MSS_STOP_EXTENSION_SENTINEL",false]},"explanation":"MSS_ORDINARY_DIAG_SENTINEL"}"#,
+                r#","stop_details":{"fallback_credit_token":"[REDACTED_STOP_EXTENSION]","explanation":"MSS_ORDINARY_DIAG_SENTINEL"}"#,
+                "{}",
+                MISSING,
+            ),
+            (
+                "stream-selected-number-error",
+                r#","stop_details":{"fallback_credit_token":1e99999,"explanation":"MSS_ORDINARY_DIAG_SENTINEL"}"#,
+                r#","stop_details":{"fallback_credit_token":"[REDACTED_STOP_EXTENSION]","explanation":"MSS_ORDINARY_DIAG_SENTINEL"}"#,
+                r#"{"output_tokens":2}"#,
+                "number out of range",
+            ),
+        ];
+        let mut cases: Vec<_> = ordinary_cases
+            .into_iter()
+            .map(
+                |(name, raw, view, usage, required_error)| MdsStreamErrorCase {
+                    name,
+                    raw: mds_error_delta(raw, usage),
+                    view: mds_error_delta(view, usage),
+                    required_error,
+                    projection_reason: None,
+                },
+            )
+            .collect();
+        for (name, raw, view, required_error, projection_reason) in [
+            (
+                "stream-ordinary-truncated",
+                r#"{"type":"message_delta","ordinary":"MSS_ORDINARY_DIAG_SENTINEL"#,
+                r#"{"type":"message_delta","ordinary":"MSS_ORDINARY_DIAG_SENTINEL"#,
+                "EOF while parsing a string",
+                None,
+            ),
+            (
+                "stream-sensitive-truncated",
+                r#"{"type":"message_delta","delta":{"stop_details":{"fallback_credit_token":"MSS_STOP_EXTENSION_SENTINEL"#,
+                MDS_UNAVAILABLE,
+                "EOF while parsing a string",
+                Some("truncated_selected_value"),
+            ),
+            (
+                "stream-ordinary-invalid-key",
+                r#"{"type":"message_delta","delta":{"stop_details":{"ordinary_\uZZZZ":"MSS_ORDINARY_DIAG_SENTINEL"}},"usage":{}}"#,
+                r#"{"type":"message_delta","delta":{"stop_details":{"ordinary_\uZZZZ":"MSS_ORDINARY_DIAG_SENTINEL"}},"usage":{}}"#,
+                "invalid escape",
+                None,
+            ),
+            (
+                "stream-sensitive-invalid-key",
+                r#"{"type":"message_delta","delta":{"stop_details":{"fallback_credit_\uZZZZ":"MSS_STOP_EXTENSION_SENTINEL"}},"usage":{}}"#,
+                MDS_UNAVAILABLE,
+                "invalid escape",
+                Some("ambiguous_relevant_key"),
+            ),
+        ] {
+            cases.push(MdsStreamErrorCase {
+                name,
+                raw: raw.to_owned(),
+                view: view.to_owned(),
+                required_error,
+                projection_reason,
+            });
+        }
+        cases.push(MdsStreamErrorCase {
+            name: "stream-mixed-trailing-malformed",
+            raw: format!(r#"{{"type":"message_delta","delta":{{"stop_reason":"refusal"{SECRET}}},"usage":{{}},"ordinary":"#),
+            view: format!(r#"{{"type":"message_delta","delta":{{"stop_reason":"refusal"{MASKED}}},"usage":{{}},"ordinary":"#),
+            required_error: "EOF while parsing a value",
+            projection_reason: None,
+        });
+        cases.push(MdsStreamErrorCase {
+            name: "stream-multiline-mixed",
+            raw: format!("{{\n\"type\":\"message_delta\",\n\"delta\":{{\"stop_reason\":\"refusal\"{SECRET}}},\n\"usage\":{{}}\n}}"),
+            view: format!("{{\n\"type\":\"message_delta\",\n\"delta\":{{\"stop_reason\":\"refusal\"{MASKED}}},\n\"usage\":{{}}\n}}"),
+            required_error: MISSING,
+            projection_reason: None,
+        });
+        cases.extend(mds_stream_structural_error_cases());
+        cases.extend(mds_stream_split_scalar_cases());
+        cases
+    }
+
+    fn mds_stream_error_observations(dispatch: &tracing::Dispatch) -> Vec<MdsObservation> {
+        tracing::dispatcher::with_default(dispatch, || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let mut observations = Vec::new();
+                for case in mds_stream_error_cases() {
+                    let span = tracing::info_span!(target: "sampling_log", "mds_diagnostic", case = case.name);
+                    let observed = async {
+                        let start = mds_start("");
+                        let frames = vec![(start.clone(), start), (case.raw.clone(), case.view.clone())];
+                        let server = mds_server(mds_sse(&frames), "text/event-stream").await;
+                        let base_url = server.base_url.clone();
+                        let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                            let client = SamplingClient::new(mds_config(&base_url)).map_err(|e| e.to_string())?;
+                            let mut request = mds_default_request(|r| client.conversation_messages(r));
+                            request.items.push(serde_json::from_value(serde_json::json!({
+                                "type": "user", "content": [{"type": "text", "text": "diagnostic request"}]
+                            })).map_err(|e| e.to_string())?);
+                            let (mut events, _) = client.conversation_stream_messages(request)
+                                .await.map_err(|e| e.to_string())?;
+                            let first = std::future::poll_fn(|cx| events.as_mut().poll_next(cx)).await
+                                .ok_or("MDS_STREAM_START_ABSENT")?.map_err(|e| e.to_string())?;
+                            let first = serde_json::to_value(first).map_err(|e| e.to_string())?;
+                            let error = match std::future::poll_fn(|cx| events.as_mut().poll_next(cx)).await {
+                                Some(Err(error)) => error,
+                                other => return Err(format!("MDS_EXPECTED_STREAM_SERIALIZATION: {other:?}")),
+                            };
+                            let info = crate::SamplingErrorInfo::from(&error);
+                            if info.kind != crate::SamplingErrorKind::Serialization {
+                                return Err(format!("MDS_WRONG_STREAM_ERROR: {:?}", info.kind));
+                            }
+                            Ok::<_, String>(serde_json::json!({
+                                "kind": "serialization", "error": info.message,
+                                "retryable": info.is_retryable, "first_event": first,
+                            }))
+                        }).await;
+                        let requests = server.finish().await;
+                        assert_eq!(requests.len(), 1, "MDS_STREAM_HTTP_REQUEST_COUNT: {} result={result:?}", case.name);
+                        assert_eq!(requests[0]["stream"], true);
+                        assert_eq!(requests[0]["model"], "mds-model");
+                        let outcome = result.expect("MDS_STREAM_HTTP_DEADLINE").expect("MDS_STREAM_PRIMARY_SERIALIZATION");
+                        assert_eq!(outcome["first_event"]["type"], "message_start");
+                        assert_eq!(outcome["first_event"]["message"]["id"], "mds-message");
+                        assert_eq!(outcome["retryable"], false);
+                        assert!(outcome["error"].as_str().unwrap().contains(case.required_error), "MDS_STREAM_PRIMARY_REASON: {} {outcome}", case.name);
+                        MdsObservation { name: case.name, base_url, outcome }
+                    }.instrument(span).await;
+                    observations.push(observed);
+                }
+                observations
+            })
+        })
+    }
+
+    fn mds_ordinary_stream_errors() -> (MdsOutput, Vec<MdsObservation>) {
+        let buffer = MdsLog::default();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(buffer.clone())
+            .finish();
+        let observations = mds_stream_error_observations(&tracing::Dispatch::new(subscriber));
+        (buffer.output(&observations), observations)
+    }
+
+    fn mds_stream_error_fields<'a>(record: &'a str, name: &str) -> (&'a str, &'a str) {
+        let prefix = format!(
+            "ERROR mds_diagnostic{{case=\"{name}\"}}: xai_grok_sampler::client: Failed to deserialize MessageStreamEvent from stream error="
+        );
+        let fields = record
+            .trim_start()
+            .strip_prefix(&prefix)
+            .expect("MDS_STREAM_EVENT_IDENTITY");
+        let fields = fields
+            .strip_suffix('\n')
+            .expect("MDS_STREAM_RECORD_BOUNDARY");
+        fields
+            .split_once(" raw_data=")
+            .expect("MDS_STREAM_RAW_PRESERVATION")
+    }
+
+    fn mds_assert_stream_errors(output: &MdsOutput, observations: &[MdsObservation]) {
+        let cases = mds_stream_error_cases();
+        let errors: Vec<_> = output
+            .records
+            .iter()
+            .filter(|record| {
+                record.contains("Failed to deserialize MessageStreamEvent from stream")
+            })
+            .collect();
+        let sse: Vec<_> = output
+            .records
+            .iter()
+            .filter(|record| record.contains("event=\"sse_chunk\""))
+            .collect();
+        let clients: Vec<_> = output
+            .records
+            .iter()
+            .filter(|record| record.contains("event=\"client_new\""))
+            .collect();
+        println!(
+            "MDS_STREAM_ERROR_OBSERVATION {}",
+            serde_json::json!({
+                "mode": "ordinary_stream_error", "records": errors, "sse_records": sse,
+                "client_records": clients, "output": output.text,
+                "cases": cases.iter().zip(observations).map(|(case, observed)| serde_json::json!({
+                    "name": case.name, "raw": case.raw, "view": case.view,
+                    "projection_reason": case.projection_reason, "outcome": observed.outcome,
+                    "status": 200,
+                })).collect::<Vec<_>>(),
+            })
+        );
+        assert_eq!(observations.len(), cases.len(), "MDS_STREAM_CASE_COUNT");
+        assert_eq!(clients.len(), cases.len(), "MDS_STREAM_CLIENT_NEW_LIVENESS");
+        assert_eq!(errors.len(), cases.len(), "MDS_STREAM_ERROR_CARDINALITY");
+        assert_eq!(sse.len(), cases.len() * 2, "MDS_STREAM_PREDECODE_LIVENESS");
+        for index in 0..2 {
+            let (error, raw) = mds_stream_error_fields(errors[index], cases[index].name);
+            let primary = observations[index].outcome["error"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("serialization error: ")
+                .unwrap();
+            assert_eq!(
+                error, primary,
+                "MDS_STREAM_ERROR_PRESERVATION: {}",
+                cases[index].name
+            );
+            assert_eq!(
+                raw, cases[index].raw,
+                "MDS_STREAM_RAW_PRESERVATION: {}",
+                cases[index].name
+            );
+        }
+        println!("MDS_STREAM_ORDINARY_PRESERVATION_PASSED cases=2");
+        assert!(
+            !sse[5].contains("MSS_STOP_EXTENSION_"),
+            "MDS_STREAM_D1_PREDECODE_PROTECTED"
+        );
+        assert!(
+            !output.text.contains("MSS_STOP_EXTENSION_"),
+            "MDS_STREAM_MARKER_ABSENCE raw_data/error output"
+        );
+        for (index, (case, observed)) in cases.iter().zip(observations).enumerate() {
+            let (error, raw) = mds_stream_error_fields(errors[index], case.name);
+            let primary = observed.outcome["error"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("serialization error: ")
+                .unwrap();
+            let status = case
+                .projection_reason
+                .map(|reason| format!(" stop_metadata_projection=\"{reason}\""))
+                .unwrap_or_default();
+            assert_eq!(
+                error, primary,
+                "MDS_STREAM_DETAILED_ERROR_PRESERVATION: {}",
+                case.name
+            );
+            assert_eq!(
+                raw,
+                format!("{}{status}", case.view),
+                "MDS_STREAM_SELECTIVE_RAW_PRESERVATION: {}",
+                case.name
+            );
+            let prefix = format!(
+                " INFO mds_diagnostic{{case=\"{}\"}}: sampling_log: ",
+                case.name
+            );
+            assert_eq!(
+                *sse[index * 2],
+                format!(
+                    "{prefix}event=\"sse_chunk\" backend=\"messages\" data={}\n",
+                    mds_start("")
+                ),
+                "MDS_STREAM_START_DATA_PRESERVATION"
+            );
+            assert_eq!(
+                *sse[index * 2 + 1],
+                format!(
+                    "{prefix}event=\"sse_chunk\" backend=\"messages\" data={}{status}\n",
+                    case.view
+                ),
+                "MDS_STREAM_PREDECODE_DATA_PRESERVATION: {}",
+                case.name
+            );
+            assert_eq!(
+                *clients[index],
+                format!(
+                    "{prefix}event=\"client_new\" base_url=http://127.0.0.1:PORT/v1 model=mds-model api_backend=Messages auth_scheme=Bearer reasoning_effort=\"unset\" has_api_key=true has_bearer_resolver=false has_authorization_header=true has_x_api_key_header=false\n"
+                ),
+                "MDS_STREAM_CLIENT_NEW_PRESERVATION"
+            );
+        }
+        println!("MDS_STREAM_ERROR_ASSERTIONS_PASSED cases={}", cases.len());
+    }
+
+    #[test]
+    fn mss_diag_stream_parse_error_is_safe() {
+        let (output, observations) = mds_ordinary_stream_errors();
+        mds_assert_stream_errors(&output, &observations);
+    }
+
+    fn mds_stream_structural_error_cases() -> Vec<MdsStreamErrorCase> {
+        let mut cases = Vec::new();
+        let pairs = [
+            (
+                "stream-ordinary-unbalanced",
+                r#","stop_details":{"ordinary":["MSS_ORDINARY_DIAG_SENTINEL"}"#,
+                r#","stop_details":{"ordinary":["MSS_ORDINARY_DIAG_SENTINEL"}"#,
+                "expected `,` or `]`",
+                None,
+            ),
+            (
+                "stream-selected-unbalanced",
+                r#","stop_details":{"fallback_credit_token":["MSS_STOP_EXTENSION_SENTINEL"}"#,
+                MDS_UNAVAILABLE,
+                "expected `,` or `]`",
+                Some("unbalanced_selected_value"),
+            ),
+            (
+                "stream-ordinary-value-boundary",
+                r#","stop_details":{"ordinary":oops"MSS_ORDINARY_DIAG_SENTINEL"}"#,
+                r#","stop_details":{"ordinary":oops"MSS_ORDINARY_DIAG_SENTINEL"}"#,
+                "expected value",
+                None,
+            ),
+            (
+                "stream-selected-value-boundary",
+                r#","stop_details":{"fallback_credit_token":oops"MSS_STOP_EXTENSION_SENTINEL"}"#,
+                MDS_UNAVAILABLE,
+                "expected value",
+                Some("ambiguous_selected_value"),
+            ),
+            (
+                "stream-ordinary-missing-colon",
+                r#","stop_details":{"ordinary" "MSS_ORDINARY_DIAG_SENTINEL"}"#,
+                r#","stop_details":{"ordinary" "MSS_ORDINARY_DIAG_SENTINEL"}"#,
+                "expected `:`",
+                None,
+            ),
+            (
+                "stream-selected-missing-colon",
+                r#","stop_details":{"fallback_credit_token" "MSS_STOP_EXTENSION_SENTINEL"}"#,
+                MDS_UNAVAILABLE,
+                "expected `:`",
+                Some("ambiguous_selected_member_separator"),
+            ),
+            (
+                "stream-ordinary-unquoted-key",
+                r#","stop_details":{ordinary:"MSS_ORDINARY_DIAG_SENTINEL"}"#,
+                r#","stop_details":{ordinary:"MSS_ORDINARY_DIAG_SENTINEL"}"#,
+                "key must be a string",
+                None,
+            ),
+            (
+                "stream-selected-unquoted-key",
+                r#","stop_details":{fallback_credit_token:"MSS_STOP_EXTENSION_SENTINEL"}"#,
+                MDS_UNAVAILABLE,
+                "key must be a string",
+                Some("ambiguous_object_member"),
+            ),
+            (
+                "stream-selected-safe-tail",
+                r#","stop_details":{"fallback_credit_token":"MSS_STOP_EXTENSION_SENTINEL" nonsense}"#,
+                r#","stop_details":{"fallback_credit_token":"[REDACTED_STOP_EXTENSION]" nonsense}"#,
+                "expected `,` or `}`",
+                None,
+            ),
+            (
+                "stream-selected-ambiguous-tail",
+                r#","stop_details":{"fallback_credit_token":"MSS_STOP_EXTENSION_SENTINEL" fallback_credit_token:"MSS_STOP_EXTENSION_SENTINEL"}"#,
+                MDS_UNAVAILABLE,
+                "expected `,` or `}`",
+                Some("ambiguous_object_boundary"),
+            ),
+        ];
+        for (name, raw, view, required_error, projection_reason) in pairs {
+            cases.push(MdsStreamErrorCase {
+                name,
+                raw: mds_error_delta(raw, "{}"),
+                view: if projection_reason.is_some() {
+                    view.to_owned()
+                } else {
+                    mds_error_delta(view, "{}")
+                },
+                required_error,
+                projection_reason,
+            });
+        }
+        for (name, key, marker, reason) in [
+            ("stream-ordinary-depth", "ordinary", MDS_ORDINARY, None),
+            (
+                "stream-selected-depth",
+                "fallback_credit_token",
+                MDS_SECRET,
+                Some("selected_container_depth_unresolved"),
+            ),
+        ] {
+            let details = format!(
+                ",\"stop_details\":{{\"{key}\":{}\"{marker}\"{}}}",
+                "[".repeat(129),
+                "]".repeat(129)
+            );
+            let raw = mds_error_delta(&details, "{}");
+            cases.push(MdsStreamErrorCase {
+                name,
+                view: if reason.is_some() {
+                    MDS_UNAVAILABLE.to_owned()
+                } else {
+                    raw.clone()
+                },
+                raw,
+                required_error: "recursion limit exceeded",
+                projection_reason: reason,
+            });
+        }
+        for (name, details, view, tail, reason) in [
+            ("stream-ordinary-trailing-data", "", "", " ordinary", None),
+            (
+                "stream-selected-trailing-data",
+                r#","stop_details":{"fallback_credit_token":"MSS_STOP_EXTENSION_SENTINEL"}"#,
+                r#","stop_details":{"fallback_credit_token":"[REDACTED_STOP_EXTENSION]"}"#,
+                " ordinary",
+                None,
+            ),
+            (
+                "stream-ordinary-trailing-object",
+                "",
+                "",
+                r#" {"ordinary":"MSS_ORDINARY_DIAG_SENTINEL"}"#,
+                None,
+            ),
+            (
+                "stream-selected-trailing-object",
+                "",
+                "",
+                r#" {"stop_details":{"fallback_credit_token":"MSS_STOP_EXTENSION_SENTINEL"}}"#,
+                Some("ambiguous_trailing_input"),
+            ),
+        ] {
+            let raw = format!(
+                "{}{tail}",
+                mds_error_delta(details, r#"{"output_tokens":2}"#)
+            );
+            let view = if reason.is_some() {
+                MDS_UNAVAILABLE.to_owned()
+            } else {
+                format!("{}{tail}", mds_error_delta(view, r#"{"output_tokens":2}"#))
+            };
+            cases.push(MdsStreamErrorCase {
+                name,
+                raw,
+                view,
+                required_error: "trailing characters",
+                projection_reason: reason,
+            });
+        }
+        cases
+    }
+
+    struct MdsBodyErrorCase {
+        name: &'static str,
+        raw: Vec<u8>,
+        view: String,
+        required_error: &'static str,
+        projection_reason: Option<&'static str>,
+    }
+
+    fn mds_error_body(details: &str, usage: &str) -> String {
+        format!(
+            r#"{{"id":"mds-body","type":"message","role":"assistant","content":[{{"type":"text","text":"MSS_ORDINARY_DIAG_SENTINEL"}}],"model":"mds-model","stop_reason":"refusal","stop_sequence":"ordinary-end"{details}{usage},"ordinary":1.2300e+02,"ordinary":-0}}"#
+        )
+    }
+
+    fn mds_body_error_cases() -> Vec<MdsBodyErrorCase> {
+        const ORDINARY: &str = r#","stop_details":{"type":"refusal","category":"ordinary-category","explanation":"MSS_ORDINARY_DIAG_SENTINEL","resumable":false}"#;
+        const SECRET: &str = r#","stop_details":{"type":"refusal","category":"ordinary-category","explanation":"MSS_ORDINARY_DIAG_SENTINEL","fallback_credit_token":"MSS_STOP_EXTENSION_SENTINEL","resumable":false}"#;
+        const MASKED: &str = r#","stop_details":{"type":"refusal","category":"ordinary-category","explanation":"MSS_ORDINARY_DIAG_SENTINEL","fallback_credit_token":"[REDACTED_STOP_EXTENSION]","resumable":false}"#;
+        const WRONG: &str =
+            r#","usage":{"input_tokens":"MSS_ORDINARY_DIAG_SENTINEL","output_tokens":2}"#;
+        const MISSING: &str = "missing field `usage`";
+        let pairs = [
+            ("body-ordinary-missing", ORDINARY, ORDINARY, "", MISSING),
+            (
+                "body-ordinary-wrong-type",
+                ORDINARY,
+                ORDINARY,
+                WRONG,
+                "invalid type: string \"MSS_ORDINARY_DIAG_SENTINEL\", expected u32",
+            ),
+            ("body-mixed-missing", SECRET, MASKED, "", MISSING),
+            (
+                "body-mixed-wrong-type",
+                SECRET,
+                MASKED,
+                WRONG,
+                "invalid type: string \"MSS_ORDINARY_DIAG_SENTINEL\", expected u32",
+            ),
+            (
+                "body-token-equals-field",
+                r#","stop_details":{"fallback_credit_token":"usage","explanation":"MSS_ORDINARY_DIAG_SENTINEL"}"#,
+                r#","stop_details":{"fallback_credit_token":"[REDACTED_STOP_EXTENSION]","explanation":"MSS_ORDINARY_DIAG_SENTINEL"}"#,
+                "",
+                MISSING,
+            ),
+            (
+                "body-escaped-duplicates",
+                r#", "stop\u005fdetails" : {"fallback_credit_\u0074oken":"MSS_STOP_EXTENSION_SEN\u0054INEL","ordinary":1e+02,"ordinary":-0,"fallback_credit_token":{"nested":["MSS_STOP_EXTENSION_SENTINEL"]},"explanation":"MSS_ORDINARY_DIAG_SENTINEL"}"#,
+                r#", "stop\u005fdetails" : {"fallback_credit_\u0074oken":"[REDACTED_STOP_EXTENSION]","ordinary":1e+02,"ordinary":-0,"fallback_credit_token":"[REDACTED_STOP_EXTENSION]","explanation":"MSS_ORDINARY_DIAG_SENTINEL"}"#,
+                "",
+                MISSING,
+            ),
+            (
+                "body-null-selected",
+                r#","stop_details":{"fallback_credit_token":null}"#,
+                r#","stop_details":{"fallback_credit_token":null}"#,
+                "",
+                MISSING,
+            ),
+        ];
+        let mut cases: Vec<_> = pairs
+            .into_iter()
+            .map(
+                |(name, raw, view, usage, required_error)| MdsBodyErrorCase {
+                    name,
+                    raw: mds_error_body(raw, usage).into_bytes(),
+                    view: mds_error_body(view, usage),
+                    required_error,
+                    projection_reason: None,
+                },
+            )
+            .collect();
+        for (name, raw, view, reason) in [
+            (
+                "body-ordinary-truncated",
+                r#"{"type":"message","ordinary":"MSS_ORDINARY_DIAG_SENTINEL"#,
+                r#"{"type":"message","ordinary":"MSS_ORDINARY_DIAG_SENTINEL"#,
+                None,
+            ),
+            (
+                "body-selected-truncated",
+                r#"{"type":"message","stop_details":{"fallback_credit_token":"MSS_STOP_EXTENSION_SENTINEL"#,
+                MDS_UNAVAILABLE,
+                Some("truncated_selected_value"),
+            ),
+        ] {
+            cases.push(MdsBodyErrorCase {
+                name,
+                raw: raw.as_bytes().to_vec(),
+                view: view.to_owned(),
+                required_error: "EOF while parsing a string",
+                projection_reason: reason,
+            });
+        }
+        for (name, details, reason) in [
+            (
+                "body-ordinary-invalid-utf8",
+                r#","stop_details":{"ordinary_UTF8_KEY":"MSS_ORDINARY_DIAG_SENTINEL"}"#,
+                None,
+            ),
+            (
+                "body-selected-invalid-utf8",
+                r#","stop_details":{"fallback_credit_toUTF8_KEYken":"MSS_STOP_EXTENSION_SENTINEL"}"#,
+                Some("invalid_relevant_key_utf8"),
+            ),
+        ] {
+            let bytes = mds_error_body(details, "").into_bytes();
+            let index = bytes
+                .windows(8)
+                .position(|bytes| bytes == b"UTF8_KEY")
+                .unwrap();
+            let mut raw = bytes[..index].to_vec();
+            raw.push(0xff);
+            raw.extend_from_slice(&bytes[index + 8..]);
+            let view = if reason.is_some() {
+                MDS_UNAVAILABLE.to_owned()
+            } else {
+                String::from_utf8_lossy(&raw).into_owned()
+            };
+            cases.push(MdsBodyErrorCase {
+                name,
+                raw,
+                view,
+                required_error: "invalid unicode code point",
+                projection_reason: reason,
+            });
+        }
+        for (name, raw, view) in [
+            ("body-ordinary-trailing-data", ORDINARY, ORDINARY),
+            ("body-selected-trailing-data", SECRET, MASKED),
+        ] {
+            const USAGE: &str = r#","usage":{"input_tokens":3,"output_tokens":2}"#;
+            cases.push(MdsBodyErrorCase {
+                name,
+                raw: format!("{} ordinary", mds_error_body(raw, USAGE)).into_bytes(),
+                view: format!("{} ordinary", mds_error_body(view, USAGE)),
+                required_error: "trailing characters",
+                projection_reason: None,
+            });
+        }
+        cases.extend(mds_body_split_scalar_cases());
+        cases
+    }
+
+    fn mds_body_error_observations(dispatch: &tracing::Dispatch) -> Vec<MdsObservation> {
+        tracing::dispatcher::with_default(dispatch, || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let mut observations = Vec::new();
+                for case in mds_body_error_cases() {
+                    let span = tracing::info_span!(target: "sampling_log", "mds_diagnostic", case = case.name);
+                    let observed = async {
+                        let server = mds_server(case.raw.clone(), "application/json").await;
+                        let base_url = server.base_url.clone();
+                        let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                            let client = SamplingClient::new(mds_config(&base_url)).map_err(|e| e.to_string())?;
+                            let mut request = mds_default_request(|r| client.conversation_messages(r));
+                            request.items.push(serde_json::from_value(serde_json::json!({
+                                "type": "user", "content": [{"type": "text", "text": "diagnostic request"}]
+                            })).map_err(|e| e.to_string())?);
+                            let error = match client.conversation_messages(request).await {
+                                Err(error) => error,
+                                Ok(_) => return Err("MDS_EXPECTED_BODY_SERIALIZATION".to_owned()),
+                            };
+                            let info = crate::SamplingErrorInfo::from(&error);
+                            if info.kind != crate::SamplingErrorKind::Serialization {
+                                return Err(format!("MDS_WRONG_BODY_ERROR: {:?}", info.kind));
+                            }
+                            Ok::<_, String>(serde_json::json!({
+                                "kind": "serialization", "error": info.message,
+                                "retryable": info.is_retryable,
+                            }))
+                        }).await;
+                        let requests = server.finish().await;
+                        assert_eq!(requests.len(), 1, "MDS_BODY_HTTP_REQUEST_COUNT: {} result={result:?}", case.name);
+                        assert_eq!(requests[0]["model"], "mds-model");
+                        assert!(matches!(requests[0].get("stream"), None | Some(serde_json::Value::Null | serde_json::Value::Bool(false))), "MDS_BODY_NONSTREAM_REQUEST");
+                        let outcome = result.expect("MDS_BODY_HTTP_DEADLINE").expect("MDS_BODY_PRIMARY_SERIALIZATION");
+                        assert_eq!(outcome["retryable"], false);
+                        assert!(outcome["error"].as_str().unwrap().contains(case.required_error), "MDS_BODY_PRIMARY_REASON: {} {outcome}", case.name);
+                        MdsObservation { name: case.name, base_url, outcome }
+                    }.instrument(span).await;
+                    observations.push(observed);
+                }
+                observations
+            })
+        })
+    }
+
+    fn mds_ordinary_body_errors() -> (MdsOutput, Vec<MdsObservation>) {
+        let buffer = MdsLog::default();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(buffer.clone())
+            .finish();
+        let observations = mds_body_error_observations(&tracing::Dispatch::new(subscriber));
+        (buffer.output(&observations), observations)
+    }
+
+    fn mds_body_error_fields<'a>(record: &'a str, name: &str) -> (&'a str, &'a str) {
+        let prefix = format!(
+            "ERROR mds_diagnostic{{case=\"{name}\"}}: xai_grok_sampler::client: Failed to deserialize MessagesResponse error="
+        );
+        let fields = record
+            .trim_start()
+            .strip_prefix(&prefix)
+            .expect("MDS_BODY_EVENT_IDENTITY");
+        let fields = fields.strip_suffix('\n').expect("MDS_BODY_RECORD_BOUNDARY");
+        fields
+            .split_once(" raw_body=")
+            .expect("MDS_BODY_RAW_PRESERVATION")
+    }
+
+    fn mds_assert_body_errors(output: &MdsOutput, observations: &[MdsObservation]) {
+        let cases = mds_body_error_cases();
+        let errors: Vec<_> = output
+            .records
+            .iter()
+            .filter(|record| record.contains("Failed to deserialize MessagesResponse"))
+            .collect();
+        let clients: Vec<_> = output
+            .records
+            .iter()
+            .filter(|record| record.contains("event=\"client_new\""))
+            .collect();
+        println!(
+            "MDS_BODY_ERROR_OBSERVATION {}",
+            serde_json::json!({
+                "mode": "ordinary_body_error", "records": errors, "client_records": clients,
+                "output": output.text,
+                "cases": cases.iter().zip(observations).map(|(case, observed)| serde_json::json!({
+                    "name": case.name, "raw_bytes": case.raw,
+                    "raw_lossy": String::from_utf8_lossy(&case.raw), "view": case.view,
+                    "projection_reason": case.projection_reason, "outcome": observed.outcome,
+                    "status": 200,
+                })).collect::<Vec<_>>(),
+            })
+        );
+        assert_eq!(observations.len(), cases.len(), "MDS_BODY_CASE_COUNT");
+        assert_eq!(clients.len(), cases.len(), "MDS_BODY_CLIENT_NEW_LIVENESS");
+        assert_eq!(errors.len(), cases.len(), "MDS_BODY_ERROR_CARDINALITY");
+        assert!(
+            !output.text.contains("event=\"sse_chunk\""),
+            "MDS_BODY_IS_NONSTREAM"
+        );
+        for index in 0..2 {
+            let (error, raw) = mds_body_error_fields(errors[index], cases[index].name);
+            let primary = observations[index].outcome["error"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("serialization error: ")
+                .unwrap();
+            assert_eq!(
+                error, primary,
+                "MDS_BODY_ERROR_PRESERVATION: {}",
+                cases[index].name
+            );
+            assert_eq!(
+                raw,
+                String::from_utf8_lossy(&cases[index].raw),
+                "MDS_BODY_RAW_PRESERVATION: {}",
+                cases[index].name
+            );
+        }
+        println!("MDS_BODY_ORDINARY_PRESERVATION_PASSED cases=2");
+        assert!(
+            !output.text.contains("MSS_STOP_EXTENSION_"),
+            "MDS_BODY_MARKER_ABSENCE raw_body/error output"
+        );
+        for (index, (case, observed)) in cases.iter().zip(observations).enumerate() {
+            let (error, raw) = mds_body_error_fields(errors[index], case.name);
+            let primary = observed.outcome["error"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("serialization error: ")
+                .unwrap();
+            let status = case
+                .projection_reason
+                .map(|reason| format!(" stop_metadata_projection=\"{reason}\""))
+                .unwrap_or_default();
+            assert_eq!(
+                error, primary,
+                "MDS_BODY_DETAILED_ERROR_PRESERVATION: {}",
+                case.name
+            );
+            assert_eq!(
+                raw,
+                format!("{}{status}", case.view),
+                "MDS_BODY_SELECTIVE_RAW_PRESERVATION: {}",
+                case.name
+            );
+            let prefix = format!(
+                " INFO mds_diagnostic{{case=\"{}\"}}: sampling_log: ",
+                case.name
+            );
+            assert_eq!(
+                *clients[index],
+                format!(
+                    "{prefix}event=\"client_new\" base_url=http://127.0.0.1:PORT/v1 model=mds-model api_backend=Messages auth_scheme=Bearer reasoning_effort=\"unset\" has_api_key=true has_bearer_resolver=false has_authorization_header=true has_x_api_key_header=false\n"
+                ),
+                "MDS_BODY_CLIENT_NEW_PRESERVATION"
+            );
+        }
+        println!("MDS_BODY_ERROR_ASSERTIONS_PASSED cases={}", cases.len());
+    }
+
+    #[test]
+    fn mss_diag_nonstream_parse_error_is_safe() {
+        let (output, observations) = mds_ordinary_body_errors();
+        mds_assert_body_errors(&output, &observations);
+    }
+
+    #[test]
+    fn mss_u4_stop_extension_not_in_parse_error_logs() {
+        let (stream, stream_observations) = mds_ordinary_stream_errors();
+        let (body, body_observations) = mds_ordinary_body_errors();
+        mds_assert_stream_errors(&stream, &stream_observations);
+        mds_assert_body_errors(&body, &body_observations);
+    }
+
+    fn mds_stream_split_scalar_cases() -> Vec<MdsStreamErrorCase> {
+        [
+            (
+                "stream-ordinary-split-scalar",
+                r#","stop_details":{"ordinary":MSS_ORDINARY_DIAG_ SENTINEL}"#,
+                None,
+            ),
+            (
+                "stream-selected-split-scalar",
+                r#","stop_details":{"fallback_credit_token":MSS_STOP_EXTENSION_ SENTINEL}"#,
+                Some("ambiguous_selected_value"),
+            ),
+        ]
+        .into_iter()
+        .map(|(name, details, reason)| {
+            let raw = mds_error_delta(details, "{}");
+            MdsStreamErrorCase {
+                name,
+                view: if reason.is_some() {
+                    MDS_UNAVAILABLE.to_owned()
+                } else {
+                    raw.clone()
+                },
+                raw,
+                required_error: "expected value",
+                projection_reason: reason,
+            }
+        })
+        .collect()
+    }
+
+    fn mds_body_split_scalar_cases() -> Vec<MdsBodyErrorCase> {
+        [
+            (
+                "body-ordinary-split-scalar",
+                r#","stop_details":{"ordinary":MSS_ORDINARY_DIAG_ SENTINEL}"#,
+                None,
+            ),
+            (
+                "body-selected-split-scalar",
+                r#","stop_details":{"fallback_credit_token":MSS_STOP_EXTENSION_ SENTINEL}"#,
+                Some("ambiguous_selected_value"),
+            ),
+        ]
+        .into_iter()
+        .map(|(name, details, reason)| {
+            let raw = mds_error_body(details, "");
+            MdsBodyErrorCase {
+                name,
+                view: if reason.is_some() {
+                    MDS_UNAVAILABLE.to_owned()
+                } else {
+                    raw.clone()
+                },
+                raw: raw.into_bytes(),
+                required_error: "expected value",
+                projection_reason: reason,
+            }
+        })
+        .collect()
     }
 }
