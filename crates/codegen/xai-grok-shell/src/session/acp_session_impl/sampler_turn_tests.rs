@@ -8732,3 +8732,537 @@ async fn u3_bridge_identity_surfaces() {
         a2_received_body(actor, &auxiliary, &binding, &wire, "xai").await;
     }
 }
+
+fn u7_core(
+    checkpoint: &xai_chat_state::persistence::native::NativeCheckpoint,
+    request: &ConversationRequest,
+    selected: &[xai_grok_sampling_types::conversation::native_search_history::NativeSourceCoordinate],
+    qualified: bool,
+) -> Result<
+    xai_grok_sampling_types::conversation::native_search_history::NativeHistoryCore,
+    xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRefusal,
+> {
+    u7_core_for_domain(checkpoint, request, selected, qualified, &u7_domain())
+}
+
+fn u7_domain() -> xai_grok_sampling_types::conversation::native_search_history::NativeReplayDomain {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    NativeReplayDomain {
+        backend: ApiBackend::Messages,
+        dialect: NativeReplayDialect::Messages,
+        model: "u3-identity".into(),
+        row: "u3-identity".into(),
+        provider: "offline".into(),
+        deployment: "offline".into(),
+        deployment_revision: "1".into(),
+        endpoint: "https://offline.invalid/v1".into(),
+        principal: "nonsecret-fixture".into(),
+    }
+}
+
+fn u7_core_for_domain(
+    checkpoint: &xai_chat_state::persistence::native::NativeCheckpoint,
+    request: &ConversationRequest,
+    selected: &[xai_grok_sampling_types::conversation::native_search_history::NativeSourceCoordinate],
+    qualified: bool,
+    domain: &xai_grok_sampling_types::conversation::native_search_history::NativeReplayDomain,
+) -> Result<
+    xai_grok_sampling_types::conversation::native_search_history::NativeHistoryCore,
+    xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRefusal,
+> {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    use xai_grok_sampling_types::conversation::projection::{Boundary, TargetRoute};
+    let authorship = checkpoint
+        .source
+        .ordered_blocks
+        .iter()
+        .map(|block| (block.coordinates.occurrence, NativeIdAuthorship::Provider))
+        .collect();
+    let history = NativePureHistory {
+        record: &checkpoint.record,
+        source: &checkpoint.source,
+        ledger: &checkpoint.ledger,
+        identity: &checkpoint.identity,
+        blobs: &checkpoint.blobs,
+        authorship: &authorship,
+    };
+    let admission = request.search_admission.unwrap();
+    let target = TargetRoute::new(ApiBackend::Messages, Boundary::Vertex, admission);
+    prepare_native_history_core(
+        &history,
+        &NativeProjectionInputs {
+            target_model_id: "u3-identity",
+            target: &target,
+            tools: &request.tools,
+            current: request.native_eligible_inputs.as_deref(),
+            selected,
+            origin_domains: &Default::default(),
+            pending: &Default::default(),
+            prior_f: None,
+        },
+        |group| {
+            let result = checkpoint
+                .source
+                .ordered_blocks
+                .iter()
+                .find(|block| block.coordinates == group.members[1])
+                .unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_slice(&checkpoint.blobs[&result.block.digest]).unwrap();
+            let shape = NativeReplayShape {
+                family: NativeReplayFamily::MessagesServer,
+                keyless_server: false,
+                output_id_present: false,
+                completed: true,
+                result_error: false,
+                referenced_members: native_candidate_references(&raw).unwrap().len() as u64,
+            };
+            (
+                DiscoveryOrigin {
+                    boundary: Boundary::Vertex,
+                    owner_model_id: Some("u3-identity".into()),
+                },
+                NativeQualification {
+                    source: qualified.then(|| domain.clone()),
+                    target: Some(domain.clone()),
+                    request: Some(domain.clone()),
+                    original_admission: admission,
+                    shape: shape.clone(),
+                    receipt: qualified.then(|| NativeShapeReceipt {
+                        target: domain.clone(),
+                        shape,
+                        receipt_id: "offline-shape-only".into(),
+                    }),
+                    intact_membership: true,
+                    current_backing: true,
+                    faithful_identity: true,
+                },
+            )
+        },
+    )
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_history_loaded_authority_and_accounting_core() {
+    use serde_json::json;
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    tokio::task::LocalSet::new().run_until(async {
+        let server = xai_grok_test_support::MockInferenceServer::start().await.unwrap();
+        server.enqueue_response("/v1/messages", u3_identity_frames(&["alpha__lookup", "zeta__fetch"]));
+        let session = U3IdentitySession::new(&server).await;
+        let schemas = [
+            json!({"type":"object","description":"Exact lookup schema","properties":{"query":{"type":"string","default":"account"}},"required":["query"],"additionalProperties":false}),
+            json!({"type":"object","description":"Exact fetch schema","properties":{"limit":{"type":"integer","default":7}},"required":["limit"],"additionalProperties":false}),
+        ];
+        for (index, name) in ["alpha__lookup", "zeta__fetch"].into_iter().enumerate() {
+            register_native_fixture(&session.actor, name, ToolNamespace::MCP, "U7 full declaration", schemas[index].clone());
+        }
+        let _trace = trace_native_snapshots(None);
+        let _outer = super::SessionActor::a3_trace_outer(None);
+        session.primary("u7-core-primary").await;
+        assert_eq!(observed_native_snapshots().len(), 1);
+        let builds = super::SessionActor::a3_take_outer_builds();
+        assert_eq!(builds.len(), 1, "the real primary performs one atomic actor build");
+        let checkpoint = u3_reload(&session).await;
+        u3_assert_backed(&checkpoint, 0, NativeNamespaceKind::Mcp, "alpha", "lookup", &schemas[0]);
+        u3_assert_backed(&checkpoint, 1, NativeNamespaceKind::Mcp, "zeta", "fetch", &schemas[1]);
+        let selected: Vec<_> = checkpoint.source.ordered_blocks.iter().map(|b| b.coordinates.clone()).collect();
+        let core = u7_core(&checkpoint, &builds[0].0, &selected, true).unwrap();
+        assert_eq!(core.accounting.raw_members.len(), checkpoint.source.ordered_blocks.len(), "U7 must return conservation for every raw source member");
+        assert_eq!(core.accounting.references.len(), 2, "U7 must return both A1 reference witnesses");
+        assert_eq!(core.loaded.definitions.len(), 2, "qualified current backing supplies complete definitions");
+        let domain = u7_domain();
+        let shape = NativeReplayShape {
+            family: NativeReplayFamily::MessagesServer,
+            keyless_server: false,
+            output_id_present: false,
+            completed: true,
+            result_error: false,
+            referenced_members: 2,
+        };
+        assert_eq!(
+            (&core.accounting.target, &core.accounting.qualification),
+            (&Some(domain.clone()), &vec![NativeGroupQualification {
+                group: checkpoint.ledger.groups[0].key.clone(),
+                source: Some(domain.clone()),
+                target: domain.clone(),
+                shape: shape.clone(),
+                receipt: Some(NativeShapeReceipt {
+                    target: domain.clone(),
+                    shape,
+                    receipt_id: "offline-shape-only".into(),
+                }),
+            }]),
+            "F4 returned accounting binds the actual target and computed qualification"
+        );
+        let base_f = u7_core_for_domain(&checkpoint, &builds[0].0, &selected, false, &domain).unwrap();
+        for field in ["deployment", "principal"] {
+            let mut changed = domain.clone();
+            match field {
+                "deployment" => changed.deployment.push_str("-other"),
+                "principal" => changed.principal.push_str("-other"),
+                _ => unreachable!(),
+            }
+            let other_f = u7_core_for_domain(&checkpoint, &builds[0].0, &selected, false, &changed).unwrap();
+            assert_ne!(base_f.accounting, other_f.accounting, "F4 same-model {field} bindings remain distinct");
+        }
+
+        u7_authority_matrix(&session, &checkpoint, &builds[0].0, &schemas).await;
+    }).await;
+}
+
+async fn u7_current_request(session: &U3IdentitySession) -> ConversationRequest {
+    let (prepared, _) = session.actor.prepare_native_tool_candidates_timed().await;
+    let bundle = session.actor.prepared_tool_bundle(&prepared);
+    let projection = super::BridgeDeclarationProjection::prepared(
+        bundle,
+        prepared
+            .mcp_specs
+            .iter()
+            .map(|spec| spec.name.clone())
+            .collect(),
+    );
+    let request = session
+        .actor
+        .chat_state_handle
+        .build_request_with_binding(
+            projection.candidates(),
+            None,
+            false,
+            None,
+            "u7-current-conversation".into(),
+            "u7-current-request".into(),
+        )
+        .await
+        .unwrap()
+        .0;
+    assert!(
+        request
+            .native_eligible_inputs
+            .as_ref()
+            .is_some_and(|inputs| inputs.matches_specs(&request.tools)),
+        "U7 re-registration fixture preserves the actual opaque companion"
+    );
+    request
+}
+
+fn u7_assert_demoted(
+    checkpoint: &xai_chat_state::persistence::native::NativeCheckpoint,
+    request: &ConversationRequest,
+    selected: &[xai_grok_sampling_types::conversation::native_search_history::NativeSourceCoordinate],
+    qualified: bool,
+) -> xai_grok_sampling_types::conversation::native_search_history::NativeHistoryCore {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let core = u7_core(checkpoint, request, selected, qualified).unwrap();
+    assert!(
+        core.loaded.definitions.is_empty(),
+        "F/strip must never retain a forbidden historical definition"
+    );
+    assert!(core.loaded.names.is_empty() && core.loaded.promotion_names.is_empty());
+    assert_eq!(core.decision.groups.len(), 1);
+    assert!(matches!(
+        core.decision.groups[0].action,
+        NativeHistoryAction::F | NativeHistoryAction::Strip
+    ));
+    assert_eq!(core.accounting.raw_members.len(), 3);
+    assert_eq!(core.accounting.references.len(), 2);
+    assert!(
+        core.accounting
+            .references
+            .iter()
+            .all(|reference| reference.lost)
+    );
+    assert_eq!(
+        core.accounting.durable_dispositions,
+        checkpoint.active.dispositions
+    );
+    assert_eq!(
+        core.accounting.durable_projection_revision,
+        checkpoint.active.projection_revision
+    );
+    assert!(core.accounting.summary.len() <= 512 && core.accounting.reasons.len() <= 8);
+    assert!(
+        core.accounting
+            .summary
+            .starts_with("request-only native history")
+    );
+    assert!(core.accounting.rediscovery);
+    core
+}
+
+fn u7_structural_disposition(
+    checkpoint: &xai_chat_state::persistence::native::NativeCheckpoint,
+    disposition: &str,
+) -> xai_chat_state::persistence::native::NativeCheckpoint {
+    use sha2::{Digest, Sha256};
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let mut result = checkpoint.clone();
+    result
+        .active
+        .dispositions
+        .insert(result.ledger.groups[0].key.clone(), disposition.into());
+    let bytes = serde_json::to_vec(&result.active).unwrap();
+    result.record.active = NativeBlobRef {
+        kind: "active".into(),
+        byte_len: bytes.len() as u64,
+        digest: format!("{:x}", Sha256::digest(&bytes)),
+    };
+    result
+        .blobs
+        .insert(result.record.active.digest.clone(), bytes.into());
+    result.ledger.active_digest = result.record.active.digest.clone();
+    let NativeIdentityExtension::Revision2 {
+        eligible_member_accounting,
+        ..
+    } = &result.identity
+    else {
+        unreachable!()
+    };
+    let bytes = serde_json::to_vec(&NativeLedgerV2::from_parts(
+        result.ledger.clone(),
+        eligible_member_accounting.clone(),
+    ))
+    .unwrap();
+    result.record.ledger = NativeBlobRef {
+        kind: "ledger".into(),
+        byte_len: bytes.len() as u64,
+        digest: format!("{:x}", Sha256::digest(&bytes)),
+    };
+    result
+        .blobs
+        .insert(result.record.ledger.digest.clone(), bytes.into());
+    result
+}
+
+async fn u7_authority_matrix(
+    session: &U3IdentitySession,
+    checkpoint: &xai_chat_state::persistence::native::NativeCheckpoint,
+    original: &ConversationRequest,
+    schemas: &[serde_json::Value; 2],
+) {
+    use serde_json::json;
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let selected: Vec<_> = checkpoint
+        .source
+        .ordered_blocks
+        .iter()
+        .map(|b| b.coordinates.clone())
+        .collect();
+    let core = u7_core(checkpoint, original, &selected, true).unwrap();
+    assert_eq!(
+        core.accounting.groups,
+        NativeHistoryCounts {
+            kept: 1,
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        core.accounting.members,
+        NativeHistoryCounts {
+            kept: 3,
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        core.loaded.names,
+        vec![
+            ("lookup".into(), "alpha".into()),
+            ("fetch".into(), "zeta".into())
+        ]
+    );
+    for (index, definition) in core.loaded.definitions.iter().enumerate() {
+        assert_eq!(definition.definition["parameters"], schemas[index]);
+        assert_eq!(definition.definition["description"], "U7 full declaration");
+        assert_eq!(definition.declaration["parameters"], schemas[index]);
+        assert_eq!(definition.namespace_kind, NativeNamespaceKind::Mcp);
+        assert_eq!(definition.source.submember, Some(index as u64));
+    }
+    for block in &checkpoint.source.ordered_blocks {
+        let witness = core
+            .accounting
+            .raw_members
+            .iter()
+            .find(|member| member.source == block.coordinates)
+            .unwrap();
+        assert_eq!(
+            witness.source_digest,
+            checkpoint
+                .ledger
+                .accounting
+                .iter()
+                .find(|row| row.source == block.coordinates)
+                .unwrap()
+                .source_digest
+        );
+        assert_eq!(witness.output, Some(block.coordinates.clone()));
+        assert!(!witness.lost);
+    }
+    for (index, reference) in core.accounting.references.iter().enumerate() {
+        assert_eq!(
+            reference.identity,
+            checkpoint.eligible_members().unwrap()[index].identity
+        );
+        assert_eq!(reference.action, NativeHistoryAction::Keep);
+        assert!(!reference.lost);
+    }
+    assert!(!core.accounting.rediscovery);
+    let foreign = u7_assert_demoted(checkpoint, original, &selected, false);
+    assert_ne!(foreign.loaded.cache_digest, core.loaded.cache_digest);
+    assert_eq!(
+        foreign.accounting.groups,
+        NativeHistoryCounts {
+            demoted: 1,
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        foreign.accounting.members,
+        NativeHistoryCounts {
+            kept: 1,
+            demoted: 2,
+            ..Default::default()
+        }
+    );
+    assert!(foreign.decision.members.iter().all(|m| m.raw.is_none()));
+    for member in &foreign.decision.members {
+        let text = &member.neutral.as_ref().unwrap().text;
+        assert!(
+            !text.contains("alpha")
+                && !text.contains("lookup")
+                && !text.contains("u7-core-primary")
+        );
+    }
+    let mut no_identity = original.clone();
+    no_identity.native_eligible_inputs = None;
+    u7_assert_demoted(checkpoint, &no_identity, &selected, true);
+    let mut no_admission = original.clone();
+    no_admission
+        .search_admission
+        .as_mut()
+        .unwrap()
+        .supports_search_tool = false;
+    u7_assert_demoted(checkpoint, &no_admission, &selected, true);
+    let compaction = vec![selected[0].clone(), selected[2].clone()];
+    let lost = u7_assert_demoted(checkpoint, original, &compaction, true);
+    assert!(
+        lost.accounting
+            .reasons
+            .contains_key(&NativeHistoryReason::MissingView)
+    );
+    let mut missing = original.clone();
+    let position = missing
+        .tools
+        .iter()
+        .position(|tool| tool.name == "zeta__fetch")
+        .unwrap();
+    missing.tools.remove(position);
+    u7_assert_demoted(checkpoint, &missing, &selected, true);
+    let mut changed_description = original.clone();
+    changed_description.tools[0].description = Some("Changed declaration".into());
+    u7_assert_demoted(checkpoint, &changed_description, &selected, true);
+    let mut stub = original.clone();
+    for tool in &mut stub.tools {
+        tool.parameters = json!({"type":"object"});
+    }
+    u7_assert_demoted(checkpoint, &stub, &selected, true);
+    let mut stale = checkpoint.clone();
+    stale.record.reader_floor = 99;
+    let refusal = u7_core(&stale, original, &selected, true).unwrap_err();
+    assert_eq!(refusal.reason, NativeUnavailable::UnsupportedVersion);
+    assert!(refusal.summary.len() <= 512 && refusal.rediscovery);
+    let bridge = session.actor.agent.borrow().tool_bridge().clone();
+    assert!(bridge.unregister_tool_by_name("zeta__fetch"));
+    let absent = u7_current_request(session).await;
+    u7_assert_demoted(checkpoint, &absent, &selected, true);
+    register_native_fixture(
+        &session.actor,
+        "zeta__fetch",
+        ToolNamespace::MCP,
+        "U7 full declaration",
+        schemas[1].clone(),
+    );
+    let matching = u7_current_request(session).await;
+    let reregistered = u7_core(checkpoint, &matching, &selected, true).unwrap();
+    assert_eq!(
+        reregistered.loaded, core.loaded,
+        "identical-byte registration is current backing without occurrence continuity"
+    );
+    for field in ["default", "description"] {
+        assert!(bridge.unregister_tool_by_name("zeta__fetch"));
+        let mut changed = schemas[1].clone();
+        if field == "default" {
+            changed["properties"]["limit"]["default"] = json!(8);
+        } else {
+            changed["description"] = json!("Changed full-schema description");
+        }
+        register_native_fixture(
+            &session.actor,
+            "zeta__fetch",
+            ToolNamespace::MCP,
+            "U7 full declaration",
+            changed,
+        );
+        let request = u7_current_request(session).await;
+        u7_assert_demoted(checkpoint, &request, &selected, true);
+    }
+    assert!(bridge.unregister_tool_by_name("zeta__fetch"));
+    register_native_fixture(
+        &session.actor,
+        "zeta__fetch",
+        ToolNamespace::GrokBuild,
+        "U7 full declaration",
+        schemas[1].clone(),
+    );
+    let flat = u7_current_request(session).await;
+    let flat_entry = flat
+        .native_eligible_inputs
+        .as_ref()
+        .unwrap()
+        .entries()
+        .iter()
+        .find(|entry| entry.declaration().name == "zeta__fetch")
+        .unwrap();
+    assert_eq!(
+        (
+            flat_entry.namespace_kind(),
+            flat_entry.qualified_namespace(),
+            flat_entry.child_name()
+        ),
+        (NativeNamespaceKind::GrokBuild, "grok_build", "zeta__fetch")
+    );
+    u7_assert_demoted(checkpoint, &flat, &selected, true);
+    assert!(bridge.unregister_tool_by_name("zeta__fetch"));
+    register_native_fixture(
+        &session.actor,
+        "zeta__fetch",
+        ToolNamespace::MCP,
+        "U7 full declaration",
+        schemas[1].clone(),
+    );
+    let matching = u7_current_request(session).await;
+    for disposition in ["F", "strip"] {
+        let structural = u7_structural_disposition(checkpoint, disposition);
+        let before = structural.blobs.clone();
+        let result = u7_core(&structural, &matching, &selected, true).unwrap();
+        assert_eq!(
+            result.decision.groups[0].action,
+            if disposition == "F" {
+                NativeHistoryAction::F
+            } else {
+                NativeHistoryAction::Strip
+            },
+            "prior F/strip cannot resurrect after identical registration"
+        );
+        assert!(result.loaded.definitions.is_empty());
+        assert_eq!(
+            structural.blobs, before,
+            "structural prior disposition is not a durable acknowledgement"
+        );
+    }
+    let reread = u3_reload(session).await;
+    assert_eq!(
+        reread.bytes, checkpoint.bytes,
+        "pure current preparation never writes durable disposition"
+    );
+    assert_eq!(reread.active, checkpoint.active);
+}

@@ -2320,6 +2320,132 @@ pub fn loaded_tool_set<'a>(
     loaded
 }
 
+/// Derive request-local authority only after complete-group qualification.
+pub(super) fn native_loaded_authority(
+    history: &super::projection::NativePureHistory<'_>,
+    input: &super::projection::NativeProjectionInputs<'_>,
+    decision: &super::projection::NativeHistoryDecision,
+) -> Result<
+    super::native_search_history::NativeLoadedAuthority,
+    super::native_search_history::NativeUnavailable,
+> {
+    use super::native_search_history::*;
+    use super::projection::{NativeHistoryAction, native_content_digest, native_policy_blob};
+    let mut result = NativeLoadedAuthority::default();
+    for group in &decision.groups {
+        if group.action != NativeHistoryAction::Keep {
+            continue;
+        }
+        for member in &decision.members {
+            if !group.members.contains(&member.source) || member.duplicate_of.is_some() {
+                continue;
+            }
+            let block = history
+                .source
+                .ordered_blocks
+                .iter()
+                .find(|block| block.coordinates == member.source)
+                .ok_or(NativeUnavailable::InvalidReference)?;
+            let raw: Value =
+                serde_json::from_slice(native_policy_blob(history, &block.block, "raw_block")?)
+                    .map_err(|_| NativeUnavailable::InvalidReference)?;
+            let leaves = native_candidate_references(&raw)?;
+            for (ordinal, leaf) in leaves.iter().enumerate() {
+                let NativeCandidateReference::Tool { declaration, .. } = leaf else {
+                    continue;
+                };
+                let NativeIdentityExtension::Revision2 {
+                    eligible_member_links,
+                    ..
+                } = history.identity
+                else {
+                    return Err(NativeUnavailable::UnknownIdentity);
+                };
+                let mut source = member.source.clone();
+                source.submember =
+                    Some(u64::try_from(ordinal).map_err(|_| NativeUnavailable::Capacity)?);
+                let link = eligible_member_links
+                    .iter()
+                    .find(|link| link.source == source)
+                    .ok_or(NativeUnavailable::InvalidReference)?;
+                let NativeEligibleMemberIdentity::Backed { eligible_ref } = &link.identity else {
+                    return Err(NativeUnavailable::UnknownIdentity);
+                };
+                let snapshot: NativeEligibleSnapshot = serde_json::from_slice(native_policy_blob(
+                    history,
+                    eligible_ref,
+                    "eligible_snapshot",
+                )?)
+                .map_err(|_| NativeUnavailable::InvalidReference)?;
+                let schema = native_policy_blob(history, &snapshot.schema, "eligible_schema")?;
+                let inputs = input
+                    .current
+                    .filter(|inputs| inputs.matches_specs(input.tools))
+                    .ok_or(NativeUnavailable::UnknownIdentity)?;
+                let entries: Vec<_> = inputs
+                    .entries()
+                    .iter()
+                    .filter(|entry| {
+                        entry.namespace_kind() == snapshot.namespace_kind
+                            && entry.qualified_namespace() == snapshot.qualified_namespace
+                            && entry.child_name() == snapshot.child_name
+                            && entry.schema_bytes() == schema
+                            && entry.schema_digest() == snapshot.schema.digest
+                    })
+                    .collect();
+                if entries.len() != 1 {
+                    return Err(NativeUnavailable::UnknownIdentity);
+                }
+                let entry = entries[0];
+                let current = serde_json::to_value(entry.declaration())
+                    .map_err(|_| NativeUnavailable::Fidelity)?;
+                let definition = declaration.map_or_else(
+                    || {
+                        serde_json::json!({
+                            "type": "function", "name": entry.declaration().name,
+                            "description": entry.declaration().description,
+                            "parameters": entry.declaration().parameters,
+                        })
+                    },
+                    |definition| definition.clone(),
+                );
+                result.definitions.push(NativeLoadedDefinition {
+                    namespace_kind: snapshot.namespace_kind,
+                    qualified_namespace: snapshot.qualified_namespace,
+                    child_name: snapshot.child_name,
+                    invocation_name: entry.declaration().name.clone(),
+                    schema_digest: snapshot.schema.digest,
+                    declaration: current,
+                    definition,
+                    source,
+                });
+            }
+        }
+    }
+    let mut keys = Vec::new();
+    for definition in &result.definitions {
+        let name = (
+            definition.child_name.clone(),
+            definition.qualified_namespace.clone(),
+        );
+        if !result.names.contains(&name) {
+            result.names.push(name);
+        }
+        if !result.promotion_names.contains(&definition.invocation_name) {
+            result
+                .promotion_names
+                .push(definition.invocation_name.clone());
+        }
+        keys.push(serde_json::json!({
+            "namespace_kind": definition.namespace_kind, "namespace": definition.qualified_namespace,
+            "child": definition.child_name, "declaration": definition.declaration,
+            "definition": definition.definition, "schema": definition.schema_digest,
+        }));
+    }
+    result.cache_digest = native_content_digest(&encode_native(&keys, NATIVE_SOURCE_BYTES)?);
+    Ok(result)
+}
+
 /// The names the loaded set can be invoked by, as the PAIR of forms.
 ///
 /// The two wires invoke a discovered namespace child DIFFERENTLY: Responses

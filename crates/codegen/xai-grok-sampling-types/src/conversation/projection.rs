@@ -837,7 +837,7 @@ impl TargetRoute {
 /// unresolvable (mirrors [`forward_owner_model`]); that is never a KEEP.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // pending apex-waj.2 (the projector arms that read the tuple; D0..D3 ladder apex-waj.29, in flight); the route tuple itself landed with apex-waj.35
-pub(super) struct DiscoveryOrigin {
+pub struct DiscoveryOrigin {
     pub boundary: Boundary,
     pub owner_model_id: Option<String>,
 }
@@ -911,13 +911,13 @@ pub(super) fn discovery_tier(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum NativeReplayDialect {
+pub enum NativeReplayDialect {
     Responses(super::ResponsesReplayDialect),
     Messages,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct NativeReplayDomain {
+pub struct NativeReplayDomain {
     pub backend: ApiBackend,
     pub dialect: NativeReplayDialect,
     pub model: String,
@@ -930,7 +930,7 @@ pub(super) struct NativeReplayDomain {
 }
 
 impl NativeReplayDomain {
-    fn complete(&self) -> bool {
+    pub(super) fn complete(&self) -> bool {
         [
             &self.model,
             &self.row,
@@ -953,7 +953,7 @@ impl NativeReplayDomain {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct NativeReplayShape {
+pub struct NativeReplayShape {
     pub family: super::native_search_history::NativeReplayFamily,
     pub keyless_server: bool,
     pub output_id_present: bool,
@@ -963,13 +963,13 @@ pub(super) struct NativeReplayShape {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct NativeShapeReceipt {
+pub struct NativeShapeReceipt {
     pub target: NativeReplayDomain,
     pub shape: NativeReplayShape,
     pub receipt_id: String,
 }
 
-pub(super) struct NativeQualification {
+pub struct NativeQualification {
     pub source: Option<NativeReplayDomain>,
     pub target: Option<NativeReplayDomain>,
     pub request: Option<NativeReplayDomain>,
@@ -981,7 +981,7 @@ pub(super) struct NativeQualification {
     pub faithful_identity: bool,
 }
 
-pub(super) struct NativePureHistory<'a> {
+pub struct NativePureHistory<'a> {
     pub record: &'a super::native_search_history::NativeSearchHistoryV1,
     pub source: &'a super::native_search_history::NativeSource,
     pub ledger: &'a super::native_search_history::NativeLedger,
@@ -992,7 +992,7 @@ pub(super) struct NativePureHistory<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum NativeHistoryAction {
+pub enum NativeHistoryAction {
     Keep,
     F,
     Strip,
@@ -1003,15 +1003,16 @@ pub(super) enum NativeHistoryAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct NativePreparedMember {
+pub struct NativePreparedMember {
     pub source: super::native_search_history::NativeSourceCoordinate,
     pub action: NativeHistoryAction,
     pub raw: Option<Value>,
+    pub neutral: Option<super::native_search_history::NativeNeutralText>,
     pub duplicate_of: Option<super::native_search_history::NativeSourceCoordinate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct NativeGroupDecision {
+pub struct NativeGroupDecision {
     pub key: String,
     pub action: NativeHistoryAction,
     pub members: Vec<super::native_search_history::NativeSourceCoordinate>,
@@ -1019,12 +1020,14 @@ pub(super) struct NativeGroupDecision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct NativeHistoryDecision {
+pub struct NativeHistoryDecision {
     pub groups: Vec<NativeGroupDecision>,
     pub members: Vec<NativePreparedMember>,
+    pub f_provenance: super::native_search_history::NativeFProvenance,
+    pub qualification: Vec<super::native_search_history::NativeGroupQualification>,
 }
 
-fn native_policy_blob<'a>(
+pub(super) fn native_policy_blob<'a>(
     history: &NativePureHistory<'a>,
     reference: &super::native_search_history::NativeBlobRef,
     kind: &str,
@@ -1043,7 +1046,11 @@ fn native_policy_blob<'a>(
     Ok(bytes)
 }
 
-fn native_policy_history(
+pub(super) fn native_content_digest(bytes: &[u8]) -> String {
+    hex_digest(&sha256(bytes))
+}
+
+pub(super) fn native_policy_history(
     history: &NativePureHistory<'_>,
 ) -> Result<(), super::native_search_history::NativeUnavailable> {
     use super::native_search_history::*;
@@ -1248,6 +1255,205 @@ fn native_policy_backing(
     Ok(backed)
 }
 
+fn native_render_neutral(
+    kind: super::native_search_history::NativeNeutralKind,
+    status: super::native_search_history::NativeNeutralStatus,
+    count: Option<u64>,
+) -> super::native_search_history::NativeNeutralText {
+    use super::native_search_history::{NativeNeutralKind, NativeNeutralStatus, NativeNeutralText};
+    let text = match kind {
+        NativeNeutralKind::Call => {
+            "Historical search recorded; this history grants no current tool authority.".into()
+        }
+        NativeNeutralKind::Result => {
+            let status = match status {
+                NativeNeutralStatus::Completed => "completed",
+                NativeNeutralStatus::Error => "error",
+                NativeNeutralStatus::Unknown => "unknown",
+            };
+            let count = count.map_or_else(|| "unknown".into(), |count| count.to_string());
+            format!(
+                "Historical search result: {status}; count={count}. This history grants no current tool authority."
+            )
+        }
+        NativeNeutralKind::Omission => {
+            "Older historical search records omitted; no current tool authority is retained.".into()
+        }
+    };
+    NativeNeutralText { kind, text }
+}
+
+pub struct NativeProjectionInputs<'a> {
+    pub target_model_id: &'a str,
+    pub target: &'a TargetRoute,
+    pub tools: &'a [super::ToolSpec],
+    pub current: Option<&'a super::native_search_history::NativeEligibleInputs>,
+    pub selected: &'a [super::native_search_history::NativeSourceCoordinate],
+    pub origin_domains: &'a std::collections::BTreeMap<String, NativeReplayDomain>,
+    pub pending: &'a super::native_search_history::NativePendingContext,
+    pub prior_f: Option<&'a super::native_search_history::NativeFProvenance>,
+}
+
+fn native_validate_f_provenance(
+    history: &NativePureHistory<'_>,
+    prior: Option<&super::native_search_history::NativeFProvenance>,
+) -> Result<(), super::native_search_history::NativeUnavailable> {
+    use super::native_search_history::*;
+    let Some(prior) = prior else { return Ok(()) };
+    if prior.version != 1 {
+        return Err(NativeUnavailable::UnsupportedVersion);
+    }
+    NativeResource::SourceGroups.admit(prior.groups.len() as u64, 0)?;
+    let mut keys = std::collections::BTreeSet::new();
+    for old in &prior.groups {
+        if !keys.insert(&old.key) || old.call.occurrence >= old.result.occurrence {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        let group = history
+            .ledger
+            .groups
+            .iter()
+            .find(|group| group.key == old.key)
+            .ok_or(NativeUnavailable::InvalidReference)?;
+        if group.state != "Completed" {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        for (coordinate, digest) in [
+            (&old.call, &old.call_digest),
+            (&old.result, &old.result_digest),
+        ] {
+            if !group.members.contains(coordinate)
+                || !history
+                    .source
+                    .ordered_blocks
+                    .iter()
+                    .any(|block| &block.coordinates == coordinate && &block.block.digest == digest)
+            {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn native_apply_f_budget(
+    decision: &mut NativeHistoryDecision,
+    prior: Option<&super::native_search_history::NativeFProvenance>,
+) -> Result<(), super::native_search_history::NativeUnavailable> {
+    use super::native_search_history::*;
+    if let Some(prior) = prior {
+        for old in &prior.groups {
+            if !decision
+                .f_provenance
+                .groups
+                .iter()
+                .any(|group| group.key == old.key)
+            {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+        }
+    }
+    let mut candidates = Vec::new();
+    for (index, group) in decision.groups.iter().enumerate() {
+        if group.action != NativeHistoryAction::F {
+            continue;
+        }
+        let emitted: Vec<_> = decision
+            .members
+            .iter()
+            .filter(|member| {
+                group.members.contains(&member.source) && member.duplicate_of.is_none()
+            })
+            .collect();
+        if emitted.len() != 2 {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        let mut bytes = 0usize;
+        for member in &emitted {
+            let text = member
+                .neutral
+                .as_ref()
+                .ok_or(NativeUnavailable::InvalidReference)?;
+            if text.text.len() > 128 {
+                return Err(NativeUnavailable::Capacity);
+            }
+            bytes = bytes
+                .checked_add(text.text.len())
+                .ok_or(NativeUnavailable::Capacity)?;
+        }
+        if bytes > 256 {
+            return Err(NativeUnavailable::Capacity);
+        }
+        candidates.push((index, emitted[1].source.occurrence, bytes));
+    }
+    candidates.sort_by_key(|(_, result, _)| *result);
+    let notice = native_render_neutral(
+        NativeNeutralKind::Omission,
+        NativeNeutralStatus::Unknown,
+        None,
+    );
+    if notice.text.len() > 128 {
+        return Err(NativeUnavailable::Capacity);
+    }
+    let mut retained_bytes = 0usize;
+    let mut retained = 0usize;
+    for (index, _, bytes) in candidates.into_iter().rev() {
+        if retained < 3 && retained_bytes + bytes + notice.text.len() <= 1024 {
+            retained += 1;
+            retained_bytes += bytes;
+        } else {
+            decision.groups[index].action = NativeHistoryAction::Strip;
+        }
+    }
+    for group in &decision.groups {
+        if group.action == NativeHistoryAction::Strip {
+            for member in &mut decision.members {
+                if group.members.contains(&member.source) {
+                    member.action = NativeHistoryAction::Strip;
+                    member.raw = None;
+                    member.neutral = None;
+                }
+            }
+        }
+    }
+    for provenance in &mut decision.f_provenance.groups {
+        let group = decision
+            .groups
+            .iter()
+            .find(|group| group.key == provenance.key)
+            .ok_or(NativeUnavailable::InvalidReference)?;
+        provenance.disposition = if group.action == NativeHistoryAction::Strip {
+            NativeFDisposition::Strip
+        } else {
+            NativeFDisposition::F
+        };
+    }
+    if let Some(last) = decision
+        .f_provenance
+        .groups
+        .iter()
+        .filter(|group| group.disposition == NativeFDisposition::Strip)
+        .max_by_key(|group| group.result.occurrence)
+    {
+        let member = decision
+            .members
+            .iter_mut()
+            .find(|member| member.source == last.result)
+            .ok_or(NativeUnavailable::InvalidReference)?;
+        member.neutral = Some(notice);
+    }
+    let total: usize = decision
+        .members
+        .iter()
+        .filter_map(|member| member.neutral.as_ref())
+        .map(|text| text.text.len())
+        .sum();
+    if total > 1024 {
+        return Err(NativeUnavailable::Capacity);
+    }
+    Ok(())
+}
+
 pub(super) fn prepare_native_history(
     history: &NativePureHistory<'_>,
     target_model_id: &str,
@@ -1286,6 +1492,29 @@ pub(super) fn prepare_native_history_selected(
     selected: &[super::native_search_history::NativeSourceCoordinate],
     origin_domains: &std::collections::BTreeMap<String, NativeReplayDomain>,
     pending: &super::native_search_history::NativePendingContext,
+    qualification: impl FnMut(
+        &super::native_search_history::NativeGroupRecord,
+    ) -> (DiscoveryOrigin, NativeQualification),
+) -> Result<NativeHistoryDecision, super::native_search_history::NativeUnavailable> {
+    prepare_native_history_reproject(
+        history,
+        &NativeProjectionInputs {
+            target_model_id,
+            target,
+            tools,
+            current,
+            selected,
+            origin_domains,
+            pending,
+            prior_f: None,
+        },
+        qualification,
+    )
+}
+
+pub(super) fn prepare_native_history_reproject(
+    history: &NativePureHistory<'_>,
+    input: &NativeProjectionInputs<'_>,
     mut qualification: impl FnMut(
         &super::native_search_history::NativeGroupRecord,
     ) -> (DiscoveryOrigin, NativeQualification),
@@ -1293,6 +1522,17 @@ pub(super) fn prepare_native_history_selected(
     use super::native_search_history::*;
     use super::tool_search::ToolSearchItem;
     native_policy_history(history)?;
+    native_validate_f_provenance(history, input.prior_f)?;
+    let NativeProjectionInputs {
+        target_model_id,
+        target,
+        tools,
+        current,
+        selected,
+        origin_domains,
+        pending,
+        prior_f: _,
+    } = *input;
     let mut raw = std::collections::BTreeMap::new();
     let mut all_raw = std::collections::BTreeMap::new();
     for block in &history.source.ordered_blocks {
@@ -1343,6 +1583,8 @@ pub(super) fn prepare_native_history_selected(
     let mut decision = NativeHistoryDecision {
         groups: Vec::new(),
         members: Vec::new(),
+        f_provenance: NativeFProvenance::empty(),
+        qualification: Vec::new(),
     };
     for (group, (origin, mut qualified)) in groups.into_iter().zip(qualified) {
         let references = match history.identity {
@@ -1360,7 +1602,7 @@ pub(super) fn prepare_native_history_selected(
                 .count() as u64,
         };
         NativeResource::GroupMembers.admit(group.record.members.len() as u64, references)?;
-        let (action, waiting_clients) = if group.state == NativeGroupState::Completed {
+        let (mut action, waiting_clients) = if group.state == NativeGroupState::Completed {
             let call = &group.primary[0].2;
             let output = &group.primary[1].2;
             let mut backing = true;
@@ -1449,6 +1691,65 @@ pub(super) fn prepare_native_history_selected(
             }
             native_pending_action(&group, history.source, history.ledger, pending)?
         };
+        if let Some(prior) = input
+            .prior_f
+            .and_then(|prior| prior.groups.iter().find(|old| old.key == group.record.key))
+        {
+            if group.primary.len() != 2
+                || prior.call != group.primary[0].0
+                || prior.result != group.primary[1].0
+            {
+                return Err(NativeUnavailable::InvalidReference);
+            }
+            action = match prior.disposition {
+                NativeFDisposition::F if action != NativeHistoryAction::Strip => {
+                    NativeHistoryAction::F
+                }
+                NativeFDisposition::F | NativeFDisposition::Strip => NativeHistoryAction::Strip,
+            };
+        }
+        let neutral = if matches!(action, NativeHistoryAction::F | NativeHistoryAction::Strip) {
+            let call = &group.primary[0].0;
+            let result = &group.primary[1];
+            let call_block = &history.source.ordered_blocks[call.occurrence as usize];
+            let result_block = &history.source.ordered_blocks[result.0.occurrence as usize];
+            decision.f_provenance.groups.push(NativeFGroup {
+                key: group.record.key.clone(),
+                call: call.clone(),
+                call_digest: call_block.block.digest.clone(),
+                result: result.0.clone(),
+                result_digest: result_block.block.digest.clone(),
+                disposition: if action == NativeHistoryAction::Strip {
+                    NativeFDisposition::Strip
+                } else {
+                    NativeFDisposition::F
+                },
+            });
+            let status = if !group.accepted {
+                NativeNeutralStatus::Unknown
+            } else if result.2.result_error {
+                NativeNeutralStatus::Error
+            } else {
+                NativeNeutralStatus::Completed
+            };
+            let count = if group.accepted {
+                u64::try_from(native_candidate_references(result.1.raw())?.len()).ok()
+            } else {
+                None
+            };
+            Some((status, count))
+        } else {
+            None
+        };
+        if let Some(target) = qualified.target {
+            decision.qualification.push(NativeGroupQualification {
+                group: group.record.key.clone(),
+                source: qualified.source,
+                target,
+                shape: qualified.shape,
+                receipt: qualified.receipt,
+            });
+        }
         decision.groups.push(NativeGroupDecision {
             key: group.record.key.clone(),
             action,
@@ -1470,17 +1771,32 @@ pub(super) fn prepare_native_history_selected(
                         | NativeHistoryAction::AwaitResults
                         | NativeHistoryAction::ContinueOriginal
                 );
+            let emit_neutral = duplicate_of.is_none();
             decision.members.push(NativePreparedMember {
                 source: coordinate.clone(),
                 action,
                 duplicate_of,
                 raw: emit.then(|| raw[&coordinate.occurrence].raw().clone()),
+                neutral: neutral
+                    .filter(|_| action == NativeHistoryAction::F && emit_neutral)
+                    .map(|(status, count)| {
+                        native_render_neutral(
+                            if coordinate == &group.primary[0].0 {
+                                NativeNeutralKind::Call
+                            } else {
+                                NativeNeutralKind::Result
+                            },
+                            status,
+                            count,
+                        )
+                    }),
             });
         }
     }
     decision
         .members
         .sort_by_key(|member| member.source.occurrence);
+    native_apply_f_budget(&mut decision, input.prior_f)?;
     Ok(decision)
 }
 
@@ -4342,6 +4658,552 @@ mod tests {
         assert!(
             u5_selected(&server_responses, &[], &context).is_err(),
             "completed-pair qualification cannot authorize a pending Responses server continuation"
+        );
+    }
+
+    fn u6_lower(items: Vec<ConversationItem>, backend: ApiBackend) -> Value {
+        let request = crate::ConversationRequest {
+            model: Some("u6-offline".into()),
+            items,
+            max_output_tokens: Some(4096),
+            ..Default::default()
+        };
+        match backend {
+            ApiBackend::Messages => serde_json::to_value(
+                crate::conversation::messages::build_messages_request(&request),
+            )
+            .unwrap(),
+            ApiBackend::Responses => serde_json::to_value(
+                async_openai::types::responses::CreateResponse::from(&request),
+            )
+            .unwrap(),
+            _ => unreachable!(),
+        }
+    }
+
+    fn u6_view(fixture: &U4Fixture, decision: &NativeHistoryDecision) -> Vec<ConversationItem> {
+        let mut items = vec![ConversationItem::user("Neutral history projection")];
+        for block in &fixture.source.ordered_blocks {
+            if let Some(member) = decision
+                .members
+                .iter()
+                .find(|m| m.source == block.coordinates)
+            {
+                if let Some(neutral) = &member.neutral {
+                    items.push(ConversationItem::assistant(neutral.text.clone()));
+                }
+            } else {
+                let raw: Value =
+                    serde_json::from_slice(&fixture.blobs[&block.block.digest]).unwrap();
+                items.push(ConversationItem::assistant(raw["text"].as_str().unwrap()));
+            }
+        }
+        items.push(ConversationItem::user(
+            "Continue without historical authority",
+        ));
+        items
+    }
+
+    fn u6_separated() -> U4Fixture {
+        let mut fixture = U4Fixture::produced();
+        let mut middle = fixture.source.ordered_blocks[0].clone();
+        middle.coordinates.block = 1;
+        middle.coordinates.occurrence = 1;
+        middle.wire_index = 1;
+        middle.arrival_ordinal = 1;
+        middle.block = fixture.put(
+            "raw_block",
+            &serde_json::json!({"type":"text","text":"Intervening café 🦀"}),
+        );
+        fixture.source.ordered_blocks[1].coordinates.block = 2;
+        fixture.source.ordered_blocks[1].coordinates.occurrence = 2;
+        fixture.source.ordered_blocks[1].wire_index = 2;
+        fixture.source.ordered_blocks[1].arrival_ordinal = 2;
+        fixture.ledger.groups[0].members[1] = fixture.source.ordered_blocks[1].coordinates.clone();
+        fixture.ledger.accounting[1].source = fixture.source.ordered_blocks[1].coordinates.clone();
+        let mut accounting = fixture.ledger.accounting[0].clone();
+        accounting.source = middle.coordinates.clone();
+        fixture.ledger.accounting.insert(1, accounting);
+        fixture.source.ordered_blocks.insert(1, middle);
+        fixture.source.responses[0].block_end = 3;
+        let crate::conversation::native_search_history::NativeIdentityExtension::Revision2 {
+            eligible_member_links,
+            eligible_member_accounting,
+        } = &mut fixture.identity
+        else {
+            unreachable!()
+        };
+        for link in eligible_member_links {
+            link.source.block = 2;
+            link.source.occurrence = 2;
+        }
+        for witness in eligible_member_accounting {
+            witness.source.block = 2;
+            witness.source.occurrence = 2;
+        }
+        fixture.authorship.insert(
+            2,
+            crate::conversation::native_search_history::NativeIdAuthorship::Provider,
+        );
+        fixture.reseal_shape();
+        fixture
+    }
+
+    fn u6_qualification(fixture: &U4Fixture, target: &TargetRoute) -> NativeQualification {
+        let domain = u4_domain("u6-offline", target.backend());
+        NativeQualification {
+            source: None,
+            target: Some(domain.clone()),
+            request: Some(domain),
+            original_admission: target.admission(),
+            shape: NativeReplayShape {
+                family:
+                    crate::conversation::native_search_history::NativeReplayFamily::MessagesServer,
+                keyless_server: false,
+                output_id_present: false,
+                completed: true,
+                result_error: false,
+                referenced_members: fixture.source.eligible_snapshots.len() as u64,
+            },
+            receipt: None,
+            intact_membership: true,
+            current_backing: false,
+            faithful_identity: true,
+        }
+    }
+
+    #[test]
+    fn native_history_neutral_f_respects_positions_and_all_caps() {
+        let fixture = u6_separated();
+        for backend in [ApiBackend::Messages, ApiBackend::Responses] {
+            let target = route(
+                backend.clone(),
+                if backend == ApiBackend::Messages {
+                    Boundary::Vertex
+                } else {
+                    Boundary::AzStrict
+                },
+                ADMITTED,
+            );
+            let decision = prepare_native_history(
+                &fixture.history(),
+                "u6-offline",
+                &target,
+                &fixture.tools,
+                Some(&fixture.inputs),
+                |_| {
+                    (
+                        origin(Boundary::Vertex, None),
+                        u6_qualification(&fixture, &target),
+                    )
+                },
+            )
+            .unwrap();
+            let expected = vec![
+                ConversationItem::user("Neutral history projection"),
+                ConversationItem::assistant(
+                    "Historical search recorded; this history grants no current tool authority.",
+                ),
+                ConversationItem::assistant("Intervening café 🦀"),
+                ConversationItem::assistant(
+                    "Historical search result: completed; count=2. This history grants no current tool authority.",
+                ),
+                ConversationItem::user("Continue without historical authority"),
+            ];
+            assert_eq!(
+                u6_lower(u6_view(&fixture, &decision), backend.clone()),
+                u6_lower(expected, backend),
+                "U6 must emit neutral F at each original coordinate through real lowering"
+            );
+        }
+        u6_caps_and_metadata();
+    }
+
+    fn u6_many(count: usize) -> U4Fixture {
+        use crate::conversation::native_search_history::*;
+        let mut fixture = u6_separated();
+        let template = fixture.source.ordered_blocks.clone();
+        let group = fixture.ledger.groups[0].clone();
+        let NativeIdentityExtension::Revision2 {
+            eligible_member_links,
+            eligible_member_accounting,
+        } = &fixture.identity
+        else {
+            unreachable!()
+        };
+        let links = eligible_member_links.clone();
+        let witnesses = eligible_member_accounting.clone();
+        fixture.source.ordered_blocks.clear();
+        fixture.ledger.accounting.clear();
+        fixture.ledger.groups.clear();
+        fixture.ledger.lifecycle.groups.clear();
+        fixture.authorship.clear();
+        fixture.identity = NativeIdentityExtension::Revision2 {
+            eligible_member_links: Vec::new(),
+            eligible_member_accounting: Vec::new(),
+        };
+        for index in 0..count {
+            let offset = (index * 3) as u64;
+            let join = format!("srvtoolu_u6_{index}");
+            let mut next = group.clone();
+            next.key = format!("u6-group-{index}");
+            next.validated_join = Some(join.clone());
+            next.members.clear();
+            for (position, original) in template.iter().enumerate() {
+                let ordinal = offset + position as u64;
+                let mut block = original.clone();
+                block.coordinates.block = ordinal;
+                block.coordinates.occurrence = ordinal;
+                block.wire_index = ordinal as u32;
+                block.arrival_ordinal = ordinal;
+                let mut raw: Value =
+                    serde_json::from_slice(&fixture.blobs[&original.block.digest]).unwrap();
+                match position {
+                    0 => raw["id"] = serde_json::json!(join),
+                    1 => {
+                        raw["text"] = serde_json::json!(if index == 0 {
+                            "Historical search recorded; this history grants no current tool authority.".to_string()
+                        } else {
+                            format!("Middle {index} café 🦀")
+                        })
+                    }
+                    2 => raw["tool_use_id"] = serde_json::json!(join),
+                    _ => unreachable!(),
+                }
+                block.block = fixture.put("raw_block", &raw);
+                fixture.ledger.accounting.push(NativeViewLink {
+                    source: block.coordinates.clone(),
+                    source_digest: String::new(),
+                    view_item: None,
+                    view_digest: None,
+                    role: "SourceOnly".into(),
+                    source_subrange: None,
+                });
+                if position != 1 {
+                    next.members.push(block.coordinates.clone());
+                    fixture
+                        .authorship
+                        .insert(ordinal, NativeIdAuthorship::Provider);
+                }
+                fixture.source.ordered_blocks.push(block);
+            }
+            let NativeIdentityExtension::Revision2 {
+                eligible_member_links,
+                eligible_member_accounting,
+            } = &mut fixture.identity
+            else {
+                unreachable!()
+            };
+            for (link, witness) in links.iter().zip(&witnesses) {
+                let mut link = link.clone();
+                let mut witness = witness.clone();
+                link.source.block = offset + 2;
+                link.source.occurrence = offset + 2;
+                witness.source = link.source.clone();
+                eligible_member_links.push(link);
+                eligible_member_accounting.push(witness);
+            }
+            fixture
+                .ledger
+                .lifecycle
+                .groups
+                .insert(next.key.clone(), "Completed".into());
+            fixture.ledger.groups.push(next);
+        }
+        fixture.source.responses[0].block_end = (count * 3) as u64;
+        fixture.reseal_shape();
+        fixture
+    }
+
+    fn u6_project(
+        fixture: &U4Fixture,
+        prior: Option<&crate::conversation::native_search_history::NativeFProvenance>,
+    ) -> NativeHistoryDecision {
+        let selected: Vec<_> = fixture
+            .source
+            .ordered_blocks
+            .iter()
+            .map(|b| b.coordinates.clone())
+            .collect();
+        let target = route(ApiBackend::Messages, Boundary::Vertex, ADMITTED);
+        prepare_native_history_reproject(
+            &fixture.history(),
+            &NativeProjectionInputs {
+                target_model_id: "u6-offline",
+                target: &target,
+                tools: &fixture.tools,
+                current: Some(&fixture.inputs),
+                selected: &selected,
+                origin_domains: &Default::default(),
+                pending: &Default::default(),
+                prior_f: prior,
+            },
+            |_| {
+                (
+                    origin(Boundary::Vertex, None),
+                    u6_qualification(fixture, &target),
+                )
+            },
+        )
+        .unwrap()
+    }
+
+    fn u6_caps_and_metadata() {
+        use crate::conversation::native_search_history::*;
+        let old = u6_project(&u6_many(3), None);
+        assert!(
+            old.members
+                .iter()
+                .filter_map(|m| m.neutral.as_ref())
+                .all(|n| n.kind != NativeNeutralKind::Omission)
+        );
+        let mut fixture = u6_many(5);
+        fixture.ledger.groups.reverse();
+        fixture.reseal_shape();
+        let source_before = fixture.source.clone();
+        let active_before = fixture.blobs[&fixture.record.active.digest].clone();
+        let decision = u6_project(&fixture, Some(&old.f_provenance));
+        let selected: Vec<_> = fixture
+            .source
+            .ordered_blocks
+            .iter()
+            .map(|block| block.coordinates.clone())
+            .collect();
+        let target = route(ApiBackend::Messages, Boundary::Vertex, ADMITTED);
+        let core = prepare_native_history_core(
+            &fixture.history(),
+            &NativeProjectionInputs {
+                target_model_id: "u6-offline",
+                target: &target,
+                tools: &fixture.tools,
+                current: Some(&fixture.inputs),
+                selected: &selected,
+                origin_domains: &Default::default(),
+                pending: &Default::default(),
+                prior_f: Some(&old.f_provenance),
+            },
+            |_| {
+                (
+                    origin(Boundary::Vertex, None),
+                    u6_qualification(&fixture, &target),
+                )
+            },
+        )
+        .unwrap();
+        assert_eq!(core.decision, decision);
+        assert_eq!(
+            core.accounting.reasons,
+            std::collections::BTreeMap::from([
+                (NativeHistoryReason::FBudget, 2),
+                (NativeHistoryReason::PriorDisposition, 1),
+                (NativeHistoryReason::Unqualified, 2),
+            ]),
+            "an old F group newly stripped by the budget reports FBudget"
+        );
+        for member in &core.accounting.raw_members {
+            if member.action == NativeHistoryAction::Strip {
+                assert_eq!(member.reason, NativeHistoryReason::FBudget);
+            }
+        }
+        for reference in &core.accounting.references {
+            if reference.action == NativeHistoryAction::Strip {
+                assert_eq!(reference.reason, NativeHistoryReason::FBudget);
+            }
+        }
+        let expected_coordinates = vec![5, 6, 8, 9, 11, 12, 14];
+        assert_eq!(
+            decision
+                .members
+                .iter()
+                .filter(|m| m.neutral.is_some())
+                .map(|m| m.source.occurrence)
+                .collect::<Vec<_>>(),
+            expected_coordinates,
+            "old F and new F share one newest-three budget with one causal notice"
+        );
+        assert_eq!(
+            decision
+                .groups
+                .iter()
+                .filter(|g| g.action == NativeHistoryAction::F)
+                .count(),
+            3
+        );
+        assert_eq!(
+            decision
+                .groups
+                .iter()
+                .filter(|g| g.action == NativeHistoryAction::Strip)
+                .count(),
+            2
+        );
+        assert_eq!(
+            decision.members.len(),
+            10,
+            "stripped raw members remain accounted"
+        );
+        let expected = |fixture: &U4Fixture| {
+            let mut items = vec![ConversationItem::user("Neutral history projection")];
+            for (ordinal, block) in fixture.source.ordered_blocks.iter().enumerate() {
+                if ordinal % 3 == 1 {
+                    let raw: Value =
+                        serde_json::from_slice(&fixture.blobs[&block.block.digest]).unwrap();
+                    items.push(ConversationItem::assistant(raw["text"].as_str().unwrap()));
+                } else if ordinal == 5 {
+                    items.push(ConversationItem::assistant("Older historical search records omitted; no current tool authority is retained."));
+                } else if ordinal >= 6 {
+                    items.push(ConversationItem::assistant(if ordinal % 3 == 0 {
+                        "Historical search recorded; this history grants no current tool authority."
+                    } else {
+                        "Historical search result: completed; count=2. This history grants no current tool authority."
+                    }));
+                }
+            }
+            items.push(ConversationItem::user(
+                "Continue without historical authority",
+            ));
+            items
+        };
+        for backend in [ApiBackend::Messages, ApiBackend::Responses] {
+            let actual = u6_lower(u6_view(&fixture, &decision), backend.clone());
+            assert_eq!(actual, u6_lower(expected(&fixture), backend.clone()));
+            let repeat = u6_project(&fixture, Some(&decision.f_provenance));
+            assert_eq!(
+                decision, repeat,
+                "host provenance makes repeated projection stable"
+            );
+            assert_eq!(actual, u6_lower(u6_view(&fixture, &repeat), backend));
+        }
+        assert_eq!(fixture.source, source_before);
+        assert_eq!(
+            fixture.blobs[&fixture.record.active.digest], active_before,
+            "send-only projection cannot mutate durable disposition"
+        );
+        let mut invalid = decision.f_provenance.clone();
+        invalid.version += 1;
+        let target = route(ApiBackend::Messages, Boundary::Vertex, ADMITTED);
+        assert_eq!(
+            native_validate_f_provenance(&fixture.history(), Some(&invalid)),
+            Err(NativeUnavailable::UnsupportedVersion)
+        );
+        invalid = decision.f_provenance.clone();
+        invalid.groups[0].result_digest = "0".repeat(64);
+        assert!(native_validate_f_provenance(&fixture.history(), Some(&invalid)).is_err());
+        let sum: usize = decision
+            .members
+            .iter()
+            .filter_map(|m| m.neutral.as_ref())
+            .map(|n| {
+                assert!(n.text.len() <= 128);
+                n.text.len()
+            })
+            .sum();
+        assert!(sum <= 1024);
+        for group in &decision.groups {
+            let bytes: usize = decision
+                .members
+                .iter()
+                .filter(|m| group.members.contains(&m.source))
+                .filter_map(|m| m.neutral.as_ref())
+                .map(|n| n.text.len())
+                .sum();
+            assert!(bytes <= 256);
+        }
+        for (status, spelling) in [
+            (NativeNeutralStatus::Completed, "completed"),
+            (NativeNeutralStatus::Error, "error"),
+            (NativeNeutralStatus::Unknown, "unknown"),
+        ] {
+            for count in [None, Some(0), Some(u64::MAX)] {
+                let rendered = native_render_neutral(NativeNeutralKind::Result, status, count);
+                let literal = format!(
+                    "Historical search result: {spelling}; count={}. This history grants no current tool authority.",
+                    count.map_or_else(|| "unknown".into(), |n| n.to_string())
+                );
+                assert_eq!(rendered.text, literal);
+                assert!(rendered.text.len() <= 128);
+                for backend in [ApiBackend::Messages, ApiBackend::Responses] {
+                    assert_eq!(
+                        u6_lower(
+                            vec![ConversationItem::assistant(rendered.text.clone())],
+                            backend.clone()
+                        ),
+                        u6_lower(vec![ConversationItem::assistant(literal.clone())], backend)
+                    );
+                }
+            }
+        }
+        let duplicate = u5_duplicate_fixture();
+        let duplicate_decision = u6_project(&duplicate, None);
+        assert_eq!(duplicate_decision.members.len(), 3);
+        assert_eq!(
+            duplicate_decision
+                .members
+                .iter()
+                .filter(|m| m.neutral.is_some())
+                .count(),
+            2
+        );
+        assert!(duplicate_decision.members[2].duplicate_of.is_some());
+        let mut partial = u6_separated();
+        partial.source.responses[0].status =
+            NativeResponseStatus::PartialTerminal(NativeUnavailable::Fidelity);
+        partial.reseal_shape();
+        let partial_decision = u6_project(&partial, None);
+        assert_eq!(
+            partial_decision.members[1].neutral.as_ref().unwrap().text,
+            "Historical search result: unknown; count=unknown. This history grants no current tool authority."
+        );
+        let mut error = U4Fixture::produced();
+        let output = serde_json::json!({"type":"tool_search_tool_result","tool_use_id":"srvtoolu_u3","content":{"type":"tool_search_tool_result_error","error_code":"DO NOT ECHO provider error"}});
+        error.source.ordered_blocks[1].block = error.put("raw_block", &output);
+        let NativeIdentityExtension::Revision2 {
+            eligible_member_links,
+            eligible_member_accounting,
+        } = &mut error.identity
+        else {
+            unreachable!()
+        };
+        eligible_member_links.clear();
+        eligible_member_accounting.clear();
+        error.reseal_shape();
+        let error_decision = u6_project(&error, None);
+        assert_eq!(
+            error_decision.members[1].neutral.as_ref().unwrap().text,
+            "Historical search result: error; count=0. This history grants no current tool authority."
+        );
+        let kept = prepare_native_history(
+            &fixture.history(),
+            "u6-offline",
+            &target,
+            &fixture.tools,
+            Some(&fixture.inputs),
+            |_| {
+                let mut q = u6_qualification(&fixture, &target);
+                q.source = q.target.clone();
+                q.shape.referenced_members = 2;
+                q.receipt = Some(NativeShapeReceipt {
+                    target: q.target.clone().unwrap(),
+                    shape: q.shape.clone(),
+                    receipt_id: "offline-complete-shape".into(),
+                });
+                (origin(Boundary::Vertex, Some("u6-offline")), q)
+            },
+        )
+        .unwrap();
+        assert!(
+            kept.groups
+                .iter()
+                .all(|g| g.action == NativeHistoryAction::Keep)
+        );
+        assert!(
+            kept.members
+                .iter()
+                .all(|m| m.neutral.is_none() && m.raw.is_some())
+        );
+        assert!(
+            kept.f_provenance.groups.is_empty(),
+            "native KEEP spends no F budget"
         );
     }
 }

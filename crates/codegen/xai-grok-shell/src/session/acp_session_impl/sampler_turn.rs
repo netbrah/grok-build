@@ -522,44 +522,64 @@ impl SessionActor {
             None
         } else {
             (|| {
-            use sha2::{Digest, Sha256};
-            use xai_grok_sampling_types::conversation::native_search_history::{
-                NativeEligibleEntry, NativeEligibleInputs, NativeNamespaceKind,
-                NATIVE_SOURCE_BYTES, encode_native,
-            };
-            let mut entries = Vec::new();
-            for (position, (definition, namespace, _)) in inventory.iter().enumerate() {
-                let kind = match namespace {
-                    ToolNamespace::GrokBuild => NativeNamespaceKind::GrokBuild,
-                    ToolNamespace::GrokBuildConcise => NativeNamespaceKind::GrokBuildConcise,
-                    ToolNamespace::GrokBuildHashline => NativeNamespaceKind::GrokBuildHashline,
-                    ToolNamespace::Codex => NativeNamespaceKind::Codex,
-                    ToolNamespace::OpenCode => NativeNamespaceKind::OpenCode,
-                    ToolNamespace::MCP => NativeNamespaceKind::Mcp,
+                use sha2::{Digest, Sha256};
+                use xai_grok_sampling_types::conversation::native_search_history::{
+                    NativeEligibleEntry, NativeEligibleInputs, NativeNamespaceKind,
+                    NATIVE_SOURCE_BYTES, encode_native,
                 };
-                let (qualified_namespace, child_name) = if *namespace == ToolNamespace::MCP {
-                    let Some((_, server, child)) = xai_grok_mcp::servers::parse_mcp_qualified_name(&definition.function.name) else { continue; };
-                    (server.to_owned(), child.to_owned())
-                } else {
-                    let name = match namespace {
-                        ToolNamespace::GrokBuild => "grok_build",
-                        ToolNamespace::GrokBuildConcise => "grok_build_concise",
-                        ToolNamespace::GrokBuildHashline => "grok_build_hashline",
-                        ToolNamespace::Codex => "codex",
-                        ToolNamespace::OpenCode => "opencode",
-                        ToolNamespace::MCP => unreachable!(),
+                let mut entries = Vec::new();
+                for (position, (definition, namespace, _)) in inventory.iter().enumerate() {
+                    let kind = match namespace {
+                        ToolNamespace::GrokBuild => NativeNamespaceKind::GrokBuild,
+                        ToolNamespace::GrokBuildConcise => NativeNamespaceKind::GrokBuildConcise,
+                        ToolNamespace::GrokBuildHashline => NativeNamespaceKind::GrokBuildHashline,
+                        ToolNamespace::Codex => NativeNamespaceKind::Codex,
+                        ToolNamespace::OpenCode => NativeNamespaceKind::OpenCode,
+                        ToolNamespace::MCP => NativeNamespaceKind::Mcp,
                     };
-                    (name.to_owned(), definition.function.name.clone())
-                };
-                let schema = encode_native(&definition.function.parameters, NATIVE_SOURCE_BYTES)?;
-                let schema_digest = format!("{:x}", Sha256::digest(&schema));
-                entries.push(NativeEligibleEntry::checked(position, kind, qualified_namespace, child_name,
-                    ToolSpec::from(definition.clone()), schema.into(), schema_digest)?);
-            }
-            NativeEligibleInputs::checked(entries, inventory.len()).map(std::sync::Arc::new)
-        })().map_err(|reason: xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable| {
-            tracing::debug!(?reason, "native eligible snapshot unavailable");
-        }).ok()
+                    let (qualified_namespace, child_name) = if *namespace == ToolNamespace::MCP {
+                        let Some((_, server, child)) =
+                            xai_grok_mcp::servers::parse_mcp_qualified_name(
+                                &definition.function.name
+                            )
+                        else {
+                            continue;
+                        };
+                        (server.to_owned(), child.to_owned())
+                    } else {
+                        let name = match namespace {
+                            ToolNamespace::GrokBuild => "grok_build",
+                            ToolNamespace::GrokBuildConcise => "grok_build_concise",
+                            ToolNamespace::GrokBuildHashline => "grok_build_hashline",
+                            ToolNamespace::Codex => "codex",
+                            ToolNamespace::OpenCode => "opencode",
+                            ToolNamespace::MCP => unreachable!(),
+                        };
+                        (name.to_owned(), definition.function.name.clone())
+                    };
+                    let schema =
+                        encode_native(&definition.function.parameters, NATIVE_SOURCE_BYTES)?;
+                    let schema_digest = format!("{:x}", Sha256::digest(&schema));
+                    entries.push(NativeEligibleEntry::checked(
+                        position,
+                        kind,
+                        qualified_namespace,
+                        child_name,
+                        ToolSpec::from(definition.clone()),
+                        schema.into(),
+                        schema_digest
+                    )?);
+                }
+                NativeEligibleInputs::checked(entries, inventory.len()).map(std::sync::Arc::new)
+            })()
+            .map_err(
+                |reason:
+                    xai_grok_sampling_types::conversation::native_search_history::
+                        NativeUnavailable| {
+                    tracing::debug!(?reason, "native eligible snapshot unavailable");
+                }
+            )
+            .ok()
         };
 
         let plan_active = self.plan_mode.lock().is_active();

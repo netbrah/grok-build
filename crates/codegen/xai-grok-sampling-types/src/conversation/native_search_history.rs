@@ -364,7 +364,7 @@ pub(super) struct NativeValidatedGroup {
 }
 
 #[derive(Default)]
-pub(super) enum NativeNextInput {
+pub enum NativeNextInput {
     #[default]
     None,
     Fresh,
@@ -375,7 +375,7 @@ pub(super) enum NativeNextInput {
 }
 
 #[derive(Default)]
-pub(super) struct NativePendingContext {
+pub struct NativePendingContext {
     pub live_binding: Option<NativeBlobRef>,
     pub next: NativeNextInput,
 }
@@ -1766,14 +1766,14 @@ fn native_history_identity_shapes_preserve_field_presence() {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum NativeReplayFamily {
+pub enum NativeReplayFamily {
     ResponsesClient,
     ResponsesServer,
     MessagesServer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum NativeIdAuthorship {
+pub enum NativeIdAuthorship {
     Provider,
     ClientOutput,
     ClientMinted,
@@ -2000,6 +2000,2792 @@ fn u5_ledger_semantics() {
                 == right)
             .is_err(),
             "full group/lifecycle validation refuses {fault}"
+        );
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeNeutralStatus {
+    Completed,
+    Error,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeNeutralKind {
+    Call,
+    Result,
+    Omission,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeNeutralText {
+    pub kind: NativeNeutralKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeFDisposition {
+    F,
+    Strip,
+}
+
+/// Request-local provenance; never inferred from model-visible text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeFGroup {
+    pub key: String,
+    pub call: NativeSourceCoordinate,
+    pub call_digest: String,
+    pub result: NativeSourceCoordinate,
+    pub result_digest: String,
+    pub disposition: NativeFDisposition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeFProvenance {
+    pub version: u32,
+    pub groups: Vec<NativeFGroup>,
+}
+
+impl NativeFProvenance {
+    pub fn empty() -> Self {
+        Self {
+            version: 1,
+            groups: Vec::new(),
+        }
+    }
+}
+
+pub use super::projection::{
+    DiscoveryOrigin, NativeGroupDecision, NativeHistoryAction, NativeHistoryDecision,
+    NativePreparedMember, NativeProjectionInputs, NativePureHistory, NativeQualification,
+    NativeReplayDialect, NativeReplayDomain, NativeReplayShape, NativeShapeReceipt,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NativeHistoryReason {
+    Kept,
+    Unqualified,
+    MissingView,
+    PriorDisposition,
+    FBudget,
+    Pending,
+    Abandoned,
+}
+
+impl NativeHistoryReason {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Kept => "kept",
+            Self::Unqualified => "unqualified",
+            Self::MissingView => "missing_view",
+            Self::PriorDisposition => "prior_disposition",
+            Self::FBudget => "f_budget",
+            Self::Pending => "pending",
+            Self::Abandoned => "abandoned",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NativeHistoryCounts {
+    pub kept: u64,
+    pub demoted: u64,
+    pub stripped: u64,
+    pub omitted: u64,
+    pub pending: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeMemberAccounting {
+    pub source: NativeSourceCoordinate,
+    pub source_digest: String,
+    pub origin: Option<NativeBlobRef>,
+    pub group: Option<String>,
+    pub action: NativeHistoryAction,
+    pub reason: NativeHistoryReason,
+    pub output: Option<NativeSourceCoordinate>,
+    pub output_digest: Option<String>,
+    pub lost: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeReferenceAccounting {
+    pub source: NativeSourceCoordinate,
+    pub source_digest: String,
+    pub identity: NativeEligibleMemberIdentity,
+    pub group: Option<String>,
+    pub action: NativeHistoryAction,
+    pub reason: NativeHistoryReason,
+    pub output: Option<NativeSourceCoordinate>,
+    pub lost: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeGroupQualification {
+    pub group: String,
+    pub source: Option<NativeReplayDomain>,
+    pub target: NativeReplayDomain,
+    pub shape: NativeReplayShape,
+    pub receipt: Option<NativeShapeReceipt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeHistoryAccounting {
+    pub history: NativeHistoryBoundary,
+    pub source_revision: u64,
+    pub source_digest: String,
+    pub durable_projection_revision: u64,
+    pub durable_dispositions: BTreeMap<String, String>,
+    pub target_model: String,
+    pub target: Option<NativeReplayDomain>,
+    pub qualification: Vec<NativeGroupQualification>,
+    pub original_admission: super::responses::SearchAdmission,
+    pub groups: NativeHistoryCounts,
+    pub members: NativeHistoryCounts,
+    pub raw_members: Vec<NativeMemberAccounting>,
+    pub references: Vec<NativeReferenceAccounting>,
+    pub reasons: BTreeMap<NativeHistoryReason, u64>,
+    pub summary: String,
+    pub rediscovery: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeLoadedDefinition {
+    pub namespace_kind: NativeNamespaceKind,
+    pub qualified_namespace: String,
+    pub child_name: String,
+    pub invocation_name: String,
+    pub schema_digest: String,
+    pub declaration: Value,
+    pub definition: Value,
+    pub source: NativeSourceCoordinate,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NativeLoadedAuthority {
+    pub definitions: Vec<NativeLoadedDefinition>,
+    pub names: Vec<(String, String)>,
+    pub promotion_names: Vec<String>,
+    pub cache_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeHistoryCore {
+    pub decision: NativeHistoryDecision,
+    pub loaded: NativeLoadedAuthority,
+    pub accounting: NativeHistoryAccounting,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeHistoryRefusal {
+    pub reason: NativeUnavailable,
+    pub summary: String,
+    pub rediscovery: bool,
+}
+
+impl From<NativeUnavailable> for NativeHistoryRefusal {
+    fn from(reason: NativeUnavailable) -> Self {
+        Self {
+            reason,
+            summary: format!(
+                "request-only native history refused: {reason:?}; no replay authority"
+            ),
+            rediscovery: true,
+        }
+    }
+}
+
+/// Pure request-local derivation, never a durable transition or production selector.
+pub fn prepare_native_history_core(
+    history: &NativePureHistory<'_>,
+    input: &NativeProjectionInputs<'_>,
+    qualification: impl FnMut(&NativeGroupRecord) -> (DiscoveryOrigin, NativeQualification),
+) -> Result<NativeHistoryCore, NativeHistoryRefusal> {
+    let decision =
+        super::projection::prepare_native_history_reproject(history, input, qualification)?;
+    let accounting = native_returned_accounting(history, input, &decision)?;
+    let loaded = super::tool_search::native_loaded_authority(history, input, &decision)?;
+    Ok(NativeHistoryCore {
+        decision,
+        loaded,
+        accounting,
+    })
+}
+
+fn native_count_action(counts: &mut NativeHistoryCounts, action: NativeHistoryAction) {
+    match action {
+        NativeHistoryAction::Keep => counts.kept += 1,
+        NativeHistoryAction::F => counts.demoted += 1,
+        NativeHistoryAction::Strip => counts.stripped += 1,
+        NativeHistoryAction::OmitSendOnly => counts.omitted += 1,
+        NativeHistoryAction::AwaitClient
+        | NativeHistoryAction::AwaitResults
+        | NativeHistoryAction::ContinueOriginal => counts.pending += 1,
+    }
+}
+
+fn native_returned_accounting(
+    history: &NativePureHistory<'_>,
+    input: &NativeProjectionInputs<'_>,
+    decision: &NativeHistoryDecision,
+) -> Result<NativeHistoryAccounting, NativeUnavailable> {
+    use super::projection::{native_policy_blob, native_policy_history};
+    native_policy_history(history)?;
+    let active: NativeActive = serde_json::from_slice(native_policy_blob(
+        history,
+        &history.record.active,
+        "active",
+    )?)
+    .map_err(|_| NativeUnavailable::InvalidReference)?;
+    let target = decision.qualification.first().map(|q| q.target.clone());
+    if decision
+        .qualification
+        .iter()
+        .any(|q| Some(&q.target) != target.as_ref())
+    {
+        return Err(NativeUnavailable::ConflictingObservation);
+    }
+    let mut accounting = NativeHistoryAccounting {
+        history: history.record.history_boundary.clone(),
+        source_revision: history.source.source_revision,
+        source_digest: history.record.source.digest.clone(),
+        durable_projection_revision: active.projection_revision,
+        durable_dispositions: active.dispositions.clone(),
+        target_model: input.target_model_id.into(),
+        target,
+        qualification: decision.qualification.clone(),
+        original_admission: input.target.admission(),
+        groups: NativeHistoryCounts::default(),
+        members: NativeHistoryCounts::default(),
+        raw_members: Vec::new(),
+        references: Vec::new(),
+        reasons: BTreeMap::new(),
+        summary: String::new(),
+        rediscovery: false,
+    };
+    let reason_for = |group: &NativeGroupDecision| match group.action {
+        NativeHistoryAction::Keep => NativeHistoryReason::Kept,
+        NativeHistoryAction::OmitSendOnly => NativeHistoryReason::Abandoned,
+        NativeHistoryAction::AwaitClient
+        | NativeHistoryAction::AwaitResults
+        | NativeHistoryAction::ContinueOriginal => NativeHistoryReason::Pending,
+        NativeHistoryAction::F | NativeHistoryAction::Strip => {
+            let prior_strip = active
+                .dispositions
+                .get(&group.key)
+                .is_some_and(|old| old == "strip")
+                || input.prior_f.is_some_and(|prior| {
+                    prior.groups.iter().any(|old| {
+                        old.key == group.key && old.disposition == NativeFDisposition::Strip
+                    })
+                });
+            if group.action == NativeHistoryAction::Strip && !prior_strip {
+                NativeHistoryReason::FBudget
+            } else if active
+                .dispositions
+                .get(&group.key)
+                .is_some_and(|old| old == "F" || old == "strip")
+                || input
+                    .prior_f
+                    .is_some_and(|prior| prior.groups.iter().any(|old| old.key == group.key))
+            {
+                NativeHistoryReason::PriorDisposition
+            } else if group
+                .members
+                .iter()
+                .any(|source| !input.selected.contains(source))
+            {
+                NativeHistoryReason::MissingView
+            } else {
+                NativeHistoryReason::Unqualified
+            }
+        }
+    };
+    for group in &decision.groups {
+        native_count_action(&mut accounting.groups, group.action);
+        *accounting.reasons.entry(reason_for(group)).or_default() += 1;
+    }
+    for block in &history.source.ordered_blocks {
+        let group = decision
+            .groups
+            .iter()
+            .find(|group| group.members.contains(&block.coordinates));
+        let member = decision
+            .members
+            .iter()
+            .find(|member| member.source == block.coordinates);
+        let action = member.map_or_else(
+            || {
+                if input.selected.contains(&block.coordinates) {
+                    NativeHistoryAction::Keep
+                } else {
+                    NativeHistoryAction::OmitSendOnly
+                }
+            },
+            |member| member.action,
+        );
+        let reason = group.map_or_else(
+            || {
+                if action == NativeHistoryAction::Keep {
+                    NativeHistoryReason::Kept
+                } else {
+                    NativeHistoryReason::MissingView
+                }
+            },
+            reason_for,
+        );
+        let lost = matches!(
+            action,
+            NativeHistoryAction::F | NativeHistoryAction::Strip | NativeHistoryAction::OmitSendOnly
+        );
+        let output = match member {
+            Some(member) if member.raw.is_some() || member.neutral.is_some() => {
+                Some(member.source.clone())
+            }
+            Some(member) => member.duplicate_of.clone().filter(|original| {
+                decision.members.iter().any(|other| {
+                    &other.source == original && (other.raw.is_some() || other.neutral.is_some())
+                })
+            }),
+            None if action == NativeHistoryAction::Keep => Some(block.coordinates.clone()),
+            None => None,
+        };
+        let output_digest = member
+            .and_then(|member| member.neutral.as_ref())
+            .map(|text| super::projection::native_content_digest(text.text.as_bytes()))
+            .or_else(|| {
+                output
+                    .as_ref()
+                    .filter(|_| !lost)
+                    .map(|_| block.block.digest.clone())
+            });
+        native_count_action(&mut accounting.members, action);
+        let witness = history
+            .ledger
+            .accounting
+            .iter()
+            .find(|entry| entry.source == block.coordinates)
+            .ok_or(NativeUnavailable::InvalidReference)?;
+        accounting.raw_members.push(NativeMemberAccounting {
+            source: block.coordinates.clone(),
+            source_digest: witness.source_digest.clone(),
+            origin: history
+                .source
+                .producing_bindings
+                .iter()
+                .find(|binding| binding.request == block.coordinates.producing_binding)
+                .map(|binding| binding.origin_ref.clone()),
+            group: group.map(|group| group.key.clone()),
+            action,
+            reason,
+            output,
+            output_digest,
+            lost,
+        });
+    }
+    for block in &history.source.ordered_blocks {
+        let raw: Value =
+            serde_json::from_slice(native_policy_blob(history, &block.block, "raw_block")?)
+                .map_err(|_| NativeUnavailable::InvalidReference)?;
+        let leaves = native_candidate_references(&raw)?;
+        let parent = accounting
+            .raw_members
+            .iter()
+            .find(|member| member.source == block.coordinates)
+            .ok_or(NativeUnavailable::InvalidReference)?;
+        for (ordinal, _) in leaves.iter().enumerate() {
+            let mut source = block.coordinates.clone();
+            source.submember =
+                Some(u64::try_from(ordinal).map_err(|_| NativeUnavailable::Capacity)?);
+            let identity = match history.identity {
+                NativeIdentityExtension::Revision1Unknown => {
+                    NativeEligibleMemberIdentity::Unavailable {
+                        reason: NativeUnavailable::UnknownIdentity,
+                    }
+                }
+                NativeIdentityExtension::Revision2 {
+                    eligible_member_links,
+                    eligible_member_accounting,
+                } => {
+                    let links: Vec<_> = eligible_member_links
+                        .iter()
+                        .filter(|link| link.source == source)
+                        .collect();
+                    let witnesses: Vec<_> = eligible_member_accounting
+                        .iter()
+                        .filter(|witness| witness.source == source)
+                        .collect();
+                    if links.len() != 1
+                        || witnesses.len() != 1
+                        || witnesses[0].source_digest != parent.source_digest
+                    {
+                        return Err(NativeUnavailable::InvalidReference);
+                    }
+                    links[0].identity.clone()
+                }
+            };
+            accounting.references.push(NativeReferenceAccounting {
+                source,
+                source_digest: parent.source_digest.clone(),
+                identity,
+                group: parent.group.clone(),
+                action: parent.action,
+                reason: parent.reason,
+                output: parent.output.clone(),
+                lost: parent.lost,
+            });
+        }
+    }
+    if let NativeIdentityExtension::Revision2 {
+        eligible_member_links,
+        eligible_member_accounting,
+    } = history.identity
+        && (accounting.references.len() != eligible_member_links.len()
+            || accounting.references.len() != eligible_member_accounting.len())
+    {
+        return Err(NativeUnavailable::InvalidReference);
+    }
+    NativeResource::LedgerMembers.admit(
+        accounting.raw_members.len() as u64,
+        accounting.references.len() as u64,
+    )?;
+    accounting.rediscovery =
+        accounting.groups.demoted + accounting.groups.stripped + accounting.groups.omitted > 0;
+    let g = &accounting.groups;
+    let m = &accounting.members;
+    let reasons = accounting
+        .reasons
+        .iter()
+        .map(|(reason, count)| format!("{}={count}", reason.label()))
+        .collect::<Vec<_>>()
+        .join(",");
+    accounting.summary = format!(
+        "request-only native history; groups keep={} F={} strip={} omit={} pending={}; members keep={} F={} strip={} omit={} pending={}; references={}; reasons={}; aggregate={}; rediscovery={}; durable unchanged",
+        g.kept,
+        g.demoted,
+        g.stripped,
+        g.omitted,
+        g.pending,
+        m.kept,
+        m.demoted,
+        m.stripped,
+        m.omitted,
+        m.pending,
+        accounting.references.len(),
+        reasons,
+        decision.groups.len(),
+        accounting.rediscovery
+    );
+    if accounting.summary.len() > 512 || accounting.reasons.len() > 8 {
+        return Err(NativeUnavailable::Capacity);
+    }
+    Ok(accounting)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeHistoryRequirement {
+    Inactive,
+    Selected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeHistoryWriteAuthority {
+    SendOnly,
+    SwitchStore {
+        lineage: String,
+        binding_generation: u64,
+    },
+    OwningPrimary {
+        lineage: String,
+        binding_generation: u64,
+        request: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeHistoryExecution {
+    Client,
+    Server,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeHistoryVersions {
+    pub schema: u32,
+    pub policy: u32,
+    pub projection: u32,
+    pub reader: u32,
+    pub limits: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeHistoryCapture {
+    pub history: NativeHistoryBoundary,
+    pub history_revision: u64,
+    pub lineage: NativeLineage,
+    pub native_generation: u64,
+    pub high_water: u64,
+    pub projection_revision: u64,
+    pub strict_append_sequence: u64,
+    pub binding_generation: u64,
+    pub install_generation: u64,
+    pub issued_request: String,
+    pub target: NativeReplayDomain,
+    pub execution: NativeHistoryExecution,
+    pub original_admission: super::responses::SearchAdmission,
+    pub versions: NativeHistoryVersions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeHistoryRequestContext {
+    requirement: NativeHistoryRequirement,
+    capture: NativeHistoryCapture,
+    authority: NativeHistoryWriteAuthority,
+}
+
+impl NativeHistoryRequestContext {
+    pub fn captured(
+        requirement: NativeHistoryRequirement,
+        capture: NativeHistoryCapture,
+        authority: NativeHistoryWriteAuthority,
+    ) -> Self {
+        Self {
+            requirement,
+            capture,
+            authority,
+        }
+    }
+
+    pub fn requirement(&self) -> NativeHistoryRequirement {
+        self.requirement
+    }
+    pub fn capture(&self) -> &NativeHistoryCapture {
+        &self.capture
+    }
+    pub fn authority(&self) -> &NativeHistoryWriteAuthority {
+        &self.authority
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeFinalCarrier {
+    bytes: Arc<[u8]>,
+    digest: String,
+    tools: Option<NativeToolsRange>,
+}
+
+impl NativeFinalCarrier {
+    pub fn capture(bytes: Arc<[u8]>) -> Result<Self, NativeUnavailable> {
+        NativeResource::SnapshotPayloadBytes.admit(bytes.len() as u64, 0)?;
+        let tools = native_final_tools_range(&bytes)?;
+        Ok(Self {
+            digest: super::projection::native_content_digest(&bytes),
+            bytes,
+            tools,
+        })
+    }
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+    pub fn tools(&self) -> Option<&NativeToolsRange> {
+        self.tools.as_ref()
+    }
+    pub fn declarations(&self) -> Option<&[u8]> {
+        self.tools.as_ref().map(|range| {
+            &self.bytes[range.offset as usize..(range.offset + range.byte_len) as usize]
+        })
+    }
+}
+
+fn native_final_tools_range(bytes: &[u8]) -> Result<Option<NativeToolsRange>, NativeUnavailable> {
+    fn whitespace(bytes: &[u8], at: &mut usize) {
+        while bytes.get(*at).is_some_and(u8::is_ascii_whitespace) {
+            *at += 1;
+        }
+    }
+    fn take<'a, T: Deserialize<'a>>(
+        bytes: &'a [u8],
+        at: &mut usize,
+    ) -> Result<T, NativeUnavailable> {
+        let mut stream = serde_json::Deserializer::from_slice(&bytes[*at..]).into_iter::<T>();
+        let value = stream
+            .next()
+            .ok_or(NativeUnavailable::Fidelity)?
+            .map_err(|_| NativeUnavailable::Fidelity)?;
+        *at += stream.byte_offset();
+        Ok(value)
+    }
+    let mut at = 0usize;
+    whitespace(bytes, &mut at);
+    if bytes.get(at) != Some(&b'{') {
+        return Err(NativeUnavailable::Fidelity);
+    }
+    at += 1;
+    let mut keys = std::collections::BTreeSet::new();
+    let mut tools = None;
+    whitespace(bytes, &mut at);
+    if bytes.get(at) == Some(&b'}') {
+        at += 1;
+    } else {
+        loop {
+            whitespace(bytes, &mut at);
+            let key: String = take(bytes, &mut at)?;
+            if !keys.insert(key.clone()) {
+                return Err(NativeUnavailable::Fidelity);
+            }
+            whitespace(bytes, &mut at);
+            if bytes.get(at) != Some(&b':') {
+                return Err(NativeUnavailable::Fidelity);
+            }
+            at += 1;
+            whitespace(bytes, &mut at);
+            let start = at;
+            let _: serde::de::IgnoredAny = take(bytes, &mut at)?;
+            if key == "tools" {
+                if bytes.get(start) != Some(&b'[') {
+                    return Err(NativeUnavailable::Fidelity);
+                }
+                tools = Some(NativeToolsRange {
+                    offset: start as u64,
+                    byte_len: (at - start) as u64,
+                    digest: super::projection::native_content_digest(&bytes[start..at]),
+                });
+            }
+            whitespace(bytes, &mut at);
+            match bytes.get(at) {
+                Some(b',') => {
+                    at += 1;
+                }
+                Some(b'}') => {
+                    at += 1;
+                    break;
+                }
+                _ => return Err(NativeUnavailable::Fidelity),
+            }
+        }
+    }
+    whitespace(bytes, &mut at);
+    if at != bytes.len() {
+        return Err(NativeUnavailable::Fidelity);
+    }
+    Ok(tools)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeDeclarationIdentity {
+    pub declaration_index: u64,
+    pub child_index: Option<u64>,
+    pub namespace_kind: NativeNamespaceKind,
+    pub qualified_namespace: String,
+    pub child_name: String,
+    pub declaration: Value,
+    pub schema: NativeBlobRef,
+    pub schema_bytes: Arc<[u8]>,
+    pub provenance: NativeBlobRef,
+    pub provenance_bytes: Arc<[u8]>,
+    pub binding_bytes: Option<Arc<[u8]>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativePlanReadiness {
+    Tentative,
+    SendOnly,
+    RequiredGeneration {
+        generation: u64,
+        high_water: u64,
+        authority: Option<NativeGenerationAuthority>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeLoweredHistory {
+    conversation: String,
+    instructions: Option<String>,
+}
+
+impl NativeLoweredHistory {
+    fn capture(
+        request: &crate::ConversationRequest,
+        backend: &crate::ApiBackend,
+    ) -> Result<Self, NativePlanRefusal> {
+        let body = match backend {
+            crate::ApiBackend::Messages => {
+                serde_json::to_value(super::messages::build_messages_request(request))
+            }
+            crate::ApiBackend::Responses => serde_json::to_value(
+                async_openai::types::responses::CreateResponse::from(request),
+            ),
+            crate::ApiBackend::ChatCompletions => {
+                return Err(NativePlanRefusal::InvalidQualification);
+            }
+        }
+        .map_err(|_| NativePlanRefusal::InvalidHistory)?;
+        Self::from_body(&body, backend)
+    }
+
+    fn from_body(body: &Value, backend: &crate::ApiBackend) -> Result<Self, NativePlanRefusal> {
+        let (conversation, instructions) = match backend {
+            crate::ApiBackend::Messages => ("messages", "system"),
+            crate::ApiBackend::Responses => ("input", "instructions"),
+            crate::ApiBackend::ChatCompletions => {
+                return Err(NativePlanRefusal::InvalidQualification);
+            }
+        };
+        let conversation = body
+            .get(conversation)
+            .filter(|value| value.is_array())
+            .ok_or(NativePlanRefusal::FinalCarrierChanged)?;
+        let digest = |value: &Value| {
+            serde_json::to_vec(value)
+                .map(|bytes| super::projection::native_content_digest(&bytes))
+                .map_err(|_| NativePlanRefusal::FinalCarrierChanged)
+        };
+        Ok(Self {
+            conversation: digest(conversation)?,
+            instructions: body.get(instructions).map(digest).transpose()?,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativePlanProducingBinding {
+    request: String,
+    generation: Option<u64>,
+    origin: Value,
+}
+
+#[derive(Serialize)]
+struct NativePlanGroupIndex<'a> {
+    key: &'a str,
+    action: String,
+    members: &'a [NativeSourceCoordinate],
+    waiting_clients: &'a [String],
+}
+
+#[derive(Serialize)]
+struct NativePlanFIndex<'a> {
+    key: &'a str,
+    call: &'a NativeSourceCoordinate,
+    call_digest: &'a str,
+    result: &'a NativeSourceCoordinate,
+    result_digest: &'a str,
+    disposition: &'static str,
+}
+
+#[derive(Serialize)]
+struct NativePlanActiveView<'a> {
+    view_links: Vec<&'a NativeViewLink>,
+    outputs: &'a BTreeMap<usize, Option<super::ConversationItem>>,
+    groups: Vec<NativePlanGroupIndex<'a>>,
+    f_version: u32,
+    f_groups: Vec<NativePlanFIndex<'a>>,
+    duplicates: Vec<(&'a NativeSourceCoordinate, &'a NativeSourceCoordinate)>,
+}
+
+impl NativePlanActiveView<'_> {
+    fn check(
+        ledger: &NativeLedger,
+        decision: &NativeHistoryDecision,
+        outputs: &BTreeMap<usize, Option<super::ConversationItem>>,
+    ) -> Result<(), NativePlanRefusal> {
+        let view = NativePlanActiveView {
+            view_links: ledger
+                .accounting
+                .iter()
+                .filter(|link| {
+                    decision
+                        .members
+                        .iter()
+                        .any(|member| member.source == link.source)
+                })
+                .collect(),
+            outputs,
+            groups: decision
+                .groups
+                .iter()
+                .map(|group| NativePlanGroupIndex {
+                    key: &group.key,
+                    action: format!("{:?}", group.action),
+                    members: &group.members,
+                    waiting_clients: &group.waiting_clients,
+                })
+                .collect(),
+            f_version: decision.f_provenance.version,
+            f_groups: decision
+                .f_provenance
+                .groups
+                .iter()
+                .map(|group| NativePlanFIndex {
+                    key: &group.key,
+                    call: &group.call,
+                    call_digest: &group.call_digest,
+                    result: &group.result,
+                    result_digest: &group.result_digest,
+                    disposition: match group.disposition {
+                        NativeFDisposition::F => "F",
+                        NativeFDisposition::Strip => "strip",
+                    },
+                })
+                .collect(),
+            duplicates: decision
+                .members
+                .iter()
+                .filter_map(|member| {
+                    member
+                        .duplicate_of
+                        .as_ref()
+                        .map(|original| (&member.source, original))
+                })
+                .collect(),
+        };
+        native_encoded_len(&view, NATIVE_ACTIVE_BYTES)
+            .map(|_| ())
+            .map_err(|_| NativePlanRefusal::InvalidHistory)
+    }
+}
+
+pub struct NativeHistoryPlanInput<'a> {
+    pub record: NativeSearchHistoryV1,
+    pub input_history_bytes: Arc<[u8]>,
+    pub ledger_bytes: Arc<[u8]>,
+    pub lowering_request: &'a crate::ConversationRequest,
+    pub post_history_bytes: Arc<[u8]>,
+    pub carrier: NativeFinalCarrier,
+    pub identities: Vec<NativeDeclarationIdentity>,
+    pub qualification: Vec<NativeGroupQualification>,
+    pub core: NativeHistoryCore,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeHistoryPlan {
+    context: NativeHistoryRequestContext,
+    record: NativeSearchHistoryV1,
+    input_history_bytes: Arc<[u8]>,
+    ledger_bytes: Arc<[u8]>,
+    post_history: NativeHistoryBoundary,
+    post_history_bytes: Arc<[u8]>,
+    lowered_history: NativeLoweredHistory,
+    carrier: NativeFinalCarrier,
+    identities: Vec<NativeDeclarationIdentity>,
+    qualification: Vec<NativeGroupQualification>,
+    core: NativeHistoryCore,
+    readiness: NativePlanReadiness,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeHistoryReady {
+    Inactive,
+    SendOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativePlanRefusal {
+    MissingPlan,
+    InactivePlan,
+    StaleContext,
+    UnsupportedVersion,
+    InvalidHistory,
+    InvalidDeclarations,
+    InvalidQualification,
+    InvalidAccounting,
+    NotReady,
+    AuthorityUnverified,
+    KeepCarrierUnverified,
+    FinalCarrierChanged,
+}
+
+impl NativeHistoryPlan {
+    pub fn checked(
+        context: NativeHistoryRequestContext,
+        input: NativeHistoryPlanInput<'_>,
+    ) -> Result<Self, NativePlanRefusal> {
+        let NativeHistoryPlanInput {
+            record,
+            input_history_bytes,
+            ledger_bytes,
+            lowering_request,
+            post_history_bytes,
+            carrier,
+            identities,
+            qualification,
+            core,
+        } = input;
+        NativeResource::SnapshotPayloadBytes
+            .admit(post_history_bytes.len() as u64, 0)
+            .map_err(|_| NativePlanRefusal::InvalidHistory)?;
+        let post: Vec<super::ConversationItem> = serde_json::from_slice(&post_history_bytes)
+            .map_err(|_| NativePlanRefusal::InvalidHistory)?;
+        if lowering_request.model.as_deref() != Some(context.capture.target.model.as_str())
+            || lowering_request.search_admission != Some(context.capture.original_admission)
+            || serde_json::to_value(&lowering_request.items)
+                .map_err(|_| NativePlanRefusal::InvalidHistory)?
+                != serde_json::to_value(&post).map_err(|_| NativePlanRefusal::InvalidHistory)?
+        {
+            return Err(NativePlanRefusal::InvalidHistory);
+        }
+        let lowered_history =
+            NativeLoweredHistory::capture(lowering_request, &context.capture.target.backend)?;
+        let plan = Self {
+            context,
+            record,
+            input_history_bytes,
+            ledger_bytes,
+            post_history: NativeHistoryBoundary {
+                items: post.len() as u64,
+                digest: super::projection::native_content_digest(&post_history_bytes),
+            },
+            post_history_bytes,
+            lowered_history,
+            carrier,
+            identities,
+            qualification,
+            core,
+            readiness: NativePlanReadiness::Tentative,
+        };
+        plan.validate_binding()?;
+        Ok(plan)
+    }
+
+    pub fn send_only(mut self) -> Result<Self, NativePlanRefusal> {
+        if self.context.authority != NativeHistoryWriteAuthority::SendOnly {
+            return Err(NativePlanRefusal::AuthorityUnverified);
+        }
+        self.validate_binding()?;
+        self.readiness = NativePlanReadiness::SendOnly;
+        Ok(self)
+    }
+
+    pub fn require_generation(
+        mut self,
+        generation: u64,
+        high_water: u64,
+        authority: Option<NativeGenerationAuthority>,
+    ) -> Self {
+        self.readiness = NativePlanReadiness::RequiredGeneration {
+            generation,
+            high_water,
+            authority,
+        };
+        self
+    }
+
+    pub fn context(&self) -> &NativeHistoryRequestContext {
+        &self.context
+    }
+    pub fn post_history(&self) -> &NativeHistoryBoundary {
+        &self.post_history
+    }
+    pub fn post_history_bytes(&self) -> &[u8] {
+        &self.post_history_bytes
+    }
+    pub fn carrier(&self) -> &NativeFinalCarrier {
+        &self.carrier
+    }
+    pub fn identities(&self) -> &[NativeDeclarationIdentity] {
+        &self.identities
+    }
+    pub fn qualification(&self) -> &[NativeGroupQualification] {
+        &self.qualification
+    }
+    pub fn core(&self) -> &NativeHistoryCore {
+        &self.core
+    }
+    pub fn readiness(&self) -> &NativePlanReadiness {
+        &self.readiness
+    }
+
+    fn validate_binding(&self) -> Result<(), NativePlanRefusal> {
+        let capture = &self.context.capture;
+        if self.context.requirement != NativeHistoryRequirement::Selected {
+            return Err(NativePlanRefusal::InactivePlan);
+        }
+        // Current lowerers do not verify native KEEP bytes; U9 owns that binding.
+        if self
+            .core
+            .decision
+            .groups
+            .iter()
+            .any(|group| group.action == NativeHistoryAction::Keep)
+        {
+            return Err(NativePlanRefusal::KeepCarrierUnverified);
+        }
+        let versions = capture.versions;
+        if !matches!(
+            (
+                versions.schema,
+                versions.policy,
+                versions.reader,
+                versions.limits
+            ),
+            (1, 1, 1, 1) | (2, 1, 2, 1)
+        ) || versions.projection != 1
+            || (
+                versions.schema,
+                versions.policy,
+                versions.reader,
+                versions.limits,
+            ) != (
+                self.record.schema_version,
+                self.record.policy_revision,
+                self.record.reader_floor,
+                self.record.limits_revision,
+            )
+        {
+            return Err(NativePlanRefusal::UnsupportedVersion);
+        }
+        let digest = |text: &str| {
+            text.len() == 64
+                && text
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        };
+        if !digest(&capture.history.digest)
+            || !digest(&capture.lineage.source_digest)
+            || capture.lineage.id.is_empty()
+            || capture.issued_request.is_empty()
+            || !capture.target.complete()
+            || self.record.lineage != capture.lineage
+            || self.record.source.digest != capture.lineage.source_digest
+            || self.record.history_boundary != capture.history
+            || self.record.generation != capture.native_generation
+            || self.record.high_water != capture.high_water
+            || self.post_history.digest
+                != super::projection::native_content_digest(&self.post_history_bytes)
+            || self.core.accounting.history != capture.history
+            || self.core.accounting.source_revision != capture.lineage.source_revision
+            || self.core.accounting.source_digest != capture.lineage.source_digest
+            || self.core.accounting.durable_projection_revision != capture.projection_revision
+            || self.core.accounting.target_model != capture.target.model
+            || self.core.accounting.original_admission != capture.original_admission
+        {
+            return Err(NativePlanRefusal::InvalidHistory);
+        }
+        let body: Value = serde_json::from_slice(self.carrier.bytes())
+            .map_err(|_| NativePlanRefusal::FinalCarrierChanged)?;
+        if body.get("model").and_then(Value::as_str) != Some(capture.target.model.as_str())
+            || (capture.target.backend == crate::ApiBackend::Responses
+                && body.get("store") != Some(&Value::Bool(false)))
+        {
+            return Err(NativePlanRefusal::FinalCarrierChanged);
+        }
+        let post: Vec<super::ConversationItem> = serde_json::from_slice(&self.post_history_bytes)
+            .map_err(|_| NativePlanRefusal::InvalidHistory)?;
+        if post.len() as u64 != self.post_history.items {
+            return Err(NativePlanRefusal::InvalidHistory);
+        }
+        self.validate_output_mapping(&post)?;
+        if NativeLoweredHistory::from_body(&body, &capture.target.backend)? != self.lowered_history
+        {
+            return Err(NativePlanRefusal::FinalCarrierChanged);
+        }
+        self.validate_declarations()?;
+        self.validate_decisions()?;
+        Ok(())
+    }
+
+    fn validate_output_mapping(
+        &self,
+        post: &[super::ConversationItem],
+    ) -> Result<(), NativePlanRefusal> {
+        use super::ConversationItem;
+        NativeResource::LedgerBytes
+            .admit(self.ledger_bytes.len() as u64, 0)
+            .map_err(|_| NativePlanRefusal::InvalidHistory)?;
+        if self.record.ledger.kind != "ledger"
+            || self.record.ledger.byte_len != self.ledger_bytes.len() as u64
+            || self.record.ledger.digest
+                != super::projection::native_content_digest(&self.ledger_bytes)
+            || self.context.capture.history.digest
+                != super::projection::native_content_digest(&self.input_history_bytes)
+        {
+            return Err(NativePlanRefusal::InvalidHistory);
+        }
+        let ledger = match self.record.schema_version {
+            1 => serde_json::from_slice::<NativeLedger>(&self.ledger_bytes),
+            2 => serde_json::from_slice::<NativeLedgerV2>(&self.ledger_bytes)
+                .map(|ledger| ledger.into_parts().0),
+            _ => return Err(NativePlanRefusal::UnsupportedVersion),
+        }
+        .map_err(|_| NativePlanRefusal::InvalidHistory)?;
+        let input: Vec<ConversationItem> = serde_json::from_slice(&self.input_history_bytes)
+            .map_err(|_| NativePlanRefusal::InvalidHistory)?;
+        if input.len() as u64 != self.context.capture.history.items
+            || ledger.source_digest != self.record.source.digest
+            || ledger.active_digest != self.record.active.digest
+        {
+            return Err(NativePlanRefusal::InvalidHistory);
+        }
+        for group in &self.core.decision.groups {
+            let source_groups: Vec<_> = ledger
+                .groups
+                .iter()
+                .filter(|source| source.key == group.key)
+                .collect();
+            if source_groups.len() != 1 || source_groups[0].members != group.members {
+                return Err(NativePlanRefusal::InvalidAccounting);
+            }
+        }
+        let mut outputs = BTreeMap::new();
+        for member in &self.core.decision.members {
+            let links: Vec<_> = ledger
+                .accounting
+                .iter()
+                .filter(|link| link.source == member.source)
+                .collect();
+            if links.len() != 1 {
+                return Err(NativePlanRefusal::InvalidHistory);
+            }
+            let link = links[0];
+            let duplicate = ledger
+                .groups
+                .iter()
+                .flat_map(|group| &group.duplicate_observations)
+                .find(|(source, _)| source == &member.source)
+                .map(|(_, original)| original);
+            if member.duplicate_of.as_ref() != duplicate
+                || !self
+                    .core
+                    .accounting
+                    .raw_members
+                    .iter()
+                    .any(|row| row.source == link.source && row.source_digest == link.source_digest)
+            {
+                return Err(NativePlanRefusal::InvalidAccounting);
+            }
+            let output = match (&member.neutral, &member.raw) {
+                (Some(neutral), None) => Some(ConversationItem::assistant(neutral.text.clone())),
+                (None, Some(raw)) => Some(ConversationItem::Discovery {
+                    item: super::tool_search::ToolSearchItem::from_wire(raw.clone())
+                        .map_err(|_| NativePlanRefusal::InvalidHistory)?,
+                }),
+                (None, None) => None,
+                (Some(_), Some(_)) => return Err(NativePlanRefusal::InvalidHistory),
+            };
+            if duplicate.is_some() && output.is_some() {
+                return Err(NativePlanRefusal::InvalidHistory);
+            }
+            let Some(index) = link.view_item else {
+                if output.is_some() {
+                    return Err(NativePlanRefusal::InvalidHistory);
+                }
+                continue;
+            };
+            let index = usize::try_from(index).map_err(|_| NativePlanRefusal::InvalidHistory)?;
+            let original = input.get(index).ok_or(NativePlanRefusal::InvalidHistory)?;
+            let digest = super::projection::native_content_digest(
+                &serde_json::to_vec(original).map_err(|_| NativePlanRefusal::InvalidHistory)?,
+            );
+            let native = match original {
+                ConversationItem::Discovery { item } => {
+                    member.raw.as_ref().is_none_or(|raw| item.raw() == raw)
+                }
+                ConversationItem::Assistant(assistant) => {
+                    link.role == "ProjectedText"
+                        && assistant.tool_calls.is_empty()
+                        && self.core.decision.f_provenance.version == 1
+                        && self.core.decision.f_provenance.groups.iter().any(|group| {
+                            group.call == member.source || group.result == member.source
+                        })
+                }
+                _ => false,
+            };
+            if link.view_digest.as_ref() != Some(&digest) || !native {
+                return Err(NativePlanRefusal::InvalidHistory);
+            }
+            match outputs.entry(index) {
+                std::collections::btree_map::Entry::Occupied(_) => {
+                    if output.is_some()
+                        || !duplicate.is_some_and(|source| {
+                            ledger.accounting.iter().any(|link| {
+                                &link.source == source && link.view_item == Some(index as u64)
+                            })
+                        })
+                    {
+                        return Err(NativePlanRefusal::InvalidHistory);
+                    }
+                }
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(output);
+                }
+            }
+        }
+        NativePlanActiveView::check(&ledger, &self.core.decision, &outputs)?;
+        let mut expected = Vec::new();
+        for (index, item) in input.into_iter().enumerate() {
+            if let Some(output) = outputs.get(&index) {
+                expected.extend(output.iter().cloned());
+            } else if matches!(item, ConversationItem::Discovery { .. }) {
+                return Err(NativePlanRefusal::InvalidHistory);
+            } else {
+                expected.push(item);
+            }
+        }
+        if serde_json::to_value(&expected).map_err(|_| NativePlanRefusal::InvalidHistory)?
+            != serde_json::to_value(post).map_err(|_| NativePlanRefusal::InvalidHistory)?
+        {
+            return Err(NativePlanRefusal::InvalidHistory);
+        }
+        Ok(())
+    }
+
+    fn validate_declarations(&self) -> Result<(), NativePlanRefusal> {
+        let declarations: Vec<Value> = self
+            .carrier
+            .declarations()
+            .map(serde_json::from_slice)
+            .transpose()
+            .map_err(|_| NativePlanRefusal::InvalidDeclarations)?
+            .unwrap_or_default();
+        let mut positions = std::collections::BTreeSet::new();
+        for identity in &self.identities {
+            let position = usize::try_from(identity.declaration_index)
+                .map_err(|_| NativePlanRefusal::InvalidDeclarations)?;
+            let top = declarations
+                .get(position)
+                .ok_or(NativePlanRefusal::InvalidDeclarations)?;
+            let declaration = if let Some(child) = identity.child_index {
+                if top.get("type").and_then(Value::as_str) != Some("namespace")
+                    || top.get("name").and_then(Value::as_str)
+                        != Some(identity.qualified_namespace.as_str())
+                {
+                    return Err(NativePlanRefusal::InvalidDeclarations);
+                }
+                top.get("tools")
+                    .and_then(Value::as_array)
+                    .and_then(|tools| tools.get(child as usize))
+                    .ok_or(NativePlanRefusal::InvalidDeclarations)?
+            } else {
+                top
+            };
+            if !positions.insert((position, identity.child_index))
+                || declaration != &identity.declaration
+                || identity.qualified_namespace.is_empty()
+                || identity.child_name.is_empty()
+                || identity.schema.kind != "eligible_schema"
+                || identity.schema.byte_len != identity.schema_bytes.len() as u64
+                || identity.schema.digest
+                    != super::projection::native_content_digest(&identity.schema_bytes)
+                || identity.provenance.kind != "eligible_snapshot"
+                || identity.provenance.byte_len != identity.provenance_bytes.len() as u64
+                || identity.provenance.digest
+                    != super::projection::native_content_digest(&identity.provenance_bytes)
+            {
+                return Err(NativePlanRefusal::InvalidDeclarations);
+            }
+            let schema: Value = serde_json::from_slice(&identity.schema_bytes)
+                .map_err(|_| NativePlanRefusal::InvalidDeclarations)?;
+            let snapshot: NativeEligibleSnapshot =
+                serde_json::from_slice(&identity.provenance_bytes)
+                    .map_err(|_| NativePlanRefusal::InvalidDeclarations)?;
+            let binding_bytes = identity
+                .binding_bytes
+                .as_deref()
+                .ok_or(NativePlanRefusal::InvalidDeclarations)?;
+            if snapshot.binding.kind != "producing_binding"
+                || snapshot.binding.byte_len != binding_bytes.len() as u64
+                || snapshot.binding.digest
+                    != super::projection::native_content_digest(binding_bytes)
+            {
+                return Err(NativePlanRefusal::InvalidDeclarations);
+            }
+            let binding: NativePlanProducingBinding = serde_json::from_slice(binding_bytes)
+                .map_err(|_| NativePlanRefusal::InvalidDeclarations)?;
+            if binding.request != self.context.capture.issued_request
+                || binding.generation != Some(self.context.capture.binding_generation)
+                || !binding.origin.is_object()
+            {
+                return Err(NativePlanRefusal::InvalidDeclarations);
+            }
+            let name = if identity.child_index.is_none()
+                && identity.namespace_kind == NativeNamespaceKind::Mcp
+            {
+                format!("{}__{}", identity.qualified_namespace, identity.child_name)
+            } else {
+                identity.child_name.clone()
+            };
+            if declaration
+                .get("input_schema")
+                .or_else(|| declaration.get("parameters"))
+                != Some(&schema)
+                || declaration.get("name").and_then(Value::as_str) != Some(name.as_str())
+                || snapshot.version != 1
+                || snapshot.schema != identity.schema
+                || snapshot.namespace_kind != identity.namespace_kind
+                || snapshot.qualified_namespace != identity.qualified_namespace
+                || snapshot.child_name != identity.child_name
+            {
+                return Err(NativePlanRefusal::InvalidDeclarations);
+            }
+        }
+        for (position, declaration) in declarations.iter().enumerate() {
+            if let Some(children) = declaration.get("tools").and_then(Value::as_array) {
+                for (child, _) in children.iter().enumerate() {
+                    if !positions.contains(&(position, Some(child as u64))) {
+                        return Err(NativePlanRefusal::InvalidDeclarations);
+                    }
+                }
+            } else if (declaration.get("input_schema").is_some()
+                || declaration.get("parameters").is_some())
+                && !positions.contains(&(position, None))
+            {
+                return Err(NativePlanRefusal::InvalidDeclarations);
+            }
+        }
+        for loaded in &self.core.loaded.definitions {
+            if !self.identities.iter().any(|identity| {
+                identity.namespace_kind == loaded.namespace_kind
+                    && identity.qualified_namespace == loaded.qualified_namespace
+                    && identity.child_name == loaded.child_name
+                    && identity.schema.digest == loaded.schema_digest
+            }) {
+                return Err(NativePlanRefusal::InvalidDeclarations);
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_decisions(&self) -> Result<(), NativePlanRefusal> {
+        let accounting = &self.core.accounting;
+        if accounting.target.as_ref() != Some(&self.context.capture.target)
+            || self.qualification != accounting.qualification
+            || accounting.qualification != self.core.decision.qualification
+        {
+            return Err(NativePlanRefusal::InvalidQualification);
+        }
+        if accounting.summary.is_empty()
+            || accounting.summary.len() > 512
+            || accounting.reasons.len() > 8
+            || self.qualification.len() != self.core.decision.groups.len()
+        {
+            return Err(NativePlanRefusal::InvalidAccounting);
+        }
+        let mut groups = NativeHistoryCounts::default();
+        let mut members = NativeHistoryCounts::default();
+        let mut seen = Vec::new();
+        for group in &self.core.decision.groups {
+            native_count_action(&mut groups, group.action);
+            if group.key.is_empty()
+                || group.members.is_empty()
+                || seen.contains(&group.key.as_str())
+            {
+                return Err(NativePlanRefusal::InvalidAccounting);
+            }
+            seen.push(group.key.as_str());
+            let qualification: Vec<_> = self
+                .qualification
+                .iter()
+                .filter(|q| q.group == group.key)
+                .collect();
+            if qualification.len() != 1 {
+                return Err(NativePlanRefusal::InvalidQualification);
+            }
+            let qualification = qualification[0];
+            if qualification.target != self.context.capture.target
+                || qualification.shape.referenced_members
+                    != accounting
+                        .references
+                        .iter()
+                        .filter(|reference| {
+                            let mut parent = reference.source.clone();
+                            parent.submember = None;
+                            reference.group.as_ref() == Some(&group.key)
+                                && self.core.decision.members.iter().any(|member| {
+                                    member.source == parent && member.duplicate_of.is_none()
+                                })
+                        })
+                        .count() as u64
+                || !qualification.shape.completed
+            {
+                return Err(NativePlanRefusal::InvalidQualification);
+            }
+            for source in &group.members {
+                let decision: Vec<_> = self
+                    .core
+                    .decision
+                    .members
+                    .iter()
+                    .filter(|member| &member.source == source)
+                    .collect();
+                let witnesses: Vec<_> = accounting
+                    .raw_members
+                    .iter()
+                    .filter(|member| &member.source == source)
+                    .collect();
+                if decision.len() != 1
+                    || witnesses.len() != 1
+                    || decision[0].action != group.action
+                    || witnesses[0].action != group.action
+                    || witnesses[0].group.as_ref() != Some(&group.key)
+                {
+                    return Err(NativePlanRefusal::InvalidAccounting);
+                }
+            }
+            if group.action == NativeHistoryAction::Keep {
+                if qualification.source.as_ref() != Some(&qualification.target)
+                    || !self.context.capture.original_admission.admitted()
+                    || !qualification.receipt.as_ref().is_some_and(|receipt| {
+                        receipt.target == qualification.target
+                            && receipt.shape == qualification.shape
+                            && !receipt.receipt_id.is_empty()
+                    })
+                {
+                    return Err(NativePlanRefusal::InvalidQualification);
+                }
+                let supported = matches!(
+                    (
+                        &qualification.target.dialect,
+                        qualification.shape.family,
+                        self.context.capture.execution
+                    ),
+                    (
+                        NativeReplayDialect::Messages,
+                        NativeReplayFamily::MessagesServer,
+                        NativeHistoryExecution::Server
+                    ) | (
+                        NativeReplayDialect::Responses(super::ResponsesReplayDialect::Codex),
+                        NativeReplayFamily::ResponsesClient,
+                        NativeHistoryExecution::Client
+                    ) | (
+                        NativeReplayDialect::Responses(super::ResponsesReplayDialect::Codex),
+                        NativeReplayFamily::ResponsesServer,
+                        NativeHistoryExecution::Server
+                    )
+                );
+                if !supported {
+                    return Err(NativePlanRefusal::InvalidQualification);
+                }
+            }
+        }
+        let mut raw_seen = Vec::new();
+        for member in &accounting.raw_members {
+            if raw_seen.contains(&member.source)
+                || member.source.lineage != self.context.capture.lineage.id
+            {
+                return Err(NativePlanRefusal::InvalidAccounting);
+            }
+            raw_seen.push(member.source.clone());
+            native_count_action(&mut members, member.action);
+        }
+        if groups != accounting.groups || members != accounting.members {
+            return Err(NativePlanRefusal::InvalidAccounting);
+        }
+        let mut references = Vec::new();
+        for reference in &accounting.references {
+            let mut parent = reference.source.clone();
+            parent.submember = None;
+            if reference.source.submember.is_none()
+                || references.contains(&reference.source)
+                || !accounting.raw_members.iter().any(|member| {
+                    member.source == parent
+                        && member.action == reference.action
+                        && member.group == reference.group
+                        && member.source_digest == reference.source_digest
+                        && member.lost == reference.lost
+                })
+            {
+                return Err(NativePlanRefusal::InvalidAccounting);
+            }
+            references.push(reference.source.clone());
+        }
+        for member in &self.core.decision.members {
+            if !accounting
+                .raw_members
+                .iter()
+                .any(|row| row.source == member.source && row.action == member.action)
+            {
+                return Err(NativePlanRefusal::InvalidAccounting);
+            }
+        }
+        if self
+            .core
+            .decision
+            .groups
+            .iter()
+            .all(|group| group.action != NativeHistoryAction::Keep)
+            && (!self.core.loaded.definitions.is_empty()
+                || !self.core.loaded.names.is_empty()
+                || !self.core.loaded.promotion_names.is_empty())
+        {
+            return Err(NativePlanRefusal::InvalidAccounting);
+        }
+        Ok(())
+    }
+}
+
+pub fn validate_native_history_plan(
+    context: &NativeHistoryRequestContext,
+    plan: Option<&NativeHistoryPlan>,
+    carrier: &NativeFinalCarrier,
+) -> Result<NativeHistoryReady, NativePlanRefusal> {
+    match (context.requirement, plan) {
+        (NativeHistoryRequirement::Inactive, None) => Ok(NativeHistoryReady::Inactive),
+        (NativeHistoryRequirement::Inactive, Some(_)) => Err(NativePlanRefusal::InactivePlan),
+        (NativeHistoryRequirement::Selected, None) => Err(NativePlanRefusal::MissingPlan),
+        (NativeHistoryRequirement::Selected, Some(plan)) => {
+            if plan.context != *context {
+                return Err(NativePlanRefusal::StaleContext);
+            }
+            plan.validate_binding()?;
+            if plan.carrier != *carrier {
+                return Err(NativePlanRefusal::FinalCarrierChanged);
+            }
+            match (&context.authority, &plan.readiness) {
+                (NativeHistoryWriteAuthority::SendOnly, NativePlanReadiness::SendOnly) => {
+                    Ok(NativeHistoryReady::SendOnly)
+                }
+                (_, NativePlanReadiness::Tentative) => Err(NativePlanRefusal::NotReady),
+                _ => Err(NativePlanRefusal::AuthorityUnverified),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ConversationItem;
+    use crate::conversation::projection::{Boundary, TargetRoute};
+    use serde_json::json;
+
+    enum PassiveMembers {
+        Pair,
+        DuplicateResult,
+        ResponsesPair,
+        MessagesKeep,
+        ResponsesKeep,
+    }
+
+    fn passive_plan_fixture() -> (NativeHistoryRequestContext, NativeHistoryPlan) {
+        passive_plan_fixture_for(PassiveMembers::Pair).unwrap()
+    }
+
+    fn passive_plan_fixture_for(
+        members: PassiveMembers,
+    ) -> Result<(NativeHistoryRequestContext, NativeHistoryPlan), NativePlanRefusal> {
+        let (context, plan) = passive_plan_candidate_for(members)?;
+        Ok((context, passive_recheck(&plan)?))
+    }
+
+    fn passive_plan_candidate_for(
+        members: PassiveMembers,
+    ) -> Result<(NativeHistoryRequestContext, NativeHistoryPlan), NativePlanRefusal> {
+        let keep = matches!(
+            members,
+            PassiveMembers::MessagesKeep | PassiveMembers::ResponsesKeep
+        );
+        let responses_keep = matches!(members, PassiveMembers::ResponsesKeep);
+        let duplicate_result = matches!(members, PassiveMembers::DuplicateResult);
+        let backend = if matches!(
+            members,
+            PassiveMembers::ResponsesPair | PassiveMembers::ResponsesKeep
+        ) {
+            crate::ApiBackend::Responses
+        } else {
+            crate::ApiBackend::Messages
+        };
+
+        let digest = super::super::projection::native_content_digest;
+        let mut blobs: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
+        let mut put = |kind: &str, value: Value| {
+            let bytes = serde_json::to_vec(&value).unwrap();
+            let reference = NativeBlobRef {
+                kind: kind.into(),
+                byte_len: bytes.len() as u64,
+                digest: digest(&bytes),
+            };
+            blobs.insert(reference.digest.clone(), bytes.into());
+            reference
+        };
+        let coordinates = |occurrence| NativeSourceCoordinate {
+            lineage: "passive-lineage".into(),
+            producing_binding: "issued-A".into(),
+            turn: 1,
+            item: 0,
+            response: 0,
+            block: occurrence,
+            submember: None,
+            occurrence,
+        };
+        let call = json!({"type":"server_tool_use","id":"srvtoolu_passive","name":"tool_search_tool_regex","input":{"query":"secret query never rendered"}});
+        let references = if duplicate_result {
+            vec![json!({"type":"tool_reference","tool_name":"alpha__lookup"})]
+        } else {
+            Vec::new()
+        };
+        let result = json!({"type":"tool_search_tool_result","tool_use_id":"srvtoolu_passive","content":{"type":"tool_search_tool_search_result","tool_references":references}});
+        let mut raw = if responses_keep {
+            vec![
+                json!({"type":"tool_search_call","id":"tsc_passive","call_id":"call_passive","execution":"server","status":"completed","arguments":{"query":"secret query never rendered"}}),
+                json!({"type":"tool_search_output","id":"tso_passive","call_id":"call_passive","execution":"server","status":"completed","tools":[]}),
+            ]
+        } else {
+            vec![call, result]
+        };
+        if duplicate_result {
+            raw.push(raw[1].clone());
+        }
+        let original: Vec<_> = raw
+            .iter()
+            .map(|raw| ConversationItem::Discovery {
+                item: super::super::tool_search::ToolSearchItem::from_wire(raw.clone()).unwrap(),
+            })
+            .collect();
+        let member_count = original.len() as u64;
+        let history = NativeHistoryBoundary {
+            items: member_count,
+            digest: digest(&serde_json::to_vec(&original).unwrap()),
+        };
+        let origin = put(
+            "producing_binding",
+            json!({"request":"issued-A","generation":17,"origin":{"status":"Unknown"}}),
+        );
+        let blocks = raw
+            .into_iter()
+            .enumerate()
+            .map(|(index, raw)| NativeRawBlock {
+                coordinates: coordinates(index as u64),
+                wire_index: index as u32,
+                arrival_ordinal: index as u64,
+                block: put("raw_block", raw),
+                partial: None,
+                state: NativeBlockState::ClosedFaithful,
+                eligible_ref: None,
+                eligible_unavailable: (duplicate_result && index > 0)
+                    .then_some(NativeUnavailable::UnknownIdentity),
+            })
+            .collect();
+        let source = NativeSource {
+            schema_version: 2,
+            lineage: "passive-lineage".into(),
+            source_revision: 3,
+            producing_bindings: vec![NativeProducingBinding {
+                request: "issued-A".into(),
+                generation: Some(17),
+                origin: json!({"status":"Unknown"}),
+                origin_ref: origin.clone(),
+            }],
+            responses: vec![NativeResponseBoundary {
+                occurrence: 0,
+                request: "issued-A".into(),
+                lease: 1,
+                attempt: 1,
+                continuation: 0,
+                provider_response_id: Some(json!("msg_passive")),
+                source_stop_reason: Some("end_turn".into()),
+                block_start: 0,
+                block_end: member_count,
+                stream_complete: true,
+                status: NativeResponseStatus::Accepted,
+            }],
+            ordered_blocks: blocks,
+            eligible_snapshots: Vec::new(),
+            older_sources: Vec::new(),
+        };
+        let reference_links: Vec<_> = if duplicate_result {
+            [1, 2]
+                .into_iter()
+                .map(|index| {
+                    let mut source = coordinates(index);
+                    source.submember = Some(0);
+                    NativeEligibleMemberLink {
+                        source,
+                        identity: NativeEligibleMemberIdentity::Unavailable {
+                            reason: NativeUnavailable::UnknownIdentity,
+                        },
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let source_ref = put(
+            "source",
+            serde_json::to_value(NativeSourceV2::from_parts(
+                source.clone(),
+                reference_links.clone(),
+            ))
+            .unwrap(),
+        );
+        let active = NativeActive::default();
+        let active_ref = put("active", serde_json::to_value(&active).unwrap());
+        let group = NativeGroupRecord {
+            key: "passive-group".into(),
+            family: if responses_keep {
+                "Responses"
+            } else {
+                "Messages"
+            }
+            .into(),
+            execution: "server".into(),
+            origin_ref: origin,
+            validated_join: Some(
+                if responses_keep {
+                    "call_passive"
+                } else {
+                    "srvtoolu_passive"
+                }
+                .into(),
+            ),
+            keyless_server_fifo: false,
+            members: (0..member_count).map(coordinates).collect(),
+            duplicate_observations: if duplicate_result {
+                vec![(coordinates(2), coordinates(1))]
+            } else {
+                Vec::new()
+            },
+            state: "Completed".into(),
+        };
+        let mut ledger = NativeLedger {
+            source_digest: source_ref.digest.clone(),
+            active_digest: active_ref.digest.clone(),
+            groups: vec![group],
+            ..Default::default()
+        };
+        ledger
+            .lifecycle
+            .groups
+            .insert("passive-group".into(), "Completed".into());
+        ledger.accounting = (0..member_count)
+            .map(|index| NativeViewLink {
+                source: coordinates(index),
+                source_digest: source_ref.digest.clone(),
+                view_item: Some(index),
+                view_digest: Some(digest(
+                    &serde_json::to_vec(&original[index as usize]).unwrap(),
+                )),
+                role: "Discovery".into(),
+                source_subrange: None,
+            })
+            .collect();
+        let reference_accounting: Vec<_> = reference_links
+            .iter()
+            .map(|link| NativeEligibleMemberAccounting {
+                source: link.source.clone(),
+                source_digest: source_ref.digest.clone(),
+            })
+            .collect();
+        let ledger_ref = put(
+            "ledger",
+            serde_json::to_value(NativeLedgerV2::from_parts(
+                ledger.clone(),
+                reference_accounting.clone(),
+            ))
+            .unwrap(),
+        );
+        let record = NativeSearchHistoryV1 {
+            schema_version: 2,
+            policy_revision: 1,
+            reader_floor: 2,
+            limits_revision: 1,
+            lineage: NativeLineage {
+                id: "passive-lineage".into(),
+                source_revision: 3,
+                source_digest: source_ref.digest.clone(),
+            },
+            generation: 5,
+            high_water: 7,
+            source: source_ref,
+            active: active_ref,
+            ledger: ledger_ref,
+            history_boundary: history.clone(),
+            exchange_snapshot: None,
+            previous_checkpoint: None,
+            capacity: BTreeMap::new(),
+        };
+        let domain = NativeReplayDomain {
+            backend: backend.clone(),
+            dialect: if backend == crate::ApiBackend::Responses {
+                NativeReplayDialect::Responses(crate::ResponsesReplayDialect::Codex)
+            } else {
+                NativeReplayDialect::Messages
+            },
+            model: "passive-target".into(),
+            row: "passive-target".into(),
+            provider: "offline".into(),
+            deployment: "offline".into(),
+            deployment_revision: "1".into(),
+            endpoint: "https://offline.invalid/v1".into(),
+            principal: "fixture".into(),
+        };
+        let admission = crate::SearchAdmission {
+            supports_search_tool: keep,
+            has_searchable_tools: keep,
+        };
+        let target = TargetRoute::new(
+            backend.clone(),
+            if backend == crate::ApiBackend::Messages {
+                Boundary::Vertex
+            } else {
+                Boundary::AzStrict
+            },
+            admission,
+        );
+        let shape = NativeReplayShape {
+            family: if responses_keep {
+                NativeReplayFamily::ResponsesServer
+            } else {
+                NativeReplayFamily::MessagesServer
+            },
+            keyless_server: false,
+            output_id_present: responses_keep,
+            completed: true,
+            result_error: false,
+            referenced_members: u64::from(duplicate_result),
+        };
+        let identity = NativeIdentityExtension::Revision2 {
+            eligible_member_links: reference_links,
+            eligible_member_accounting: reference_accounting,
+        };
+        let selected: Vec<_> = (0..member_count).map(coordinates).collect();
+        let authorship = (0..member_count)
+            .map(|index| (index, NativeIdAuthorship::Provider))
+            .collect();
+        let core = prepare_native_history_core(
+            &NativePureHistory {
+                record: &record,
+                source: &source,
+                ledger: &ledger,
+                identity: &identity,
+                blobs: &blobs,
+                authorship: &authorship,
+            },
+            &NativeProjectionInputs {
+                target_model_id: "passive-target",
+                target: &target,
+                tools: &[],
+                current: None,
+                selected: &selected,
+                origin_domains: &Default::default(),
+                pending: &Default::default(),
+                prior_f: None,
+            },
+            |_| {
+                (
+                    DiscoveryOrigin {
+                        boundary: if responses_keep {
+                            Boundary::AzStrict
+                        } else {
+                            Boundary::Vertex
+                        },
+                        owner_model_id: keep.then(|| domain.model.clone()),
+                    },
+                    NativeQualification {
+                        source: keep.then(|| domain.clone()),
+                        target: Some(domain.clone()),
+                        request: Some(domain.clone()),
+                        original_admission: admission,
+                        shape: shape.clone(),
+                        receipt: keep.then(|| NativeShapeReceipt {
+                            target: domain.clone(),
+                            shape: shape.clone(),
+                            receipt_id: "offline-structural-keep".into(),
+                        }),
+                        intact_membership: true,
+                        current_backing: false,
+                        faithful_identity: true,
+                    },
+                )
+            },
+        )
+        .unwrap();
+        let post: Vec<_> = core
+            .decision
+            .members
+            .iter()
+            .filter_map(|member| {
+                member
+                    .neutral
+                    .as_ref()
+                    .map(|neutral| ConversationItem::assistant(neutral.text.clone()))
+                    .or_else(|| {
+                        member.raw.as_ref().map(|raw| ConversationItem::Discovery {
+                            item: super::super::tool_search::ToolSearchItem::from_wire(raw.clone())
+                                .unwrap(),
+                        })
+                    })
+            })
+            .collect();
+        let request = crate::ConversationRequest {
+            items: post.clone(),
+            model: Some("passive-target".into()),
+            search_admission: Some(admission),
+            max_output_tokens: Some(4096),
+            ..Default::default()
+        };
+        let carrier = NativeFinalCarrier::capture(
+            serde_json::to_vec(&passive_lower(&request, backend.clone()))
+                .unwrap()
+                .into(),
+        )
+        .unwrap();
+        let identities = if keep && backend == crate::ApiBackend::Messages {
+            let declarations: Vec<Value> =
+                serde_json::from_slice(carrier.declarations().unwrap()).unwrap();
+            let declaration = declarations[0].clone();
+            assert_eq!(declaration["name"], "DeferredToolPlaceholder");
+            let schema_bytes: Arc<[u8]> = serde_json::to_vec(&declaration["input_schema"])
+                .unwrap()
+                .into();
+            let schema = NativeBlobRef {
+                kind: "eligible_schema".into(),
+                byte_len: schema_bytes.len() as u64,
+                digest: digest(&schema_bytes),
+            };
+            let binding = source.producing_bindings[0].origin_ref.clone();
+            let binding_bytes = blobs[&binding.digest].clone();
+            let snapshot = NativeEligibleSnapshot {
+                version: 1,
+                namespace_kind: NativeNamespaceKind::GrokBuild,
+                qualified_namespace: "grok_build".into(),
+                child_name: "DeferredToolPlaceholder".into(),
+                schema: schema.clone(),
+                binding,
+            };
+            let provenance_bytes: Arc<[u8]> = serde_json::to_vec(&snapshot).unwrap().into();
+            vec![NativeDeclarationIdentity {
+                declaration_index: 0,
+                child_index: None,
+                namespace_kind: snapshot.namespace_kind,
+                qualified_namespace: snapshot.qualified_namespace,
+                child_name: snapshot.child_name,
+                declaration,
+                schema,
+                schema_bytes,
+                provenance: NativeBlobRef {
+                    kind: "eligible_snapshot".into(),
+                    byte_len: provenance_bytes.len() as u64,
+                    digest: digest(&provenance_bytes),
+                },
+                provenance_bytes,
+                binding_bytes: Some(binding_bytes),
+            }]
+        } else {
+            Vec::new()
+        };
+        let context = NativeHistoryRequestContext::captured(
+            NativeHistoryRequirement::Selected,
+            NativeHistoryCapture {
+                history,
+                history_revision: 11,
+                lineage: record.lineage.clone(),
+                native_generation: 5,
+                high_water: 7,
+                projection_revision: 0,
+                strict_append_sequence: 13,
+                binding_generation: 17,
+                install_generation: 19,
+                issued_request: "issued-A".into(),
+                target: domain.clone(),
+                execution: NativeHistoryExecution::Server,
+                original_admission: admission,
+                versions: NativeHistoryVersions {
+                    schema: 2,
+                    policy: 1,
+                    projection: 1,
+                    reader: 2,
+                    limits: 1,
+                },
+            },
+            NativeHistoryWriteAuthority::SendOnly,
+        );
+        let post_history_bytes: Arc<[u8]> = serde_json::to_vec(&post).unwrap().into();
+        let plan = NativeHistoryPlan {
+            context: context.clone(),
+            input_history_bytes: serde_json::to_vec(&original).unwrap().into(),
+            ledger_bytes: blobs[&record.ledger.digest].clone(),
+            record,
+            post_history: NativeHistoryBoundary {
+                items: post.len() as u64,
+                digest: digest(&post_history_bytes),
+            },
+            post_history_bytes,
+            lowered_history: NativeLoweredHistory::capture(&request, &backend)?,
+            carrier,
+            identities,
+            qualification: core.accounting.qualification.clone(),
+            core,
+            readiness: NativePlanReadiness::Tentative,
+        };
+        Ok((context, plan))
+    }
+
+    #[test]
+    fn native_history_passive_plan_context_contract() {
+        let (context, plan) = passive_plan_fixture();
+        let carrier = plan.carrier.clone();
+        assert_eq!(
+            validate_native_history_plan(&context, Some(&plan), &carrier),
+            Ok(NativeHistoryReady::SendOnly)
+        );
+        assert_eq!(
+            validate_native_history_plan(&context, None, &carrier),
+            Err(NativePlanRefusal::MissingPlan),
+            "Selected without a plan must never become Inactive"
+        );
+        let mut inactive = context.clone();
+        inactive.requirement = NativeHistoryRequirement::Inactive;
+        assert_eq!(
+            validate_native_history_plan(&inactive, None, &carrier),
+            Ok(NativeHistoryReady::Inactive)
+        );
+        assert_eq!(
+            validate_native_history_plan(&inactive, Some(&plan), &carrier),
+            Err(NativePlanRefusal::InactivePlan)
+        );
+        let mut changed_body: Value = serde_json::from_slice(carrier.bytes()).unwrap();
+        changed_body["max_tokens"] = json!(4095);
+        let changed =
+            NativeFinalCarrier::capture(serde_json::to_vec(&changed_body).unwrap().into()).unwrap();
+        assert_eq!(
+            validate_native_history_plan(&context, Some(&plan), &changed),
+            Err(NativePlanRefusal::FinalCarrierChanged),
+            "changed actual carrier refuses even when tools and context match"
+        );
+        let mut spaced = carrier.bytes().to_vec();
+        spaced.push(b' ');
+        let spaced = NativeFinalCarrier::capture(spaced.into()).unwrap();
+        assert_ne!(spaced.digest(), carrier.digest());
+        assert_eq!(
+            validate_native_history_plan(&context, Some(&plan), &spaced),
+            Err(NativePlanRefusal::FinalCarrierChanged)
+        );
+        for field in [
+            "history",
+            "lineage",
+            "source",
+            "projection",
+            "g",
+            "high_water",
+            "q",
+            "binding",
+            "install",
+            "issued",
+            "target",
+            "admission",
+            "authority",
+            "requirement",
+        ] {
+            let mut changed = context.clone();
+            match field {
+                "history" => changed.capture.history_revision += 1,
+                "lineage" => changed.capture.lineage.id.push('x'),
+                "source" => changed.capture.lineage.source_revision += 1,
+                "projection" => changed.capture.projection_revision += 1,
+                "g" => changed.capture.native_generation += 1,
+                "high_water" => changed.capture.high_water += 1,
+                "q" => changed.capture.strict_append_sequence += 1,
+                "binding" => changed.capture.binding_generation += 1,
+                "install" => changed.capture.install_generation += 1,
+                "issued" => changed.capture.issued_request = "installed-B".into(),
+                "target" => changed.capture.target.deployment.push('B'),
+                "admission" => changed.capture.original_admission.supports_search_tool = true,
+                "authority" => {
+                    changed.authority = NativeHistoryWriteAuthority::OwningPrimary {
+                        lineage: changed.capture.lineage.id.clone(),
+                        binding_generation: changed.capture.binding_generation,
+                        request: "issued-A".into(),
+                    }
+                }
+                "requirement" => changed.requirement = NativeHistoryRequirement::Inactive,
+                _ => unreachable!(),
+            }
+            assert!(
+                validate_native_history_plan(&changed, Some(&plan), &carrier).is_err(),
+                "retained captured field {field} cannot change"
+            );
+        }
+        for version in ["schema", "policy", "projection", "reader", "limits"] {
+            let mut changed = plan.clone();
+            match version {
+                "schema" => changed.context.capture.versions.schema += 1,
+                "policy" => changed.context.capture.versions.policy += 1,
+                "projection" => changed.context.capture.versions.projection += 1,
+                "reader" => changed.context.capture.versions.reader += 1,
+                "limits" => changed.context.capture.versions.limits += 1,
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                validate_native_history_plan(&changed.context, Some(&changed), &carrier),
+                Err(NativePlanRefusal::UnsupportedVersion)
+            );
+        }
+        let mut tentative = plan.clone();
+        tentative.readiness = NativePlanReadiness::Tentative;
+        assert_eq!(
+            validate_native_history_plan(&context, Some(&tentative), &carrier),
+            Err(NativePlanRefusal::NotReady)
+        );
+        let mut owning = plan.clone();
+        owning.context.authority = NativeHistoryWriteAuthority::OwningPrimary {
+            lineage: context.capture.lineage.id.clone(),
+            binding_generation: 17,
+            request: "issued-A".into(),
+        };
+        let checkpoint_ref = owning.record.source.clone();
+        owning = owning.require_generation(
+            5,
+            7,
+            Some(NativeGenerationAuthority {
+                schema_version: 2,
+                lineage: context.capture.lineage.id.clone(),
+                high_water: 7,
+                checkpoint: checkpoint_ref,
+                transaction: "structural-not-acknowledged".into(),
+            }),
+        );
+        assert_eq!(
+            validate_native_history_plan(&owning.context, Some(&owning), &carrier),
+            Err(NativePlanRefusal::AuthorityUnverified),
+            "stored descriptors do not issue owning-primary permission"
+        );
+        let tools = NativeFinalCarrier::capture(Arc::from(br#"{ "tools" : [ { "name":"f", "parameters":{} } ], "nested":{"tools":[]}, "model":"m" }"#.as_slice())).unwrap();
+        assert_eq!(
+            tools.declarations().unwrap(),
+            br#"[ { "name":"f", "parameters":{} } ]"#
+        );
+        assert_eq!(
+            tools.tools().unwrap().digest,
+            super::super::projection::native_content_digest(tools.declarations().unwrap())
+        );
+        assert!(
+            NativeFinalCarrier::capture(Arc::from(br#"{"tools":[],"tools":[]}"#.as_slice()))
+                .is_err()
+        );
+        assert!(NativeFinalCarrier::capture(Arc::from(br#"{"tools":null}"#.as_slice())).is_err());
+        assert!(NativeFinalCarrier::capture(Arc::from(br#"{"tools":[],}"#.as_slice())).is_err());
+        assert!(
+            NativeFinalCarrier::capture(Arc::from(br#"{"tools":[]} trailing"#.as_slice())).is_err()
+        );
+        assert!(carrier.tools().is_none());
+        let mut missing_shape = plan.clone();
+        missing_shape.qualification.clear();
+        assert!(validate_native_history_plan(&context, Some(&missing_shape), &carrier).is_err());
+        let mut missing_member = plan.clone();
+        missing_member.core.accounting.raw_members.pop();
+        assert!(validate_native_history_plan(&context, Some(&missing_member), &carrier).is_err());
+        let mut false_count = plan.clone();
+        false_count.core.accounting.groups.demoted += 1;
+        assert!(validate_native_history_plan(&context, Some(&false_count), &carrier).is_err());
+        let default = crate::ConversationRequest::default();
+        let cloned = default.clone();
+        assert_eq!(
+            serde_json::to_value(crate::conversation::messages::build_messages_request(
+                &default
+            ))
+            .unwrap(),
+            serde_json::to_value(crate::conversation::messages::build_messages_request(
+                &cloned
+            ))
+            .unwrap()
+        );
+        passive_declarations_and_binding();
+    }
+
+    fn passive_declaration_fixture() -> NativeHistoryPlan {
+        let (_, mut plan) = passive_plan_fixture();
+        let schema = json!({"type":"object","description":"full schema","properties":{"limit":{"type":"integer","default":7}},"required":["limit"],"additionalProperties":false});
+        let schema_bytes: Arc<[u8]> = serde_json::to_vec(&schema).unwrap().into();
+        let schema_ref = NativeBlobRef {
+            kind: "eligible_schema".into(),
+            byte_len: schema_bytes.len() as u64,
+            digest: super::super::projection::native_content_digest(&schema_bytes),
+        };
+        let binding_bytes: Arc<[u8]> = serde_json::to_vec(&json!({
+            "request":"issued-A", "generation":17, "origin":{"status":"Unknown"}
+        }))
+        .unwrap()
+        .into();
+        let snapshot = NativeEligibleSnapshot {
+            version: 1,
+            namespace_kind: NativeNamespaceKind::Mcp,
+            qualified_namespace: "alpha".into(),
+            child_name: "lookup".into(),
+            schema: schema_ref.clone(),
+            binding: NativeBlobRef {
+                kind: "producing_binding".into(),
+                byte_len: binding_bytes.len() as u64,
+                digest: super::super::projection::native_content_digest(&binding_bytes),
+            },
+        };
+        let provenance_bytes: Arc<[u8]> = serde_json::to_vec(&snapshot).unwrap().into();
+        let provenance = NativeBlobRef {
+            kind: "eligible_snapshot".into(),
+            byte_len: provenance_bytes.len() as u64,
+            digest: super::super::projection::native_content_digest(&provenance_bytes),
+        };
+        let declaration =
+            json!({"name":"alpha__lookup","description":"exact declaration","input_schema":schema});
+        let mut body: Value = serde_json::from_slice(plan.carrier.bytes()).unwrap();
+        body["tools"] = json!([declaration.clone()]);
+        plan.carrier =
+            NativeFinalCarrier::capture(serde_json::to_vec_pretty(&body).unwrap().into()).unwrap();
+        plan.identities.push(NativeDeclarationIdentity {
+            declaration_index: 0,
+            child_index: None,
+            namespace_kind: NativeNamespaceKind::Mcp,
+            qualified_namespace: "alpha".into(),
+            child_name: "lookup".into(),
+            declaration,
+            schema: schema_ref,
+            schema_bytes,
+            provenance,
+            provenance_bytes,
+            binding_bytes: Some(binding_bytes),
+        });
+        plan
+    }
+
+    fn passive_declarations_and_binding() {
+        let plan = passive_declaration_fixture();
+        let context = plan.context.clone();
+        assert_eq!(
+            validate_native_history_plan(&context, Some(&plan), &plan.carrier),
+            Ok(NativeHistoryReady::SendOnly)
+        );
+        for field in [
+            "identity",
+            "schema",
+            "description",
+            "name",
+            "kind",
+            "provenance",
+            "post",
+            "target",
+        ] {
+            let mut bad = plan.clone();
+            match field {
+                "identity" => bad.identities.clear(),
+                "schema" => bad.identities[0].schema.digest = "a".repeat(64),
+                "description" => bad.identities[0].declaration["description"] = json!("different"),
+                "name" => bad.identities[0].child_name.push('x'),
+                "kind" => bad.identities[0].namespace_kind = NativeNamespaceKind::GrokBuild,
+                "provenance" => bad.identities[0].provenance_bytes = Arc::from(b"{}".as_slice()),
+                "post" => {
+                    bad.post_history_bytes = Arc::from(b"[]".as_slice());
+                    bad.post_history = NativeHistoryBoundary {
+                        items: 0,
+                        digest: super::super::projection::native_content_digest(b"[]"),
+                    };
+                }
+                "target" => {
+                    let mut body: Value = serde_json::from_slice(bad.carrier.bytes()).unwrap();
+                    body["model"] = json!("installed-B");
+                    bad.carrier =
+                        NativeFinalCarrier::capture(serde_json::to_vec(&body).unwrap().into())
+                            .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                validate_native_history_plan(&context, Some(&bad), &bad.carrier).is_err(),
+                "changed passive field {field} cannot become Ready"
+            );
+        }
+        let mut switched = plan.clone();
+        switched.context.authority = NativeHistoryWriteAuthority::SwitchStore {
+            lineage: context.capture.lineage.id.clone(),
+            binding_generation: context.capture.binding_generation,
+        };
+        assert_eq!(
+            validate_native_history_plan(&switched.context, Some(&switched), &switched.carrier),
+            Err(NativePlanRefusal::AuthorityUnverified)
+        );
+        let mut shapes = plan.clone();
+        shapes.qualification[0].target.deployment.push('x');
+        assert_eq!(
+            validate_native_history_plan(&context, Some(&shapes), &shapes.carrier),
+            Err(NativePlanRefusal::InvalidQualification)
+        );
+    }
+    fn passive_request(plan: &NativeHistoryPlan) -> crate::ConversationRequest {
+        crate::ConversationRequest {
+            items: serde_json::from_slice(&plan.post_history_bytes).unwrap(),
+            model: Some(plan.context.capture.target.model.clone()),
+            search_admission: Some(plan.context.capture.original_admission),
+            max_output_tokens: Some(4096),
+            ..Default::default()
+        }
+    }
+
+    fn passive_lower(request: &crate::ConversationRequest, backend: crate::ApiBackend) -> Value {
+        match backend {
+            crate::ApiBackend::Messages => serde_json::to_value(
+                crate::conversation::messages::build_messages_request(request),
+            )
+            .unwrap(),
+            crate::ApiBackend::Responses => {
+                let mut request = async_openai::types::responses::CreateResponse::from(request);
+                request.store = Some(false);
+                serde_json::to_value(request).unwrap()
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn passive_recheck(plan: &NativeHistoryPlan) -> Result<NativeHistoryPlan, NativePlanRefusal> {
+        let request = passive_request(plan);
+        NativeHistoryPlan::checked(
+            plan.context.clone(),
+            NativeHistoryPlanInput {
+                record: plan.record.clone(),
+                input_history_bytes: plan.input_history_bytes.clone(),
+                ledger_bytes: plan.ledger_bytes.clone(),
+                post_history_bytes: plan.post_history_bytes.clone(),
+                lowering_request: &request,
+                carrier: plan.carrier.clone(),
+                identities: plan.identities.clone(),
+                qualification: plan.qualification.clone(),
+                core: plan.core.clone(),
+            },
+        )?
+        .send_only()
+    }
+
+    fn passive_replace_post(plan: &mut NativeHistoryPlan, post: &[ConversationItem]) {
+        plan.post_history_bytes = serde_json::to_vec(post).unwrap().into();
+        plan.post_history = NativeHistoryBoundary {
+            items: post.len() as u64,
+            digest: super::super::projection::native_content_digest(&plan.post_history_bytes),
+        };
+        plan.carrier = NativeFinalCarrier::capture(
+            serde_json::to_vec(&passive_lower(
+                &passive_request(plan),
+                plan.context.capture.target.backend.clone(),
+            ))
+            .unwrap()
+            .into(),
+        )
+        .unwrap();
+    }
+
+    fn passive_append_ordinary(plan: &mut NativeHistoryPlan, ordinary: ConversationItem) {
+        let mut input: Vec<ConversationItem> =
+            serde_json::from_slice(&plan.input_history_bytes).unwrap();
+        input.push(ordinary.clone());
+        plan.input_history_bytes = serde_json::to_vec(&input).unwrap().into();
+        let history = NativeHistoryBoundary {
+            items: input.len() as u64,
+            digest: super::super::projection::native_content_digest(&plan.input_history_bytes),
+        };
+        plan.context.capture.history = history.clone();
+        plan.record.history_boundary = history.clone();
+        plan.core.accounting.history = history;
+        let mut post: Vec<ConversationItem> =
+            serde_json::from_slice(&plan.post_history_bytes).unwrap();
+        post.push(ordinary);
+        passive_replace_post(plan, &post);
+    }
+
+    #[test]
+    fn native_history_plan_rejects_original_discovery_carrier() {
+        let (_, mut plan) = passive_plan_fixture();
+        let original: Vec<ConversationItem> =
+            serde_json::from_slice(&plan.input_history_bytes).unwrap();
+        let raw: Vec<_> = original
+            .iter()
+            .map(|item| match item {
+                ConversationItem::Discovery { item } => item.raw().clone(),
+                _ => unreachable!(),
+            })
+            .collect();
+        let mut body: Value = serde_json::from_slice(plan.carrier.bytes()).unwrap();
+        let assistant = body["messages"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|message| message["role"] == "assistant")
+            .unwrap();
+        assistant["content"] = json!(raw);
+        plan.carrier =
+            NativeFinalCarrier::capture(serde_json::to_vec(&body).unwrap().into()).unwrap();
+        assert_eq!(
+            passive_recheck(&plan),
+            Err(NativePlanRefusal::FinalCarrierChanged),
+            "F1 original Discovery carrier cannot certify a neutral-F post-history"
+        );
+    }
+
+    #[test]
+    fn native_history_plan_rejects_empty_carrier_conversation() {
+        let (_, mut plan) = passive_plan_fixture();
+        let mut body: Value = serde_json::from_slice(plan.carrier.bytes()).unwrap();
+        body["messages"] = json!([]);
+        plan.carrier =
+            NativeFinalCarrier::capture(serde_json::to_vec(&body).unwrap().into()).unwrap();
+        assert_eq!(
+            passive_recheck(&plan),
+            Err(NativePlanRefusal::FinalCarrierChanged),
+            "F1 an empty conversation cannot certify emitted neutral halves"
+        );
+    }
+
+    #[test]
+    fn native_history_plan_rejects_extra_native_carrier_block() {
+        let (_, mut plan) = passive_plan_fixture();
+        let mut body: Value = serde_json::from_slice(plan.carrier.bytes()).unwrap();
+        let original: Vec<ConversationItem> =
+            serde_json::from_slice(&plan.input_history_bytes).unwrap();
+        let ConversationItem::Discovery { item } = &original[0] else {
+            unreachable!()
+        };
+        let assistant = body["messages"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|message| message["role"] == "assistant")
+            .unwrap();
+        assistant["content"]
+            .as_array_mut()
+            .unwrap()
+            .push(item.raw().clone());
+        plan.carrier =
+            NativeFinalCarrier::capture(serde_json::to_vec(&body).unwrap().into()).unwrap();
+        assert_eq!(
+            passive_recheck(&plan),
+            Err(NativePlanRefusal::FinalCarrierChanged),
+            "F1 extra native search material cannot ride alongside neutral F"
+        );
+    }
+
+    #[test]
+    fn native_history_plan_rejects_duplicate_neutral_post() {
+        let (_, mut plan) = passive_plan_fixture();
+        let mut post: Vec<ConversationItem> =
+            serde_json::from_slice(&plan.post_history_bytes).unwrap();
+        post.insert(0, post[0].clone());
+        passive_replace_post(&mut plan, &post);
+        assert_eq!(
+            passive_recheck(&plan),
+            Err(NativePlanRefusal::InvalidHistory),
+            "F1 an additional neutral wrapper violates exact source-to-output mapping"
+        );
+    }
+
+    #[test]
+    fn native_history_plan_rejects_relocated_neutral_post() {
+        let (_, mut plan) = passive_plan_fixture();
+        passive_append_ordinary(
+            &mut plan,
+            ConversationItem::user("ordinary suffix remains after both halves"),
+        );
+        assert!(passive_recheck(&plan).is_ok());
+        let mut post: Vec<ConversationItem> =
+            serde_json::from_slice(&plan.post_history_bytes).unwrap();
+        let ordinary = post.pop().unwrap();
+        post.insert(1, ordinary);
+        passive_replace_post(&mut plan, &post);
+        assert_eq!(
+            passive_recheck(&plan),
+            Err(NativePlanRefusal::InvalidHistory),
+            "F1 preserving native subsequence order is not preserving its positions"
+        );
+    }
+
+    fn passive_binding_change(plan: &mut NativeHistoryPlan, field: &str, value: Value) {
+        let identity = &mut plan.identities[0];
+        let mut binding: Value =
+            serde_json::from_slice(identity.binding_bytes.as_ref().unwrap()).unwrap();
+        binding[field] = value;
+        let bytes: Arc<[u8]> = serde_json::to_vec(&binding).unwrap().into();
+        let mut snapshot: NativeEligibleSnapshot =
+            serde_json::from_slice(&identity.provenance_bytes).unwrap();
+        snapshot.binding.byte_len = bytes.len() as u64;
+        snapshot.binding.digest = super::super::projection::native_content_digest(&bytes);
+        identity.binding_bytes = Some(bytes);
+        identity.provenance_bytes = serde_json::to_vec(&snapshot).unwrap().into();
+        identity.provenance.byte_len = identity.provenance_bytes.len() as u64;
+        identity.provenance.digest =
+            super::super::projection::native_content_digest(&identity.provenance_bytes);
+    }
+
+    #[test]
+    fn native_history_plan_rejects_missing_binding_descriptor() {
+        let mut plan = passive_declaration_fixture();
+        plan.identities[0].binding_bytes = None;
+        assert_eq!(
+            passive_recheck(&plan),
+            Err(NativePlanRefusal::InvalidDeclarations),
+            "F2 a snapshot must resolve its actual producing-binding descriptor"
+        );
+    }
+
+    #[test]
+    fn native_history_plan_rejects_foreign_binding_request() {
+        let mut plan = passive_declaration_fixture();
+        passive_binding_change(&mut plan, "request", json!("installed-B"));
+        assert_eq!(
+            passive_recheck(&plan),
+            Err(NativePlanRefusal::InvalidDeclarations),
+            "F2 a hash-consistent foreign request cannot supply producing provenance"
+        );
+    }
+
+    #[test]
+    fn native_history_plan_rejects_foreign_binding_generation() {
+        let mut plan = passive_declaration_fixture();
+        passive_binding_change(&mut plan, "generation", json!(18));
+        assert_eq!(
+            passive_recheck(&plan),
+            Err(NativePlanRefusal::InvalidDeclarations),
+            "F2 a hash-consistent foreign generation cannot supply producing provenance"
+        );
+    }
+
+    #[test]
+    fn native_history_plan_rejects_binding_digest_mismatch() {
+        let mut plan = passive_declaration_fixture();
+        let mut bytes = plan.identities[0].binding_bytes.as_ref().unwrap().to_vec();
+        bytes.push(b' ');
+        plan.identities[0].binding_bytes = Some(bytes.into());
+        assert_eq!(
+            passive_recheck(&plan),
+            Err(NativePlanRefusal::InvalidDeclarations),
+            "F2 binding digests cover actual descriptor bytes, not equivalent reserialization"
+        );
+    }
+
+    #[test]
+    fn native_history_plan_accepts_large_ordinary_history() {
+        let (_, mut plan) = passive_plan_fixture();
+        for index in 0..17 {
+            let text = "x".repeat(256 * 1024);
+            let item = if index % 2 == 0 {
+                ConversationItem::user(text)
+            } else {
+                ConversationItem::assistant(text)
+            };
+            passive_append_ordinary(&mut plan, item);
+        }
+        assert!(plan.post_history_bytes.len() as u64 > NATIVE_ACTIVE_BYTES);
+        assert!((plan.carrier.bytes().len() as u64) < NATIVE_SNAPSHOT_PAYLOAD_BYTES);
+        let checked = passive_recheck(&plan);
+        assert!(
+            checked.is_ok(),
+            "F3 ordinary history is not the native-active partition: {checked:?}"
+        );
+        let checked = checked.unwrap();
+        assert_eq!(
+            validate_native_history_plan(&checked.context, Some(&checked), &checked.carrier),
+            Ok(NativeHistoryReady::SendOnly)
+        );
+    }
+
+    #[test]
+    fn native_history_plan_rejects_post_above_snapshot_envelope() {
+        let (_, mut plan) = passive_plan_fixture();
+        passive_append_ordinary(
+            &mut plan,
+            ConversationItem::assistant_with_model(
+                "ordinary model metadata is not copied to the carrier",
+                "x".repeat(NATIVE_SNAPSHOT_PAYLOAD_BYTES as usize),
+            ),
+        );
+        assert!(plan.post_history_bytes.len() as u64 > NATIVE_SNAPSHOT_PAYLOAD_BYTES);
+        assert!((plan.carrier.bytes().len() as u64) < NATIVE_SNAPSHOT_PAYLOAD_BYTES);
+        assert_eq!(
+            passive_recheck(&plan),
+            Err(NativePlanRefusal::InvalidHistory),
+            "F3 the full post-history remains bounded by the snapshot envelope"
+        );
+    }
+
+    #[test]
+    fn native_history_plan_rejects_reasserted_qualification() {
+        let (_, mut plan) = passive_plan_fixture();
+        plan.qualification[0].shape.keyless_server = true;
+        assert_eq!(
+            passive_recheck(&plan),
+            Err(NativePlanRefusal::InvalidQualification),
+            "F4 the passive plan cannot reassert qualification different from the common core"
+        );
+    }
+
+    #[test]
+    fn native_history_plan_accounts_duplicate_result_once_logically() {
+        let result = passive_plan_fixture_for(PassiveMembers::DuplicateResult);
+        assert!(
+            result.is_ok(),
+            "F5 duplicate observation charges are not logical result cardinality: {result:?}"
+        );
+        let (context, plan) = result.unwrap();
+        assert_eq!(plan.core.accounting.references.len(), 2);
+        assert_eq!(
+            plan.core.accounting.qualification[0]
+                .shape
+                .referenced_members,
+            1
+        );
+        assert_eq!(
+            validate_native_history_plan(&context, Some(&plan), &plan.carrier),
+            Ok(NativeHistoryReady::SendOnly)
+        );
+    }
+
+    #[test]
+    fn native_history_plan_binds_both_real_dialect_lowerers() {
+        for members in [PassiveMembers::Pair, PassiveMembers::ResponsesPair] {
+            let (_, mut plan) = passive_plan_fixture_for(members).unwrap();
+            passive_append_ordinary(
+                &mut plan,
+                ConversationItem::user("ordinary suffix is also bound"),
+            );
+            let valid = passive_recheck(&plan).unwrap();
+            assert_eq!(
+                validate_native_history_plan(&valid.context, Some(&valid), &valid.carrier),
+                Ok(NativeHistoryReady::SendOnly)
+            );
+            let key = match plan.context.capture.target.backend {
+                crate::ApiBackend::Messages => "messages",
+                crate::ApiBackend::Responses => "input",
+                _ => unreachable!(),
+            };
+            for change in ["empty", "extra_native", "ordinary"] {
+                let mut bad = plan.clone();
+                let mut body: Value = serde_json::from_slice(bad.carrier.bytes()).unwrap();
+                match change {
+                    "empty" => body[key] = json!([]),
+                    "extra_native" => body[key].as_array_mut().unwrap().push(json!({
+                        "type":"tool_search_call", "execution":"server", "arguments":{"query":"unprepared"}
+                    })),
+                    "ordinary" => {
+                        let last = body[key].as_array_mut().unwrap().last_mut().unwrap();
+                        last["content"] = json!("changed ordinary suffix");
+                    }
+                    _ => unreachable!(),
+                }
+                bad.carrier =
+                    NativeFinalCarrier::capture(serde_json::to_vec(&body).unwrap().into()).unwrap();
+                assert_eq!(
+                    passive_recheck(&bad),
+                    Err(NativePlanRefusal::FinalCarrierChanged),
+                    "F1 {key}/{change} is compared with the real lowerer without exclusions"
+                );
+            }
+        }
+    }
+
+    fn assert_unverified_keep_refused(plan: NativeHistoryPlan) {
+        assert!(
+            plan.core
+                .decision
+                .groups
+                .iter()
+                .any(|group| group.action == NativeHistoryAction::Keep)
+        );
+        assert_eq!(
+            passive_recheck(&plan),
+            Err(NativePlanRefusal::KeepCarrierUnverified),
+            "R3 a KEEP plan cannot certify an unverified native carrier"
+        );
+        assert_eq!(
+            plan.clone().send_only(),
+            Err(NativePlanRefusal::KeepCarrierUnverified)
+        );
+        let mut unchecked_ready = plan;
+        unchecked_ready.readiness = NativePlanReadiness::SendOnly;
+        assert_eq!(
+            validate_native_history_plan(
+                &unchecked_ready.context,
+                Some(&unchecked_ready),
+                &unchecked_ready.carrier
+            ),
+            Err(NativePlanRefusal::KeepCarrierUnverified)
+        );
+        let context = unchecked_ready.context.clone();
+        let required = unchecked_ready.require_generation(5, 7, None);
+        assert_eq!(
+            validate_native_history_plan(&context, Some(&required), &required.carrier),
+            Err(NativePlanRefusal::KeepCarrierUnverified)
+        );
+    }
+
+    #[test]
+    fn native_history_plan_rejects_messages_keep_legacy_carrier() {
+        let (_, plan) = passive_plan_candidate_for(PassiveMembers::MessagesKeep).unwrap();
+        let body: Value = serde_json::from_slice(plan.carrier.bytes()).unwrap();
+        assert!(!body["messages"].as_array().unwrap().is_empty());
+        assert_unverified_keep_refused(plan);
+    }
+
+    #[test]
+    fn native_history_plan_rejects_responses_keep_placeholder_carrier() {
+        let (_, plan) = passive_plan_candidate_for(PassiveMembers::ResponsesKeep).unwrap();
+        let body: Value = serde_json::from_slice(plan.carrier.bytes()).unwrap();
+        assert!(
+            body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["type"] == "message")
+        );
+        assert_unverified_keep_refused(plan);
+    }
+
+    #[test]
+    fn native_history_plan_rejects_responses_keep_raw_spliced_carrier() {
+        let (_, mut plan) = passive_plan_candidate_for(PassiveMembers::ResponsesKeep).unwrap();
+        let request = passive_request(&plan);
+        let replacements =
+            request.raw_responses_input_replacements(crate::ResponsesReplayDialect::Codex);
+        assert_eq!(replacements.len(), 2);
+        let mut body: Value = serde_json::from_slice(plan.carrier.bytes()).unwrap();
+        for replacement in replacements {
+            body["input"][replacement.input_item_index] = replacement.value;
+        }
+        assert_eq!(body["input"][0]["type"], "tool_search_call");
+        assert_eq!(body["input"][1]["type"], "tool_search_output");
+        plan.carrier =
+            NativeFinalCarrier::capture(serde_json::to_vec(&body).unwrap().into()).unwrap();
+        assert_unverified_keep_refused(plan);
+    }
+
+    #[test]
+    fn native_history_plan_rejects_responses_reasoning_finalize_rewrite() {
+        use async_openai::types::responses as rs;
+        let (_, mut plan) = passive_plan_fixture_for(PassiveMembers::ResponsesPair).unwrap();
+        passive_append_ordinary(
+            &mut plan,
+            ConversationItem::Reasoning(
+                rs::ReasoningItem {
+                    id: None,
+                    summary: Vec::new(),
+                    content: Some(vec![rs::ReasoningItemContent::ReasoningText(
+                        rs::ReasoningTextContent {
+                            text: "ordinary retained reasoning".into(),
+                        },
+                    )]),
+                    encrypted_content: None,
+                    status: Some(rs::OutputStatus::Completed),
+                }
+                .into(),
+            ),
+        );
+        plan = passive_recheck(&plan).unwrap();
+        assert_eq!(
+            validate_native_history_plan(&plan.context, Some(&plan), &plan.carrier),
+            Ok(NativeHistoryReady::SendOnly)
+        );
+        let mut body: Value = serde_json::from_slice(plan.carrier.bytes()).unwrap();
+        let typed_input = body["input"].clone();
+        crate::conversation::patch_reasoning_empty_ids(&mut body, "passive-target");
+        assert_ne!(
+            body["input"], typed_input,
+            "the actual reasoning finalize patch must change the input"
+        );
+        let finalized =
+            NativeFinalCarrier::capture(serde_json::to_vec(&body).unwrap().into()).unwrap();
+        assert_eq!(
+            validate_native_history_plan(&plan.context, Some(&plan), &finalized),
+            Err(NativePlanRefusal::FinalCarrierChanged)
+        );
+        plan.carrier = finalized;
+        assert_eq!(
+            passive_recheck(&plan),
+            Err(NativePlanRefusal::FinalCarrierChanged),
+            "R3 finalize-aware binding is deferred, not silently accepted"
         );
     }
 }
