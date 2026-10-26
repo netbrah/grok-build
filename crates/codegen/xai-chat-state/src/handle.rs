@@ -731,6 +731,42 @@ impl ChatStateHandle {
             .await.unwrap_or(Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence))
             .and_then(|mut reply| reply.lease.take().ok_or(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Indeterminate))
     }
+    pub async fn begin_native_capture_with_identity(
+        &self,
+        lineage: String,
+        request: String,
+        turn: u64,
+        inputs: Option<
+            std::sync::Arc<
+                xai_grok_sampling_types::conversation::native_search_history::NativeEligibleInputs,
+            >,
+        >,
+    ) -> Result<
+        xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        self.query("BeginNativeCaptureWithIdentity", |reply| ChatStateCommand::BeginNativeCaptureWithIdentity { lineage, request, turn, inputs, publication: crate::persistence::native::NativePrimaryPublication::Legacy, reply })
+            .await.unwrap_or(Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence))
+            .and_then(|mut reply| reply.lease.take().ok_or(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Indeterminate))
+    }
+    pub async fn begin_native_primary_capture(
+        &self,
+        lineage: String,
+        request: String,
+        turn: u64,
+        inputs: Option<
+            std::sync::Arc<
+                xai_grok_sampling_types::conversation::native_search_history::NativeEligibleInputs,
+            >,
+        >,
+    ) -> Result<
+        xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        self.query("BeginNativePrimaryCapture", |reply| ChatStateCommand::BeginNativeCaptureWithIdentity { lineage, request, turn, inputs, publication: crate::persistence::native::NativePrimaryPublication::Deferred, reply })
+            .await.unwrap_or(Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence))
+            .and_then(|mut reply| reply.lease.take().ok_or(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Indeterminate))
+    }
     pub async fn append_native_evidence(
         &self,
         request: String,
@@ -741,6 +777,17 @@ impl ChatStateHandle {
         xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
     > {
         self.query("AppendNativeEvidence", |reply| ChatStateCommand::AppendNativeEvidence { request, lease, event, reply })
+            .await.unwrap_or(Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence))
+    }
+    pub async fn resolve_native_primary(
+        &self,
+        lease: xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        decision: crate::persistence::native::NativePrimaryDecision,
+    ) -> Result<
+        crate::persistence::native::NativeAppendAck,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        self.query("ResolveNativePrimary", |reply| ChatStateCommand::ResolveNativePrimary { lease, decision, reply })
             .await.unwrap_or(Err(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::Persistence))
     }
     pub async fn read_native_history(

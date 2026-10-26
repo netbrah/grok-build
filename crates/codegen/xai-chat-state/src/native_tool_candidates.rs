@@ -8,6 +8,11 @@ use xai_grok_sampling_types::{ApiBackend, SamplingConfig, ToolExposure, ToolSpec
 pub struct NativeToolCandidates {
     pub(crate) specs: Vec<ToolSpec>,
     pub(crate) mcp_membership: BTreeSet<String>,
+    native_inputs: Option<
+        std::sync::Arc<
+            xai_grok_sampling_types::conversation::native_search_history::NativeEligibleInputs,
+        >,
+    >,
 }
 
 impl NativeToolCandidates {
@@ -16,6 +21,7 @@ impl NativeToolCandidates {
         Self {
             specs,
             mcp_membership: BTreeSet::new(),
+            native_inputs: None,
         }
     }
 
@@ -24,33 +30,88 @@ impl NativeToolCandidates {
         Self {
             specs,
             mcp_membership,
+            native_inputs: None,
         }
     }
 
     /// Select MCP exposure using the captured request row.
     pub fn select_for_row(self, config: &SamplingConfig) -> Vec<ToolSpec> {
-        let include_mcp = config.api_backend == ApiBackend::Messages && config.supports_search_tool;
-        self.specs
-            .into_iter()
-            .filter_map(|mut spec| {
-                if self.mcp_membership.contains(&spec.name) {
-                    if !include_mcp {
-                        return None;
-                    }
-                    spec.exposure = ToolExposure::Deferred;
-                }
-                Some(spec)
-            })
-            .collect()
+        self.select_with_identity(config).0
     }
 
     /// Transform prepared specs, preserving membership only for surviving tools.
     pub fn map_specs(mut self, transform: impl FnOnce(Vec<ToolSpec>) -> Vec<ToolSpec>) -> Self {
         self.specs = transform(self.specs);
+        self.native_inputs = None;
         let surviving_names: BTreeSet<_> =
             self.specs.iter().map(|spec| spec.name.as_str()).collect();
         self.mcp_membership
             .retain(|name| surviving_names.contains(name.as_str()));
+        self
+    }
+    /// Preserve the shell-owned envelope without interpreting tool namespaces.
+    pub fn with_native_inputs(
+        mut self,
+        inputs: Option<
+            std::sync::Arc<
+                xai_grok_sampling_types::conversation::native_search_history::NativeEligibleInputs,
+            >,
+        >,
+    ) -> Self {
+        self.native_inputs = inputs
+            .and_then(|inputs| inputs.with_appended(&self.specs).ok())
+            .map(std::sync::Arc::new);
+        self
+    }
+
+    pub fn select_with_identity(
+        self,
+        config: &SamplingConfig,
+    ) -> (
+        Vec<ToolSpec>,
+        Option<
+            std::sync::Arc<
+                xai_grok_sampling_types::conversation::native_search_history::NativeEligibleInputs,
+            >,
+        >,
+    ) {
+        let include_mcp = config.api_backend == ApiBackend::Messages && config.supports_search_tool;
+        let mut positions = Vec::new();
+        let mut specs = Vec::new();
+        for (position, mut spec) in self.specs.into_iter().enumerate() {
+            if self.mcp_membership.contains(&spec.name) {
+                if !include_mcp {
+                    continue;
+                }
+                spec.exposure = ToolExposure::Deferred;
+            }
+            positions.push(position);
+            specs.push(spec);
+        }
+        let inputs = self
+            .native_inputs
+            .and_then(|inputs| inputs.select_exposure(&positions, &specs).ok())
+            .map(std::sync::Arc::new);
+        (specs, inputs)
+    }
+
+    pub fn filter_positions(mut self, positions: &[usize]) -> Self {
+        let specs: Option<Vec<_>> = positions
+            .iter()
+            .map(|position| self.specs.get(*position).cloned())
+            .collect();
+        if let Some(specs) = specs {
+            self.native_inputs = self
+                .native_inputs
+                .and_then(|inputs| inputs.select(positions, &specs).ok())
+                .map(std::sync::Arc::new);
+            self.specs = specs;
+            let names: BTreeSet<_> = self.specs.iter().map(|spec| spec.name.as_str()).collect();
+            self.mcp_membership
+                .retain(|name| names.contains(name.as_str()));
+        } else {
+            self.native_inputs = None;
+        }
         self
     }
 }
@@ -61,6 +122,141 @@ mod tests {
     use xai_grok_sampling_types::{ApiBackend, ToolExposure};
 
     use super::*;
+
+    #[test]
+    fn native_identity_companion_tracks_surviving_specs() {
+        use crate::persistence::native::digest;
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let (builtins, mcp) = prepared_specs();
+        let specs: Vec<_> = builtins.iter().chain(&mcp).cloned().collect();
+        let entries = specs
+            .iter()
+            .enumerate()
+            .map(|(position, spec)| {
+                let (kind, namespace, child) = if position < builtins.len() {
+                    (
+                        NativeNamespaceKind::GrokBuild,
+                        "grok_build",
+                        spec.name.as_str(),
+                    )
+                } else {
+                    let (namespace, child) = spec.name.split_once("__").unwrap();
+                    (NativeNamespaceKind::Mcp, namespace, child)
+                };
+                let schema = encode_native(&spec.parameters, NATIVE_SOURCE_BYTES).unwrap();
+                NativeEligibleEntry::checked(
+                    position,
+                    kind,
+                    namespace.into(),
+                    child.into(),
+                    spec.clone(),
+                    schema.clone().into(),
+                    digest(&schema),
+                )
+                .unwrap()
+            })
+            .collect();
+        let inputs =
+            std::sync::Arc::new(NativeEligibleInputs::checked(entries, specs.len()).unwrap());
+        let candidates = candidates(&builtins, &mcp).with_native_inputs(Some(inputs.clone()));
+        let mut config: SamplingConfig = serde_json::from_value(json!({
+            "base_url":"https://u3.invalid", "model":"u3", "context_window":128000,
+            "api_backend":"messages", "supports_search_tool":true
+        }))
+        .unwrap();
+        let (selected, identity) = candidates.clone().select_with_identity(&config);
+        let identity = identity.unwrap();
+        assert!(identity.matches_specs(&selected));
+        assert_eq!(identity.entries().len(), specs.len());
+        assert_eq!(
+            identity.entries()[2].namespace_kind(),
+            NativeNamespaceKind::Mcp
+        );
+        assert_eq!(identity.entries()[2].qualified_namespace(), "alpha");
+        assert_eq!(identity.entries()[2].child_name(), "lookup");
+        assert_eq!(
+            identity.entries()[2].schema_bytes(),
+            serde_json::to_vec(&mcp[0].parameters).unwrap()
+        );
+        assert_eq!(
+            identity.entries()[2].declaration().exposure,
+            ToolExposure::Deferred
+        );
+        let (reordered, identity) = candidates
+            .clone()
+            .filter_positions(&[3, 0, 2])
+            .select_with_identity(&config);
+        let identity = identity.unwrap();
+        assert!(identity.matches_specs(&reordered));
+        assert_eq!(
+            identity
+                .entries()
+                .iter()
+                .map(|entry| (entry.position(), entry.child_name()))
+                .collect::<Vec<_>>(),
+            vec![(0, "fetch"), (1, "z_builtin"), (2, "lookup")]
+        );
+        assert_eq!(
+            identity.entries()[0].schema_digest(),
+            inputs.entries()[3].schema_digest()
+        );
+        let (_, ambiguous) = candidates
+            .clone()
+            .filter_positions(&[2, 2])
+            .select_with_identity(&config);
+        assert!(
+            ambiguous.is_none(),
+            "duplicate original positions cannot inherit identity"
+        );
+        let mut appended = specs.clone();
+        appended.push(mcp[0].clone());
+        let appended_inputs = inputs.with_appended(&appended).unwrap();
+        assert!(appended_inputs.matches_specs(&appended));
+        assert_eq!(appended_inputs.entries().len(), specs.len());
+        assert!(
+            !appended_inputs
+                .entries()
+                .iter()
+                .any(|entry| entry.position() == specs.len())
+        );
+        let (_, mapped) = candidates
+            .clone()
+            .map_specs(|mut values| {
+                values.push(values[2].clone());
+                values
+            })
+            .select_with_identity(&config);
+        assert!(
+            mapped.is_none(),
+            "arbitrary maps cannot back appended equal-valued stubs"
+        );
+        for change in 0..3 {
+            let mut changed = specs.clone();
+            match change {
+                0 => changed[2].parameters["properties"]["query"]["default"] = json!("changed"),
+                1 => changed[2].description = Some("changed declaration".into()),
+                _ => changed[2].parameters["description"] = json!("changed schema description"),
+            }
+            let filtered = inputs
+                .select(&(0..specs.len()).collect::<Vec<_>>(), &changed)
+                .unwrap();
+            assert_eq!(filtered.entries().len(), specs.len() - 1);
+            assert!(!filtered.entries().iter().any(|entry| entry.position() == 2));
+        }
+        config.supports_search_tool = false;
+        let (selected, identity) = candidates.select_with_identity(&config);
+        assert_eq!(
+            serde_json::to_value(&selected).unwrap(),
+            serde_json::to_value(&builtins).unwrap()
+        );
+        assert!(identity.unwrap().matches_specs(&selected));
+        let empty = inputs.select(&[], &[]).unwrap();
+        assert!(empty.entries().is_empty());
+        assert!(empty.matches_specs(&[]));
+        let (_, legacy) = NativeToolCandidates::builtins_only(specs).select_with_identity(&config);
+        assert!(legacy.is_none());
+        assert!(!format!("{inputs:?}").contains("alpha__lookup"));
+    }
 
     fn prepared_specs() -> (Vec<ToolSpec>, Vec<ToolSpec>) {
         let builtins = vec![

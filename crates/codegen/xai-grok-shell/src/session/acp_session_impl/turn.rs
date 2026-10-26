@@ -2971,8 +2971,8 @@ impl SessionActor {
                 })),
             );
             let model_timer = std::time::Instant::now();
-            let model_sampler_outcome = self
-                .run_turn_via_sampler(
+            let primary_outcome = self
+                .run_primary_turn_via_sampler(
                     request.clone(),
                     binding,
                     &mut rate_limit_waits,
@@ -2986,6 +2986,10 @@ impl SessionActor {
                     turn_parked,
                 )
                 .await;
+            let (model_sampler_outcome, primary_receipt) = match primary_outcome {
+                Ok((outcome, receipt)) => (Ok(outcome), receipt),
+                Err(error) => (Err(error), None),
+            };
             let (response, latency) = match model_sampler_outcome {
                 Ok(SamplerTurnOutcome::Response(r, latency)) => {
                     salvage.response_arrived();
@@ -3385,6 +3389,11 @@ impl SessionActor {
                     },
                 ))
                 .await;
+                self.resolve_primary_native(
+                    primary_receipt,
+                    xai_chat_state::persistence::native::NativePrimaryDecision::Rejected,
+                )
+                .await;
                 self.push_system_reminder(&reminder);
                 self.turn_phases.discard_uncommitted_first_token();
                 self.turn_phases.discard_uncommitted_first_meaningful();
@@ -3416,6 +3425,11 @@ impl SessionActor {
                     && !tool_calls.is_empty(),
             ) {
                 LengthSalvageAction::Exhausted => {
+                    self.resolve_primary_native(
+                        primary_receipt,
+                        xai_chat_state::persistence::native::NativePrimaryDecision::Rejected,
+                    )
+                    .await;
                     tracing::error!(
                         session_id = %self.session_info.id,
                         max = MAX_OUTPUT_TOKEN_LIMIT_RETRIES,
@@ -3434,6 +3448,11 @@ impl SessionActor {
             // never dispatched, and the turn completes with the typed terminal.
             // Provenance: frozen-spec@2cbc222c §6.3 L4278/L4284-85.
             if (turn_refused || turn_context_full) && !tool_calls.is_empty() {
+                self.resolve_primary_native(
+                    primary_receipt,
+                    xai_chat_state::persistence::native::NativePrimaryDecision::Rejected,
+                )
+                .await;
                 // Generalize the refusal notice (G5): refusal-with-tools is NOT
                 // `response_is_empty`, so the reject path has its own emission.
                 let notice = if turn_refused {
@@ -3529,6 +3548,11 @@ impl SessionActor {
             );
             self.record_response_items(response.items, usage_reported)
                 .await;
+            self.resolve_primary_native(
+                primary_receipt,
+                xai_chat_state::persistence::native::NativePrimaryDecision::Committed,
+            )
+            .await;
             record_response_span.close();
             if inject_length_reminder {
                 // Flush after tool results so the reminder cannot split their pairing run.

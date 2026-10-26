@@ -7763,3 +7763,972 @@ async fn equal_cutover_requests_keep_equal_prefix_bytes() {
         assert_eq!(super::SessionActor::a3_take_outer_builds().len(),3,"A6 one actual build per request");
     }).await;
 }
+
+struct U3IdentitySession {
+    actor: std::sync::Arc<super::SessionActor>,
+    persistence: crate::session::persistence::PersistenceHandle,
+    directory: tempfile::TempDir,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+    _models: tempfile::TempDir,
+}
+
+impl Drop for U3IdentitySession {
+    fn drop(&mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+    }
+}
+
+impl U3IdentitySession {
+    async fn new(server: &xai_grok_test_support::MockInferenceServer) -> Self {
+        use crate::session::persistence::PersistenceMsg;
+        let directory = tempfile::tempdir().unwrap();
+        let config = xai_grok_sampler::SamplerConfig {
+            base_url: server.url(),
+            model: "u3-identity".into(),
+            api_key: Some("u3-loopback-fixture".into()),
+            api_backend: ApiBackend::Messages,
+            max_completion_tokens: Some(4096),
+            max_retries: Some(0),
+            ..Default::default()
+        };
+        let info = crate::session::info::Info {
+            id: agent_client_protocol::SessionId::new(format!(
+                "u3-identity-{}",
+                directory.path().file_name().unwrap().to_string_lossy()
+            )),
+            cwd: directory.path().to_string_lossy().into_owned(),
+        };
+        let persistence = crate::session::persistence::new_with_explicit_dir(
+            &info,
+            directory.path().to_path_buf(),
+            agent_client_protocol::ModelId::new("u3-identity"),
+            xai_grok_sampler::SamplingClient::new(config.clone()).unwrap(),
+            "u3-identity".into(),
+            crate::session::persistence::ExplicitSessionOpen::New {
+                identity: None,
+                next_trace_turn: None,
+            },
+        )
+        .await
+        .unwrap();
+        let (gateway_tx, gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+        support::drain_gateway(gateway_rx);
+        let (mut actor, _) = support::create_test_actor_with_chat_persistence(
+            0,
+            256_000,
+            85,
+            gateway_tx,
+            persistence.tx.clone(),
+            Box::new(
+                crate::session::chat_persistence::ChannelChatPersistence::new(
+                    persistence.tx.clone(),
+                ),
+            ),
+        )
+        .await;
+        actor.session_info = info;
+        actor.max_retries = 0;
+        actor.attach_non_interactive.set(true);
+        actor.memory.flush_config.enabled = false;
+        actor.memory.dream_config.enabled = false;
+        actor.memory.save_on_end = false;
+        let (manager, models) = support::manager_with_entries();
+        let mut entry = support::entry_with_search_flag("u3-identity", true);
+        entry.info.api_backend = ApiBackend::Messages;
+        entry.api_base_url = Some(server.url());
+        entry.api_key = Some("u3-loopback-fixture".into());
+        manager.insert_test_entry("u3-identity", entry);
+        manager.set_current_model_id(agent_client_protocol::ModelId::new("u3-identity"));
+        actor.models_manager = manager;
+        let mut binding = actor
+            .chat_state_handle
+            .capture_transport_binding()
+            .await
+            .unwrap();
+        binding.config.base_url = server.url();
+        binding.config.model = "u3-identity".into();
+        binding.config.api_backend = ApiBackend::Messages;
+        binding.config.supports_search_tool = true;
+        binding.config.max_completion_tokens = Some(4096);
+        binding.config.max_retries = Some(0);
+        binding.credentials.api_key = Some("u3-loopback-fixture".into());
+        binding.credentials.auth_type = xai_chat_state::AuthType::ApiKey;
+        actor
+            .chat_state_handle
+            .install_transport_binding(binding)
+            .await
+            .unwrap();
+        let (sampler_tx, mut sampler_rx) = tokio::sync::mpsc::unbounded_channel();
+        actor.sampler_handle = xai_grok_sampler::SamplerActor::spawn(
+            config,
+            xai_grok_sampler::RetryPolicy {
+                max_retries: 0,
+                ..Default::default()
+            },
+            sampler_tx,
+        );
+        let actor = std::sync::Arc::new(actor);
+        let drainer = actor.clone();
+        let sampler_task = tokio::task::spawn_local(async move {
+            while let Some(event) = sampler_rx.recv().await {
+                drainer.handle_sampling_event(event).await;
+            }
+        });
+        let (respond_to, receiver) = tokio::sync::oneshot::channel();
+        persistence
+            .tx
+            .send(PersistenceMsg::FlushAndAck { respond_to })
+            .unwrap();
+        receiver.await.unwrap().unwrap();
+        Self {
+            actor,
+            persistence,
+            directory,
+            tasks: vec![sampler_task],
+            _models: models,
+        }
+    }
+
+    async fn primary(&self, request: &str) {
+        use crate::session::persistence::PersistenceMsg;
+        self.actor
+            .chat_state_handle
+            .push_user_message_and_ack(ConversationItem::user("find both registered tools"))
+            .await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            self.actor.process_conversation_turn_with_recovery(
+                request,
+                None,
+                None,
+                None,
+                &mut super::super::length_salvage::LengthSalvage::new(None),
+                &mut Default::default(),
+            ),
+        )
+        .await
+        .expect("U3 real primary deadline")
+        .expect("U3 real primary completes");
+        self.actor.chat_state_handle.get_conversation().await;
+        let (respond_to, receiver) = tokio::sync::oneshot::channel();
+        self.persistence
+            .tx
+            .send(PersistenceMsg::FlushAndAck { respond_to })
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(30), receiver)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+}
+
+fn u3_identity_frames(names: &[&str]) -> xai_grok_test_support::ScriptedResponse {
+    use serde_json::json;
+    let references: Vec<_> = names
+        .iter()
+        .map(|name| json!({"type":"tool_reference","tool_name":name}))
+        .collect();
+    let frames = vec![
+        json!({"type":"message_start","message":{"id":"msg_u3","type":"message","role":"assistant","model":"u3-identity","content":[],"stop_reason":null,"usage":{"input_tokens":11,"output_tokens":0}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_u3","name":"tool_search_tool_regex","input":{}}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"lookup\"}"}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_u3","content":{"type":"tool_search_tool_search_result","tool_references":references}}}),
+        json!({"type":"content_block_stop","index":1}),
+        json!({"type":"content_block_start","index":2,"content_block":{"type":"text","text":"Both tools found."}}),
+        json!({"type":"content_block_stop","index":2}),
+        json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":11,"output_tokens":7}}),
+        json!({"type":"message_stop"}),
+    ];
+    xai_grok_test_support::ScriptedResponse::sse(
+        frames
+            .into_iter()
+            .map(|frame| xai_grok_test_support::SseEvent::data(frame.to_string()))
+            .collect(),
+    )
+}
+
+fn u3_disk_value(directory: &std::path::Path, reference: &serde_json::Value) -> serde_json::Value {
+    use sha2::{Digest, Sha256};
+    let digest = reference["digest"].as_str().unwrap();
+    assert_eq!(digest.len(), 64);
+    assert!(
+        digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    );
+    let raw = std::fs::read(
+        directory
+            .join("native_history/blobs")
+            .join(format!("{digest}.json")),
+    )
+    .unwrap();
+    assert_eq!(raw.len() as u64, reference["byte_len"].as_u64().unwrap());
+    assert_eq!(format!("{:x}", Sha256::digest(&raw)), digest);
+    serde_json::from_slice(&raw).unwrap()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_identity_companion_comes_from_single_typed_snapshot() {
+    use crate::session::storage::StorageAdapter;
+    use serde_json::json;
+    tokio::task::LocalSet::new().run_until(async {
+        let server = xai_grok_test_support::MockInferenceServer::start().await.unwrap();
+        server.enqueue_response("/v1/messages", u3_identity_frames(&["alpha__lookup", "zeta__fetch"]));
+        let session = U3IdentitySession::new(&server).await;
+        let schemas = [
+            json!({"type":"object","description":"Lookup schema retained verbatim","properties":{"query":{"type":"string","default":"account","description":"Exact query"}},"required":["query"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"url":{"type":"string"},"limit":{"type":"integer","default":7}},"required":["url"],"additionalProperties":false}),
+        ];
+        register_native_fixture(&session.actor, "alpha__lookup", ToolNamespace::MCP, "Typed lookup declaration", schemas[0].clone());
+        register_native_fixture(&session.actor, "zeta__fetch", ToolNamespace::MCP, "Typed fetch declaration", schemas[1].clone());
+        let _trace = trace_native_snapshots(None);
+        let _outer = super::SessionActor::a3_trace_outer(None);
+        session.primary("u3-primary").await;
+        assert_eq!(observed_native_snapshots().len(), 1, "U3 uses one typed preparation snapshot");
+        let builds = super::SessionActor::a3_take_outer_builds();
+        assert_eq!(builds.len(), 1, "U3 builds the submitted request once");
+        assert_eq!(server.messages_request_count(), 1);
+        let requests = server.requests();
+        let body = requests.iter().find(|request| request.path == "/v1/messages").unwrap().body.as_ref().unwrap();
+        for (name, schema) in ["alpha__lookup", "zeta__fetch"].into_iter().zip(&schemas) {
+            let tool = body["tools"].as_array().unwrap().iter().find(|tool| tool["name"] == name).unwrap();
+            assert_eq!(tool["input_schema"], *schema);
+            assert_eq!(tool["defer_loading"], true);
+        }
+        let adapter = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(session.directory.path().to_path_buf());
+        let full = adapter.load_session(&session.actor.session_info).await.unwrap();
+        let light = adapter.load_session_without_updates(&session.actor.session_info).await.unwrap();
+        assert_eq!(serde_json::to_value(&full.chat_history).unwrap(), serde_json::to_value(&light.chat_history).unwrap());
+        let read = adapter.read_native_history(&session.actor.session_info).await.unwrap().checkpoint.expect("U3 typed identities must reach a real acknowledged checkpoint");
+        read.matches_history(&full.chat_history).unwrap();
+        let record: serde_json::Value = serde_json::from_slice(&std::fs::read(session.directory.path().join("native_history/current.json")).unwrap()).unwrap();
+        let source = u3_disk_value(session.directory.path(), &record["source"]);
+        let ledger = u3_disk_value(session.directory.path(), &record["ledger"]);
+        assert_eq!(source["responses"].as_array().unwrap().len(), 1);
+        assert_eq!(source["ordered_blocks"].as_array().unwrap().len(), 3);
+        assert_eq!(ledger["usage"][0]["observed"]["output_tokens"], 7);
+        assert_eq!(source["eligible_snapshots"].as_array().unwrap().len(), 2, "U3 typed producer identities must reach the actual persisted source");
+        assert_eq!(record["schema_version"], 2);
+        assert_eq!(record["reader_floor"], 2);
+        let links = source["eligible_member_links"].as_array().expect("A1 required source relation");
+        assert_eq!(links.len(), 2);
+        assert_eq!(ledger["eligible_member_accounting"].as_array().unwrap().len(), 2);
+        use xai_grok_sampling_types::conversation::native_search_history::*;
+        let original = u3_reload(&session).await;
+        u3_assert_backed(&original, 0, NativeNamespaceKind::Mcp, "alpha", "lookup", &schemas[0]);
+        u3_assert_backed(&original, 1, NativeNamespaceKind::Mcp, "zeta", "fetch", &schemas[1]);
+        assert_eq!(original.eligible_members().unwrap().iter().map(|link| link.source.submember).collect::<Vec<_>>(), vec![Some(0), Some(1)]);
+        u3_deterministic_payload(builds[0].0.native_eligible_inputs.as_deref().unwrap());
+        u3_authority_mismatch(&session).await;
+        u3_wrong_member_reader_fixture(&session, builds[0].0.native_eligible_inputs.as_deref().unwrap()).await;
+        let bridge = session.actor.agent.borrow().tool_bridge().clone();
+        assert!(bridge.unregister_tool_by_name("alpha__lookup"));
+        assert!(bridge.unregister_tool_by_name("zeta__fetch"));
+        register_native_fixture(&session.actor, "zeta__fetch", ToolNamespace::MCP, "Typed fetch declaration", schemas[1].clone());
+        register_native_fixture(&session.actor, "alpha__lookup", ToolNamespace::MCP, "Typed lookup declaration", schemas[0].clone());
+        server.enqueue_response("/v1/messages", u3_identity_frames(&["zeta__fetch", "alpha__lookup", "alpha__lookup"]));
+        session.primary("u3-reregistered").await;
+        let reordered = u3_reload(&session).await;
+        u3_assert_backed(&reordered, 2, NativeNamespaceKind::Mcp, "zeta", "fetch", &schemas[1]);
+        u3_assert_backed(&reordered, 3, NativeNamespaceKind::Mcp, "alpha", "lookup", &schemas[0]);
+        u3_assert_backed(&reordered, 4, NativeNamespaceKind::Mcp, "alpha", "lookup", &schemas[0]);
+        assert_eq!(reordered.eligible_members().unwrap()[3].identity, reordered.eligible_members().unwrap()[4].identity);
+        assert_ne!(reordered.eligible_members().unwrap()[3].source, reordered.eligible_members().unwrap()[4].source);
+        for reference in &original.source.eligible_snapshots { assert_eq!(reordered.blobs[&reference.digest], original.blobs[&reference.digest]); }
+        assert!(bridge.unregister_tool_by_name("zeta__fetch"));
+        server.enqueue_response("/v1/messages", u3_identity_frames(&["alpha__lookup", "zeta__fetch"]));
+        session.primary("u3-removed-second").await;
+        let removed = u3_reload(&session).await;
+        u3_assert_backed(&removed, 5, NativeNamespaceKind::Mcp, "alpha", "lookup", &schemas[0]);
+        assert!(matches!(removed.eligible_members().unwrap()[6].identity, NativeEligibleMemberIdentity::Unavailable { reason: NativeUnavailable::UnknownIdentity }));
+        let mut changed_schema = schemas[1].clone();
+        changed_schema["properties"]["limit"]["default"] = json!(8);
+        changed_schema["description"] = json!("Changed schema and declaration");
+        register_native_fixture(&session.actor, "zeta__fetch", ToolNamespace::MCP, "Changed declaration", changed_schema.clone());
+        server.enqueue_response("/v1/messages", u3_identity_frames(&["zeta__fetch"]));
+        session.primary("u3-changed-schema").await;
+        let changed = u3_reload(&session).await;
+        u3_assert_backed(&changed, 7, NativeNamespaceKind::Mcp, "zeta", "fetch", &changed_schema);
+        u3_assert_backed(&changed, 1, NativeNamespaceKind::Mcp, "zeta", "fetch", &schemas[1]);
+        assert!(bridge.unregister_tool_by_name("zeta__fetch"));
+        register_native_fixture(&session.actor, "zeta__fetch", ToolNamespace::GrokBuild, "Typed fetch declaration", schemas[1].clone());
+        server.enqueue_response("/v1/messages", u3_identity_frames(&["zeta__fetch"]));
+        session.primary("u3-namespace-collision").await;
+        let collision = u3_reload(&session).await;
+        u3_assert_backed(&collision, 8, NativeNamespaceKind::GrokBuild, "grok_build", "zeta__fetch", &schemas[1]);
+        assert_eq!(observed_native_snapshots().len(), 5, "one typed snapshot per real primary");
+        assert_eq!(super::SessionActor::a3_take_outer_builds().len(), 4);
+        for source in [&reordered, &removed, &changed, &collision] {
+            assert_eq!(&source.source.ordered_blocks[..3], original.source.ordered_blocks.as_slice());
+            assert_eq!(source.ledger.usage[0], original.ledger.usage[0]);
+        }
+        let empty_server = xai_grok_test_support::MockInferenceServer::start().await.unwrap();
+        let empty = U3IdentitySession::new(&empty_server).await;
+        register_native_fixture(&empty.actor, "alpha__lookup", ToolNamespace::MCP, "Typed lookup declaration", schemas[0].clone());
+        let mut binding = empty.actor.chat_state_handle.capture_transport_binding().await.unwrap();
+        binding.config.supports_search_tool = false;
+        empty.actor.chat_state_handle.install_transport_binding(binding).await.unwrap();
+        empty_server.enqueue_response("/v1/messages", u3_identity_frames(&[]));
+        empty.primary("u3-empty-selection").await;
+        let selected_empty = u3_reload(&empty).await;
+        assert_eq!(selected_empty.record.schema_version, 2, "R4 a nonempty registry snapshot retains a checked empty selection");
+        assert!(selected_empty.eligible_members().unwrap().is_empty());
+        assert!(selected_empty.source.eligible_snapshots.is_empty());
+        let empty_builds = super::SessionActor::a3_take_outer_builds();
+        let empty_request = &empty_builds.last().unwrap().0;
+        assert!(empty_request.tools.is_empty());
+        assert!(empty_request.native_eligible_inputs.as_ref().unwrap().entries().is_empty());
+        for fail_migration in [false, true] {
+            let server = xai_grok_test_support::MockInferenceServer::start().await.unwrap();
+            let migration = U3IdentitySession::new(&server).await;
+            server.enqueue_response("/v1/messages", u3_identity_frames(&["alpha__lookup", "zeta__fetch"]));
+            migration.primary("u3-legacy-primary").await;
+            let legacy = u3_reload(&migration).await;
+            assert_eq!((legacy.record.schema_version, legacy.record.policy_revision, legacy.record.reader_floor, legacy.record.limits_revision), (1, 1, 1, 1));
+            assert!(legacy.eligible_members().unwrap().iter().all(|link| matches!(link.identity, NativeEligibleMemberIdentity::Unavailable { reason: NativeUnavailable::UnknownIdentity })));
+            register_native_fixture(&migration.actor, "alpha__lookup", ToolNamespace::MCP, "Typed lookup declaration", schemas[0].clone());
+            register_native_fixture(&migration.actor, "zeta__fetch", ToolNamespace::MCP, "Typed fetch declaration", schemas[1].clone());
+            let lock = if fail_migration {
+                let file = std::fs::OpenOptions::new().read(true).write(true).open(migration.directory.path().join("native_history/transaction.lock")).unwrap();
+                fs2::FileExt::try_lock_exclusive(&file).unwrap();
+                Some(file)
+            } else { None };
+            server.enqueue_response("/v1/messages", u3_identity_frames(&["alpha__lookup", "zeta__fetch"]));
+            migration.primary("u3-typed-successor").await;
+            if let Some(file) = &lock { fs2::FileExt::unlock(file).unwrap(); }
+            let migrated = u3_reload(&migration).await;
+            if fail_migration {
+                assert_eq!(migrated.bytes, legacy.bytes, "failed real migration acknowledgement retains the old generation");
+                assert_eq!(migrated.source, legacy.source);
+            } else {
+                assert_eq!((migrated.record.schema_version, migrated.record.policy_revision, migrated.record.reader_floor, migrated.record.limits_revision), (2, 1, 2, 1));
+                assert_eq!(&migrated.source.ordered_blocks[..3], legacy.source.ordered_blocks.as_slice());
+                assert_eq!(&migrated.ledger.accounting[..3], legacy.ledger.accounting.as_slice());
+                assert_eq!(migrated.ledger.usage[0], legacy.ledger.usage[0]);
+                assert!(migrated.eligible_members().unwrap()[..2].iter().all(|link| matches!(link.identity, NativeEligibleMemberIdentity::Unavailable { reason: NativeUnavailable::UnknownIdentity })));
+                u3_assert_backed(&migrated, 2, NativeNamespaceKind::Mcp, "alpha", "lookup", &schemas[0]);
+                u3_assert_backed(&migrated, 3, NativeNamespaceKind::Mcp, "zeta", "fetch", &schemas[1]);
+            }
+            assert_eq!(server.messages_request_count(), 2, "native migration does not replay ordinary inference");
+        }
+        super::SessionActor::a3_take_outer_builds();
+        for unknown_block in [false, true] {
+            let server = xai_grok_test_support::MockInferenceServer::start().await.unwrap();
+            let partial = U3IdentitySession::new(&server).await;
+            register_native_fixture(&partial.actor, "alpha__lookup", ToolNamespace::MCP, "Typed lookup declaration", schemas[0].clone());
+            register_native_fixture(&partial.actor, "zeta__fetch", ToolNamespace::MCP, "Typed fetch declaration", schemas[1].clone());
+            let mut scripted = u3_identity_frames(&["alpha__lookup", "zeta__fetch"]);
+            let xai_grok_test_support::scripted::ScriptedBody::Sse(events) = &mut scripted.body else { unreachable!() };
+            let at = events.len() - 2;
+            if unknown_block {
+                events.insert(at, xai_grok_test_support::SseEvent::data(json!({"type":"content_block_start","index":3,"content_block":{"type":"future_block","payload":"bounded unknown"}}).to_string()));
+                events.insert(at + 1, xai_grok_test_support::SseEvent::data(json!({"type":"content_block_stop","index":3}).to_string()));
+            } else {
+                events.insert(at, xai_grok_test_support::SseEvent::data(json!({"type":"future_event","payload":"bounded unknown"}).to_string()));
+            }
+            server.enqueue_response("/v1/messages", scripted);
+            partial.primary("u3-typed-partial").await;
+            let checkpoint = u3_reload(&partial).await;
+            assert_eq!(checkpoint.source.responses[0].status, NativeResponseStatus::PartialTerminal(NativeUnavailable::Fidelity));
+            assert!(checkpoint.active.view_links.is_empty(), "typed partial source never becomes an accepted view");
+            assert_eq!(checkpoint.ledger.usage[0].observed["output_tokens"], 7);
+            u3_assert_backed(&checkpoint, 0, NativeNamespaceKind::Mcp, "alpha", "lookup", &schemas[0]);
+            u3_assert_backed(&checkpoint, 1, NativeNamespaceKind::Mcp, "zeta", "fetch", &schemas[1]);
+            assert_eq!(super::SessionActor::a3_take_outer_builds().len(), 1);
+        }
+        u3_bridge_identity_surfaces().await;
+    }).await;
+}
+
+async fn u3_reload(
+    session: &U3IdentitySession,
+) -> xai_chat_state::persistence::native::NativeCheckpoint {
+    use crate::session::storage::StorageAdapter;
+    let adapter = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
+        session.directory.path().to_path_buf(),
+    );
+    let full = adapter
+        .load_session(&session.actor.session_info)
+        .await
+        .unwrap();
+    let light = adapter
+        .load_session_without_updates(&session.actor.session_info)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&full.chat_history).unwrap(),
+        serde_json::to_value(&light.chat_history).unwrap()
+    );
+    let checkpoint = adapter
+        .read_native_history(&session.actor.session_info)
+        .await
+        .unwrap()
+        .checkpoint
+        .expect("U3 typed identities must reach a real acknowledged checkpoint");
+    checkpoint.matches_history(&full.chat_history).unwrap();
+    assert_eq!(
+        checkpoint.bytes.as_ref(),
+        std::fs::read(session.directory.path().join("native_history/current.json")).unwrap()
+    );
+    let authority: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            session
+                .directory
+                .path()
+                .join("native_history/authority.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        authority["schema_version"],
+        checkpoint.record.schema_version
+    );
+    assert_eq!(authority["high_water"], checkpoint.record.high_water);
+    (*checkpoint).clone()
+}
+
+fn u3_assert_backed(
+    checkpoint: &xai_chat_state::persistence::native::NativeCheckpoint,
+    index: usize,
+    kind: xai_grok_sampling_types::conversation::native_search_history::NativeNamespaceKind,
+    namespace: &str,
+    child: &str,
+    expected_schema: &serde_json::Value,
+) {
+    use sha2::{Digest, Sha256};
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let links = checkpoint.eligible_members().unwrap();
+    let link = &links[index];
+    let NativeEligibleMemberIdentity::Backed { eligible_ref } = &link.identity else {
+        panic!("every selected reference must retain its own typed identity at {index}");
+    };
+    let bytes = &checkpoint.blobs[&eligible_ref.digest];
+    assert_eq!(bytes.len() as u64, eligible_ref.byte_len);
+    assert_eq!(format!("{:x}", Sha256::digest(bytes)), eligible_ref.digest);
+    let snapshot: NativeEligibleSnapshot = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(
+        (
+            snapshot.version,
+            snapshot.namespace_kind,
+            snapshot.qualified_namespace.as_str(),
+            snapshot.child_name.as_str()
+        ),
+        (1, kind, namespace, child)
+    );
+    let schema_bytes = serde_json::to_vec(expected_schema).unwrap();
+    assert_eq!(
+        checkpoint.blobs[&snapshot.schema.digest].as_ref(),
+        schema_bytes
+    );
+    assert_eq!(
+        snapshot.schema.digest,
+        format!("{:x}", Sha256::digest(&schema_bytes))
+    );
+    assert_eq!(snapshot.schema.kind, "eligible_schema");
+    assert_eq!(snapshot.schema.byte_len, schema_bytes.len() as u64);
+    let parent = &checkpoint.source.ordered_blocks[link.source.occurrence as usize];
+    let mut coordinate = parent.coordinates.clone();
+    coordinate.submember = link.source.submember;
+    assert_eq!(link.source, coordinate);
+    let binding = checkpoint
+        .source
+        .producing_bindings
+        .iter()
+        .find(|binding| binding.request == parent.coordinates.producing_binding)
+        .unwrap();
+    assert_eq!(snapshot.binding, binding.origin_ref);
+    assert_eq!(
+        binding.origin["status"], "Unknown",
+        "typed eligibility is not domain readiness"
+    );
+    let NativeIdentityExtension::Revision2 {
+        eligible_member_accounting,
+        ..
+    } = &checkpoint.identity
+    else {
+        panic!("A1 requires witnesses");
+    };
+    let witness = &eligible_member_accounting[index];
+    assert_eq!(witness.source, coordinate);
+    assert_eq!(
+        witness.source_digest,
+        checkpoint
+            .ledger
+            .accounting
+            .iter()
+            .find(|entry| entry.source == parent.coordinates)
+            .unwrap()
+            .source_digest
+    );
+    assert!(checkpoint.source.eligible_snapshots.contains(eligible_ref));
+}
+
+fn u3_deterministic_payload(
+    inputs: &xai_grok_sampling_types::conversation::native_search_history::NativeEligibleInputs,
+) {
+    use serde_json::json;
+    use xai_chat_state::persistence::native::NativeCheckpoint;
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let raws = [
+        json!({"type":"server_tool_use","id":"srvtoolu_u3","name":"tool_search_tool_regex","input":{"query":"lookup"}}),
+        json!({"type":"tool_search_tool_result","tool_use_id":"srvtoolu_u3","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"alpha__lookup"},{"type":"tool_reference","tool_name":"zeta__fetch"}]}}),
+    ];
+    let attempt = NativeAttemptEvidence {
+        attempt: 1,
+        admitted: true,
+        response_started: true,
+        provider_response_id: Some(json!("msg_u3")),
+        source_stop_reason: Some("end_turn".into()),
+        stream_complete: true,
+        status: NativeResponseStatus::Accepted,
+        blocks: raws
+            .into_iter()
+            .enumerate()
+            .map(|(index, raw)| NativeCapturedBlock {
+                wire_index: index as u32,
+                arrival_ordinal: index as u64,
+                raw: raw.to_string(),
+                partial_json: None,
+                state: NativeBlockState::ClosedFaithful,
+            })
+            .collect(),
+        usage: std::collections::BTreeMap::from([
+            ("input_tokens".into(), json!(11)),
+            ("output_tokens".into(), json!(7)),
+        ]),
+        latency_ms: Some(1),
+        http_dispatches: 1,
+        observed_bytes: 100,
+        failed_block: None,
+        view_roles: vec![None, None],
+        view_digests: Vec::new(),
+    };
+    let encode = || {
+        let lease = NativeCaptureLease::issue(
+            "mock".into(),
+            "u3-deterministic".into(),
+            1,
+            1,
+            NATIVE_SOURCE_BYTES,
+        );
+        NativeCheckpoint::append_with_identity(
+            None,
+            &lease,
+            &[std::sync::Arc::new(attempt.clone())],
+            &[],
+            Some(inputs),
+        )
+        .unwrap()
+    };
+    let first = encode();
+    let second = encode();
+    assert_eq!(first.bytes, second.bytes);
+    assert_eq!(first.blobs, second.blobs);
+    let legacy_lease = NativeCaptureLease::issue(
+        "mock".into(),
+        "u3-legacy-fixture".into(),
+        1,
+        1,
+        NATIVE_SOURCE_BYTES,
+    );
+    let legacy =
+        NativeCheckpoint::append(None, &legacy_lease, &[std::sync::Arc::new(attempt)], &[])
+            .unwrap();
+    assert_eq!(
+        (legacy.record.schema_version, legacy.record.reader_floor),
+        (1, 1)
+    );
+    let payloads = |checkpoint: &NativeCheckpoint| {
+        checkpoint
+            .blobs
+            .iter()
+            .map(|(digest, bytes)| (digest.clone(), String::from_utf8(bytes.to_vec()).unwrap()))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    println!(
+        "U3_DETERMINISTIC_PAYLOAD {}",
+        json!({"record":String::from_utf8(first.bytes.to_vec()).unwrap(),"blobs":payloads(&first),"legacy_record":String::from_utf8(legacy.bytes.to_vec()).unwrap(),"legacy_blobs":payloads(&legacy)})
+    );
+}
+
+async fn u3_authority_mismatch(session: &U3IdentitySession) {
+    use crate::session::storage::StorageAdapter;
+    let path = session
+        .directory
+        .path()
+        .join("native_history/authority.json");
+    let bytes = std::fs::read(&path).unwrap();
+    let mut authority: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    authority["schema_version"] = serde_json::json!(1);
+    std::fs::write(&path, serde_json::to_vec(&authority).unwrap()).unwrap();
+    let adapter = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
+        session.directory.path().to_path_buf(),
+    );
+    let full = adapter.load_session(&session.actor.session_info).await;
+    let light = adapter
+        .load_session_without_updates(&session.actor.session_info)
+        .await;
+    std::fs::write(&path, bytes).unwrap();
+    assert!(
+        full.is_err() && light.is_err(),
+        "both real readers reject an authority/checkpoint schema mismatch"
+    );
+    u3_reload(session).await;
+}
+
+async fn u3_wrong_member_reader_fixture(
+    session: &U3IdentitySession,
+    inputs: &xai_grok_sampling_types::conversation::native_search_history::NativeEligibleInputs,
+) {
+    use crate::session::storage::StorageAdapter;
+    use sha2::{Digest, Sha256};
+    use xai_chat_state::persistence::native::NativeCheckpoint;
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let head = u3_reload(session).await;
+    let previous_ref = head
+        .record
+        .previous_checkpoint
+        .as_ref()
+        .expect("accepted primary resolution must retain its predecessor checkpoint");
+    let previous_bytes = &head.blobs[&previous_ref.digest];
+    assert_eq!(previous_bytes.len() as u64, previous_ref.byte_len);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(previous_bytes)),
+        previous_ref.digest
+    );
+    let previous = NativeCheckpoint::decode(previous_bytes.to_vec(), |reference| {
+        Ok(head.blobs[&reference.digest].to_vec())
+    })
+    .unwrap();
+    assert_eq!(head.record.generation, previous.record.generation + 1);
+    assert_eq!(head.record.high_water, head.record.generation);
+    assert_eq!(head.record.lineage.id, previous.record.lineage.id);
+    head.extends(&previous).unwrap();
+    let adapter = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
+        session.directory.path().to_path_buf(),
+    );
+    let history = adapter
+        .load_session(&session.actor.session_info)
+        .await
+        .unwrap();
+    let response = &head.source.responses[0];
+    let usage = &head.ledger.usage[0];
+    let blocks: Vec<_> = head.source.ordered_blocks
+        [response.block_start as usize..response.block_end as usize]
+        .iter()
+        .map(|block| NativeCapturedBlock {
+            wire_index: block.wire_index,
+            arrival_ordinal: block.arrival_ordinal,
+            raw: String::from_utf8(head.blobs[&block.block.digest].to_vec()).unwrap(),
+            partial_json: None,
+            state: block.state,
+        })
+        .collect();
+    let observed_bytes = blocks.iter().map(|block| block.raw.len() as u64).sum();
+    let attempt = NativeAttemptEvidence {
+        attempt: 1,
+        admitted: true,
+        response_started: true,
+        provider_response_id: response.provider_response_id.clone(),
+        source_stop_reason: response.source_stop_reason.clone(),
+        stream_complete: response.stream_complete,
+        status: response.status,
+        view_roles: vec![None; blocks.len()],
+        blocks,
+        usage: usage.observed.clone(),
+        latency_ms: usage.latency_ms,
+        http_dispatches: usage.http_dispatches,
+        observed_bytes,
+        failed_block: None,
+        view_digests: Vec::new(),
+    };
+    // The malformed member is new; sealed predecessor identities stay immutable.
+    let lease = NativeCaptureLease::issue(
+        head.record.lineage.id.clone(),
+        "u3-reader-successor".into(),
+        1,
+        head.record.generation + 1,
+        NATIVE_SOURCE_BYTES,
+    );
+    lease.revoke_view();
+    let fixture = NativeCheckpoint::append_with_identity(
+        Some(&head),
+        &lease,
+        &[std::sync::Arc::new(attempt)],
+        &history.chat_history,
+        Some(inputs),
+    )
+    .unwrap();
+    fixture.extends(&head).unwrap();
+    fixture.matches_history(&history.chat_history).unwrap();
+    let first = head.eligible_members().unwrap().len();
+    assert_eq!(fixture.eligible_members().unwrap().len(), first + 2);
+    let directory = session.directory.path().join("native_history");
+    for (digest, bytes) in &fixture.blobs {
+        let path = directory.join("blobs").join(format!("{digest}.json"));
+        if path.exists() {
+            assert_eq!(std::fs::read(path).unwrap(), bytes.as_ref());
+        } else {
+            std::fs::write(path, bytes).unwrap();
+        }
+    }
+    let decoded = NativeCheckpoint::decode(fixture.bytes.to_vec(), |reference| {
+        std::fs::read(
+            directory
+                .join("blobs")
+                .join(format!("{}.json", reference.digest)),
+        )
+        .map_err(|_| NativeUnavailable::Persistence)
+    })
+    .unwrap();
+    decoded.extends(&head).unwrap();
+    decoded.matches_history(&history.chat_history).unwrap();
+    for wrong_binding in [false, true] {
+        let directory = session.directory.path().join("native_history");
+        let original_authority = std::fs::read(directory.join("authority.json")).unwrap();
+        let original_record = std::fs::read(directory.join("current.json")).unwrap();
+        assert_eq!(original_record, head.bytes.as_ref());
+        let mut record: serde_json::Value = serde_json::from_slice(&fixture.bytes).unwrap();
+        assert_eq!(
+            record["previous_checkpoint"]["digest"],
+            format!("{:x}", Sha256::digest(&original_record))
+        );
+        let original_source_digest = record["source"]["digest"].clone();
+        let mut source = u3_disk_value(session.directory.path(), &record["source"]);
+        let mut ledger = u3_disk_value(session.directory.path(), &record["ledger"]);
+        let mut active = u3_disk_value(session.directory.path(), &record["active"]);
+        let put = |kind: &str, value: &serde_json::Value| {
+            let bytes = serde_json::to_vec(value).unwrap();
+            let digest = format!("{:x}", Sha256::digest(&bytes));
+            let path = directory.join("blobs").join(format!("{digest}.json"));
+            if path.exists() {
+                assert_eq!(std::fs::read(path).unwrap(), bytes);
+            } else {
+                std::fs::write(path, &bytes).unwrap();
+            }
+            serde_json::json!({"kind":kind,"byte_len":bytes.len(),"digest":digest})
+        };
+        let mut added_source = 0;
+        if wrong_binding {
+            let old_ref =
+                source["eligible_member_links"][first + 1]["identity"]["eligible_ref"].clone();
+            let mut snapshot = u3_disk_value(session.directory.path(), &old_ref);
+            let mut descriptor = u3_disk_value(session.directory.path(), &snapshot["binding"]);
+            descriptor["request"] =
+                serde_json::json!("x".repeat(descriptor["request"].as_str().unwrap().len()));
+            let binding = put("producing_binding", &descriptor);
+            assert_ne!(binding, snapshot["binding"]);
+            assert_eq!(binding["byte_len"], snapshot["binding"]["byte_len"]);
+            added_source = binding["byte_len"].as_u64().unwrap();
+            snapshot["binding"] = binding;
+            let reference = put("eligible_snapshot", &snapshot);
+            assert_eq!(reference["byte_len"], old_ref["byte_len"]);
+            for member in source["eligible_snapshots"].as_array_mut().unwrap() {
+                if *member == old_ref {
+                    *member = reference.clone();
+                }
+            }
+            source["eligible_member_links"][first + 1]["identity"]["eligible_ref"] = reference;
+        } else {
+            source["eligible_member_links"][first + 1]["identity"] =
+                source["eligible_member_links"][first]["identity"].clone();
+        }
+        let source_ref = put("source", &source);
+        assert_eq!(source_ref["byte_len"], record["source"]["byte_len"]);
+        for link in active["view_links"].as_array_mut().unwrap() {
+            if link["source_digest"] == original_source_digest {
+                link["source_digest"] = source_ref["digest"].clone();
+            }
+        }
+        let active_ref = put("active", &active);
+        assert_eq!(active_ref["byte_len"], record["active"]["byte_len"]);
+        for link in ledger["accounting"].as_array_mut().unwrap() {
+            if link["source_digest"] == original_source_digest {
+                link["source_digest"] = source_ref["digest"].clone();
+            }
+        }
+        for link in ledger["eligible_member_accounting"].as_array_mut().unwrap() {
+            if link["source_digest"] == original_source_digest {
+                link["source_digest"] = source_ref["digest"].clone();
+            }
+        }
+        ledger["source_digest"] = source_ref["digest"].clone();
+        ledger["active_digest"] = active_ref["digest"].clone();
+        let ledger_ref = put("ledger", &ledger);
+        assert_eq!(ledger_ref["byte_len"], record["ledger"]["byte_len"]);
+        record["lineage"]["source_digest"] = source_ref["digest"].clone();
+        record["source"] = source_ref;
+        record["active"] = active_ref;
+        record["ledger"] = ledger_ref;
+        for key in [
+            "source_bytes",
+            "reserved_current_bytes",
+            "reserved_staging_bytes",
+            "reserved_backup_bytes",
+        ] {
+            record["capacity"][key] =
+                serde_json::json!(record["capacity"][key].as_u64().unwrap() + added_source);
+        }
+        record["capacity"]["reserved_lineage_bytes"] = serde_json::json!(
+            record["capacity"]["reserved_lineage_bytes"]
+                .as_u64()
+                .unwrap()
+                + 3 * added_source
+        );
+        let record_ref = put("checkpoint", &record);
+        assert_eq!(record_ref["byte_len"], fixture.bytes.len());
+        let (chain_source, chain_links) = serde_json::from_value::<NativeSourceV2>(source.clone())
+            .unwrap()
+            .into_parts();
+        let (chain_ledger, chain_witnesses) =
+            serde_json::from_value::<NativeLedgerV2>(ledger.clone())
+                .unwrap()
+                .into_parts();
+        let mut chain = fixture.clone();
+        chain.record = serde_json::from_value(record.clone()).unwrap();
+        chain.source = chain_source;
+        chain.active = serde_json::from_value(active.clone()).unwrap();
+        chain.ledger = chain_ledger;
+        chain.identity = NativeIdentityExtension::Revision2 {
+            eligible_member_links: chain_links,
+            eligible_member_accounting: chain_witnesses,
+        };
+        chain.bytes = serde_json::to_vec(&record).unwrap().into();
+        assert_eq!(
+            chain.extends(&head),
+            Ok(()),
+            "malformed reader fixture must preserve the predecessor chain"
+        );
+        assert_eq!(chain.record.generation, head.record.generation + 1);
+        assert_eq!(chain.record.high_water, chain.record.generation);
+        for (digest, bytes) in &head.blobs {
+            assert_eq!(
+                std::fs::read(directory.join("blobs").join(format!("{digest}.json"))).unwrap(),
+                bytes.as_ref()
+            );
+        }
+
+        let mut authority: serde_json::Value = serde_json::from_slice(&original_authority).unwrap();
+        authority["checkpoint"] = record_ref;
+        authority["high_water"] = record["high_water"].clone();
+        std::fs::write(
+            directory.join("authority.json"),
+            serde_json::to_vec(&authority).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("current.json"),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        let adapter = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
+            session.directory.path().to_path_buf(),
+        );
+        let full = adapter.load_session(&session.actor.session_info).await;
+        let light = adapter
+            .load_session_without_updates(&session.actor.session_info)
+            .await;
+        std::fs::write(directory.join("authority.json"), original_authority).unwrap();
+        std::fs::write(directory.join("current.json"), original_record).unwrap();
+        println!(
+            "R9_READER_REJECTION {}",
+            serde_json::json!({
+                "wrong_binding": wrong_binding,
+                "expected_inner_check": if wrong_binding { "snapshot producing-binding equality" } else { "reference_matches snapshot-to-member identity" },
+                "predecessor_generation": head.record.generation,
+                "fixture_generation": chain.record.generation,
+                "predecessor_digest": format!("{:x}", Sha256::digest(&head.bytes)),
+                "chain_extends": true,
+                "full_error": full.as_ref().err().map(|error| format!("{error:#}")),
+                "light_error": light.as_ref().err().map(|error| format!("{error:#}")),
+            })
+        );
+        assert!(
+            full.is_err() && light.is_err(),
+            "both real readers must reject hash-consistent second-member or binding mismatch: {wrong_binding}"
+        );
+        u3_reload(session).await;
+    }
+}
+
+async fn u3_bridge_identity_surfaces() {
+    for inventory in [A2Inventory::Mixed, A2Inventory::BridgeOnly] {
+        let wire = ParentGoldenWire::start().await;
+        let fixture =
+            a2_projection_fixture(&ApiBackend::Responses, true, "xai", inventory, &wire).await;
+        let actor = &fixture.actor;
+        let (prepared, _) = actor.prepare_native_tool_candidates_timed().await;
+        let bundle = actor.prepared_tool_bundle(&prepared);
+        let mut projection = super::BridgeDeclarationProjection::prepared(
+            bundle,
+            prepared
+                .mcp_specs
+                .iter()
+                .map(|spec| spec.name.clone())
+                .collect(),
+        );
+        if matches!(inventory, A2Inventory::Mixed) {
+            projection.append_builtin(child_structured_output_spec());
+        }
+        let (mut request, binding) = a2_build_projection_request(actor, &projection).await;
+        let original = request.clone();
+        assert!(
+            request
+                .native_eligible_inputs
+                .as_ref()
+                .unwrap()
+                .matches_specs(&request.tools)
+        );
+        actor
+            .project_bound_bridge_declarations(&mut request, &binding, &projection)
+            .unwrap();
+        let identities = request.native_eligible_inputs.as_ref().unwrap();
+        assert!(
+            identities.matches_specs(&request.tools),
+            "late primary bridge filtering must filter the native companion at the same positions"
+        );
+        assert!(!identities.entries().iter().any(|entry| {
+            ["bridge__discover", "bridge__invoke"].contains(&entry.declaration().name.as_str())
+        }));
+        if matches!(inventory, A2Inventory::BridgeOnly) {
+            assert!(identities.entries().is_empty());
+            assert!(request.tools.is_empty());
+        }
+        let sent = a2_received_body(actor, &request, &binding, &wire, "xai").await;
+        assert_eq!(sent.parsed_body["store"], false);
+        assert_eq!(request.search_admission, original.search_admission);
+        let tools = actor.prepare_side_call_tool_specs(&binding).await;
+        let auxiliary = actor.parent_cached_request(super::super::side_call::AuxCall {
+            items: request.items.clone(),
+            tools,
+            hosted_tools: Vec::new(),
+            model: binding.config.model.clone(),
+            supports_search_tool: true,
+            reasoning_effort: binding.config.reasoning_effort,
+            ultra_wire_effort: binding.config.ultra_wire_effort,
+            backend: ApiBackend::Responses,
+            conv_id: "u3-aux".into(),
+            req_id: "u3-aux-request".into(),
+        });
+        let auxiliary_identity = auxiliary.native_eligible_inputs.as_ref().unwrap();
+        assert!(
+            auxiliary_identity.matches_specs(&auxiliary.tools),
+            "synchronous auxiliary projection must preserve final-surface identity correspondence"
+        );
+        assert!(!auxiliary_identity.entries().iter().any(|entry| {
+            ["bridge__discover", "bridge__invoke"].contains(&entry.declaration().name.as_str())
+        }));
+        assert!(
+            !auxiliary_identity
+                .entries()
+                .iter()
+                .any(|entry| entry.declaration().name == child_structured_output_spec().name)
+        );
+        a2_received_body(actor, &auxiliary, &binding, &wire, "xai").await;
+    }
+}

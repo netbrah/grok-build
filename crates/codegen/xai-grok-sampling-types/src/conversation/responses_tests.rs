@@ -4159,6 +4159,42 @@ fn the_client_answer_splice_carries_the_real_output_on_codex_only() {
     }
 }
 
+#[test]
+fn native_history_pure_author_carrier_lowering_preserves_identity() {
+    let raw = serde_json::json!({"type":"tool_search_call","id":"tsc_provider_u4","call_id":"call_u4","execution":"client","status":"completed","arguments":{"query":"lookup"}});
+    let call = tool_search::ToolSearchItem::from_wire(raw.clone()).unwrap();
+    assert_eq!(call.call_id(), Some("call_u4"));
+    let output = tool_search::ToolSearchItem::client_answer("call_u4", Vec::new());
+    assert_eq!(
+        output.call_id(),
+        Some("call_u4"),
+        "U4 lowered client output keeps required join"
+    );
+    let expected = serde_json::json!({"type":"tool_search_output","call_id":"call_u4","status":"completed","execution":"client","tools":[]});
+    assert_eq!(output.raw(), &expected);
+    let request = ConversationRequest::from_items(vec![
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: output },
+    ]);
+    let replacements = request.raw_responses_input_replacements(ResponsesReplayDialect::Codex);
+    assert_eq!(
+        replacements
+            .iter()
+            .map(|item| item.value.clone())
+            .collect::<Vec<_>>(),
+        vec![raw, expected]
+    );
+    assert!(
+        !replacements[1]
+            .value
+            .as_object()
+            .unwrap()
+            .contains_key("id")
+    );
+    for dialect in [ResponsesReplayDialect::Other, ResponsesReplayDialect::Xai] {
+        assert!(request.raw_responses_input_replacements(dialect).is_empty());
+    }
+}
 /// R7 arm (a) — Outbound: the real splice over a transcript built from the banked frame
 /// (`probe2-client-full.raw`, decoded as `CLIENT_CALL_ITEM`: a client-executed
 /// `tool_search_call`, `call_id` `call_KGrhHQ8F7MeagVDbKnGlq6vv`, where the provider

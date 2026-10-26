@@ -57,6 +57,11 @@ pub struct ToolSpecBundle {
     pub(crate) specs: Vec<ToolSpec>,
     inventory: Option<ToolIdentityInventory>,
     pub(crate) companion: Option<ToolIdentityCompanion>,
+    pub(crate) native_inputs: Option<
+        std::sync::Arc<
+            xai_grok_sampling_types::conversation::native_search_history::NativeEligibleInputs,
+        >,
+    >,
 }
 
 fn same_spec(left: &ToolSpec, right: &ToolSpec) -> bool {
@@ -81,6 +86,7 @@ impl ToolSpecBundle {
             specs,
             inventory: Some(inventory),
             companion: Some(companion),
+            native_inputs: None,
         }
     }
 
@@ -132,6 +138,13 @@ impl ToolSpecBundle {
                 self.specs.extend(survivor);
             }
         }
+        self.native_inputs = if valid {
+            self.native_inputs
+                .and_then(|inputs| inputs.select(&positions, &self.specs).ok())
+                .map(std::sync::Arc::new)
+        } else {
+            None
+        };
         if valid {
             if let Some(companion) = &mut self.companion {
                 let coordinates = positions
@@ -177,6 +190,17 @@ impl ToolSpecBundle {
             position += 1;
             *specs = child_safe_tool_specs(std::mem::take(specs), projection, |_| kind);
         })
+    }
+    pub(super) fn with_native_inputs(
+        mut self,
+        inputs: Option<
+            std::sync::Arc<
+                xai_grok_sampling_types::conversation::native_search_history::NativeEligibleInputs,
+            >,
+        >,
+    ) -> Self {
+        self.native_inputs = inputs.filter(|inputs| inputs.matches_specs(&self.specs));
+        self
     }
 }
 

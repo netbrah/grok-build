@@ -121,6 +121,7 @@ impl SessionActor {
             &call.tools.specs,
         ));
         let tools = call.tools.specs.clone();
+        let native_eligible_inputs = call.tools.native_inputs.clone();
         let projection = BridgeDeclarationProjection::prepared(call.tools, Default::default());
         let mut request = ConversationRequest {
             items: xai_chat_state::compaction_utils::ModelRequestHistory::from_raw(call.items)
@@ -128,6 +129,7 @@ impl SessionActor {
             tools,
             hosted_tools: call.hosted_tools,
             search_admission,
+            native_eligible_inputs,
             model: Some(call.model),
             temperature: None,
             // Effort changes the prompt ahead of the conversation history, so dropping it here would share no prefix with the main turn.
@@ -187,15 +189,23 @@ impl SessionActor {
     ) -> ToolSpecBundle {
         let (prepared, _) = self.prepare_native_tool_candidates_timed().await;
         let bundle = self.prepared_tool_bundle(&prepared);
-        let selected = self
-            .turn_native_tool_candidates(&prepared.builtin_defs, &prepared.mcp_specs)
-            .select_for_row(&binding.config);
+        let (selected, inputs) = xai_chat_state::NativeToolCandidates::with_mcp_membership(
+            bundle.specs.clone(),
+            prepared
+                .mcp_specs
+                .iter()
+                .map(|spec| spec.name.clone())
+                .collect(),
+        )
+        .with_native_inputs(bundle.native_inputs.clone())
+        .select_with_identity(&binding.config);
         // The selector retains the builtin prefix and keeps or drops the entire MCP suffix.
         let coordinates = bundle
             .companion
             .expect("prepared_tool_bundle constructs its identity companion")
             .coordinates;
         ToolSpecBundle::from_selected(prepared.inventory, coordinates.into_iter().zip(selected))
+            .with_native_inputs(inputs)
     }
 
     /// Build the cache-aligned request for a recap-style side-call via [`Self::parent_cached_request`].
@@ -1050,7 +1060,11 @@ pub(super) mod tests {
                     assert_eq!(baseline.tools.iter().any(|tool| tool.name == "web_search"), !backend_search);
                     assert_eq!(!baseline.hosted_tools.is_empty(), backend_search);
                     let (prepared, _) = fixture.actor.prepare_native_tool_candidates_timed().await;
-                    let candidates = fixture.actor.turn_native_tool_candidates(&prepared.builtin_defs, &prepared.mcp_specs);
+                    let bundle = fixture.actor.prepared_tool_bundle(&prepared);
+                    let candidates = xai_chat_state::NativeToolCandidates::with_mcp_membership(
+                        bundle.specs.clone(),
+                        prepared.mcp_specs.iter().map(|spec| spec.name.clone()).collect(),
+                    ).with_native_inputs(bundle.native_inputs.clone());
                     let eligible = backend == ApiBackend::Messages && flag;
                     let expected: Vec<_> = baseline.tools.iter().cloned()
                         .chain(if eligible { mcp.clone() } else { Vec::new() }).collect();
@@ -1075,14 +1089,32 @@ pub(super) mod tests {
                         "U6 auxiliary captured MCP specs must retain exact qualified schemas and Deferred suffix only on captured Messages-on");
                     assert_eq!(actual.search_admission, Some(SearchAdmission::for_row(flag, &expected)),
                         "U6 auxiliary admission must use the captured flag and actual selected tools");
+                    let (_, expected_native_inputs) = candidates.clone().select_with_identity(&setup.binding.config);
                     let actor_request = auxiliary_actor_request(&setup.binding, candidates).await;
-                    assert_eq!((serde_json::to_value(&actual.tools).unwrap(), actual.search_admission),
-                        (serde_json::to_value(&actor_request.tools).unwrap(), actor_request.search_admission),
-                        "U6 auxiliary and actor paths must share complete selection and admission");
+                    let native_identity = |request: &super::ConversationRequest| {
+                        request.native_eligible_inputs.as_ref().map(|inputs| {
+                            assert!(inputs.matches_specs(&request.tools));
+                            inputs.entries().iter().map(|entry| serde_json::json!({
+                                "position": entry.position(),
+                                "namespace_kind": entry.namespace_kind(),
+                                "qualified_namespace": entry.qualified_namespace(),
+                                "child_name": entry.child_name(),
+                                "declaration": entry.declaration(),
+                                "schema_bytes": entry.schema_bytes(),
+                                "schema_digest": entry.schema_digest(),
+                            })).collect::<Vec<_>>()
+                        })
+                    };
+                    assert_eq!((serde_json::to_value(&actual.tools).unwrap(), actual.search_admission, native_identity(&actual)),
+                        (serde_json::to_value(&actor_request.tools).unwrap(), actor_request.search_admission, native_identity(&actor_request)),
+                        "auxiliary and actor paths must agree on tools, admission, and native eligible inputs");
                     let mut expected_request = baseline.clone();
                     expected_request.tools = expected;
+                    expected_request.native_eligible_inputs = expected_native_inputs;
+                    assert!(expected_request.native_eligible_inputs.is_some());
+                    assert_eq!(native_identity(&actual), native_identity(&expected_request));
                     assert_eq!(format!("{actual:?}"), format!("{expected_request:?}"),
-                        "U6 selected tools are the only change from the isolated builtin request");
+                        "selected tools and their captured native inputs are the only changes from the isolated builtin request");
                     assert_eq!(auxiliary_lowered_body(&actual, &backend), auxiliary_lowered_body(&expected_request, &backend));
                     let body = fixture.server_a.requests()[0].body.clone().unwrap();
                     let control_body = control.server_a.requests()[0].body.clone().unwrap();

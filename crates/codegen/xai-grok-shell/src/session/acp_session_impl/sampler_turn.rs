@@ -314,6 +314,16 @@ pub(super) struct PreparedTurnTools {
     pub(super) inventory: child_tool_projection::ToolIdentityInventory,
     pub(super) builtin_coordinates: Vec<usize>,
     pub(super) mcp_coordinates: Vec<usize>,
+    native_inputs: Option<
+        std::sync::Arc<
+            xai_grok_sampling_types::conversation::native_search_history::NativeEligibleInputs,
+        >,
+    >,
+}
+
+pub(super) struct PrimaryNativeReceipt {
+    lease: xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+    phase: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -368,6 +378,7 @@ impl BridgeDeclarationProjection {
             specs,
             self.mcp_membership.clone(),
         )
+        .with_native_inputs(self.bundle.native_inputs.clone())
     }
 }
 
@@ -441,6 +452,7 @@ impl SessionActor {
             return Err(invalid_identity());
         }
         let mut position = 0;
+        let mut positions = Vec::new();
         request.tools.retain(|_| {
             let kind = selected[position].1;
             position += 1;
@@ -451,8 +463,16 @@ impl SessionActor {
                         | xai_grok_tools::types::tool::ToolKind::UseTool
                 )
             );
+            if !is_bridge {
+                positions.push(position - 1);
+            }
             !is_bridge
         });
+        request.native_eligible_inputs = request
+            .native_eligible_inputs
+            .take()
+            .and_then(|inputs| inputs.select(&positions, &request.tools).ok())
+            .map(std::sync::Arc::new);
         Ok(())
     }
 }
@@ -498,6 +518,50 @@ impl SessionActor {
         )
         .await;
         let inventory: child_tool_projection::ToolIdentityInventory = snapshot.into();
+        let native_inputs = if inventory.is_empty() {
+            None
+        } else {
+            (|| {
+            use sha2::{Digest, Sha256};
+            use xai_grok_sampling_types::conversation::native_search_history::{
+                NativeEligibleEntry, NativeEligibleInputs, NativeNamespaceKind,
+                NATIVE_SOURCE_BYTES, encode_native,
+            };
+            let mut entries = Vec::new();
+            for (position, (definition, namespace, _)) in inventory.iter().enumerate() {
+                let kind = match namespace {
+                    ToolNamespace::GrokBuild => NativeNamespaceKind::GrokBuild,
+                    ToolNamespace::GrokBuildConcise => NativeNamespaceKind::GrokBuildConcise,
+                    ToolNamespace::GrokBuildHashline => NativeNamespaceKind::GrokBuildHashline,
+                    ToolNamespace::Codex => NativeNamespaceKind::Codex,
+                    ToolNamespace::OpenCode => NativeNamespaceKind::OpenCode,
+                    ToolNamespace::MCP => NativeNamespaceKind::Mcp,
+                };
+                let (qualified_namespace, child_name) = if *namespace == ToolNamespace::MCP {
+                    let Some((_, server, child)) = xai_grok_mcp::servers::parse_mcp_qualified_name(&definition.function.name) else { continue; };
+                    (server.to_owned(), child.to_owned())
+                } else {
+                    let name = match namespace {
+                        ToolNamespace::GrokBuild => "grok_build",
+                        ToolNamespace::GrokBuildConcise => "grok_build_concise",
+                        ToolNamespace::GrokBuildHashline => "grok_build_hashline",
+                        ToolNamespace::Codex => "codex",
+                        ToolNamespace::OpenCode => "opencode",
+                        ToolNamespace::MCP => unreachable!(),
+                    };
+                    (name.to_owned(), definition.function.name.clone())
+                };
+                let schema = encode_native(&definition.function.parameters, NATIVE_SOURCE_BYTES)?;
+                let schema_digest = format!("{:x}", Sha256::digest(&schema));
+                entries.push(NativeEligibleEntry::checked(position, kind, qualified_namespace, child_name,
+                    ToolSpec::from(definition.clone()), schema.into(), schema_digest)?);
+            }
+            NativeEligibleInputs::checked(entries, inventory.len()).map(std::sync::Arc::new)
+        })().map_err(|reason: xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable| {
+            tracing::debug!(?reason, "native eligible snapshot unavailable");
+        }).ok()
+        };
+
         let plan_active = self.plan_mode.lock().is_active();
         let (builtin_entries, mcp_entries): (Vec<_>, Vec<_>) = inventory
             .iter()
@@ -539,6 +603,7 @@ impl SessionActor {
                 inventory,
                 builtin_coordinates,
                 mcp_coordinates,
+                native_inputs,
             },
             mcp_wait_ms,
         )
@@ -559,7 +624,16 @@ impl SessionActor {
             .iter()
             .copied()
             .zip(prepared.mcp_specs.iter().cloned());
-        ToolSpecBundle::from_selected(prepared.inventory.clone(), builtins.chain(mcp))
+        let selected: Vec<_> = builtins.chain(mcp).collect();
+        let positions: Vec<_> = selected.iter().map(|(position, _)| *position).collect();
+        let specs: Vec<_> = selected.iter().map(|(_, spec)| spec.clone()).collect();
+        let inputs = prepared
+            .native_inputs
+            .as_ref()
+            .and_then(|inputs| inputs.select_exposure(&positions, &specs).ok())
+            .map(std::sync::Arc::new);
+        ToolSpecBundle::from_selected(prepared.inventory.clone(), selected)
+            .with_native_inputs(inputs)
     }
 
     pub(super) fn turn_native_tool_candidates(
@@ -2120,12 +2194,56 @@ impl SessionActor {
     pub(crate) async fn run_turn_via_sampler(
         self: &Arc<Self>,
         request: ConversationRequest,
-        mut binding: xai_chat_state::RequestTransportBinding,
+        binding: xai_chat_state::RequestTransportBinding,
         budget: &mut RateLimitWaitBudget,
         transient: TransientRetryState,
         mid_salvage_continuation: bool,
         park: TurnParkState,
     ) -> Result<SamplerTurnOutcome, acp::Error> {
+        self.run_turn_via_sampler_core(
+            request,
+            binding,
+            budget,
+            transient,
+            mid_salvage_continuation,
+            park,
+            false,
+        )
+        .await
+        .map(|(outcome, _)| outcome)
+    }
+
+    pub(super) async fn run_primary_turn_via_sampler(
+        self: &Arc<Self>,
+        request: ConversationRequest,
+        binding: xai_chat_state::RequestTransportBinding,
+        budget: &mut RateLimitWaitBudget,
+        transient: TransientRetryState,
+        mid_salvage_continuation: bool,
+        park: TurnParkState,
+    ) -> Result<(SamplerTurnOutcome, Option<PrimaryNativeReceipt>), acp::Error> {
+        self.run_turn_via_sampler_core(
+            request,
+            binding,
+            budget,
+            transient,
+            mid_salvage_continuation,
+            park,
+            true,
+        )
+        .await
+    }
+
+    async fn run_turn_via_sampler_core(
+        self: &Arc<Self>,
+        request: ConversationRequest,
+        mut binding: xai_chat_state::RequestTransportBinding,
+        budget: &mut RateLimitWaitBudget,
+        transient: TransientRetryState,
+        mid_salvage_continuation: bool,
+        park: TurnParkState,
+        primary: bool,
+    ) -> Result<(SamplerTurnOutcome, Option<PrimaryNativeReceipt>), acp::Error> {
         // Per-turn auth refresh + sampler config push. Mirrors
         // `prepare_chat_completion(false)` from the legacy path.
         let mut prepared_config = if park.is_parked() {
@@ -2137,12 +2255,12 @@ impl SessionActor {
         if !budget.can_wait() {
             // Nothing will send this request a second time, so move it into the sampler instead of deep-cloning the whole message history on every main-session turn
             return match self
-                .submit_turn_request(request, &binding, prepared_config)
+                .submit_turn_request_core(request, &binding, prepared_config, primary)
                 .await
             {
                 Ok(outcome) => Ok(outcome),
-                Err(info) => {
-                    self.recover_from_sampling_failure(
+                Err(info) => self
+                    .recover_from_sampling_failure(
                         info,
                         &mut binding,
                         budget,
@@ -2151,13 +2269,18 @@ impl SessionActor {
                         park,
                     )
                     .await
-                }
+                    .map(|outcome| (outcome, None)),
             };
         }
 
         loop {
             match self
-                .submit_turn_request(request.clone(), &binding, prepared_config.take())
+                .submit_turn_request_core(
+                    request.clone(),
+                    &binding,
+                    prepared_config.take(),
+                    primary,
+                )
                 .await
             {
                 Ok(outcome) => {
@@ -2177,7 +2300,8 @@ impl SessionActor {
                                 mid_salvage_continuation,
                                 park,
                             )
-                            .await;
+                            .await
+                            .map(|outcome| (outcome, None));
                     };
                     self.notify_rate_limit_wait(attempt, budget, backoff).await;
                     // Esc cancels a turn by aborting its task, so this await point is itself the cancellation point; no select needed
@@ -2200,6 +2324,23 @@ impl SessionActor {
         binding: &xai_chat_state::RequestTransportBinding,
         prepared_config: Option<SamplingConfig>,
     ) -> Result<SamplerTurnOutcome, xai_grok_sampler::SamplingErrorInfo> {
+        self.submit_turn_request_core(request, binding, prepared_config, false)
+            .await
+            .map(|(outcome, _)| outcome)
+    }
+
+    async fn submit_turn_request_core(
+        self: &Arc<Self>,
+        request: ConversationRequest,
+        binding: &xai_chat_state::RequestTransportBinding,
+        prepared_config: Option<SamplingConfig>,
+        primary: bool,
+    ) -> Result<
+        (SamplerTurnOutcome, Option<PrimaryNativeReceipt>),
+        xai_grok_sampler::SamplingErrorInfo,
+    > {
+        let mut primary_receipt = None;
+        let phase = self.turn_phases.current_generation();
         let request_id = xai_grok_sampler::RequestId::random();
         let native_turn = self.current_turn_number.get();
         self.turn_phases.record_sampling_request();
@@ -2227,14 +2368,27 @@ impl SessionActor {
                 None => self.turn_sampler_config_from_binding(binding).await,
             };
             let native = if sampler_config.api_backend == xai_grok_sampler::ApiBackend::Messages {
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    self.chat_state_handle.begin_native_capture(
-                        self.session_id_string(),
-                        request_id.as_str().to_owned(),
-                        native_turn,
-                    ),
-                )
+                match tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    if primary {
+                        self.chat_state_handle
+                            .begin_native_primary_capture(
+                                self.session_id_string(),
+                                request_id.as_str().to_owned(),
+                                native_turn,
+                                request.native_eligible_inputs.clone(),
+                            )
+                            .await
+                    } else {
+                        self.chat_state_handle
+                            .begin_native_capture_with_identity(
+                                self.session_id_string(),
+                                request_id.as_str().to_owned(),
+                                native_turn,
+                                request.native_eligible_inputs.clone(),
+                            )
+                            .await
+                    }
+                })
                 .await
                 {
                     Ok(Ok(lease)) => Some(lease),
@@ -2252,6 +2406,12 @@ impl SessionActor {
             };
             match native {
                 Some(lease) => {
+                    if primary {
+                        primary_receipt = Some(PrimaryNativeReceipt {
+                            lease: lease.clone(),
+                            phase,
+                        });
+                    }
                     self.sampler_handle
                         .submit_and_collect_with_native_capture(
                             request_id.clone(),
@@ -2352,9 +2512,9 @@ impl SessionActor {
                 if !terminal_event_queued {
                     self.turn_stream_drained.lock().remove(&request_id);
                 }
-                Ok(SamplerTurnOutcome::Response(
-                    Box::new(response),
-                    Box::new(metrics),
+                Ok((
+                    SamplerTurnOutcome::Response(Box::new(response), Box::new(metrics)),
+                    primary_receipt,
                 ))
             }
             Err(rich_err) => {
@@ -2783,6 +2943,37 @@ impl SessionActor {
         } else {
             self.chat_state_handle
                 .push_unreported_model_output(assistant_item);
+        }
+    }
+    pub(super) async fn resolve_primary_native(
+        &self,
+        receipt: Option<PrimaryNativeReceipt>,
+        decision: xai_chat_state::persistence::native::NativePrimaryDecision,
+    ) {
+        use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+        let Some(receipt) = receipt else {
+            return;
+        };
+        if receipt.phase != self.turn_phases.current_generation() {
+            receipt.lease.unavailable(NativeUnavailable::Cancelled);
+            return;
+        }
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(6),
+            self.chat_state_handle
+                .resolve_native_primary(receipt.lease.clone(), decision),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(reason)) => {
+                receipt.lease.unavailable(reason);
+                tracing::warn!(?reason, "native primary resolution unavailable");
+            }
+            Err(_) => {
+                receipt.lease.unavailable(NativeUnavailable::Indeterminate);
+                tracing::warn!("native primary resolution acknowledgement timed out");
+            }
         }
     }
 }

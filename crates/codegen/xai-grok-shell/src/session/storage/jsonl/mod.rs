@@ -1854,7 +1854,7 @@ impl StorageAdapter for JsonlStorageAdapter {
             };
             validate_history()?;
             let authority = NativeGenerationAuthority {
-                schema_version: NATIVE_SCHEMA_VERSION,
+                schema_version: checkpoint.record.schema_version,
                 lineage: info.id.to_string(),
                 high_water: checkpoint.record.high_water,
                 checkpoint: NativeBlobRef {
@@ -2343,7 +2343,7 @@ impl JsonlStorageAdapter {
         };
         let authority: NativeGenerationAuthority = serde_json::from_slice(&authority_bytes)
             .map_err(|_| NativeUnavailable::InvalidReference)?;
-        if authority.schema_version != NATIVE_SCHEMA_VERSION
+        if !matches!(authority.schema_version, 1 | 2)
             || authority.high_water == 0
             || authority.lineage.is_empty()
             || authority.transaction.is_empty()
@@ -2382,7 +2382,8 @@ impl JsonlStorageAdapter {
             )
             .map_err(|_| NativeUnavailable::InvalidReference)
         })?;
-        if checkpoint.record.lineage.id != authority.lineage
+        if checkpoint.record.schema_version != authority.schema_version
+            || checkpoint.record.lineage.id != authority.lineage
             || checkpoint.record.high_water != authority.high_water
             || checkpoint.record.generation != authority.high_water
         {

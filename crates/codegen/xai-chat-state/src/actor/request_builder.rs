@@ -94,6 +94,7 @@ impl ChatStateActor {
             tools: tool_definitions,
             hosted_tools: vec![],
             search_admission,
+            native_eligible_inputs: None,
             tool_choice: None,
             // MGW F5 (apex-ayl.114): row-resolved tool control threads onto
             // the request; the producer nests dptu into tool_choice and

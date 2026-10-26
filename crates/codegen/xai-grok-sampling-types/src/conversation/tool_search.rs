@@ -726,6 +726,23 @@ impl ToolSearchItem {
         .filter(|id| !id.is_empty())
     }
 
+    pub(super) fn native_identity_fields(
+        &self,
+    ) -> super::native_search_history::NativeIdentityFields<'_> {
+        let join_field = match self.kind {
+            ToolSearchKind::ServerToolUse => self.raw.get("id"),
+            ToolSearchKind::ToolSearchToolResult => self.raw.get("tool_use_id"),
+            ToolSearchKind::Call | ToolSearchKind::Output => self.raw.get("call_id"),
+        };
+        super::native_search_history::NativeIdentityFields {
+            kind: self.kind,
+            item_id: self.raw.get("id"),
+            join_field,
+            join: self.call_id(),
+            execution: self.execution(),
+        }
+    }
+
     /// The `status` field as the closed [`ToolSearchStatus`] view. Lossy in one
     /// direction worth naming: an unknown string, an absent key and a non-string value
     /// all read [`ToolSearchStatus::Unknown`], so the view cannot tell "written by a
@@ -2648,6 +2665,59 @@ mod tests {
     use super::*;
     use crate::conversation::tool_name::FLAT_TOOL_NAME_DELIMITER;
     use serde_json::json;
+
+    #[test]
+    fn native_history_optional_ids_and_required_joins() {
+        let output = ToolSearchItem::client_answer("call_u4", Vec::new());
+        assert_eq!(
+            output.call_id(),
+            Some("call_u4"),
+            "U4 client output keeps required join"
+        );
+        assert_eq!(
+            output.raw(),
+            &json!({"type":"tool_search_output","call_id":"call_u4","status":"completed","execution":"client","tools":[]})
+        );
+        assert!(!output.raw().as_object().unwrap().contains_key("id"));
+        for join in [
+            None,
+            Some(Value::Null),
+            Some(json!("")),
+            Some(json!(7)),
+            Some(json!("call_u4")),
+        ] {
+            let mut raw = output.raw().clone();
+            raw.as_object_mut().unwrap().remove("call_id");
+            if let Some(value) = &join {
+                raw["call_id"] = value.clone();
+            }
+            let item = ToolSearchItem::from_wire(raw.clone()).unwrap();
+            assert_eq!(item.raw(), &raw);
+            assert_eq!(
+                item.call_id(),
+                join.as_ref()
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+            );
+            let shape = crate::conversation::native_search_history::native_item_shape(
+                &item,
+                crate::conversation::native_search_history::NativeIdAuthorship::ClientOutput,
+            );
+            assert_eq!(
+                shape.is_ok(),
+                item.call_id().is_some(),
+                "required joins never collapse malformed presence into keyless server identity"
+            );
+        }
+        for raw in [
+            json!({"type":"server_tool_use","id":"srvtoolu_u4","name":"tool_search_tool_regex","input":{}}),
+            json!({"type":"tool_search_tool_result","tool_use_id":"srvtoolu_u4","content":{"type":"tool_search_tool_search_result","tool_references":[]}}),
+        ] {
+            let item = ToolSearchItem::from_wire(raw.clone()).unwrap();
+            assert_eq!(item.call_id(), Some("srvtoolu_u4"));
+            assert_eq!(item.raw(), &raw);
+        }
+    }
 
     /// `CX3-toolsearch-5.5-LIVE/next-turn.json` `input[11]` — the completed
     /// call, verbatim.

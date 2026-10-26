@@ -1105,6 +1105,8 @@ pub struct ConversationRequest {
     /// field alone on a path `prompt_cache_key` makes cache-aligned (`session/compaction.rs:1045-1046`)
     /// and whose body builder already reads it (`xai-grok-sampler/src/client.rs:2736`).
     pub search_admission: Option<SearchAdmission>,
+    /// Host provenance only; absence grants no native identity or replay authority.
+    pub native_eligible_inputs: Option<std::sync::Arc<native_search_history::NativeEligibleInputs>>,
     /// Config-selected server-tool union members (canonical dated type
     /// strings, validated at the config layer; "mcp_toolset" requires
     /// `mcp_toolset_server`) (MSGW F1, apex-ayl.115).

@@ -5286,7 +5286,9 @@ async fn r21d_grow_active(
     growth_frames.splice(terminal..terminal, extra);
     let ordinary = r17_unleased_output(growth_frames.clone(), None).await;
     let checkpoint = r21_guard_growth(started, async {
+        let mut previous: Option<Arc<xai_chat_state::persistence::native::NativeCheckpoint>> = None;
         for ordinal in 1..=NATIVE_SOURCE_RESPONSES {
+            let native_turn = session.actor.current_turn_number.get();
             session
                 .native_ended
                 .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -5296,7 +5298,6 @@ async fn r21d_grow_active(
                 matches!(r17_run_primary_turn(session, "r21d-growth").await,
                 TurnOutcome::Completed { ref tools_called, .. } if tools_called.is_empty())
             );
-            r21a_native_ack(session).await;
             let attempts = {
                 let events = session.observed.lock().unwrap();
                 assert_eq!(
@@ -5315,6 +5316,55 @@ async fn r21d_grow_active(
                     })
                     .collect::<Vec<_>>()
             };
+            if attempts.is_empty() {
+                r14_flush_native_session(session).await;
+                let checkpoint = session
+                    .actor
+                    .chat_state_handle
+                    .read_native_history()
+                    .await
+                    .unwrap()
+                    .checkpoint
+                    .unwrap();
+                let old = previous.expect("R11: capacity refusal follows an acknowledged capture");
+                assert_eq!(checkpoint.record.generation, old.record.generation);
+                assert_eq!(checkpoint.bytes, old.bytes, "R11: refusal preserves the checkpoint");
+                assert_eq!(
+                    std::fs::read(session.directory.path().join("native_history/current.json"))
+                        .unwrap(),
+                    old.bytes.as_ref()
+                );
+                let request = session.observed.lock().unwrap()[start..]
+                    .iter()
+                    .find_map(|event| match event {
+                        xai_grok_sampler::SamplingEvent::Completed { request_id, .. } => {
+                            Some(request_id.as_str().to_owned())
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                assert_eq!(
+                    session
+                        .actor
+                        .chat_state_handle
+                        .begin_native_primary_capture(
+                            checkpoint.record.lineage.id.clone(),
+                            request,
+                            native_turn,
+                            None,
+                        )
+                        .await
+                        .err(),
+                    Some(NativeUnavailable::Capacity),
+                    "R11: the same primary admission reports Capacity"
+                );
+                eprintln!(
+                    "R11 growth helper=r21d_grow_active admitted={} refused_ordinal={ordinal} reason=Capacity",
+                    ordinal - 1
+                );
+                return checkpoint;
+            }
+            r21a_native_ack(session).await;
             assert_eq!(attempts.len(), 1);
             assert_eq!(attempts[0].status, NativeResponseStatus::Accepted);
             assert_eq!(attempts[0].blocks.len() as u64, NATIVE_RESPONSE_BLOCKS);
@@ -5336,8 +5386,10 @@ async fn r21d_grow_active(
             let copy = checkpoint.record.active.byte_len;
             // Leave the last admissible five-block capture to the boundary probe.
             if remaining <= copy * 4 {
+                eprintln!("R11 growth helper=r21d_grow_active admitted={ordinal} reason=active_threshold");
                 return checkpoint;
             }
+            previous = Some(checkpoint);
         }
         panic!("R21d: maximal linked responses must reach the active copy boundary");
     })
@@ -5362,20 +5414,26 @@ async fn r21_generation_boundary() {
     let growth_started = std::time::Instant::now();
     let grown = r21d_grow_active(&session, &server, &frames, growth_started).await;
     r21_guard_growth(growth_started, async {
-        let first_boundary = grown.record.generation + 1;
+        let growth_admitted = grown.source.responses.len() as u64;
+        assert_eq!(
+            grown.record.generation,
+            growth_admitted * 2,
+            "R12: each accepted primary seals source and resolution generations"
+        );
+        let first_boundary = server.messages_request_count() as u64 + 1;
+        let growth_refused = first_boundary == growth_admitted + 2;
+        assert!(first_boundary == growth_admitted + 1 || growth_refused);
         let mut previous = Some(grown);
         let mut refused = false;
-        let mut last_admitted_growing = true;
+        let mut last_admitted_ordinal = (!growth_refused).then_some(first_boundary - 1);
         for ordinal in first_boundary..=NATIVE_SOURCE_RESPONSES {
+            let native_turn = session.actor.current_turn_number.get();
             session
                 .native_ended
                 .store(false, std::sync::atomic::Ordering::SeqCst);
             let start = session.observed.lock().unwrap().len();
             server.enqueue_response("/v1/messages", native_history_script(frames.clone()));
-            let growing = previous.as_ref().is_none_or(|checkpoint| {
-                NATIVE_ACTIVE_BYTES.saturating_sub(checkpoint.record.capacity["active_bytes"])
-                    > checkpoint.record.active.byte_len.saturating_mul(3)
-            });
+            let admitted = growth_admitted + ordinal - first_boundary;
             let work = async {
                 assert!(
                     matches!(r17_run_primary_turn(&session, "r21-generation").await,
@@ -5417,12 +5475,6 @@ async fn r21_generation_boundary() {
                 attempts
             };
             let attempts = work.await;
-            if growing {
-                eprintln!(
-                    "R21d growth witness=generation elapsed_ms={} generations={ordinal} blocks_per_response=5",
-                    growth_started.elapsed().as_millis()
-                );
-            }
             let read = session.actor.chat_state_handle.read_native_history().await;
             assert!(
                 read.as_ref().is_ok_and(|read| read.checkpoint.is_some()),
@@ -5435,31 +5487,67 @@ async fn r21_generation_boundary() {
             assert_eq!(current.as_slice(), checkpoint.bytes.as_ref());
             if attempts.is_empty() {
                 assert!(
-                    !growing && !last_admitted_growing,
-                    "R21i: the last admitted capture and refusal are boundary steps"
+                    last_admitted_ordinal == Some(ordinal - 1)
+                        || (ordinal == first_boundary && growth_refused),
+                    "R12: refusal follows an acknowledged admission or measured growth refusal"
                 );
                 let old = previous
                     .as_ref()
                     .expect("a real lineage must precede capacity refusal");
+                assert_eq!(old.record.generation, admitted * 2);
                 assert_eq!(
                     checkpoint.bytes, old.bytes,
                     "R21: refusal keeps every earlier generation"
                 );
+                let request = session.observed.lock().unwrap()[start..]
+                    .iter()
+                    .find_map(|event| match event {
+                        xai_grok_sampler::SamplingEvent::Completed { request_id, .. } => {
+                            Some(request_id.as_str().to_owned())
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
                 assert!(
                     matches!(
                         session
                             .actor
                             .chat_state_handle
-                            .begin_native_capture(
+                            .begin_native_primary_capture(
                                 checkpoint.record.lineage.id.clone(),
-                                "r21-refused".into(),
-                                ordinal
+                                request.clone(),
+                                native_turn,
+                                None,
                             )
                             .await,
                         Err(NativeUnavailable::Capacity)
                     ),
                     "R21: the next lease is refused at admission"
                 );
+                let legacy = session
+                    .actor
+                    .chat_state_handle
+                    .begin_native_capture(
+                        checkpoint.record.lineage.id.clone(),
+                        request,
+                        native_turn,
+                    )
+                    .await;
+                eprintln!(
+                    "R13 legacy admission control={:?}",
+                    legacy.as_ref().map(|_| "admitted")
+                );
+                if let Ok(lease) = legacy {
+                    lease.finish();
+                }
+                let source_seal: NativeSearchHistoryV1 = serde_json::from_value(native_blob(
+                    session.directory.path(),
+                    &serde_json::to_value(checkpoint.record.previous_checkpoint.as_ref().unwrap())
+                        .unwrap(),
+                ))
+                .unwrap();
+                assert_eq!(checkpoint.record.generation, source_seal.generation + 1);
+                assert_eq!(checkpoint.record.source, source_seal.source);
                 let candidates = [
                     (
                         "source",
@@ -5471,12 +5559,14 @@ async fn r21_generation_boundary() {
                         "active",
                         NATIVE_ACTIVE_BYTES
                             .saturating_sub(checkpoint.record.capacity["active_bytes"])
+                            .saturating_sub(source_seal.active.byte_len)
                             .saturating_sub(checkpoint.record.active.byte_len),
                     ),
                     (
                         "ledger",
                         NATIVE_LEDGER_BYTES
                             .saturating_sub(checkpoint.record.capacity["ledger_bytes"])
+                            .saturating_sub(source_seal.ledger.byte_len)
                             .saturating_sub(checkpoint.record.ledger.byte_len),
                     ),
                     (
@@ -5518,11 +5608,11 @@ async fn r21_generation_boundary() {
                 let ledger = native_blob(session.directory.path(), &record["ledger"]);
                 assert_eq!(
                     source["responses"].as_array().unwrap().len() as u64,
-                    ordinal - 1
+                    admitted
                 );
                 assert_eq!(
                     ledger["usage"].as_array().unwrap().len() as u64,
-                    ordinal - 1
+                    admitted
                 );
                 let last = source["responses"].as_array().unwrap().last().unwrap();
                 assert_eq!(last["status"], "Accepted");
@@ -5546,6 +5636,11 @@ async fn r21_generation_boundary() {
                 );
                 disk.matches_history(&full.chat_history).unwrap();
                 assert_eq!(server.messages_request_count() as u64, ordinal);
+                eprintln!(
+                    "R12 generation boundary growth_admitted={growth_admitted} boundary_admitted={} checkpoint_generation={} reason=Capacity",
+                    ordinal - first_boundary,
+                    checkpoint.record.generation
+                );
                 refused = true;
                 break;
             }
@@ -5556,9 +5651,10 @@ async fn r21_generation_boundary() {
                 "R21: the last admissible small capture is retained in full"
             );
             assert_eq!(attempts[0].blocks.len(), 5);
-            assert_eq!(checkpoint.source.responses.len() as u64, ordinal);
-            assert_eq!(checkpoint.ledger.usage.len() as u64, ordinal);
-            last_admitted_growing = growing;
+            assert_eq!(checkpoint.source.responses.len() as u64, admitted + 1);
+            assert_eq!(checkpoint.ledger.usage.len() as u64, admitted + 1);
+            assert_eq!(checkpoint.record.generation, (admitted + 1) * 2);
+            last_admitted_ordinal = Some(ordinal);
             previous = Some(checkpoint);
         }
         assert!(
@@ -6303,15 +6399,22 @@ async fn r21f_mixed_boundary() {
     use xai_grok_sampling_types::conversation::native_search_history::*;
     let frames = r21f_mixed_frames();
     let ordinary = r17_unleased_output(frames.clone(), None).await;
+    let growth_ordinary = r17_unleased_output(native_history_frames(), None).await;
     let server = MockInferenceServer::start().await.unwrap();
     let session = NativeHistorySession::new(&server).await;
     let started = std::time::Instant::now();
     let grown = r21d_grow_active(&session, &server, &native_history_frames(), started).await;
     let before = r21_guard_growth(started, async {
         let mut checkpoint = grown;
-        for _ in 0..NATIVE_SOURCE_RESPONSES {
+        for ordinal in 1..=NATIVE_SOURCE_RESPONSES {
+            let native_turn = session.actor.current_turn_number.get();
             let remaining = NATIVE_ACTIVE_BYTES - checkpoint.record.capacity["active_bytes"];
             if remaining <= checkpoint.record.active.byte_len * 2 {
+                eprintln!(
+                    "R11 growth helper=r21f admitted_total={} admitted_stage={} reason=active_threshold",
+                    checkpoint.source.responses.len(),
+                    ordinal - 1
+                );
                 return checkpoint;
             }
             session
@@ -6323,7 +6426,13 @@ async fn r21f_mixed_boundary() {
                 native_history_script(native_history_frames()),
             );
             session.sample().await;
-            let evidence = session.observed.lock().unwrap()[start..]
+            let events = session.observed.lock().unwrap()[start..].to_vec();
+            assert_eq!(
+                r18_terminal_observation(&events),
+                vec![json!({"completed":growth_ordinary})],
+                "R11: boundary growth preserves the unleased ordinary outcome"
+            );
+            let evidence = events
                 .iter()
                 .any(|event| {
                     matches!(
@@ -6349,6 +6458,40 @@ async fn r21f_mixed_boundary() {
                 assert_eq!(
                     next.bytes, checkpoint.bytes,
                     "R21f: setup admission refusal keeps its completed lineage"
+                );
+                assert_eq!(next.record.generation, checkpoint.record.generation);
+                assert_eq!(
+                    std::fs::read(session.directory.path().join("native_history/current.json"))
+                        .unwrap(),
+                    checkpoint.bytes.as_ref()
+                );
+                let request = events
+                    .iter()
+                    .find_map(|event| match event {
+                        xai_grok_sampler::SamplingEvent::Completed { request_id, .. } => {
+                            Some(request_id.as_str().to_owned())
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                assert_eq!(
+                    session
+                        .actor
+                        .chat_state_handle
+                        .begin_native_capture(
+                            checkpoint.record.lineage.id.clone(),
+                            request,
+                            native_turn,
+                        )
+                        .await
+                        .err(),
+                    Some(NativeUnavailable::Capacity),
+                    "R11: the same boundary admission reports Capacity"
+                );
+                eprintln!(
+                    "R11 growth helper=r21f admitted_total={} admitted_stage={} refused_ordinal={ordinal} reason=Capacity",
+                    checkpoint.source.responses.len(),
+                    ordinal - 1
                 );
                 return checkpoint;
             }
@@ -6913,4 +7056,1290 @@ fn native_history_source_generation_refusal_preserves_checkpoint() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[derive(Debug, Clone)]
+struct U5aClientTool {
+    name: &'static str,
+    kind: xai_grok_tools::types::tool::ToolKind,
+    executions: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl xai_grok_tools::types::tool_metadata::ToolMetadata for U5aClientTool {
+    fn kind(&self) -> xai_grok_tools::types::tool::ToolKind {
+        self.kind
+    }
+    fn tool_namespace(&self) -> xai_grok_tools::types::tool::ToolNamespace {
+        xai_grok_tools::types::tool::ToolNamespace::MCP
+    }
+    fn description_template(&self) -> &str {
+        "Offline primary-resolution tool"
+    }
+}
+
+impl xai_tool_runtime::Tool for U5aClientTool {
+    type Args = Value;
+    type Output = xai_grok_tools::types::output::ToolOutput;
+    fn id(&self) -> xai_tool_protocol::ToolId {
+        xai_tool_protocol::ToolId::new(self.name).unwrap()
+    }
+    fn description(
+        &self,
+        _: &xai_tool_runtime::ListToolsContext,
+    ) -> xai_tool_types::ToolDescription {
+        xai_tool_types::ToolDescription::new(self.name, "Offline primary-resolution tool")
+    }
+    async fn run(
+        &self,
+        _: xai_tool_runtime::ToolCallContext,
+        _: Value,
+    ) -> Result<Self::Output, xai_tool_runtime::ToolError> {
+        self.executions
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(xai_grok_tools::types::output::ToolOutput::Text(
+            "offline client result".into(),
+        ))
+    }
+}
+
+struct U5aPrimarySession {
+    actor: Arc<SessionActor>,
+    persistence: crate::session::persistence::PersistenceHandle,
+    directory: tempfile::TempDir,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+    _models: tempfile::TempDir,
+    executions: Arc<std::sync::atomic::AtomicUsize>,
+    source_acks: tokio::sync::mpsc::UnboundedReceiver<()>,
+    release_decision: Arc<tokio::sync::Semaphore>,
+    resolution_writes:
+        tokio::sync::mpsc::UnboundedReceiver<xai_chat_state::persistence::native::NativeWrite>,
+    resolution_gate: Arc<tokio::sync::Semaphore>,
+    gate_enabled: Arc<std::sync::atomic::AtomicBool>,
+    resolution_ack_count: Arc<std::sync::atomic::AtomicUsize>,
+    lose_resolution_reply: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for U5aPrimarySession {
+    fn drop(&mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+    }
+}
+
+impl U5aPrimarySession {
+    async fn new(server: &MockInferenceServer) -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let config = xai_grok_sampler::SamplerConfig {
+            base_url: server.url(),
+            model: "u5a".into(),
+            api_key: Some("u5a-loopback".into()),
+            api_backend: xai_grok_sampler::ApiBackend::Messages,
+            max_completion_tokens: Some(4096),
+            max_retries: Some(0),
+            ..Default::default()
+        };
+        let info = crate::session::info::Info {
+            id: acp::SessionId::new(format!(
+                "u5a-{}",
+                directory.path().file_name().unwrap().to_string_lossy()
+            )),
+            cwd: directory.path().to_string_lossy().into_owned(),
+        };
+        let persistence = crate::session::persistence::new_with_explicit_dir(
+            &info,
+            directory.path().to_path_buf(),
+            acp::ModelId::new("u5a"),
+            xai_grok_sampler::SamplingClient::new(config.clone()).unwrap(),
+            "u5a".into(),
+            crate::session::persistence::ExplicitSessionOpen::New {
+                identity: None,
+                next_trace_turn: None,
+            },
+        )
+        .await
+        .unwrap();
+        let (chat_tx, mut chat_rx) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+        let (resolution_tx, resolution_writes) = tokio::sync::mpsc::unbounded_channel();
+        let resolution_gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let gate = resolution_gate.clone();
+        let gate_enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let enabled = gate_enabled.clone();
+        let lose_resolution_reply = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let lose_reply = lose_resolution_reply.clone();
+        let real = persistence.tx.clone();
+        let resolution_ack_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ack_count = resolution_ack_count.clone();
+        let disk = tokio::task::spawn_local(async move {
+            while let Some(message) = chat_rx.recv().await {
+                match message {
+                    PersistenceMsg::PersistNativeGenerationAndAck { write, respond_to }
+                        if write.transaction.starts_with("primary:")
+                            && enabled.load(std::sync::atomic::Ordering::SeqCst) =>
+                    {
+                        resolution_tx.send(write.clone()).unwrap();
+                        gate.acquire().await.unwrap().forget();
+                        let (disk_tx, disk_rx) = tokio::sync::oneshot::channel();
+                        real.send(PersistenceMsg::PersistNativeGenerationAndAck {
+                            write,
+                            respond_to: disk_tx,
+                        })
+                        .unwrap();
+                        let result = disk_rx.await.unwrap();
+                        if result.is_ok() {
+                            ack_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        if lose_reply.load(std::sync::atomic::Ordering::SeqCst) {
+                            drop(respond_to);
+                        } else {
+                            let _ = respond_to.send(result);
+                        }
+                    }
+                    message => {
+                        real.send(message).unwrap();
+                    }
+                }
+            }
+        });
+        let (gateway_tx, mut gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+        let gateway = tokio::task::spawn_local(async move {
+            while let Some(message) = gateway_rx.recv().await {
+                if let xai_acp_lib::AcpClientMessage::SessionNotification(args) = message {
+                    let _ = args.response_tx.send(Ok(()));
+                }
+            }
+        });
+        let (mut actor, _) = create_test_actor_with_chat_persistence(
+            0,
+            256_000,
+            85,
+            gateway_tx,
+            persistence.tx.clone(),
+            Box::new(crate::session::chat_persistence::ChannelChatPersistence::new(chat_tx)),
+        )
+        .await;
+        actor.session_info = info;
+        actor.attach_non_interactive.set(true);
+        actor.max_retries = 0;
+        actor.compaction.compaction_mode = xai_chat_state::CompactionMode::Summary;
+        {
+            let mut slot = actor.agent.borrow_mut();
+            let mut policy = slot.compaction_policy().clone();
+            policy.two_pass_enabled = false;
+            policy.remote_compaction_v2 = false;
+            policy.memory_flush_enabled = false;
+            *slot = xai_grok_agent::Agent::new(
+                slot.definition().clone(),
+                slot.prompt_context().clone(),
+                slot.system_prompt().to_string(),
+                slot.tool_bridge().clone(),
+                slot.reminder_policy().clone(),
+                policy,
+                Vec::new(),
+                true,
+            );
+        }
+        actor.memory.flush_config.enabled = false;
+        actor.memory.dream_config.enabled = false;
+        actor.memory.save_on_end = false;
+        let (manager, models) = manager_with_entries();
+        let mut entry = entry_with_search_flag("u5a", true);
+        entry.info.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+        entry.api_base_url = Some(server.url());
+        entry.api_key = Some("u5a-loopback".into());
+        manager.insert_test_entry("u5a", entry);
+        manager.set_current_model_id(acp::ModelId::new("u5a"));
+        actor.models_manager = manager;
+        let mut binding = actor
+            .chat_state_handle
+            .capture_transport_binding()
+            .await
+            .unwrap();
+        binding.config.base_url = server.url();
+        binding.config.model = "u5a".into();
+        binding.config.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+        binding.config.supports_search_tool = true;
+        binding.config.max_completion_tokens = Some(4096);
+        binding.config.max_retries = Some(0);
+        binding.credentials.api_key = Some("u5a-loopback".into());
+        binding.credentials.auth_type = xai_chat_state::AuthType::ApiKey;
+        actor
+            .chat_state_handle
+            .install_transport_binding(binding)
+            .await
+            .unwrap();
+        let executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        for name in ["alpha__lookup", "zeta__fetch"] {
+            actor
+                .agent
+                .borrow()
+                .tool_bridge()
+                .register_mcp_tools(
+                    name.into(),
+                    U5aClientTool {
+                        name,
+                        kind: xai_grok_tools::types::tool::ToolKind::Other,
+                        executions: executions.clone(),
+                    },
+                    Some(json!({"type":"object","properties":{},"additionalProperties":false})),
+                )
+                .unwrap();
+        }
+        let (sampler_tx, mut sampler_rx) = tokio::sync::mpsc::unbounded_channel();
+        actor.sampler_handle = xai_grok_sampler::SamplerActor::spawn(
+            config,
+            xai_grok_sampler::RetryPolicy {
+                max_retries: 0,
+                ..Default::default()
+            },
+            sampler_tx,
+        );
+        let actor = Arc::new(actor);
+        let drainer = actor.clone();
+        let (source_tx, source_acks) = tokio::sync::mpsc::unbounded_channel();
+        let release_decision = Arc::new(tokio::sync::Semaphore::new(0));
+        let resume = release_decision.clone();
+        let sampler = tokio::task::spawn_local(async move {
+            while let Some(event) = sampler_rx.recv().await {
+                let accepted = matches!(&event, xai_grok_sampler::SamplingEvent::NativeAttemptEvidence { evidence: xai_grok_sampling_types::conversation::native_search_history::NativeEvidenceEvent::Attempt(attempt), .. } if attempt.status == xai_grok_sampling_types::conversation::native_search_history::NativeResponseStatus::Accepted);
+                drainer.handle_sampling_event(event).await;
+                if accepted {
+                    source_tx.send(()).unwrap();
+                    resume.acquire().await.unwrap().forget();
+                }
+            }
+        });
+        Self {
+            actor,
+            persistence,
+            directory,
+            tasks: vec![gateway, sampler, disk],
+            _models: models,
+            executions,
+            source_acks,
+            release_decision,
+            resolution_writes,
+            resolution_gate,
+            gate_enabled,
+            resolution_ack_count,
+            lose_resolution_reply,
+        }
+    }
+}
+
+fn u5a_frames(stop: &str, tools: usize) -> Vec<Value> {
+    let mut frames = vec![
+        json!({"type":"message_start","message":{"id":"msg_u5a","type":"message","role":"assistant","model":"u5a","content":[],"stop_reason":null,"usage":{"input_tokens":11,"output_tokens":0}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_u5a","name":"tool_search_tool_regex","input":{}}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"lookup\"}"}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_u5a","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"alpha__lookup"},{"type":"tool_reference","tool_name":"zeta__fetch"}]}}}),
+        json!({"type":"content_block_stop","index":1}),
+    ];
+    for index in 0..tools {
+        frames.push(json!({"type":"content_block_start","index":index+2,"content_block":{"type":"tool_use","id":format!("toolu_u5a_{index}"),"name":"alpha__lookup","input":{}}}));
+        frames.push(json!({"type":"content_block_delta","index":index+2,"delta":{"type":"input_json_delta","partial_json":"{}"}}));
+        frames.push(json!({"type":"content_block_stop","index":index+2}));
+    }
+    frames.extend([
+        json!({"type":"content_block_start","index":tools+2,"content_block":{"type":"text","text":"native primary response"}}),
+        json!({"type":"content_block_stop","index":tools+2}),
+        json!({"type":"message_delta","delta":{"stop_reason":stop},"usage":{"input_tokens":11,"output_tokens":7}}),
+        json!({"type":"message_stop"}),
+    ]);
+    frames
+}
+
+fn u5a_disk_parts(session: &U5aPrimarySession) -> (Value, Value, Value, Value) {
+    let record: Value = serde_json::from_slice(
+        &std::fs::read(session.directory.path().join("native_history/current.json")).unwrap(),
+    )
+    .unwrap();
+    let source = native_blob(session.directory.path(), &record["source"]);
+    let active = native_blob(session.directory.path(), &record["active"]);
+    let ledger = native_blob(session.directory.path(), &record["ledger"]);
+    (record, source, active, ledger)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rejected_native_primary_has_no_active_links_and_next_capture_survives() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            for stop in ["refusal", "model_context_window_exceeded"] {
+                let server = MockInferenceServer::start().await.unwrap();
+                server.enqueue_response("/v1/messages", native_history_script(u5a_frames(stop, 1)));
+                let mut session = U5aPrimarySession::new(&server).await;
+                session
+                    .actor
+                    .chat_state_handle
+                    .push_user_message_and_ack(ConversationItem::user(
+                        "find and use the exact tool",
+                    ))
+                    .await;
+                let actor = session.actor.clone();
+                let running = tokio::task::spawn_local(async move {
+                    actor
+                        .process_conversation_turn_with_recovery(
+                            "u5a-reject",
+                            None,
+                            None,
+                            None,
+                            &mut length_salvage::LengthSalvage::new(None),
+                            &mut Default::default(),
+                        )
+                        .await
+                });
+                tokio::time::timeout(NATIVE_TIMEOUT, session.source_acks.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(
+                    !running.is_finished(),
+                    "primary decision remains held after real source ACK"
+                );
+                let (_, source, active, ledger) = u5a_disk_parts(&session);
+                assert_eq!(source["schema_version"], 2);
+                assert!(
+                    active["view_links"].as_array().unwrap().is_empty(),
+                    "U5a source ACK must not publish active links before the primary decision"
+                );
+                assert!(
+                    ledger["accounting"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|entry| entry["view_item"].is_null()
+                            && entry["view_digest"].is_null()
+                            && entry["role"] == "SourceOnly")
+                );
+                session.release_decision.add_permits(1);
+                let outcome = tokio::time::timeout(NATIVE_TIMEOUT, running)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                assert!(matches!(outcome, TurnOutcome::Completed { .. }));
+                assert_eq!(
+                    session.executions.load(std::sync::atomic::Ordering::SeqCst),
+                    0
+                );
+                let (_, retained, active, ledger) = u5a_disk_parts(&session);
+                assert_eq!(
+                    retained, source,
+                    "primary rejection preserves exact source and A1 identities"
+                );
+                assert!(active["view_links"].as_array().unwrap().is_empty());
+                assert!(
+                    ledger["lifecycle"]["waiting_clients"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|client| client["delivery"] == "Unavailable"),
+                    "U5a rejected client obligations must be unavailable"
+                );
+                assert!(
+                    ledger["transitions"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|entry| entry["primary_resolution"] == "Rejected"),
+                    "U5a owns a durable rejected resolution"
+                );
+                u5a_independent_reader_control(&session).await;
+                if stop == "refusal" {
+                    server.enqueue_response(
+                        "/v1/messages",
+                        native_history_script(u5a_frames("end_turn", 0)),
+                    );
+                    session.release_decision.add_permits(1);
+                    session
+                        .actor
+                        .chat_state_handle
+                        .push_user_message_and_ack(ConversationItem::user(
+                            "capture the next ordinary turn",
+                        ))
+                        .await;
+                    session
+                        .actor
+                        .process_conversation_turn_with_recovery(
+                            "u5a-next",
+                            None,
+                            None,
+                            None,
+                            &mut length_salvage::LengthSalvage::new(None),
+                            &mut Default::default(),
+                        )
+                        .await
+                        .unwrap();
+                    use crate::session::storage::StorageAdapter;
+                    let adapter =
+                        crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
+                            session.directory.path().to_path_buf(),
+                        );
+                    let read = adapter
+                        .read_native_history(&session.actor.session_info)
+                        .await
+                        .unwrap()
+                        .checkpoint
+                        .unwrap();
+                    assert_eq!(
+                        read.source.responses.len(),
+                        2,
+                        "U5a next genuine primary capture is acknowledged"
+                    );
+                    let full = adapter
+                        .load_session(&session.actor.session_info)
+                        .await
+                        .unwrap();
+                    let light = adapter
+                        .load_session_without_updates(&session.actor.session_info)
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        serde_json::to_value(&full.chat_history).unwrap(),
+                        serde_json::to_value(&light.chat_history).unwrap()
+                    );
+                    read.matches_history(&full.chat_history).unwrap();
+                    assert!(
+                        !read.active.view_links.is_empty(),
+                        "accepted primary must publish its exact mappings"
+                    );
+                }
+            }
+            u5a_disk_controls().await;
+            u5a_resolution_failure_controls().await;
+            u5a_phase_and_drop_controls().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn media_resampled_native_primary_has_no_active_links_and_next_capture_survives() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let server = MockInferenceServer::start().await.unwrap();
+            let session = U5aPrimarySession::new(&server).await;
+            let bridge = session.actor.agent.borrow().tool_bridge().clone();
+            assert!(bridge.unregister_tool_by_name("alpha__lookup"));
+            bridge
+                .register_mcp_tools(
+                    "alpha__lookup".into(),
+                    U5aClientTool {
+                        name: "alpha__lookup",
+                        kind: xai_grok_tools::types::tool::ToolKind::ImageGen,
+                        executions: session.executions.clone(),
+                    },
+                    Some(json!({"type":"object","properties":{},"additionalProperties":false})),
+                )
+                .unwrap();
+            let count = xai_grok_tools::media_gen_limits::DEFAULT_MAX_PARALLEL_IMAGE_GEN * 2;
+            server.enqueue_response(
+                "/v1/messages",
+                native_history_script(u5a_frames("tool_use", count)),
+            );
+            server.enqueue_response(
+                "/v1/messages",
+                native_history_script(u5a_frames("end_turn", 0)),
+            );
+            let (session, outcome, held) = u5a_observe_primary(session, "u5a-media", 2).await;
+            assert!(outcome.is_ok());
+            assert_eq!(held.len(), 2);
+            assert_eq!(
+                server.messages_request_count(),
+                2,
+                "real media policy performs one bounded resample"
+            );
+            assert_eq!(
+                session.executions.load(std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+            u5a_assert_rejected(&held[0], &u5a_disk_parts(&session));
+            u5a_assert_usable(&session, 2).await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn length_exhausted_native_primary_has_no_active_links_and_next_capture_survives() {
+    tokio::task::LocalSet::new().run_until(async {
+        let server = MockInferenceServer::start().await.unwrap();
+        let session = U5aPrimarySession::new(&server).await;
+        let count = sampler_turn::MAX_OUTPUT_TOKEN_LIMIT_RETRIES as usize + 1;
+        for _ in 0..count { server.enqueue_response("/v1/messages", native_history_script(u5a_frames("max_tokens", 1))); }
+        let (session, outcome, held) = u5a_observe_primary(session, "u5a-length", count).await;
+        assert!(outcome.is_err(), "real Length salvage cap retains its ordinary error");
+        assert_eq!(held.len(), count);
+        assert_eq!(server.messages_request_count(), count);
+        let (_, _, active, ledger) = u5a_disk_parts(&session);
+        assert!(active["view_links"].as_array().unwrap().iter().all(|entry| entry["source"]["response"].as_u64().unwrap() < (count - 1) as u64));
+        assert!(ledger["transitions"].as_array().unwrap().iter().any(|entry| entry["primary_resolution"] == "Rejected"));
+        u5a_assert_rejected(held.last().unwrap(), &u5a_disk_parts(&session));
+        server.enqueue_response("/v1/messages", native_history_script(u5a_frames("end_turn", 0)));
+        let (session, next, _) = u5a_observe_primary(session, "u5a-after-length", 1).await;
+        assert!(next.is_ok());
+        u5a_assert_usable(&session, count + 1).await;
+    }).await;
+}
+
+type U5aParts = (Value, Value, Value, Value);
+
+async fn u5a_observe_primary(
+    mut session: U5aPrimarySession,
+    request: &'static str,
+    count: usize,
+) -> (
+    U5aPrimarySession,
+    Result<TurnOutcome, acp::Error>,
+    Vec<U5aParts>,
+) {
+    session
+        .actor
+        .chat_state_handle
+        .push_user_message_and_ack(ConversationItem::user("exercise native primary resolution"))
+        .await;
+    let actor = session.actor.clone();
+    let running = tokio::task::spawn_local(async move {
+        actor
+            .process_conversation_turn_with_recovery(
+                request,
+                None,
+                None,
+                None,
+                &mut length_salvage::LengthSalvage::new(None),
+                &mut Default::default(),
+            )
+            .await
+    });
+    let mut held = Vec::new();
+    for _ in 0..count {
+        tokio::time::timeout(NATIVE_TIMEOUT, session.source_acks.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!running.is_finished());
+        let parts = u5a_disk_parts(&session);
+        let occurrence = parts.1["responses"].as_array().unwrap().last().unwrap()["occurrence"]
+            .as_u64()
+            .unwrap();
+        assert!(
+            parts.2["view_links"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["source"]["response"].as_u64().unwrap() != occurrence),
+            "U5a source ACK must not publish active links before the primary decision"
+        );
+        held.push(parts);
+        session.release_decision.add_permits(1);
+    }
+    let outcome = tokio::time::timeout(NATIVE_TIMEOUT, running)
+        .await
+        .unwrap()
+        .unwrap();
+    (session, outcome, held)
+}
+
+fn u5a_assert_rejected(before: &U5aParts, after: &U5aParts) {
+    let response = before.1["responses"].as_array().unwrap().last().unwrap();
+    let occurrence = response["occurrence"].as_u64().unwrap();
+    assert_eq!(after.1["responses"][occurrence as usize], *response);
+    let prefix = before.1["ordered_blocks"].as_array().unwrap();
+    assert_eq!(
+        &after.1["ordered_blocks"].as_array().unwrap()[..prefix.len()],
+        prefix
+    );
+    assert!(
+        after.2["view_links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["source"]["response"].as_u64().unwrap() != occurrence)
+    );
+    let own: Vec<_> = after.3["accounting"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["source"]["response"].as_u64().unwrap() == occurrence)
+        .collect();
+    assert!(own.iter().all(|entry| entry["role"] == "SourceOnly"
+        && entry["view_item"].is_null()
+        && entry["view_digest"].is_null()));
+    assert!(
+        after.3["transitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["occurrence"].as_u64() == Some(occurrence)
+                && entry["primary_resolution"] == "Rejected"),
+        "U5a rejected occurrence must carry its owned resolution"
+    );
+    assert!(
+        after.3["lifecycle"]["waiting_clients"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["source"]["response"].as_u64() == Some(occurrence))
+            .all(|entry| entry["delivery"] == "Unavailable")
+    );
+    let links = before.1["eligible_member_links"].as_array().unwrap();
+    let witnesses = before.3["eligible_member_accounting"].as_array().unwrap();
+    assert_eq!(
+        &after.1["eligible_member_links"].as_array().unwrap()[..links.len()],
+        links
+    );
+    assert_eq!(
+        &after.3["eligible_member_accounting"].as_array().unwrap()[..witnesses.len()],
+        witnesses
+    );
+}
+
+async fn u5a_assert_usable(session: &U5aPrimarySession, responses: usize) {
+    use crate::session::storage::StorageAdapter;
+    let adapter = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
+        session.directory.path().to_path_buf(),
+    );
+    let read = adapter
+        .read_native_history(&session.actor.session_info)
+        .await
+        .unwrap()
+        .checkpoint
+        .unwrap();
+    let full = adapter
+        .load_session(&session.actor.session_info)
+        .await
+        .unwrap();
+    let light = adapter
+        .load_session_without_updates(&session.actor.session_info)
+        .await
+        .unwrap();
+    assert_eq!(
+        read.source.responses.len(),
+        responses,
+        "next real capture must be acknowledged, not just sent"
+    );
+    assert_eq!(
+        serde_json::to_value(&full.chat_history).unwrap(),
+        serde_json::to_value(&light.chat_history).unwrap()
+    );
+    read.matches_history(&full.chat_history).unwrap();
+    assert!(!read.active.view_links.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn context_full_native_primary_compaction_fails_closed_without_stale_links() {
+    tokio::task::LocalSet::new().run_until(async {
+        use crate::session::storage::StorageAdapter;
+        use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+        let server = MockInferenceServer::start().await.unwrap();
+        let session = U5aPrimarySession::new(&server).await;
+        session.actor.chat_state_handle.push_user_message_and_ack(ConversationItem::system("You are an offline primary-resolution test agent.")).await;
+        session.actor.chat_state_handle.push_user_message_and_ack(ConversationItem::user("retained earlier work ".repeat(3000))).await;
+        server.enqueue_response("/v1/messages", native_history_script(u5a_frames("end_turn", 0)));
+        let (session, accepted, _) = u5a_observe_primary(session, "u5a-before-context-full", 1).await;
+        assert!(accepted.is_ok());
+        let before = session.actor.chat_state_handle.get_conversation().await;
+        server.enqueue_response("/v1/messages", native_history_script(u5a_frames("model_context_window_exceeded", 1)));
+        let (session, rejected, held) = u5a_observe_primary(session, "u5a-context-full", 1).await;
+        assert!(matches!(rejected.as_ref().unwrap(), TurnOutcome::Completed { stop: CompletedStop::ContextWindowExceeded, .. }));
+        u5a_assert_rejected(&held[0], &u5a_disk_parts(&session));
+        let native_before = u5a_disk_parts(&session);
+        let requests_before = server.requests().len();
+        let ordinary_text = "ordinary continuation after successful context-full compaction";
+        let ordinary_usage = xai_grok_sampling_types::TokenUsage {
+            prompt_tokens: 11,
+            completion_tokens: 7,
+            total_tokens: 18,
+            ..Default::default()
+        };
+        let mut expected_prompt = session.actor.chat_state_handle.try_get_prompt_usage().await.unwrap().unwrap();
+        let mut expected_session = session.actor.chat_state_handle.try_get_session_usage().await.unwrap();
+        for ledger in [&mut expected_prompt, &mut expected_session] {
+            ledger.record_main_loop_call("u5a", &ordinary_usage, None, None);
+        }
+        let count = session.actor.compaction.count.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(session.actor.compaction.force_compact.load(std::sync::atomic::Ordering::Relaxed));
+        server.enqueue_response("/v1/messages", native_history_script(vec![
+            json!({"type":"message_start","message":{"id":"msg_compact_u5a","type":"message","role":"assistant","model":"u5a","content":[],"stop_reason":null,"usage":{"input_tokens":11,"output_tokens":0}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"## Task\nContinue the native primary test.\n## Progress\nThe earlier tool discovery completed; the context-full response was rejected.\n## Next\nAnswer the next request. Preserve the recorded ordinary outcome and do not execute the rejected client call. The two retained typed tool identities remain historical evidence and cannot authorize reuse after this successful history replacement. The summary represents completed earlier work, the source-only rejected occurrence, and the next user request. No file edits, external calls, or additional tasks are needed.\n".repeat(2)}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":11,"output_tokens":7}}),
+            json!({"type":"message_stop"}),
+        ]));
+        let mut ordinary_frames = u5a_frames("end_turn", 0);
+        let ordinary_block = ordinary_frames.iter_mut().find(|frame| frame["content_block"]["type"] == "text").unwrap();
+        ordinary_block["content_block"]["text"] = json!(ordinary_text);
+        server.enqueue_response("/v1/messages", native_history_script(ordinary_frames));
+        session.release_decision.add_permits(1);
+        session.actor.chat_state_handle.push_user_message_and_ack(ConversationItem::user("continue after the context-full response")).await;
+        let result = tokio::time::timeout(Duration::from_secs(60), session.actor.process_conversation_turn_with_recovery("u5a-real-forced-compaction", None, None, None, &mut length_salvage::LengthSalvage::new(None), &mut Default::default())).await.unwrap();
+        assert!(result.is_ok(), "ordinary forced compaction and following turn succeed");
+        let requests = server.requests();
+        let following = &requests[requests_before..];
+        assert_eq!(
+            following.iter().map(|entry| (entry.method.as_str(), entry.path.as_str())).collect::<Vec<_>>(),
+            vec![("POST", "/v1/messages"), ("POST", "/v1/messages")],
+            "R15 T5aF: compaction must be followed by exactly one ordinary dispatch"
+        );
+        let request_text = |body: &Value| {
+            body["messages"].as_array().unwrap().iter()
+                .flat_map(|message| message["content"].as_array().unwrap())
+                .filter_map(|block| block["text"].as_str())
+                .collect::<Vec<_>>().join("\n")
+        };
+        let compaction_prompt = crate::session::helpers::session_compact::build_compaction_prompt(None, false);
+        let compaction_request = request_text(following[0].body.as_ref().unwrap());
+        let ordinary_request = request_text(following[1].body.as_ref().unwrap());
+        assert!(compaction_request.ends_with(&compaction_prompt), "first dispatch is the real summarization request");
+        assert!(!ordinary_request.contains(&compaction_prompt));
+        assert!(ordinary_request.contains("Continue the native primary test."), "next dispatch consumes the installed summary");
+        assert!(ordinary_request.contains("continue after the context-full response"));
+        assert!(matches!(result.unwrap(), TurnOutcome::Completed {
+            stop: CompletedStop::EndTurn, tools_called, structured_output: None,
+        } if tools_called.is_empty()), "scripted ordinary terminal and dispatch result are preserved");
+        assert_eq!(session.actor.chat_state_handle.get_last_turn_usage().await, Some(ordinary_usage));
+        let without_latency = |mut ledger: xai_chat_state::usage::UsageLedger| {
+            ledger.totals.api_duration_ms = 0;
+            for totals in ledger.by_model.values_mut() {
+                totals.api_duration_ms = 0;
+            }
+            ledger
+        };
+        assert_eq!(without_latency(session.actor.chat_state_handle.try_get_prompt_usage().await.unwrap().unwrap()), without_latency(expected_prompt), "ordinary prompt accounting matches the scripted usage");
+        assert_eq!(without_latency(session.actor.chat_state_handle.try_get_session_usage().await.unwrap()), without_latency(expected_session), "ordinary session accounting matches the scripted usage");
+        assert!(matches!(rejected.as_ref().unwrap(), TurnOutcome::Completed {
+            stop: CompletedStop::ContextWindowExceeded, tools_called, structured_output: None,
+        } if tools_called.is_empty()), "compaction leaves the earlier typed context-full outcome unchanged");
+        assert!(!session.actor.compaction.force_compact.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(session.actor.compaction.count.load(std::sync::atomic::Ordering::Relaxed), count + 1, "the real main path successfully compacted");
+        let after = session.actor.chat_state_handle.get_conversation().await;
+        let ordinary_assistant = after.iter().rev().find_map(|item| match item {
+            ConversationItem::Assistant(assistant) => Some(assistant),
+            _ => None,
+        }).unwrap();
+        assert_eq!(ordinary_assistant.content.as_ref(), ordinary_text, "the queued ordinary response was consumed and recorded");
+        assert!(ordinary_assistant.tool_calls.is_empty());
+        assert_ne!(serde_json::to_value(&after[..before.len().min(after.len())]).unwrap(), serde_json::to_value(&before).unwrap(), "successful compaction rewrites the retained prefix");
+        assert_eq!(u5a_disk_parts(&session).0, native_before.0, "the stale native checkpoint stays immutable historical evidence");
+        assert!(matches!(session.actor.chat_state_handle.read_native_history().await, Err(NativeUnavailable::StaleHistory)));
+        let (respond_to, flushed) = tokio::sync::oneshot::channel();
+        session.persistence.tx.send(PersistenceMsg::FlushAndAck { respond_to }).unwrap();
+        tokio::time::timeout(NATIVE_TIMEOUT, flushed).await.unwrap().unwrap().unwrap();
+        let adapter = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(session.directory.path().to_path_buf());
+        assert!(matches!(adapter.read_native_history(&session.actor.session_info).await, Err(NativeUnavailable::StaleHistory)));
+        let full = adapter.load_session(&session.actor.session_info).await.unwrap();
+        let light = adapter.load_session_without_updates(&session.actor.session_info).await.unwrap();
+        assert_eq!(serde_json::to_value(&full.chat_history).unwrap(), serde_json::to_value(&light.chat_history).unwrap());
+        let persisted_assistant = full.chat_history.iter().rev().find_map(|item| match item {
+            ConversationItem::Assistant(assistant) => Some(assistant),
+            _ => None,
+        }).unwrap();
+        assert_eq!(serde_json::to_value(persisted_assistant).unwrap(), serde_json::to_value(ordinary_assistant).unwrap(), "the scripted ordinary assistant survives real disk reload");
+        assert_eq!(session.executions.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }).await;
+}
+
+async fn u5a_disk_controls() {
+    use xai_chat_state::persistence::native::{NativeAppendAck, NativePrimaryDecision};
+    use xai_grok_sampling_types::conversation::native_search_history::{
+        NativeCaptureLease, NativeUnavailable,
+    };
+    {
+        use xai_grok_sampling_types::conversation::native_search_history::NativeEvidenceEvent;
+        let server = MockInferenceServer::start().await.unwrap();
+        let mut session = U5aPrimarySession::new(&server).await;
+        let handle = session.actor.chat_state_handle.clone();
+        handle
+            .push_user_message_and_ack(ConversationItem::user(
+                "observe the first primary-resolution reply",
+            ))
+            .await;
+        let lineage = handle.read_native_history().await.unwrap().lineage;
+        let request_id = xai_grok_sampler::RequestId::random();
+        let lease = handle
+            .begin_native_primary_capture(lineage, request_id.as_str().into(), 1, None)
+            .await
+            .unwrap();
+        let config = xai_grok_sampler::SamplerConfig {
+            base_url: server.url(),
+            model: "u5a".into(),
+            api_key: Some("u5a-loopback".into()),
+            api_backend: xai_grok_sampler::ApiBackend::Messages,
+            max_completion_tokens: Some(4096),
+            max_retries: Some(0),
+            ..Default::default()
+        };
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let sampler = xai_grok_sampler::SamplerActor::spawn(
+            config.clone(),
+            xai_grok_sampler::RetryPolicy {
+                max_retries: 0,
+                ..Default::default()
+            },
+            events,
+        );
+        server.enqueue_response(
+            "/v1/messages",
+            native_history_script(u5a_frames("end_turn", 0)),
+        );
+        let sampled = tokio::time::timeout(
+            NATIVE_TIMEOUT,
+            sampler.submit_and_collect_with_native_capture(
+                request_id,
+                xai_grok_sampling_types::ConversationRequest {
+                    items: handle.get_conversation().await,
+                    ..Default::default()
+                },
+                config,
+                lease.clone(),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(sampled.result.is_ok());
+        let mut source_acks = 0;
+        loop {
+            let event = tokio::time::timeout(NATIVE_TIMEOUT, received.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if let xai_grok_sampler::SamplingEvent::NativeAttemptEvidence {
+                request_id,
+                lease: issued,
+                evidence,
+            } = event
+            {
+                assert!(issued.same_lease(&lease));
+                let end = matches!(&evidence, NativeEvidenceEvent::End);
+                let ack = handle
+                    .append_native_evidence(request_id.as_str().into(), issued, evidence)
+                    .await
+                    .unwrap();
+                if end {
+                    assert_eq!(ack, NativeAppendAck::Released);
+                    break;
+                }
+                assert!(matches!(ack, NativeAppendAck::Applied { .. }));
+                source_acks += 1;
+            }
+        }
+        assert_eq!(source_acks, 1);
+        let before = u5a_disk_parts(&session);
+        assert_eq!(before.3["transitions"][0]["primary_resolution"], "Pending");
+        session
+            .gate_enabled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut reply = tokio::task::spawn_local(async move {
+            handle
+                .resolve_native_primary(lease, NativePrimaryDecision::Rejected)
+                .await
+        });
+        let write = tokio::time::timeout(NATIVE_TIMEOUT, session.resolution_writes.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut reply)
+                .await
+                .is_err(),
+            "U5a primary resolution reply cannot precede the held real disk operation"
+        );
+        assert_eq!(
+            session
+                .resolution_ack_count
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(u5a_disk_parts(&session).0, before.0);
+        session.resolution_gate.add_permits(1);
+        let ack = tokio::time::timeout(NATIVE_TIMEOUT, reply)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(ack, NativeAppendAck::Applied { .. }));
+        assert_eq!(
+            session
+                .resolution_ack_count
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the real adapter acknowledges exactly one forwarded first resolution"
+        );
+        assert!(session.resolution_writes.try_recv().is_err());
+        assert_eq!(
+            write.checkpoint.record.generation,
+            u5a_disk_parts(&session).0["generation"].as_u64().unwrap()
+        );
+    }
+    for reject in [false, true] {
+        let server = MockInferenceServer::start().await.unwrap();
+        let mut session = U5aPrimarySession::new(&server).await;
+        server.enqueue_response(
+            "/v1/messages",
+            native_history_script(u5a_frames(
+                if reject { "refusal" } else { "end_turn" },
+                usize::from(reject),
+            )),
+        );
+        session
+            .gate_enabled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        session
+            .actor
+            .chat_state_handle
+            .push_user_message_and_ack(ConversationItem::user(
+                "hold the real primary-resolution write",
+            ))
+            .await;
+        let actor = session.actor.clone();
+        let running = tokio::task::spawn_local(async move {
+            actor
+                .process_conversation_turn_with_recovery(
+                    "u5a-held-disk",
+                    None,
+                    None,
+                    None,
+                    &mut length_salvage::LengthSalvage::new(None),
+                    &mut Default::default(),
+                )
+                .await
+        });
+        tokio::time::timeout(NATIVE_TIMEOUT, session.source_acks.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let before = u5a_disk_parts(&session);
+        session.release_decision.add_permits(1);
+        let write = tokio::time::timeout(NATIVE_TIMEOUT, session.resolution_writes.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !running.is_finished(),
+            "U5a primary success cannot precede the held real disk operation"
+        );
+        assert_eq!(
+            session
+                .resolution_ack_count
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            u5a_disk_parts(&session).0,
+            before.0,
+            "held operation has not changed disk authority"
+        );
+        session.resolution_gate.add_permits(1);
+        assert!(
+            tokio::time::timeout(NATIVE_TIMEOUT, running)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_ok()
+        );
+        assert_eq!(
+            session
+                .resolution_ack_count
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the real adapter acknowledges exactly one forwarded resolution"
+        );
+        assert_eq!(
+            write.checkpoint.record.generation,
+            u5a_disk_parts(&session).0["generation"].as_u64().unwrap()
+        );
+        let response = &write.checkpoint.source.responses[0];
+        let foreign = NativeCaptureLease::issue(
+            response.request.clone(),
+            response.request.clone(),
+            1,
+            response.lease,
+            1024,
+        );
+        assert!(
+            session
+                .actor
+                .chat_state_handle
+                .resolve_native_primary(
+                    foreign,
+                    if reject {
+                        NativePrimaryDecision::Rejected
+                    } else {
+                        NativePrimaryDecision::Committed
+                    }
+                )
+                .await
+                .is_err(),
+            "foreign capability cannot resolve another lease"
+        );
+        let _ = (NativeAppendAck::Unchanged, NativeUnavailable::StaleHistory);
+    }
+}
+
+async fn u5a_resolution_failure_controls() {
+    use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+    for fail_before_write in [false, true] {
+        let server = MockInferenceServer::start().await.unwrap();
+        let mut session = U5aPrimarySession::new(&server).await;
+        session
+            .gate_enabled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        session
+            .lose_resolution_reply
+            .store(!fail_before_write, std::sync::atomic::Ordering::SeqCst);
+        server.enqueue_response(
+            "/v1/messages",
+            native_history_script(u5a_frames("refusal", 1)),
+        );
+        session
+            .actor
+            .chat_state_handle
+            .push_user_message_and_ack(ConversationItem::user(
+                "preserve rejection when native disk acknowledgement fails",
+            ))
+            .await;
+        let actor = session.actor.clone();
+        let running = tokio::task::spawn_local(async move {
+            actor
+                .process_conversation_turn_with_recovery(
+                    "u5a-failed-ack",
+                    None,
+                    None,
+                    None,
+                    &mut length_salvage::LengthSalvage::new(None),
+                    &mut Default::default(),
+                )
+                .await
+        });
+        tokio::time::timeout(NATIVE_TIMEOUT, session.source_acks.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let before = u5a_disk_parts(&session);
+        session.release_decision.add_permits(1);
+        tokio::time::timeout(NATIVE_TIMEOUT, session.resolution_writes.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let lock = if fail_before_write {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(
+                    session
+                        .directory
+                        .path()
+                        .join("native_history/transaction.lock"),
+                )
+                .unwrap();
+            fs2::FileExt::try_lock_exclusive(&file).unwrap();
+            Some(file)
+        } else {
+            None
+        };
+        session.resolution_gate.add_permits(1);
+        let outcome = tokio::time::timeout(NATIVE_TIMEOUT, running)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                outcome,
+                TurnOutcome::Completed {
+                    stop: CompletedStop::Refusal(_),
+                    ..
+                }
+            ),
+            "native resolution failure does not replace the ordinary refusal"
+        );
+        if let Some(file) = lock {
+            fs2::FileExt::unlock(&file).unwrap();
+            assert_eq!(u5a_disk_parts(&session).0, before.0);
+        }
+        assert!(
+            matches!(
+                session.actor.chat_state_handle.read_native_history().await,
+                Err(NativeUnavailable::Indeterminate)
+            ),
+            "lost or failed native acknowledgement is unavailable, never fabricated success"
+        );
+        assert_eq!(
+            session.executions.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(server.messages_request_count(), 1);
+    }
+}
+
+async fn u5a_independent_reader_control(session: &U5aPrimarySession) {
+    use crate::session::storage::StorageAdapter;
+    use xai_chat_state::persistence::native::{NativeCheckpoint, digest};
+    use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+    let directory = session.directory.path().join("native_history");
+    let original_authority = std::fs::read(directory.join("authority.json")).unwrap();
+    let original_record = std::fs::read(directory.join("current.json")).unwrap();
+    let mut record: Value = serde_json::from_slice(&original_record).unwrap();
+    let mut ledger = native_blob(session.directory.path(), &record["ledger"]);
+    assert_eq!(ledger["accounting"][0]["role"], "SourceOnly");
+    ledger["accounting"][0]["role"] = json!("sourceOnly");
+    let put = |kind: &str, value: &Value| {
+        let bytes = serde_json::to_vec(value).unwrap();
+        let digest = digest(&bytes);
+        std::fs::write(
+            directory.join("blobs").join(format!("{digest}.json")),
+            &bytes,
+        )
+        .unwrap();
+        json!({"kind":kind,"byte_len":bytes.len(),"digest":digest})
+    };
+    let reference = put("ledger", &ledger);
+    assert_eq!(reference["byte_len"], record["ledger"]["byte_len"]);
+    record["ledger"] = reference;
+    let checkpoint = put("checkpoint", &record);
+    assert_eq!(checkpoint["byte_len"], original_record.len());
+    let mut authority: Value = serde_json::from_slice(&original_authority).unwrap();
+    authority["checkpoint"] = checkpoint;
+    let bytes = serde_json::to_vec(&record).unwrap();
+    std::fs::write(directory.join("current.json"), &bytes).unwrap();
+    std::fs::write(
+        directory.join("authority.json"),
+        serde_json::to_vec(&authority).unwrap(),
+    )
+    .unwrap();
+    let decoded = NativeCheckpoint::decode(bytes, |reference| {
+        std::fs::read(
+            directory
+                .join("blobs")
+                .join(format!("{}.json", reference.digest)),
+        )
+        .map_err(|_| NativeUnavailable::InvalidReference)
+    });
+    let adapter = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
+        session.directory.path().to_path_buf(),
+    );
+    let full = adapter.load_session(&session.actor.session_info).await;
+    let light = adapter
+        .load_session_without_updates(&session.actor.session_info)
+        .await;
+    std::fs::write(directory.join("authority.json"), original_authority).unwrap();
+    std::fs::write(directory.join("current.json"), original_record).unwrap();
+    assert!(
+        decoded.is_err() && full.is_err() && light.is_err(),
+        "non-owned accounting change is rejected by the independent reader"
+    );
+    assert!(
+        adapter
+            .read_native_history(&session.actor.session_info)
+            .await
+            .unwrap()
+            .checkpoint
+            .is_some()
+    );
+}
+
+async fn u5a_phase_and_drop_controls() {
+    use crate::session::storage::StorageAdapter;
+    for drop_primary in [false, true] {
+        let server = MockInferenceServer::start().await.unwrap();
+        let mut session = U5aPrimarySession::new(&server).await;
+        server.enqueue_response(
+            "/v1/messages",
+            native_history_script(u5a_frames("refusal", 1)),
+        );
+        session
+            .actor
+            .chat_state_handle
+            .push_user_message_and_ack(ConversationItem::user(
+                "invalidate only the native primary owner",
+            ))
+            .await;
+        let actor = session.actor.clone();
+        let running = tokio::task::spawn_local(async move {
+            actor
+                .process_conversation_turn_with_recovery(
+                    "u5a-phase",
+                    None,
+                    None,
+                    None,
+                    &mut length_salvage::LengthSalvage::new(None),
+                    &mut Default::default(),
+                )
+                .await
+        });
+        tokio::time::timeout(NATIVE_TIMEOUT, session.source_acks.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let before = u5a_disk_parts(&session);
+        assert!(before.2["view_links"].as_array().unwrap().is_empty());
+        if drop_primary {
+            running.abort();
+            assert!(matches!(running.await, Err(error) if error.is_cancelled()));
+            session.release_decision.add_permits(1);
+        } else {
+            let generation = session.actor.turn_phases.current_generation();
+            session.actor.turn_phases.start();
+            assert_ne!(session.actor.turn_phases.current_generation(), generation);
+            session.release_decision.add_permits(1);
+            let outcome = tokio::time::timeout(NATIVE_TIMEOUT, running)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert!(matches!(
+                outcome,
+                TurnOutcome::Completed {
+                    stop: CompletedStop::Refusal(_),
+                    ..
+                }
+            ));
+        }
+        session.actor.chat_state_handle.get_conversation().await;
+        let (respond_to, flushed) = tokio::sync::oneshot::channel();
+        session
+            .persistence
+            .tx
+            .send(PersistenceMsg::FlushAndAck { respond_to })
+            .unwrap();
+        tokio::time::timeout(NATIVE_TIMEOUT, flushed)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            u5a_disk_parts(&session),
+            before,
+            "a dropped or stale-phase primary cannot resolve or publish its retained source"
+        );
+        let adapter = crate::session::storage::JsonlStorageAdapter::with_explicit_session_dir(
+            session.directory.path().to_path_buf(),
+        );
+        let read = adapter
+            .read_native_history(&session.actor.session_info)
+            .await
+            .unwrap()
+            .checkpoint
+            .unwrap();
+        assert!(read.active.view_links.is_empty());
+        let full = adapter
+            .load_session(&session.actor.session_info)
+            .await
+            .unwrap();
+        let light = adapter
+            .load_session_without_updates(&session.actor.session_info)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&full.chat_history).unwrap(),
+            serde_json::to_value(&light.chat_history).unwrap()
+        );
+        read.matches_history(&full.chat_history).unwrap();
+        assert_eq!(
+            session.executions.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(server.messages_request_count(), 1);
+    }
 }

@@ -183,7 +183,33 @@ impl ChatStateActor {
                 reply,
             } => {
                 let result = self
-                    .begin_native_capture(lineage, request, turn)
+                    .begin_native_capture(
+                        lineage,
+                        request,
+                        turn,
+                        None,
+                        crate::persistence::native::NativePrimaryPublication::Legacy,
+                    )
+                    .map(|lease| crate::persistence::native::NativeCaptureReply {
+                        lease: Some(lease),
+                    });
+                if let Err(Ok(mut abandoned)) = reply.send(result)
+                    && let Some(lease) = abandoned.lease.take()
+                {
+                    lease.finish();
+                    self.state.native.leases.remove(&lease.ordinal());
+                }
+            }
+            ChatStateCommand::BeginNativeCaptureWithIdentity {
+                lineage,
+                request,
+                turn,
+                inputs,
+                publication,
+                reply,
+            } => {
+                let result = self
+                    .begin_native_capture(lineage, request, turn, inputs, publication)
                     .map(|lease| crate::persistence::native::NativeCaptureReply {
                         lease: Some(lease),
                     });
@@ -201,6 +227,14 @@ impl ChatStateActor {
                 reply,
             } => {
                 let result = self.append_native_evidence(request, lease, event).await;
+                let _ = reply.send(result);
+            }
+            ChatStateCommand::ResolveNativePrimary {
+                lease,
+                decision,
+                reply,
+            } => {
+                let result = self.resolve_native_primary(lease, decision).await;
                 let _ = reply.send(result);
             }
             ChatStateCommand::ReadNativeHistory { reply } => {
@@ -537,8 +571,9 @@ impl ChatStateActor {
                     config: self.state.sampling_config.clone(),
                     credentials: self.state.credentials.clone(),
                 };
-                let specs = tool_candidates.select_for_row(&binding.config);
-                let request = self.build_conversation_request(
+                let (specs, native_eligible_inputs) =
+                    tool_candidates.select_with_identity(&binding.config);
+                let mut request = self.build_conversation_request(
                     specs,
                     memory_reminder,
                     persist_memory_reminder,
@@ -546,6 +581,7 @@ impl ChatStateActor {
                     conv_id,
                     req_id,
                 );
+                request.native_eligible_inputs = native_eligible_inputs;
                 let _ = reply.send((request, binding));
             }
             ChatStateCommand::GetConversation { reply } => {

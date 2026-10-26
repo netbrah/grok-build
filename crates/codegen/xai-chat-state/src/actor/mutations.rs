@@ -155,6 +155,12 @@ impl ChatStateActor {
         lineage: String,
         request: String,
         turn: u64,
+        inputs: Option<
+            std::sync::Arc<
+                xai_grok_sampling_types::conversation::native_search_history::NativeEligibleInputs,
+            >,
+        >,
+        publication: crate::persistence::native::NativePrimaryPublication,
     ) -> Result<
         xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
         xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
@@ -209,11 +215,21 @@ impl ChatStateActor {
             NATIVE_SOURCE_BYTES,
         );
         let (available, copies, minimum) =
-            crate::persistence::native::NativeCheckpoint::capture_allocation(
-                self.state.native.checkpoint.as_deref(),
-                &probe,
-                &self.state.conversation,
-            )?;
+            if publication == crate::persistence::native::NativePrimaryPublication::Deferred {
+                crate::persistence::native::NativeCheckpoint::capture_allocation_primary(
+                    self.state.native.checkpoint.as_deref(),
+                    &probe,
+                    &self.state.conversation,
+                    inputs.as_deref(),
+                )?
+            } else {
+                crate::persistence::native::NativeCheckpoint::capture_allocation_with_identity(
+                    self.state.native.checkpoint.as_deref(),
+                    &probe,
+                    &self.state.conversation,
+                    inputs.as_deref(),
+                )?
+            };
         let reserved = self
             .state
             .native
@@ -240,6 +256,10 @@ impl ChatStateActor {
                 pending: Vec::new(),
                 admitted: false,
                 reserved_bytes: ceiling,
+                inputs,
+                publication,
+                primary_pending: None,
+                primary_decision: None,
             },
         );
         Ok(lease)
@@ -270,6 +290,9 @@ impl ChatStateActor {
         }
         let NativeEvidenceEvent::Attempt(attempt) = event else {
             lease.finish();
+            if owner.admitted {
+                owner.inputs = None;
+            }
             if !owner.admitted {
                 self.state.native.leases.remove(&lease.ordinal());
             }
@@ -330,11 +353,21 @@ impl ChatStateActor {
             .checkpoint
             .as_ref()
             .map_or(0, |p| p.record.generation);
-        let candidate = match NativeCheckpoint::append(
+        let inputs = if attempts
+            .last()
+            .is_some_and(|attempt| attempt.status == NativeResponseStatus::Accepted)
+        {
+            owner.inputs.take()
+        } else {
+            owner.inputs.clone()
+        };
+        let candidate = match NativeCheckpoint::append_with_publication(
             self.state.native.checkpoint.as_deref(),
             &lease,
             &attempts,
             &self.state.conversation,
+            inputs.as_deref(),
+            owner.publication,
         ) {
             Ok(candidate) => {
                 owner.admitted = true;
@@ -376,7 +409,107 @@ impl ChatStateActor {
                     .max(candidate.bytes.len() as u64);
                 lease
                     .limit_generations(candidate.available_capture_bytes().unwrap_or(0), copies)?;
+                owner.primary_pending =
+                    candidate.pending_primary(&lease, &attempts, &self.state.conversation)?;
                 self.state.native.checkpoint = Some(candidate);
+                Ok(NativeAppendAck::Applied { generation, digest })
+            }
+            Ok(Ok(Err(reason))) => {
+                self.state.native.unavailable = Some(reason);
+                lease.unavailable(reason);
+                Err(reason)
+            }
+            _ => {
+                self.state.native.unavailable = Some(NativeUnavailable::Indeterminate);
+                lease.unavailable(NativeUnavailable::Indeterminate);
+                Err(NativeUnavailable::Indeterminate)
+            }
+        }
+    }
+
+    pub(super) async fn resolve_native_primary(
+        &mut self,
+        lease: xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        decision: crate::persistence::native::NativePrimaryDecision,
+    ) -> Result<
+        crate::persistence::native::NativeAppendAck,
+        xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+    > {
+        use crate::persistence::native::{
+            NativeAppendAck, NativePrimaryDecision, NativePrimaryPublication, NativeWrite, digest,
+        };
+        use xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable;
+        let owner = self
+            .state
+            .native
+            .leases
+            .get(&lease.ordinal())
+            .ok_or(NativeUnavailable::StaleHistory)?;
+        if !owner.capability.same_lease(&lease)
+            || self.state.native.lineage.as_deref() != Some(lease.lineage())
+            || owner.publication != NativePrimaryPublication::Deferred
+        {
+            return Err(NativeUnavailable::StaleHistory);
+        }
+        if let Some(previous) = owner.primary_decision {
+            return if previous == decision {
+                Ok(NativeAppendAck::Unchanged)
+            } else {
+                Err(NativeUnavailable::ConflictingObservation)
+            };
+        }
+        if let Some(reason) = self.state.native.unavailable {
+            return Err(reason);
+        }
+        let pending = owner
+            .primary_pending
+            .clone()
+            .ok_or(NativeUnavailable::StaleHistory)?;
+        if decision == NativePrimaryDecision::Committed && !pending.authorized() {
+            return Err(NativeUnavailable::Cancelled);
+        }
+        let previous = self
+            .state
+            .native
+            .checkpoint
+            .as_ref()
+            .ok_or(NativeUnavailable::StaleHistory)?;
+        let candidate = match previous.resolve_primary(&pending, decision, &self.state.conversation)
+        {
+            Ok(candidate) => std::sync::Arc::new(candidate),
+            Err(reason) => return Err(reason),
+        };
+        let expected_digest = digest(&candidate.bytes);
+        let write = NativeWrite {
+            previous_generation: previous.record.generation,
+            transaction: format!(
+                "primary:{}:{}:{}:{}",
+                lease.request(),
+                lease.ordinal(),
+                pending.attempt(),
+                pending.occurrence()
+            ),
+            checkpoint: candidate.clone(),
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.persistence.persist_native_generation_and_ack(write),
+        )
+        .await;
+        match result {
+            Ok(Ok(Ok(NativeAppendAck::Applied { generation, digest })))
+                if generation == candidate.record.generation && digest == expected_digest =>
+            {
+                self.state.native.checkpoint = Some(candidate);
+                let owner = self
+                    .state
+                    .native
+                    .leases
+                    .get_mut(&lease.ordinal())
+                    .ok_or(NativeUnavailable::StaleHistory)?;
+                owner.primary_pending = None;
+                owner.inputs = None;
+                owner.primary_decision = Some(decision);
                 Ok(NativeAppendAck::Applied { generation, digest })
             }
             Ok(Ok(Err(reason))) => {

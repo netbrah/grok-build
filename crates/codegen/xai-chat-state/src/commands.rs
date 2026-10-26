@@ -354,6 +354,23 @@ pub enum ChatStateCommand {
     Snapshot {
         reply: oneshot::Sender<ChatStateSnapshot>,
     },
+    BeginNativeCaptureWithIdentity {
+        lineage: String,
+        request: String,
+        turn: u64,
+        inputs: Option<
+            std::sync::Arc<
+                xai_grok_sampling_types::conversation::native_search_history::NativeEligibleInputs,
+            >,
+        >,
+        publication: crate::persistence::native::NativePrimaryPublication,
+        reply: oneshot::Sender<
+            Result<
+                crate::persistence::native::NativeCaptureReply,
+                xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+            >,
+        >,
+    },
     BeginNativeCapture {
         lineage: String,
         request: String,
@@ -369,6 +386,16 @@ pub enum ChatStateCommand {
         request: String,
         lease: xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
         event: xai_grok_sampling_types::conversation::native_search_history::NativeEvidenceEvent,
+        reply: oneshot::Sender<
+            Result<
+                crate::persistence::native::NativeAppendAck,
+                xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+            >,
+        >,
+    },
+    ResolveNativePrimary {
+        lease: xai_grok_sampling_types::conversation::native_search_history::NativeCaptureLease,
+        decision: crate::persistence::native::NativePrimaryDecision,
         reply: oneshot::Sender<
             Result<
                 crate::persistence::native::NativeAppendAck,

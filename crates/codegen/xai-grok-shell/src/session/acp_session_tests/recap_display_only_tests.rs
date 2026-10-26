@@ -2128,7 +2128,7 @@ async fn auxiliary_mcp_selection_keeps_builtin_snapshot_and_captured_row() {
     use super::side_call::tests::{
         AuxiliaryGuard, assert_auxiliary_binding, assert_auxiliary_wire, auxiliary_fixture,
     };
-    use xai_grok_sampling_types::{ApiBackend, SearchAdmission, ToolExposure};
+    use xai_grok_sampling_types::{ApiBackend, ConversationRequest, SearchAdmission, ToolExposure};
     tokio::task::LocalSet::new().run_until(async {
         for call in ["btw", "recap"] {
             for (backend, flag, next_backend, next_flag) in [
@@ -2178,6 +2178,14 @@ async fn auxiliary_mcp_selection_keeps_builtin_snapshot_and_captured_row() {
                     assert!(baseline.tools.iter().any(|tool| tool.exposure == ToolExposure::Deferred));
                     assert_eq!(baseline.tools.iter().any(|tool| tool.name == "web_search"), !backend_search);
                     assert_eq!(!baseline.hosted_tools.is_empty(), backend_search);
+                    let binding = fixture.actor.chat_state_handle.capture_transport_binding().await.unwrap();
+                    assert_auxiliary_binding(&binding, &fixture.a);
+                    let (prepared, _) = fixture.actor.prepare_native_tool_candidates_timed().await;
+                    let bundle = fixture.actor.prepared_tool_bundle(&prepared);
+                    let (_, expected_native_inputs) = xai_chat_state::NativeToolCandidates::with_mcp_membership(
+                        bundle.specs,
+                        prepared.mcp_specs.iter().map(|spec| spec.name.clone()).collect(),
+                    ).with_native_inputs(bundle.native_inputs).select_with_identity(&binding.config);
                     let guard = AuxiliaryGuard::new(fixture.b.clone());
                     match call {
                         "btw" => { fixture.actor.handle_side_question("What matters?").await.unwrap(); }
@@ -2201,10 +2209,28 @@ async fn auxiliary_mcp_selection_keeps_builtin_snapshot_and_captured_row() {
                         "U6 actual auxiliary admission must use captured A, not installed B or the catalog");
                     let mut expected_request = baseline.clone();
                     expected_request.tools = expected_tools;
+                    expected_request.native_eligible_inputs = expected_native_inputs;
+                    assert!(expected_request.native_eligible_inputs.is_some());
+                    let native_identity = |request: &ConversationRequest| {
+                        request.native_eligible_inputs.as_ref().map(|inputs| {
+                            assert!(inputs.matches_specs(&request.tools));
+                            inputs.entries().iter().map(|entry| serde_json::json!({
+                                "position": entry.position(),
+                                "namespace_kind": entry.namespace_kind(),
+                                "qualified_namespace": entry.qualified_namespace(),
+                                "child_name": entry.child_name(),
+                                "declaration": entry.declaration(),
+                                "schema_bytes": entry.schema_bytes(),
+                                "schema_digest": entry.schema_digest(),
+                            })).collect::<Vec<_>>()
+                        })
+                    };
+                    assert_eq!(native_identity(request), native_identity(&expected_request),
+                        "recap and side-question native inputs must match captured selection");
                     expected_request.x_grok_conv_id = request.x_grok_conv_id.clone();
                     expected_request.x_grok_req_id = request.x_grok_req_id.clone();
                     assert_eq!(format!("{request:?}"), format!("{expected_request:?}"),
-                        "U6 complete auxiliary request differs only by selected MCP and fresh request IDs");
+                        "U6 complete auxiliary request differs only by selected MCP, captured native inputs and fresh request IDs");
                     assert_auxiliary_wire(&fixture, &fixture.a.config.model);
                     assert_auxiliary_wire(&control, &control.a.config.model);
                     let body = fixture.server_a.requests()[0].body.clone().unwrap();

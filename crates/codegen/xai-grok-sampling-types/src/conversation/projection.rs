@@ -717,57 +717,17 @@ fn hex_digest(bytes: &[u8]) -> String {
     hex
 }
 
-/// Which discovery-fidelity tier a discovery record takes on a target route
-/// (xwire-boundary-map.md §4.1 ladder). Decided by [`discovery_tier`]; the
-/// projector arm that acts on it is not written: `project_switch_history` (:196) has no
-/// `Discovery` arm, so a tier is read only by this module's tests (bead apex-waj.2).
+/// Native decisions are qualified KEEP, whole-group F, or refusal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // pending apex-waj.2 (the projector arms that read the tuple; D0..D3 ladder apex-waj.29, in flight); the route tuple itself landed with apex-waj.35
+#[allow(dead_code)]
 pub(super) enum DiscoveryTier {
-    /// D0 — same mint domain, same row, same boundary: the record rides on
-    /// verbatim, `wire_ids` included.
     Keep,
-    /// D1 — the logical record and its correlation survive; only ids are
-    /// adjusted. The implementer of the arm inherits both constraints:
-    ///
-    /// - `output_item_id` MUST be re-minted deterministically (§4.2 rule 4) so
-    ///   the switch is idempotent (XD-6) and S-1 byte-stability holds across
-    ///   retries. That mint is REQUIRED AND NOT YET IMPLEMENTED: rule 4 calls
-    ///   the v5 suffix helper "existing" and it is not —
-    ///   `SYNTHETIC_OUTPUT_ID_NAMESPACE` and `with_suffix("tso", …)` are PLAN
-    ///   names (PLAN:23; `tool_search.rs:108-110` and `:1266` give the mint to
-    ///   T15/Tasks), and this crate does not depend on `uuid` at all. The only
-    ///   id grammar present in this file today is `xw_` + SHA-256
-    ///   (`xw_reasoning_id`, `xw_reasoning_id_values`).
-    /// - The provider-minted `tsc_` `call_item_id` MUST be KEPT. Its designated
-    ///   owner is the reactive net (`xai-grok-sampling-types/src/error.rs:399-486`
-    ///   `is_model_bound_history_error` -> `xai-grok-sampler/src/retry.rs:142-143`
-    ///   `RetryDecision::RetryWithModelBoundStateStrip`) — designated, not
-    ///   proven: §8 X-1 records the foreign-`tsc_` replay as never exercised
-    ///   and probe P4 is outstanding. Pre-emptively stripping the id is
-    ///   FORBIDDEN for no evidenced gain (it also breaks survival, §4.2 rule 1)
-    ///   — §4.2 rule 5, `UNDECIDED`.
-    ///   The clause the D1 arm needs: that designated remedy is currently BLIND to
-    ///   this class. `ConversationRequest::strip_model_bound_state` (`conversation.rs:1227`)
-    ///   delegates to `drop_model_bound_items` (`conversation.rs:1422`), whose `retain`
-    ///   (`conversation.rs:1450-1469`) drops only `Reasoning` + `BackendToolCall` plus
-    ///   the results paired with those calls and keeps everything else on a NAMED arm:
-    ///   the pair takes `ConversationItem::Discovery { .. } => true` (`conversation.rs:1465`,
-    ///   under "A-26, named rather than inherited from the old wildcard" at `:1455`) and
-    ///   survives the strip untouched, `tsc_` id included. The recovery is a strict
-    ///   one-retry, and on a history whose only model-bound state is the discovery pair
-    ///   the strip returns `0`, so the request task fails closed (`retry.rs:135-136`).
-    ///   Teaching the net this class is open work gated on per-row wire evidence (C4),
-    ///   so "designated owner" names a policy, not a mechanism that can act on it yet.
-    ReKey,
-    /// D2 — the `/messages` wire has no typed discovery item but a MANDATORY
-    /// declaration surface, so the record is emitted as the transcript form AND
-    /// every loaded entry is declared in `tools[]` (§4.2 rules 6-11).
-    Materialise,
-    /// D3 — the fail-closed tier: emit no discovery item at all, hand the loaded
-    /// set to the legacy `ToolIndex` tier for rediscovery, and record the
-    /// demotion (§4.2 rules 12-13).
     Demote,
+    Refuse,
+    /// Legacy reference value; the native policy never returns it.
+    ReKey,
+    /// Legacy reference value; the native policy never returns it.
+    Materialise,
 }
 
 /// The target route a switch lands on: which API it lands on, which boundary
@@ -882,126 +842,646 @@ pub(super) struct DiscoveryOrigin {
     pub owner_model_id: Option<String>,
 }
 
-/// Choose the discovery tier for a switch onto `target` (xwire-boundary-map.md
-/// §4.1).
-///
-/// The §4.1 table fixes the four TIERS and their actions; its `when` column is
-/// a per-row description and states NO order. The sequence below is this
-/// lane's resolution of the cells the table leaves ambiguous, and four of its
-/// cells contradict the table's literal wording. Two are CONTESTED and escalated
-/// as ruling **R-1** on bead apex-waj.29; the third is recorded below and R-1,
-/// as filed, does not reach it; the fourth is step 4's guard over D1, recorded
-/// there and being added to the same R-1 family by the coordinator:
-///
-/// - Step 1 against the D3 row, whose `when` is "target `ApiBackend ==
-///   ChatCompletions`, or any route not admitted for native discovery". Read
-///   literally that sends an unadmitted **Messages** route to D3; step 1 sends
-///   it to D2. If the controller rules the wording literal,
-///   `d2_materialises_on_an_unadmitted_messages_target` flips to
-///   `DiscoveryTier::Demote`.
-/// - Step 3 against the D0 row, whose `when` is "`ApiBackend == Responses` AND
-///   `origin == target Boundary` AND the owner row is unchanged". That is
-///   literally satisfied by the `Responses x Vertex` cell step 3 demotes. If
-///   that wording rules, `responses_vertex_route_disagreement_demotes` flips to
-///   `DiscoveryTier::Keep`.
-/// - Step 1 again, against the D2 row, whose `when` is "target `Boundary ==
-///   Vertex` (`ApiBackend == Messages`)" — literally a conjunction, so a
-///   `Messages` target on a non-`Vertex` boundary matches NO row at all: not
-///   D0/D1 (`ApiBackend == Responses`), not D2 (`Boundary == Vertex`), not D3
-///   (`ChatCompletions`, or unadmitted). Step 1 materialises it anyway, off
-///   §4.2's D2 preamble, which names the tier by the target wire
-///   (`xwire-boundary-map.md:279`) and grounds it in that wire's mandatory
-///   declaration surface (`:282`, A-23).
-///   `messages_target_on_a_non_vertex_boundary_still_materialises` pins the
-///   shipped answer; R-1 was filed over the two cells above only, so this one is
-///   contested and, as of this pass, not yet escalated.
-///
-/// Every arm is reachable:
-///
-/// 1. `Messages` target -> [`DiscoveryTier::Materialise`] (D2), whatever the
-///    origin or the gate says: D2 is a property of that wire, whose declaration
-///    surface is mandatory (§4.2's D2 preamble, `xwire-boundary-map.md:282`,
-///    A-23 — wire authority, not route choice). Rules 6 and 7 are not that
-///    sentence: they are the two halves the arm must then produce, 6 the
-///    transcript (`:284`) and 7 the declaration (`:289`).
-/// 2. `ChatCompletions` target -> [`DiscoveryTier::Demote`] (D3) — that wire has
-///    neither a typed item nor a declaration surface.
-/// 3. `Responses` target on a `Vertex` boundary -> [`DiscoveryTier::Demote`]:
-///    the `Responses x Vertex` cell is the fail-closed case — a route claiming
-///    a Vertex row on the Responses wire is internally inconsistent, so nothing
-///    is kept. Note the consequence in the other direction: a `Responses`
-///    target never reaches D2, because D2 emits declarations into `tools[]` and
-///    §4.2 rule 2 forbids a loaded definition entering `tools[]` there.
-/// 4. `Responses` target whose row is not admitted for native discovery ->
-///    [`DiscoveryTier::Demote`], as a guard over BOTH Responses tiers. §4.2
-///    rule 3 (`xwire-boundary-map.md:261-263`) is where the gate comes from,
-///    but it reaches only part of this arm's range: verbatim it redirects D0 —
-///    "If the target row is not admitted, the projector **MUST** take D3,
-///    **not D0**" — so a cell that never satisfied D0's `when` in the first
-///    place (owner row changed, boundary changed, or owner unresolvable) says
-///    nothing about it. Those cells are exactly the ones §4.1's D1 `when`
-///    claims, and that row carries NO admission clause at all ("target
-///    `ApiBackend == Responses`, boundary or row changed", `:247`). The two
-///    rows therefore COLLIDE for them: read literally, §4.1 says Re-Key and
-///    the shipped code says Demote. The warrant for shipping Demote is the D3
-///    `when` column itself — "target `ApiBackend == ChatCompletions`, **or any
-///    route not admitted** for native discovery" (`:249`), which excepts no
-///    tier — read as a guard over D0/D1 rather than as a fourth alternative to
-///    them. THAT PRECEDENCE IS THIS LANE'S READING of two colliding rows, not
-///    something §4.1 states: the `when` column states no order (preamble
-///    above), so this is a FOURTH colliding cell, and the coordinator is adding
-///    it to the R-1 family on bead apex-waj.29 — which as filed reaches the two
-///    cells named above and logs the `Messages` x non-`Vertex` cell only as a
-///    note. If R-1 is ruled the other way — every `when` literal, so D1 owns
-///    these cells — the changed-row / changed-boundary / unattributable legs of
-///    [`unadmitted_responses_route_demotes_whatever_the_origin_says`] flip from
-///    `Demote` to `ReKey`. Rule 3 holds either way, because it only ever spoke
-///    about D0.
-///
-/// Steps 3 and 4 share one D3 arm: the same outcome for two independent
-/// reasons, neither reachable from the other —
-/// `responses_vertex_route_disagreement_demotes` pins the route-disagreement
-/// reason on an admitted row, `unadmitted_responses_target_demotes_not_keeps`
-/// pins the admission reason on a non-`Vertex` boundary whose origin is
-/// KEEP-shaped, and
-/// `unadmitted_responses_route_demotes_whatever_the_origin_says` pins it on the
-/// three origins that are not — the cells step 4 and §4.1's D1 row collide over.
-/// The code tests both reasons in one condition; the order of the two operands
-/// is not a claim any test can observe, and none is made.
-///
-/// 5. same owner row AND same boundary -> [`DiscoveryTier::Keep`] (D0).
-/// 6. otherwise (row changed, boundary changed, or owner unresolvable) ->
-///    [`DiscoveryTier::ReKey`] (D1).
-///
-/// The keying reads `backend`, `boundary` and `admission` only. It never
-/// consults `is_family_switch` (§9 item 3 — too narrow, it is false for
-/// family-unset rows), and there is no parameter through which it could.
-#[allow(dead_code)] // pending apex-waj.2 (the projector arms that read the tuple; D0..D3 ladder apex-waj.29, in flight); the route tuple itself landed with apex-waj.35
+/// Qualified native replay policy. Production projection remains unchanged until U8.
+#[allow(dead_code)]
 pub(super) fn discovery_tier(
     target_model_id: &str,
     target: &TargetRoute,
     origin: &DiscoveryOrigin,
+    qualification: &NativeQualification,
 ) -> DiscoveryTier {
-    match target.backend {
-        ApiBackend::Messages => DiscoveryTier::Materialise,
-        ApiBackend::ChatCompletions => DiscoveryTier::Demote,
-        ApiBackend::Responses => {
-            // Two independent fail-closed reasons share the D3 arm, both ahead
-            // of the KEEP test: the `Responses x Vertex` route disagreement (a
-            // route that contradicts itself has no admission story to consult)
-            // and §4.2 rule 3's unadmitted row. Operand order carries no
-            // meaning and is unobservable; each reason has its own test.
-            if target.boundary == Boundary::Vertex || !target.admission.admitted() {
-                DiscoveryTier::Demote
-            } else if origin.owner_model_id.as_deref() == Some(target_model_id)
-                && origin.boundary == target.boundary
-            {
-                DiscoveryTier::Keep
-            } else {
-                DiscoveryTier::ReKey
+    use super::native_search_history::NativeReplayFamily;
+    let Some(domain) = qualification
+        .target
+        .as_ref()
+        .filter(|domain| domain.complete())
+    else {
+        return DiscoveryTier::Refuse;
+    };
+    if qualification.request.as_ref() != Some(domain)
+        || domain.model != target_model_id
+        || domain.backend != target.backend
+        || qualification.original_admission != target.admission
+        || !qualification.intact_membership
+    {
+        return DiscoveryTier::Refuse;
+    }
+    if target.backend == ApiBackend::ChatCompletions
+        || !target.admission.admitted()
+        || (target.backend == ApiBackend::Responses && target.boundary == Boundary::Vertex)
+        || (target.backend == ApiBackend::Messages && target.boundary != Boundary::Vertex)
+    {
+        return DiscoveryTier::Demote;
+    }
+    let Some(source) = qualification
+        .source
+        .as_ref()
+        .filter(|source| source.complete())
+    else {
+        return DiscoveryTier::Demote;
+    };
+    let supported = matches!(
+        (&domain.dialect, qualification.shape.family),
+        (
+            NativeReplayDialect::Responses(super::ResponsesReplayDialect::Codex),
+            NativeReplayFamily::ResponsesClient | NativeReplayFamily::ResponsesServer
+        ) | (
+            NativeReplayDialect::Messages,
+            NativeReplayFamily::MessagesServer
+        )
+    );
+    let qualified_shape = qualification.receipt.as_ref().is_some_and(|receipt| {
+        !receipt.receipt_id.is_empty()
+            && receipt.target == *domain
+            && receipt.shape == qualification.shape
+    });
+    if source != domain
+        || origin.owner_model_id.as_deref() != Some(source.model.as_str())
+        || origin.boundary != target.boundary
+        || !qualification.shape.completed
+        || !qualification.current_backing
+        || !qualification.faithful_identity
+        || !supported
+        || !qualified_shape
+    {
+        DiscoveryTier::Demote
+    } else {
+        DiscoveryTier::Keep
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum NativeReplayDialect {
+    Responses(super::ResponsesReplayDialect),
+    Messages,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NativeReplayDomain {
+    pub backend: ApiBackend,
+    pub dialect: NativeReplayDialect,
+    pub model: String,
+    pub row: String,
+    pub provider: String,
+    pub deployment: String,
+    pub deployment_revision: String,
+    pub endpoint: String,
+    pub principal: String,
+}
+
+impl NativeReplayDomain {
+    fn complete(&self) -> bool {
+        [
+            &self.model,
+            &self.row,
+            &self.provider,
+            &self.deployment,
+            &self.deployment_revision,
+            &self.endpoint,
+            &self.principal,
+        ]
+        .iter()
+        .all(|field| !field.is_empty())
+            && (self.endpoint.starts_with("https://") || self.endpoint.starts_with("http://"))
+            && match (&self.backend, &self.dialect) {
+                (ApiBackend::Responses, NativeReplayDialect::Responses(_))
+                | (ApiBackend::Messages, NativeReplayDialect::Messages)
+                | (ApiBackend::ChatCompletions, _) => true,
+                _ => false,
             }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NativeReplayShape {
+    pub family: super::native_search_history::NativeReplayFamily,
+    pub keyless_server: bool,
+    pub output_id_present: bool,
+    pub completed: bool,
+    pub result_error: bool,
+    pub referenced_members: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NativeShapeReceipt {
+    pub target: NativeReplayDomain,
+    pub shape: NativeReplayShape,
+    pub receipt_id: String,
+}
+
+pub(super) struct NativeQualification {
+    pub source: Option<NativeReplayDomain>,
+    pub target: Option<NativeReplayDomain>,
+    pub request: Option<NativeReplayDomain>,
+    pub original_admission: SearchAdmission,
+    pub shape: NativeReplayShape,
+    pub receipt: Option<NativeShapeReceipt>,
+    pub intact_membership: bool,
+    pub current_backing: bool,
+    pub faithful_identity: bool,
+}
+
+pub(super) struct NativePureHistory<'a> {
+    pub record: &'a super::native_search_history::NativeSearchHistoryV1,
+    pub source: &'a super::native_search_history::NativeSource,
+    pub ledger: &'a super::native_search_history::NativeLedger,
+    pub identity: &'a super::native_search_history::NativeIdentityExtension,
+    pub blobs: &'a std::collections::BTreeMap<String, std::sync::Arc<[u8]>>,
+    pub authorship:
+        &'a std::collections::BTreeMap<u64, super::native_search_history::NativeIdAuthorship>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativeHistoryAction {
+    Keep,
+    F,
+    Strip,
+    AwaitClient,
+    AwaitResults,
+    ContinueOriginal,
+    OmitSendOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NativePreparedMember {
+    pub source: super::native_search_history::NativeSourceCoordinate,
+    pub action: NativeHistoryAction,
+    pub raw: Option<Value>,
+    pub duplicate_of: Option<super::native_search_history::NativeSourceCoordinate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NativeGroupDecision {
+    pub key: String,
+    pub action: NativeHistoryAction,
+    pub members: Vec<super::native_search_history::NativeSourceCoordinate>,
+    pub waiting_clients: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NativeHistoryDecision {
+    pub groups: Vec<NativeGroupDecision>,
+    pub members: Vec<NativePreparedMember>,
+}
+
+fn native_policy_blob<'a>(
+    history: &NativePureHistory<'a>,
+    reference: &super::native_search_history::NativeBlobRef,
+    kind: &str,
+) -> Result<&'a [u8], super::native_search_history::NativeUnavailable> {
+    use super::native_search_history::NativeUnavailable;
+    let bytes = history
+        .blobs
+        .get(&reference.digest)
+        .ok_or(NativeUnavailable::InvalidReference)?;
+    if reference.kind != kind
+        || reference.byte_len != bytes.len() as u64
+        || reference.digest != hex_digest(&sha256(bytes))
+    {
+        return Err(NativeUnavailable::InvalidReference);
+    }
+    Ok(bytes)
+}
+
+fn native_policy_history(
+    history: &NativePureHistory<'_>,
+) -> Result<(), super::native_search_history::NativeUnavailable> {
+    use super::native_search_history::*;
+    let record = history.record;
+    let profile = (
+        record.schema_version,
+        record.policy_revision,
+        record.reader_floor,
+        record.limits_revision,
+    );
+    if !matches!(profile, (1, 1, 1, 1) | (2, 1, 2, 1)) {
+        return Err(NativeUnavailable::UnsupportedVersion);
+    }
+    let source_bytes = native_policy_blob(history, &record.source, "source")?;
+    let ledger_bytes = native_policy_blob(history, &record.ledger, "ledger")?;
+    NativeResource::SourceBytes.admit(source_bytes.len() as u64, 0)?;
+    NativeResource::LedgerBytes.admit(ledger_bytes.len() as u64, 0)?;
+    let equal = match (record.schema_version, history.identity) {
+        (1, NativeIdentityExtension::Revision1Unknown) => {
+            serde_json::from_slice::<NativeSource>(source_bytes)
+                .ok()
+                .as_ref()
+                == Some(history.source)
+                && serde_json::from_slice::<NativeLedger>(ledger_bytes)
+                    .ok()
+                    .as_ref()
+                    == Some(history.ledger)
+        }
+        (
+            2,
+            NativeIdentityExtension::Revision2 {
+                eligible_member_links,
+                eligible_member_accounting,
+            },
+        ) => {
+            let source = serde_json::from_slice::<NativeSourceV2>(source_bytes)
+                .map_err(|_| NativeUnavailable::InvalidReference)?
+                .into_parts();
+            let ledger = serde_json::from_slice::<NativeLedgerV2>(ledger_bytes)
+                .map_err(|_| NativeUnavailable::InvalidReference)?
+                .into_parts();
+            source.0 == *history.source
+                && source.1 == *eligible_member_links
+                && ledger.0 == *history.ledger
+                && ledger.1 == *eligible_member_accounting
+        }
+        _ => return Err(NativeUnavailable::UnsupportedVersion),
+    };
+    if !equal
+        || history.source.schema_version != record.schema_version
+        || history.source.lineage != record.lineage.id
+        || history.ledger.source_digest != record.source.digest
+        || record.lineage.source_digest != record.source.digest
+        || history.ledger.active_digest != record.active.digest
+    {
+        return Err(NativeUnavailable::InvalidReference);
+    }
+    NativeResource::SourceBlocks.admit(history.source.ordered_blocks.len() as u64, 0)?;
+    NativeResource::SourceGroups.admit(history.ledger.groups.len() as u64, 0)?;
+    for (index, block) in history.source.ordered_blocks.iter().enumerate() {
+        if block.coordinates.occurrence != index as u64
+            || block.coordinates.lineage != history.source.lineage
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        let entries: Vec<_> = history
+            .ledger
+            .accounting
+            .iter()
+            .filter(|entry| entry.source == block.coordinates)
+            .collect();
+        if entries.len() != 1 {
+            return Err(NativeUnavailable::InvalidReference);
         }
     }
+    Ok(())
+}
+
+fn native_policy_backing(
+    history: &NativePureHistory<'_>,
+    block: &super::native_search_history::NativeRawBlock,
+    raw: &Value,
+    tools: &[super::ToolSpec],
+    current: Option<&super::native_search_history::NativeEligibleInputs>,
+) -> Result<bool, super::native_search_history::NativeUnavailable> {
+    use super::native_search_history::*;
+    let leaves = native_candidate_references(raw)?;
+    if leaves.is_empty() {
+        return Ok(true);
+    }
+    let NativeIdentityExtension::Revision2 {
+        eligible_member_links,
+        eligible_member_accounting,
+    } = history.identity
+    else {
+        return Ok(false);
+    };
+    let belongs = |coordinate: &NativeSourceCoordinate| {
+        let mut parent = coordinate.clone();
+        parent.submember = None;
+        parent == block.coordinates
+    };
+    let links: Vec<_> = eligible_member_links
+        .iter()
+        .filter(|link| belongs(&link.source))
+        .collect();
+    let witnesses: Vec<_> = eligible_member_accounting
+        .iter()
+        .filter(|entry| belongs(&entry.source))
+        .collect();
+    let parent = history
+        .ledger
+        .accounting
+        .iter()
+        .find(|entry| entry.source == block.coordinates)
+        .ok_or(NativeUnavailable::InvalidReference)?;
+    if links.len() != leaves.len() || witnesses.len() != leaves.len() {
+        return Err(NativeUnavailable::InvalidReference);
+    }
+    let mut backed = true;
+    for (ordinal, ((leaf, link), witness)) in leaves.iter().zip(links).zip(witnesses).enumerate() {
+        let mut expected = block.coordinates.clone();
+        expected.submember = Some(ordinal as u64);
+        if link.source != expected
+            || witness.source != expected
+            || witness.source_digest != parent.source_digest
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        let NativeEligibleMemberIdentity::Backed { eligible_ref } = &link.identity else {
+            backed = false;
+            continue;
+        };
+        if !history.source.eligible_snapshots.contains(eligible_ref) {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        let snapshot: NativeEligibleSnapshot = serde_json::from_slice(native_policy_blob(
+            history,
+            eligible_ref,
+            "eligible_snapshot",
+        )?)
+        .map_err(|_| NativeUnavailable::InvalidReference)?;
+        let schema = native_policy_blob(history, &snapshot.schema, "eligible_schema")?;
+        let binding: Vec<_> = history
+            .source
+            .producing_bindings
+            .iter()
+            .filter(|binding| binding.request == block.coordinates.producing_binding)
+            .collect();
+        if snapshot.version != 1 || binding.len() != 1 || snapshot.binding != binding[0].origin_ref
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        native_policy_blob(history, &snapshot.binding, "producing_binding")?;
+        let NativeCandidateReference::Tool {
+            namespace,
+            name,
+            declaration,
+        } = leaf
+        else {
+            return Err(NativeUnavailable::InvalidReference);
+        };
+        let flat = if snapshot.namespace_kind == NativeNamespaceKind::Mcp {
+            format!("{}__{}", snapshot.qualified_namespace, snapshot.child_name)
+        } else {
+            snapshot.child_name.clone()
+        };
+        let named = match namespace {
+            Some(namespace) => {
+                *namespace == snapshot.qualified_namespace && *name == snapshot.child_name
+            }
+            None => *name == flat,
+        };
+        if !named
+            || declaration.is_some_and(|declaration| {
+                declaration
+                    .get("parameters")
+                    .and_then(|value| encode_native(value, NATIVE_SOURCE_BYTES).ok())
+                    .as_deref()
+                    != Some(schema)
+            })
+        {
+            return Err(NativeUnavailable::InvalidReference);
+        }
+        let matches = current
+            .filter(|inputs| inputs.matches_specs(tools))
+            .map_or(0, |inputs| {
+                inputs
+                    .entries()
+                    .iter()
+                    .filter(|entry| {
+                        entry.namespace_kind() == snapshot.namespace_kind
+                            && entry.qualified_namespace() == snapshot.qualified_namespace
+                            && entry.child_name() == snapshot.child_name
+                            && entry.schema_digest() == snapshot.schema.digest
+                            && entry.schema_bytes() == schema
+                    })
+                    .count()
+            });
+        backed &= matches == 1;
+    }
+    Ok(backed)
+}
+
+pub(super) fn prepare_native_history(
+    history: &NativePureHistory<'_>,
+    target_model_id: &str,
+    target: &TargetRoute,
+    tools: &[super::ToolSpec],
+    current: Option<&super::native_search_history::NativeEligibleInputs>,
+    qualification: impl FnMut(
+        &super::native_search_history::NativeGroupRecord,
+    ) -> (DiscoveryOrigin, NativeQualification),
+) -> Result<NativeHistoryDecision, super::native_search_history::NativeUnavailable> {
+    let selected: Vec<_> = history
+        .source
+        .ordered_blocks
+        .iter()
+        .map(|block| block.coordinates.clone())
+        .collect();
+    prepare_native_history_selected(
+        history,
+        target_model_id,
+        target,
+        tools,
+        current,
+        &selected,
+        &Default::default(),
+        &Default::default(),
+        qualification,
+    )
+}
+
+pub(super) fn prepare_native_history_selected(
+    history: &NativePureHistory<'_>,
+    target_model_id: &str,
+    target: &TargetRoute,
+    tools: &[super::ToolSpec],
+    current: Option<&super::native_search_history::NativeEligibleInputs>,
+    selected: &[super::native_search_history::NativeSourceCoordinate],
+    origin_domains: &std::collections::BTreeMap<String, NativeReplayDomain>,
+    pending: &super::native_search_history::NativePendingContext,
+    mut qualification: impl FnMut(
+        &super::native_search_history::NativeGroupRecord,
+    ) -> (DiscoveryOrigin, NativeQualification),
+) -> Result<NativeHistoryDecision, super::native_search_history::NativeUnavailable> {
+    use super::native_search_history::*;
+    use super::tool_search::ToolSearchItem;
+    native_policy_history(history)?;
+    let mut raw = std::collections::BTreeMap::new();
+    let mut all_raw = std::collections::BTreeMap::new();
+    for block in &history.source.ordered_blocks {
+        let value: Value =
+            serde_json::from_slice(native_policy_blob(history, &block.block, "raw_block")?)
+                .map_err(|_| NativeUnavailable::InvalidReference)?;
+        all_raw.insert(block.coordinates.occurrence, value.clone());
+        if let Ok(item) = ToolSearchItem::from_wire(value) {
+            raw.insert(block.coordinates.occurrence, item);
+        }
+    }
+    let mut qualified = Vec::new();
+    let mut domains = origin_domains.clone();
+    for group in &history.ledger.groups {
+        let pair = qualification(group);
+        if let Some(source) = pair.1.source.as_ref().filter(|source| source.complete()) {
+            if domains
+                .get(&group.origin_ref.digest)
+                .is_some_and(|old| old != source)
+            {
+                return Err(NativeUnavailable::ConflictingObservation);
+            }
+            domains.insert(group.origin_ref.digest.clone(), source.clone());
+        }
+        qualified.push(pair);
+    }
+    let same_domain = |left: &NativeBlobRef, right: &NativeBlobRef| {
+        left == right
+            || domains
+                .get(&left.digest)
+                .zip(domains.get(&right.digest))
+                .is_some_and(|(left, right)| left.complete() && right.complete() && left == right)
+    };
+    native_validate_waiting_clients(history.source, history.ledger, &all_raw)?;
+    let groups = native_validate_groups(
+        history.source,
+        history.ledger,
+        &raw,
+        history.authorship,
+        same_domain,
+    )?;
+    let active: NativeActive = serde_json::from_slice(native_policy_blob(
+        history,
+        &history.record.active,
+        "active",
+    )?)
+    .map_err(|_| NativeUnavailable::InvalidReference)?;
+    let mut decision = NativeHistoryDecision {
+        groups: Vec::new(),
+        members: Vec::new(),
+    };
+    for (group, (origin, mut qualified)) in groups.into_iter().zip(qualified) {
+        let references = match history.identity {
+            NativeIdentityExtension::Revision1Unknown => 0,
+            NativeIdentityExtension::Revision2 {
+                eligible_member_links,
+                ..
+            } => eligible_member_links
+                .iter()
+                .filter(|link| {
+                    let mut parent = link.source.clone();
+                    parent.submember = None;
+                    group.record.members.contains(&parent)
+                })
+                .count() as u64,
+        };
+        NativeResource::GroupMembers.admit(group.record.members.len() as u64, references)?;
+        let (action, waiting_clients) = if group.state == NativeGroupState::Completed {
+            let call = &group.primary[0].2;
+            let output = &group.primary[1].2;
+            let mut backing = true;
+            for coordinate in &group.record.members {
+                let block = &history.source.ordered_blocks[coordinate.occurrence as usize];
+                backing &= native_policy_backing(
+                    history,
+                    block,
+                    raw[&coordinate.occurrence].raw(),
+                    tools,
+                    current,
+                )?;
+            }
+            qualified.shape = NativeReplayShape {
+                family: call.family,
+                keyless_server: call.keyless_server,
+                output_id_present: output.item_id_present,
+                completed: true,
+                result_error: output.result_error,
+                referenced_members: native_candidate_references(group.primary[1].1.raw())?.len()
+                    as u64,
+            };
+            qualified.intact_membership = true;
+            qualified.current_backing = backing;
+            qualified.faithful_identity = group
+                .primary
+                .iter()
+                .all(|member| member.2.faithful_identity);
+            let tier = discovery_tier(target_model_id, target, &origin, &qualified);
+            let policy = match tier {
+                DiscoveryTier::Keep => NativeHistoryAction::Keep,
+                DiscoveryTier::Demote => NativeHistoryAction::F,
+                DiscoveryTier::Refuse | DiscoveryTier::ReKey | DiscoveryTier::Materialise => {
+                    return Err(NativeUnavailable::UnknownIdentity);
+                }
+            };
+            let whole_view = group.accepted
+                && group
+                    .primary
+                    .iter()
+                    .all(|member| selected.contains(&member.0));
+            let retained = native_completed_action(
+                whole_view,
+                active
+                    .dispositions
+                    .get(&group.record.key)
+                    .map(String::as_str),
+            )?;
+            (
+                if retained == NativeHistoryAction::Keep {
+                    policy
+                } else {
+                    retained
+                },
+                Vec::new(),
+            )
+        } else {
+            if group.state == NativeGroupState::LivePending
+                && group.primary[0].2.family == NativeReplayFamily::ResponsesServer
+            {
+                let shape = NativeReplayShape {
+                    family: NativeReplayFamily::ResponsesServer,
+                    keyless_server: group.primary[0].2.keyless_server,
+                    output_id_present: false,
+                    completed: false,
+                    result_error: false,
+                    referenced_members: 0,
+                };
+                let qualified_pending = qualified
+                    .source
+                    .as_ref()
+                    .filter(|source| source.complete())
+                    .zip(qualified.receipt.as_ref())
+                    .is_some_and(|(source, receipt)| {
+                        receipt.target == *source
+                            && receipt.shape == shape
+                            && !receipt.receipt_id.is_empty()
+                            && source.dialect
+                                == NativeReplayDialect::Responses(
+                                    super::ResponsesReplayDialect::Codex,
+                                )
+                    });
+                if !qualified_pending {
+                    return Err(NativeUnavailable::UnknownIdentity);
+                }
+            }
+            native_pending_action(&group, history.source, history.ledger, pending)?
+        };
+        decision.groups.push(NativeGroupDecision {
+            key: group.record.key.clone(),
+            action,
+            members: group.record.members.clone(),
+            waiting_clients,
+        });
+        for coordinate in &group.record.members {
+            let duplicate_of = group
+                .record
+                .duplicate_observations
+                .iter()
+                .find(|(duplicate, _)| duplicate == coordinate)
+                .map(|(_, original)| original.clone());
+            let emit = duplicate_of.is_none()
+                && matches!(
+                    action,
+                    NativeHistoryAction::Keep
+                        | NativeHistoryAction::AwaitClient
+                        | NativeHistoryAction::AwaitResults
+                        | NativeHistoryAction::ContinueOriginal
+                );
+            decision.members.push(NativePreparedMember {
+                source: coordinate.clone(),
+                action,
+                duplicate_of,
+                raw: emit.then(|| raw[&coordinate.occurrence].raw().clone()),
+            });
+        }
+    }
+    decision
+        .members
+        .sort_by_key(|member| member.source.occurrence);
+    Ok(decision)
 }
 
 #[cfg(test)]
@@ -1606,7 +2086,12 @@ mod tests {
             "a non-empty declared surface is searchable, so the row's flag decides here"
         );
         assert_eq!(
-            discovery_tier(owner_row, &route, &from),
+            discovery_tier(
+                owner_row,
+                &route,
+                &from,
+                &u4_qualified_fixture(owner_row, &route, &from)
+            ),
             DiscoveryTier::Keep,
             "the admitted route must reach D0"
         );
@@ -1617,7 +2102,12 @@ mod tests {
             SearchAdmission::for_row(/* supports_search_tool */ false, &declared_tools);
         let route = TargetRoute::new(ApiBackend::Responses, Boundary::AzStrict, unadmitted);
         assert_eq!(
-            discovery_tier(owner_row, &route, &from),
+            discovery_tier(
+                owner_row,
+                &route,
+                &from,
+                &u4_qualified_fixture(owner_row, &route, &from)
+            ),
             DiscoveryTier::Demote,
             "the row's flag alone must be able to close the route"
         );
@@ -1644,7 +2134,12 @@ mod tests {
         let target = route(ApiBackend::ChatCompletions, Boundary::AzStrict, ADMITTED);
         let from = origin(Boundary::AzStrict, Some("gpt-5.6-sol"));
         assert_eq!(
-            discovery_tier("gpt-5.6-sol", &target, &from),
+            discovery_tier(
+                "gpt-5.6-sol",
+                &target,
+                &from,
+                &u4_qualified_fixture("gpt-5.6-sol", &target, &from)
+            ),
             DiscoveryTier::Demote,
             "backend authority: the wire decides, not the unchanged row"
         );
@@ -1686,7 +2181,12 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                discovery_tier(model_id, &target, &from),
+                discovery_tier(
+                    model_id,
+                    &target,
+                    &from,
+                    &u4_qualified_fixture(model_id, &target, &from)
+                ),
                 DiscoveryTier::Demote,
                 "{shape}: D3 on the Chat Completions wire is keyed on the target \
                  backend alone — an origin-conditional arm would KEEP a record this \
@@ -1702,8 +2202,13 @@ mod tests {
         let target = route(ApiBackend::Messages, Boundary::Vertex, ADMITTED);
         let from = origin(Boundary::AzStrict, Some("gpt-5.6-sol"));
         assert_eq!(
-            discovery_tier("claude-sonnet-5", &target, &from),
-            DiscoveryTier::Materialise
+            discovery_tier(
+                "claude-sonnet-5",
+                &target,
+                &from,
+                &u4_qualified_fixture("claude-sonnet-5", &target, &from)
+            ),
+            DiscoveryTier::Demote
         );
     }
 
@@ -1741,8 +2246,13 @@ mod tests {
         for boundary in [Boundary::AzStrict, Boundary::VLLenient] {
             let target = route(ApiBackend::Messages, boundary, ADMITTED);
             assert_eq!(
-                discovery_tier("claude-sonnet-5", &target, &from),
-                DiscoveryTier::Materialise,
+                discovery_tier(
+                    "claude-sonnet-5",
+                    &target,
+                    &from,
+                    &u4_qualified_fixture("claude-sonnet-5", &target, &from)
+                ),
+                DiscoveryTier::Demote,
                 "shipped step 1 keys D2 on the wire, so a `/messages` target \
                  materialises whatever boundary it claims — contested cell, see doc"
             );
@@ -1795,8 +2305,13 @@ mod tests {
             ] {
                 let target = route(ApiBackend::Messages, boundary, admission);
                 assert_eq!(
-                    discovery_tier("claude-sonnet-5", &target, &from),
-                    DiscoveryTier::Materialise,
+                    discovery_tier(
+                        "claude-sonnet-5",
+                        &target,
+                        &from,
+                        &u4_qualified_fixture("claude-sonnet-5", &target, &from)
+                    ),
+                    DiscoveryTier::Demote,
                     "{boundary:?} + {shape}: D2 is a property of the `/messages` \
                      wire, not of the Responses admission gate — contested cell, see doc"
                 );
@@ -1817,7 +2332,12 @@ mod tests {
         let target = route(ApiBackend::Responses, Boundary::Vertex, ADMITTED);
         let from = origin(Boundary::Vertex, Some("claude-sonnet-5"));
         assert_eq!(
-            discovery_tier("claude-sonnet-5", &target, &from),
+            discovery_tier(
+                "claude-sonnet-5",
+                &target,
+                &from,
+                &u4_qualified_fixture("claude-sonnet-5", &target, &from)
+            ),
             DiscoveryTier::Demote,
             "a route that contradicts itself must not KEEP a record it cannot place"
         );
@@ -1837,7 +2357,12 @@ mod tests {
         let target = route(ApiBackend::Responses, Boundary::AzStrict, ROW_REJECTS);
         let from = origin(Boundary::AzStrict, Some("gpt-5.6-sol"));
         assert_eq!(
-            discovery_tier("gpt-5.6-sol", &target, &from),
+            discovery_tier(
+                "gpt-5.6-sol",
+                &target,
+                &from,
+                &u4_qualified_fixture("gpt-5.6-sol", &target, &from)
+            ),
             DiscoveryTier::Demote,
             "admission is a guard on D0, not a suggestion"
         );
@@ -1899,7 +2424,12 @@ mod tests {
             for admission in [NOTHING_SEARCHABLE, ROW_REJECTS, NEITHER_SIGNAL] {
                 let target = route(ApiBackend::Responses, boundary, admission);
                 assert_eq!(
-                    discovery_tier(model_id, &target, &from),
+                    discovery_tier(
+                        model_id,
+                        &target,
+                        &from,
+                        &u4_qualified_fixture(model_id, &target, &from)
+                    ),
                     DiscoveryTier::Demote,
                     "{shape} + {admission:?}: the lane's precedence puts rule 3's \
                      gate above D1 as well as D0 (warrant: D3's `when`, \
@@ -1917,7 +2447,12 @@ mod tests {
         let target = route(ApiBackend::Responses, Boundary::AzStrict, ADMITTED);
         let from = origin(Boundary::AzStrict, Some("gpt-5.6-sol"));
         assert_eq!(
-            discovery_tier("gpt-5.6-sol", &target, &from),
+            discovery_tier(
+                "gpt-5.6-sol",
+                &target,
+                &from,
+                &u4_qualified_fixture("gpt-5.6-sol", &target, &from)
+            ),
             DiscoveryTier::Keep
         );
     }
@@ -1928,8 +2463,13 @@ mod tests {
         let target = route(ApiBackend::Responses, Boundary::AzStrict, ADMITTED);
         let other_row = origin(Boundary::AzStrict, Some("gpt-5.6-terra"));
         assert_eq!(
-            discovery_tier("gpt-5.6-sol", &target, &other_row),
-            DiscoveryTier::ReKey
+            discovery_tier(
+                "gpt-5.6-sol",
+                &target,
+                &other_row,
+                &u4_qualified_fixture("gpt-5.6-sol", &target, &other_row)
+            ),
+            DiscoveryTier::Demote
         );
     }
 
@@ -1943,8 +2483,13 @@ mod tests {
         let target = route(ApiBackend::Responses, Boundary::AzStrict, ADMITTED);
         let unattributed = origin(Boundary::AzStrict, None);
         assert_eq!(
-            discovery_tier("gpt-5.6-sol", &target, &unattributed),
-            DiscoveryTier::ReKey,
+            discovery_tier(
+                "gpt-5.6-sol",
+                &target,
+                &unattributed,
+                &u4_qualified_fixture("gpt-5.6-sol", &target, &unattributed)
+            ),
+            DiscoveryTier::Demote,
             "an unattributable record cannot be a KEEP"
         );
     }
@@ -1990,7 +2535,12 @@ mod tests {
             ] {
                 let target = route(ApiBackend::Responses, boundary, admission);
                 assert_eq!(
-                    discovery_tier(model_id, &target, &from),
+                    discovery_tier(
+                        model_id,
+                        &target,
+                        &from,
+                        &u4_qualified_fixture(model_id, &target, &from)
+                    ),
                     want,
                     "{boundary:?} + {admission:?} must fold to {want:?}"
                 );
@@ -2005,8 +2555,13 @@ mod tests {
         let target = route(ApiBackend::Responses, Boundary::VLLenient, ADMITTED);
         let from = origin(Boundary::AzStrict, Some("qwen3.8-27b"));
         assert_eq!(
-            discovery_tier("qwen3.8-27b", &target, &from),
-            DiscoveryTier::ReKey
+            discovery_tier(
+                "qwen3.8-27b",
+                &target,
+                &from,
+                &u4_qualified_fixture("qwen3.8-27b", &target, &from)
+            ),
+            DiscoveryTier::Demote
         );
     }
 
@@ -2041,32 +2596,37 @@ mod tests {
                 ),
                 (
                     "row changed, boundary same",
-                    DiscoveryTier::ReKey,
+                    DiscoveryTier::Demote,
                     origin(boundary, Some("gpt-5.6-terra")),
                 ),
                 (
                     "owner unattributable, boundary same",
-                    DiscoveryTier::ReKey,
+                    DiscoveryTier::Demote,
                     origin(boundary, None),
                 ),
                 (
                     "row same, boundary changed",
-                    DiscoveryTier::ReKey,
+                    DiscoveryTier::Demote,
                     origin(other_boundary, Some(model_id)),
                 ),
                 (
                     "row changed AND boundary changed",
-                    DiscoveryTier::ReKey,
+                    DiscoveryTier::Demote,
                     origin(other_boundary, Some("gpt-5.6-terra")),
                 ),
                 (
                     "owner unattributable AND boundary changed",
-                    DiscoveryTier::ReKey,
+                    DiscoveryTier::Demote,
                     origin(other_boundary, None),
                 ),
             ] {
                 assert_eq!(
-                    discovery_tier(model_id, &target, &from),
+                    discovery_tier(
+                        model_id,
+                        &target,
+                        &from,
+                        &u4_qualified_fixture(model_id, &target, &from)
+                    ),
                     want,
                     "{cell}: D0 needs the same owner row AND the same boundary; \
                      every other cell of this grid crosses a mint domain and re-keys"
@@ -2102,8 +2662,13 @@ mod tests {
         let target = route(ApiBackend::Messages, Boundary::Vertex, ROW_REJECTS);
         let from = origin(Boundary::AzStrict, Some("gpt-5.6-sol"));
         assert_eq!(
-            discovery_tier("claude-sonnet-5", &target, &from),
-            DiscoveryTier::Materialise,
+            discovery_tier(
+                "claude-sonnet-5",
+                &target,
+                &from,
+                &u4_qualified_fixture("claude-sonnet-5", &target, &from)
+            ),
+            DiscoveryTier::Demote,
             "D2 must not inherit the Responses admission gate"
         );
     }
@@ -2235,5 +2800,1548 @@ mod tests {
                 "{boundary:?} rewrote the live discovery round"
             );
         }
+    }
+
+    // Identity/schema/link bytes from the executed U3 encoder; r5-u3-payload-extraction.json.
+    const U4_PRODUCED: &str = r####"{"record":"{\"schema_version\":2,\"policy_revision\":1,\"reader_floor\":2,\"limits_revision\":1,\"lineage\":{\"id\":\"mock\",\"source_revision\":1,\"source_digest\":\"eb7a340288481abedb855f247f204158cc32fcba7ba2415f439b0a825b625a91\"},\"generation\":1,\"high_water\":1,\"source\":{\"kind\":\"source\",\"byte_len\":2295,\"digest\":\"eb7a340288481abedb855f247f204158cc32fcba7ba2415f439b0a825b625a91\"},\"active\":{\"kind\":\"active\",\"byte_len\":85,\"digest\":\"a2386459883db027fb29e12362319be4ef39700a73c9ab336b45adfef54f8c09\"},\"ledger\":{\"kind\":\"ledger\",\"byte_len\":2409,\"digest\":\"15efd76dc8ef1c0e3c486bca2fe42bcd1908105e489a63dd58a4a50bf0d00099\"},\"history_boundary\":{\"items\":0,\"digest\":\"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\"},\"exchange_snapshot\":null,\"previous_checkpoint\":null,\"capacity\":{\"active_bytes\":85,\"control_bytes\":1160,\"ledger_bytes\":2409,\"ledger_groups\":1,\"ledger_members\":6,\"reserved_backup_bytes\":6298,\"reserved_control_bytes\":4194304,\"reserved_current_bytes\":6298,\"reserved_lineage_bytes\":4213198,\"reserved_staging_bytes\":6298,\"snapshot_bytes\":0,\"source_blocks\":2,\"source_bytes\":3804,\"source_groups\":1,\"source_responses\":1,\"terminal_active_bytes\":0,\"terminal_ledger_bytes\":0}}","blobs":{"15efd76dc8ef1c0e3c486bca2fe42bcd1908105e489a63dd58a4a50bf0d00099":"{\"source_digest\":\"eb7a340288481abedb855f247f204158cc32fcba7ba2415f439b0a825b625a91\",\"active_digest\":\"a2386459883db027fb29e12362319be4ef39700a73c9ab336b45adfef54f8c09\",\"groups\":[{\"key\":\"u3-deterministic:1:1:0\",\"family\":\"Messages\",\"execution\":\"server\",\"origin_ref\":{\"kind\":\"producing_binding\",\"byte_len\":130,\"digest\":\"cb0312e961b6257ae5c935cc135d19b6c83d0368516da045078c76a86ecaf3ce\"},\"validated_join\":\"srvtoolu_u3\",\"keyless_server_fifo\":false,\"members\":[{\"lineage\":\"mock\",\"producing_binding\":\"u3-deterministic\",\"turn\":1,\"item\":0,\"response\":0,\"block\":0,\"submember\":null,\"occurrence\":0},{\"lineage\":\"mock\",\"producing_binding\":\"u3-deterministic\",\"turn\":1,\"item\":0,\"response\":0,\"block\":1,\"submember\":null,\"occurrence\":1}],\"duplicate_observations\":[],\"state\":\"Completed\"}],\"lifecycle\":{\"exchanges\":{\"u3-deterministic\":\"Terminal\"},\"groups\":{\"u3-deterministic:1:1:0\":\"Completed\"},\"waiting_clients\":[],\"terminal\":{}},\"accounting\":[{\"source\":{\"lineage\":\"mock\",\"producing_binding\":\"u3-deterministic\",\"turn\":1,\"item\":0,\"response\":0,\"block\":0,\"submember\":null,\"occurrence\":0},\"source_digest\":\"eb7a340288481abedb855f247f204158cc32fcba7ba2415f439b0a825b625a91\",\"view_item\":null,\"view_digest\":null,\"role\":\"SourceOnly\",\"source_subrange\":null},{\"source\":{\"lineage\":\"mock\",\"producing_binding\":\"u3-deterministic\",\"turn\":1,\"item\":0,\"response\":0,\"block\":1,\"submember\":null,\"occurrence\":1},\"source_digest\":\"eb7a340288481abedb855f247f204158cc32fcba7ba2415f439b0a825b625a91\",\"view_item\":null,\"view_digest\":null,\"role\":\"SourceOnly\",\"source_subrange\":null}],\"usage\":[{\"request\":\"u3-deterministic\",\"lease\":1,\"attempt\":1,\"response_occurrence\":0,\"continuation\":0,\"observed\":{\"input_tokens\":11,\"output_tokens\":7},\"source_stop_reason\":\"end_turn\",\"outcome\":\"Accepted\",\"latency_ms\":1,\"http_dispatches\":1}],\"observations\":[{\"request\":\"u3-deterministic\",\"lease\":1,\"attempt\":1,\"digest\":\"e2789a08fd081abd3b049eb3fbbafb578d583ac99238b0b8d4da422a09881bad\"}],\"transitions\":[],\"eligible_member_accounting\":[{\"source\":{\"lineage\":\"mock\",\"producing_binding\":\"u3-deterministic\",\"turn\":1,\"item\":0,\"response\":0,\"block\":1,\"submember\":0,\"occurrence\":1},\"source_digest\":\"eb7a340288481abedb855f247f204158cc32fcba7ba2415f439b0a825b625a91\"},{\"source\":{\"lineage\":\"mock\",\"producing_binding\":\"u3-deterministic\",\"turn\":1,\"item\":0,\"response\":0,\"block\":1,\"submember\":1,\"occurrence\":1},\"source_digest\":\"eb7a340288481abedb855f247f204158cc32fcba7ba2415f439b0a825b625a91\"}]}","34469c5546072d7cce326a0d7bd71814edbd22e0753ec403d4eb085e62b7feff":"{\"type\":\"tool_search_tool_result\",\"tool_use_id\":\"srvtoolu_u3\",\"content\":{\"type\":\"tool_search_tool_search_result\",\"tool_references\":[{\"type\":\"tool_reference\",\"tool_name\":\"alpha__lookup\"},{\"type\":\"tool_reference\",\"tool_name\":\"zeta__fetch\"}]}}","7a5e2899b3dbc43e06de504d98ecaae591e4ce62381a6c9a8b500e75bb1b0d84":"{\"type\":\"object\",\"description\":\"Lookup schema retained verbatim\",\"properties\":{\"query\":{\"type\":\"string\",\"default\":\"account\",\"description\":\"Exact query\"}},\"required\":[\"query\"],\"additionalProperties\":false}","a2386459883db027fb29e12362319be4ef39700a73c9ab336b45adfef54f8c09":"{\"projection_revision\":0,\"view_links\":[],\"dispositions\":{},\"loaded_invalidations\":[]}","ade6bc6092740b2064e4450153d2ebed0fbecf2cbedd7979233b4524fb057e10":"{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\"},\"limit\":{\"type\":\"integer\",\"default\":7}},\"required\":[\"url\"],\"additionalProperties\":false}","cb0312e961b6257ae5c935cc135d19b6c83d0368516da045078c76a86ecaf3ce":"{\"request\":\"u3-deterministic\",\"generation\":null,\"origin\":{\"status\":\"Unknown\",\"reason\":\"producing identity unavailable before U3\"}}","d7bcaf820f5be89d8c8060c00e406ada1a63dd0d73c36ef2d787b71f9b28eb52":"{\"type\":\"server_tool_use\",\"id\":\"srvtoolu_u3\",\"name\":\"tool_search_tool_regex\",\"input\":{\"query\":\"lookup\"}}","eb7a340288481abedb855f247f204158cc32fcba7ba2415f439b0a825b625a91":"{\"schema_version\":2,\"lineage\":\"mock\",\"source_revision\":1,\"producing_bindings\":[{\"request\":\"u3-deterministic\",\"generation\":null,\"origin\":{\"status\":\"Unknown\",\"reason\":\"producing identity unavailable before U3\"},\"origin_ref\":{\"kind\":\"producing_binding\",\"byte_len\":130,\"digest\":\"cb0312e961b6257ae5c935cc135d19b6c83d0368516da045078c76a86ecaf3ce\"}}],\"responses\":[{\"occurrence\":0,\"request\":\"u3-deterministic\",\"lease\":1,\"attempt\":1,\"continuation\":0,\"provider_response_id\":\"msg_u3\",\"source_stop_reason\":\"end_turn\",\"block_start\":0,\"block_end\":2,\"stream_complete\":true,\"status\":\"Accepted\"}],\"ordered_blocks\":[{\"coordinates\":{\"lineage\":\"mock\",\"producing_binding\":\"u3-deterministic\",\"turn\":1,\"item\":0,\"response\":0,\"block\":0,\"submember\":null,\"occurrence\":0},\"wire_index\":0,\"arrival_ordinal\":0,\"block\":{\"kind\":\"raw_block\",\"byte_len\":104,\"digest\":\"d7bcaf820f5be89d8c8060c00e406ada1a63dd0d73c36ef2d787b71f9b28eb52\"},\"partial\":null,\"state\":\"ClosedFaithful\",\"eligible_ref\":null,\"eligible_unavailable\":null},{\"coordinates\":{\"lineage\":\"mock\",\"producing_binding\":\"u3-deterministic\",\"turn\":1,\"item\":0,\"response\":0,\"block\":1,\"submember\":null,\"occurrence\":1},\"wire_index\":1,\"arrival_ordinal\":1,\"block\":{\"kind\":\"raw_block\",\"byte_len\":240,\"digest\":\"34469c5546072d7cce326a0d7bd71814edbd22e0753ec403d4eb085e62b7feff\"},\"partial\":null,\"state\":\"ClosedFaithful\",\"eligible_ref\":null,\"eligible_unavailable\":null}],\"eligible_snapshots\":[{\"kind\":\"eligible_snapshot\",\"byte_len\":345,\"digest\":\"fbeb800577aa31e9f3cf6bced5b30a0a94fe15ecf898d48f5c69a4a44ebe549a\"},{\"kind\":\"eligible_snapshot\",\"byte_len\":343,\"digest\":\"f2cd1b35d0416155002174e86365f59eda6bb09db3edd7b9223b165d75179187\"}],\"older_sources\":[],\"eligible_member_links\":[{\"source\":{\"lineage\":\"mock\",\"producing_binding\":\"u3-deterministic\",\"turn\":1,\"item\":0,\"response\":0,\"block\":1,\"submember\":0,\"occurrence\":1},\"identity\":{\"state\":\"Backed\",\"eligible_ref\":{\"kind\":\"eligible_snapshot\",\"byte_len\":345,\"digest\":\"fbeb800577aa31e9f3cf6bced5b30a0a94fe15ecf898d48f5c69a4a44ebe549a\"}}},{\"source\":{\"lineage\":\"mock\",\"producing_binding\":\"u3-deterministic\",\"turn\":1,\"item\":0,\"response\":0,\"block\":1,\"submember\":1,\"occurrence\":1},\"identity\":{\"state\":\"Backed\",\"eligible_ref\":{\"kind\":\"eligible_snapshot\",\"byte_len\":343,\"digest\":\"f2cd1b35d0416155002174e86365f59eda6bb09db3edd7b9223b165d75179187\"}}}]}","f2cd1b35d0416155002174e86365f59eda6bb09db3edd7b9223b165d75179187":"{\"version\":1,\"namespace_kind\":\"mcp\",\"qualified_namespace\":\"zeta\",\"child_name\":\"fetch\",\"schema\":{\"kind\":\"eligible_schema\",\"byte_len\":143,\"digest\":\"ade6bc6092740b2064e4450153d2ebed0fbecf2cbedd7979233b4524fb057e10\"},\"binding\":{\"kind\":\"producing_binding\",\"byte_len\":130,\"digest\":\"cb0312e961b6257ae5c935cc135d19b6c83d0368516da045078c76a86ecaf3ce\"}}","fbeb800577aa31e9f3cf6bced5b30a0a94fe15ecf898d48f5c69a4a44ebe549a":"{\"version\":1,\"namespace_kind\":\"mcp\",\"qualified_namespace\":\"alpha\",\"child_name\":\"lookup\",\"schema\":{\"kind\":\"eligible_schema\",\"byte_len\":204,\"digest\":\"7a5e2899b3dbc43e06de504d98ecaae591e4ce62381a6c9a8b500e75bb1b0d84\"},\"binding\":{\"kind\":\"producing_binding\",\"byte_len\":130,\"digest\":\"cb0312e961b6257ae5c935cc135d19b6c83d0368516da045078c76a86ecaf3ce\"}}"},"legacy_record":"{\"schema_version\":1,\"policy_revision\":1,\"reader_floor\":1,\"limits_revision\":1,\"lineage\":{\"id\":\"mock\",\"source_revision\":1,\"source_digest\":\"cdb4bed384771da19753940efef285e93976094fd6a634473a0c20d87acf749a\"},\"generation\":1,\"high_water\":1,\"source\":{\"kind\":\"source\",\"byte_len\":1452,\"digest\":\"cdb4bed384771da19753940efef285e93976094fd6a634473a0c20d87acf749a\"},\"active\":{\"kind\":\"active\",\"byte_len\":85,\"digest\":\"a2386459883db027fb29e12362319be4ef39700a73c9ab336b45adfef54f8c09\"},\"ledger\":{\"kind\":\"ledger\",\"byte_len\":1943,\"digest\":\"599681318b87a21803f08ccab754793d5c0c6488a218bb8e9e5c799e542c4987\"},\"history_boundary\":{\"items\":0,\"digest\":\"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\"},\"exchange_snapshot\":null,\"previous_checkpoint\":null,\"capacity\":{\"active_bytes\":85,\"control_bytes\":1160,\"ledger_bytes\":1943,\"ledger_groups\":1,\"ledger_members\":4,\"reserved_backup_bytes\":3955,\"reserved_control_bytes\":4194304,\"reserved_current_bytes\":3955,\"reserved_lineage_bytes\":4206169,\"reserved_staging_bytes\":3955,\"snapshot_bytes\":0,\"source_blocks\":2,\"source_bytes\":1927,\"source_groups\":1,\"source_responses\":1,\"terminal_active_bytes\":0,\"terminal_ledger_bytes\":0}}","legacy_blobs":{"32e162bfc7031d849bf853e7dc65e0118dfd1daa57d762de40060eef8844a28f":"{\"request\":\"u3-legacy-fixture\",\"generation\":null,\"origin\":{\"status\":\"Unknown\",\"reason\":\"producing identity unavailable before U3\"}}","34469c5546072d7cce326a0d7bd71814edbd22e0753ec403d4eb085e62b7feff":"{\"type\":\"tool_search_tool_result\",\"tool_use_id\":\"srvtoolu_u3\",\"content\":{\"type\":\"tool_search_tool_search_result\",\"tool_references\":[{\"type\":\"tool_reference\",\"tool_name\":\"alpha__lookup\"},{\"type\":\"tool_reference\",\"tool_name\":\"zeta__fetch\"}]}}","599681318b87a21803f08ccab754793d5c0c6488a218bb8e9e5c799e542c4987":"{\"source_digest\":\"cdb4bed384771da19753940efef285e93976094fd6a634473a0c20d87acf749a\",\"active_digest\":\"a2386459883db027fb29e12362319be4ef39700a73c9ab336b45adfef54f8c09\",\"groups\":[{\"key\":\"u3-legacy-fixture:1:1:0\",\"family\":\"Messages\",\"execution\":\"server\",\"origin_ref\":{\"kind\":\"producing_binding\",\"byte_len\":131,\"digest\":\"32e162bfc7031d849bf853e7dc65e0118dfd1daa57d762de40060eef8844a28f\"},\"validated_join\":\"srvtoolu_u3\",\"keyless_server_fifo\":false,\"members\":[{\"lineage\":\"mock\",\"producing_binding\":\"u3-legacy-fixture\",\"turn\":1,\"item\":0,\"response\":0,\"block\":0,\"submember\":null,\"occurrence\":0},{\"lineage\":\"mock\",\"producing_binding\":\"u3-legacy-fixture\",\"turn\":1,\"item\":0,\"response\":0,\"block\":1,\"submember\":null,\"occurrence\":1}],\"duplicate_observations\":[],\"state\":\"Completed\"}],\"lifecycle\":{\"exchanges\":{\"u3-legacy-fixture\":\"Terminal\"},\"groups\":{\"u3-legacy-fixture:1:1:0\":\"Completed\"},\"waiting_clients\":[],\"terminal\":{}},\"accounting\":[{\"source\":{\"lineage\":\"mock\",\"producing_binding\":\"u3-legacy-fixture\",\"turn\":1,\"item\":0,\"response\":0,\"block\":0,\"submember\":null,\"occurrence\":0},\"source_digest\":\"cdb4bed384771da19753940efef285e93976094fd6a634473a0c20d87acf749a\",\"view_item\":null,\"view_digest\":null,\"role\":\"SourceOnly\",\"source_subrange\":null},{\"source\":{\"lineage\":\"mock\",\"producing_binding\":\"u3-legacy-fixture\",\"turn\":1,\"item\":0,\"response\":0,\"block\":1,\"submember\":null,\"occurrence\":1},\"source_digest\":\"cdb4bed384771da19753940efef285e93976094fd6a634473a0c20d87acf749a\",\"view_item\":null,\"view_digest\":null,\"role\":\"SourceOnly\",\"source_subrange\":null}],\"usage\":[{\"request\":\"u3-legacy-fixture\",\"lease\":1,\"attempt\":1,\"response_occurrence\":0,\"continuation\":0,\"observed\":{\"input_tokens\":11,\"output_tokens\":7},\"source_stop_reason\":\"end_turn\",\"outcome\":\"Accepted\",\"latency_ms\":1,\"http_dispatches\":1}],\"observations\":[{\"request\":\"u3-legacy-fixture\",\"lease\":1,\"attempt\":1,\"digest\":\"e2789a08fd081abd3b049eb3fbbafb578d583ac99238b0b8d4da422a09881bad\"}],\"transitions\":[]}","a2386459883db027fb29e12362319be4ef39700a73c9ab336b45adfef54f8c09":"{\"projection_revision\":0,\"view_links\":[],\"dispositions\":{},\"loaded_invalidations\":[]}","cdb4bed384771da19753940efef285e93976094fd6a634473a0c20d87acf749a":"{\"schema_version\":1,\"lineage\":\"mock\",\"source_revision\":1,\"producing_bindings\":[{\"request\":\"u3-legacy-fixture\",\"generation\":null,\"origin\":{\"status\":\"Unknown\",\"reason\":\"producing identity unavailable before U3\"},\"origin_ref\":{\"kind\":\"producing_binding\",\"byte_len\":131,\"digest\":\"32e162bfc7031d849bf853e7dc65e0118dfd1daa57d762de40060eef8844a28f\"}}],\"responses\":[{\"occurrence\":0,\"request\":\"u3-legacy-fixture\",\"lease\":1,\"attempt\":1,\"continuation\":0,\"provider_response_id\":\"msg_u3\",\"source_stop_reason\":\"end_turn\",\"block_start\":0,\"block_end\":2,\"stream_complete\":true,\"status\":\"Accepted\"}],\"ordered_blocks\":[{\"coordinates\":{\"lineage\":\"mock\",\"producing_binding\":\"u3-legacy-fixture\",\"turn\":1,\"item\":0,\"response\":0,\"block\":0,\"submember\":null,\"occurrence\":0},\"wire_index\":0,\"arrival_ordinal\":0,\"block\":{\"kind\":\"raw_block\",\"byte_len\":104,\"digest\":\"d7bcaf820f5be89d8c8060c00e406ada1a63dd0d73c36ef2d787b71f9b28eb52\"},\"partial\":null,\"state\":\"ClosedFaithful\",\"eligible_ref\":null,\"eligible_unavailable\":\"UnknownIdentity\"},{\"coordinates\":{\"lineage\":\"mock\",\"producing_binding\":\"u3-legacy-fixture\",\"turn\":1,\"item\":0,\"response\":0,\"block\":1,\"submember\":null,\"occurrence\":1},\"wire_index\":1,\"arrival_ordinal\":1,\"block\":{\"kind\":\"raw_block\",\"byte_len\":240,\"digest\":\"34469c5546072d7cce326a0d7bd71814edbd22e0753ec403d4eb085e62b7feff\"},\"partial\":null,\"state\":\"ClosedFaithful\",\"eligible_ref\":null,\"eligible_unavailable\":\"UnknownIdentity\"}],\"eligible_snapshots\":[],\"older_sources\":[]}","d7bcaf820f5be89d8c8060c00e406ada1a63dd0d73c36ef2d787b71f9b28eb52":"{\"type\":\"server_tool_use\",\"id\":\"srvtoolu_u3\",\"name\":\"tool_search_tool_regex\",\"input\":{\"query\":\"lookup\"}}"}}"####;
+    struct U4Fixture {
+        record: crate::conversation::native_search_history::NativeSearchHistoryV1,
+        source: crate::conversation::native_search_history::NativeSource,
+        ledger: crate::conversation::native_search_history::NativeLedger,
+        identity: crate::conversation::native_search_history::NativeIdentityExtension,
+        blobs: std::collections::BTreeMap<String, std::sync::Arc<[u8]>>,
+        tools: Vec<crate::ToolSpec>,
+        inputs: crate::conversation::native_search_history::NativeEligibleInputs,
+        authorship: std::collections::BTreeMap<
+            u64,
+            crate::conversation::native_search_history::NativeIdAuthorship,
+        >,
+    }
+
+    impl U4Fixture {
+        fn history(&self) -> NativePureHistory<'_> {
+            NativePureHistory {
+                record: &self.record,
+                source: &self.source,
+                ledger: &self.ledger,
+                identity: &self.identity,
+                blobs: &self.blobs,
+                authorship: &self.authorship,
+            }
+        }
+
+        fn produced() -> Self {
+            use crate::conversation::native_search_history::*;
+            let payload: Value = serde_json::from_str(U4_PRODUCED).unwrap();
+            let record: NativeSearchHistoryV1 =
+                serde_json::from_str(payload["record"].as_str().unwrap()).unwrap();
+            let blobs: std::collections::BTreeMap<String, std::sync::Arc<[u8]>> = payload["blobs"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(digest, value)| {
+                    let bytes = value.as_str().unwrap().as_bytes();
+                    assert_eq!(
+                        &hex_digest(&sha256(bytes)),
+                        digest,
+                        "U4 must consume exact U3 bytes"
+                    );
+                    (digest.clone(), std::sync::Arc::from(bytes))
+                })
+                .collect();
+            let (source, links) =
+                serde_json::from_slice::<NativeSourceV2>(&blobs[&record.source.digest])
+                    .unwrap()
+                    .into_parts();
+            let (ledger, witnesses) =
+                serde_json::from_slice::<NativeLedgerV2>(&blobs[&record.ledger.digest])
+                    .unwrap()
+                    .into_parts();
+            let names = ["alpha__lookup", "zeta__fetch"];
+            let descriptions = ["Typed lookup declaration", "Typed fetch declaration"];
+            let mut entries = Vec::new();
+            let mut tools = Vec::new();
+            for (position, reference) in source.eligible_snapshots.iter().enumerate() {
+                let snapshot: NativeEligibleSnapshot =
+                    serde_json::from_slice(&blobs[&reference.digest]).unwrap();
+                let spec = crate::ToolSpec {
+                    name: names[position].into(),
+                    description: Some(descriptions[position].into()),
+                    parameters: serde_json::from_slice(&blobs[&snapshot.schema.digest]).unwrap(),
+                    exposure: crate::ToolExposure::Deferred,
+                };
+                entries.push(
+                    NativeEligibleEntry::checked(
+                        position,
+                        snapshot.namespace_kind,
+                        snapshot.qualified_namespace,
+                        snapshot.child_name,
+                        spec.clone(),
+                        blobs[&snapshot.schema.digest].clone(),
+                        snapshot.schema.digest,
+                    )
+                    .unwrap(),
+                );
+                tools.push(spec);
+            }
+            let inputs = NativeEligibleInputs::checked(entries, tools.len()).unwrap();
+            let authorship = std::collections::BTreeMap::from([
+                (0, NativeIdAuthorship::Provider),
+                (1, NativeIdAuthorship::Provider),
+            ]);
+            Self {
+                record,
+                source,
+                ledger,
+                identity: NativeIdentityExtension::Revision2 {
+                    eligible_member_links: links,
+                    eligible_member_accounting: witnesses,
+                },
+                blobs,
+                tools,
+                inputs,
+                authorship,
+            }
+        }
+
+        fn shape(&self) -> NativeReplayShape {
+            use crate::conversation::native_search_history::*;
+            let raw: Value =
+                serde_json::from_slice(&self.blobs[&self.source.ordered_blocks[1].block.digest])
+                    .unwrap();
+            let item = crate::conversation::tool_search::ToolSearchItem::from_wire(raw).unwrap();
+            let output = native_item_shape(&item, self.authorship[&1])
+                .expect("U4 shape preserves original required join");
+            NativeReplayShape {
+                family: output.family,
+                keyless_server: output.keyless_server,
+                output_id_present: output.item_id_present,
+                completed: true,
+                result_error: output.result_error,
+                referenced_members: native_candidate_references(item.raw()).unwrap().len() as u64,
+            }
+        }
+    }
+
+    impl U4Fixture {
+        fn put(
+            &mut self,
+            kind: &str,
+            value: &impl serde::Serialize,
+        ) -> crate::conversation::native_search_history::NativeBlobRef {
+            let bytes = serde_json::to_vec(value).unwrap();
+            let reference = crate::conversation::native_search_history::NativeBlobRef {
+                kind: kind.into(),
+                byte_len: bytes.len() as u64,
+                digest: hex_digest(&sha256(&bytes)),
+            };
+            self.blobs.insert(reference.digest.clone(), bytes.into());
+            reference
+        }
+
+        fn reseal_shape(&mut self) {
+            use crate::conversation::native_search_history::*;
+            let source = match &self.identity {
+                NativeIdentityExtension::Revision1Unknown => {
+                    serde_json::to_value(&self.source).unwrap()
+                }
+                NativeIdentityExtension::Revision2 {
+                    eligible_member_links,
+                    ..
+                } => serde_json::to_value(NativeSourceV2::from_parts(
+                    self.source.clone(),
+                    eligible_member_links.clone(),
+                ))
+                .unwrap(),
+            };
+            self.record.source = self.put("source", &source);
+            self.record.lineage.source_digest = self.record.source.digest.clone();
+            self.ledger.source_digest = self.record.source.digest.clone();
+            for entry in &mut self.ledger.accounting {
+                entry.source_digest = self.record.source.digest.clone();
+            }
+            if let NativeIdentityExtension::Revision2 {
+                eligible_member_accounting,
+                ..
+            } = &mut self.identity
+            {
+                for entry in eligible_member_accounting {
+                    entry.source_digest = self.record.source.digest.clone();
+                }
+            }
+            let ledger = match &self.identity {
+                NativeIdentityExtension::Revision1Unknown => {
+                    serde_json::to_value(&self.ledger).unwrap()
+                }
+                NativeIdentityExtension::Revision2 {
+                    eligible_member_accounting,
+                    ..
+                } => serde_json::to_value(NativeLedgerV2::from_parts(
+                    self.ledger.clone(),
+                    eligible_member_accounting.clone(),
+                ))
+                .unwrap(),
+            };
+            self.record.ledger = self.put("ledger", &ledger);
+        }
+
+        fn with_family(
+            family: crate::conversation::native_search_history::NativeReplayFamily,
+            keyless: bool,
+        ) -> Self {
+            use crate::conversation::native_search_history::*;
+            use crate::conversation::tool_search::ToolSearchItem;
+            let mut fixture = Self::produced();
+            if family == NativeReplayFamily::MessagesServer {
+                return fixture;
+            }
+            let execution = if family == NativeReplayFamily::ResponsesClient {
+                "client"
+            } else {
+                "server"
+            };
+            let mut call = serde_json::json!({"type":"tool_search_call","id":"tsc_provider_u4","call_id":"call_u4","execution":execution,"status":"completed","arguments":{"query":"lookup"}});
+            let tools = fixture.tools.iter().map(|spec| serde_json::json!({"type":"function","name":spec.name,"description":spec.description,"parameters":spec.parameters})).collect();
+            let mut output = if family == NativeReplayFamily::ResponsesClient {
+                fixture
+                    .authorship
+                    .insert(1, NativeIdAuthorship::ClientOutput);
+                ToolSearchItem::client_answer("call_u4", tools)
+                    .raw()
+                    .clone()
+            } else {
+                serde_json::json!({"type":"tool_search_output","id":"tso_provider_u4","call_id":"call_u4","execution":"server","status":"completed","tools":tools})
+            };
+            if keyless {
+                call.as_object_mut().unwrap().remove("call_id");
+                output.as_object_mut().unwrap().remove("call_id");
+            }
+            fixture.source.ordered_blocks[0].block = fixture.put("raw_block", &call);
+            fixture.source.ordered_blocks[1].block = fixture.put("raw_block", &output);
+            fixture.ledger.groups[0].family = "Responses".into();
+            fixture.ledger.groups[0].execution = execution.into();
+            fixture.ledger.groups[0].validated_join = (!keyless).then(|| "call_u4".into());
+            fixture.ledger.groups[0].keyless_server_fifo = keyless;
+            fixture.reseal_shape();
+            fixture
+        }
+    }
+
+    fn u4_domain(model: &str, backend: ApiBackend) -> NativeReplayDomain {
+        let dialect = if backend == ApiBackend::Messages {
+            NativeReplayDialect::Messages
+        } else {
+            NativeReplayDialect::Responses(crate::conversation::ResponsesReplayDialect::Codex)
+        };
+        NativeReplayDomain {
+            backend,
+            dialect,
+            model: model.into(),
+            row: model.into(),
+            provider: "offline-provider".into(),
+            deployment: "offline-deployment".into(),
+            deployment_revision: "revision-1".into(),
+            endpoint: "https://offline.invalid/v1".into(),
+            principal: "nonsecret-test-tenant".into(),
+        }
+    }
+
+    fn u4_qualification(
+        fixture: &U4Fixture,
+        model: &str,
+        target: &TargetRoute,
+        from: &DiscoveryOrigin,
+    ) -> NativeQualification {
+        use crate::conversation::native_search_history::*;
+        let shape = fixture.shape();
+        let source_backend = if shape.family == NativeReplayFamily::MessagesServer {
+            ApiBackend::Messages
+        } else {
+            ApiBackend::Responses
+        };
+        let domain = u4_domain(model, target.backend());
+        let history = fixture.history();
+        native_policy_history(&history).unwrap();
+        let mut backing = true;
+        let mut faithful = true;
+        for block in &fixture.source.ordered_blocks {
+            let raw: Value = serde_json::from_slice(&fixture.blobs[&block.block.digest]).unwrap();
+            backing &=
+                native_policy_backing(&history, block, &raw, &fixture.tools, Some(&fixture.inputs))
+                    .unwrap();
+            let item = crate::conversation::tool_search::ToolSearchItem::from_wire(raw).unwrap();
+            faithful &= native_item_shape(&item, fixture.authorship[&block.coordinates.occurrence])
+                .unwrap()
+                .faithful_identity;
+        }
+        // Only identity bytes are producer evidence; route/domain/shape qualification is offline.
+        NativeQualification {
+            source: from
+                .owner_model_id
+                .as_deref()
+                .map(|model| u4_domain(model, source_backend)),
+            target: Some(domain.clone()),
+            request: Some(domain.clone()),
+            original_admission: target.admission(),
+            receipt: Some(NativeShapeReceipt {
+                target: domain,
+                shape: shape.clone(),
+                receipt_id: "offline-qualified-shape".into(),
+            }),
+            shape,
+            intact_membership: true,
+            current_backing: backing,
+            faithful_identity: faithful,
+        }
+    }
+
+    fn u4_qualified_fixture(
+        model: &str,
+        target: &TargetRoute,
+        from: &DiscoveryOrigin,
+    ) -> NativeQualification {
+        let fixture = U4Fixture::with_family(
+            crate::conversation::native_search_history::NativeReplayFamily::ResponsesClient,
+            false,
+        );
+        u4_qualification(&fixture, model, target, from)
+    }
+
+    fn u4_prepare(
+        fixture: &U4Fixture,
+        model: &str,
+        target: &TargetRoute,
+        from: &DiscoveryOrigin,
+        qualified: NativeQualification,
+    ) -> Result<NativeHistoryDecision, crate::conversation::native_search_history::NativeUnavailable>
+    {
+        let mut qualified = Some(qualified);
+        prepare_native_history(
+            &fixture.history(),
+            model,
+            target,
+            &fixture.tools,
+            Some(&fixture.inputs),
+            |_| (from.clone(), qualified.take().unwrap()),
+        )
+    }
+
+    fn u4_assert_action(
+        fixture: &U4Fixture,
+        decision: &NativeHistoryDecision,
+        action: NativeHistoryAction,
+    ) {
+        use crate::conversation::native_search_history::NativeIdentityExtension;
+        assert_eq!(decision.groups.len(), 1);
+        assert_eq!(
+            decision.groups[0].action, action,
+            "U4 complete-group policy action must match qualification"
+        );
+        assert_eq!(decision.members.len(), 2);
+        for member in &decision.members {
+            assert_eq!(
+                member.action, action,
+                "one whole-group action, never a half KEEP"
+            );
+            let block = fixture
+                .source
+                .ordered_blocks
+                .iter()
+                .find(|block| block.coordinates == member.source)
+                .unwrap();
+            let raw: Value = serde_json::from_slice(&fixture.blobs[&block.block.digest]).unwrap();
+            assert_eq!(
+                member.raw,
+                (action == NativeHistoryAction::Keep).then_some(raw),
+                "native output never mints IDs or leaks host coordinates"
+            );
+        }
+        if let NativeIdentityExtension::Revision2 {
+            eligible_member_links,
+            ..
+        } = &fixture.identity
+        {
+            for link in eligible_member_links {
+                let mut parent = link.source.clone();
+                parent.submember = None;
+                assert_eq!(
+                    decision
+                        .members
+                        .iter()
+                        .find(|member| member.source == parent)
+                        .unwrap()
+                        .action,
+                    action,
+                    "every A1 reference inherits its raw parent's action"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_history_qualified_matrix_and_r1() {
+        use crate::conversation::native_search_history::*;
+        let model = "u4-model";
+        for (family, keyless) in [
+            (NativeReplayFamily::ResponsesClient, false),
+            (NativeReplayFamily::ResponsesServer, false),
+            (NativeReplayFamily::ResponsesServer, true),
+            (NativeReplayFamily::MessagesServer, false),
+        ] {
+            let fixture = U4Fixture::with_family(family, keyless);
+            let source_before = serde_json::to_value(&fixture.source).unwrap();
+            let backend = if family == NativeReplayFamily::MessagesServer {
+                ApiBackend::Messages
+            } else {
+                ApiBackend::Responses
+            };
+            let boundary = if backend == ApiBackend::Messages {
+                Boundary::Vertex
+            } else {
+                Boundary::AzStrict
+            };
+            let target = route(backend.clone(), boundary, ADMITTED);
+            let from = origin(boundary, Some(model));
+            let qualified = u4_qualification(&fixture, model, &target, &from);
+            let decision = u4_prepare(&fixture, model, &target, &from, qualified).unwrap();
+            u4_assert_action(&fixture, &decision, NativeHistoryAction::Keep);
+            let recreated = U4Fixture::with_family(family, keyless);
+            let second = u4_prepare(
+                &recreated,
+                model,
+                &target,
+                &from,
+                u4_qualification(&recreated, model, &target, &from),
+            )
+            .unwrap();
+            assert_eq!(
+                second, decision,
+                "identical-byte current registrations require no occurrence continuity"
+            );
+            for other in [
+                ApiBackend::Responses,
+                ApiBackend::Messages,
+                ApiBackend::ChatCompletions,
+            ] {
+                let boundary = if other == ApiBackend::Messages {
+                    Boundary::Vertex
+                } else {
+                    Boundary::AzStrict
+                };
+                let target = route(other, boundary, ADMITTED);
+                let decision = u4_prepare(
+                    &fixture,
+                    "other-row",
+                    &target,
+                    &from,
+                    u4_qualification(&fixture, "other-row", &target, &from),
+                )
+                .unwrap();
+                u4_assert_action(&fixture, &decision, NativeHistoryAction::F);
+            }
+            assert_eq!(
+                serde_json::to_value(&fixture.source).unwrap(),
+                source_before,
+                "policy never rewrites retained source"
+            );
+        }
+        let fixture = U4Fixture::with_family(NativeReplayFamily::ResponsesClient, false);
+        let target = route(ApiBackend::Responses, Boundary::AzStrict, ADMITTED);
+        let from = origin(Boundary::AzStrict, Some(model));
+        let mut unknown = u4_qualification(&fixture, model, &target, &from);
+        unknown.source = None;
+        assert_eq!(
+            discovery_tier(model, &target, &from, &unknown),
+            DiscoveryTier::Demote,
+            "U4 legacy boundary/model attribution cannot qualify native replay without domain and identity evidence"
+        );
+        u4_assert_action(
+            &fixture,
+            &u4_prepare(&fixture, model, &target, &from, unknown).unwrap(),
+            NativeHistoryAction::F,
+        );
+        for field in [
+            "row",
+            "provider",
+            "deployment",
+            "revision",
+            "endpoint",
+            "principal",
+        ] {
+            let mut qualified = u4_qualification(&fixture, model, &target, &from);
+            let source = qualified.source.as_mut().unwrap();
+            match field {
+                "row" => source.row.push_str("-foreign"),
+                "provider" => source.provider.push_str("-foreign"),
+                "deployment" => source.deployment.push_str("-foreign"),
+                "revision" => source.deployment_revision.push_str("-foreign"),
+                "endpoint" => source.endpoint.push_str("/foreign"),
+                "principal" => source.principal.push_str("-foreign"),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                discovery_tier(model, &target, &from, &qualified),
+                DiscoveryTier::Demote,
+                "exact producing-domain mismatch: {field}"
+            );
+        }
+        for fault in [
+            "unknown-target",
+            "unknown-request",
+            "request-mismatch",
+            "model-mismatch",
+            "admission-mismatch",
+        ] {
+            let mut qualified = u4_qualification(&fixture, model, &target, &from);
+            match fault {
+                "unknown-target" => {
+                    qualified.target = None;
+                    qualified.source = None;
+                }
+                "unknown-request" => qualified.request = None,
+                "request-mismatch" => qualified
+                    .request
+                    .as_mut()
+                    .unwrap()
+                    .deployment
+                    .push_str("-different"),
+                "model-mismatch" => qualified
+                    .target
+                    .as_mut()
+                    .unwrap()
+                    .model
+                    .push_str("-different"),
+                "admission-mismatch" => qualified.original_admission = ROW_REJECTS,
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                discovery_tier(model, &target, &from, &qualified),
+                DiscoveryTier::Refuse,
+                "independently unknown or incoherent target refuses: {fault}"
+            );
+        }
+        for fault in [
+            "no-receipt",
+            "wrong-shape",
+            "pending-receipt",
+            "error-shape",
+            "member-count-shape",
+            "unsupported-dialect",
+        ] {
+            let mut qualified = u4_qualification(&fixture, model, &target, &from);
+            match fault {
+                "no-receipt" => qualified.receipt = None,
+                "wrong-shape" => {
+                    qualified.receipt.as_mut().unwrap().shape.family =
+                        NativeReplayFamily::ResponsesServer
+                }
+                "pending-receipt" => qualified.receipt.as_mut().unwrap().shape.completed = false,
+                "error-shape" => qualified.receipt.as_mut().unwrap().shape.result_error = true,
+                "member-count-shape" => {
+                    qualified.receipt.as_mut().unwrap().shape.referenced_members = 1
+                }
+                "unsupported-dialect" => {
+                    qualified.target.as_mut().unwrap().dialect = NativeReplayDialect::Responses(
+                        crate::conversation::ResponsesReplayDialect::Other,
+                    );
+                    qualified.source.as_mut().unwrap().dialect =
+                        qualified.target.as_ref().unwrap().dialect.clone();
+                    qualified.request = qualified.target.clone();
+                    qualified.receipt.as_mut().unwrap().target = qualified.target.clone().unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                discovery_tier(model, &target, &from, &qualified),
+                DiscoveryTier::Demote,
+                "route-and-shape qualification is exact: {fault}"
+            );
+        }
+        for (backend, boundary, admission) in [
+            (ApiBackend::Messages, Boundary::Vertex, ROW_REJECTS),
+            (ApiBackend::Responses, Boundary::Vertex, ADMITTED),
+            (ApiBackend::Messages, Boundary::AzStrict, ADMITTED),
+            (ApiBackend::Responses, Boundary::AzStrict, ROW_REJECTS),
+        ] {
+            let target = route(backend, boundary, admission);
+            for from in [
+                origin(boundary, Some(model)),
+                origin(Boundary::VLLenient, Some("other-row")),
+                origin(boundary, None),
+            ] {
+                let qualified = u4_qualified_fixture(model, &target, &from);
+                assert_eq!(
+                    discovery_tier(model, &target, &from, &qualified),
+                    DiscoveryTier::Demote,
+                    "all five coherent R-1 cells use F"
+                );
+            }
+        }
+        for missing in [false, true] {
+            let mut partial = U4Fixture::produced();
+            if missing {
+                partial.tools.pop();
+                partial.inputs = partial.inputs.select(&[0], &partial.tools).unwrap();
+            } else {
+                let NativeIdentityExtension::Revision2 {
+                    eligible_member_links,
+                    ..
+                } = &mut partial.identity
+                else {
+                    unreachable!()
+                };
+                eligible_member_links[1].identity = NativeEligibleMemberIdentity::Unavailable {
+                    reason: NativeUnavailable::UnknownIdentity,
+                };
+                partial.source.ordered_blocks[1].eligible_unavailable =
+                    Some(NativeUnavailable::UnknownIdentity);
+                partial.reseal_shape();
+            }
+            let target = route(ApiBackend::Messages, Boundary::Vertex, ADMITTED);
+            let from = origin(Boundary::Vertex, Some(model));
+            let decision = u4_prepare(
+                &partial,
+                model,
+                &target,
+                &from,
+                u4_qualification(&partial, model, &target, &from),
+            )
+            .unwrap();
+            u4_assert_action(&partial, &decision, NativeHistoryAction::F);
+        }
+        for field in ["schema", "description", "name"] {
+            let mut changed = U4Fixture::produced();
+            match field {
+                "schema" => {
+                    changed.tools[1].parameters["properties"]["limit"]["default"] =
+                        serde_json::json!(8)
+                }
+                "description" => changed.tools[1].description = Some("changed declaration".into()),
+                "name" => changed.tools[1].name = "different__fetch".into(),
+                _ => unreachable!(),
+            }
+            changed.inputs = changed.inputs.select(&[0, 1], &changed.tools).unwrap();
+            let target = route(ApiBackend::Messages, Boundary::Vertex, ADMITTED);
+            let from = origin(Boundary::Vertex, Some(model));
+            u4_assert_action(
+                &changed,
+                &u4_prepare(
+                    &changed,
+                    model,
+                    &target,
+                    &from,
+                    u4_qualification(&changed, model, &target, &from),
+                )
+                .unwrap(),
+                NativeHistoryAction::F,
+            );
+        }
+        for id in [
+            Value::Null,
+            serde_json::json!(""),
+            serde_json::json!(7),
+            serde_json::json!("call_u4"),
+            serde_json::json!("digest-derived-id"),
+        ] {
+            let mut bad = U4Fixture::with_family(NativeReplayFamily::ResponsesClient, false);
+            let mut raw: Value =
+                serde_json::from_slice(&bad.blobs[&bad.source.ordered_blocks[1].block.digest])
+                    .unwrap();
+            raw["id"] = id;
+            bad.source.ordered_blocks[1].block = bad.put("raw_block", &raw);
+            bad.reseal_shape();
+            u4_assert_action(
+                &bad,
+                &u4_prepare(
+                    &bad,
+                    model,
+                    &target,
+                    &from,
+                    u4_qualification(&bad, model, &target, &from),
+                )
+                .unwrap(),
+                NativeHistoryAction::F,
+            );
+        }
+        for join in [
+            None,
+            Some(Value::Null),
+            Some(serde_json::json!("")),
+            Some(serde_json::json!(7)),
+        ] {
+            let mut bad = U4Fixture::with_family(NativeReplayFamily::ResponsesClient, false);
+            let qualified = u4_qualification(&bad, model, &target, &from);
+            let mut raw: Value =
+                serde_json::from_slice(&bad.blobs[&bad.source.ordered_blocks[1].block.digest])
+                    .unwrap();
+            raw.as_object_mut().unwrap().remove("call_id");
+            if let Some(join) = join {
+                raw["call_id"] = join;
+            }
+            bad.source.ordered_blocks[1].block = bad.put("raw_block", &raw);
+            bad.reseal_shape();
+            assert!(
+                u4_prepare(&bad, model, &target, &from, qualified).is_err(),
+                "required client joins never become keyless FIFO"
+            );
+        }
+        for family in [
+            NativeReplayFamily::ResponsesClient,
+            NativeReplayFamily::ResponsesServer,
+            NativeReplayFamily::MessagesServer,
+        ] {
+            for (count, error) in [(0, false), (1, false), (2, false), (0, true)] {
+                let mut shaped = U4Fixture::with_family(family, false);
+                let mut output: Value = serde_json::from_slice(
+                    &shaped.blobs[&shaped.source.ordered_blocks[1].block.digest],
+                )
+                .unwrap();
+                if family == NativeReplayFamily::MessagesServer {
+                    if error {
+                        output["content"] = serde_json::json!({"type":"tool_search_tool_result_error","error_code":"unavailable"});
+                    } else {
+                        output["content"]["tool_references"]
+                            .as_array_mut()
+                            .unwrap()
+                            .truncate(count);
+                    }
+                } else {
+                    output["tools"].as_array_mut().unwrap().truncate(count);
+                    if error {
+                        output["status"] = serde_json::json!("error");
+                    }
+                }
+                let NativeIdentityExtension::Revision2 {
+                    eligible_member_links,
+                    eligible_member_accounting,
+                } = &mut shaped.identity
+                else {
+                    unreachable!()
+                };
+                eligible_member_links.truncate(count);
+                eligible_member_accounting.truncate(count);
+                shaped.source.ordered_blocks[1].block = shaped.put("raw_block", &output);
+                shaped.reseal_shape();
+                let backend = if family == NativeReplayFamily::MessagesServer {
+                    ApiBackend::Messages
+                } else {
+                    ApiBackend::Responses
+                };
+                let boundary = if backend == ApiBackend::Messages {
+                    Boundary::Vertex
+                } else {
+                    Boundary::AzStrict
+                };
+                let target = route(backend, boundary, ADMITTED);
+                let from = origin(boundary, Some(model));
+                u4_assert_action(
+                    &shaped,
+                    &u4_prepare(
+                        &shaped,
+                        model,
+                        &target,
+                        &from,
+                        u4_qualification(&shaped, model, &target, &from),
+                    )
+                    .unwrap(),
+                    NativeHistoryAction::Keep,
+                );
+            }
+        }
+        let mut namespaced = U4Fixture::with_family(NativeReplayFamily::ResponsesClient, false);
+        let mut output: Value = serde_json::from_slice(
+            &namespaced.blobs[&namespaced.source.ordered_blocks[1].block.digest],
+        )
+        .unwrap();
+        let tools = output["tools"].as_array_mut().unwrap();
+        for (index, (namespace, child)) in [("alpha", "lookup"), ("zeta", "fetch")]
+            .into_iter()
+            .enumerate()
+        {
+            let mut function = tools[index].clone();
+            function["name"] = serde_json::json!(child);
+            tools[index] =
+                serde_json::json!({"type":"namespace","name":namespace,"tools":[function]});
+        }
+        namespaced.source.ordered_blocks[1].block = namespaced.put("raw_block", &output);
+        namespaced.reseal_shape();
+        u4_assert_action(
+            &namespaced,
+            &u4_prepare(
+                &namespaced,
+                model,
+                &target,
+                &from,
+                u4_qualification(&namespaced, model, &target, &from),
+            )
+            .unwrap(),
+            NativeHistoryAction::Keep,
+        );
+        let mut namespace_mismatch = U4Fixture::produced();
+        let original = &namespace_mismatch.inputs.entries()[1];
+        let changed = NativeEligibleEntry::checked(
+            1,
+            NativeNamespaceKind::GrokBuild,
+            "grok_build".into(),
+            original.declaration().name.clone(),
+            original.declaration().clone(),
+            original.schema_bytes().into(),
+            original.schema_digest().into(),
+        )
+        .unwrap();
+        namespace_mismatch.inputs = NativeEligibleInputs::checked(
+            vec![namespace_mismatch.inputs.entries()[0].clone(), changed],
+            namespace_mismatch.tools.len(),
+        )
+        .unwrap();
+        let messages = route(ApiBackend::Messages, Boundary::Vertex, ADMITTED);
+        let messages_from = origin(Boundary::Vertex, Some(model));
+        u4_assert_action(
+            &namespace_mismatch,
+            &u4_prepare(
+                &namespace_mismatch,
+                model,
+                &messages,
+                &messages_from,
+                u4_qualification(&namespace_mismatch, model, &messages, &messages_from),
+            )
+            .unwrap(),
+            NativeHistoryAction::F,
+        );
+        let mut wrong_profile = U4Fixture::with_family(NativeReplayFamily::ResponsesClient, false);
+        let qualified = u4_qualification(&wrong_profile, model, &target, &from);
+        wrong_profile.record.reader_floor = 1;
+        assert_eq!(
+            u4_prepare(&wrong_profile, model, &target, &from, qualified),
+            Err(NativeUnavailable::UnsupportedVersion)
+        );
+        for fault in ["length", "digest", "kind"] {
+            let mut malformed = U4Fixture::with_family(NativeReplayFamily::ResponsesClient, false);
+            let qualified = u4_qualification(&malformed, model, &target, &from);
+            let NativeIdentityExtension::Revision2 {
+                eligible_member_links,
+                ..
+            } = &mut malformed.identity
+            else {
+                unreachable!()
+            };
+            let NativeEligibleMemberIdentity::Backed { eligible_ref } =
+                &mut eligible_member_links[1].identity
+            else {
+                unreachable!()
+            };
+            match fault {
+                "length" => eligible_ref.byte_len += 1,
+                "digest" => eligible_ref.digest = "a".repeat(64),
+                "kind" => eligible_ref.kind = "raw_block".into(),
+                _ => unreachable!(),
+            }
+            malformed.source.eligible_snapshots[1] = eligible_ref.clone();
+            malformed.reseal_shape();
+            assert!(
+                u4_prepare(&malformed, model, &target, &from, qualified).is_err(),
+                "invalid immutable identity reference refuses: {fault}"
+            );
+        }
+        for fault in ["nonterminal-output", "unsupported-arguments"] {
+            let mut malformed = U4Fixture::with_family(NativeReplayFamily::ResponsesClient, false);
+            let qualified = u4_qualification(&malformed, model, &target, &from);
+            let index = usize::from(fault == "nonterminal-output");
+            let mut raw: Value = serde_json::from_slice(
+                &malformed.blobs[&malformed.source.ordered_blocks[index].block.digest],
+            )
+            .unwrap();
+            if fault == "nonterminal-output" {
+                raw["status"] = serde_json::json!("in_progress");
+            } else {
+                raw["arguments"] = serde_json::json!("unmodeled arguments");
+            }
+            malformed.source.ordered_blocks[index].block = malformed.put("raw_block", &raw);
+            malformed.reseal_shape();
+            assert!(
+                u4_prepare(&malformed, model, &target, &from, qualified).is_err(),
+                "unsupported completed-group shape must refuse: {fault}"
+            );
+        }
+        let mut legacy = U4Fixture::produced();
+        let payload: Value = serde_json::from_str(U4_PRODUCED).unwrap();
+        legacy.record = serde_json::from_str(payload["legacy_record"].as_str().unwrap()).unwrap();
+        for (digest, value) in payload["legacy_blobs"].as_object().unwrap() {
+            legacy.blobs.insert(
+                digest.clone(),
+                std::sync::Arc::from(value.as_str().unwrap().as_bytes()),
+            );
+        }
+        legacy.source =
+            serde_json::from_slice(&legacy.blobs[&legacy.record.source.digest]).unwrap();
+        legacy.ledger =
+            serde_json::from_slice(&legacy.blobs[&legacy.record.ledger.digest]).unwrap();
+        legacy.identity = NativeIdentityExtension::Revision1Unknown;
+        let messages = route(ApiBackend::Messages, Boundary::Vertex, ADMITTED);
+        let messages_from = origin(Boundary::Vertex, Some(model));
+        u4_assert_action(
+            &legacy,
+            &u4_prepare(
+                &legacy,
+                model,
+                &messages,
+                &messages_from,
+                u4_qualification(&legacy, model, &messages, &messages_from),
+            )
+            .unwrap(),
+            NativeHistoryAction::F,
+        );
+        let mut ambiguous = U4Fixture::produced();
+        let qualified = u4_qualification(&ambiguous, model, &messages, &messages_from);
+        ambiguous.ledger.groups[0].members[1] = ambiguous.ledger.groups[0].members[0].clone();
+        ambiguous.reseal_shape();
+        assert!(
+            u4_prepare(&ambiguous, model, &messages, &messages_from, qualified).is_err(),
+            "ambiguous membership refuses instead of concealing a guessed group with F"
+        );
+        let mut unknown_ids = U4Fixture::with_family(NativeReplayFamily::ResponsesServer, false);
+        unknown_ids
+            .authorship
+            .insert(0, NativeIdAuthorship::Unknown);
+        unknown_ids
+            .authorship
+            .insert(1, NativeIdAuthorship::ClientMinted);
+        u4_assert_action(
+            &unknown_ids,
+            &u4_prepare(
+                &unknown_ids,
+                model,
+                &target,
+                &from,
+                u4_qualification(&unknown_ids, model, &target, &from),
+            )
+            .unwrap(),
+            NativeHistoryAction::F,
+        );
+    }
+
+    fn u5_duplicate_fixture() -> U4Fixture {
+        use crate::conversation::native_search_history::NativeIdAuthorship;
+        let mut fixture = U4Fixture::produced();
+        let mut duplicate = fixture.source.ordered_blocks[0].clone();
+        duplicate.coordinates.occurrence = 2;
+        duplicate.coordinates.block = 2;
+        duplicate.wire_index = 2;
+        duplicate.arrival_ordinal = 2;
+        fixture.source.ordered_blocks.push(duplicate.clone());
+        fixture.source.responses[0].block_end = 3;
+        let mut accounting = fixture.ledger.accounting[0].clone();
+        accounting.source = duplicate.coordinates.clone();
+        fixture.ledger.accounting.push(accounting);
+        fixture.ledger.groups[0]
+            .members
+            .push(duplicate.coordinates.clone());
+        fixture.ledger.groups[0].duplicate_observations.push((
+            duplicate.coordinates,
+            fixture.source.ordered_blocks[0].coordinates.clone(),
+        ));
+        fixture.authorship.insert(2, NativeIdAuthorship::Provider);
+        fixture.reseal_shape();
+        fixture
+    }
+
+    #[test]
+    fn native_history_whole_history_group_conservation() {
+        let fixture = u5_duplicate_fixture();
+        let target = route(ApiBackend::Messages, Boundary::Vertex, ADMITTED);
+        let from = origin(Boundary::Vertex, Some("u5-model"));
+        let qualified = u4_qualification(&fixture, "u5-model", &target, &from);
+        let decision = u4_prepare(&fixture, "u5-model", &target, &from, qualified)
+            .expect("U5 must account for the complete group and its verified duplicate");
+        assert_eq!(decision.members.len(), 3);
+        assert_eq!(
+            decision
+                .members
+                .iter()
+                .filter(|member| member.raw.is_some())
+                .count(),
+            2,
+            "verified duplicates keep a source witness without another native emission"
+        );
+        u5_group_cases();
+    }
+
+    #[test]
+    fn native_history_lifecycle_never_reopens_completed_groups() {
+        use crate::conversation::native_search_history::NativeActive;
+        let mut fixture = U4Fixture::produced();
+        let mut active: NativeActive =
+            serde_json::from_slice(&fixture.blobs[&fixture.record.active.digest]).unwrap();
+        active
+            .dispositions
+            .insert(fixture.ledger.groups[0].key.clone(), "F".into());
+        fixture.record.active = fixture.put("active", &active);
+        fixture.ledger.active_digest = fixture.record.active.digest.clone();
+        fixture.reseal_shape();
+        let target = route(ApiBackend::Messages, Boundary::Vertex, ADMITTED);
+        let from = origin(Boundary::Vertex, Some("u5-model"));
+        let decision = u4_prepare(
+            &fixture,
+            "u5-model",
+            &target,
+            &from,
+            u4_qualification(&fixture, "u5-model", &target, &from),
+        )
+        .unwrap();
+        u4_assert_action(&fixture, &decision, NativeHistoryAction::F);
+        assert_eq!(fixture.ledger.groups[0].state, "Completed");
+        u5_lifecycle_cases();
+    }
+
+    fn u5_pending_fixture(
+        family: crate::conversation::native_search_history::NativeReplayFamily,
+        abandoned: bool,
+    ) -> U4Fixture {
+        use crate::conversation::native_search_history::*;
+        let mut fixture = U4Fixture::with_family(family, false);
+        fixture.source.ordered_blocks.truncate(1);
+        fixture.source.responses[0].block_end = 1;
+        fixture.ledger.accounting.truncate(1);
+        fixture.ledger.groups[0].members.truncate(1);
+        fixture.ledger.groups[0].state = if abandoned {
+            "AbandonedPending"
+        } else {
+            "LivePending"
+        }
+        .into();
+        fixture.ledger.lifecycle.groups.insert(
+            fixture.ledger.groups[0].key.clone(),
+            fixture.ledger.groups[0].state.clone(),
+        );
+        let response = &fixture.source.responses[0];
+        fixture.ledger.lifecycle.exchanges.insert(
+            response.request.clone(),
+            if abandoned { "Terminal" } else { "LiveBound" }.into(),
+        );
+        if abandoned {
+            fixture.ledger.lifecycle.terminal.insert(
+                format!("{}:{}", response.request, response.attempt),
+                NativeTerminalMarker {
+                    outcome: NativeUnavailable::Cancelled,
+                    last_accepted_response: Some(0),
+                    observed_bytes: 100,
+                    failed_block: None,
+                },
+            );
+        }
+        let NativeIdentityExtension::Revision2 {
+            eligible_member_links,
+            eligible_member_accounting,
+        } = &mut fixture.identity
+        else {
+            unreachable!()
+        };
+        eligible_member_links.clear();
+        eligible_member_accounting.clear();
+        fixture.reseal_shape();
+        fixture
+    }
+
+    fn u5_mixed_fixture() -> U4Fixture {
+        use crate::conversation::native_search_history::*;
+        let mut fixture = u5_pending_fixture(NativeReplayFamily::MessagesServer, false);
+        for (index, id) in ["client_a", "client_b"].into_iter().enumerate() {
+            let mut block = fixture.source.ordered_blocks[0].clone();
+            let ordinal = index as u64 + 1;
+            block.coordinates.occurrence = ordinal;
+            block.coordinates.block = ordinal;
+            block.wire_index = ordinal as u32;
+            block.arrival_ordinal = ordinal;
+            block.block = fixture.put("raw_block", &serde_json::json!({"type":"tool_use","id":id,"name":fixture.tools[index].name,"input":{}}));
+            fixture.source.ordered_blocks.push(block.clone());
+            let mut entry = fixture.ledger.accounting[0].clone();
+            entry.source = block.coordinates.clone();
+            fixture.ledger.accounting.push(entry);
+            fixture
+                .ledger
+                .lifecycle
+                .waiting_clients
+                .push(NativeWaitingClient {
+                    client_id: id.into(),
+                    source: block.coordinates.clone(),
+                    result: None,
+                    delivery: "Waiting".into(),
+                });
+            let mut source = block.coordinates;
+            source.submember = Some(0);
+            let NativeIdentityExtension::Revision2 {
+                eligible_member_links,
+                eligible_member_accounting,
+            } = &mut fixture.identity
+            else {
+                unreachable!()
+            };
+            eligible_member_links.push(NativeEligibleMemberLink {
+                source: source.clone(),
+                identity: NativeEligibleMemberIdentity::Backed {
+                    eligible_ref: fixture.source.eligible_snapshots[index].clone(),
+                },
+            });
+            eligible_member_accounting.push(NativeEligibleMemberAccounting {
+                source,
+                source_digest: fixture.record.source.digest.clone(),
+            });
+        }
+        fixture.source.responses[0].block_end = 3;
+        fixture.reseal_shape();
+        fixture
+    }
+
+    fn u5_selected(
+        fixture: &U4Fixture,
+        selected: &[crate::conversation::native_search_history::NativeSourceCoordinate],
+        pending: &crate::conversation::native_search_history::NativePendingContext,
+    ) -> Result<NativeHistoryDecision, crate::conversation::native_search_history::NativeUnavailable>
+    {
+        use crate::conversation::native_search_history::*;
+        let family = match fixture.ledger.groups[0].family.as_str() {
+            "Messages" => NativeReplayFamily::MessagesServer,
+            _ if fixture.ledger.groups[0].execution == "client" => {
+                NativeReplayFamily::ResponsesClient
+            }
+            _ => NativeReplayFamily::ResponsesServer,
+        };
+        let complete = U4Fixture::with_family(family, fixture.ledger.groups[0].keyless_server_fifo);
+        let backend = if family == NativeReplayFamily::MessagesServer {
+            ApiBackend::Messages
+        } else {
+            ApiBackend::Responses
+        };
+        let boundary = if backend == ApiBackend::Messages {
+            Boundary::Vertex
+        } else {
+            Boundary::AzStrict
+        };
+        let target = route(backend, boundary, ADMITTED);
+        let from = origin(boundary, Some("u5-model"));
+        prepare_native_history_selected(
+            &fixture.history(),
+            "u5-model",
+            &target,
+            &fixture.tools,
+            Some(&fixture.inputs),
+            selected,
+            &Default::default(),
+            pending,
+            |_| {
+                (
+                    from.clone(),
+                    u4_qualification(&complete, "u5-model", &target, &from),
+                )
+            },
+        )
+    }
+
+    fn u5_two_genuine_fixture() -> U4Fixture {
+        use crate::conversation::native_search_history::*;
+        let mut fixture = U4Fixture::produced();
+        let originals = fixture.source.ordered_blocks.clone();
+        for (index, mut block) in originals.into_iter().enumerate() {
+            block.coordinates.occurrence += 2;
+            block.coordinates.response = 1;
+            fixture.source.ordered_blocks.push(block.clone());
+            let mut entry = fixture.ledger.accounting[index].clone();
+            entry.source = block.coordinates;
+            fixture.ledger.accounting.push(entry);
+            fixture
+                .authorship
+                .insert(index as u64 + 2, NativeIdAuthorship::Provider);
+        }
+        let mut response = fixture.source.responses[0].clone();
+        response.occurrence = 1;
+        response.attempt = 2;
+        response.block_start = 2;
+        response.block_end = 4;
+        response.provider_response_id = Some(serde_json::json!("msg_u5_second"));
+        fixture.source.responses.push(response);
+        let mut group = fixture.ledger.groups[0].clone();
+        group.key.push_str(":second");
+        group.members = fixture.source.ordered_blocks[2..]
+            .iter()
+            .map(|block| block.coordinates.clone())
+            .collect();
+        fixture
+            .ledger
+            .lifecycle
+            .groups
+            .insert(group.key.clone(), group.state.clone());
+        fixture.ledger.groups.push(group);
+        let NativeIdentityExtension::Revision2 {
+            eligible_member_links,
+            eligible_member_accounting,
+        } = &mut fixture.identity
+        else {
+            unreachable!()
+        };
+        let links = eligible_member_links.clone();
+        let witnesses = eligible_member_accounting.clone();
+        for (mut link, mut witness) in links.into_iter().zip(witnesses) {
+            let submember = link.source.submember;
+            link.source = fixture.source.ordered_blocks[3].coordinates.clone();
+            link.source.submember = submember;
+            witness.source = link.source.clone();
+            eligible_member_links.push(link);
+            eligible_member_accounting.push(witness);
+        }
+        fixture.reseal_shape();
+        fixture
+    }
+
+    fn u5_cross_response_fixture() -> U4Fixture {
+        use crate::conversation::native_search_history::*;
+        let mut fixture = U4Fixture::produced();
+        let mut result = fixture.source.ordered_blocks.pop().unwrap();
+        result.coordinates.occurrence = 2;
+        result.coordinates.response = 1;
+        result.coordinates.block = 0;
+        result.wire_index = 0;
+        result.arrival_ordinal = 0;
+        let mut text = fixture.source.ordered_blocks[0].clone();
+        text.coordinates.occurrence = 1;
+        text.coordinates.block = 1;
+        text.wire_index = 1;
+        text.arrival_ordinal = 1;
+        text.block = fixture.put(
+            "raw_block",
+            &serde_json::json!({"type":"text","text":"between the source halves"}),
+        );
+        fixture
+            .source
+            .ordered_blocks
+            .extend([text.clone(), result.clone()]);
+        fixture.source.responses[0].source_stop_reason = Some("pause_turn".into());
+        let mut response = fixture.source.responses[0].clone();
+        response.occurrence = 1;
+        response.attempt = 2;
+        response.block_start = 2;
+        response.block_end = 3;
+        response.source_stop_reason = Some("end_turn".into());
+        response.provider_response_id = Some(serde_json::json!("msg_u5_next"));
+        fixture.source.responses.push(response);
+        fixture.ledger.accounting[1].source = result.coordinates.clone();
+        let mut accounting = fixture.ledger.accounting[0].clone();
+        accounting.source = text.coordinates;
+        fixture.ledger.accounting.push(accounting);
+        fixture
+            .ledger
+            .accounting
+            .sort_by_key(|entry| entry.source.occurrence);
+        fixture.ledger.groups[0].members[1] = result.coordinates.clone();
+        let NativeIdentityExtension::Revision2 {
+            eligible_member_links,
+            eligible_member_accounting,
+        } = &mut fixture.identity
+        else {
+            unreachable!()
+        };
+        for (link, witness) in eligible_member_links
+            .iter_mut()
+            .zip(eligible_member_accounting)
+        {
+            let submember = link.source.submember;
+            link.source = result.coordinates.clone();
+            link.source.submember = submember;
+            witness.source = link.source.clone();
+        }
+        fixture.authorship.insert(2, NativeIdAuthorship::Provider);
+        fixture.reseal_shape();
+        fixture
+    }
+
+    fn u5_group_cases() {
+        use crate::conversation::native_search_history::*;
+        let fixture = U4Fixture::produced();
+        let before = serde_json::to_value(&fixture.source).unwrap();
+        let partial = u5_selected(
+            &fixture,
+            &[fixture.source.ordered_blocks[0].coordinates.clone()],
+            &Default::default(),
+        )
+        .expect("U5 groups full retained history before selecting the request window");
+        u4_assert_action(&fixture, &partial, NativeHistoryAction::F);
+        assert_eq!(serde_json::to_value(&fixture.source).unwrap(), before);
+        let cross = u5_cross_response_fixture();
+        let all: Vec<_> = cross
+            .source
+            .ordered_blocks
+            .iter()
+            .map(|block| block.coordinates.clone())
+            .collect();
+        let decision = u5_selected(&cross, &all, &Default::default()).unwrap();
+        assert_eq!(
+            decision
+                .members
+                .iter()
+                .map(|member| member.source.occurrence)
+                .collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+        assert!(
+            decision
+                .members
+                .iter()
+                .all(|member| member.action == NativeHistoryAction::Keep),
+            "nonadjacent cross-response joins remain one whole group"
+        );
+        let genuine = u5_two_genuine_fixture();
+        let all: Vec<_> = genuine
+            .source
+            .ordered_blocks
+            .iter()
+            .map(|block| block.coordinates.clone())
+            .collect();
+        let decision = u5_selected(&genuine, &all, &Default::default()).unwrap();
+        assert_eq!(
+            decision.groups.len(),
+            2,
+            "genuinely distinct identical payload occurrences do not collapse"
+        );
+        assert_eq!(
+            decision
+                .members
+                .iter()
+                .filter(|member| member.raw.is_some())
+                .count(),
+            4,
+            "genuine occurrences each emit once"
+        );
+        for fault in ["missing-join", "result-before-call", "execution", "domain"] {
+            let mut malformed = U4Fixture::produced();
+            match fault {
+                "missing-join" => {
+                    for (index, key) in [(0, "id"), (1, "tool_use_id")] {
+                        let mut raw: Value = serde_json::from_slice(
+                            &malformed.blobs[&malformed.source.ordered_blocks[index].block.digest],
+                        )
+                        .unwrap();
+                        raw.as_object_mut().unwrap().remove(key);
+                        malformed.source.ordered_blocks[index].block =
+                            malformed.put("raw_block", &raw);
+                    }
+                    malformed.ledger.groups[0].validated_join = None;
+                }
+                "result-before-call" => {
+                    let first = malformed.source.ordered_blocks[0].block.clone();
+                    malformed.source.ordered_blocks[0].block =
+                        malformed.source.ordered_blocks[1].block.clone();
+                    malformed.source.ordered_blocks[1].block = first;
+                }
+                "execution" => malformed.ledger.groups[0].execution = "client".into(),
+                "domain" => malformed.ledger.groups[0].origin_ref.digest = "0".repeat(64),
+                _ => unreachable!(),
+            }
+            malformed.reseal_shape();
+            let all: Vec<_> = malformed
+                .source
+                .ordered_blocks
+                .iter()
+                .map(|block| block.coordinates.clone())
+                .collect();
+            assert!(
+                u5_selected(&malformed, &all, &Default::default()).is_err(),
+                "family/domain/execution and genuine joins precede grouping: {fault}"
+            );
+        }
+        let mut stripped = U4Fixture::produced();
+        let mut active: NativeActive =
+            serde_json::from_slice(&stripped.blobs[&stripped.record.active.digest]).unwrap();
+        active
+            .dispositions
+            .insert(stripped.ledger.groups[0].key.clone(), "strip".into());
+        stripped.record.active = stripped.put("active", &active);
+        stripped.ledger.active_digest = stripped.record.active.digest.clone();
+        stripped.reseal_shape();
+        let all: Vec<_> = stripped
+            .source
+            .ordered_blocks
+            .iter()
+            .map(|block| block.coordinates.clone())
+            .collect();
+        let decision = u5_selected(&stripped, &all, &Default::default()).unwrap();
+        assert_eq!(decision.groups[0].action, NativeHistoryAction::Strip);
+        assert!(decision.members.iter().all(|member| member.raw.is_none()));
+    }
+
+    fn u5_lifecycle_cases() {
+        use crate::conversation::native_search_history::*;
+        use crate::conversation::tool_search::ToolSearchItem;
+        let completed = U4Fixture::produced();
+        let loss = u5_selected(
+            &completed,
+            &[completed.source.ordered_blocks[0].coordinates.clone()],
+            &Default::default(),
+        )
+        .unwrap();
+        u4_assert_action(&completed, &loss, NativeHistoryAction::F);
+        assert_eq!(
+            completed.ledger.groups[0].state, "Completed",
+            "completed loss is never pending"
+        );
+        let live = u5_pending_fixture(NativeReplayFamily::MessagesServer, false);
+        let binding = live.ledger.groups[0].origin_ref.clone();
+        let context = NativePendingContext {
+            live_binding: Some(binding.clone()),
+            next: NativeNextInput::None,
+        };
+        let decision = u5_selected(&live, &[], &context).unwrap();
+        assert_eq!(
+            decision.groups[0].action,
+            NativeHistoryAction::ContinueOriginal,
+            "pending server work never requests a client-authored answer"
+        );
+        assert!(
+            u5_selected(
+                &live,
+                &[],
+                &NativePendingContext {
+                    live_binding: Some(binding.clone()),
+                    next: NativeNextInput::Fresh
+                }
+            )
+            .is_err(),
+            "live work cannot be omitted for fresh input"
+        );
+        assert!(u5_selected(&live, &[], &NativePendingContext::default()).is_err());
+        let abandoned = u5_pending_fixture(NativeReplayFamily::MessagesServer, true);
+        let original_source = serde_json::to_value(&abandoned.source).unwrap();
+        let original_ledger = serde_json::to_value(&abandoned.ledger).unwrap();
+        let omitted = u5_selected(
+            &abandoned,
+            &[],
+            &NativePendingContext {
+                live_binding: None,
+                next: NativeNextInput::Fresh,
+            },
+        )
+        .unwrap();
+        assert_eq!(omitted.groups[0].action, NativeHistoryAction::OmitSendOnly);
+        assert!(
+            omitted.members.iter().all(|member| member.raw.is_none()),
+            "abandoned omission emits no empty native message"
+        );
+        assert_eq!(
+            serde_json::to_value(&abandoned.source).unwrap(),
+            original_source
+        );
+        assert_eq!(
+            serde_json::to_value(&abandoned.ledger).unwrap(),
+            original_ledger
+        );
+        assert!(
+            u5_selected(&abandoned, &[], &context).is_err(),
+            "persisted terminal state cannot rearm even with the old binding"
+        );
+        let client = u5_pending_fixture(NativeReplayFamily::ResponsesClient, false);
+        let client_context = NativePendingContext {
+            live_binding: Some(client.ledger.groups[0].origin_ref.clone()),
+            next: NativeNextInput::None,
+        };
+        let waiting = u5_selected(&client, &[], &client_context).unwrap();
+        assert_eq!(waiting.groups[0].action, NativeHistoryAction::AwaitClient);
+        assert_eq!(waiting.groups[0].waiting_clients, vec!["call_u4"]);
+        for (id, accepted) in [("call_u4", true), ("foreign_call", false)] {
+            let context = NativePendingContext {
+                live_binding: client_context.live_binding.clone(),
+                next: NativeNextInput::Results {
+                    messages: Vec::new(),
+                    client_outputs: vec![ToolSearchItem::client_answer(id, Vec::new())],
+                },
+            };
+            let result = u5_selected(&client, &[], &context);
+            assert_eq!(
+                result.is_ok(),
+                accepted,
+                "only the original legitimate client join can continue"
+            );
+            if accepted {
+                assert_eq!(
+                    result.unwrap().groups[0].action,
+                    NativeHistoryAction::ContinueOriginal
+                );
+            }
+        }
+        let mixed = u5_mixed_fixture();
+        let waiting = u5_selected(&mixed, &[], &context).unwrap();
+        assert_eq!(
+            waiting.groups[0].action,
+            NativeHistoryAction::AwaitResults,
+            "waiting obligations are captured before cleanup"
+        );
+        assert_eq!(
+            waiting.groups[0].waiting_clients,
+            vec!["client_a", "client_b"]
+        );
+        let results = serde_json::json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"client_a","content":"actual result a"},{"type":"tool_result","tool_use_id":"client_b","content":"actual result b"}]});
+        for fault in [
+            "valid",
+            "missing",
+            "empty",
+            "duplicate",
+            "text",
+            "two-messages",
+        ] {
+            let mut message = results.clone();
+            match fault {
+                "missing" => {
+                    message["content"].as_array_mut().unwrap().pop();
+                }
+                "empty" => message["content"] = serde_json::json!([]),
+                "duplicate" => message["content"][1]["tool_use_id"] = serde_json::json!("client_a"),
+                "text" => message["content"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!({"type":"text","text":"not results-only"})),
+                _ => {}
+            }
+            let messages = if fault == "two-messages" {
+                vec![message.clone(), message]
+            } else {
+                vec![message]
+            };
+            let next = NativePendingContext {
+                live_binding: Some(binding.clone()),
+                next: NativeNextInput::Results {
+                    messages,
+                    client_outputs: Vec::new(),
+                },
+            };
+            let result = u5_selected(&mixed, &[], &next);
+            assert_eq!(
+                result.is_ok(),
+                fault == "valid",
+                "one complete results-only response is required: {fault}"
+            );
+            if fault == "valid" {
+                assert_eq!(
+                    result.unwrap().groups[0].action,
+                    NativeHistoryAction::ContinueOriginal
+                );
+            }
+        }
+        let mut invalid_delivery = u5_mixed_fixture();
+        invalid_delivery.ledger.lifecycle.waiting_clients[0].delivery = "unknown-delivery".into();
+        invalid_delivery.reseal_shape();
+        assert!(
+            u5_selected(&invalid_delivery, &[], &context).is_err(),
+            "unknown delivery state cannot erase a waiting obligation"
+        );
+        let mut invalid_source = u5_mixed_fixture();
+        invalid_source.ledger.lifecycle.waiting_clients[0].source =
+            invalid_source.source.ordered_blocks[0].coordinates.clone();
+        invalid_source.reseal_shape();
+        assert!(
+            u5_selected(&invalid_source, &[], &context).is_err(),
+            "waiting clients require their actual ordinary call source"
+        );
+        let server_responses = u5_pending_fixture(NativeReplayFamily::ResponsesServer, false);
+        assert!(
+            u5_selected(&server_responses, &[], &context).is_err(),
+            "completed-pair qualification cannot authorize a pending Responses server continuation"
+        );
     }
 }

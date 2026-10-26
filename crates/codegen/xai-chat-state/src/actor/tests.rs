@@ -9278,3 +9278,1224 @@ fn native_history_serialized_three_role_boundary() {
         Err(NativeUnavailable::Capacity)
     ));
 }
+
+fn u3_specs_and_inputs() -> (
+    Vec<xai_grok_sampling_types::ToolSpec>,
+    std::sync::Arc<
+        xai_grok_sampling_types::conversation::native_search_history::NativeEligibleInputs,
+    >,
+) {
+    use crate::persistence::native::digest;
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let schemas = [
+        serde_json::json!({"type":"object","description":"Lookup schema retained verbatim","properties":{"query":{"type":"string","default":"account","description":"Exact query"}},"required":["query"],"additionalProperties":false}),
+        serde_json::json!({"type":"object","properties":{"url":{"type":"string"},"limit":{"type":"integer","default":7}},"required":["url"],"additionalProperties":false}),
+    ];
+    let specs: Vec<_> = [
+        ("alpha__lookup", "Typed lookup declaration"),
+        ("zeta__fetch", "Typed fetch declaration"),
+    ]
+    .into_iter()
+    .zip(schemas)
+    .map(
+        |((name, description), parameters)| xai_grok_sampling_types::ToolSpec {
+            name: name.into(),
+            description: Some(description.into()),
+            parameters,
+            exposure: xai_grok_sampling_types::ToolExposure::Immediate,
+        },
+    )
+    .collect();
+    let entries = specs
+        .iter()
+        .enumerate()
+        .map(|(position, spec)| {
+            let schema = encode_native(&spec.parameters, NATIVE_SOURCE_BYTES).unwrap();
+            let (namespace, child) = spec.name.split_once("__").unwrap();
+            NativeEligibleEntry::checked(
+                position,
+                NativeNamespaceKind::Mcp,
+                namespace.into(),
+                child.into(),
+                spec.clone(),
+                schema.clone().into(),
+                digest(&schema),
+            )
+            .unwrap()
+        })
+        .collect();
+    let inputs = NativeEligibleInputs::checked(entries, specs.len()).unwrap();
+    (specs, std::sync::Arc::new(inputs))
+}
+
+fn u3_reference_attempt(
+    names: &[&str],
+) -> xai_grok_sampling_types::conversation::native_search_history::NativeAttemptEvidence {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let references: Vec<_> = names
+        .iter()
+        .map(|name| serde_json::json!({"type":"tool_reference","tool_name":name}))
+        .collect();
+    let raw = [
+        serde_json::json!({"type":"server_tool_use","id":"srvtoolu_u3","name":"tool_search_tool_regex","input":{"query":"lookup"}}),
+        serde_json::json!({"type":"tool_search_tool_result","tool_use_id":"srvtoolu_u3","content":{"type":"tool_search_tool_search_result","tool_references":references}}),
+    ];
+    NativeAttemptEvidence {
+        attempt: 1,
+        admitted: true,
+        response_started: true,
+        provider_response_id: Some(serde_json::json!("msg_u3")),
+        source_stop_reason: Some("end_turn".into()),
+        stream_complete: true,
+        status: NativeResponseStatus::Accepted,
+        blocks: raw
+            .into_iter()
+            .enumerate()
+            .map(|(index, raw)| NativeCapturedBlock {
+                wire_index: index as u32,
+                arrival_ordinal: index as u64,
+                raw: raw.to_string(),
+                partial_json: None,
+                state: NativeBlockState::ClosedFaithful,
+            })
+            .collect(),
+        usage: std::collections::BTreeMap::from([
+            ("input_tokens".into(), serde_json::json!(11)),
+            ("output_tokens".into(), serde_json::json!(7)),
+        ]),
+        latency_ms: Some(1),
+        http_dispatches: 1,
+        observed_bytes: 100,
+        failed_block: None,
+        view_roles: vec![None, None],
+        view_digests: Vec::new(),
+    }
+}
+
+fn u3_checkpoint(names: &[&str]) -> crate::persistence::native::NativeCheckpoint {
+    use crate::persistence::native::NativeCheckpoint;
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let (_, inputs) = u3_specs_and_inputs();
+    let lease = NativeCaptureLease::issue(
+        "mock".into(),
+        "u3-deterministic".into(),
+        1,
+        1,
+        NATIVE_SOURCE_BYTES,
+    );
+    NativeCheckpoint::append_with_identity(
+        None,
+        &lease,
+        &[std::sync::Arc::new(u3_reference_attempt(names))],
+        &[],
+        Some(&inputs),
+    )
+    .unwrap()
+}
+
+fn u3_put_value(
+    checkpoint: &mut crate::persistence::native::NativeCheckpoint,
+    kind: &str,
+    value: &serde_json::Value,
+) -> xai_grok_sampling_types::conversation::native_search_history::NativeBlobRef {
+    use crate::persistence::native::digest;
+    let bytes = serde_json::to_vec(value).unwrap();
+    let reference = xai_grok_sampling_types::conversation::native_search_history::NativeBlobRef {
+        kind: kind.into(),
+        byte_len: bytes.len() as u64,
+        digest: digest(&bytes),
+    };
+    checkpoint
+        .blobs
+        .insert(reference.digest.clone(), bytes.into());
+    checkpoint
+        .blob_kinds
+        .insert(reference.digest.clone(), kind.into());
+    reference
+}
+
+fn u3_reseal_fixture(
+    mut checkpoint: crate::persistence::native::NativeCheckpoint,
+) -> crate::persistence::native::NativeCheckpoint {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    assert!(checkpoint.record.previous_checkpoint.is_none());
+    checkpoint.blobs.retain(|key, _| {
+        !matches!(
+            checkpoint.blob_kinds[key].as_str(),
+            "source" | "active" | "ledger"
+        )
+    });
+    checkpoint
+        .blob_kinds
+        .retain(|key, _| checkpoint.blobs.contains_key(key));
+    let source = match &checkpoint.identity {
+        NativeIdentityExtension::Revision1Unknown => {
+            serde_json::to_value(&checkpoint.source).unwrap()
+        }
+        NativeIdentityExtension::Revision2 {
+            eligible_member_links,
+            ..
+        } => serde_json::to_value(NativeSourceV2::from_parts(
+            checkpoint.source.clone(),
+            eligible_member_links.clone(),
+        ))
+        .unwrap(),
+    };
+    checkpoint.record.source = u3_put_value(&mut checkpoint, "source", &source);
+    checkpoint.record.lineage.source_digest = checkpoint.record.source.digest.clone();
+    for link in checkpoint
+        .ledger
+        .accounting
+        .iter_mut()
+        .chain(&mut checkpoint.active.view_links)
+    {
+        link.source_digest = checkpoint.record.source.digest.clone();
+    }
+    if let NativeIdentityExtension::Revision2 {
+        eligible_member_accounting,
+        ..
+    } = &mut checkpoint.identity
+    {
+        for witness in eligible_member_accounting {
+            witness.source_digest = checkpoint.record.source.digest.clone();
+        }
+    }
+    let active = serde_json::to_value(&checkpoint.active).unwrap();
+    checkpoint.record.active = u3_put_value(&mut checkpoint, "active", &active);
+    checkpoint.ledger.source_digest = checkpoint.record.source.digest.clone();
+    checkpoint.ledger.active_digest = checkpoint.record.active.digest.clone();
+    let ledger = match &checkpoint.identity {
+        NativeIdentityExtension::Revision1Unknown => {
+            serde_json::to_value(&checkpoint.ledger).unwrap()
+        }
+        NativeIdentityExtension::Revision2 {
+            eligible_member_accounting,
+            ..
+        } => serde_json::to_value(NativeLedgerV2::from_parts(
+            checkpoint.ledger.clone(),
+            eligible_member_accounting.clone(),
+        ))
+        .unwrap(),
+    };
+    checkpoint.record.ledger = u3_put_value(&mut checkpoint, "ledger", &ledger);
+    checkpoint.bytes = serde_json::to_vec(&checkpoint.record).unwrap().into();
+    checkpoint.seal_capacity().unwrap();
+    checkpoint
+}
+
+fn u3_decode(
+    checkpoint: &crate::persistence::native::NativeCheckpoint,
+) -> Result<
+    crate::persistence::native::NativeCheckpoint,
+    xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable,
+> {
+    crate::persistence::native::NativeCheckpoint::decode(checkpoint.bytes.to_vec(), |reference| {
+        checkpoint.blobs.get(&reference.digest).map(|bytes| bytes.to_vec())
+            .ok_or(xai_grok_sampling_types::conversation::native_search_history::NativeUnavailable::InvalidReference)
+    })
+}
+
+#[tokio::test]
+async fn native_identity_companion_reaches_persisted_slot() {
+    use crate::persistence::native::NativeAppendAck;
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let (specs, inputs) = u3_specs_and_inputs();
+    let mut config = test_config();
+    config.api_backend = xai_grok_sampling_types::ApiBackend::Messages;
+    config.supports_search_tool = true;
+    let h = TestHarness::with_config(Vec::new(), config);
+    let candidates = crate::NativeToolCandidates::with_mcp_membership(
+        specs.clone(),
+        specs.iter().map(|spec| spec.name.clone()).collect(),
+    )
+    .with_native_inputs(Some(inputs.clone()));
+    let (request, _) = h
+        .handle
+        .build_request_with_binding(
+            candidates,
+            None,
+            false,
+            None,
+            "u3-conversation".into(),
+            "u3-build".into(),
+        )
+        .await
+        .unwrap();
+    let submitted = request.native_eligible_inputs.as_ref().unwrap();
+    assert!(submitted.matches_specs(&request.tools));
+    assert_eq!(
+        submitted
+            .entries()
+            .iter()
+            .map(|entry| (
+                entry.namespace_kind(),
+                entry.qualified_namespace(),
+                entry.child_name(),
+                entry.schema_digest()
+            ))
+            .collect::<Vec<_>>(),
+        inputs
+            .entries()
+            .iter()
+            .map(|entry| (
+                entry.namespace_kind(),
+                entry.qualified_namespace(),
+                entry.child_name(),
+                entry.schema_digest()
+            ))
+            .collect::<Vec<_>>()
+    );
+    let lease = h
+        .handle
+        .begin_native_capture_with_identity(
+            "mock".into(),
+            "u3-actor".into(),
+            1,
+            request.native_eligible_inputs.clone(),
+        )
+        .await
+        .unwrap();
+    let attempt = std::sync::Arc::new(u3_reference_attempt(&["alpha__lookup", "zeta__fetch"]));
+    assert!(matches!(
+        h.handle
+            .append_native_evidence(
+                "u3-actor".into(),
+                lease.clone(),
+                NativeEvidenceEvent::Attempt(attempt.clone())
+            )
+            .await
+            .unwrap(),
+        NativeAppendAck::Applied { .. }
+    ));
+    let checkpoint = h
+        .handle
+        .read_native_history()
+        .await
+        .unwrap()
+        .checkpoint
+        .unwrap();
+    let loaded = u3_decode(&checkpoint).unwrap();
+    assert_eq!(
+        loaded.eligible_members().unwrap(),
+        checkpoint.eligible_members().unwrap()
+    );
+    assert_eq!(loaded.source.eligible_snapshots.len(), 2);
+    for (ordinal, link) in loaded.eligible_members().unwrap().iter().enumerate() {
+        let NativeEligibleMemberIdentity::Backed { eligible_ref } = &link.identity else {
+            panic!("U3 actor must preserve every identity");
+        };
+        let snapshot: NativeEligibleSnapshot =
+            serde_json::from_slice(&loaded.blobs[&eligible_ref.digest]).unwrap();
+        assert_eq!(
+            (
+                snapshot.namespace_kind,
+                snapshot.qualified_namespace.as_str(),
+                snapshot.child_name.as_str()
+            ),
+            (
+                NativeNamespaceKind::Mcp,
+                ["alpha", "zeta"][ordinal],
+                ["lookup", "fetch"][ordinal]
+            )
+        );
+        assert_eq!(
+            loaded.blobs[&snapshot.schema.digest].as_ref(),
+            inputs.entries()[ordinal].schema_bytes()
+        );
+        assert_eq!(
+            snapshot.binding,
+            loaded.source.producing_bindings[0].origin_ref
+        );
+    }
+    assert_eq!(
+        h.handle
+            .append_native_evidence(
+                "u3-actor".into(),
+                lease.clone(),
+                NativeEvidenceEvent::Attempt(attempt)
+            )
+            .await
+            .unwrap(),
+        NativeAppendAck::Unchanged
+    );
+    h.handle
+        .append_native_evidence("u3-actor".into(), lease, NativeEvidenceEvent::End)
+        .await
+        .unwrap();
+    assert_eq!(
+        h.handle
+            .read_native_history()
+            .await
+            .unwrap()
+            .checkpoint
+            .unwrap()
+            .bytes,
+        checkpoint.bytes
+    );
+    for (request_id, retry) in [("u3-retry-owner", true), ("u3-terminal-owner", false)] {
+        let candidates = crate::NativeToolCandidates::with_mcp_membership(
+            specs.clone(),
+            specs.iter().map(|spec| spec.name.clone()).collect(),
+        )
+        .with_native_inputs(Some(inputs.clone()));
+        let (request, _) = h
+            .handle
+            .build_request_with_binding(
+                candidates,
+                None,
+                false,
+                None,
+                "u3-owner".into(),
+                request_id.into(),
+            )
+            .await
+            .unwrap();
+        let weak = std::sync::Arc::downgrade(request.native_eligible_inputs.as_ref().unwrap());
+        let lease = h
+            .handle
+            .begin_native_capture_with_identity(
+                "mock".into(),
+                request_id.into(),
+                1,
+                request.native_eligible_inputs.clone(),
+            )
+            .await
+            .unwrap();
+        drop(request);
+        assert_eq!(
+            weak.strong_count(),
+            1,
+            "the issued actor lease owns the only remaining request envelope"
+        );
+        let mut partial = u3_reference_attempt(&["alpha__lookup", "zeta__fetch"]);
+        partial.status = NativeResponseStatus::PartialTerminal(NativeUnavailable::Fidelity);
+        partial.stream_complete = false;
+        assert!(matches!(
+            h.handle
+                .append_native_evidence(
+                    request_id.into(),
+                    lease.clone(),
+                    NativeEvidenceEvent::Attempt(std::sync::Arc::new(partial))
+                )
+                .await
+                .unwrap(),
+            NativeAppendAck::Applied { .. }
+        ));
+        assert_eq!(
+            weak.strong_count(),
+            1,
+            "a still-live lease must retain identity for another attempt"
+        );
+        if retry {
+            let mut accepted = u3_reference_attempt(&["alpha__lookup", "zeta__fetch"]);
+            accepted.attempt = 2;
+            assert!(matches!(
+                h.handle
+                    .append_native_evidence(
+                        request_id.into(),
+                        lease.clone(),
+                        NativeEvidenceEvent::Attempt(std::sync::Arc::new(accepted))
+                    )
+                    .await
+                    .unwrap(),
+                NativeAppendAck::Applied { .. }
+            ));
+            let stored = h
+                .handle
+                .read_native_history()
+                .await
+                .unwrap()
+                .checkpoint
+                .unwrap();
+            assert!(
+                stored
+                    .eligible_members()
+                    .unwrap()
+                    .iter()
+                    .rev()
+                    .take(2)
+                    .all(|link| matches!(
+                        link.identity,
+                        NativeEligibleMemberIdentity::Backed { .. }
+                    ))
+            );
+        }
+        assert_eq!(
+            h.handle
+                .append_native_evidence(request_id.into(), lease.clone(), NativeEvidenceEvent::End)
+                .await
+                .unwrap(),
+            NativeAppendAck::Released
+        );
+        h.handle.get_conversation().await;
+        assert!(lease.is_finished());
+        assert_eq!(
+            weak.strong_count(),
+            0,
+            "U3 End must release the transient envelope after acknowledged terminal evidence without pruning the admitted lease"
+        );
+    }
+}
+
+#[test]
+fn native_identity_links_reject_invalid_coordinates_and_charge_each_member() {
+    use crate::persistence::native::{NativeCheckpoint, digest};
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    let base = u3_checkpoint(&["alpha__lookup", "zeta__fetch"]);
+    assert_eq!(
+        u3_decode(&base).unwrap().eligible_members().unwrap(),
+        base.eligible_members().unwrap()
+    );
+    for fault in [
+        "missing",
+        "duplicate",
+        "swapped",
+        "ordinal",
+        "occurrence",
+        "response",
+        "alias",
+        "kind",
+        "length",
+        "digest",
+        "binding",
+        "schema",
+    ] {
+        let mut bad = base.clone();
+        if matches!(fault, "binding" | "schema") {
+            let original = bad.source.eligible_snapshots[1].clone();
+            let mut snapshot: serde_json::Value =
+                serde_json::from_slice(&bad.blobs[&original.digest]).unwrap();
+            if fault == "schema" {
+                let other: serde_json::Value =
+                    serde_json::from_slice(&bad.blobs[&bad.source.eligible_snapshots[0].digest])
+                        .unwrap();
+                snapshot["schema"] = other["schema"].clone();
+            } else {
+                let descriptor = serde_json::json!({"request":"foreign-request","generation":null,"origin":{"status":"Unknown","reason":"offline wrong binding"}});
+                let reference = u3_put_value(&mut bad, "producing_binding", &descriptor);
+                bad.source.producing_bindings.push(NativeProducingBinding {
+                    request: "foreign-request".into(),
+                    generation: None,
+                    origin: descriptor["origin"].clone(),
+                    origin_ref: reference.clone(),
+                });
+                snapshot["binding"] = serde_json::to_value(reference).unwrap();
+            }
+            let reference = u3_put_value(&mut bad, "eligible_snapshot", &snapshot);
+            bad.source.eligible_snapshots.push(reference.clone());
+            let NativeIdentityExtension::Revision2 {
+                eligible_member_links,
+                ..
+            } = &mut bad.identity
+            else {
+                unreachable!()
+            };
+            eligible_member_links[1].identity = NativeEligibleMemberIdentity::Backed {
+                eligible_ref: reference,
+            };
+        } else {
+            let NativeIdentityExtension::Revision2 {
+                eligible_member_links: links,
+                ..
+            } = &mut bad.identity
+            else {
+                unreachable!()
+            };
+            match fault {
+                "missing" => {
+                    links.pop();
+                }
+                "duplicate" => links.push(links[1].clone()),
+                "swapped" => links.swap(0, 1),
+                "ordinal" => links[1].source.submember = Some(2),
+                "occurrence" => links[1].source.occurrence = 0,
+                "response" => links[1].source.response = 1,
+                "alias" => links[1].identity = links[0].identity.clone(),
+                "kind" | "length" | "digest" => {
+                    let NativeEligibleMemberIdentity::Backed { eligible_ref } =
+                        &mut links[1].identity
+                    else {
+                        unreachable!()
+                    };
+                    match fault {
+                        "kind" => eligible_ref.kind = "raw_block".into(),
+                        "length" => eligible_ref.byte_len += 1,
+                        _ => eligible_ref.digest = "a".repeat(64),
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+        let bad = u3_reseal_fixture(bad);
+        assert_eq!(
+            digest(&bad.bytes),
+            digest(&serde_json::to_vec(&bad.record).unwrap())
+        );
+        assert!(
+            u3_decode(&bad).is_err(),
+            "A1 hash-consistent inner fault must refuse: {fault}"
+        );
+    }
+    let mut unknown = base.clone();
+    let NativeIdentityExtension::Revision2 {
+        eligible_member_links,
+        ..
+    } = &mut unknown.identity
+    else {
+        unreachable!()
+    };
+    eligible_member_links[1].identity = NativeEligibleMemberIdentity::Unavailable {
+        reason: NativeUnavailable::UnknownIdentity,
+    };
+    unknown.source.ordered_blocks[1].eligible_unavailable =
+        Some(NativeUnavailable::UnknownIdentity);
+    let unknown = u3_reseal_fixture(unknown);
+    assert!(matches!(
+        u3_decode(&unknown).unwrap().eligible_members().unwrap()[1].identity,
+        NativeEligibleMemberIdentity::Unavailable {
+            reason: NativeUnavailable::UnknownIdentity
+        }
+    ));
+    for field in [
+        "reader_floor",
+        "policy_revision",
+        "limits_revision",
+        "schema_version",
+    ] {
+        let mut record = serde_json::to_value(&base.record).unwrap();
+        record[field] = serde_json::json!(if field == "reader_floor" { 1 } else { 99 });
+        assert!(matches!(
+            NativeCheckpoint::decode(serde_json::to_vec(&record).unwrap(), |reference| Ok(base
+                .blobs[&reference.digest]
+                .to_vec())),
+            Err(NativeUnavailable::UnsupportedVersion)
+        ));
+    }
+    for partition in ["source", "ledger"] {
+        let mut bad = base.clone();
+        let reference = if partition == "source" {
+            bad.record.source.clone()
+        } else {
+            bad.record.ledger.clone()
+        };
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&bad.blobs[&reference.digest]).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove(if partition == "source" {
+                "eligible_member_links"
+            } else {
+                "eligible_member_accounting"
+            });
+        let reference = u3_put_value(&mut bad, partition, &value);
+        if partition == "source" {
+            bad.record.source = reference;
+            bad.record.lineage.source_digest = bad.record.source.digest.clone();
+        } else {
+            bad.record.ledger = reference;
+        }
+        bad.bytes = serde_json::to_vec(&bad.record).unwrap().into();
+        assert!(
+            u3_decode(&bad).is_err(),
+            "required v2 {partition} vector cannot default"
+        );
+    }
+    let mut disguise = base.clone();
+    let mut source: serde_json::Value =
+        serde_json::from_slice(&disguise.blobs[&disguise.record.source.digest]).unwrap();
+    source["schema_version"] = serde_json::json!(1);
+    disguise.record.schema_version = 1;
+    disguise.record.reader_floor = 1;
+    disguise.record.source = u3_put_value(&mut disguise, "source", &source);
+    disguise.record.lineage.source_digest = disguise.record.source.digest.clone();
+    disguise.bytes = serde_json::to_vec(&disguise.record).unwrap().into();
+    assert!(
+        u3_decode(&disguise).is_err(),
+        "v1 cannot disguise v2 fields"
+    );
+    let (_, inputs) = u3_specs_and_inputs();
+    let lease = NativeCaptureLease::issue(
+        "mock".into(),
+        "u3-deterministic".into(),
+        1,
+        1,
+        NATIVE_SOURCE_BYTES,
+    );
+    let mut legacy = NativeCheckpoint::append(
+        None,
+        &lease,
+        &[std::sync::Arc::new(u3_reference_attempt(&[
+            "alpha__lookup",
+            "zeta__fetch",
+        ]))],
+        &[],
+    )
+    .unwrap();
+    for (key, value) in &base.blobs {
+        if matches!(
+            base.blob_kinds[key].as_str(),
+            "eligible_schema" | "eligible_snapshot"
+        ) {
+            legacy.blobs.insert(key.clone(), value.clone());
+            legacy
+                .blob_kinds
+                .insert(key.clone(), base.blob_kinds[key].clone());
+        }
+    }
+    legacy.source.eligible_snapshots = base.source.eligible_snapshots.clone();
+    legacy.source.ordered_blocks[1].eligible_ref = Some(base.source.eligible_snapshots[0].clone());
+    let legacy = u3_reseal_fixture(legacy);
+    let loaded = u3_decode(&legacy).unwrap();
+    assert!(
+        loaded
+            .eligible_members()
+            .unwrap()
+            .iter()
+            .all(|link| matches!(
+                link.identity,
+                NativeEligibleMemberIdentity::Unavailable {
+                    reason: NativeUnavailable::UnknownIdentity
+                }
+            ))
+    );
+    let mut next = u3_reference_attempt(&["alpha__lookup", "zeta__fetch"]);
+    next.attempt = 2;
+    let migrated = NativeCheckpoint::append_with_identity(
+        Some(&loaded),
+        &lease,
+        &[std::sync::Arc::new(next)],
+        &[],
+        Some(&inputs),
+    )
+    .unwrap();
+    assert_eq!(
+        &migrated.source.ordered_blocks[..2],
+        loaded.source.ordered_blocks.as_slice()
+    );
+    assert_eq!(
+        &migrated.ledger.accounting[..2],
+        loaded.ledger.accounting.as_slice()
+    );
+    assert!(
+        migrated.eligible_members().unwrap()[..2]
+            .iter()
+            .all(|link| matches!(
+                link.identity,
+                NativeEligibleMemberIdentity::Unavailable {
+                    reason: NativeUnavailable::UnknownIdentity
+                }
+            ))
+    );
+    assert!(
+        migrated.eligible_members().unwrap()[2..]
+            .iter()
+            .all(|link| matches!(link.identity, NativeEligibleMemberIdentity::Backed { .. }))
+    );
+    assert!(u3_decode(&migrated).is_ok());
+    for names in [
+        vec![],
+        vec!["alpha__lookup"],
+        vec!["alpha__lookup", "zeta__fetch"],
+        vec!["alpha__lookup", "alpha__lookup"],
+    ] {
+        let checkpoint = u3_checkpoint(&names);
+        assert_eq!(checkpoint.source.ordered_blocks.len(), 2);
+        assert_eq!(checkpoint.eligible_members().unwrap().len(), names.len());
+        assert_eq!(
+            checkpoint.record.capacity["ledger_members"],
+            4 + names.len() as u64
+        );
+        assert_eq!(
+            checkpoint.reservation().unwrap().current,
+            checkpoint.reservation().unwrap().staging
+        );
+        assert_eq!(
+            checkpoint.reservation().unwrap().staging,
+            checkpoint.reservation().unwrap().backup
+        );
+    }
+    let fit = u3_checkpoint(&vec!["alpha__lookup"; 254]);
+    assert_eq!(
+        fit.ledger.groups[0].members.len() + fit.eligible_members().unwrap().len(),
+        NATIVE_GROUP_MEMBERS as usize
+    );
+    assert!(fit.record.capacity["source_bytes"] < NATIVE_SOURCE_BYTES);
+    assert!(fit.record.capacity["ledger_bytes"] < NATIVE_LEDGER_BYTES);
+    assert!(matches!(
+        NativeCheckpoint::append_with_identity(
+            None,
+            &lease,
+            &[std::sync::Arc::new(u3_reference_attempt(&vec![
+                "alpha__lookup";
+                255
+            ]))],
+            &[],
+            Some(&inputs)
+        ),
+        Err(NativeUnavailable::Capacity)
+    ));
+    let mut ledger_fit = base.clone();
+    ledger_fit.ledger.transitions = vec![
+        serde_json::json!({});
+        (NATIVE_LEDGER_MEMBERS - base.record.capacity["ledger_members"])
+            as usize
+    ];
+    let ledger_fit = u3_reseal_fixture(ledger_fit);
+    assert_eq!(
+        ledger_fit.record.capacity["ledger_members"],
+        NATIVE_LEDGER_MEMBERS
+    );
+    assert!(u3_decode(&ledger_fit).is_ok());
+    let mut over = ledger_fit.clone();
+    over.ledger.transitions.push(serde_json::json!({}));
+    assert_eq!(over.seal_capacity(), Err(NativeUnavailable::Capacity));
+    let links = base.eligible_members().unwrap();
+    let NativeIdentityExtension::Revision2 {
+        eligible_member_accounting: witnesses,
+        ..
+    } = &base.identity
+    else {
+        unreachable!()
+    };
+    let source_delta = serde_json::to_vec(&links).unwrap().len() as u64 - 2;
+    let witness_delta = serde_json::to_vec(witnesses).unwrap().len() as u64 - 2;
+    let additional = source_delta + 2 * witness_delta;
+    for (budget, fits) in [(additional, true), (additional - 1, false)] {
+        let lease =
+            NativeCaptureLease::issue("mock".into(), "u3-deterministic".into(), 1, 1, budget);
+        let result = NativeCheckpoint::append_with_identity(
+            None,
+            &lease,
+            &[std::sync::Arc::new(u3_reference_attempt(&[
+                "alpha__lookup",
+                "zeta__fetch",
+            ]))],
+            &[],
+            Some(&inputs),
+        );
+        assert_eq!(
+            result.is_ok(),
+            fits,
+            "actual link and terminal-copy preflight must respect the issued budget"
+        );
+        if fits {
+            assert_eq!(
+                lease.charged().unwrap(),
+                additional,
+                "each encoded identity link and ledger copy is reserved before growth"
+            );
+        } else {
+            assert!(matches!(result, Err(NativeUnavailable::Capacity)));
+        }
+    }
+    let (specs, inputs) = u3_specs_and_inputs();
+    let function = |index: usize, name: &str| serde_json::json!({"type":"function","name":name,"description":specs[index].description,"parameters":specs[index].parameters});
+    for (tools, expected) in [
+        (
+            vec![function(0, "alpha__lookup"), function(1, "zeta__fetch")],
+            vec!["lookup", "fetch"],
+        ),
+        (
+            vec![
+                serde_json::json!({"type":"namespace","name":"alpha","tools":[function(0, "lookup"),function(0, "lookup")]}),
+                serde_json::json!({"type":"namespace","name":"zeta","tools":[function(1, "fetch")]}),
+            ],
+            vec!["lookup", "lookup", "fetch"],
+        ),
+        (vec![], vec![]),
+    ] {
+        let raw = serde_json::json!({"type":"tool_search_output","execution":"server","status":"completed","tools":tools});
+        let mut attempt = u3_reference_attempt(&[]);
+        attempt.blocks = vec![NativeCapturedBlock {
+            wire_index: 0,
+            arrival_ordinal: 0,
+            raw: raw.to_string(),
+            partial_json: None,
+            state: NativeBlockState::ClosedFaithful,
+        }];
+        let lease = NativeCaptureLease::issue(
+            "mock".into(),
+            "u3-response-shapes".into(),
+            1,
+            1,
+            NATIVE_SOURCE_BYTES,
+        );
+        let checkpoint = NativeCheckpoint::append_with_identity(
+            None,
+            &lease,
+            &[std::sync::Arc::new(attempt)],
+            &[],
+            Some(&inputs),
+        )
+        .unwrap();
+        let loaded = u3_decode(&checkpoint).unwrap();
+        let names: Vec<_> = loaded
+            .eligible_members()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(ordinal, link)| {
+                assert_eq!(link.source.submember, Some(ordinal as u64));
+                let NativeEligibleMemberIdentity::Backed { eligible_ref } = &link.identity else {
+                    panic!("namespace children retain exact typed identity");
+                };
+                let snapshot: NativeEligibleSnapshot =
+                    serde_json::from_slice(&loaded.blobs[&eligible_ref.digest]).unwrap();
+                snapshot.child_name
+            })
+            .collect();
+        assert_eq!(names, expected);
+        assert_eq!(
+            loaded.source.ordered_blocks.len(),
+            1,
+            "reference expansion never duplicates the raw result"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_primary_resolution_is_owned_idempotent_and_source_preserving() {
+    u5a_primary_capacity_controls();
+    use crate::persistence::native::{NativeAppendAck, NativePrimaryDecision};
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    for with_identity in [false, true] {
+        let h = TestHarness::with_config(Vec::new(), test_config());
+        let (_, inputs) = u3_specs_and_inputs();
+        let inputs = with_identity.then_some(inputs);
+        for decision in [
+            NativePrimaryDecision::Rejected,
+            NativePrimaryDecision::Committed,
+        ] {
+            let request = if decision == NativePrimaryDecision::Rejected {
+                "u5a-reject"
+            } else {
+                "u5a-commit"
+            };
+            let lease = h
+                .handle
+                .begin_native_primary_capture("mock".into(), request.into(), 1, inputs.clone())
+                .await
+                .unwrap();
+            let mut attempt = u3_reference_attempt(&["alpha__lookup", "zeta__fetch"]);
+            let items: Vec<_> = attempt
+                .blocks
+                .iter()
+                .map(
+                    |block| xai_grok_sampling_types::ConversationItem::Discovery {
+                        item: xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(
+                            serde_json::from_str(&block.raw).unwrap(),
+                        )
+                        .unwrap(),
+                    },
+                )
+                .collect();
+            attempt.view_roles = vec![Some((0, "Discovery".into())), Some((1, "Discovery".into()))];
+            attempt.view_digests = items
+                .iter()
+                .map(|item| {
+                    crate::persistence::native::history_boundary(std::slice::from_ref(item))
+                        .unwrap()
+                        .digest
+                })
+                .collect();
+            h.handle
+                .append_native_evidence(
+                    request.into(),
+                    lease.clone(),
+                    NativeEvidenceEvent::Attempt(std::sync::Arc::new(attempt)),
+                )
+                .await
+                .unwrap();
+            let source_only = h
+                .handle
+                .read_native_history()
+                .await
+                .unwrap()
+                .checkpoint
+                .unwrap();
+            assert!(
+                source_only
+                    .active
+                    .view_links
+                    .iter()
+                    .all(|entry| entry.source.producing_binding != request)
+            );
+            let foreign = NativeCaptureLease::issue(
+                "mock".into(),
+                request.into(),
+                1,
+                lease.ordinal(),
+                NATIVE_SOURCE_BYTES,
+            );
+            assert!(
+                h.handle
+                    .resolve_native_primary(foreign, decision)
+                    .await
+                    .is_err(),
+                "foreign capability cannot resolve another lease"
+            );
+            h.handle
+                .append_native_evidence(request.into(), lease.clone(), NativeEvidenceEvent::End)
+                .await
+                .unwrap();
+            lease.revoke_view();
+            if decision == NativePrimaryDecision::Committed {
+                for item in &items {
+                    h.handle.push_model_output(item.clone());
+                }
+                h.handle.get_conversation().await;
+            }
+            assert!(
+                matches!(
+                    h.handle
+                        .resolve_native_primary(lease.clone(), decision)
+                        .await
+                        .unwrap(),
+                    NativeAppendAck::Applied { .. }
+                ),
+                "normal End is not rejection authority"
+            );
+            let resolved = h
+                .handle
+                .read_native_history()
+                .await
+                .unwrap()
+                .checkpoint
+                .unwrap();
+            assert_eq!(resolved.source, source_only.source);
+            assert_eq!(resolved.identity, source_only.identity);
+            assert_eq!(resolved.record.source, source_only.record.source);
+            assert_eq!(resolved.ledger.usage, source_only.ledger.usage);
+            assert_eq!(
+                resolved.ledger.observations,
+                source_only.ledger.observations
+            );
+            assert_eq!(
+                h.handle
+                    .resolve_native_primary(lease.clone(), decision)
+                    .await
+                    .unwrap(),
+                NativeAppendAck::Unchanged
+            );
+            let opposite = if decision == NativePrimaryDecision::Committed {
+                NativePrimaryDecision::Rejected
+            } else {
+                NativePrimaryDecision::Committed
+            };
+            assert!(
+                h.handle
+                    .resolve_native_primary(lease, opposite)
+                    .await
+                    .is_err(),
+                "opposite resolution cannot rewrite a completed decision"
+            );
+            let own: Vec<_> = resolved
+                .active
+                .view_links
+                .iter()
+                .filter(|entry| entry.source.producing_binding == request)
+                .collect();
+            assert_eq!(
+                own.len(),
+                if decision == NativePrimaryDecision::Committed {
+                    2
+                } else {
+                    0
+                },
+                "only a committed primary publishes its complete intended mapping"
+            );
+            assert!(
+                resolved
+                    .ledger
+                    .groups
+                    .iter()
+                    .all(|group| group.state == "Completed")
+            );
+            u3_decode(&resolved).unwrap();
+            let mut bad = (*resolved).clone();
+            bad.ledger.accounting[0].role = "unowned-change".into();
+            assert!(
+                bad.extends(&source_only).is_err(),
+                "non-owned accounting change is rejected by the predecessor validator"
+            );
+        }
+    }
+}
+
+fn u5a_primary_capacity_controls() {
+    use crate::persistence::native::{
+        NativeCheckpoint, NativePrimaryDecision, NativePrimaryPublication, history_boundary,
+    };
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    for with_identity in [false, true] {
+        let (_, inputs) = u3_specs_and_inputs();
+        let inputs = with_identity.then_some(inputs);
+        for empty in [false, true] {
+            let mut attempt = u3_reference_attempt(&["alpha__lookup", "zeta__fetch"]);
+            if empty {
+                attempt.blocks.clear();
+            }
+            let items: Vec<_> = attempt
+                .blocks
+                .iter()
+                .map(|block| ConversationItem::Discovery {
+                    item: xai_grok_sampling_types::tool_search::ToolSearchItem::from_wire(
+                        serde_json::from_str(&block.raw).unwrap(),
+                    )
+                    .unwrap(),
+                })
+                .collect();
+            attempt.view_roles = items
+                .iter()
+                .enumerate()
+                .map(|(index, _)| Some((index as u64, "Discovery".into())))
+                .collect();
+            attempt.view_digests = items
+                .iter()
+                .map(|item| history_boundary(std::slice::from_ref(item)).unwrap().digest)
+                .collect();
+            let attempt = std::sync::Arc::new(attempt);
+            let issue = |budget| {
+                NativeCaptureLease::issue("mock".into(), "u5a-capacity".into(), 1, 1, budget)
+            };
+            let lease = issue(NATIVE_SOURCE_BYTES);
+            let legacy = NativeCheckpoint::capture_allocation_with_identity(
+                None,
+                &lease,
+                &[],
+                inputs.as_deref(),
+            )
+            .unwrap();
+            let primary =
+                NativeCheckpoint::capture_allocation_primary(None, &lease, &[], inputs.as_deref())
+                    .unwrap();
+            assert!(
+                primary.0 < legacy.0 && primary.1 >= legacy.1 && primary.2 > legacy.2,
+                "primary probe includes its real pending and both decision encodings without removing old terms"
+            );
+            let pending = NativeCheckpoint::append_with_publication(
+                None,
+                &lease,
+                std::slice::from_ref(&attempt),
+                &[],
+                inputs.as_deref(),
+                NativePrimaryPublication::Deferred,
+            )
+            .unwrap();
+            assert!(pending.active.view_links.is_empty());
+            assert!(
+                pending
+                    .ledger
+                    .groups
+                    .iter()
+                    .all(|group| group.state == "Completed")
+            );
+            assert!(pending.ledger.lifecycle.waiting_clients.is_empty());
+            assert_eq!(pending.ledger.transitions.len(), 1);
+            assert_eq!(
+                pending.ledger.transitions[0]["primary_resolution"],
+                "Pending"
+            );
+            let reserved = pending.reservation().unwrap();
+            assert!(
+                pending.record.capacity["terminal_active_bytes"] > 0
+                    && pending.record.capacity["terminal_ledger_bytes"] > 0,
+                "Pending primary reserves decision copies without LivePending groups, including zero blocks"
+            );
+            assert_eq!(reserved.current, reserved.staging);
+            assert_eq!(reserved.staging, reserved.backup);
+            assert_eq!(
+                reserved.validate().unwrap(),
+                reserved.current.bytes().unwrap() * 3 + NATIVE_CONTROL_BYTES
+            );
+            let intended = pending
+                .pending_primary(&lease, std::slice::from_ref(&attempt), &[])
+                .unwrap()
+                .unwrap();
+            if !empty {
+                let wrong = vec![ConversationItem::user("wrong committed response"); items.len()];
+                assert!(matches!(
+                    pending.resolve_primary(&intended, NativePrimaryDecision::Committed, &wrong),
+                    Err(NativeUnavailable::StaleHistory)
+                ));
+            }
+            for decision in [
+                NativePrimaryDecision::Committed,
+                NativePrimaryDecision::Rejected,
+            ] {
+                let resolved = pending
+                    .resolve_primary(
+                        &intended,
+                        decision,
+                        if decision == NativePrimaryDecision::Committed {
+                            &items
+                        } else {
+                            &[]
+                        },
+                    )
+                    .unwrap();
+                assert_eq!(resolved.source, pending.source);
+                assert_eq!(resolved.identity, pending.identity);
+                assert_eq!(resolved.record.source, pending.record.source);
+                assert_eq!(
+                    resolved.ledger.accounting.len(),
+                    pending.ledger.accounting.len()
+                );
+                assert_eq!(resolved.ledger.transitions.len(), 1);
+                u3_decode(&resolved).unwrap();
+                assert!(
+                    resolved.record.capacity["active_bytes"] <= reserved.current.active_bytes,
+                    "actual primary active partitions fit the predecision reservation"
+                );
+                assert!(
+                    resolved.record.capacity["ledger_bytes"] <= reserved.current.ledger_bytes,
+                    "actual primary ledger partitions fit the predecision reservation"
+                );
+            }
+            let exact_charge = lease.charged().unwrap();
+            assert!(exact_charge > 0);
+            for (budget, fits) in [(exact_charge, true), (exact_charge - 1, false)] {
+                let bounded = issue(budget);
+                let result = NativeCheckpoint::append_with_publication(
+                    None,
+                    &bounded,
+                    std::slice::from_ref(&attempt),
+                    &[],
+                    inputs.as_deref(),
+                    NativePrimaryPublication::Deferred,
+                );
+                assert_eq!(
+                    result.is_ok(),
+                    fits,
+                    "actual primary control and A1 member preflight has an exact last-fit boundary"
+                );
+                if !fits {
+                    assert!(matches!(result, Err(NativeUnavailable::Capacity)));
+                }
+            }
+            if empty {
+                let mut full = pending.clone();
+                let remaining = NATIVE_LEDGER_MEMBERS - full.record.capacity["ledger_members"];
+                full.ledger.transitions.extend(std::iter::repeat_n(
+                    serde_json::json!({}),
+                    remaining as usize,
+                ));
+                let full = u3_reseal_fixture(full);
+                assert_eq!(
+                    full.record.capacity["ledger_members"],
+                    NATIVE_LEDGER_MEMBERS
+                );
+                assert!(full.record.capacity["ledger_bytes"] < NATIVE_LEDGER_BYTES);
+                u3_decode(&full).unwrap();
+                let mut over = full;
+                over.ledger.transitions.push(serde_json::json!({}));
+                assert_eq!(
+                    over.seal_capacity(),
+                    Err(NativeUnavailable::Capacity),
+                    "primary-resolution terminal member is charged at the real ledger-member ceiling"
+                );
+            }
+        }
+    }
+}
