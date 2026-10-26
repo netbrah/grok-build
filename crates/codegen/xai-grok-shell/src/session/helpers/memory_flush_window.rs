@@ -42,6 +42,13 @@ pub fn select_flush_window(
         }
         start = snapped;
     }
+    while start > 0
+        && !messages
+            .get(start)
+            .is_some_and(|m| matches!(m, ConversationItem::User(_)))
+    {
+        start -= 1;
+    }
     messages.into_iter().skip(start).collect()
 }
 
@@ -59,7 +66,7 @@ mod tests {
         let window = select_flush_window(messages, 20);
 
         assert_eq!(window.len(), 21);
-        assert!(matches!(window[0], ConversationItem::User(_)));
+        assert!(matches!(window.first(), Some(ConversationItem::User(_))));
     }
 
     #[test]
@@ -90,7 +97,7 @@ mod tests {
         let window = select_flush_window(messages, 20);
 
         assert_eq!(window.len(), 2);
-        assert!(matches!(window[0], ConversationItem::User(_)));
+        assert!(matches!(window.first(), Some(ConversationItem::User(_))));
     }
 
     #[test]
@@ -101,13 +108,16 @@ mod tests {
         let projected =
             xai_chat_state::compaction_utils::ModelRequestHistory::from_raw(window).into_items();
 
-        assert_eq!(projected[0].text_content(), human.text_content());
         assert_eq!(
-            projected[1].text_content(),
-            format!(
+            projected.first().map(|i| i.text_content()),
+            Some(human.text_content())
+        );
+        assert_eq!(
+            projected.get(1).map(|i| i.text_content()),
+            Some(format!(
                 "{}\nagent context",
                 xai_chat_state::compaction_utils::AGENT_MESSAGE_MODEL_LABEL
-            )
+            ))
         );
     }
 

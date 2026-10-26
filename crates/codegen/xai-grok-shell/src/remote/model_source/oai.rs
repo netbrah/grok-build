@@ -1,6 +1,6 @@
 //! Reads the model list from an OpenAI-compatible `/v1/models`.
 use crate::agent::config::EndpointsConfig;
-use crate::agent::remote_config::ModelFetchAuth;
+use crate::agent::remote_config::{ModelFetchAuth, external_provider_auth};
 use crate::remote::client::{
     BackendError, BakedCapRow, FetchModelsResult, baked_cap_rows, parse_model_group_info,
     parse_remote_model_value,
@@ -104,7 +104,32 @@ impl ModelSource for OaiModelSource {
     fn fetch(&self, auth: Option<&GrokAuth>) -> Result<FetchModelsResult, BackendError> {
         let client = crate::http::shared_startup_blocking_client();
         tracing::info!("Fetching models from {}", self.endpoint.url);
-        let request = self.with_auth(client.get(&self.endpoint.url), auth)?;
+        let mut request = client.get(&self.endpoint.url);
+        match self.endpoint.auth {
+            EndpointAuth::ApiKey => {
+                let api_key = list_fetch_api_key(auth)?;
+                request = request.header("Authorization", format!("Bearer {}", api_key));
+            }
+            EndpointAuth::Session => {
+                let auth = auth
+                    .filter(|_| ActiveAuthBackend::default().is_xai_authority())
+                    .ok_or_else(|| {
+                        BackendError::Auth("No auth credentials for cli-chat-proxy".into())
+                    })?;
+                request = request
+                    .header("Authorization", format!("Bearer {}", &auth.key))
+                    .header("X-XAI-Token-Auth", "xai-grok-cli")
+                    .header("x-userid", &auth.user_id)
+                    .header("x-grok-client-version", xai_grok_version::VERSION)
+                    .header(
+                        crate::http::CLIENT_MODE_HEADER,
+                        crate::http::process_client_mode(),
+                    );
+                if let Some(email) = &auth.email {
+                    request = request.header("x-email", email);
+                }
+            }
+        }
         let response = request.send()?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -171,6 +196,18 @@ impl ModelSource for OaiModelSource {
             }
         }
     }
+}
+/// A grok login session token must not reach a custom models endpoint.
+fn list_fetch_api_key(auth: Option<&GrokAuth>) -> Result<String, BackendError> {
+    crate::agent::auth_method::read_xai_api_key_env()
+        .or_else(|_| {
+            external_provider_auth(auth)
+                .map(|provider| provider.key.clone())
+                .ok_or(std::env::VarError::NotPresent)
+        })
+        .map_err(|_| {
+            BackendError::Auth("No API key for custom models endpoint. Set XAI_API_KEY.".into())
+        })
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EndpointAuth {
@@ -249,5 +286,44 @@ mod tests {
         let ep = ListModelsEndpoint::from_endpoints(&custom, ModelFetchAuth::Session);
         assert_eq!(ep.url, "https://models.acme.com/v1/models");
         assert_eq!(ep.auth, EndpointAuth::ApiKey);
+    }
+    #[test]
+    #[serial_test::serial]
+    fn custom_endpoint_list_fetch_never_sends_the_session_token() {
+        use xai_grok_test_support::EnvGuard;
+        let _no_key = EnvGuard::unset("XAI_API_KEY");
+        let _no_legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+        let cfg = EndpointsConfig::from_config_value(
+            &toml::from_str(
+                r#"[endpoints]
+                    models_base_url = "https://models.acme.com/v1""#,
+            )
+            .expect("parse the custom-endpoint toml"),
+        );
+        let source = OaiModelSource::new(&cfg, ModelFetchAuth::CustomEndpoint);
+        let err = match source.fetch(Some(&GrokAuth::test_default())) {
+            Ok(_) => panic!("fetch must fail when no XAI_API_KEY is set"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(&err, BackendError::Auth(msg) if msg.contains("Set XAI_API_KEY")),
+            "expected the Set XAI_API_KEY auth error, got: {err:?}",
+        );
+    }
+    #[test]
+    #[serial_test::serial]
+    fn custom_endpoint_list_fetch_sends_an_external_provider_token_with_any_issuer() {
+        use xai_grok_test_support::EnvGuard;
+        let _no_key = EnvGuard::unset("XAI_API_KEY");
+        let _no_legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+        let xai_issued_external = GrokAuth {
+            key: "provider-token".to_owned(),
+            auth_mode: xai_grok_login::AuthMode::External,
+            oidc_issuer: Some(xai_grok_login::xai_oauth2_issuer().to_owned()),
+            ..GrokAuth::test_default()
+        };
+        let bearer = list_fetch_api_key(Some(&xai_issued_external))
+            .expect("an external provider token authenticates the list fetch");
+        assert_eq!("provider-token", bearer);
     }
 }

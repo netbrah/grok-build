@@ -10,11 +10,14 @@
 //! inherits that property naturally on stable Rust.
 
 pub(crate) mod active_message;
+mod agent_quotas;
+mod agent_targets;
 mod completion;
 mod graph;
 mod native;
 mod query;
 mod queue;
+mod root_targets;
 mod spawn;
 mod wake;
 
@@ -24,29 +27,31 @@ use std::sync::Arc;
 use futures::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::{mpsc, oneshot};
+use xai_tool_types::HandedOffSubagentState;
 
 use super::active_message::ActiveMessageIngress;
 use super::admission::Admission;
+use super::coordinator_state::PendingDisposition;
 use super::coordinator_state::{
     ActiveChild, AgentMailboxWaiter, BlockingWaiter, BufferedCompletion, ChildRecord,
-    CompletedChild, DisplacedCompletedChild, InternalEvent, ListRequest, PendingChild,
-    ProgressFuture, ProgressTarget, ReplyFuture, TaggedFuture, active_summary,
-    background_at_deadline, background_if_caller_gone, completed_snapshot, sleep_until,
-    workflow_outstanding,
+    CompletedChild, DisplacedCompletedChild, ForegroundChild, InternalEvent, ListRequest,
+    PendingChild, ProgressFuture, ProgressTarget, ReplyFuture, TaggedFuture, active_summary,
+    background_at_deadline, background_if_caller_gone, completed_snapshot, hand_off_to_background,
+    sleep_until, workflow_outstanding,
 };
 use super::types::{
     ActiveAgentMessageOutcome, AgentAddress, AgentMailboxIdentity, AgentMailboxMessage,
-    AgentMessageDeliveryStatus, AgentMessageSendOutput, AgentRosterEntry, ListAgentsOutput,
-    SpawnedSubagentRef,
-    SubagentCancelOutcome, SubagentCancelTarget, SubagentDescribeOutcome, SubagentEvent,
-    SubagentOutstandingReply, SubagentRegistryCounts, SubagentRequest, SubagentResult,
-    SubagentResumeLookup, SubagentResumeSource, SubagentValidateTypeOutcome,
-    WaitAgentMessagesOutput,
+    AgentMessageDeliveryStatus, AgentMessageSendOutput, AgentRosterEntry,
+    HandedOffForegroundSubagent, ListAgentsOutput, SpawnedSubagentRef, SubagentCancelOutcome,
+    SubagentCancelTarget, SubagentDescribeOutcome, SubagentEvent, SubagentOutstandingReply,
+    SubagentRegistryCounts, SubagentRequest, SubagentResult, SubagentResumeLookup,
+    SubagentResumeSource, SubagentValidateTypeOutcome, WaitAgentMessagesOutput,
 };
-use active_message::{
-    ActiveChildGeneration, ActiveMessageFuture, ActiveMessageLifecycle, SpawnReadyMessages,
-};
+pub use active_message::ActiveChildGeneration;
+use active_message::{ActiveMessageFuture, ActiveMessageLifecycle, SpawnReadyMessages};
+use agent_quotas::AgentMessageQuotas;
 use graph::SpawnGraph;
+use root_targets::{RootTargetKey, RootTargetLifecycle};
 
 pub use super::coordinator_state::{
     ACTIVE_MESSAGE_ADMISSION_TIMEOUT, ACTIVE_MESSAGE_FINALIZATION_TIMEOUT,
@@ -57,11 +62,13 @@ pub use super::coordinator_state::{
     SubagentLimitDecision, SubagentLimitNotice, SubagentLimitSink, SubagentProgress, WakeOrigin,
 };
 use queue::{QUEUED_REAP_INTERVAL, QueuedCaller, SpawnQueue, StartOrigin};
+use wake::PendingWake;
 
 /// Channel-owned subagent lifecycle actor.
 pub struct SubagentCoordinator<R: ChildRunner> {
     commands: mpsc::UnboundedReceiver<SubagentEvent>,
     active_message_ingress: Option<mpsc::UnboundedReceiver<ActiveMessageIngress>>,
+    agent_message_sender_factory: Option<super::agent_message_sender::AgentMessageSenderFactory>,
     internal_tx: mpsc::UnboundedSender<InternalEvent<R::Control>>,
     internal_rx: mpsc::UnboundedReceiver<InternalEvent<R::Control>>,
     terminal_published_tx: mpsc::UnboundedSender<String>,
@@ -81,7 +88,9 @@ pub struct SubagentCoordinator<R: ChildRunner> {
     active: HashMap<String, ActiveChild<R::Control>>,
     completed: HashMap<String, CompletedChild>,
     completed_order: VecDeque<String>,
-    pending_wakes: HashMap<String, Vec<ActiveMessageIngress>>,
+    agent_message_quotas: AgentMessageQuotas,
+    root_active_messages: HashMap<RootTargetKey, RootTargetLifecycle<R::RootControl>>,
+    pending_wakes: HashMap<String, Vec<PendingWake>>,
     next_completion_age: u64,
     graph: SpawnGraph,
     waiters: HashMap<String, Vec<BlockingWaiter>>,
@@ -136,6 +145,7 @@ pub struct SubagentCoordinatorReceiver {
     pub(crate) active_messages: mpsc::UnboundedReceiver<ActiveMessageIngress>,
     active_message_permits: Arc<tokio::sync::Semaphore>,
     active_message_capacity: usize,
+    agent_message_sender_factory: super::agent_message_sender::AgentMessageSenderFactory,
 }
 
 impl SubagentCoordinatorReceiver {
@@ -150,6 +160,11 @@ impl SubagentCoordinatorReceiver {
         Self,
     ) {
         Self::paired_with_capacity(MAX_ACTIVE_MESSAGE_ADMISSIONS)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_message_available_permits(&self) -> usize {
+        self.active_message_permits.available_permits()
     }
 
     #[cfg(test)]
@@ -172,6 +187,12 @@ impl SubagentCoordinatorReceiver {
         let (active_message_tx, active_messages) = mpsc::unbounded_channel();
         let active_message_capacity = capacity.max(1);
         let active_message_permits = Arc::new(tokio::sync::Semaphore::new(active_message_capacity));
+        let agent_message_sender_factory =
+            super::agent_message_sender::AgentMessageSenderFactory::new(
+                active_message_tx.downgrade(),
+                Arc::clone(&active_message_permits),
+                active_message_capacity,
+            );
         (
             crate::implementations::grok_build::task::backend::SubagentCoordinatorSender::from_paired_channels(
                 tx,
@@ -184,6 +205,7 @@ impl SubagentCoordinatorReceiver {
                 active_messages,
                 active_message_permits,
                 active_message_capacity,
+                agent_message_sender_factory,
             },
         )
     }
@@ -233,7 +255,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         runner: R,
         config: CoordinatorConfig,
     ) -> Self {
-        Self::from_receivers(commands, None, None, 0, runner, config)
+        Self::from_receivers(commands, None, None, 0, None, runner, config)
     }
 
     /// Build a coordinator from the receiver paired by [`Self::channel`].
@@ -247,6 +269,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             Some(receiver.active_messages),
             Some(receiver.active_message_permits),
             receiver.active_message_capacity,
+            Some(receiver.agent_message_sender_factory),
             runner,
             config,
         )
@@ -257,6 +280,9 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         active_message_ingress: Option<mpsc::UnboundedReceiver<ActiveMessageIngress>>,
         active_message_permits: Option<Arc<tokio::sync::Semaphore>>,
         active_message_capacity: usize,
+        agent_message_sender_factory: Option<
+            super::agent_message_sender::AgentMessageSenderFactory,
+        >,
         runner: R,
         config: CoordinatorConfig,
     ) -> Self {
@@ -265,6 +291,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         Self {
             commands,
             active_message_ingress,
+            agent_message_sender_factory,
             internal_tx,
             internal_rx,
             terminal_published_tx,
@@ -279,6 +306,8 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             active: HashMap::new(),
             completed: HashMap::new(),
             completed_order: VecDeque::new(),
+            agent_message_quotas: AgentMessageQuotas::default(),
+            root_active_messages: HashMap::new(),
             pending_wakes: HashMap::new(),
             next_completion_age: 0,
             graph: SpawnGraph::default(),
@@ -626,6 +655,11 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 refs.sort_by(|a, b| a.subagent_id.cmp(&b.subagent_id));
                 let _ = request.respond_to.send(refs);
             }
+            SubagentEvent::HandOffForeground(request) => {
+                let handed_off =
+                    self.hand_off_prompt_foreground(&request.parent_session_id, &request.prompt_id);
+                let _ = request.respond_to.send(handed_off);
+            }
             SubagentEvent::ValidateType(request) => {
                 self.validations.push(ReplyFuture {
                     future: Box::pin(
@@ -669,6 +703,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             self.completed.remove(&id);
             self.reject_pending_wakes_for_id(&id);
             self.graph.remove(&id);
+            self.clear_target_incarnation(&id);
         }
     }
 
@@ -682,16 +717,26 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             self.reject_pending_wakes_for_id(&subagent_id);
             return;
         }
-        for ingress in self.pending_wakes.remove(&subagent_id).unwrap_or_default() {
-            self.handle_send_active_message(ingress);
+        for pending in self.pending_wakes.remove(&subagent_id).unwrap_or_default() {
+            let (decision, _) = self.resolve_active_message_target(
+                &pending.ingress.request,
+                Some(&pending.incarnation),
+            );
+            self.handle_resolved_send(
+                decision,
+                pending.route,
+                pending.quota_admission,
+                pending.ingress,
+            );
         }
     }
 
     fn reject_pending_wakes_for_id(&mut self, subagent_id: &str) -> usize {
         let pending = self.pending_wakes.remove(subagent_id).unwrap_or_default();
         let count = pending.len();
-        for ingress in pending {
-            let _ = ingress
+        for pending in pending {
+            let _ = pending
+                .ingress
                 .request
                 .respond_to
                 .send(ActiveAgentMessageOutcome::NotActiveOrFinalizing);
@@ -1059,6 +1104,16 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                     });
                 }
                 let promoted_id = subagent_id.clone();
+                #[cfg(not(test))]
+                debug_assert_eq!(child_session_id, pending.request.id);
+                if child_session_id != pending.request.id {
+                    tracing::warn!(
+                        subagent_id = %pending.request.id,
+                        child_session_id,
+                        "child session identity diverged; disabling agent messaging",
+                    );
+                }
+                let is_wake_promotion = pending.wake_of.is_some();
                 let deferred_wake = defer_admission.then_some(pending.wake_of).flatten();
                 self.active.insert(
                     subagent_id,
@@ -1071,13 +1126,15 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                         handle_only: pending.handle_only,
                         definition_background,
                         explicitly_killed: pending.explicitly_killed,
+                        disposition: pending.disposition,
                         child_session_id,
                         persona,
                         resumed_from,
                         child_cwd,
                         worktree_path,
                         effective_model_id,
-                        generation: ActiveChildGeneration::new(),
+                        attempt_id: pending.attempt_id,
+                        generation: pending.generation,
                         agent_address: pending.agent_address,
                         spawner_session_id: pending.spawner_session_id,
                         active_messages: ActiveMessageLifecycle::default(),
@@ -1085,6 +1142,13 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                         control,
                     },
                 );
+                if is_wake_promotion {
+                    if !defer_admission {
+                        self.activate_wake_incarnation(&promoted_id);
+                    }
+                } else {
+                    let _ = self.current_target_incarnation(&promoted_id);
+                }
                 let _ = respond_to.send(true);
                 if !defer_admission {
                     self.admit_spawn_ready_messages(&promoted_id);
@@ -1110,6 +1174,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                     return;
                 };
                 if is_committed {
+                    self.activate_wake_incarnation(&subagent_id);
                     self.active.insert(subagent_id.clone(), child);
                     self.admit_spawn_ready_messages(&subagent_id);
                 } else {
@@ -1129,6 +1194,29 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             } => self.handle_active_message_finalizing(subagent_id, respond_to),
             InternalEvent::DropSpawnerClaim { subagent_id } => {
                 self.graph.drop_advertise(&subagent_id);
+            }
+            InternalEvent::ResolvedSubagentType {
+                subagent_id,
+                subagent_type,
+                respond_to,
+            } => {
+                let updated = if let Some(child) = self.pending.get_mut(&subagent_id) {
+                    child.request.subagent_type = subagent_type;
+                    true
+                } else if let Some(child) = self.active.get_mut(&subagent_id) {
+                    child.request.subagent_type = subagent_type;
+                    true
+                } else if let Some(queued) = self
+                    .queued
+                    .iter_mut()
+                    .find(|queued| queued.request.id == subagent_id)
+                {
+                    queued.request.subagent_type = subagent_type;
+                    true
+                } else {
+                    false
+                };
+                let _ = respond_to.send(updated);
             }
             InternalEvent::ResumeSource {
                 source_id,
@@ -1206,6 +1294,14 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         // graph advertise target (main's lineage source of truth).
         let spawner_session_id =
             spawner_session_id.or_else(|| self.graph.advertise_target(&id).map(str::to_owned));
+        let identity = super::agent_message_sender::AgentMessageSender::mint_for_child(
+            self.agent_message_sender_factory.as_ref(),
+            &id,
+            !request.owner.is_workflow() && self.runner.supports_agent_message_sender(),
+        );
+        let attempt_id = identity.attempt_id;
+        let generation = identity.generation;
+        let agent_message_sender = identity.sender;
         self.pending.insert(
             id.clone(),
             PendingChild {
@@ -1216,7 +1312,10 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 foreground_deadline,
                 handle_only,
                 explicitly_killed: false,
+                disposition: PendingDisposition::Live,
                 launched: true,
+                attempt_id: attempt_id.clone(),
+                generation,
                 agent_address: agent_address.clone(),
                 spawner_session_id: spawner_session_id.clone(),
                 wake_of,
@@ -1229,7 +1328,6 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         // Computed after the pending insert, so a non-workflow spawn counts
         // itself; max over launches gives a session's peak concurrency.
         let session_running = self.session_running_count(&request.parent_session_id);
-        let attempt_id = xai_message_delivery_core::AttemptId::mint(uuid::Uuid::new_v4().as_u128());
         let reporter = ChildReporter {
             subagent_id: id.clone(),
             tx: self.internal_tx.clone(),
@@ -1242,6 +1340,8 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                     cancellation,
                     reporter,
                     attempt_id,
+                    generation,
+                    agent_message_sender,
                     wake_origin,
                     queued_for,
                     session_running,
@@ -1415,7 +1515,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         self.finish_child(id, output);
     }
 
-    fn finish_child(&mut self, id: &str, output: ChildRunOutput<R::CompletionData>) {
+    fn finish_child(&mut self, id: &str, mut output: ChildRunOutput<R::CompletionData>) {
         // Child is leaving the registry: human parked sends must not retry.
         self.reject_spawn_ready_ids(&[id.to_owned()]);
         let mut record = if let Some(child) = self.active.remove(id) {
@@ -1426,12 +1526,20 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             return;
         };
 
-        if let Some(displaced) = record.take_failed_pre_start_wake(output.result.success) {
+        let explicitly_killed = record.explicitly_killed();
+        let (was_cancelled, disposition) = match &record {
+            ChildRecord::Pending(child) => (child.cancellation.is_cancelled(), child.disposition),
+            ChildRecord::Active(child) => (child.cancellation.is_cancelled(), child.disposition),
+        };
+        if let Some(mut displaced) = record.take_failed_pre_start_wake(output.result.success) {
             tracing::warn!(
                 subagent_id = %id,
                 error = ?output.result.error,
                 "subagent wake failed before start; keeping prior record",
             );
+            // Host rejections also cancel the token, so only a recorded user or owner cancel counts.
+            displaced.completed.wake_eligible &=
+                !explicitly_killed && disposition != PendingDisposition::Cancelled;
             let parent_session_id = displaced.completed.request.parent_session_id.clone();
             self.restore_displaced_completion(displaced);
             self.running_count_changed();
@@ -1459,7 +1567,8 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 "background subagent failed after start",
             );
         }
-        let explicitly_killed = record.explicitly_killed();
+        self.clear_message_sender_attempt(id, &record);
+        self.complete_target_incarnation(id);
         let (
             started_at,
             child_session_id,
@@ -1501,6 +1610,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             ),
         };
 
+        output.result.subagent_type = request.subagent_type.clone();
         let persisted_output_ref = self.runner.persisted_output_ref(&output.completion_data);
         let completion_age = self.next_completion_age;
         self.next_completion_age = self
@@ -1523,6 +1633,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
             effective_model_id,
             agent_address,
             spawner_session_id,
+            wake_eligible: !explicitly_killed && !was_cancelled && !output.result.cancelled,
             result: output.result.clone(),
         };
         let snapshot = completed_snapshot(&completed, None);
@@ -1602,12 +1713,14 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         }
         if let Some(child) = self.active.get_mut(id) {
             child.explicitly_killed |= explicit;
+            child.disposition = PendingDisposition::Cancelled;
             child.cancellation.cancel();
             child.control.cancel();
             return SubagentCancelOutcome::Cancelled;
         }
         if let Some(child) = self.pending.get_mut(id) {
             child.explicitly_killed |= explicit;
+            child.disposition = PendingDisposition::Cancelled;
             child.cancellation.cancel();
             self.reject_spawn_ready_ids(&[id.to_owned()]);
             return SubagentCancelOutcome::Cancelled;
@@ -1624,19 +1737,21 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
     }
 
     fn cancel_parent_prompt(&mut self, parent_prompt_id: &str, parent_session_id: Option<&str>) {
-        for child in self.active.values() {
+        for child in self.active.values_mut() {
             if child.request.parent_prompt_id.as_deref() == Some(parent_prompt_id)
                 && belongs_to_session(&child.request, parent_session_id)
             {
+                child.disposition = PendingDisposition::Cancelled;
                 child.cancellation.cancel();
                 child.control.cancel();
             }
         }
         let mut doomed = Vec::new();
-        for child in self.pending.values() {
+        for child in self.pending.values_mut() {
             if child.request.parent_prompt_id.as_deref() == Some(parent_prompt_id)
                 && belongs_to_session(&child.request, parent_session_id)
             {
+                child.disposition = PendingDisposition::Cancelled;
                 child.cancellation.cancel();
                 doomed.push(child.request.id.clone());
             }
@@ -1648,6 +1763,59 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         });
     }
 
+    fn hand_off_prompt_foreground(
+        &mut self,
+        parent_session_id: &str,
+        prompt_id: &str,
+    ) -> Vec<HandedOffForegroundSubagent> {
+        fn hand_off_children<'a, C: ForegroundChild + 'a>(
+            children: impl Iterator<Item = &'a mut C>,
+            parent_session_id: &str,
+            prompt_id: &str,
+        ) -> Vec<HandedOffForegroundSubagent> {
+            children
+                .filter_map(|child| {
+                    let record = hand_off_record(
+                        child.request(),
+                        parent_session_id,
+                        prompt_id,
+                        HandedOffSubagentState::Running,
+                    )?;
+                    hand_off_to_background(child);
+                    Some(record)
+                })
+                .collect()
+        }
+        let mut handed_off =
+            hand_off_children(self.pending.values_mut(), parent_session_id, prompt_id);
+        handed_off.extend(hand_off_children(
+            self.active.values_mut(),
+            parent_session_id,
+            prompt_id,
+        ));
+        for queued in self.queued.iter_mut() {
+            if let Some(record) = hand_off_record(
+                &queued.request,
+                parent_session_id,
+                prompt_id,
+                HandedOffSubagentState::Queued,
+            ) {
+                queued.caller = QueuedCaller::Backgrounded;
+                handed_off.push(record);
+            }
+        }
+        handed_off.extend(self.completed.values().filter_map(|child| {
+            let state = if child.result.cancelled {
+                HandedOffSubagentState::Cancelled
+            } else {
+                HandedOffSubagentState::Finished
+            };
+            hand_off_record(&child.request, parent_session_id, prompt_id, state)
+        }));
+        handed_off.sort_by(|a, b| a.subagent_id.cmp(&b.subagent_id));
+        handed_off
+    }
+
     fn teardown_session_children(&mut self, parent_session_id: &str) {
         let mut cancelled = self.reject_pending_wakes_for_session(parent_session_id);
         for child in self.active.values_mut() {
@@ -1655,6 +1823,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                 // Parent is gone: do not rebuffer this completion for a later
                 // resume of the same session id.
                 child.request.surface_completion = false;
+                child.disposition = PendingDisposition::Cancelled;
                 child.cancellation.cancel();
                 child.control.cancel();
                 cancelled += 1;
@@ -1664,6 +1833,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         for child in self.pending.values_mut() {
             if child.request.parent_session_id == parent_session_id {
                 child.request.surface_completion = false;
+                child.disposition = PendingDisposition::Cancelled;
                 child.cancellation.cancel();
                 doomed.push(child.request.id.clone());
                 cancelled += 1;
@@ -1752,19 +1922,21 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         };
         self.spawn_blocked_sessions
             .insert(parent_session_id.to_owned());
-        for child in self.active.values() {
+        for child in self.active.values_mut() {
             if child.request.parent_session_id == parent_session_id
                 && !child.request.owner.is_workflow()
             {
+                child.disposition = PendingDisposition::Cancelled;
                 child.cancellation.cancel();
                 child.control.cancel();
             }
         }
         let mut doomed = Vec::new();
-        for child in self.pending.values() {
+        for child in self.pending.values_mut() {
             if child.request.parent_session_id == parent_session_id
                 && !child.request.owner.is_workflow()
             {
+                child.disposition = PendingDisposition::Cancelled;
                 child.cancellation.cancel();
                 doomed.push(child.request.id.clone());
             }
@@ -1969,7 +2141,10 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
         session_id.is_none_or(|id| self.graph.is_reachable_from(child_id, id))
     }
 
-    fn active_child_for_session(&self, session_id: &str) -> Option<&ActiveChild<R::Control>> {
+    pub(super) fn active_child_for_session(
+        &self,
+        session_id: &str,
+    ) -> Option<&ActiveChild<R::Control>> {
         self.active
             .values()
             .find(|child| child.child_session_id == session_id)
@@ -1985,6 +2160,24 @@ fn request_in_scope(request: &SubagentRequest, parent_session_id: &str, prompt_i
     request.parent_session_id == parent_session_id
         && request.parent_prompt_id.as_deref() == Some(prompt_id)
         && !request.owner.is_workflow()
+}
+
+fn hand_off_record(
+    request: &SubagentRequest,
+    parent_session_id: &str,
+    prompt_id: &str,
+    state: HandedOffSubagentState,
+) -> Option<HandedOffForegroundSubagent> {
+    if request.run_in_background || !request_in_scope(request, parent_session_id, prompt_id) {
+        return None;
+    }
+    let tool_call_id = request.tool_call_id.clone()?;
+    Some(HandedOffForegroundSubagent {
+        subagent_id: request.id.clone(),
+        tool_call_id,
+        description: request.description.clone(),
+        state,
+    })
 }
 
 /// Ready as soon as any still-foreground caller drops its spawn-reply receiver. The actor `select!` uses this so an
@@ -2020,8 +2213,9 @@ impl<R: ChildRunner> Drop for SubagentCoordinator<R> {
         // host completion callbacks — off-limits from a destructor (the
         // host's storage may already be tearing down).
         self.resolve_queued_at_drop();
-        for ingress in self.pending_wakes.drain().flat_map(|(_, pending)| pending) {
-            let _ = ingress
+        for pending in self.pending_wakes.drain().flat_map(|(_, pending)| pending) {
+            let _ = pending
+                .ingress
                 .request
                 .respond_to
                 .send(ActiveAgentMessageOutcome::NotActiveOrFinalizing);

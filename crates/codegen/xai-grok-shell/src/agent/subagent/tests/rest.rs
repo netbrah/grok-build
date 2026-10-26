@@ -5,6 +5,7 @@ use crate::session::storage::UnfinishedSubagent;
 use crate::test_support::lsp_runtime::{ctx_with_toggle, test_gateway};
 use crate::upload::trace::SubagentSpawnedRef;
 use xai_grok_sampling_types::ToolExposure;
+use xai_grok_sampling_types::SyntheticReason;
 use xai_grok_tools::implementations::grok_build::task::backend::ChannelBackend;
 #[test]
 fn normalize_forked_context_strips_project_layout() {
@@ -18,7 +19,7 @@ fn normalize_forked_context_strips_project_layout() {
     let (conv, _) = xai_grok_subagent_resolution::context::normalize_forked_context(
         items,
     );
-    if let ConversationItem::User(u) = &conv[1] {
+    if let Some(ConversationItem::User(u)) = conv.get(1) {
         let text = u
             .content
             .iter()
@@ -51,7 +52,7 @@ fn normalize_forked_context_consecutive_users() {
         items,
     );
     assert_eq!(prefix_len, 2);
-    if let ConversationItem::User(u) = &conv[1] {
+    if let Some(ConversationItem::User(u)) = conv.get(1) {
         let text = u
             .content
             .iter()
@@ -94,18 +95,18 @@ fn end_to_end_normalized_conversation_shape() {
     );
     assert_eq!(prefix_len, 2);
     assert_eq!(conv.len(), 2);
-    if let ConversationItem::System(ref mut sys) = conv[0] {
+    if let Some(ConversationItem::System(sys)) = conv.first_mut() {
         sys.content = "child system prompt with tool guidance".into();
     } else {
         panic!("expected System at position 0");
     }
-    if let ConversationItem::System(ref sys) = conv[0] {
+    if let Some(ConversationItem::System(sys)) = conv.first() {
         assert_eq!(
                 sys.content.as_ref(),
                 "child system prompt with tool guidance"
             );
     }
-    if let ConversationItem::User(ref u) = conv[1] {
+    if let Some(ConversationItem::User(u)) = conv.get(1) {
         let text = u
             .content
             .iter()
@@ -124,10 +125,10 @@ fn end_to_end_normalized_conversation_shape() {
     let task = "implement bubble sort in Rust";
     conv.push(ConversationItem::user(task));
     assert_eq!(conv.len(), 3);
-    assert!(matches!(conv[0], ConversationItem::System(_)));
-    assert!(matches!(conv[1], ConversationItem::User(_)));
-    assert!(matches!(conv[2], ConversationItem::User(_)));
-    if let ConversationItem::User(ref u) = conv[2] {
+    assert!(matches!(conv.first(), Some(ConversationItem::System(_))));
+    assert!(matches!(conv.get(1), Some(ConversationItem::User(_))));
+    assert!(matches!(conv.get(2), Some(ConversationItem::User(_))));
+    if let Some(ConversationItem::User(u)) = conv.get(2) {
         let text = u
             .content
             .iter()
@@ -155,7 +156,7 @@ fn cached_prompt_text_is_task_not_background() {
     let (conv, _) = xai_grok_subagent_resolution::context::normalize_forked_context(
         parent_conv,
     );
-    let background_text = if let ConversationItem::User(ref u) = conv[1] {
+    let background_text = if let Some(ConversationItem::User(u)) = conv.get(1) {
         u.content
             .iter()
             .filter_map(|p| match p {
@@ -235,7 +236,7 @@ fn compaction_preserves_inherited_prefix() {
     );
     assert_eq!(prefix_len, 2);
     let mut full_conv = conv;
-    if let ConversationItem::System(ref mut sys) = full_conv[0] {
+    if let Some(ConversationItem::System(sys)) = full_conv.first_mut() {
         sys.content = "child system prompt".into();
     }
     full_conv.push(ConversationItem::user("do the thing"));
@@ -245,7 +246,10 @@ fn compaction_preserves_inherited_prefix() {
             ConversationItem::user("user prefix"),
             ConversationItem::user("<compacted_summary>summary of work</compacted_summary>"),
         ];
-    let inherited: Vec<_> = full_conv[..prefix_len].to_vec();
+    let Some(prefix) = full_conv.get(..prefix_len) else {
+        panic!("prefix_len {prefix_len} exceeds conversation len {}", full_conv.len());
+    };
+    let inherited: Vec<_> = prefix.to_vec();
     let child_items: Vec<_> = compacted_history
         .into_iter()
         .skip_while(|i| matches!(i, ConversationItem::System(_)))
@@ -253,12 +257,12 @@ fn compaction_preserves_inherited_prefix() {
     let mut preserved = inherited;
     preserved.extend(child_items);
     assert_eq!(preserved.len(), 4);
-    if let ConversationItem::System(ref sys) = preserved[0] {
+    if let Some(ConversationItem::System(sys)) = preserved.first() {
         assert_eq!(sys.content.as_ref(), "child system prompt");
     } else {
         panic!("expected System at [0]");
     }
-    if let ConversationItem::User(ref u) = preserved[1] {
+    if let Some(ConversationItem::User(u)) = preserved.get(1) {
         let text: String = u
             .content
             .iter()
@@ -318,7 +322,7 @@ fn compaction_no_prefix_passes_through() {
     let prefix_len: usize = 0;
     let result = if prefix_len > 0 { unreachable!() } else { compacted.clone() };
     assert_eq!(result.len(), 2);
-    assert!(matches!(result[0], ConversationItem::System(_)));
+    assert!(matches!(result.first(), Some(ConversationItem::System(_))));
 }
 #[test]
 fn resumed_from_field_in_meta_roundtrips() {
@@ -1176,12 +1180,12 @@ fn resumed_session_uses_current_runtime_contract() {
     if let Some(ConversationItem::System(sys)) = conversation.first_mut() {
         sys.content = current_prompt.into();
     }
-    match &conversation[0] {
-        ConversationItem::System(sys) => {
+    match conversation.first() {
+        Some(ConversationItem::System(sys)) => {
             assert_eq!(sys.content.as_ref(), current_prompt);
             assert!(!sys.content.contains("old source"));
         }
-        _ => panic!("first item should be System"),
+        other => panic!("first item should be System, got {other:?}"),
     }
     assert_eq!(conversation.len(), 3);
 }
@@ -1208,7 +1212,7 @@ fn token_estimation_accounts_for_images() {
             content: vec![ContentPart::Text {
                 text: "describe this".into(),
             }],
-            synthetic_reason: None,
+            synthetic_reason: SyntheticReason::Human,
             ..Default::default()
         })];
     let text_tokens = xai_chat_state::estimate_conversation_tokens(&text_only);
@@ -1221,7 +1225,7 @@ fn token_estimation_accounts_for_images() {
                     url: "data:image/png;base64,abc".into(),
                 },
             ],
-            synthetic_reason: None,
+            synthetic_reason: SyntheticReason::Human,
             ..Default::default()
         })];
     let image_tokens = xai_chat_state::estimate_conversation_tokens(&with_image);
@@ -1236,7 +1240,7 @@ fn token_estimation_accounts_for_images() {
                 ContentPart::Image { url: "img2".into() },
                 ContentPart::Image { url: "img3".into() },
             ],
-            synthetic_reason: None,
+            synthetic_reason: SyntheticReason::Human,
             ..Default::default()
         })];
     let multi_tokens = xai_chat_state::estimate_conversation_tokens(&multi_image);
@@ -2094,10 +2098,16 @@ fn notification_subagent_spawned_includes_resumed_from() {
         agent_address: None,
     };
     let json = serde_json::to_value(&notification).unwrap();
-    assert_eq!(json["resumed_from"], "prev-agent-id");
-    assert_eq!(json["effective_context_source"], "resumed");
-    assert_eq!(json["role"], serde_json::Value::Null);
-    assert_eq!(json["model"], serde_json::Value::Null);
+    assert_eq!(
+            json.get("resumed_from").and_then(|v| v.as_str()),
+            Some("prev-agent-id")
+        );
+    assert_eq!(
+            json.get("effective_context_source").and_then(|v| v.as_str()),
+            Some("resumed")
+        );
+    assert!(json.get("role").is_none_or(serde_json::Value::is_null), "{json}");
+    assert!(json.get("model").is_none_or(serde_json::Value::is_null), "{json}");
     let fresh = SessionUpdate::SubagentSpawned {
         attempt_id: None,
         subagent_id: "sa-fresh".into(),
@@ -2132,8 +2142,14 @@ fn upload_ref_includes_resumed_from() {
         resumed_from: Some("prev-agent".into()),
     };
     let json = serde_json::to_value(&ref_resumed).unwrap();
-    assert_eq!(json["resumed_from"], "prev-agent");
-    assert_eq!(json["description"], "goal achievement skeptic");
+    assert_eq!(
+            json.get("resumed_from").and_then(|v| v.as_str()),
+            Some("prev-agent")
+        );
+    assert_eq!(
+            json.get("description").and_then(|v| v.as_str()),
+            Some("goal achievement skeptic")
+        );
     let ref_fresh = SubagentSpawnedRef {
         subagent_id: "sa-f".into(),
         child_session_id: "child-f".into(),
@@ -2207,8 +2223,14 @@ async fn read_parent_sampling_config_keeps_catalog_threshold_when_routing_slug_i
     assert_eq!(config.rate_limit_retry_threshold, Some(6));
     assert_eq!(config.conversation_group_id, Some(expected_group));
 }
+/// Also pins the per-route fields the inherit path derives from the parent's base URL
+/// (`extra_response_includes`, `request_compression`), which a `Default::default()` would silently drop.
 #[tokio::test]
+#[serial_test::serial]
+#[serial_test::serial(remote_sig_disarm)]
 async fn read_parent_sampling_config_keeps_auto_when_catalog_has_slug_key_only() {
+    let _env = crate::env::EnvVarGuard::remove("GROK_REQUEST_COMPRESSION");
+    let parent_base_url = "https://api.x.ai/v1";
     let mut models = indexmap::IndexMap::new();
     let mut entry = test_model_entry("grok-4.5");
     entry.info.supports_backend_search = true;
@@ -2222,13 +2244,20 @@ async fn read_parent_sampling_config_keeps_auto_when_catalog_has_slug_key_only()
             base_url: "https://api.x.ai/v1".to_string(),
             cache_ttl: None,
             thinking_replay: None,
+            base_url: parent_base_url.to_string(),
             ..test_sampling_config("grok-4.5")
         });
+    crate::util::config::cache_remote_accept_request_encodings(
+        parent_base_url,
+        &[xai_grok_config_types::RemoteRequestEncoding::Zstd],
+    );
     let (config, model_id) = read_parent_sampling_config(&ctx).await;
+    crate::util::config::cache_remote_accept_request_encodings(parent_base_url, &[]);
     assert_eq!(config.model, "grok-4.5");
     assert_eq!(model_id.0.as_ref(), "auto");
     assert!(config.supports_backend_search);
     assert_eq!(config.extra_response_includes, ["no_inline_citations"]);
+    assert_eq!(config.request_compression, xai_grok_sampler::RequestCompression::Zstd);
 }
 /// A child inheriting a live Grok selection must retain Grok's route metadata,
 /// even when the spawn context was built while its parent used Codex.
@@ -3012,8 +3041,8 @@ fn non_cursor_persona_injected_as_system_reminder() {
     prefix_len += 1;
     assert_eq!(conv.len(), 3, "conversation should have 3 items");
     assert_eq!(prefix_len, 3, "prefix_len should be incremented");
-    if let ConversationItem::User(ref u) = conv[2] {
-        assert_eq!(u.synthetic_reason, Some(SyntheticReason::SystemReminder));
+    if let Some(ConversationItem::User(u)) = conv.get(2) {
+        assert_eq!(u.synthetic_reason, SyntheticReason::SystemReminder);
         let text = u
             .content
             .first()
@@ -3078,7 +3107,7 @@ fn persona_injection_into_empty_conversation() {
     prefix_len += 1;
     assert_eq!(conv.len(), 1);
     assert_eq!(prefix_len, 1);
-    assert!(matches!(& conv[0], ConversationItem::User(_)));
+    assert!(matches!(conv.first(), Some(ConversationItem::User(_))));
 }
 mod cancellation_error_message_tests {
     use super::super::cancellation_error_message;
@@ -3388,6 +3417,7 @@ fn make_test_skill(
         disable_model_invocation: false,
         has_user_specified_description: false,
         paths: None,
+        origin: None,
         body: None,
     }
 }

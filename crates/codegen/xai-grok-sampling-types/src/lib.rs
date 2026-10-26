@@ -4,6 +4,14 @@
 //! It contains no I/O: no HTTP clients, no file system access.
 //! Downstream crates like `xai-chat-state` can depend on it without pulling in the full `xai-grok-shell`.
 
+#![deny(clippy::indexing_slicing)]
+
+//! Pure data types for the xAI sampling / chat-completion API layer.
+//!
+//! API-agnostic conversation, chat-completion request/response, streaming, and error types used across the xAI agent stack.
+//! It contains no I/O: no HTTP clients, no file system access.
+//! Downstream crates like `xai-chat-state` can depend on it without pulling in the full `xai-grok-shell`.
+
 pub mod catalog_wire;
 pub mod conversation;
 pub mod doom_loop;

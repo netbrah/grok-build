@@ -356,6 +356,7 @@ async fn spawn(mut ctx: ToolCallContext, input: SpawnAgentInput) -> Result<ToolO
                 description: task_name,
                 prompt: "Complete the task in the agent message supplied with this turn."
                     .to_owned(),
+                subagent_type_specified: input.agent_type.is_some(),
                 subagent_type: input
                     .agent_type
                     .unwrap_or_else(|| "general-purpose".to_owned()),
@@ -366,6 +367,7 @@ async fn spawn(mut ctx: ToolCallContext, input: SpawnAgentInput) -> Result<ToolO
                 cwd: None,
                 capability_mode: None,
                 isolation: None,
+                workspace: None,
             },
         )
         .await

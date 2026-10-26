@@ -5,16 +5,19 @@ pub mod chat_modes;
 pub mod config;
 pub mod config_schema;
 pub(crate) mod config_model_override_parse;
+pub(crate) mod cursor_worker_config;
 mod ext_parsers;
 pub mod external_otel_pin;
 pub mod feedback_client;
 pub mod folder_trust;
 pub(crate) mod handlers;
 pub mod init;
+pub mod media_tool_config;
 pub mod model_providers;
 pub mod mvp_agent;
 pub(crate) mod otel_gate;
 pub(crate) mod proxy;
+pub(crate) mod proxy_headers;
 pub mod relay;
 pub mod remote_config;
 pub(crate) mod restore_code;
@@ -39,5 +42,11 @@ mod catalog_bake_tests;
 mod catalog_hydrate_tests;
 #[cfg(test)]
 mod catalog_live_hydrate_tests;
+
+pub use mvp_agent::MvpAgent;
+pub use mvp_agent::SessionSetupPhase;
+pub use relay::{RelayConfig, RelayHandle, spawn_relay_connection};
+pub use server::{ServerConfig, run_agent_server};
+
 #[cfg(test)]
 mod storage_client_tests;

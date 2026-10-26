@@ -528,6 +528,27 @@ fn write_summary(
         last_turn_summary_prompt_id: None,
         last_recap: None,
     };
+    let created_at = active_at - ChronoDuration::minutes(5);
+    let summary: Summary = serde_json::from_value(serde_json::json!({
+        "info": { "id": session_id, "cwd": cwd },
+        "session_summary": format!("Deterministic benchmark session {ordinal}"),
+        "created_at": created_at.to_rfc3339(),
+        "updated_at": active_at.to_rfc3339(),
+        "num_messages": 8 + ordinal % 24,
+        "num_chat_messages": 8 + ordinal % 24,
+        "current_model_id": "benchmark-model",
+        "chat_format_version": 1,
+        "git_root_dir": cwd,
+        "git_remotes": ["git@github.com:xai-org/benchmark.git"],
+        "head_commit": format!("{ordinal:040x}"),
+        "head_branch": "main",
+        "last_active_at": active_at.to_rfc3339(),
+        "generated_title": format!("Benchmark session {ordinal}"),
+        "worktree_label": worktree_label,
+        "agent_name": "benchmark-agent",
+        "sandbox_profile": "workspace",
+    }))
+    .expect("summary fixture");
     let summary_path = session_dir.join("summary.json");
     let bytes = serde_json::to_vec_pretty(&summary).expect("serialize summary");
     fs::write(&summary_path, bytes).expect("write summary");

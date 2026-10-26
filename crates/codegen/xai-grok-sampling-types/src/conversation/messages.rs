@@ -571,9 +571,11 @@ fn apply_cache_breakpoints(
         last.cache_control = Some(head.clone());
     }
 
-    let tip = (0..messages.len())
-        .rev()
-        .find(|&i| mark_message_cache_breakpoint(&mut messages[i]));
+    let tip = (0..messages.len()).rev().find(|&i| {
+        messages
+            .get_mut(i)
+            .is_some_and(mark_message_cache_breakpoint)
+    });
 
     // Where the previous request ended. R1's same-role merge keeps one user
     // message per user-role run, so the previous tip is the last user
@@ -581,16 +583,20 @@ fn apply_cache_breakpoints(
     // several user messages in a row and the lookup had to skip the whole
     // trailing run).
     if let Some(tip) = tip
-        && let Some(prev) = messages[..tip]
+        && let Some(before_tip) = messages.get(..tip)
+        && let Some(prev) = before_tip
             .iter()
             .rposition(|m| matches!(m.role, MessageRole::Assistant))
             .and_then(|assistant| {
-                messages[..assistant]
-                    .iter()
-                    .rposition(|m| matches!(m.role, MessageRole::User))
+                before_tip.get(..assistant).and_then(|before_asst| {
+                    before_asst
+                        .iter()
+                        .rposition(|m| matches!(m.role, MessageRole::User))
+                })
             })
+        && let Some(msg) = messages.get_mut(prev)
     {
-        mark_message_cache_breakpoint(&mut messages[prev]);
+        mark_message_cache_breakpoint(msg);
     }
 
     // ANTHROPIC-WIRE-1 (cut 3): with no system prefix the stable head is
@@ -1147,13 +1153,13 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 // never re-splits, so adjacent real users (and adjacent
                 // same-tag items) keep coalescing exactly as pre-cut.
                 let class = u.synthetic_reason.clone();
-                let cm_present =
-                    pending_user_cm || matches!(class, Some(SyntheticReason::CompactionMeta));
-                if cm_present && !pending_user.is_empty() && pending_user_class != class {
+                let cm_present = pending_user_cm || class == SyntheticReason::CompactionMeta;
+                if cm_present && !pending_user.is_empty() && pending_user_class.as_ref() != Some(&class)
+                {
                     flush_user(&mut pending_user, &mut messages);
                 }
                 pending_user_cm = cm_present;
-                pending_user_class = class;
+                pending_user_class = Some(class);
                 pending_user.extend(content_parts_to_anthropic_blocks(&u.content));
             }
             ConversationItem::Assistant(a) => {
@@ -1488,8 +1494,10 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
 
     let system: Option<SystemParam> = if system_blocks.is_empty() {
         None
-    } else if system_blocks.len() == 1 && system_blocks[0].cache_control.is_none() {
-        Some(SystemParam::Text(system_blocks[0].text.clone()))
+    } else if let [block] = system_blocks.as_slice()
+        && block.cache_control.is_none()
+    {
+        Some(SystemParam::Text(block.text.clone()))
     } else {
         Some(SystemParam::Blocks(system_blocks))
     };

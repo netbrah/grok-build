@@ -70,57 +70,13 @@ impl ActorState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::ApiBackend;
-    use indexmap::IndexMap;
 
     fn cfg() -> SamplerConfig {
         SamplerConfig {
-            api_key: None,
             base_url: "https://example.test".into(),
-            mtls_cert_dir: None,
             model: "test-model".into(),
-            max_completion_tokens: None,
-            temperature: None,
-            top_p: None,
-            api_backend: ApiBackend::ChatCompletions,
-            auth_scheme: Default::default(),
-            extra_headers: IndexMap::new(),
-            extra_response_includes: Vec::new(),
-            query_params: IndexMap::new(),
-            env_http_headers: IndexMap::new(),
             context_window: 8192,
-            force_http1: false,
-            max_retries: None,
-            rate_limit_retry_threshold: None,
-            stream_tool_calls: false,
-            idle_timeout_secs: None,
-            reasoning_effort: None,
-            origin_client: None,
-            client_identifier: None,
-            deployment_id: None,
-            user_id: None,
-            conversation_group_id: None,
-            client_version: None,
-            attribution_callback: None,
-            bearer_resolver: None,
-            supports_backend_search: false,
-            compactions_remaining: None,
-            compaction_at_tokens: None,
-            cache_ttl: None,
-            thinking_replay: None,
-            top_k: None,
-            stop_sequences: None,
-            disable_parallel_tool_use: None,
-            tool_cache_breakpoint: None,
-            server_tools: None,
-            mcp_servers: None,
-            mcp_toolset_server: None,
-            doom_loop_recovery: None,
-            header_injector: None,
-            model_family: None,
-            strict_responses_input: false,
-            normalize_content_types: false,
-            ultra_wire_effort: None,
+            ..Default::default()
         }
     }
 

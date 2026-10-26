@@ -1,4 +1,4 @@
-//! Shared cache-aligned request building for recap-style auxiliary model calls (recap, turn summary).
+//! Shared cache-aligned request building for recap-style auxiliary model calls (recap, title refresh).
 //! `/btw` reuses the request skeleton.
 
 use super::*;
@@ -144,7 +144,7 @@ impl SessionActor {
         }
     }
 
-    /// Prepare the shared pieces of a recap-style side-call (recap and turn summary): the sampling client and the config both need.
+    /// Prepare the shared pieces of a recap-style side-call (recap and title refresh): the sampling client and the config both need.
     /// Recap-style side-calls preserve reasoning so their conversation prefix stays byte-identical to the parent turn.
     /// Messages strips reasoning only when the matching effort cannot emit a top-level thinking configuration.
     pub(crate) async fn prepare_side_call(&self) -> Result<SideCallSetup, acp::Error> {

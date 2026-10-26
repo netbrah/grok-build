@@ -1,11 +1,12 @@
 //! Tests for ChatStateActor.
 
+use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
 use xai_grok_sampling_types::{
-    ConversationItem, SamplingConfig,
+    ConversationItem, SamplingConfig, SyntheticReason,
     conversation::projection::{Boundary, TargetRoute},
 };
 
@@ -22,33 +23,10 @@ fn test_config() -> SamplingConfig {
 fn test_config_with_window(context_window: u64) -> SamplingConfig {
     SamplingConfig {
         base_url: "https://api.example.com".to_string(),
-        mtls_cert_dir: None,
         model: "test-model".to_string(),
-        max_completion_tokens: None,
-        temperature: None,
-        top_p: None,
-        max_retries: None,
-        rate_limit_retry_threshold: None,
-        api_backend: Default::default(),
-        extra_headers: Default::default(),
-        conversation_group_id: None,
-        query_params: Default::default(),
-        env_http_headers: Default::default(),
         context_window: NonZeroU64::new(context_window)
             .expect("test context_window must be non-zero"),
-        reasoning_effort: None,
-        ultra_wire_effort: None,
-        stream_tool_calls: None,
-        cache_ttl: None,
-        thinking_replay: None,
-        top_k: None,
-        stop_sequences: None,
-        disable_parallel_tool_use: None,
-        tool_cache_breakpoint: None,
-        supports_search_tool: false,
-        server_tools: None,
-        mcp_servers: None,
-        mcp_toolset_server: None,
+        ..Default::default()
     }
 }
 
@@ -137,7 +115,10 @@ async fn push_user_message_appends_and_persists() {
 
     let records = h.drain_persistence();
     assert_eq!(records.len(), 1);
-    assert!(matches!(&records[0], PersistenceRecord::Message(_)));
+    assert!(matches!(
+        records.first(),
+        Some(PersistenceRecord::Message(_))
+    ));
 }
 
 #[tokio::test]
@@ -226,7 +207,10 @@ async fn push_user_message_and_ack_waits_for_actor_acceptance() {
 
     let records = h.drain_persistence();
     assert_eq!(records.len(), 1);
-    assert!(matches!(&records[0], PersistenceRecord::Message(_)));
+    assert!(matches!(
+        records.first(),
+        Some(PersistenceRecord::Message(_))
+    ));
 }
 
 #[tokio::test]
@@ -259,7 +243,13 @@ async fn strict_switch_append_preserves_prefix_and_deduplicates_generation() {
         assert_eq!(serde_json::to_vec(actual).unwrap(), *expected);
     }
     assert_eq!(
-        serde_json::to_vec(&conversation[3]).unwrap(),
+        serde_json::to_vec({
+            let Some(item) = conversation.get(3) else {
+                panic!("expected item 3: {conversation:?}");
+            };
+            item
+        })
+        .unwrap(),
         serde_json::to_vec(&reminder).unwrap()
     );
     assert!(matches!(
@@ -355,7 +345,9 @@ async fn committed_storage_result_converges_actor_memory() {
     let conversation = h.handle.get_conversation().await;
     assert_eq!(conversation.len(), 1);
     assert_eq!(
-        conversation[0].working_directory_switch_generation(),
+        conversation
+            .first()
+            .and_then(|i| i.working_directory_switch_generation()),
         Some(2)
     );
 }
@@ -389,7 +381,10 @@ async fn already_present_replaces_stale_switch_in_actor_memory() {
     ));
     let conversation = h.handle.get_conversation().await;
     assert_eq!(conversation.len(), 1);
-    assert_eq!(conversation[0].text_content(), "authoritative");
+    assert_eq!(
+        conversation.first().map(|i| i.text_content()).as_deref(),
+        Some("authoritative")
+    );
 }
 
 #[tokio::test]
@@ -427,7 +422,10 @@ async fn committed_already_present_replaces_retry_candidate_in_actor_memory() {
     ));
     let conversation = h.handle.get_conversation().await;
     assert_eq!(conversation.len(), 1);
-    assert_eq!(conversation[0].text_content(), "authoritative");
+    assert_eq!(
+        conversation.first().map(|i| i.text_content()).as_deref(),
+        Some("authoritative")
+    );
 }
 
 #[tokio::test]
@@ -798,7 +796,10 @@ async fn replace_conversation_persists_and_emits_reset() {
 
     let records = h.drain_persistence();
     assert_eq!(records.len(), 1);
-    assert!(matches!(&records[0], PersistenceRecord::ReplaceHistory(_)));
+    assert!(matches!(
+        records.first(),
+        Some(PersistenceRecord::ReplaceHistory(_))
+    ));
 }
 
 #[tokio::test]
@@ -834,7 +835,7 @@ async fn strip_conversation_images_replaces_only_listed_urls_and_persists() {
         2,
         "in-place strip must not add or remove conversation items"
     );
-    let ConversationItem::User(u) = &conv[0] else {
+    let Some(ConversationItem::User(u)) = conv.first() else {
         panic!("expected user item");
     };
     assert!(
@@ -843,7 +844,7 @@ async fn strip_conversation_images_replaces_only_listed_urls_and_persists() {
             .all(|p| !matches!(p, xai_grok_sampling_types::ContentPart::Image { .. })),
         "listed image part must be replaced"
     );
-    let ConversationItem::User(survivor) = &conv[1] else {
+    let Some(ConversationItem::User(survivor)) = conv.get(1) else {
         panic!("expected user item");
     };
     assert!(
@@ -1309,7 +1310,7 @@ async fn flush_calls_persistence_flush() {
 
     let records = h.drain_persistence();
     assert_eq!(records.len(), 1);
-    assert!(matches!(&records[0], PersistenceRecord::Flush));
+    assert!(matches!(records.first(), Some(PersistenceRecord::Flush)));
 }
 
 // ============================================================================
@@ -1338,9 +1339,11 @@ async fn replace_system_head_swaps_head_and_preserves_turns() {
     assert_eq!(changed, Some(true));
     let conv = h.handle.get_conversation().await;
     assert_eq!(conv.len(), 3, "must not wipe user/assistant turns");
-    assert!(matches!(&conv[0], ConversationItem::System(s) if s.content.as_ref() == "new prompt"));
-    assert!(matches!(conv[1], ConversationItem::User(_)));
-    assert!(matches!(conv[2], ConversationItem::Assistant(_)));
+    assert!(
+        matches!(conv.first(), Some(ConversationItem::System(s)) if s.content.as_ref() == "new prompt")
+    );
+    assert!(matches!(conv.get(1), Some(ConversationItem::User(_))));
+    assert!(matches!(conv.get(2), Some(ConversationItem::Assistant(_))));
 }
 
 #[tokio::test]
@@ -1357,7 +1360,9 @@ async fn replace_system_head_noop_when_head_matches_modulo_newline() {
         "trailing-newline-only diff is a no-op"
     );
     let conv = h.handle.get_conversation().await;
-    assert!(matches!(&conv[0], ConversationItem::System(s) if s.content.as_ref() == "same\n"));
+    assert!(
+        matches!(conv.first(), Some(ConversationItem::System(s)) if s.content.as_ref() == "same\n")
+    );
     assert!(
         h.drain_persistence().is_empty(),
         "a no-op must not re-persist"
@@ -1371,8 +1376,10 @@ async fn replace_system_head_inserts_when_absent() {
     assert_eq!(changed, Some(true));
     let conv = h.handle.get_conversation().await;
     assert_eq!(conv.len(), 2, "inserts System at head, keeps the user turn");
-    assert!(matches!(&conv[0], ConversationItem::System(s) if s.content.as_ref() == "sys"));
-    assert!(matches!(conv[1], ConversationItem::User(_)));
+    assert!(
+        matches!(conv.first(), Some(ConversationItem::System(s)) if s.content.as_ref() == "sys")
+    );
+    assert!(matches!(conv.get(1), Some(ConversationItem::User(_))));
 }
 
 /// Lost-update safety: an item pushed just before the head swap survives.
@@ -1390,8 +1397,10 @@ async fn replace_system_head_retains_concurrently_pushed_item() {
         2,
         "the item pushed before the swap must not be lost"
     );
-    assert!(matches!(&conv[0], ConversationItem::System(s) if s.content.as_ref() == "new"));
-    assert!(matches!(conv[1], ConversationItem::Assistant(_)));
+    assert!(
+        matches!(conv.first(), Some(ConversationItem::System(s)) if s.content.as_ref() == "new")
+    );
+    assert!(matches!(conv.get(1), Some(ConversationItem::Assistant(_))));
 }
 
 /// A head swap during an active turn capture must not drop the in-flight captured tail.
@@ -1417,10 +1426,13 @@ async fn replace_system_head_preserves_active_turn_capture() {
         2,
         "mid-turn head swap must not drop the captured turn tail"
     );
-    assert!(matches!(&capture.messages[0], ConversationItem::User(_)));
     assert!(matches!(
-        &capture.messages[1],
-        ConversationItem::Assistant(_)
+        capture.messages.first(),
+        Some(ConversationItem::User(_))
+    ));
+    assert!(matches!(
+        capture.messages.get(1),
+        Some(ConversationItem::Assistant(_))
     ));
 }
 
@@ -1478,32 +1490,13 @@ async fn update_sampling_config_is_queryable() {
     let h = TestHarness::new();
     let new_config = SamplingConfig {
         base_url: "https://new.example.com".to_string(),
-        mtls_cert_dir: None,
         model: "grok-3".to_string(),
         max_completion_tokens: Some(4096),
         temperature: Some(0.5),
-        top_p: None,
         max_retries: Some(6),
         rate_limit_retry_threshold: Some(4),
-        api_backend: Default::default(),
-        extra_headers: Default::default(),
-        conversation_group_id: None,
-        query_params: Default::default(),
-        env_http_headers: Default::default(),
         context_window: NonZeroU64::new(200_000).unwrap(),
-        reasoning_effort: None,
-        ultra_wire_effort: None,
-        stream_tool_calls: None,
-        cache_ttl: None,
-        thinking_replay: None,
-        top_k: None,
-        stop_sequences: None,
-        disable_parallel_tool_use: None,
-        tool_cache_breakpoint: None,
-        supports_search_tool: false,
-        server_tools: None,
-        mcp_servers: None,
-        mcp_toolset_server: None,
+        ..Default::default()
     };
     h.handle.update_sampling_config(new_config.clone());
 
@@ -1620,7 +1613,7 @@ async fn truncate_to_zero_keeps_only_system() {
 
     let conv = h.handle.get_conversation().await;
     assert_eq!(conv.len(), 1); // just "sys"
-    assert!(matches!(&conv[0], ConversationItem::System(_)));
+    assert!(matches!(conv.first(), Some(ConversationItem::System(_))));
     assert_eq!(h.handle.get_prompt_index().await, 0);
 }
 
@@ -1764,16 +1757,19 @@ async fn build_request_projects_agent_message_for_model_without_mutating_history
         .await
         .unwrap();
     assert_eq!(
-        request.items[0].text_content(),
-        format!(
+        request.items.first().map(|i| i.text_content()),
+        Some(format!(
             "{}\n{raw}",
             crate::compaction_utils::AGENT_MESSAGE_MODEL_LABEL
-        )
+        ))
     );
 
     let persisted = h.handle.get_conversation().await;
-    assert_eq!(persisted[0].text_content(), raw);
-    assert_eq!(serde_json::to_vec(&persisted[0]).unwrap(), raw_bytes);
+    assert_eq!(persisted.first().map(|i| i.text_content()), Some(raw));
+    let Some(persisted0) = persisted.first() else {
+        panic!("expected persisted item: {persisted:?}");
+    };
+    assert_eq!(serde_json::to_vec(persisted0).unwrap(), raw_bytes);
 }
 
 #[tokio::test]
@@ -1799,7 +1795,7 @@ async fn build_request_preserves_system_message() {
         .await
         .unwrap();
     assert_eq!(request.items.len(), 2);
-    if let ConversationItem::System(ref sys) = request.items[0] {
+    if let Some(ConversationItem::System(sys)) = request.items.first() {
         assert_eq!(sys.content.as_ref(), "You are a coding assistant.");
     } else {
         panic!("expected System item");
@@ -1825,7 +1821,7 @@ async fn build_request_injects_memory_reminder() {
         .await
         .unwrap();
 
-    if let ConversationItem::System(ref sys) = request.items[0] {
+    if let Some(ConversationItem::System(sys)) = request.items.first() {
         assert!(sys.content.contains("Remember: user prefers Rust"));
         assert!(sys.content.starts_with("You are helpful."));
     } else {
@@ -1850,7 +1846,10 @@ async fn build_request_injects_memory_when_no_system() {
         .unwrap();
 
     assert_eq!(request.items.len(), 2); // new System + original User
-    assert!(matches!(&request.items[0], ConversationItem::System(_)));
+    assert!(matches!(
+        request.items.first(),
+        Some(ConversationItem::System(_))
+    ));
 }
 
 #[tokio::test]
@@ -1878,7 +1877,10 @@ async fn build_request_repairs_dangling_tool_calls() {
 
     // Synthetic ToolResult present (inserted at construction, not at request time).
     assert_eq!(request.items.len(), 4);
-    assert!(matches!(&request.items[3], ConversationItem::ToolResult(_)));
+    assert!(matches!(
+        request.items.get(3),
+        Some(ConversationItem::ToolResult(_))
+    ));
 }
 
 #[tokio::test]
@@ -1904,39 +1906,23 @@ async fn build_request_with_tool_definitions() {
         .unwrap();
 
     assert_eq!(request.tools.len(), 1);
-    assert_eq!(request.tools[0].name, "read_file");
+    assert_eq!(
+        request.tools.first().map(|t| t.name.as_str()),
+        Some("read_file")
+    );
 }
 
 #[tokio::test]
 async fn build_request_uses_sampling_config() {
     let config = SamplingConfig {
         base_url: "https://api.example.com".to_string(),
-        mtls_cert_dir: None,
         model: "grok-3".to_string(),
         max_completion_tokens: Some(8192),
         temperature: Some(0.7),
         top_p: Some(0.9),
-        max_retries: None,
-        rate_limit_retry_threshold: None,
-        api_backend: Default::default(),
-        extra_headers: Default::default(),
-        conversation_group_id: None,
-        query_params: Default::default(),
-        env_http_headers: Default::default(),
         context_window: NonZeroU64::new(128_000).unwrap(),
-        reasoning_effort: None,
-        ultra_wire_effort: None,
-        stream_tool_calls: None,
         cache_ttl: Some("1h".to_string()),
-        thinking_replay: None,
-        top_k: None,
-        stop_sequences: None,
-        disable_parallel_tool_use: None,
-        tool_cache_breakpoint: None,
-        supports_search_tool: false,
-        server_tools: None,
-        mcp_servers: None,
-        mcp_toolset_server: None,
+        ..Default::default()
     };
     let h = TestHarness::with_config(vec![ConversationItem::user("hi")], config);
 
@@ -1979,7 +1965,7 @@ async fn build_request_does_not_mutate_actor_state() {
     // Actor's own conversation should be unchanged
     let conv = h.handle.get_conversation().await;
     assert_eq!(conv.len(), 2);
-    if let ConversationItem::System(ref sys) = conv[0] {
+    if let Some(ConversationItem::System(sys)) = conv.first() {
         assert_eq!(sys.content.as_ref(), "sys"); // no memory injected into original
     }
 }
@@ -2004,14 +1990,14 @@ async fn build_request_can_persist_memory_into_actor_state() {
         .await
         .unwrap();
 
-    if let ConversationItem::System(ref sys) = request.items[0] {
+    if let Some(ConversationItem::System(sys)) = request.items.first() {
         assert!(sys.content.contains("Remember this"));
     } else {
         panic!("expected System item in request");
     }
 
     let conv = h.handle.get_conversation().await;
-    if let ConversationItem::System(ref sys) = conv[0] {
+    if let Some(ConversationItem::System(sys)) = conv.first() {
         assert!(sys.content.contains("Remember this"));
     } else {
         panic!("expected persisted System item");
@@ -2149,26 +2135,29 @@ async fn parallel_tool_calls_accept_first_reject_second_skip_third() {
 
     // [0] System
     assert!(
-        matches!(&conv[0], ConversationItem::System(s) if s.content.as_ref() == "You are a helpful coding assistant."),
+        matches!(conv.first(), Some(ConversationItem::System(s)) if s.content.as_ref() == "You are a helpful coding assistant."),
         "item[0] should be the system prompt"
     );
 
     // [1] User
     assert!(
-        matches!(&conv[1], ConversationItem::User(_)),
+        matches!(conv.get(1), Some(ConversationItem::User(_))),
         "item[1] should be the user message"
     );
 
     // [2] Assistant with 3 tool calls
-    match &conv[2] {
-        ConversationItem::Assistant(a) => {
+    match conv.get(2) {
+        Some(ConversationItem::Assistant(a)) => {
             assert_eq!(a.tool_calls.len(), 3, "assistant should have 3 tool calls");
-            assert_eq!(a.tool_calls[0].id.as_ref(), "call_1");
-            assert_eq!(a.tool_calls[0].name, "read_file");
-            assert_eq!(a.tool_calls[1].id.as_ref(), "call_2");
-            assert_eq!(a.tool_calls[1].name, "edit_file");
-            assert_eq!(a.tool_calls[2].id.as_ref(), "call_3");
-            assert_eq!(a.tool_calls[2].name, "run_terminal_cmd");
+            let Some([c0, c1, c2]) = a.tool_calls.get(..3) else {
+                panic!("expected 3 tool calls: {:?}", a.tool_calls);
+            };
+            assert_eq!(c0.id.as_ref(), "call_1");
+            assert_eq!(c0.name, "read_file");
+            assert_eq!(c1.id.as_ref(), "call_2");
+            assert_eq!(c1.name, "edit_file");
+            assert_eq!(c2.id.as_ref(), "call_3");
+            assert_eq!(c2.name, "run_terminal_cmd");
             assert_eq!(
                 a.content.as_ref(),
                 "I'll read the file, fix it, and run tests."
@@ -2178,8 +2167,8 @@ async fn parallel_tool_calls_accept_first_reject_second_skip_third() {
     }
 
     // [3] ToolResult for call_1 — success
-    match &conv[3] {
-        ConversationItem::ToolResult(tr) => {
+    match conv.get(3) {
+        Some(ConversationItem::ToolResult(tr)) => {
             assert_eq!(tr.tool_call_id, "call_1");
             assert!(
                 tr.content.contains("hello wrold"),
@@ -2190,8 +2179,8 @@ async fn parallel_tool_calls_accept_first_reject_second_skip_third() {
     }
 
     // [4] ToolResult for call_2 — rejected
-    match &conv[4] {
-        ConversationItem::ToolResult(tr) => {
+    match conv.get(4) {
+        Some(ConversationItem::ToolResult(tr)) => {
             assert_eq!(tr.tool_call_id, "call_2");
             assert!(
                 tr.content.contains("rejected") || tr.content.contains("denied"),
@@ -2203,8 +2192,8 @@ async fn parallel_tool_calls_accept_first_reject_second_skip_third() {
     }
 
     // [5] ToolResult for call_3 — cancelled due to earlier rejection
-    match &conv[5] {
-        ConversationItem::ToolResult(tr) => {
+    match conv.get(5) {
+        Some(ConversationItem::ToolResult(tr)) => {
             assert_eq!(tr.tool_call_id, "call_3");
             assert!(
                 tr.content.contains("cancelled")
@@ -2287,12 +2276,15 @@ async fn parallel_tool_calls_with_rejection_has_no_dangling_calls() {
         .collect();
 
     assert_eq!(tool_results.len(), 3);
-    assert_eq!(tool_results[0].tool_call_id, "call_1");
-    assert_eq!(tool_results[0].content.as_ref(), "file contents");
-    assert_eq!(tool_results[1].tool_call_id, "call_2");
-    assert_eq!(tool_results[1].content.as_ref(), "rejected by user");
-    assert_eq!(tool_results[2].tool_call_id, "call_3");
-    assert!(tool_results[2].content.contains("cancelled"));
+    let Some([tr0, tr1, tr2]) = tool_results.get(..3) else {
+        panic!("expected 3 tool results: {tool_results:?}");
+    };
+    assert_eq!(tr0.tool_call_id, "call_1");
+    assert_eq!(tr0.content.as_ref(), "file contents");
+    assert_eq!(tr1.tool_call_id, "call_2");
+    assert_eq!(tr1.content.as_ref(), "rejected by user");
+    assert_eq!(tr2.tool_call_id, "call_3");
+    assert!(tr2.content.contains("cancelled"));
 }
 
 /// Verify that persistence records all 5 pushes (assistant + 3 tool results)
@@ -2424,28 +2416,35 @@ async fn dangling_tool_calls_after_crash_are_repaired_on_load() {
     );
 
     // call_1: real result (persisted before crash)
-    assert_eq!(tool_results[0].tool_call_id, "call_1");
+    let Some(tr0) = tool_results.first() else {
+        panic!("expected tool results: {tool_results:?}");
+    };
+    assert_eq!(tr0.tool_call_id, "call_1");
     assert!(
-        tool_results[0].content.contains("fn main"),
+        tr0.content.contains("fn main"),
         "call_1 should have the original result"
     );
 
     // call_2: synthetic repair
-    assert_eq!(tool_results[1].tool_call_id, "call_2");
+    let Some(tr1) = tool_results.get(1) else {
+        panic!("expected tool results: {tool_results:?}");
+    };
+    assert_eq!(tr1.tool_call_id, "call_2");
     assert!(
-        tool_results[1].content.contains("cancelled")
-            || tool_results[1].content.contains("not executed"),
+        tr1.content.contains("cancelled") || tr1.content.contains("not executed"),
         "call_2 should have a synthetic cancellation result, got: {}",
-        tool_results[1].content
+        tr1.content
     );
 
     // call_3: synthetic repair
-    assert_eq!(tool_results[2].tool_call_id, "call_3");
+    let Some(tr2) = tool_results.get(2) else {
+        panic!("expected tool results: {tool_results:?}");
+    };
+    assert_eq!(tr2.tool_call_id, "call_3");
     assert!(
-        tool_results[2].content.contains("cancelled")
-            || tool_results[2].content.contains("not executed"),
+        tr2.content.contains("cancelled") || tr2.content.contains("not executed"),
         "call_3 should have a synthetic cancellation result, got: {}",
-        tool_results[2].content
+        tr2.content
     );
 
     // build_request should also see 6 items (no double-repair)
@@ -2658,8 +2657,8 @@ async fn live_cancel_before_any_tool_execution_repairs_on_next_user_message() {
 
     // Verify the synthetic repairs are in the right place
     for (idx, expected_call_id) in [(5, "call_1"), (6, "call_2"), (7, "call_3")] {
-        match &conv[idx] {
-            ConversationItem::ToolResult(tr) => {
+        match conv.get(idx) {
+            Some(ConversationItem::ToolResult(tr)) => {
                 assert_eq!(tr.tool_call_id, expected_call_id);
                 assert!(
                     tr.content.contains("cancelled") || tr.content.contains("not executed"),
@@ -2678,7 +2677,7 @@ async fn live_cancel_before_any_tool_execution_repairs_on_next_user_message() {
 
     // New user message is at the end
     assert!(
-        matches!(&conv[8], ConversationItem::User(_)),
+        matches!(conv.get(8), Some(ConversationItem::User(_))),
         "item[8] should be the new user message"
     );
 
@@ -2747,8 +2746,8 @@ async fn live_cancel_after_partial_tool_results_repairs_remaining() {
     );
 
     // call_1 should still have the real result
-    match &conv[3] {
-        ConversationItem::ToolResult(tr) => {
+    match conv.get(3) {
+        Some(ConversationItem::ToolResult(tr)) => {
             assert_eq!(tr.tool_call_id, "call_1");
             assert_eq!(tr.content.as_ref(), "file contents here");
         }
@@ -2760,8 +2759,8 @@ async fn live_cancel_after_partial_tool_results_repairs_remaining() {
 
     // call_2 and call_3 should be synthetic repairs
     for (idx, expected_call_id) in [(4, "call_2"), (5, "call_3")] {
-        match &conv[idx] {
-            ConversationItem::ToolResult(tr) => {
+        match conv.get(idx) {
+            Some(ConversationItem::ToolResult(tr)) => {
                 assert_eq!(tr.tool_call_id, expected_call_id);
                 assert!(
                     tr.content.contains("cancelled") || tr.content.contains("not executed"),
@@ -2776,7 +2775,7 @@ async fn live_cancel_after_partial_tool_results_repairs_remaining() {
     }
 
     // New user message at the end
-    assert!(matches!(&conv[6], ConversationItem::User(_)));
+    assert!(matches!(conv.get(6), Some(ConversationItem::User(_))));
 }
 
 // Turn message capture tests
@@ -2800,14 +2799,17 @@ async fn turn_capture_collects_all_message_types() {
         .expect("capture was active");
 
     assert_eq!(capture.messages.len(), 3);
-    assert!(matches!(&capture.messages[0], ConversationItem::User(_)));
     assert!(matches!(
-        &capture.messages[1],
-        ConversationItem::Assistant(_)
+        capture.messages.first(),
+        Some(ConversationItem::User(_))
     ));
     assert!(matches!(
-        &capture.messages[2],
-        ConversationItem::ToolResult(_)
+        capture.messages.get(1),
+        Some(ConversationItem::Assistant(_))
+    ));
+    assert!(matches!(
+        capture.messages.get(2),
+        Some(ConversationItem::ToolResult(_))
     ));
     assert!(!capture.compaction_occurred);
 }
@@ -2844,22 +2846,31 @@ async fn harness_trace_items_ride_own_turn_not_the_live_capture() {
 
     // The main turn capture holds only the live items — no harness pair.
     assert_eq!(capture.messages.len(), 3);
-    assert!(matches!(&capture.messages[0], ConversationItem::User(_)));
     assert!(matches!(
-        &capture.messages[1],
-        ConversationItem::Assistant(_)
+        capture.messages.first(),
+        Some(ConversationItem::User(_))
     ));
-    assert!(matches!(&capture.messages[2], ConversationItem::User(_)));
+    assert!(matches!(
+        capture.messages.get(1),
+        Some(ConversationItem::Assistant(_))
+    ));
+    assert!(matches!(
+        capture.messages.get(2),
+        Some(ConversationItem::User(_))
+    ));
 
     // The harness pair is drained as its own standalone trace turn.
     let harness = h.handle.take_harness_trace_turns().await;
     assert_eq!(harness.len(), 1, "one sealed verifier trace turn");
-    assert_eq!(harness[0].len(), 2);
+    let Some(turn) = harness.first() else {
+        panic!("expected a harness turn: {harness:?}");
+    };
+    assert_eq!(turn.len(), 2);
     assert!(matches!(
-        &harness[0][0],
-        ConversationItem::Assistant(a) if !a.tool_calls.is_empty()
+        turn.first(),
+        Some(ConversationItem::Assistant(a)) if !a.tool_calls.is_empty()
     ));
-    assert!(matches!(&harness[0][1], ConversationItem::ToolResult(_)));
+    assert!(matches!(turn.get(1), Some(ConversationItem::ToolResult(_))));
 
     // Harness items never enter the live conversation fed to the model.
     let live_after = h.handle.get_conversation().await.len();
@@ -2901,21 +2912,27 @@ async fn harness_trace_recorded_before_capture_seals_into_own_turn() {
     // The main capture holds only the live turn items — the planner pair does
     // not lead it.
     assert_eq!(capture.messages.len(), 2);
-    assert!(matches!(&capture.messages[0], ConversationItem::User(_)));
     assert!(matches!(
-        &capture.messages[1],
-        ConversationItem::Assistant(_)
+        capture.messages.first(),
+        Some(ConversationItem::User(_))
+    ));
+    assert!(matches!(
+        capture.messages.get(1),
+        Some(ConversationItem::Assistant(_))
     ));
 
     // The planner pair is its own harness trace turn.
     let harness = h.handle.take_harness_trace_turns().await;
     assert_eq!(harness.len(), 1);
-    assert_eq!(harness[0].len(), 2);
+    let Some(turn) = harness.first() else {
+        panic!("expected a harness turn: {harness:?}");
+    };
+    assert_eq!(turn.len(), 2);
     assert!(matches!(
-        &harness[0][0],
-        ConversationItem::Assistant(a) if !a.tool_calls.is_empty()
+        turn.first(),
+        Some(ConversationItem::Assistant(a)) if !a.tool_calls.is_empty()
     ));
-    assert!(matches!(&harness[0][1], ConversationItem::ToolResult(_)));
+    assert!(matches!(turn.get(1), Some(ConversationItem::ToolResult(_))));
 }
 
 #[tokio::test]
@@ -2956,7 +2973,7 @@ async fn harness_trace_turns_separate_per_flush_and_drain_clears() {
     h.handle.flush_harness_trace_turn();
     let reused = h.handle.take_harness_trace_turns().await;
     assert_eq!(reused.len(), 1, "append-after-drain seals a fresh turn");
-    assert_eq!(reused[0].len(), 2);
+    assert_eq!(reused.first().map(|t| t.len()), Some(2));
 }
 
 #[tokio::test]
@@ -2989,12 +3006,18 @@ async fn turn_capture_survives_compaction_and_flags_it() {
         .expect("capture was active");
 
     assert_eq!(capture.messages.len(), 3);
-    assert!(matches!(&capture.messages[0], ConversationItem::User(_)));
     assert!(matches!(
-        &capture.messages[1],
-        ConversationItem::Assistant(_)
+        capture.messages.first(),
+        Some(ConversationItem::User(_))
     ));
-    assert!(matches!(&capture.messages[2], ConversationItem::User(_)));
+    assert!(matches!(
+        capture.messages.get(1),
+        Some(ConversationItem::Assistant(_))
+    ));
+    assert!(matches!(
+        capture.messages.get(2),
+        Some(ConversationItem::User(_))
+    ));
     assert!(capture.compaction_occurred);
 }
 
@@ -3058,7 +3081,10 @@ async fn begin_capture_clears_previous_buffer() {
         .expect("capture was active");
 
     assert_eq!(capture.messages.len(), 1);
-    assert!(matches!(&capture.messages[0], ConversationItem::User(_)));
+    assert!(matches!(
+        capture.messages.first(),
+        Some(ConversationItem::User(_))
+    ));
 }
 
 #[tokio::test]
@@ -3143,7 +3169,8 @@ async fn turn_capture_survives_integrity_repair_prefix_shrink() {
 
     // Integrity repair shrinks the conversation below the un-rebased capture offset.
     // Without the fix the later slice is out of range, panics the actor, and the query returns None.
-    h.handle.repair_dangling_after_harness_halt("test-halt");
+    h.handle
+        .repair_dangling_after_harness_halt("test-halt", HashMap::new());
 
     // Second turn item lands after the rebase — it must still be captured.
     h.handle
@@ -3159,12 +3186,12 @@ async fn turn_capture_survives_integrity_repair_prefix_shrink() {
     // the deduped prefix items leak in.
     assert_eq!(capture.messages.len(), 2);
     assert!(matches!(
-        &capture.messages[0],
-        ConversationItem::Assistant(a) if a.content.as_ref() == "turn-1" && a.tool_calls.is_empty()
+        capture.messages.first(),
+        Some(ConversationItem::Assistant(a)) if a.content.as_ref() == "turn-1" && a.tool_calls.is_empty()
     ));
     assert!(matches!(
-        &capture.messages[1],
-        ConversationItem::Assistant(a) if a.content.as_ref() == "turn-2" && a.tool_calls.is_empty()
+        capture.messages.get(1),
+        Some(ConversationItem::Assistant(a)) if a.content.as_ref() == "turn-2" && a.tool_calls.is_empty()
     ));
 }
 
@@ -3179,7 +3206,8 @@ async fn integrity_repair_does_not_flag_compaction() {
 
     // An in-place integrity repair goes through `snapshot_turn_slice` like
     // compaction does, but it is NOT compaction — the flag must stay unset.
-    h.handle.repair_dangling_after_harness_halt("test-halt");
+    h.handle
+        .repair_dangling_after_harness_halt("test-halt", HashMap::new());
 
     let capture = h
         .handle
@@ -3217,7 +3245,10 @@ async fn turn_capture_survives_persisted_memory_reminder_prepend() {
         )
         .await
         .unwrap();
-    assert!(matches!(&request.items[0], ConversationItem::System(_)));
+    assert!(matches!(
+        request.items.first(),
+        Some(ConversationItem::System(_))
+    ));
 
     let capture = h
         .handle
@@ -3227,10 +3258,13 @@ async fn turn_capture_survives_persisted_memory_reminder_prepend() {
 
     // Exactly the two turn items, in order.
     assert_eq!(capture.messages.len(), 2);
-    assert!(matches!(&capture.messages[0], ConversationItem::User(_)));
     assert!(matches!(
-        &capture.messages[1],
-        ConversationItem::Assistant(a) if a.content.as_ref() == "turn-a"
+        capture.messages.first(),
+        Some(ConversationItem::User(_))
+    ));
+    assert!(matches!(
+        capture.messages.get(1),
+        Some(ConversationItem::Assistant(a)) if a.content.as_ref() == "turn-a"
     ));
 }
 
@@ -3538,14 +3572,15 @@ async fn cancel_integrity_repair_drops_stranded_continue_reminder() {
     h.handle
         .push_user_message(ConversationItem::length_continue_reminder("continue"));
 
-    h.handle.repair_dangling_after_harness_halt("test-cancel");
+    h.handle
+        .repair_dangling_after_harness_halt("test-cancel", HashMap::new());
     let conv = h.handle.get_conversation().await;
     assert!(
         !matches!(
             conv.last(),
             Some(ConversationItem::User(u))
                 if u.synthetic_reason
-                    == Some(xai_grok_sampling_types::SyntheticReason::LengthContinue)
+                    == xai_grok_sampling_types::SyntheticReason::LengthContinue
         ),
         "the stranded reminder must not survive the cancel repair"
     );
@@ -3574,7 +3609,7 @@ async fn recovery_prompt_drops_stranded_continue_reminder() {
             i,
             ConversationItem::User(u)
                 if u.synthetic_reason
-                    == Some(xai_grok_sampling_types::SyntheticReason::LengthContinue)
+                    == xai_grok_sampling_types::SyntheticReason::LengthContinue
         )),
         "the dead continuation's reminder must not precede the recovery prompt"
     );
@@ -3597,13 +3632,13 @@ async fn next_real_prompt_drops_stranded_continue_reminder() {
             i,
             ConversationItem::User(u)
                 if u.synthetic_reason
-                    == Some(xai_grok_sampling_types::SyntheticReason::LengthContinue)
+                    == xai_grok_sampling_types::SyntheticReason::LengthContinue
         )),
         "the stranded reminder must not precede the new prompt"
     );
     assert!(matches!(
         conv.last(),
-        Some(ConversationItem::User(u)) if u.synthetic_reason.is_none()
+        Some(ConversationItem::User(u)) if u.synthetic_reason.is_human()
     ));
 }
 
@@ -3615,7 +3650,7 @@ async fn assert_no_continue_reminder(h: &TestHarness, context: &str) {
             i,
             ConversationItem::User(u)
                 if u.synthetic_reason
-                    == Some(xai_grok_sampling_types::SyntheticReason::LengthContinue)
+                    == xai_grok_sampling_types::SyntheticReason::LengthContinue
         )),
         "{context}: the dead continuation's reminder must be popped"
     );
@@ -3695,8 +3730,9 @@ async fn working_directory_switch_append_drops_stranded_continue_reminder() {
         .position(|r| matches!(r, PersistenceRecord::AcknowledgedMessage(_)))
         .expect("the switch append reached persistence");
     assert!(
-        !records[append_at..]
+        !records
             .iter()
+            .skip(append_at)
             .any(|r| matches!(r, PersistenceRecord::ReplaceHistory(_))),
         "no history rewrite may follow the acked append: {records:?}"
     );
@@ -3888,7 +3924,7 @@ async fn get_first_user_text_image_first_returns_none() {
         content: vec![ContentPart::Image {
             url: "data:image/png;base64,abc".into(),
         }],
-        synthetic_reason: None,
+        synthetic_reason: SyntheticReason::Human,
         ..Default::default()
     }));
 
@@ -3912,7 +3948,7 @@ async fn get_first_user_text_image_then_text_returns_none() {
                 text: "describe this image".into(),
             },
         ],
-        synthetic_reason: None,
+        synthetic_reason: SyntheticReason::Human,
         ..Default::default()
     }));
 
@@ -3935,7 +3971,7 @@ async fn get_first_user_text_text_then_image_returns_text() {
                 url: "data:image/png;base64,abc".into(),
             },
         ],
-        synthetic_reason: None,
+        synthetic_reason: SyntheticReason::Human,
         ..Default::default()
     }));
 
@@ -4169,8 +4205,8 @@ async fn prune_retained_hard_clears_old_tool_results() {
     let conv = handle.get_conversation().await;
     // Turns are laid out as [User, Assistant, ToolResult] * 8.
     // ToolResult for turn 0 is at index 2.
-    let oldest_tr = match &conv[2] {
-        ConversationItem::ToolResult(tr) => tr.content.clone(),
+    let oldest_tr = match conv.get(2) {
+        Some(ConversationItem::ToolResult(tr)) => tr.content.clone(),
         other => panic!("expected ToolResult at index 2, got {other:?}"),
     };
     assert_eq!(
@@ -4180,8 +4216,8 @@ async fn prune_retained_hard_clears_old_tool_results() {
     );
 
     // Recent turns (6, 7) must be untouched.
-    let recent_tr_6 = match &conv[6 * 3 + 2] {
-        ConversationItem::ToolResult(tr) => tr.content.clone(),
+    let recent_tr_6 = match conv.get(6 * 3 + 2) {
+        Some(ConversationItem::ToolResult(tr)) => tr.content.clone(),
         other => panic!("expected ToolResult, got {other:?}"),
     };
     assert_eq!(
@@ -4228,6 +4264,101 @@ async fn prune_retained_disabled_is_noop() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn apply_turn_request_pruning_soft_trims_old_results_over_half_window() {
+    use crate::actor::ChatStateActor;
+    use crate::persistence::MockChatPersistence;
+    use crate::types::PruningConfig;
+
+    let (mock, _rx) = MockChatPersistence::new();
+    let (event_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let token = tokio_util::sync::CancellationToken::new();
+    let config = PruningConfig {
+        keep_last_n_turns: 2,
+        soft_trim_threshold: 4000,
+        soft_trim_head: 20,
+        soft_trim_tail: 20,
+        hard_clear_age_turns: 10,
+        ..Default::default()
+    };
+    let handle = ChatStateActor::spawn_with_pruning(
+        vec![],
+        test_config_with_window(10_000),
+        config,
+        Box::new(mock),
+        event_tx,
+        token,
+    );
+
+    push_turns(&handle, 5, 8_000).await;
+    handle.record_token_usage(6_001);
+    let _ = handle.get_total_tokens().await;
+
+    let conv = handle.get_conversation().await;
+    let pruned = handle.apply_turn_request_pruning(conv.clone()).await;
+
+    let stored_oldest = match conv.get(2) {
+        Some(ConversationItem::ToolResult(tr)) => tr.content.len(),
+        other => panic!("expected ToolResult at index 2, got {other:?}"),
+    };
+    assert_eq!(stored_oldest, 8_000);
+
+    let pruned_oldest = match pruned.get(2) {
+        Some(ConversationItem::ToolResult(tr)) => tr.content.as_ref(),
+        other => panic!("expected ToolResult at index 2, got {other:?}"),
+    };
+    assert!(
+        pruned_oldest.contains("[…trimmed…]"),
+        "expected soft trim, got {pruned_oldest:?}"
+    );
+    assert!(pruned_oldest.len() < 8_000);
+
+    let recent = match pruned.get(4 * 3 + 2) {
+        Some(ConversationItem::ToolResult(tr)) => tr.content.len(),
+        other => panic!("expected ToolResult, got {other:?}"),
+    };
+    assert_eq!(recent, 8_000);
+}
+
+#[tokio::test]
+async fn apply_turn_request_pruning_is_noop_under_half_window() {
+    use crate::actor::ChatStateActor;
+    use crate::persistence::MockChatPersistence;
+
+    let (mock, _rx) = MockChatPersistence::new();
+    let (event_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let token = tokio_util::sync::CancellationToken::new();
+    let handle = ChatStateActor::spawn_with_pruning(
+        vec![],
+        test_config_with_window(10_000),
+        Default::default(),
+        Box::new(mock),
+        event_tx,
+        token,
+    );
+
+    push_turns(&handle, 5, 8_000).await;
+    handle.record_token_usage(4_000);
+    let _ = handle.get_total_tokens().await;
+
+    let conv = handle.get_conversation().await;
+    let pruned = handle.apply_turn_request_pruning(conv.clone()).await;
+    let oldest = match pruned.get(2) {
+        Some(ConversationItem::ToolResult(tr)) => tr.content.len(),
+        other => panic!("expected ToolResult at index 2, got {other:?}"),
+    };
+    assert_eq!(oldest, 8_000);
+}
+
+#[tokio::test]
+async fn apply_turn_request_pruning_keeps_items_when_actor_is_gone() {
+    let handle = crate::handle::ChatStateHandle::noop();
+    let items = vec![ConversationItem::user("keep me")];
+    let out = handle.apply_turn_request_pruning(items).await;
+    assert_eq!(out.len(), 1);
+    assert!(matches!(out.first(), Some(ConversationItem::User(_))));
 }
 
 /// Retained conversation size is bounded after many turns: old tool results
@@ -4345,15 +4476,18 @@ async fn prune_retained_rewind_still_correct() {
     // Verify we have the right item types: (User, Assistant, ToolResult) * 3.
     for turn in 0..3 {
         assert!(
-            matches!(&conv[turn * 3], ConversationItem::User(_)),
+            matches!(conv.get(turn * 3), Some(ConversationItem::User(_))),
             "item[{turn}*3] should be User"
         );
         assert!(
-            matches!(&conv[turn * 3 + 1], ConversationItem::Assistant(_)),
+            matches!(conv.get(turn * 3 + 1), Some(ConversationItem::Assistant(_))),
             "item[{turn}*3+1] should be Assistant"
         );
         assert!(
-            matches!(&conv[turn * 3 + 2], ConversationItem::ToolResult(_)),
+            matches!(
+                conv.get(turn * 3 + 2),
+                Some(ConversationItem::ToolResult(_))
+            ),
             "item[{turn}*3+2] should be ToolResult"
         );
     }
@@ -4461,32 +4595,13 @@ async fn sampling_config_survives_compaction_replacement() {
 
     let config = SamplingConfig {
         base_url: "https://api.example.com".to_string(),
-        mtls_cert_dir: None,
         model: "grok-build".to_string(),
-        max_completion_tokens: None,
         temperature: Some(0.7),
         top_p: Some(0.95),
-        max_retries: None,
-        rate_limit_retry_threshold: None,
         api_backend: ApiBackend::Responses,
-        extra_headers: Default::default(),
         conversation_group_id: Some("conversation-group".into()),
-        query_params: Default::default(),
-        env_http_headers: Default::default(),
         context_window: NonZeroU64::new(500_000).unwrap(),
-        reasoning_effort: None,
-        ultra_wire_effort: None,
-        stream_tool_calls: None,
-        cache_ttl: None,
-        thinking_replay: None,
-        top_k: None,
-        stop_sequences: None,
-        disable_parallel_tool_use: None,
-        tool_cache_breakpoint: None,
-        supports_search_tool: false,
-        server_tools: None,
-        mcp_servers: None,
-        mcp_toolset_server: None,
+        ..Default::default()
     };
 
     let h = TestHarness::with_config(
@@ -4562,32 +4677,11 @@ async fn sampling_config_survives_compaction_replacement() {
 async fn model_metadata_lost_after_compaction_then_recovered_on_next_turn() {
     let config = SamplingConfig {
         base_url: "https://api.example.com".to_string(),
-        mtls_cert_dir: None,
         model: "grok-build".to_string(),
-        max_completion_tokens: None,
         temperature: Some(0.7),
         top_p: Some(0.95),
-        max_retries: None,
-        rate_limit_retry_threshold: None,
-        api_backend: Default::default(),
-        extra_headers: Default::default(),
-        conversation_group_id: None,
-        query_params: Default::default(),
-        env_http_headers: Default::default(),
         context_window: NonZeroU64::new(500_000).unwrap(),
-        reasoning_effort: None,
-        ultra_wire_effort: None,
-        stream_tool_calls: None,
-        cache_ttl: None,
-        thinking_replay: None,
-        top_k: None,
-        stop_sequences: None,
-        disable_parallel_tool_use: None,
-        tool_cache_breakpoint: None,
-        supports_search_tool: false,
-        server_tools: None,
-        mcp_servers: None,
-        mcp_toolset_server: None,
+        ..Default::default()
     };
 
     let h = TestHarness::with_config(
@@ -4656,32 +4750,12 @@ async fn context_window_downgrade_triggers_auto_compact() {
     // Initial config: 500k context, Responses backend (matches grok-4.5)
     let config = SamplingConfig {
         base_url: "https://api.x.ai/v1".to_string(),
-        mtls_cert_dir: None,
         model: "grok-4.5".to_string(),
-        max_completion_tokens: None,
         temperature: Some(0.7),
         top_p: Some(0.95),
-        max_retries: None,
-        rate_limit_retry_threshold: None,
         api_backend: ApiBackend::Responses,
-        extra_headers: Default::default(),
-        conversation_group_id: None,
-        query_params: Default::default(),
-        env_http_headers: Default::default(),
         context_window: NonZeroU64::new(500_000).unwrap(),
-        reasoning_effort: None,
-        ultra_wire_effort: None,
-        stream_tool_calls: None,
-        cache_ttl: None,
-        thinking_replay: None,
-        top_k: None,
-        stop_sequences: None,
-        disable_parallel_tool_use: None,
-        tool_cache_breakpoint: None,
-        supports_search_tool: false,
-        server_tools: None,
-        mcp_servers: None,
-        mcp_toolset_server: None,
+        ..Default::default()
     };
 
     let h = TestHarness::with_config(vec![], config);
@@ -4771,8 +4845,8 @@ fn assert_prefix_stable_pair(
     let base_body = serialize_via_public_api(base);
     let ext_body = serialize_via_public_api(extended);
 
-    let base_input = base_body["input"].as_array().unwrap();
-    let ext_input = ext_body["input"].as_array().unwrap();
+    let base_input = base_body.get("input").and_then(|v| v.as_array()).unwrap();
+    let ext_input = ext_body.get("input").and_then(|v| v.as_array()).unwrap();
 
     assert!(
         ext_input.len() >= base_input.len(),
@@ -4781,7 +4855,7 @@ fn assert_prefix_stable_pair(
         base_input.len(),
     );
     assert_eq!(
-        &ext_input[..base_input.len()],
+        ext_input.get(..base_input.len()).unwrap_or(&[]),
         base_input.as_slice(),
         "{label}: prefix broken. Base has {} items, extended has {}. \
          First divergence at index {}",
@@ -5094,7 +5168,7 @@ async fn prefix_stable_after_image_pruning() {
                     url: big_image_url.into(),
                 },
             ],
-            synthetic_reason: None,
+            synthetic_reason: SyntheticReason::Human,
             ..Default::default()
         }),
         ConversationItem::assistant("I see it"),
@@ -5119,7 +5193,7 @@ async fn prefix_stable_after_image_pruning() {
                     url: "data:image/png;base64,newImageData".into(),
                 },
             ],
-            synthetic_reason: None,
+            synthetic_reason: SyntheticReason::Human,
             ..Default::default()
         }));
 
@@ -5134,11 +5208,12 @@ async fn prefix_stable_after_image_pruning() {
     let body1 = serialize_via_public_api(&req1);
     let body2 = serialize_via_public_api(&req2);
 
-    let input1 = body1["input"].as_array().unwrap();
-    let input2 = body2["input"].as_array().unwrap();
+    let input1 = body1.get("input").and_then(|v| v.as_array()).unwrap();
+    let input2 = body2.get("input").and_then(|v| v.as_array()).unwrap();
 
     assert_eq!(
-        input1[0], input2[0],
+        input1.first(),
+        input2.first(),
         "system prompt must be preserved after image pruning"
     );
     assert!(
@@ -5160,7 +5235,7 @@ async fn prefix_stable_after_image_pruning() {
     let texts2 = extract_text_items(input2);
     let mut idx2 = 0;
     for t1 in &texts1 {
-        while idx2 < texts2.len() && &texts2[idx2] != t1 {
+        while texts2.get(idx2).is_some_and(|x| x != t1) {
             idx2 += 1;
         }
         assert!(
@@ -5188,7 +5263,7 @@ async fn build_request_preserves_small_old_images() {
                     url: "data:image/png;base64,iVBORw0KGgo=".into(),
                 },
             ],
-            synthetic_reason: None,
+            synthetic_reason: SyntheticReason::Human,
             ..Default::default()
         }),
         ConversationItem::assistant("I see it"),
@@ -5264,7 +5339,7 @@ async fn build_request_budgets_tool_images_on_request_copy_only() {
     assert_eq!(inline_images, 1);
     assert!(needs_image_compaction);
     assert_eq!(evicted, 1);
-    let ConversationItem::ToolResult(request_result) = &request.items[1] else {
+    let Some(ConversationItem::ToolResult(request_result)) = request.items.get(1) else {
         panic!("expected request tool result");
     };
     assert!(request_result.images.is_empty());
@@ -5275,7 +5350,7 @@ async fn build_request_budgets_tool_images_on_request_copy_only() {
             .content
             .contains("images from this tool result were removed")
     );
-    let ConversationItem::ToolResult(canonical_result) = &canonical[1] else {
+    let Some(ConversationItem::ToolResult(canonical_result)) = canonical.get(1) else {
         panic!("expected canonical tool result");
     };
     assert_eq!(canonical_result.images.len(), 1);
@@ -5317,11 +5392,12 @@ async fn prefix_stable_after_tool_result_pruning() {
 
     let body1 = serialize_via_public_api(&req1);
     let body2 = serialize_via_public_api(&req2);
-    let input1 = body1["input"].as_array().unwrap();
-    let input2 = body2["input"].as_array().unwrap();
+    let input1 = body1.get("input").and_then(|v| v.as_array()).unwrap();
+    let input2 = body2.get("input").and_then(|v| v.as_array()).unwrap();
 
     assert_eq!(
-        input1[0], input2[0],
+        input1.first(),
+        input2.first(),
         "system prompt must be stable after pruning"
     );
     assert!(
@@ -5345,7 +5421,7 @@ async fn prefix_stable_after_tool_result_pruning() {
     let users2 = extract_user_texts(input2);
     let mut idx2 = 0;
     for u1 in &users1 {
-        while idx2 < users2.len() && &users2[idx2] != u1 {
+        while users2.get(idx2).is_some_and(|x| x != u1) {
             idx2 += 1;
         }
         assert!(
@@ -5455,8 +5531,8 @@ async fn prefix_stable_after_session_resume() {
 
     let body2 = serialize_via_public_api(&req2);
     let body3 = serialize_via_public_api(&req3);
-    let input2 = body2["input"].as_array().unwrap();
-    let input3 = body3["input"].as_array().unwrap();
+    let input2 = body2.get("input").and_then(|v| v.as_array()).unwrap();
+    let input3 = body3.get("input").and_then(|v| v.as_array()).unwrap();
     assert_eq!(
         input2, input3,
         "restored snapshot must produce identical request items"

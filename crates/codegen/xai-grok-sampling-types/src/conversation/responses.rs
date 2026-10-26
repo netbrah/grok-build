@@ -477,7 +477,8 @@ impl From<&ConversationRequest> for rs::CreateResponse {
             prompt_cache_retention: None,
             reasoning: Some(rs::Reasoning {
                 effort: req.reasoning_effort.map(|e| e.to_responses_api()),
-                summary: Some(rs::ReasoningSummary::Concise),
+                // merge: one summary. Local default is Concise; None omits the field.
+                summary: crate::ReasoningSummary::default().to_responses_api(),
                 mode: None,
                 context: None,
             }),
@@ -773,9 +774,7 @@ pub(super) fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<r
 }
 
 fn content_parts_to_easy_input_content(parts: &[ContentPart]) -> rs::EasyInputContent {
-    if parts.len() == 1
-        && let ContentPart::Text { text } = &parts[0]
-    {
+    if let [ContentPart::Text { text }] = parts {
         return rs::EasyInputContent::Text(text.as_ref().to_owned());
     }
 

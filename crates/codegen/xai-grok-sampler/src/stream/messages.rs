@@ -61,6 +61,8 @@ struct BlockState {
     authoritative_args: Option<String>,
     thinking_acc: String,
     signature: String,
+    /// The first `SignatureDelta` replaces a start-seeded signature (no doubling); later deltas append.
+    signature_delta_seen: bool,
     /// A `signature_delta` already arrived for this block (R2
     /// `DuplicateSignatureDelta` guard input; xli `signature_seen`).
     signature_seen: bool,
@@ -113,6 +115,30 @@ pub fn stream_messages<'a>(
         idle_timeout,
         None,
     )
+}
+
+/// Whether a thinking block's signature marks it as narration, a progress update for the user.
+///
+/// Models that write progress updates over the Anthropic Messages API send those mid-turn notes as thinking blocks.
+/// Under `display: "summarized"` the API gives no documented way to tell them from reasoning.
+/// The signature, however, begins with a readable header naming the block kind, `"thinking"` or `"narration"`, ahead of the opaque payload; this checks the decoded prefix for that word.
+/// If the header layout ever changes, the block falls back to plain reasoning display.
+fn signature_marks_narration(signature: &str) -> bool {
+    use base64::Engine as _;
+    // The kind string sits about 15 bytes into the decoded header
+    // 48 base64 chars decode to 36 bytes, enough to cover the header's variable-width length varints
+    let prefix_len = signature.len().min(48);
+    let Some(prefix) = signature.get(..prefix_len) else {
+        return false;
+    };
+    let aligned_len = prefix.len() - prefix.len() % 4;
+    let Some(aligned) = prefix.get(..aligned_len) else {
+        return false;
+    };
+    let Ok(bytes) = base64::engine::general_purpose::STANDARD_NO_PAD.decode(aligned) else {
+        return false;
+    };
+    bytes.windows(b"narration".len()).any(|w| w == b"narration")
 }
 
 pub(crate) fn stream_messages_tracked<'a>(
@@ -369,7 +395,7 @@ pub(crate) fn stream_messages_tracked<'a>(
                                 authoritative_args: None,
                                 thinking_acc: thinking.clone(),
                                 signature: signature.clone(),
-                                signature_seen: !signature.is_empty(),
+                                signature_delta_seen: false, signature_seen: !signature.is_empty(),
                                 discovery_raw: None,
                             },
                         );
@@ -392,7 +418,7 @@ pub(crate) fn stream_messages_tracked<'a>(
                                 authoritative_args: None,
                                 thinking_acc: String::new(),
                                 signature: String::new(),
-                                signature_seen: false,
+                                signature_delta_seen: false, signature_seen: false,
                                 discovery_raw: None,
                             },
                         );
@@ -431,7 +457,7 @@ pub(crate) fn stream_messages_tracked<'a>(
                                 },
                                 thinking_acc: String::new(),
                                 signature: String::new(),
-                                signature_seen: false,
+                                signature_delta_seen: false, signature_seen: false,
                                 discovery_raw: None,
                             },
                         );
@@ -479,7 +505,7 @@ pub(crate) fn stream_messages_tracked<'a>(
                                 authoritative_args: authoritative,
                                 thinking_acc: String::new(),
                                 signature: String::new(),
-                                signature_seen: false,
+                                signature_delta_seen: false, signature_seen: false,
                                 discovery_raw: Some(raw),
                             },
                         );
@@ -517,7 +543,7 @@ pub(crate) fn stream_messages_tracked<'a>(
                                 authoritative_args: None,
                                 thinking_acc: String::new(),
                                 signature: String::new(),
-                                signature_seen: false,
+                                signature_delta_seen: false, signature_seen: false,
                                 discovery_raw: Some(raw),
                             },
                         );
@@ -550,7 +576,7 @@ pub(crate) fn stream_messages_tracked<'a>(
                                     authoritative_args: None,
                                     thinking_acc: String::new(),
                                     signature: String::new(),
-                                    signature_seen: false,
+                                    signature_delta_seen: false, signature_seen: false,
                                     discovery_raw: None,
                                 },
                             );

@@ -1,13 +1,22 @@
 //! Startup model-catalog prefetch and handoff.
 
 use super::{
-    Commit, ModelFetchAuth, ModelsCacheScope, ModelsPrefetch, evaluate_models_commit,
-    fetch_models_uncommitted, resolve_disk_auth,
+    ModelFetchAuth, ModelsCacheScope, fetch_models_uncommitted, models_fetch_enabled,
+    resolve_disk_auth, resolve_live_models_cache_scope, resolve_models_cache_scope,
 };
 use crate::agent::config;
 use xai_grok_login::{GrokAuth, GrokComConfig};
 
 use super::fetch::ModelsFetchOutcome;
+
+use indexmap::IndexMap;
+use xai_grok_cloud_config::remote_settings::{
+    InitialModelsLoad, fetch_catalog_blocking, run_catalog_prefetch, start_catalog_load,
+};
+
+//! Startup model-catalog prefetch and handoff.
+};
+};
 
 pub(crate) struct PrefetchInputs {
     pub(crate) auth: Option<GrokAuth>,
@@ -19,7 +28,7 @@ pub(crate) struct PrefetchInputs {
 pub(in crate::agent::remote_config) fn resolve_startup_endpoints() -> config::EndpointsConfig {
     let mut endpoints = config::EndpointsConfig::from_effective_config();
     if endpoints.deployment_key.is_none() {
-        endpoints.deployment_key = crate::managed_config::resolve_deployment_key();
+        endpoints.deployment_key = xai_grok_cloud_config::managed_config::resolve_deployment_key();
     }
     endpoints
 }
@@ -49,7 +58,6 @@ pub(crate) fn resolve_prefetch_inputs_from_parts(
         model_fetch_auth,
     })
 }
-
 /// Joinable initial catalog prefetch. Runs on its own OS thread and reports
 /// through a `oneshot`; a timeout or cancel drops the receiver while the thread
 /// still lands its monotonic cache write for the next boot.
@@ -57,7 +65,6 @@ pub(crate) fn resolve_prefetch_inputs_from_parts(
 pub(crate) struct InitialModelsLoad(
     tokio::sync::oneshot::Receiver<Option<ModelsFetchOutcome>>,
 );
-
 impl InitialModelsLoad {
     pub(crate) async fn join(
         self,
@@ -95,16 +102,16 @@ fn models_prefetch_inputs(
     grok_com_config: Option<GrokComConfig>,
     warmed_auth: Option<GrokAuth>,
 ) -> Option<ModelsPrefetchPlan> {
-    if crate::managed_config::policy_repair_pending() {
+    if xai_grok_cloud_config::managed_config::policy_repair_pending() {
         return None;
     }
-    let remote = crate::util::config::resolve_remote_fetch_enabled();
     // Prefer the live in-memory session so a just-refreshed or just-logged-in
     // credential drives the catalog fetch, not a stale or absent disk token.
     let auth = warmed_auth.or_else(|| resolve_disk_auth(grok_com_config.clone()));
     let endpoints = resolve_startup_endpoints();
+    let remote = models_fetch_enabled(&endpoints, auth.as_ref());
     let env = resolve_prefetch_inputs_from_parts(auth.clone(), endpoints, remote)?;
-    let expected = ModelsCacheScope::resolve(&env.endpoints, env.model_fetch_auth, auth.as_ref());
+    let expected = resolve_models_cache_scope(&env.endpoints, env.model_fetch_auth, auth.as_ref());
     Some(ModelsPrefetchPlan {
         env,
         expected,
@@ -124,14 +131,14 @@ fn run_models_prefetch(
     plan: ModelsPrefetchPlan,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Option<ModelsFetchOutcome> {
-    if cancel.is_cancelled() {
-        return None;
-    }
     let ModelsPrefetchPlan {
         env,
         expected,
         commit_config,
     } = plan;
+    let fetch_auth = env.model_fetch_auth;
+    let endpoints = env.endpoints;
+    let auth = env.auth;
     match fetch_models_uncommitted(
         &env.endpoints,
         env.auth.as_ref(),
@@ -156,17 +163,25 @@ fn run_models_prefetch(
                         "models fetch served in memory; not cached until the session persists"
                     );
                     Some(write.into_outcome())
-                }
                 Commit::Retry | Commit::Abandon => {
                     tracing::info!("models load discarded fetch: policy or origin changed");
                     None
-                }
-            }
-        }
         ModelsPrefetch::Unavailable => None,
-    }
+    run_catalog_prefetch(
+        cancel,
+        &expected,
+        || fetch_models_uncommitted(&endpoints, auth.as_ref(), fetch_auth, true),
+        // Re-resolve under the fetch-time mode (stable origin) with live disk auth,
+        // so an alpha flip, key rotation, or account switch is caught without
+        // abandoning the catalog when disk auth is briefly absent.
+        || {
+            (
+                resolve_live_models_cache_scope(fetch_auth, commit_config.as_ref()),
+                models_fetch_enabled(&endpoints, auth.as_ref()),
+            )
+        },
+    )
 }
-
 /// Run one catalog prefetch on its own OS thread, delivering the result through
 /// `deliver`. An own thread, not `spawn_blocking`: the fetch creates and drops
 /// its own runtime, which panics inside a tokio context.
@@ -187,52 +202,29 @@ pub(crate) fn start_initial_models_load(
     cancel: tokio_util::sync::CancellationToken,
     grok_com_config: Option<GrokComConfig>,
     warmed_auth: Option<GrokAuth>,
-) -> Option<InitialModelsLoad> {
+) -> Option<InitialModelsLoad<ModelEntry>> {
     let plan = models_prefetch_inputs(grok_com_config, warmed_auth)?;
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    spawn_prefetch_thread("grok-models-prefetch", plan, cancel, move |models| {
-        let _ = tx.send(models);
-    })?;
-    Some(InitialModelsLoad(rx))
+    start_catalog_load("grok-models-prefetch", cancel, move |cancel| {
+        run_models_prefetch(plan, cancel)
+    })
 }
 
 /// Poll slice bounding the sync models wait so a bootstrap cancel is observed promptly.
 const MODELS_WAIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Synchronous catalog prefetch for a bootstrap that had no async pre-resolve.
-/// A cancel or the fetch timeout ends the wait; the thread still lands its
-/// monotonic commit for the next boot.
+/// A cancel or the fetch timeout ends the wait; the thread still lands its monotonic commit.
 pub(crate) fn fetch_initial_models_blocking(
     cancel: &tokio_util::sync::CancellationToken,
     grok_com_config: Option<GrokComConfig>,
     warmed_auth: Option<GrokAuth>,
 ) -> Option<ModelsFetchOutcome> {
     let plan = models_prefetch_inputs(grok_com_config, warmed_auth)?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    spawn_prefetch_thread(
+    fetch_catalog_blocking(
         "grok-models-prefetch-sync",
-        plan,
-        cancel.clone(),
-        move |models| {
-            let _ = tx.send(models);
-        },
-    )?;
-    let started = std::time::Instant::now();
-    loop {
-        if cancel.is_cancelled() {
-            return None;
-        }
-        let remaining = crate::http::STARTUP_FETCH_TIMEOUT.saturating_sub(started.elapsed());
-        if remaining.is_zero() {
-            tracing::info!(
-                "initial models prefetch timed out; catalog freeze uses bundled defaults"
-            );
-            return None;
-        }
-        match rx.recv_timeout(remaining.min(MODELS_WAIT_POLL_INTERVAL)) {
-            Ok(models) => return models,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
-        }
-    }
+        cancel,
+        crate::http::STARTUP_FETCH_TIMEOUT,
+        MODELS_WAIT_POLL_INTERVAL,
+        move |cancel| run_models_prefetch(plan, cancel),
+    )
 }

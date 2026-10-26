@@ -4,7 +4,9 @@ use xai_grok_sampling_types::{ConversationItem, ConversationRequest, ToolSpec, T
 
 use super::ChatStateActor;
 use crate::events::ChatStateEvent;
-use crate::image_budget::{ImageBudgetOutcome, apply_image_budget};
+use crate::image_budget::{
+    ImageBudgetOutcome, apply_image_budget_with_limits, image_budget_limits,
+};
 use crate::types::PruningConfig;
 
 /// Placeholder inserted when a tool result is hard-cleared.
@@ -27,10 +29,6 @@ impl ChatStateActor {
         conv_id: String,
         req_id: String,
     ) -> ConversationRequest {
-        let needs_prune = should_prune(
-            self.state.total_tokens,
-            self.state.sampling_config.context_window,
-        );
         let mut memory_reminder = memory_reminder;
         if let Some(reminder) = memory_reminder.as_deref()
             && persist_memory_reminder
@@ -45,7 +43,13 @@ impl ChatStateActor {
             }
             self.rebase_turn_capture_offset();
         }
-        let budgeted = apply_image_budget(self.state.conversation.clone());
+        let (trigger_bytes, reclaim_target_bytes) =
+            image_budget_limits(self.state.sampling_config.max_request_bytes);
+        let budgeted = apply_image_budget_with_limits(
+            self.state.conversation.clone(),
+            trigger_bytes,
+            reclaim_target_bytes,
+        );
         let ImageBudgetOutcome {
             body_bytes,
             body_bytes_after,
@@ -57,17 +61,15 @@ impl ChatStateActor {
         if inline_images > 0 {
             self.send_event(ChatStateEvent::ImageBudget {
                 body_bytes,
-                trigger_bytes: crate::image_budget::IMAGE_COMPACT_TRIGGER_BYTES,
-                reclaim_target_bytes: crate::image_budget::IMAGE_COMPACT_RECLAIM_TARGET_BYTES,
+                trigger_bytes,
+                reclaim_target_bytes,
                 inline_images,
                 needs_image_compaction,
                 evicted,
                 body_bytes_after,
             });
         }
-        if needs_prune {
-            prune_conversation(&mut items, &self.pruning_config);
-        }
+        items = self.prune_items_for_turn_request(items);
         if let Some(reminder) = memory_reminder {
             inject_memory_reminder(&mut items, &reminder);
         }
@@ -126,6 +128,7 @@ impl ChatStateActor {
             x_grok_deployment_id: None,
             x_grok_user_id: None,
             trace,
+            traceparent: None,
             prompt_cache_key: None,
             reasoning_effort: self.state.sampling_config.reasoning_effort,
             ultra_wire_effort: self.state.sampling_config.ultra_wire_effort,
@@ -137,6 +140,19 @@ impl ChatStateActor {
             // (REQVALID-1 47b D-5); chat-state always starts a request fresh.
             encoded: None,
         }
+    }
+
+    pub(super) fn prune_items_for_turn_request(
+        &self,
+        mut items: Vec<ConversationItem>,
+    ) -> Vec<ConversationItem> {
+        if should_prune(
+            self.state.total_tokens,
+            self.state.sampling_config.context_window,
+        ) {
+            prune_conversation(&mut items, &self.pruning_config);
+        }
+        items
     }
 }
 
@@ -221,8 +237,8 @@ pub(crate) fn prune_conversation(conversation: &mut [ConversationItem], config: 
     let mut turn_from_end: usize = 0;
     let mut seen_first_user = false;
 
-    for i in (0..conversation.len()).rev() {
-        if matches!(&conversation[i], ConversationItem::User(_)) {
+    for item in conversation.iter_mut().rev() {
+        if matches!(item, ConversationItem::User(_)) {
             if seen_first_user {
                 turn_from_end += 1;
             }
@@ -230,7 +246,7 @@ pub(crate) fn prune_conversation(conversation: &mut [ConversationItem], config: 
             continue;
         }
 
-        let ConversationItem::ToolResult(tool_result) = &mut conversation[i] else {
+        let ConversationItem::ToolResult(tool_result) = item else {
             continue;
         };
 
@@ -282,12 +298,19 @@ pub(super) fn inject_memory_reminder(items: &mut Vec<ConversationItem>, reminder
 }
 
 fn upsert_memory_reminder_text(system_prompt: &mut std::sync::Arc<str>, reminder: &str) -> bool {
-    let existing_start = system_prompt
-        .find(MEMORY_CONTEXT_OPEN_TAG)
-        .map(|idx| system_prompt[..idx].trim_end_matches('\n').len());
+    let existing_start = system_prompt.find(MEMORY_CONTEXT_OPEN_TAG).map(|idx| {
+        system_prompt
+            .get(..idx)
+            .unwrap_or("")
+            .trim_end_matches('\n')
+            .len()
+    });
 
     let updated: String = if let Some(prefix_len) = existing_start {
-        let prefix = system_prompt[..prefix_len].trim_end_matches('\n');
+        let prefix = system_prompt
+            .get(..prefix_len)
+            .unwrap_or("")
+            .trim_end_matches('\n');
         if prefix.is_empty() {
             reminder.to_string()
         } else {
@@ -346,9 +369,10 @@ pub(crate) mod tests {
             ..Default::default()
         };
         prune_conversation(&mut conv, &config);
-        if let ConversationItem::ToolResult(ref tr) = conv[0] {
-            assert_eq!(tr.content.len(), 10_000);
-        }
+        let [ConversationItem::ToolResult(tr)] = conv.as_slice() else {
+            panic!("expected one tool result: {conv:?}")
+        };
+        assert_eq!(tr.content.len(), 10_000);
     }
 
     #[test]
@@ -358,7 +382,7 @@ pub(crate) mod tests {
             ConversationItem::user("hi"),
         ];
         inject_memory_reminder(&mut items, "Remember: user likes rust");
-        if let ConversationItem::System(ref sys) = items[0] {
+        if let Some(ConversationItem::System(sys)) = items.first() {
             assert!(sys.content.contains("Remember: user likes rust"));
             assert!(sys.content.starts_with("You are helpful."));
         }
@@ -370,7 +394,7 @@ pub(crate) mod tests {
         let mut items = vec![ConversationItem::user("hi")];
         inject_memory_reminder(&mut items, "Remember: user likes rust");
         assert_eq!(items.len(), 2);
-        assert!(matches!(&items[0], ConversationItem::System(_)));
+        assert!(matches!(items.first(), Some(ConversationItem::System(_))));
     }
 
     // MGW F2 (apex-ayl.113, FIX-PASS 4): the expected `metadata.user_id`

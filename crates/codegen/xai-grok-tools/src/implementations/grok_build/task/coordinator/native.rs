@@ -453,6 +453,7 @@ impl<R: ChildRunner> SubagentCoordinator<R> {
                         owner: SubagentOwner::Task,
                         cancel_token: tokio_util::sync::CancellationToken::new(),
                         spawn_root: Default::default(),
+                        tool_call_id: None,
                     })
             });
         if let Some(reusable) = reusable {

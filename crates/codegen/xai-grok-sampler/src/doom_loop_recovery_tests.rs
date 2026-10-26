@@ -1,6 +1,20 @@
 use super::*;
 use xai_grok_sampling_types::{ContentPart, SyntheticReason};
 
+fn nth<T>(xs: &[T], i: usize) -> &T {
+    let Some(x) = xs.get(i) else {
+        panic!("expected item {i}, got {} items", xs.len());
+    };
+    x
+}
+
+fn first_part<T>(content: &Option<Vec<T>>) -> &T {
+    let Some(part) = content.as_ref().and_then(|c| c.first()) else {
+        panic!("expected a content part");
+    };
+    part
+}
+
 fn armed() -> FailedResponseCapture {
     FailedResponseCapture::armed()
 }
@@ -78,12 +92,13 @@ fn done_values_replace_deltas_without_duplication() {
 
     let items = capture.take_items();
     assert_eq!(items.len(), 2);
-    let ConversationItem::Reasoning(reasoning) = &items[0] else {
+    let ConversationItem::Reasoning(reasoning) = nth(&items, 0) else {
         panic!("expected reasoning item");
     };
     assert_eq!(reasoning.id.as_deref(), Some("reasoning-1"));
-    assert_eq!(content_text(&reasoning.content.as_ref().unwrap()[0]), "full reasoning");
-    let ConversationItem::Assistant(assistant) = &items[1] else {
+    // merge: tagged ReasoningItemContent — first_part (main) plus content_text (branch)
+    assert_eq!(content_text(first_part(&reasoning.content)), "full reasoning");
+    let ConversationItem::Assistant(assistant) = nth(&items, 1) else {
         panic!("expected assistant item");
     };
     assert_eq!(assistant.content.as_ref(), "full answer");
@@ -96,10 +111,10 @@ fn summary_is_used_when_raw_reasoning_is_absent() {
     capture.record_reasoning_summary_done(0, 0, "reasoning-1".into(), "full summary".into());
 
     let items = capture.take_items();
-    let ConversationItem::Reasoning(reasoning) = &items[0] else {
+    let ConversationItem::Reasoning(reasoning) = nth(&items, 0) else {
         panic!("expected reasoning item");
     };
-    assert_eq!(content_text(&reasoning.content.as_ref().unwrap()[0]), "full summary");
+    assert_eq!(content_text(first_part(&reasoning.content)), "full summary");
 }
 
 /// A raw reasoning event that carries no text must not displace the summary: the retry would otherwise lose the thought it exists to replay.
@@ -111,10 +126,10 @@ fn an_empty_raw_reasoning_event_keeps_the_summary() {
     capture.record_reasoning_delta(0, 0, "reasoning-1".into(), "");
 
     let items = capture.take_items();
-    let ConversationItem::Reasoning(reasoning) = &items[0] else {
+    let ConversationItem::Reasoning(reasoning) = nth(&items, 0) else {
         panic!("expected the summary to survive");
     };
-    assert_eq!(content_text(&reasoning.content.as_ref().unwrap()[0]), "the summary");
+    assert_eq!(content_text(first_part(&reasoning.content)), "the summary");
 }
 
 /// Same when the summary already spent the reasoning budget: the raw event records nothing, so the summary stays the recovery context.
@@ -130,10 +145,10 @@ fn a_budget_spent_raw_event_keeps_the_summary() {
     capture.record_reasoning_delta(0, 0, "reasoning-1".into(), "raw text past the cap");
 
     let items = capture.take_items();
-    let ConversationItem::Reasoning(reasoning) = &items[0] else {
+    let ConversationItem::Reasoning(reasoning) = nth(&items, 0) else {
         panic!("expected the summary to survive");
     };
-    let text = content_text(&reasoning.content.as_ref().unwrap()[0]);
+    let text = content_text(first_part(&reasoning.content));
     assert!(
         text.starts_with("summary "),
         "the summary is replayed: {text:.40}"
@@ -152,10 +167,10 @@ fn a_raw_delta_with_no_room_left_records_nothing() {
 
     let items = capture.take_items();
     assert_eq!(items.len(), 1);
-    let ConversationItem::Reasoning(reasoning) = &items[0] else {
+    let ConversationItem::Reasoning(reasoning) = nth(&items, 0) else {
         panic!("expected the summary to survive");
     };
-    assert_eq!(content_text(&reasoning.content.as_ref().unwrap()[0]), summary);
+    assert_eq!(content_text(first_part(&reasoning.content)), summary);
 }
 
 /// A disarmed capture (every stream that is not an armed recovery attempt) records nothing at all.
@@ -182,7 +197,7 @@ fn terminal_recovery_keeps_a_tool_free_turn() {
 
     let items = capture.take_items();
     assert_eq!(items.len(), 2);
-    let ConversationItem::Assistant(assistant) = &items[1] else {
+    let ConversationItem::Assistant(assistant) = nth(&items, 1) else {
         panic!("expected assistant item");
     };
     assert_eq!(assistant.content.as_ref(), "failed output");
@@ -261,17 +276,20 @@ fn terminal_recovery_merges_streamed_reasoning_into_the_final_item() {
 
     let items = capture.take_items();
     assert_eq!(items.len(), 3);
-    let ConversationItem::Reasoning(merged) = &items[0] else {
+    let ConversationItem::Reasoning(merged) = nth(&items, 0) else {
         panic!("expected reasoning item");
     };
-    assert_eq!(content_text(&merged.content.as_ref().unwrap()[0]), "raw reasoning");
+    assert_eq!(content_text(first_part(&merged.content)), "raw reasoning");
     assert_eq!(merged.encrypted_content.as_deref(), Some("cipher-1"));
-    let rs::SummaryPart::SummaryText(summary) = &merged.summary[0];
+    let Some(part) = merged.summary.first() else {
+        panic!("expected a summary part");
+    };
+    let rs::SummaryPart::SummaryText(summary) = part;
     assert_eq!(summary.text, "summary only");
-    let ConversationItem::Reasoning(sibling) = &items[1] else {
+    let ConversationItem::Reasoning(sibling) = nth(&items, 1) else {
         panic!("expected the unstreamed sibling to survive");
     };
-    assert_eq!(content_text(&sibling.content.as_ref().unwrap()[0]), "unstreamed");
+    assert_eq!(content_text(first_part(&sibling.content)), "unstreamed");
 }
 
 /// The opaque encrypted blob is charged to the replay budget.
@@ -288,11 +306,11 @@ fn an_oversized_encrypted_blob_is_dropped() {
     ]);
 
     let items = capture.take_items();
-    let ConversationItem::Reasoning(kept) = &items[0] else {
+    let ConversationItem::Reasoning(kept) = nth(&items, 0) else {
         panic!("expected reasoning item");
     };
     assert!(kept.encrypted_content.is_some(), "a blob that fits is kept");
-    let ConversationItem::Reasoning(trimmed) = &items[1] else {
+    let ConversationItem::Reasoning(trimmed) = nth(&items, 1) else {
         panic!("expected reasoning item");
     };
     assert!(
@@ -300,7 +318,7 @@ fn an_oversized_encrypted_blob_is_dropped() {
         "the oversized blob is dropped"
     );
     assert_eq!(
-        content_text(&trimmed.content.as_ref().unwrap()[0]),
+        content_text(first_part(&trimmed.content)),
         "another thought",
         "dropping the blob does not cost the readable thought"
     );
@@ -319,15 +337,16 @@ fn streamed_reasoning_the_wire_never_completed_replays_last() {
 
     let items = capture.take_items();
     assert_eq!(items.len(), 3, "completed items first, then the cut item");
-    let ConversationItem::Reasoning(first) = &items[0] else {
+    let ConversationItem::Reasoning(first) = nth(&items, 0) else {
         panic!("the wire order is preserved");
     };
+    // merge: id is Option<String>; index with nth from main
     assert_eq!(first.id.as_deref(), Some("reasoning-1"));
-    let ConversationItem::Assistant(assistant) = &items[1] else {
+    let ConversationItem::Assistant(assistant) = nth(&items, 1) else {
         panic!("expected assistant item");
     };
     assert_eq!(assistant.content.as_ref(), "the answer");
-    let ConversationItem::Reasoning(cut) = &items[2] else {
+    let ConversationItem::Reasoning(cut) = nth(&items, 2) else {
         panic!("expected the uncompleted item from the deltas");
     };
     assert_eq!(cut.id.as_deref(), Some("reasoning-late"));
@@ -380,7 +399,7 @@ fn a_terminal_turn_does_not_gain_items_from_the_deltas() {
 
     let items = capture.take_items();
     assert_eq!(items.len(), 2, "no item the wire left out: {items:?}");
-    let ConversationItem::Reasoning(reasoning) = &items[0] else {
+    let ConversationItem::Reasoning(reasoning) = nth(&items, 0) else {
         panic!("expected reasoning item");
     };
     assert_eq!(reasoning.id.as_deref(), Some("reasoning-final"));
@@ -398,10 +417,10 @@ fn terminal_content_wins_over_streamed_text() {
     ))]);
 
     let items = capture.take_items();
-    let ConversationItem::Reasoning(reasoning) = &items[0] else {
+    let ConversationItem::Reasoning(reasoning) = nth(&items, 0) else {
         panic!("expected reasoning item");
     };
-    assert_eq!(content_text(&reasoning.content.as_ref().unwrap()[0]), "final reasoning");
+    assert_eq!(content_text(first_part(&reasoning.content)), "final reasoning");
 }
 
 /// A runaway thought is capped and marked, so repeated recovery attempts cannot inflate the retry prompt without bound.
@@ -415,13 +434,13 @@ fn a_runaway_thought_is_capped_without_eliding_the_answer() {
 
     let items = capture.take_items();
     assert_eq!(items.len(), 2, "the answer survives the capped thought");
-    let ConversationItem::Reasoning(reasoning) = &items[0] else {
+    let ConversationItem::Reasoning(reasoning) = nth(&items, 0) else {
         panic!("expected reasoning item");
     };
-    let text = content_text(&reasoning.content.as_ref().unwrap()[0]);
+    let text = content_text(first_part(&reasoning.content));
     assert!(text.ends_with(TRUNCATION_MARKER), "truncation is marked");
     assert!(text.len() <= MAX_RECOVERY_REASONING_BYTES + TRUNCATION_MARKER.len());
-    let ConversationItem::Assistant(assistant) = &items[1] else {
+    let ConversationItem::Assistant(assistant) = nth(&items, 1) else {
         panic!("expected assistant item");
     };
     assert_eq!(assistant.content.as_ref(), "an answer past the thinking");
@@ -439,7 +458,7 @@ fn a_runaway_answer_is_capped_and_marked() {
     );
 
     let items = capture.take_items();
-    let ConversationItem::Assistant(assistant) = &items[0] else {
+    let ConversationItem::Assistant(assistant) = nth(&items, 0) else {
         panic!("expected assistant item");
     };
     assert!(assistant.content.ends_with(TRUNCATION_MARKER));
@@ -490,13 +509,10 @@ fn append_recovery_context_uses_synthetic_user_reminder() {
     );
 
     assert_eq!(request.items.len(), 2);
-    let ConversationItem::User(reminder) = &request.items[1] else {
+    let ConversationItem::User(reminder) = nth(&request.items, 1) else {
         panic!("expected user-role reminder");
     };
-    assert_eq!(
-        reminder.synthetic_reason,
-        Some(SyntheticReason::SystemReminder)
-    );
+    assert_eq!(reminder.synthetic_reason, SyntheticReason::SystemReminder);
     let [ContentPart::Text { text }] = reminder.content.as_slice() else {
         panic!("expected one text part");
     };

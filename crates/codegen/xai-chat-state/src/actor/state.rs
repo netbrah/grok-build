@@ -276,32 +276,9 @@ mod tests {
     fn test_sampling_config() -> SamplingConfig {
         SamplingConfig {
             base_url: "https://api.example.com".to_string(),
-            mtls_cert_dir: None,
             model: "test-model".to_string(),
-            max_completion_tokens: None,
-            temperature: None,
-            top_p: None,
-            max_retries: None,
-            rate_limit_retry_threshold: None,
-            api_backend: Default::default(),
-            extra_headers: Default::default(),
-            conversation_group_id: None,
-            query_params: Default::default(),
-            env_http_headers: Default::default(),
             context_window: std::num::NonZeroU64::new(128_000).unwrap(),
-            reasoning_effort: None,
-            ultra_wire_effort: None,
-            stream_tool_calls: None,
-            cache_ttl: None,
-            thinking_replay: None,
-            top_k: None,
-            stop_sequences: None,
-            disable_parallel_tool_use: None,
-            tool_cache_breakpoint: None,
-            supports_search_tool: false,
-            server_tools: None,
-            mcp_servers: None,
-            mcp_toolset_server: None,
+            ..Default::default()
         }
     }
 
