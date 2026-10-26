@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${GROK_PLUGIN_ROOT}/sidecar/catalog.mjs\" --write-agents --detach",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -14015,6 +14015,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "xai-grok-mods"
+version = "0.1.0"
+dependencies = [
+ "dunce",
+ "filetime",
+ "libc",
+ "parking_lot",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "which",
+ "xai-grok-tools",
+ "xai-tool-types",
+]
+
+[[package]]
 name = "xai-grok-otel"
 version = "0.1.0"
 dependencies = [
@@ -14590,6 +14611,7 @@ dependencies = [
  "xai-grok-mcp",
  "xai-grok-memory",
  "xai-grok-models",
+ "xai-grok-mods",
  "xai-grok-otel",
  "xai-grok-paths",
  "xai-grok-plugin-marketplace",

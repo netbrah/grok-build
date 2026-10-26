@@ -11,7 +11,7 @@ use super::prompt_turn_receipt::{PromptTurnReceipt, cancel_shell_child_turn};
 use crate::session::{SessionCommand, SessionThread};
 
 /// Shell runtime handle retained while a child is active.
-pub(crate) struct ShellChildRuntime {
+pub(crate) struct NativeShellChildRuntime {
     pub(crate) child_cmd_tx: mpsc::UnboundedSender<SessionCommand>,
     pub(crate) message_delivery: crate::session::message_delivery::MessageDeliveryHandle,
     pub(crate) active_message_target_session_id: String,
@@ -26,7 +26,7 @@ pub(crate) struct ShellChildRuntime {
     pub(crate) active_message_parent_prompt_index: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
-impl ChildControl for ShellChildRuntime {
+impl ChildControl for NativeShellChildRuntime {
     type ProgressFuture = LocalBoxFuture<SubagentProgress>;
 
     fn progress(&self) -> Self::ProgressFuture {
@@ -160,6 +160,51 @@ pub(crate) async fn await_session_thread_exit(
         if thread.is_finished() {
             return true;
         }
+    }
+}
+
+pub(crate) enum ShellChildRuntime {
+    Native(NativeShellChildRuntime),
+    Mod(xai_grok_mods::ModChildControl),
+}
+
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<ShellChildRuntime>();
+};
+
+impl ChildControl for ShellChildRuntime {
+    type ProgressFuture = LocalBoxFuture<SubagentProgress>;
+
+    fn progress(&self) -> Self::ProgressFuture {
+        match self { Self::Native(c) => c.progress(), Self::Mod(c) => c.progress() }
+    }
+
+    fn send_active_message(
+        &self,
+        d: ActiveAgentMessageDelivery,
+    ) -> SendBoxFuture<ActiveMessageAdmission> {
+        match self { Self::Native(c) => c.send_active_message(d), Self::Mod(c) => c.send_active_message(d) }
+    }
+
+    fn cancel(&self) {
+        match self { Self::Native(c) => c.cancel(), Self::Mod(c) => c.cancel() }
+    }
+
+    fn interrupt(&self) -> bool {
+        match self { Self::Native(c) => c.interrupt(), Self::Mod(c) => c.interrupt() }
+    }
+
+    fn accepts_native_message(&self, m: &AgentMailboxMessage) -> bool {
+        match self { Self::Native(c) => c.accepts_native_message(m), Self::Mod(c) => c.accepts_native_message(m) }
+    }
+
+    fn deliver_initial_message(&self, m: &AgentMailboxMessage) -> bool {
+        match self { Self::Native(c) => c.deliver_initial_message(m), Self::Mod(c) => c.deliver_initial_message(m) }
+    }
+
+    fn deliver_followup(&self, m: &AgentMailboxMessage) -> bool {
+        match self { Self::Native(c) => c.deliver_followup(m), Self::Mod(c) => c.deliver_followup(m) }
     }
 }
 

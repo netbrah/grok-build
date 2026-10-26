@@ -64,6 +64,7 @@ regex = { workspace = true }
 # detail of xai-grok-mcp::servers; shell never sees it. Every HTTP call site
 # in this crate uses workspace reqwest 0.12.
 xai-grok-mcp = { workspace = true }
+xai-grok-mods = { workspace = true }
 reqwest = { workspace = true, features = ["stream", "blocking"] }
 reqwest-middleware = { workspace = true }
 schemars = { workspace = true, features = ["indexmap2"] }

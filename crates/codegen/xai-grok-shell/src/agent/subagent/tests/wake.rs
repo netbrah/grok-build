@@ -985,3 +985,5 @@ async fn started_wake_with_failed_metadata_write_preserves_prior_durable_artifac
         })
         .await;
 }
+
+mod mod_adapter_tests;

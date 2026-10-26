@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "namespace": "cursor",
+  "runtime": {
+    "command": "node",
+    "args": ["sidecar/runner.mjs"],
+    "timeoutSecs": 1800,
+    "gracefulKillMs": 2000,
+    "envAllowlist": ["PATH","HOME","USER","TMPDIR","LANG","LC_ALL","CURSOR_API_KEY","HTTPS_PROXY","HTTP_PROXY","NO_PROXY"]
+  },
+  "capabilities": {
+    "liveSteer": true,
+    "sessionResume": true,
+    "mcpBridge": true,
+    "mcpInReadOnly": false
+  },
+  "mcpBridge": { "denyServers": ["pty", "codebase-memory", "weave"] }
+}

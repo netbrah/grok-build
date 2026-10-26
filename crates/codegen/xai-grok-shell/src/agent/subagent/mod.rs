@@ -66,6 +66,7 @@ pub(crate) use xai_grok_tools::implementations::grok_build::task::coordinator::{
 mod attempt_store;
 mod child_runtime;
 mod handle_request;
+mod mod_adapter;
 mod prompt_turn_receipt;
 mod prompt_turn_result;
 mod resume_window;

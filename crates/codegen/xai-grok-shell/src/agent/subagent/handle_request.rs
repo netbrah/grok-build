@@ -19,7 +19,7 @@ use xai_grok_telemetry::region::Parent;
 use xai_grok_telemetry::subagent_spawn::{SubagentSpawnPhase, phase_region};
 use xai_grok_tools::implementations::grok_build::task::types::ActiveAgentMessageSource;
 use xai_grok_tools::implementations::{grok_build, opencode};
-static SUBAGENTS_ACTIVE: xai_grok_telemetry::activity::ActivityGauge =
+pub(super) static SUBAGENTS_ACTIVE: xai_grok_telemetry::activity::ActivityGauge =
     xai_grok_telemetry::activity::ActivityGauge::work(
         xai_grok_telemetry::activity::SUBAGENTS_ACTIVE_KEY,
     );
@@ -916,6 +916,15 @@ pub(crate) async fn run_shell_child(
                 Some("scheduler_create" | "scheduler_list" | "scheduler_delete")
             )
         });
+    }
+    if let Some(validated) = super::mod_adapter::detect(&definition, &ctx) {
+        return super::mod_adapter::run(super::mod_adapter::Dispatch {
+            validated, request, ctx, completion_data, gateway, reporter, cancel_token, attempt_id,
+            agent_address, is_wake, queued_for, session_running, definition, effective_runtime,
+            resume_source, worktree_path, worktree_freshly_created, child_depth, spawn_prepare_span,
+            spawn_timer, start,
+        })
+        .await;
     }
     if request.fork_context {
         effective_runtime.model = Some(ctx.model_id.0.to_string());
@@ -1953,7 +1962,7 @@ pub(crate) async fn run_shell_child(
                     .map(|path| path.to_string_lossy().into_owned()),
                 effective_model_id: tracker_model_id.clone(),
                 definition_background,
-                control: ShellChildRuntime {
+                control: ShellChildRuntime::Native(super::child_runtime::NativeShellChildRuntime {
                     child_cmd_tx: child_handle.cmd_tx.clone(),
                     message_delivery: child_handle.message_delivery(),
                     active_message_target_session_id: child_session_id.0.to_string(),
@@ -1966,7 +1975,7 @@ pub(crate) async fn run_shell_child(
                     active_message_parent_prompt_index: ctx
                         .active_message_parent_prompt_index
                         .clone(),
-                },
+                }),
             };
             let promoted = if is_wake {
                 reporter.started_deferred(child).await

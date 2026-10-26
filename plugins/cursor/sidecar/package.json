@@ -1,0 +1,8 @@
+{
+  "name": "grok-mod-cursor-sidecar",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "dependencies": { "@cursor/sdk": "1.0.37" },
+  "scripts": { "test": "node --test runner.test.mjs" }
+}

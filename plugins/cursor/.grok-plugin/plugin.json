@@ -1,0 +1,7 @@
+{
+  "name": "cursor",
+  "version": "1.0.0",
+  "description": "Cursor SDK subagents via Grok-Build mod protocol v1",
+  "agents": ["./agents/", "./agents.generated/"],
+  "hooks": "./hooks/hooks.json"
+}

@@ -83,7 +83,7 @@ impl ChildRunner for SnapshotProbeRunner {
                     effective_model_id: "test-model".to_owned(),
                     definition_background: false,
                     control: SnapshotProbeControl {
-                        runtime: ShellChildRuntime {
+                        runtime: ShellChildRuntime::Native(NativeShellChildRuntime {
                             message_delivery:
                                 crate::session::message_delivery::MessageDeliveryHandle::new(
                                     child_cmd_tx.clone(),
@@ -101,7 +101,7 @@ impl ChildRunner for SnapshotProbeRunner {
                             active_message_parent_prompt_index: std::sync::Arc::clone(
                                 &live_prompt_index,
                             ),
-                        },
+                        }),
                         live_prompt_index,
                     },
                 })
