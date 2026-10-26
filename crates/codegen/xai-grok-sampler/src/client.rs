@@ -1054,6 +1054,16 @@ const ECHOED_REQUEST_CONFIG_FIELDS: &[&str] = &[
 /// would paper over malformed top-level `error` frames and the Strict dialect's no-synthesis
 /// contract, which the decoder tests pin as fatal.
 fn repair_gateway_event(value: &mut serde_json::Value) {
+    // SGLang's direct Responses route emits integral floats; OpenAI types created_at as number.
+    if let Some(created_at) = value.pointer_mut("/response/created_at")
+        && !created_at.is_u64()
+        && let Some(seconds) = created_at.as_f64()
+        && seconds.is_finite()
+        && seconds.fract() == 0.0
+        && (0.0..=9_007_199_254_740_992.0).contains(&seconds)
+    {
+        *created_at = serde_json::Value::from(seconds as u64);
+    }
     // Strip tools that async_openai's rs::Tool can't deserialize (e.g., xAI-specific "x_search").
     // Instead of maintaining a hardcoded allowlist, try deserializing each tool entry; if it fails, drop it.
     if let Some(tools) = value
@@ -8841,6 +8851,123 @@ mod tests {
                 panic!("expected a text-delta event");
             };
             assert_eq!(event.sequence_number, 42);
+        }
+    }
+
+    fn strict_lifecycle_created_at_frame(
+        event_type: &str,
+        created_at: serde_json::Value,
+    ) -> String {
+        serde_json::json!({
+            "type": event_type,
+            "sequence_number": 1,
+            "response": {
+                "id": "resp_created_at_test",
+                "object": "response",
+                "created_at": created_at,
+                "model": "qwen3.8-flash-next",
+                "status": if event_type == "response.completed" {
+                    "completed"
+                } else {
+                    "in_progress"
+                },
+                "output": []
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn strict_lifecycle_integral_float_created_at_decodes() {
+        let mut failures = Vec::new();
+        for event_type in [
+            "response.created",
+            "response.in_progress",
+            "response.completed",
+        ] {
+            let integer =
+                strict_lifecycle_created_at_frame(event_type, serde_json::json!(1792951146_u64));
+            serde_json::from_str::<rs::ResponseStreamEvent>(&integer)
+                .expect("integer twin decodes on the strict fast path");
+            let data =
+                strict_lifecycle_created_at_frame(event_type, serde_json::json!(1792951146.0));
+            match deserialize_response_event_for_dialect(
+                &data,
+                ResponsesWireDialect::Strict,
+                "qwen3.8-flash-next",
+            ) {
+                Ok(Some(event)) => {
+                    let (actual_type, created_at) = match event {
+                        rs::ResponseStreamEvent::ResponseCreated(event) => {
+                            ("response.created", event.response.created_at)
+                        }
+                        rs::ResponseStreamEvent::ResponseInProgress(event) => {
+                            ("response.in_progress", event.response.created_at)
+                        }
+                        rs::ResponseStreamEvent::ResponseCompleted(event) => {
+                            ("response.completed", event.response.created_at)
+                        }
+                        event => panic!("unexpected lifecycle event: {event:?}"),
+                    };
+                    assert_eq!((actual_type, created_at), (event_type, 1792951146));
+                }
+                result => failures.push(format!("{event_type}: {result:?}")),
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "integral-float lifecycle frames must decode: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn strict_lifecycle_integer_created_at_unchanged() {
+        for event_type in [
+            "response.created",
+            "response.in_progress",
+            "response.completed",
+        ] {
+            let data =
+                strict_lifecycle_created_at_frame(event_type, serde_json::json!(1792951146_u64));
+            let baseline = serde_json::from_str::<rs::ResponseStreamEvent>(&data)
+                .expect("integer lifecycle frame decodes on the strict fast path");
+            let decoded = deserialize_response_event_for_dialect(
+                &data,
+                ResponsesWireDialect::Strict,
+                "qwen3.8-flash-next",
+            )
+            .expect("integer lifecycle frame decodes")
+            .expect("integer lifecycle frame is not skipped");
+            assert_eq!(
+                serde_json::to_value(decoded).unwrap(),
+                serde_json::to_value(baseline).unwrap(),
+                "{event_type} must preserve the whole typed event"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_lifecycle_invalid_created_at_stays_rejected() {
+        let integer = strict_lifecycle_created_at_frame(
+            "response.created",
+            serde_json::json!(1792951146_u64),
+        );
+        serde_json::from_str::<rs::ResponseStreamEvent>(&integer)
+            .expect("integer twin decodes on the strict fast path");
+        for created_at in [1792951146.5, -1.0] {
+            let data = strict_lifecycle_created_at_frame(
+                "response.created",
+                serde_json::json!(created_at),
+            );
+            let decoded = deserialize_response_event_for_dialect(
+                &data,
+                ResponsesWireDialect::Strict,
+                "qwen3.8-flash-next",
+            );
+            assert!(
+                matches!(&decoded, Err(SamplingError::Serialization(_))),
+                "created_at {created_at:?} must remain rejected: {decoded:?}"
+            );
         }
     }
 
