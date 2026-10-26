@@ -1266,4 +1266,305 @@ mod tests {
             "wide legend should keep label + tokens on one line, got: {l14:?}"
         );
     }
+
+    fn snapshot_with_rows() -> ContextInfo {
+        let mut snapshot = snapshot();
+        // These labels must not follow the shell constructors changed by U5.
+        snapshot.usage_categories = vec![
+            TokenUsageCategory {
+                label: "Skills".into(),
+                tokens: 2_400,
+                detail: Some("2 skills".into()),
+            },
+            TokenUsageCategory {
+                label: "MCP servers".into(),
+                tokens: 300,
+                detail: Some("1 server".into()),
+            },
+        ];
+        snapshot
+    }
+
+    fn fallback_data() -> xai_grok_shell::session::SessionInfoData {
+        xai_grok_shell::session::SessionInfoData {
+            agent_name: None,
+            model: None,
+            model_display_name: None,
+            resolved_model_id: None,
+            model_fingerprint: None,
+            show_model_fingerprint: false,
+            api_backend: None,
+            conversation_id: None,
+            turns: 0,
+            turn_index: 0,
+            context: ContextInfo {
+                auto_compact_threshold_percent:
+                    xai_grok_shell::util::config::DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT,
+                ..ContextInfo::default()
+            },
+        }
+    }
+
+    fn ctx_u0_populated_data() -> xai_grok_shell::session::SessionInfoData {
+        let mut data = fallback_data();
+        data.model = Some("grok-4".into());
+        data.turns = 5;
+        data.turn_index = 4;
+        data.context = snapshot();
+        data
+    }
+
+    fn ctx_u0_response(
+        data: xai_grok_shell::session::SessionInfoData,
+    ) -> xai_grok_shell::session::SessionInfoResponse {
+        xai_grok_shell::session::SessionInfoResponse {
+            session_id: "ctx-u0-session".into(),
+            cwd: "/ctx-u0".into(),
+            data,
+        }
+    }
+
+    fn ctx_u0_body(data: xai_grok_shell::session::SessionInfoData) -> String {
+        serde_json::to_string(&xai_grok_shell::session::ExtMethodResult::success(
+            serde_json::to_value(ctx_u0_response(data)).unwrap(),
+        ))
+        .unwrap()
+    }
+
+    fn ctx_u0_output(block: &ContextInfoBlock, width: u16, max_lines: Option<u16>) -> String {
+        let output = block.output(&BlockContext {
+            mode: crate::scrollback::types::DisplayMode::Expanded,
+            is_running: false,
+            width,
+            raw: false,
+            max_lines,
+            appearance: AppearanceConfig::default(),
+            is_selected: false,
+            cwd: None,
+        });
+        output
+            .lines
+            .iter()
+            .flat_map(|line| {
+                line.content
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .chain(["\n"])
+            })
+            .collect()
+    }
+
+    // Frozen on the macOS/Linux Unicode glyph basis; never re-capture.
+    const GOLDEN_WIDE_80: &str = r#"Context
+
+36.7k / 1.0m tokens (3.67%)
+grok-4
+
+◆ ◆ ◆ ◆ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+
+◆ System prompt        1.2k tokens   (0.1%)
+◆ Messages            29.9k tokens   (3.0%)
+◆ Reasoning/overhead   5.6k tokens   (0.6%)
+◇ Free                 963k tokens    (96%)
+
+◈ Tool definitions     5.6k tokens   (0.6%) · 12 tools
+
+Auto-compact at 85% · ~813k tokens remaining
+
+Turns: 5 · Tool calls: 12 · Compactions: 0
+"#;
+
+    const GOLDEN_NARROW_40: &str = r#"Context
+
+36.7k / 1.0m tokens (3.67%)
+grok-4
+
+◆ ◆ ◆ ◆ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+
+◆ System prompt
+ 1.2k tokens   (0.1%)
+◆ Messages
+ 29.9k tokens   (3.0%)
+◆ Reasoning/overhead
+ 5.6k tokens   (0.6%)
+◇ Free
+ 963k tokens   (96%)
+
+◈ Tool definitions
+ 5.6k tokens   (0.6%) · 12 tools
+
+Auto-compact at 85% · ~813k tokens
+remaining
+
+Turns: 5 · Tool calls: 12 · Compactions:
+0
+"#;
+
+    const GOLDEN_WIDE_BUDGET6: &str = r#"Context
+
+36.7k / 1.0m tokens (3.67%)
+grok-4
+ …
+"#;
+
+    const GOLDEN_FALLBACK_80: &str = r#"Context
+
+0 / 0 tokens (0.00%)
+unknown
+
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+
+◆ System prompt     0 tokens   (-)
+◆ Messages          0 tokens   (-)
+◇ Free              0 tokens   (-)
+
+◈ Tool definitions  0 tokens   (-) · 0 tools
+
+Turns: 0 · Tool calls: 0 · Compactions: 0
+"#;
+
+    const GOLDEN_FALLBACK_NARROW_40: &str = r#"Context
+
+0 / 0 tokens (0.00%)
+unknown
+
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+
+◆ System prompt
+ 0 tokens   (-)
+◆ Messages
+ 0 tokens   (-)
+◇ Free
+ 0 tokens   (-)
+
+◈ Tool definitions
+ 0 tokens   (-) · 0 tools
+
+Turns: 0 · Tool calls: 0 · Compactions:
+0
+"#;
+
+    const OLD_SHAPE_BODY: &str = r#"{"result":{"sessionId":"ctx-u0-session","cwd":"/ctx-u0","model":"grok-4","resolvedModelId":null,"modelFingerprint":null,"showModelFingerprint":false,"turns":5,"turnIndex":4,"context":{"used":36700,"total":1000000,"systemPromptTokens":1200,"toolDefinitionsCount":12,"toolDefinitionsTokens":5600,"compactionCount":0,"turnCount":5,"toolCallCount":12,"messageCount":8,"messageTokens":29900,"freeTokens":963300,"usagePct":4,"autoCompactThresholdPercent":85}}}"#;
+
+    const FALLBACK_BODY: &str = r#"{"result":{"sessionId":"ctx-u0-session","cwd":"/ctx-u0","model":null,"resolvedModelId":null,"modelFingerprint":null,"showModelFingerprint":false,"turns":0,"turnIndex":0,"context":{"used":0,"total":0,"systemPromptTokens":0,"toolDefinitionsCount":0,"toolDefinitionsTokens":0,"compactionCount":0,"turnCount":0,"toolCallCount":0,"messageCount":0,"messageTokens":0,"freeTokens":0,"usagePct":0,"autoCompactThresholdPercent":85}}}"#;
+
+    fn ctx_u0_assert_goldens(cases: &[(&str, String, &str)]) {
+        // Emit every cell before the aggregate assertion can panic.
+        for (label, actual, expected) in cases {
+            eprintln!(
+                "CTX_U0_CELL {label} {}",
+                if actual == expected { "EQUAL" } else { "FAIL" }
+            );
+        }
+        let actual: Vec<_> = cases
+            .iter()
+            .map(|(label, actual, _)| (*label, actual.as_str()))
+            .collect();
+        let expected: Vec<_> = cases
+            .iter()
+            .map(|(label, _, expected)| (*label, *expected))
+            .collect();
+        assert_eq!(actual, expected, "CTX-U0 fixed whole-output goldens");
+    }
+
+    #[test]
+    fn ctx_u0_prechange_populated_goldens() {
+        let block = ContextInfoBlock::new(snapshot(), "grok-4");
+        ctx_u0_assert_goldens(&[
+            ("PW80", ctx_u0_output(&block, 80, None), GOLDEN_WIDE_80),
+            ("PN40", ctx_u0_output(&block, 40, None), GOLDEN_NARROW_40),
+            (
+                "PB6",
+                ctx_u0_output(&block, 80, Some(6)),
+                GOLDEN_WIDE_BUDGET6,
+            ),
+        ]);
+        assert_eq!(ctx_u0_body(ctx_u0_populated_data()), OLD_SHAPE_BODY);
+        let decoded: xai_grok_shell::session::ExtMethodResult<
+            xai_grok_shell::session::SessionInfoResponse,
+        > = serde_json::from_str(OLD_SHAPE_BODY).unwrap();
+        assert!(decoded.error.is_none());
+        assert_eq!(
+            serde_json::to_value(decoded.result.unwrap()).unwrap(),
+            serde_json::to_value(ctx_u0_response(ctx_u0_populated_data())).unwrap()
+        );
+        let rows = ContextInfoBlock::new(snapshot_with_rows(), "grok-4");
+        for width in [80, 40] {
+            let text = ctx_u0_output(&rows, width, None);
+            assert!(text.contains("Skills") && text.contains("2 skills"));
+            assert!(text.contains("MCP servers") && text.contains("1 server"));
+        }
+    }
+
+    #[test]
+    fn ctx_u0_prechange_fallback_goldens() {
+        let data = fallback_data();
+        assert!(data.model.is_none());
+        let block = ContextInfoBlock::new(data.context, "unknown");
+        ctx_u0_assert_goldens(&[
+            ("FW80", ctx_u0_output(&block, 80, None), GOLDEN_FALLBACK_80),
+            (
+                "FN40",
+                ctx_u0_output(&block, 40, None),
+                GOLDEN_FALLBACK_NARROW_40,
+            ),
+        ]);
+        assert_eq!(ctx_u0_body(fallback_data()), FALLBACK_BODY);
+        let decoded: xai_grok_shell::session::ExtMethodResult<
+            xai_grok_shell::session::SessionInfoResponse,
+        > = serde_json::from_str(FALLBACK_BODY).unwrap();
+        assert!(decoded.error.is_none());
+        let response = decoded.result.unwrap();
+        assert!(response.data.model.is_none());
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::to_value(ctx_u0_response(fallback_data())).unwrap()
+        );
+    }
+
+    #[test]
+    fn ctx_u0_prechange_modal_crosschecks() {
+        let theme = test_theme();
+        let populated = ContextInfoBlock::new(snapshot(), "grok-4");
+        let fallback = ContextInfoBlock::new(fallback_data().context, "unknown");
+        ctx_u0_assert_goldens(&[
+            (
+                "PM80",
+                all_text(&populated.lines_for_width(&theme, 80)),
+                GOLDEN_WIDE_80,
+            ),
+            (
+                "FM80",
+                all_text(&fallback.lines_for_width(&theme, 80)),
+                GOLDEN_FALLBACK_80,
+            ),
+        ]);
+    }
 }
