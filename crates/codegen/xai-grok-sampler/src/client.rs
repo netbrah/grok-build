@@ -34,7 +34,15 @@ use xai_grok_sampling_types::{
     build_messages_request,
     is_check_event, messages, rs,
 };
-use xai_grok_sampling_types::request_validation::EncodedMessagesRequest;
+use xai_grok_sampling_types::request_validation::{
+    EncodedMessagesRequest, NativeHistoryRequest, RequestValidationError,
+    check_native_history_request, validate_native_messages_send,
+};
+use xai_grok_sampling_types::conversation::native_search_history::{
+    NativeFinalCarrier, NativeHistoryBoundary, NativeHistoryCapture, NativeHistoryExecution,
+    NativeHistoryRequestContext, NativeHistoryRequirement, NativeHistoryVersions,
+    NativeHistoryWriteAuthority, NativeLineage, NativePlanRefusal, NativeReplayDialect, NativeReplayDomain,
+};
 
 use crate::config::{AuthScheme, OriginClientInfo, SamplerConfig};
 use crate::events::SamplingErrorInfo;
@@ -3654,6 +3662,159 @@ impl SamplingClient {
     // Anthropic Messages API
     // =========================================================================
 
+    fn native_history_for_conversation(
+        &self,
+        request: &ConversationRequest,
+    ) -> NativeHistoryRequest {
+        request
+            .native_history
+            .clone()
+            .unwrap_or_else(|| self.inactive_native_history())
+    }
+
+    fn inactive_native_history(&self) -> NativeHistoryRequest {
+        NativeHistoryRequest::new(
+            NativeHistoryRequestContext::captured(
+                NativeHistoryRequirement::Inactive,
+                NativeHistoryCapture {
+                    history: NativeHistoryBoundary {
+                        items: 0,
+                        digest: String::new(),
+                    },
+                    history_revision: 0,
+                    lineage: NativeLineage {
+                        id: String::new(),
+                        source_revision: 0,
+                        source_digest: String::new(),
+                    },
+                    native_generation: 0,
+                    high_water: 0,
+                    projection_revision: 0,
+                    strict_append_sequence: 0,
+                    binding_generation: 0,
+                    install_generation: 0,
+                    issued_request: String::new(),
+                    target: NativeReplayDomain {
+                        backend: ApiBackend::Messages,
+                        dialect: NativeReplayDialect::Messages,
+                        model: String::new(),
+                        row: String::new(),
+                        provider: String::new(),
+                        deployment: String::new(),
+                        deployment_revision: String::new(),
+                        endpoint: String::new(),
+                        principal: String::new(),
+                    },
+                    execution: NativeHistoryExecution::Server,
+                    original_admission: xai_grok_sampling_types::SearchAdmission {
+                        supports_search_tool: false,
+                        has_searchable_tools: false,
+                    },
+                    versions: NativeHistoryVersions {
+                        schema: 0,
+                        policy: 0,
+                        projection: 0,
+                        reader: 0,
+                        limits: 0,
+                    },
+                },
+                NativeHistoryWriteAuthority::SendOnly,
+            ),
+            None,
+        )
+    }
+
+    fn check_native_conversation(
+        &self,
+        request: &mut ConversationRequest,
+        native: &mut NativeHistoryRequest,
+    ) -> Result<()> {
+        if let Err(reason) = check_native_history_request(request, native.context(), native.plan())
+        {
+            request.invalidate_encoded();
+            native.invalidate_plan();
+            return Err(RequestValidationError::NativeHistory { reason }.into());
+        }
+        Ok(())
+    }
+
+    fn validate_native_messages_transport(
+        &self,
+        context: &NativeHistoryRequestContext,
+        request: &reqwest::Request,
+    ) -> Result<()> {
+        if context.requirement() == NativeHistoryRequirement::Inactive {
+            return Ok(());
+        }
+        let target = &context.capture().target;
+        let stale = || {
+            SamplingError::from(RequestValidationError::NativeHistory {
+                reason: NativePlanRefusal::StaleContext,
+            })
+        };
+        if self.api_backend() != ApiBackend::Messages
+            || target.backend != ApiBackend::Messages
+            || target.dialect != NativeReplayDialect::Messages
+            || request.url().as_str() != target.endpoint
+        {
+            return Err(stale());
+        }
+        let bytes = request
+            .body()
+            .and_then(reqwest::Body::as_bytes)
+            .ok_or_else(stale)?;
+        let body: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| stale())?;
+        if body.get("model").and_then(serde_json::Value::as_str) != Some(target.model.as_str()) {
+            return Err(stale());
+        }
+        Ok(())
+    }
+
+    fn validate_native_messages_http(
+        &self,
+        native: &mut NativeHistoryRequest,
+        built: &reqwest::Request,
+        expected: &EncodedMessagesRequest,
+    ) -> Result<()> {
+        let result = (|| {
+            if native.context().requirement() == NativeHistoryRequirement::Inactive
+                && native.plan().is_none()
+            {
+                return Ok(());
+            }
+            self.validate_native_messages_transport(native.context(), built)?;
+            let changed = || {
+                SamplingError::from(RequestValidationError::NativeHistory {
+                    reason: NativePlanRefusal::FinalCarrierChanged,
+                })
+            };
+            let bytes = built
+                .body()
+                .and_then(reqwest::Body::as_bytes)
+                .ok_or_else(changed)?;
+            let capture = |bytes: &[u8]| -> Result<NativeFinalCarrier> {
+                if bytes.len() as u64 > xai_grok_sampling_types::request_validation::MAX_ENCODED_MESSAGES_REQUEST_BYTES {
+                    return Err(changed());
+                }
+                let mut owned = Vec::new();
+                owned
+                    .try_reserve_exact(bytes.len())
+                    .map_err(|_| changed())?;
+                owned.extend_from_slice(bytes);
+                NativeFinalCarrier::capture(owned.into()).map_err(|_| changed())
+            };
+            let actual = capture(bytes)?;
+            let expected = capture(expected.as_bytes())?;
+            validate_native_messages_send(native.context(), native.plan(), &actual, Some(&expected))
+                .map(|_| ())
+                .map_err(|reason| RequestValidationError::NativeHistory { reason }.into())
+        })();
+        if result.is_err() {
+            native.invalidate_plan();
+        }
+        result
+    }
+
     fn apply_message_defaults(&self, request: &mut MessagesRequestWrapper) -> Result<()> {
         request.inner.fill_model(self.defaults.model.clone());
         request.inner.fill_max_tokens(
@@ -3679,6 +3840,14 @@ impl SamplingClient {
         &self,
         request: &ConversationRequest,
     ) -> std::result::Result<EncodedMessagesRequest, SamplingError> {
+        self.finalize_conversation_messages(request).map(|(_, encoded)| encoded)
+    }
+
+    /// Finalize one already-bound request for checked native-plan construction.
+    pub fn finalize_conversation_messages(
+        &self,
+        request: &ConversationRequest,
+    ) -> Result<(ConversationRequest, EncodedMessagesRequest)> {
         let mut request = request.clone();
         self.apply_conversation_defaults(&mut request)?;
         let mut messages_request = build_messages_request(&request);
@@ -3691,16 +3860,24 @@ impl SamplingClient {
         messages_request.fill_temperature(self.defaults.temperature);
         messages_request.fill_top_p(self.defaults.top_p);
         messages_request.set_stream(Some(true));
-        xai_grok_sampling_types::request_validation::validate_and_encode_messages_request(
+        let encoded = xai_grok_sampling_types::request_validation::validate_and_encode_messages_request(
             &messages_request,
-        )
-        .map_err(SamplingError::from)
+        ).map_err(SamplingError::from)?;
+        Ok((request, encoded))
     }
 
     /// Create a message using the Anthropic Messages API (non-streaming).
     pub async fn create_message(
         &self,
+        request: MessagesRequestWrapper,
+    ) -> Result<messages::MessagesResponse> {
+        self.create_message_with_history(request, self.inactive_native_history()).await
+    }
+
+    async fn create_message_with_history(
+        &self,
         mut request: MessagesRequestWrapper,
+        mut native: NativeHistoryRequest,
     ) -> Result<messages::MessagesResponse> {
         self.apply_message_defaults(&mut request)?;
 
@@ -3752,7 +3929,9 @@ impl SamplingClient {
         } = self.post(self.endpoint("messages"));
         let http_request = grok_headers.apply(builder).body(encoded.as_bytes().to_vec());
 
-        let response = http_request.send().await.map_err(|e| {
+        let built_request = http_request.build()?;
+        self.validate_native_messages_http(&mut native, &built_request, &encoded)?;
+        let response = self.http.execute(built_request).await.map_err(|e| {
             tracing::debug!("HTTP request failed: {}", e);
             e
         })?;
@@ -3826,6 +4005,7 @@ impl SamplingClient {
         request: MessagesRequestWrapper,
         carrier: Option<EncodedMessagesRequest>,
         dispatch: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        native: NativeHistoryRequest,
     ) -> Result<(
         BoxStream<'static, Result<crate::messages_continuation::MessagesStreamFrame>>,
         Option<ResponseModelMetadata>,
@@ -3836,11 +4016,11 @@ impl SamplingClient {
             model_id = request.inner.model(),
         );
         if region.span().is_disabled() {
-            self.create_message_stream_inner(request, carrier, dispatch, region)
+            self.create_message_stream_inner(request, carrier, dispatch, native, region)
                 .await
         } else {
             let span = region.span().clone();
-            self.create_message_stream_inner(request, carrier, dispatch, region)
+            self.create_message_stream_inner(request, carrier, dispatch, native, region)
                 .instrument(span)
                 .await
         }
@@ -3854,7 +4034,7 @@ impl SamplingClient {
         Option<ResponseModelMetadata>,
     )> {
         let (frames, metadata) = self
-            .create_message_stream_with_carrier(request, None, None)
+            .create_message_stream_with_carrier(request, None, None, self.inactive_native_history())
             .await?;
         Ok((
             frames.map(|result| result.map(|frame| frame.event)).boxed(),
@@ -3867,6 +4047,7 @@ impl SamplingClient {
         mut request: MessagesRequestWrapper,
         carrier: Option<EncodedMessagesRequest>,
         dispatch: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        mut native: NativeHistoryRequest,
         region: crate::span_timing::Region,
     ) -> Result<(
         BoxStream<'static, Result<crate::messages_continuation::MessagesStreamFrame>>,
@@ -3888,6 +4069,7 @@ impl SamplingClient {
         // headers that `post()` applies, so no explicit header is added —
         // reqwest's `.json()` (contains_key guard, request.rs:452-455 of
         // 0.12.24) likewise skips inserting it here.
+        let banked = carrier.is_some();
         let encoded = match carrier {
             Some(carrier) => carrier,
             None => {
@@ -3899,6 +4081,15 @@ impl SamplingClient {
                 .map_err(SamplingError::from)?
             }
         };
+        let candidate = if banked && native.context().requirement() == NativeHistoryRequirement::Selected {
+            self.apply_message_defaults(&mut request)?;
+            request.inner.set_stream(Some(true));
+            Some(xai_grok_sampling_types::request_validation::validate_and_encode_messages_request(&request.inner)
+                .map_err(SamplingError::from)?)
+        } else {
+            None
+        };
+        let expected = candidate.as_ref().unwrap_or(&encoded);
 
         let x_grok_conv_id = request.x_grok_conv_id.as_deref().unwrap_or_default();
         let x_grok_req_id = request.x_grok_req_id.as_deref().unwrap_or_default();
@@ -3942,6 +4133,7 @@ impl SamplingClient {
             "Sending messages API stream request"
         );
         Self::log_request_headers(&built_request, "messages");
+        self.validate_native_messages_http(&mut native, &built_request, expected)?;
         if let Some(dispatch) = dispatch {
             dispatch.store(true, std::sync::atomic::Ordering::SeqCst);
         }
@@ -4344,13 +4536,27 @@ impl SamplingClient {
 
     pub(crate) async fn conversation_stream_messages_frames(
         &self,
-        mut request: ConversationRequest,
+        request: ConversationRequest,
         dispatch: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<(
         BoxStream<'static, Result<crate::messages_continuation::MessagesStreamFrame>>,
         Option<ResponseModelMetadata>,
     )> {
+        let native = self.native_history_for_conversation(&request);
+        self.conversation_stream_messages_frames_with_history(request, dispatch, native).await
+    }
+
+    async fn conversation_stream_messages_frames_with_history(
+        &self,
+        mut request: ConversationRequest,
+        dispatch: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        mut native: NativeHistoryRequest,
+    ) -> Result<(
+        BoxStream<'static, Result<crate::messages_continuation::MessagesStreamFrame>>,
+        Option<ResponseModelMetadata>,
+    )> {
         self.apply_conversation_defaults(&mut request)?;
+        self.check_native_conversation(&mut request, &mut native)?;
 
         // REQVALID-1 47b (D-5): a carrier cached by the retry loop (the
         // encode owner, SP-2) rides the request in — the wrapper rebuild
@@ -4379,8 +4585,11 @@ impl SamplingClient {
             wrapper.trace = Some(trace);
         }
 
-        self.create_message_stream_with_carrier(wrapper, carrier, dispatch)
-            .await
+        let result = self.create_message_stream_with_carrier(wrapper, carrier, dispatch, native).await;
+        if result.is_err() {
+            request.invalidate_encoded();
+        }
+        result
     }
 
     /// Send a conversation request using the Anthropic Messages API (non-streaming).
@@ -4388,7 +4597,9 @@ impl SamplingClient {
         &self,
         mut request: ConversationRequest,
     ) -> Result<messages::MessagesResponse> {
+        let mut native = self.native_history_for_conversation(&request);
         self.apply_conversation_defaults(&mut request)?;
+        self.check_native_conversation(&mut request, &mut native)?;
 
         let trace = request.trace.take();
         let x_grok_conv_id = request.x_grok_conv_id.clone();
@@ -4412,7 +4623,11 @@ impl SamplingClient {
             wrapper.trace = Some(trace);
         }
 
-        self.create_message(wrapper).await
+        let result = self.create_message_with_history(wrapper, native).await;
+        if result.is_err() {
+            request.invalidate_encoded();
+        }
+        result
     }
 
     /// Backend-aware streaming call that collects the full response.
@@ -4432,6 +4647,22 @@ impl SamplingClient {
         request: ConversationRequest,
         idle_timeout: std::time::Duration,
     ) -> Result<ConversationResponse> {
+        let native = self.native_history_for_conversation(&request);
+        self.conversation_collect_with_idle_timeout_and_history(request, idle_timeout, native).await
+    }
+
+    async fn conversation_collect_with_idle_timeout_and_history(
+        &self,
+        mut request: ConversationRequest,
+        idle_timeout: std::time::Duration,
+        native: NativeHistoryRequest,
+    ) -> Result<ConversationResponse> {
+        if native.context().requirement() == NativeHistoryRequirement::Selected
+            && self.api_backend() != ApiBackend::Messages
+        {
+            request.invalidate_encoded();
+            return Err(RequestValidationError::NativeHistory { reason: NativePlanRefusal::StaleContext }.into());
+        }
         let request_id = crate::types::RequestId::random();
         let length_policy = request.length_policy;
         let result = match self.api_backend() {
@@ -4452,7 +4683,8 @@ impl SamplingClient {
                 crate::stream::collect_response(events).await
             }
             ApiBackend::Messages => {
-                let (raw, meta) = self.conversation_stream_messages(request).await?;
+                let (frames, meta) = self.conversation_stream_messages_frames_with_history(request, None, native).await?;
+                let raw = frames.map(|result| result.map(|frame| frame.event)).boxed();
                 let events = crate::stream::stream_messages(raw, meta, request_id, idle_timeout);
                 crate::stream::collect_response(events).await
             }
@@ -4514,6 +4746,989 @@ fn stream_collect_error(info: SamplingErrorInfo) -> SamplingError {
 
 #[cfg(test)]
 mod tests {
+    use xai_grok_sampling_types::conversation::native_search_history::*;
+    use xai_grok_sampling_types::conversation::projection::{
+        Boundary, DiscoveryOrigin, NativeHistoryAction, NativeQualification, NativeReplayDialect,
+        NativeReplayDomain, NativeReplayShape, TargetRoute,
+    };
+    use xai_grok_sampling_types::request_validation::NativeHistoryRequest;
+
+    fn native_content_digest(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    fn k1_prepare(
+        client: &SamplingClient,
+        mut request: ConversationRequest,
+        endpoint: &str,
+        streaming: bool,
+    ) -> ConversationRequest {
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+        use xai_grok_sampling_types::ConversationItem as Item;
+        use xai_grok_sampling_types::conversation::tool_search::ToolSearchItem;
+        use serde_json::{Value, json};
+
+        let mut blobs = BTreeMap::<String, Arc<[u8]>>::new();
+        let mut put = |kind: &str, value: Value| {
+            let bytes = serde_json::to_vec(&value).unwrap();
+            let reference = NativeBlobRef {
+                kind: kind.into(),
+                byte_len: bytes.len() as u64,
+                digest: native_content_digest(&bytes),
+            };
+            blobs.insert(reference.digest.clone(), bytes.into());
+            reference
+        };
+        let source_coordinate = |block| NativeSourceCoordinate {
+            lineage: "k1-lineage".into(),
+            producing_binding: "k1-issued-A".into(),
+            turn: 1,
+            item: 0,
+            response: 0,
+            block,
+            submember: None,
+            occurrence: block,
+        };
+        let raw = [
+            json!({"type":"server_tool_use","id":"srvtoolu_k1","name":"tool_search_tool_regex","input":{"query":"private fixture query"}}),
+            json!({"type":"tool_search_tool_result","tool_use_id":"srvtoolu_k1","content":{"type":"tool_search_tool_search_result","tool_references":[]}}),
+        ];
+        let offset = request.items.len();
+        let mut original = request.items.clone();
+        original.extend(raw.iter().map(|value| Item::Discovery {
+            item: ToolSearchItem::from_wire(value.clone()).unwrap(),
+        }));
+        original.push(Item::user("Continue after search."));
+        let input_history_bytes: Arc<[u8]> = serde_json::to_vec(&original).unwrap().into();
+        let history = NativeHistoryBoundary {
+            items: original.len() as u64,
+            digest: native_content_digest(&input_history_bytes),
+        };
+        let origin = put(
+            "producing_binding",
+            json!({"request":"k1-issued-A","generation":17,"origin":{"status":"Unknown"}}),
+        );
+        let source = NativeSource {
+            schema_version: 2,
+            lineage: "k1-lineage".into(),
+            source_revision: 3,
+            producing_bindings: vec![NativeProducingBinding {
+                request: "k1-issued-A".into(),
+                generation: Some(17),
+                origin: json!({"status":"Unknown"}),
+                origin_ref: origin.clone(),
+            }],
+            responses: vec![NativeResponseBoundary {
+                occurrence: 0,
+                request: "k1-issued-A".into(),
+                lease: 1,
+                attempt: 1,
+                continuation: 0,
+                provider_response_id: Some(json!("msg_k1")),
+                source_stop_reason: Some("end_turn".into()),
+                block_start: 0,
+                block_end: 2,
+                stream_complete: true,
+                status: NativeResponseStatus::Accepted,
+            }],
+            ordered_blocks: raw
+                .iter()
+                .enumerate()
+                .map(|(index, value)| NativeRawBlock {
+                    coordinates: source_coordinate(index as u64),
+                    wire_index: index as u32,
+                    arrival_ordinal: index as u64,
+                    block: put("raw_block", value.clone()),
+                    partial: None,
+                    state: NativeBlockState::ClosedFaithful,
+                    eligible_ref: None,
+                    eligible_unavailable: None,
+                })
+                .collect(),
+            eligible_snapshots: vec![],
+            older_sources: vec![],
+        };
+        let source_ref = put(
+            "source",
+            serde_json::to_value(NativeSourceV2::from_parts(source.clone(), vec![])).unwrap(),
+        );
+        let active_ref = put(
+            "active",
+            serde_json::to_value(NativeActive::default()).unwrap(),
+        );
+        let mut ledger = NativeLedger {
+            source_digest: source_ref.digest.clone(),
+            active_digest: active_ref.digest.clone(),
+            groups: vec![NativeGroupRecord {
+                key: "k1-completed".into(),
+                family: "Messages".into(),
+                execution: "server".into(),
+                origin_ref: origin.clone(),
+                validated_join: Some("srvtoolu_k1".into()),
+                keyless_server_fifo: false,
+                members: (0..2).map(source_coordinate).collect(),
+                duplicate_observations: vec![],
+                state: "Completed".into(),
+            }],
+            accounting: (0..2)
+                .map(|index| NativeViewLink {
+                    source: source_coordinate(index),
+                    source_digest: source_ref.digest.clone(),
+                    view_item: Some(offset as u64 + index),
+                    view_digest: Some(native_content_digest(
+                        &serde_json::to_vec(&original[offset + index as usize]).unwrap(),
+                    )),
+                    role: "Discovery".into(),
+                    source_subrange: None,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        ledger
+            .lifecycle
+            .groups
+            .insert("k1-completed".into(), "Completed".into());
+        let ledger_ref = put(
+            "ledger",
+            serde_json::to_value(NativeLedgerV2::from_parts(ledger.clone(), vec![])).unwrap(),
+        );
+        let record = NativeSearchHistoryV1 {
+            schema_version: 2,
+            policy_revision: 1,
+            reader_floor: 2,
+            limits_revision: 1,
+            lineage: NativeLineage {
+                id: "k1-lineage".into(),
+                source_revision: 3,
+                source_digest: source_ref.digest.clone(),
+            },
+            generation: 5,
+            high_water: 7,
+            source: source_ref,
+            active: active_ref,
+            ledger: ledger_ref,
+            history_boundary: history.clone(),
+            exchange_snapshot: None,
+            previous_checkpoint: None,
+            capacity: BTreeMap::new(),
+        };
+        let (normalized, _) = client.finalize_conversation_messages(&request).unwrap();
+        request = normalized;
+        let model = request.model.clone().unwrap();
+        let admission =
+            request
+                .search_admission
+                .unwrap_or(xai_grok_sampling_types::SearchAdmission {
+                    supports_search_tool: false,
+                    has_searchable_tools: false,
+                });
+        request.search_admission = Some(admission);
+        let domain = NativeReplayDomain {
+            backend: ApiBackend::Messages,
+            dialect: NativeReplayDialect::Messages,
+            model: model.clone(),
+            row: model.clone(),
+            provider: "offline".into(),
+            deployment: "offline".into(),
+            deployment_revision: "1".into(),
+            endpoint: endpoint.into(),
+            principal: "fixture".into(),
+        };
+        let route = TargetRoute::new(ApiBackend::Messages, Boundary::Vertex, admission);
+        let selected: Vec<_> = (0..2).map(source_coordinate).collect();
+        let identity = NativeIdentityExtension::Revision2 {
+            eligible_member_links: vec![],
+            eligible_member_accounting: vec![],
+        };
+        let authorship = (0..2)
+            .map(|index| (index, NativeIdAuthorship::Provider))
+            .collect();
+        let core = prepare_native_history_core(
+            &NativePureHistory {
+                record: &record,
+                source: &source,
+                ledger: &ledger,
+                identity: &identity,
+                blobs: &blobs,
+                authorship: &authorship,
+            },
+            &NativeProjectionInputs {
+                target_model_id: &model,
+                target: &route,
+                tools: &request.tools,
+                current: None,
+                selected: &selected,
+                origin_domains: &Default::default(),
+                pending: &Default::default(),
+                prior_f: None,
+            },
+            |_| {
+                (
+                    DiscoveryOrigin {
+                        boundary: Boundary::Vertex,
+                        owner_model_id: None,
+                    },
+                    NativeQualification {
+                        source: None,
+                        target: Some(domain.clone()),
+                        request: Some(domain.clone()),
+                        original_admission: admission,
+                        shape: NativeReplayShape {
+                            family: NativeReplayFamily::MessagesServer,
+                            keyless_server: false,
+                            output_id_present: false,
+                            completed: true,
+                            result_error: false,
+                            referenced_members: 0,
+                        },
+                        receipt: None,
+                        intact_membership: true,
+                        current_backing: false,
+                        faithful_identity: true,
+                    },
+                )
+            },
+        )
+        .unwrap();
+        assert_eq!(core.decision.groups.len(), 1);
+        assert_eq!(core.decision.groups[0].action, NativeHistoryAction::F);
+        assert_eq!(core.accounting.qualification, core.decision.qualification);
+        assert_eq!(core.accounting.raw_members.len(), 2);
+        assert!(core.accounting.references.is_empty());
+        assert_eq!(core.decision.members.len(), 2);
+        assert_eq!(core.accounting.groups.demoted, 1);
+        assert_eq!(core.accounting.members.demoted, 2);
+        assert_eq!(
+            core.decision.members[0].neutral.as_ref().unwrap().kind,
+            NativeNeutralKind::Call
+        );
+        assert_eq!(
+            core.decision.members[1].neutral.as_ref().unwrap().kind,
+            NativeNeutralKind::Result
+        );
+        assert!(core.decision.members.iter().all(|member| {
+            member
+                .neutral
+                .as_ref()
+                .is_some_and(|text| text.text.len() <= 128)
+        }));
+        assert!(
+            core.decision
+                .members
+                .iter()
+                .map(|member| member.neutral.as_ref().unwrap().text.len())
+                .sum::<usize>()
+                <= 256
+        );
+        let mut replacements = BTreeMap::new();
+        for member in &core.decision.members {
+            let link = ledger
+                .accounting
+                .iter()
+                .find(|link| link.source == member.source)
+                .unwrap();
+            assert!(member.raw.is_none());
+            let output = member
+                .neutral
+                .as_ref()
+                .map(|neutral| Item::assistant(neutral.text.clone()));
+            assert!(
+                replacements
+                    .insert(link.view_item.unwrap() as usize, output)
+                    .is_none()
+            );
+        }
+        request.items = original
+            .into_iter()
+            .enumerate()
+            .flat_map(|(index, item)| replacements.remove(&index).unwrap_or(Some(item)))
+            .collect();
+        assert!(replacements.is_empty());
+        let (normalized, streaming_carrier) =
+            client.finalize_conversation_messages(&request).unwrap();
+        request = normalized;
+        let encoded = if streaming {
+            streaming_carrier
+        } else {
+            xai_grok_sampling_types::request_validation::validate_and_encode_messages_request(
+                &xai_grok_sampling_types::build_messages_request(&request),
+            )
+            .unwrap()
+        };
+        let carrier = NativeFinalCarrier::capture(encoded.as_bytes().to_vec().into()).unwrap();
+        let declarations: Vec<Value> = carrier
+            .declarations()
+            .map(|bytes| serde_json::from_slice(bytes).unwrap())
+            .unwrap_or_default();
+        let identities = declarations
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, declaration)| {
+                let schema_value = declaration.get("input_schema")?;
+                let schema_bytes: Arc<[u8]> = serde_json::to_vec(schema_value).unwrap().into();
+                let schema = NativeBlobRef {
+                    kind: "eligible_schema".into(),
+                    byte_len: schema_bytes.len() as u64,
+                    digest: native_content_digest(&schema_bytes),
+                };
+                let snapshot = NativeEligibleSnapshot {
+                    version: 1,
+                    namespace_kind: NativeNamespaceKind::GrokBuild,
+                    qualified_namespace: "grok_build".into(),
+                    child_name: declaration["name"].as_str().unwrap().into(),
+                    schema: schema.clone(),
+                    binding: origin.clone(),
+                };
+                let provenance_bytes: Arc<[u8]> = serde_json::to_vec(&snapshot).unwrap().into();
+                Some(NativeDeclarationIdentity {
+                    declaration_index: index as u64,
+                    child_index: None,
+                    namespace_kind: snapshot.namespace_kind,
+                    qualified_namespace: snapshot.qualified_namespace,
+                    child_name: snapshot.child_name,
+                    declaration,
+                    schema,
+                    schema_bytes,
+                    provenance: NativeBlobRef {
+                        kind: "eligible_snapshot".into(),
+                        byte_len: provenance_bytes.len() as u64,
+                        digest: native_content_digest(&provenance_bytes),
+                    },
+                    provenance_bytes,
+                    binding_bytes: Some(blobs[&origin.digest].clone()),
+                })
+            })
+            .collect();
+        let context = NativeHistoryRequestContext::captured(
+            NativeHistoryRequirement::Selected,
+            NativeHistoryCapture {
+                history,
+                history_revision: 11,
+                lineage: record.lineage.clone(),
+                native_generation: 5,
+                high_water: 7,
+                projection_revision: 0,
+                strict_append_sequence: 13,
+                binding_generation: 17,
+                install_generation: 19,
+                issued_request: "k1-issued-A".into(),
+                target: domain,
+                execution: NativeHistoryExecution::Server,
+                original_admission: admission,
+                versions: NativeHistoryVersions {
+                    schema: 2,
+                    policy: 1,
+                    projection: 1,
+                    reader: 2,
+                    limits: 1,
+                },
+            },
+            NativeHistoryWriteAuthority::SendOnly,
+        );
+        let plan = NativeHistoryPlan::checked(
+            context.clone(),
+            NativeHistoryPlanInput {
+                ledger_bytes: blobs[&record.ledger.digest].clone(),
+                record,
+                input_history_bytes,
+                lowering_request: &request,
+                post_history_bytes: serde_json::to_vec(&request.items).unwrap().into(),
+                carrier,
+                identities,
+                qualification: core.accounting.qualification.clone(),
+                core,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.readiness(), &NativePlanReadiness::Tentative);
+        assert_eq!(
+            validate_native_history_plan(&context, Some(&plan), plan.carrier()),
+            Err(NativePlanRefusal::NotReady)
+        );
+        let plan = plan.send_only().unwrap();
+        assert_eq!(
+            validate_native_history_plan(&context, Some(&plan), plan.carrier()),
+            Ok(NativeHistoryReady::SendOnly)
+        );
+        let body: Value = serde_json::from_slice(encoded.as_bytes()).unwrap();
+        assert_eq!(body["max_tokens"], request.max_output_tokens.unwrap());
+        assert_eq!(body.get("stream"), streaming.then_some(&Value::Bool(true)));
+        request.encoded = streaming.then_some(encoded);
+        request.native_history = Some(NativeHistoryRequest::new(context, Some(plan)));
+        request
+    }
+    #[derive(Clone, Copy, Debug)]
+    enum K1Route {
+        Banked,
+        Direct,
+        Collect,
+        NonStreaming,
+        Actor,
+        CaptureActor,
+    }
+
+    struct K1Http {
+        config: SamplerConfig,
+        bodies: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+        server: tokio::task::JoinHandle<()>,
+    }
+
+    impl K1Http {
+        async fn start() -> Self {
+            let bodies = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let observed = bodies.clone();
+            let app = Router::new().fallback(post(move |uri: axum::http::Uri, body: Bytes| {
+                let observed = observed.clone();
+                async move {
+                    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    observed.lock().unwrap().push(body.to_vec());
+                    let path = match uri.path() {
+                        "/v1/chat/completions" => V3n5Path::ChatStream,
+                        "/v1/responses" => V3n5Path::ResponsesStream,
+                        _ if value.get("stream") == Some(&serde_json::Value::Bool(true)) => {
+                            V3n5Path::MessagesStream
+                        }
+                        _ => V3n5Path::Messages,
+                    };
+                    let (content_type, response) = v3n5_success_reply(path);
+                    axum::response::Response::builder()
+                        .header("content-type", content_type)
+                        .body(axum::body::Body::from(response))
+                        .unwrap()
+                }
+            }));
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            Self {
+                config: SamplerConfig {
+                    base_url: format!("http://{address}/v1"),
+                    api_backend: ApiBackend::Messages,
+                    model: "k1-model".into(),
+                    max_completion_tokens: Some(4096),
+                    max_retries: Some(0),
+                    ..minimal_config()
+                },
+                bodies,
+                server,
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct K1Lifecycle {
+        completed: usize,
+        failed: usize,
+        retries: usize,
+        attempts: usize,
+        ends: usize,
+        dispatches: u64,
+    }
+
+    async fn k1_send(
+        route: K1Route,
+        client: &SamplingClient,
+        config: SamplerConfig,
+        request: ConversationRequest,
+    ) -> (Result<()>, K1Lifecycle) {
+        use crate::{SamplerActor, SamplingEvent, RequestId, RetryPolicy};
+        let mut lifecycle = K1Lifecycle::default();
+        let result = match route {
+            K1Route::Actor | K1Route::CaptureActor => {
+                let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+                let handle = SamplerActor::spawn(
+                    config.clone(),
+                    RetryPolicy {
+                        max_retries: 0,
+                        ..Default::default()
+                    },
+                    events,
+                );
+                let id = RequestId::random();
+                let lease = NativeCaptureLease::issue(
+                    "k1-capture".into(),
+                    id.as_str().into(),
+                    1,
+                    1,
+                    NATIVE_CONTROL_BYTES,
+                );
+                let result = if matches!(route, K1Route::CaptureActor) {
+                    handle
+                        .submit_and_collect_with_native_capture(
+                            id.clone(),
+                            request,
+                            config,
+                            lease.clone(),
+                        )
+                        .await
+                } else {
+                    handle
+                        .submit_and_collect_with_config(id.clone(), request, config)
+                        .await
+                };
+                assert!(
+                    result.terminal_event_queued,
+                    "K1 actor completion queues its terminal event"
+                );
+                assert!(
+                    !handle.is_active(id).await,
+                    "K1 request task completes normally"
+                );
+                drop(handle);
+                while let Some(event) = receiver.recv().await {
+                    match event {
+                        SamplingEvent::Completed { .. } => lifecycle.completed += 1,
+                        SamplingEvent::Failed { error, .. } => {
+                            lifecycle.failed += 1;
+                            assert!(!error.is_retryable, "K1 terminal refusal is nonretryable");
+                        }
+                        SamplingEvent::Retrying { .. } => lifecycle.retries += 1,
+                        SamplingEvent::NativeAttemptEvidence {
+                            evidence,
+                            lease: observed,
+                            ..
+                        } => {
+                            assert!(observed.same_lease(&lease));
+                            match evidence {
+                                NativeEvidenceEvent::Attempt(attempt) => {
+                                    lifecycle.attempts += 1;
+                                    lifecycle.dispatches += attempt.http_dispatches;
+                                    if result.result.is_err() {
+                                        assert!(!attempt.response_started);
+                                        assert!(!attempt.stream_complete);
+                                        assert_eq!(attempt.http_dispatches, 0);
+                                        assert!(matches!(
+                                            attempt.status,
+                                            NativeResponseStatus::PartialTerminal(
+                                                NativeUnavailable::Failed
+                                            )
+                                        ));
+                                    }
+                                }
+                                NativeEvidenceEvent::End => {
+                                    lifecycle.ends += 1;
+                                    observed.finish();
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                assert_eq!(
+                    lifecycle.completed + lifecycle.failed,
+                    1,
+                    "one terminal event"
+                );
+                assert_eq!(lifecycle.retries, 0);
+                if matches!(route, K1Route::CaptureActor) {
+                    assert_eq!(lifecycle.ends, 1);
+                    if result.result.is_err() {
+                        assert_eq!(lifecycle.attempts, 1);
+                    }
+                    assert!(lease.is_finished());
+                } else {
+                    assert_eq!((lifecycle.attempts, lifecycle.ends), (0, 0));
+                }
+                result.result.map(|_| ())
+            }
+            K1Route::Banked | K1Route::Direct => {
+                match client.conversation_stream_messages(request).await {
+                    Ok((mut stream, _)) => {
+                        let mut result = Ok(());
+                        while let Some(event) = stream.next().await {
+                            if let Err(error) = event {
+                                result = Err(error);
+                                break;
+                            }
+                        }
+                        result
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            K1Route::Collect => client.conversation_collect(request).await.map(|_| ()),
+            K1Route::NonStreaming => client.conversation_messages(request).await.map(|_| ()),
+        };
+        (result, lifecycle)
+    }
+
+    fn k1_recontext(
+        request: &mut ConversationRequest,
+        change: impl FnOnce(&mut NativeHistoryCapture),
+    ) {
+        let native = request.native_history.as_ref().unwrap();
+        let mut capture = native.context().capture().clone();
+        change(&mut capture);
+        request.native_history = Some(NativeHistoryRequest::new(
+            NativeHistoryRequestContext::captured(
+                NativeHistoryRequirement::Selected,
+                capture,
+                native.context().authority().clone(),
+            ),
+            native.plan().cloned(),
+        ));
+    }
+    async fn k1_case(
+        http: &K1Http,
+        route: K1Route,
+        label: &str,
+        config: SamplerConfig,
+        request: ConversationRequest,
+        expected: Option<Vec<u8>>,
+    ) {
+        let before = http.bodies.lock().unwrap().len();
+        let client = SamplingClient::new(config.clone()).unwrap();
+        let (result, lifecycle) = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            k1_send(route, &client, config, request),
+        )
+        .await
+        .expect("K1 request and owned events terminate");
+        let bodies = http.bodies.lock().unwrap();
+        if let Some(expected) = expected {
+            assert!(result.is_ok(), "K1 positive {route:?}/{label}: {result:?}");
+            assert_eq!(
+                bodies.len(),
+                before + 1,
+                "K1 positive sends once {route:?}/{label}"
+            );
+            assert_eq!(
+                bodies[before], expected,
+                "K1 actual HTTP bytes {route:?}/{label}"
+            );
+            if matches!(route, K1Route::CaptureActor) {
+                assert_eq!(lifecycle.dispatches, 1);
+            }
+        } else {
+            assert_eq!(bodies.len(), before, "K1 forbidden HTTP {route:?}/{label}");
+            assert!(matches!(&result, Err(SamplingError::RequestValidation(
+                xai_grok_sampling_types::request_validation::RequestValidationError::NativeHistory { .. }
+            ))), "K1 typed refusal {route:?}/{label}: {result:?}");
+            let error = result.unwrap_err();
+            assert!(!error.is_retryable());
+            assert!(matches!(
+                crate::classify_error(&error, 0, 3, crate::RATE_LIMIT_RETRY_THRESHOLD),
+                crate::RetryDecision::Fatal(_)
+            ));
+            if label.starts_with("effective-Responses")
+                || label.starts_with("effective-ChatCompletions")
+            {
+                assert!(matches!(
+                    error,
+                    SamplingError::RequestValidation(RequestValidationError::NativeHistory {
+                        reason: NativePlanRefusal::StaleContext,
+                    })
+                ));
+            }
+            assert_eq!(lifecycle.dispatches, 0);
+        }
+        println!(
+            "K1_CASE {route:?} {label} completed_http_delta={} terminal={} attempts={} ends={} dispatches={}",
+            bodies.len() - before,
+            lifecycle.completed + lifecycle.failed,
+            lifecycle.attempts,
+            lifecycle.ends,
+            lifecycle.dispatches
+        );
+    }
+
+    #[tokio::test]
+    async fn messages_replay_plan_checked_on_all_sends() {
+        use xai_grok_sampling_types::{ConversationItem as Item, ToolSpec};
+        let http = K1Http::start().await;
+        let client = SamplingClient::new(http.config.clone()).unwrap();
+        let endpoint = format!("{}/messages", http.config.base_url);
+        let mut missing = k1_prepare(
+            &client,
+            ConversationRequest::from_items(vec![Item::user("Missing proof control")]),
+            &endpoint,
+            true,
+        );
+        missing.native_history.as_mut().unwrap().invalidate_plan();
+        k1_case(
+            &http,
+            K1Route::Banked,
+            "deliberate-missing-plan-control",
+            http.config.clone(),
+            missing,
+            None,
+        )
+        .await;
+        for route in [
+            K1Route::Banked,
+            K1Route::Direct,
+            K1Route::Collect,
+            K1Route::NonStreaming,
+            K1Route::Actor,
+            K1Route::CaptureActor,
+        ] {
+            let streaming = !matches!(route, K1Route::NonStreaming);
+            let ordinary = ConversationRequest::from_items(vec![Item::user("Find the account.")]).with_tools(vec![ToolSpec {
+                name: "lookup".into(), description: Some("Offline lookup".into()),
+                parameters: serde_json::json!({"type":"object","properties":{"query":{"type":"string"}}}),
+                exposure: Default::default(),
+            }]);
+            let mut prepared = k1_prepare(&client, ordinary, &endpoint, streaming);
+            if matches!(route, K1Route::Direct | K1Route::Collect) {
+                prepared.encoded = None;
+            }
+            let expected = prepared
+                .native_history
+                .as_ref()
+                .unwrap()
+                .plan()
+                .unwrap()
+                .carrier()
+                .bytes()
+                .to_vec();
+            k1_case(
+                &http,
+                route,
+                "valid-completed-F",
+                http.config.clone(),
+                prepared.clone(),
+                Some(expected),
+            )
+            .await;
+            for label in [
+                "stale-final-body",
+                "missing-plan",
+                "public-invalidation",
+                "history",
+                "tools",
+                "schema",
+                "model",
+                "admission",
+                "required-generation",
+                "streaming-plan-for-nonstream",
+            ] {
+                let mut request = prepared.clone();
+                match label {
+                    "stale-final-body" => request.max_output_tokens = Some(4097),
+                    "missing-plan" => request.native_history.as_mut().unwrap().invalidate_plan(),
+                    "public-invalidation" => {
+                        request.invalidate_encoded();
+                        let native = request.native_history.as_ref().unwrap();
+                        assert!(request.encoded.is_none());
+                        assert!(native.plan().is_none());
+                        assert_eq!(
+                            native.context(),
+                            prepared.native_history.as_ref().unwrap().context()
+                        );
+                    }
+                    "history" => request.items.push(Item::user("Changed outgoing history")),
+                    "tools" => request.tools.push(ToolSpec {
+                        name: "new_tool".into(),
+                        description: None,
+                        parameters: serde_json::json!({"type":"object","properties":{}}),
+                        exposure: Default::default(),
+                    }),
+                    "schema" => {
+                        request.tools[0].parameters = serde_json::json!({"type":"object","properties":{"changed":{"type":"number"}}})
+                    }
+                    "streaming-plan-for-nonstream" => {
+                        if !matches!(route, K1Route::NonStreaming) {
+                            continue;
+                        }
+                        request = k1_prepare(
+                            &client,
+                            ConversationRequest::from_items(vec![Item::user("Nonstream mode")]),
+                            &endpoint,
+                            true,
+                        );
+                    }
+                    "model" => request.model = Some("changed-model".into()),
+                    "admission" => request.search_admission = None,
+                    "required-generation" => {
+                        let native = request.native_history.as_ref().unwrap();
+                        let plan = native
+                            .plan()
+                            .unwrap()
+                            .clone()
+                            .require_generation(5, 7, None);
+                        request.native_history = Some(NativeHistoryRequest::new(
+                            native.context().clone(),
+                            Some(plan),
+                        ));
+                    }
+                    _ => unreachable!(),
+                }
+                k1_case(&http, route, label, http.config.clone(), request, None).await;
+            }
+            for label in [
+                "history-revision",
+                "history-boundary",
+                "lineage",
+                "source-revision",
+                "source-digest",
+                "native-generation",
+                "high-water",
+                "projection-revision",
+                "append-sequence",
+                "binding-generation",
+                "install-generation",
+                "issued-request",
+                "schema",
+                "policy",
+                "projection",
+                "reader",
+                "limits",
+                "target-model",
+                "target-row",
+                "target-provider",
+                "target-deployment",
+                "target-revision",
+                "target-principal",
+                "target-endpoint",
+                "target-backend",
+                "target-dialect",
+                "execution",
+                "authority",
+            ] {
+                let mut request = prepared.clone();
+                k1_recontext(&mut request, |capture| match label {
+                    "history-revision" => capture.history_revision += 1,
+                    "history-boundary" => capture.history.items += 1,
+                    "lineage" => capture.lineage.id.push_str("-changed"),
+                    "source-revision" => capture.lineage.source_revision += 1,
+                    "source-digest" => capture.lineage.source_digest = "0".repeat(64),
+                    "native-generation" => capture.native_generation += 1,
+                    "high-water" => capture.high_water += 1,
+                    "projection-revision" => capture.projection_revision += 1,
+                    "append-sequence" => capture.strict_append_sequence += 1,
+                    "binding-generation" => capture.binding_generation += 1,
+                    "install-generation" => capture.install_generation += 1,
+                    "issued-request" => capture.issued_request.push_str("-changed"),
+                    "schema" => capture.versions.schema += 1,
+                    "policy" => capture.versions.policy += 1,
+                    "projection" => capture.versions.projection += 1,
+                    "reader" => capture.versions.reader += 1,
+                    "limits" => capture.versions.limits += 1,
+                    "target-model" => capture.target.model.push_str("-changed"),
+                    "target-row" => capture.target.row.push_str("-changed"),
+                    "target-provider" => capture.target.provider.push_str("-changed"),
+                    "target-deployment" => capture.target.deployment.push_str("-changed"),
+                    "target-revision" => capture.target.deployment_revision.push_str("-changed"),
+                    "target-principal" => capture.target.principal.push_str("-changed"),
+                    "target-endpoint" => capture.target.endpoint.push_str("/changed"),
+                    "target-backend" => capture.target.backend = ApiBackend::Responses,
+                    "target-dialect" => {
+                        capture.target.dialect = NativeReplayDialect::Responses(
+                            xai_grok_sampling_types::ResponsesReplayDialect::Codex,
+                        )
+                    }
+                    "execution" => capture.execution = NativeHistoryExecution::Client,
+                    "authority" => {}
+                    _ => unreachable!(),
+                });
+                if label == "authority" {
+                    let native = request.native_history.as_ref().unwrap();
+                    request.native_history = Some(NativeHistoryRequest::new(
+                        NativeHistoryRequestContext::captured(
+                            NativeHistoryRequirement::Selected,
+                            native.context().capture().clone(),
+                            NativeHistoryWriteAuthority::SwitchStore {
+                                lineage: "k1-lineage".into(),
+                                binding_generation: 17,
+                            },
+                        ),
+                        native.plan().cloned(),
+                    ));
+                }
+                k1_case(&http, route, label, http.config.clone(), request, None).await;
+            }
+            if matches!(
+                route,
+                K1Route::Banked | K1Route::Actor | K1Route::CaptureActor
+            ) {
+                let mut wrong = prepared.clone();
+                wrong.max_output_tokens = Some(4098);
+                let wrong_body = client.encode_conversation_messages(&wrong).unwrap();
+                let mut request = prepared.clone();
+                request.encoded = Some(wrong_body);
+                k1_case(
+                    &http,
+                    route,
+                    "wrong-banked-body-intact-wrapper",
+                    http.config.clone(),
+                    request,
+                    None,
+                )
+                .await;
+            }
+            let mut changed_endpoint = http.config.clone();
+            changed_endpoint.base_url.push_str("/changed");
+            k1_case(
+                &http,
+                route,
+                "effective-endpoint",
+                changed_endpoint,
+                prepared.clone(),
+                None,
+            )
+            .await;
+            if matches!(
+                route,
+                K1Route::Actor | K1Route::CaptureActor | K1Route::Collect
+            ) {
+                for backend in [ApiBackend::Responses, ApiBackend::ChatCompletions] {
+                    for proof_present in [true, false] {
+                        let mut request = prepared.clone();
+                        if !proof_present {
+                            request.native_history.as_mut().unwrap().invalidate_plan();
+                        }
+                        let mut config = http.config.clone();
+                        config.api_backend = backend.clone();
+                        k1_case(
+                            &http,
+                            route,
+                            &format!("effective-{backend:?}-plan-{proof_present}"),
+                            config,
+                            request,
+                            None,
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+        for route in [K1Route::Actor, K1Route::CaptureActor, K1Route::Collect] {
+            for backend in [ApiBackend::Responses, ApiBackend::ChatCompletions] {
+                for attachment in [false, true] {
+                    let mut ordinary = ConversationRequest::from_items(vec![Item::user(
+                        "Ordinary non-Messages control",
+                    )]);
+                    if attachment {
+                        ordinary.native_history = Some(client.inactive_native_history());
+                    }
+                    let mut config = http.config.clone();
+                    config.api_backend = backend.clone();
+                    let ordinary_client = SamplingClient::new(config.clone()).unwrap();
+                    let before = http.bodies.lock().unwrap().len();
+                    let (result, lifecycle) = tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        k1_send(route, &ordinary_client, config, ordinary),
+                    )
+                    .await
+                    .expect("ordinary actor/collect completes");
+                    assert!(
+                        result.is_ok(),
+                        "ordinary {route:?}/{backend:?}/attachment={attachment}: {result:?}"
+                    );
+                    assert_eq!(http.bodies.lock().unwrap().len(), before + 1);
+                    assert_eq!(lifecycle.retries, 0);
+                    println!(
+                        "K1_ORDINARY_CASE {route:?} {backend:?} attachment={attachment} http_delta=1"
+                    );
+                }
+            }
+        }
+        http.server.abort();
+        assert!(http.server.await.unwrap_err().is_cancelled());
+    }
+
     use xai_grok_sampling_types as k0_types;
 
     fn k0_no_plan_requests() -> Vec<(&'static str, k0_types::ConversationRequest)> {

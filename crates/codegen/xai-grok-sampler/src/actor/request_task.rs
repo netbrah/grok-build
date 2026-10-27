@@ -313,6 +313,24 @@ pub(crate) async fn run_request_task_with_native_capture(
             native_attempt = ordinal;
         }
 
+        if client.api_backend() != ApiBackend::Messages
+            && request.native_history.as_ref().is_some_and(|native| {
+                native.context().requirement()
+                    == xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected
+            })
+        {
+            request.invalidate_encoded();
+            let error = SamplingError::from(
+                xai_grok_sampling_types::request_validation::RequestValidationError::NativeHistory {
+                    reason: xai_grok_sampling_types::conversation::native_search_history::NativePlanRefusal::StaleContext,
+                },
+            );
+            native_guard.init_failed(native_ordinal);
+            let terminal_event_queued = emit_failed(&event_tx, &request_id, &error);
+            send_completion(&mut completion, Err(error), terminal_event_queued);
+            return (request_id, d_anchor);
+        }
+
         // REQVALID-1 47b (D-5, SP-2): the retry loop owns the messages-wire
         // encode across the attempt boundary — encode once (pre-HTTP
         // validation included) and reuse the exact carrier bytes on backoff
@@ -700,6 +718,12 @@ async fn apply_retry_decision(
             match SamplingClient::new(http1_config) {
                 Ok(fresh) => {
                     *client = fresh;
+                    if request.native_history.as_ref().is_some_and(|native| {
+                        native.context().requirement()
+                            == xai_grok_sampling_types::conversation::native_search_history::NativeHistoryRequirement::Selected
+                    }) {
+                        request.invalidate_encoded();
+                    }
                     tracing::info!("rebuilt sampling client with HTTP/1.1 fallback for retry");
                 }
                 Err(rebuild_err) => {

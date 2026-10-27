@@ -386,6 +386,11 @@ fn user_echo_mode(prompt_id: &str, input_origin: &InputOrigin) -> UserEchoMode {
         UserEchoMode::Broadcast
     }
 }
+type NativeRequestPreparer<'a> = &'a mut dyn FnMut(
+    &mut ConversationRequest,
+    &xai_chat_state::RequestTransportBinding,
+) -> Result<(), acp::Error>;
+
 impl SessionActor {
     /// Exactly once per turn: the cancel path and the turn's own post-loop both announce.
     pub(super) async fn notify_turn_abort(
@@ -2567,6 +2572,39 @@ impl SessionActor {
         salvage: &mut super::length_salvage::LengthSalvage,
         turn_sampling: &mut TurnSampling,
     ) -> Result<TurnOutcome, acp::Error> {
+        self.process_conversation_turn_inner_with_native_preparer(
+            req_id, trace_gcs_config, artifact_tracker, json_schema, salvage, turn_sampling, None,
+        ).await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn process_conversation_turn_for_native_history_test(
+        self: &Arc<Self>,
+        req_id: &str,
+        trace_gcs_config: Option<crate::session::repo_changes::TraceExportConfig>,
+        artifact_tracker: Option<&crate::upload::manifest::ArtifactTracker>,
+        json_schema: Option<serde_json::Value>,
+        salvage: &mut super::length_salvage::LengthSalvage,
+        turn_sampling: &mut TurnSampling,
+        prepare: &mut dyn FnMut(&mut ConversationRequest, &xai_chat_state::RequestTransportBinding) -> Result<(), acp::Error>,
+    ) -> Result<TurnOutcome, acp::Error> {
+        let result = self.process_conversation_turn_inner_with_native_preparer(
+            req_id, trace_gcs_config, artifact_tracker, json_schema, salvage, turn_sampling, Some(prepare),
+        ).await;
+        self.turn_phases.emit_pending_latency();
+        result
+    }
+
+    async fn process_conversation_turn_inner_with_native_preparer(
+        self: &Arc<Self>,
+        req_id: &str,
+        trace_gcs_config: Option<crate::session::repo_changes::TraceExportConfig>,
+        artifact_tracker: Option<&crate::upload::manifest::ArtifactTracker>,
+        json_schema: Option<serde_json::Value>,
+        salvage: &mut super::length_salvage::LengthSalvage,
+        turn_sampling: &mut TurnSampling,
+        mut prepare: Option<NativeRequestPreparer<'_>>,
+    ) -> Result<TurnOutcome, acp::Error> {
         *self.current_turn_span_id.lock() = tracing::Span::current().id();
         struct ClearTurnSpanId<'a>(&'a parking_lot::Mutex<Option<tracing::Id>>);
         impl Drop for ClearTurnSpanId<'_> {
@@ -2970,6 +3008,9 @@ impl SessionActor {
                     "transient_retry_attempts": transient_retry_attempts,
                 })),
             );
+            if let Some(prepare) = prepare.as_mut() {
+                prepare(&mut request, &binding)?;
+            }
             let model_timer = std::time::Instant::now();
             let primary_outcome = self
                 .run_primary_turn_via_sampler(

@@ -137,6 +137,7 @@ impl ChatStateActor {
             // The retry actor (sampler) owns the cached messages-wire carrier
             // (REQVALID-1 47b D-5); chat-state always starts a request fresh.
             encoded: None,
+            native_history: None,
         }
     }
 }

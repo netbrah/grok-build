@@ -1194,6 +1194,8 @@ pub struct ConversationRequest {
     /// of an UNMUTATED request reuses the bytes verbatim (NIT-2); every
     /// post-encode request mutation clears it via [`Self::invalidate_encoded`].
     pub encoded: Option<crate::request_validation::EncodedMessagesRequest>,
+    /// Request-local authority, independent of the optional encoded body and proof.
+    pub native_history: Option<crate::request_validation::NativeHistoryRequest>,
 }
 
 impl ConversationRequest {
@@ -1208,6 +1210,9 @@ impl ConversationRequest {
     /// so the next attempt re-encodes the mutated request.
     pub fn invalidate_encoded(&mut self) {
         self.encoded = None;
+        if let Some(native) = &mut self.native_history {
+            native.invalidate_plan();
+        }
     }
 
     /// Provenance: hyper-grok-build@45e984f3 packages/ai/xai-grok-sampling-types/src/conversation.rs:1005 :: strip_model_bound_state (adapted; two struct absences documented below — ledger §CROSSWIRE-1)

@@ -1096,3 +1096,916 @@ async fn messages_no_plan_preserves_pin_shell() {
         assert_eq!(observed, expected, "K0 H parent shell parity");
     }).await;
 }
+
+use xai_grok_sampling_types::conversation::native_search_history::*;
+use xai_grok_sampling_types::conversation::projection::{
+    Boundary, DiscoveryOrigin, NativeHistoryAction, NativeQualification, NativeReplayDialect,
+    NativeReplayDomain, NativeReplayShape, TargetRoute,
+};
+use xai_grok_sampling_types::request_validation::NativeHistoryRequest;
+
+fn native_content_digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn k1_prepare(
+    client: &SamplingClient,
+    mut request: ConversationRequest,
+    endpoint: &str,
+    streaming: bool,
+) -> ConversationRequest {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use xai_grok_sampling_types::ConversationItem as Item;
+    use xai_grok_sampling_types::conversation::tool_search::ToolSearchItem;
+    use serde_json::{Value, json};
+
+    let mut blobs = BTreeMap::<String, Arc<[u8]>>::new();
+    let mut put = |kind: &str, value: Value| {
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let reference = NativeBlobRef {
+            kind: kind.into(),
+            byte_len: bytes.len() as u64,
+            digest: native_content_digest(&bytes),
+        };
+        blobs.insert(reference.digest.clone(), bytes.into());
+        reference
+    };
+    let source_coordinate = |block| NativeSourceCoordinate {
+        lineage: "k1-lineage".into(),
+        producing_binding: "k1-issued-A".into(),
+        turn: 1,
+        item: 0,
+        response: 0,
+        block,
+        submember: None,
+        occurrence: block,
+    };
+    let raw = [
+        json!({"type":"server_tool_use","id":"srvtoolu_k1","name":"tool_search_tool_regex","input":{"query":"private fixture query"}}),
+        json!({"type":"tool_search_tool_result","tool_use_id":"srvtoolu_k1","content":{"type":"tool_search_tool_search_result","tool_references":[]}}),
+    ];
+    let offset = request.items.len();
+    let mut original = request.items.clone();
+    original.extend(raw.iter().map(|value| Item::Discovery {
+        item: ToolSearchItem::from_wire(value.clone()).unwrap(),
+    }));
+    original.push(Item::user("Continue after search."));
+    let input_history_bytes: Arc<[u8]> = serde_json::to_vec(&original).unwrap().into();
+    let history = NativeHistoryBoundary {
+        items: original.len() as u64,
+        digest: native_content_digest(&input_history_bytes),
+    };
+    let origin = put(
+        "producing_binding",
+        json!({"request":"k1-issued-A","generation":17,"origin":{"status":"Unknown"}}),
+    );
+    let source = NativeSource {
+        schema_version: 2,
+        lineage: "k1-lineage".into(),
+        source_revision: 3,
+        producing_bindings: vec![NativeProducingBinding {
+            request: "k1-issued-A".into(),
+            generation: Some(17),
+            origin: json!({"status":"Unknown"}),
+            origin_ref: origin.clone(),
+        }],
+        responses: vec![NativeResponseBoundary {
+            occurrence: 0,
+            request: "k1-issued-A".into(),
+            lease: 1,
+            attempt: 1,
+            continuation: 0,
+            provider_response_id: Some(json!("msg_k1")),
+            source_stop_reason: Some("end_turn".into()),
+            block_start: 0,
+            block_end: 2,
+            stream_complete: true,
+            status: NativeResponseStatus::Accepted,
+        }],
+        ordered_blocks: raw
+            .iter()
+            .enumerate()
+            .map(|(index, value)| NativeRawBlock {
+                coordinates: source_coordinate(index as u64),
+                wire_index: index as u32,
+                arrival_ordinal: index as u64,
+                block: put("raw_block", value.clone()),
+                partial: None,
+                state: NativeBlockState::ClosedFaithful,
+                eligible_ref: None,
+                eligible_unavailable: None,
+            })
+            .collect(),
+        eligible_snapshots: vec![],
+        older_sources: vec![],
+    };
+    let source_ref = put(
+        "source",
+        serde_json::to_value(NativeSourceV2::from_parts(source.clone(), vec![])).unwrap(),
+    );
+    let active_ref = put(
+        "active",
+        serde_json::to_value(NativeActive::default()).unwrap(),
+    );
+    let mut ledger = NativeLedger {
+        source_digest: source_ref.digest.clone(),
+        active_digest: active_ref.digest.clone(),
+        groups: vec![NativeGroupRecord {
+            key: "k1-completed".into(),
+            family: "Messages".into(),
+            execution: "server".into(),
+            origin_ref: origin.clone(),
+            validated_join: Some("srvtoolu_k1".into()),
+            keyless_server_fifo: false,
+            members: (0..2).map(source_coordinate).collect(),
+            duplicate_observations: vec![],
+            state: "Completed".into(),
+        }],
+        accounting: (0..2)
+            .map(|index| NativeViewLink {
+                source: source_coordinate(index),
+                source_digest: source_ref.digest.clone(),
+                view_item: Some(offset as u64 + index),
+                view_digest: Some(native_content_digest(
+                    &serde_json::to_vec(&original[offset + index as usize]).unwrap(),
+                )),
+                role: "Discovery".into(),
+                source_subrange: None,
+            })
+            .collect(),
+        ..Default::default()
+    };
+    ledger
+        .lifecycle
+        .groups
+        .insert("k1-completed".into(), "Completed".into());
+    let ledger_ref = put(
+        "ledger",
+        serde_json::to_value(NativeLedgerV2::from_parts(ledger.clone(), vec![])).unwrap(),
+    );
+    let record = NativeSearchHistoryV1 {
+        schema_version: 2,
+        policy_revision: 1,
+        reader_floor: 2,
+        limits_revision: 1,
+        lineage: NativeLineage {
+            id: "k1-lineage".into(),
+            source_revision: 3,
+            source_digest: source_ref.digest.clone(),
+        },
+        generation: 5,
+        high_water: 7,
+        source: source_ref,
+        active: active_ref,
+        ledger: ledger_ref,
+        history_boundary: history.clone(),
+        exchange_snapshot: None,
+        previous_checkpoint: None,
+        capacity: BTreeMap::new(),
+    };
+    let (normalized, _) = client.finalize_conversation_messages(&request).unwrap();
+    request = normalized;
+    let model = request.model.clone().unwrap();
+    let admission = request
+        .search_admission
+        .unwrap_or(xai_grok_sampling_types::SearchAdmission {
+            supports_search_tool: false,
+            has_searchable_tools: false,
+        });
+    request.search_admission = Some(admission);
+    let domain = NativeReplayDomain {
+        backend: ApiBackend::Messages,
+        dialect: NativeReplayDialect::Messages,
+        model: model.clone(),
+        row: model.clone(),
+        provider: "offline".into(),
+        deployment: "offline".into(),
+        deployment_revision: "1".into(),
+        endpoint: endpoint.into(),
+        principal: "fixture".into(),
+    };
+    let route = TargetRoute::new(ApiBackend::Messages, Boundary::Vertex, admission);
+    let selected: Vec<_> = (0..2).map(source_coordinate).collect();
+    let identity = NativeIdentityExtension::Revision2 {
+        eligible_member_links: vec![],
+        eligible_member_accounting: vec![],
+    };
+    let authorship = (0..2)
+        .map(|index| (index, NativeIdAuthorship::Provider))
+        .collect();
+    let core = prepare_native_history_core(
+        &NativePureHistory {
+            record: &record,
+            source: &source,
+            ledger: &ledger,
+            identity: &identity,
+            blobs: &blobs,
+            authorship: &authorship,
+        },
+        &NativeProjectionInputs {
+            target_model_id: &model,
+            target: &route,
+            tools: &request.tools,
+            current: None,
+            selected: &selected,
+            origin_domains: &Default::default(),
+            pending: &Default::default(),
+            prior_f: None,
+        },
+        |_| {
+            (
+                DiscoveryOrigin {
+                    boundary: Boundary::Vertex,
+                    owner_model_id: None,
+                },
+                NativeQualification {
+                    source: None,
+                    target: Some(domain.clone()),
+                    request: Some(domain.clone()),
+                    original_admission: admission,
+                    shape: NativeReplayShape {
+                        family: NativeReplayFamily::MessagesServer,
+                        keyless_server: false,
+                        output_id_present: false,
+                        completed: true,
+                        result_error: false,
+                        referenced_members: 0,
+                    },
+                    receipt: None,
+                    intact_membership: true,
+                    current_backing: false,
+                    faithful_identity: true,
+                },
+            )
+        },
+    )
+    .unwrap();
+    assert_eq!(core.decision.groups.len(), 1);
+    assert_eq!(core.decision.groups[0].action, NativeHistoryAction::F);
+    assert_eq!(core.accounting.qualification, core.decision.qualification);
+    assert_eq!(core.accounting.raw_members.len(), 2);
+    assert!(core.accounting.references.is_empty());
+    assert_eq!(core.decision.members.len(), 2);
+    assert_eq!(core.accounting.groups.demoted, 1);
+    assert_eq!(core.accounting.members.demoted, 2);
+    assert_eq!(
+        core.decision.members[0].neutral.as_ref().unwrap().kind,
+        NativeNeutralKind::Call
+    );
+    assert_eq!(
+        core.decision.members[1].neutral.as_ref().unwrap().kind,
+        NativeNeutralKind::Result
+    );
+    assert!(core.decision.members.iter().all(|member| {
+        member
+            .neutral
+            .as_ref()
+            .is_some_and(|text| text.text.len() <= 128)
+    }));
+    assert!(
+        core.decision
+            .members
+            .iter()
+            .map(|member| member.neutral.as_ref().unwrap().text.len())
+            .sum::<usize>()
+            <= 256
+    );
+    let mut replacements = BTreeMap::new();
+    for member in &core.decision.members {
+        let link = ledger
+            .accounting
+            .iter()
+            .find(|link| link.source == member.source)
+            .unwrap();
+        assert!(member.raw.is_none());
+        let output = member
+            .neutral
+            .as_ref()
+            .map(|neutral| Item::assistant(neutral.text.clone()));
+        assert!(
+            replacements
+                .insert(link.view_item.unwrap() as usize, output)
+                .is_none()
+        );
+    }
+    request.items = original
+        .into_iter()
+        .enumerate()
+        .flat_map(|(index, item)| replacements.remove(&index).unwrap_or(Some(item)))
+        .collect();
+    assert!(replacements.is_empty());
+    let (normalized, streaming_carrier) = client.finalize_conversation_messages(&request).unwrap();
+    request = normalized;
+    let encoded = if streaming {
+        streaming_carrier
+    } else {
+        xai_grok_sampling_types::request_validation::validate_and_encode_messages_request(
+            &xai_grok_sampling_types::build_messages_request(&request),
+        )
+        .unwrap()
+    };
+    let carrier = NativeFinalCarrier::capture(encoded.as_bytes().to_vec().into()).unwrap();
+    let declarations: Vec<Value> = carrier
+        .declarations()
+        .map(|bytes| serde_json::from_slice(bytes).unwrap())
+        .unwrap_or_default();
+    let identities = declarations
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, declaration)| {
+            let schema_value = declaration.get("input_schema")?;
+            let schema_bytes: Arc<[u8]> = serde_json::to_vec(schema_value).unwrap().into();
+            let schema = NativeBlobRef {
+                kind: "eligible_schema".into(),
+                byte_len: schema_bytes.len() as u64,
+                digest: native_content_digest(&schema_bytes),
+            };
+            let snapshot = NativeEligibleSnapshot {
+                version: 1,
+                namespace_kind: NativeNamespaceKind::GrokBuild,
+                qualified_namespace: "grok_build".into(),
+                child_name: declaration["name"].as_str().unwrap().into(),
+                schema: schema.clone(),
+                binding: origin.clone(),
+            };
+            let provenance_bytes: Arc<[u8]> = serde_json::to_vec(&snapshot).unwrap().into();
+            Some(NativeDeclarationIdentity {
+                declaration_index: index as u64,
+                child_index: None,
+                namespace_kind: snapshot.namespace_kind,
+                qualified_namespace: snapshot.qualified_namespace,
+                child_name: snapshot.child_name,
+                declaration,
+                schema,
+                schema_bytes,
+                provenance: NativeBlobRef {
+                    kind: "eligible_snapshot".into(),
+                    byte_len: provenance_bytes.len() as u64,
+                    digest: native_content_digest(&provenance_bytes),
+                },
+                provenance_bytes,
+                binding_bytes: Some(blobs[&origin.digest].clone()),
+            })
+        })
+        .collect();
+    let context = NativeHistoryRequestContext::captured(
+        NativeHistoryRequirement::Selected,
+        NativeHistoryCapture {
+            history,
+            history_revision: 11,
+            lineage: record.lineage.clone(),
+            native_generation: 5,
+            high_water: 7,
+            projection_revision: 0,
+            strict_append_sequence: 13,
+            binding_generation: 17,
+            install_generation: 19,
+            issued_request: "k1-issued-A".into(),
+            target: domain,
+            execution: NativeHistoryExecution::Server,
+            original_admission: admission,
+            versions: NativeHistoryVersions {
+                schema: 2,
+                policy: 1,
+                projection: 1,
+                reader: 2,
+                limits: 1,
+            },
+        },
+        NativeHistoryWriteAuthority::SendOnly,
+    );
+    let plan = NativeHistoryPlan::checked(
+        context.clone(),
+        NativeHistoryPlanInput {
+            ledger_bytes: blobs[&record.ledger.digest].clone(),
+            record,
+            input_history_bytes,
+            lowering_request: &request,
+            post_history_bytes: serde_json::to_vec(&request.items).unwrap().into(),
+            carrier,
+            identities,
+            qualification: core.accounting.qualification.clone(),
+            core,
+        },
+    )
+    .unwrap();
+    assert_eq!(plan.readiness(), &NativePlanReadiness::Tentative);
+    assert_eq!(
+        validate_native_history_plan(&context, Some(&plan), plan.carrier()),
+        Err(NativePlanRefusal::NotReady)
+    );
+    let plan = plan.send_only().unwrap();
+    assert_eq!(
+        validate_native_history_plan(&context, Some(&plan), plan.carrier()),
+        Ok(NativeHistoryReady::SendOnly)
+    );
+    let body: Value = serde_json::from_slice(encoded.as_bytes()).unwrap();
+    assert_eq!(body["max_tokens"], request.max_output_tokens.unwrap());
+    assert_eq!(body.get("stream"), streaming.then_some(&Value::Bool(true)));
+    request.encoded = streaming.then_some(encoded);
+    request.native_history = Some(NativeHistoryRequest::new(context, Some(plan)));
+    request
+}
+
+use xai_grok_sampler::{ApiBackend, SamplingClient, SamplerConfig};
+
+struct K1NativePersistence {
+    ordinary: xai_chat_state::NullChatPersistence,
+    capture: bool,
+}
+
+impl xai_chat_state::ChatPersistence for K1NativePersistence {
+    fn persist_message(&mut self, item: &ConversationItem) {
+        self.ordinary.persist_message(item);
+    }
+    fn persist_working_directory_switch_and_ack(
+        &mut self,
+        item: &ConversationItem,
+    ) -> tokio::sync::oneshot::Receiver<
+        Result<xai_chat_state::StrictAppendAck, xai_chat_state::StrictAppendError>,
+    > {
+        self.ordinary.persist_working_directory_switch_and_ack(item)
+    }
+    fn replace_history(&mut self, items: &[ConversationItem]) {
+        self.ordinary.replace_history(items);
+    }
+    fn replace_history_for_strip_and_ack(
+        &mut self,
+        items: &[ConversationItem],
+    ) -> tokio::sync::oneshot::Receiver<std::io::Result<()>> {
+        self.ordinary.replace_history_for_strip_and_ack(items)
+    }
+    fn flush(&mut self) {
+        self.ordinary.flush();
+    }
+    fn read_native_history(
+        &mut self,
+    ) -> tokio::sync::oneshot::Receiver<
+        Result<xai_chat_state::persistence::native::NativeRead, NativeUnavailable>,
+    > {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = tx.send(if self.capture {
+            Ok(xai_chat_state::persistence::native::NativeRead {
+                lineage: "test-actor".into(),
+                checkpoint: None,
+            })
+        } else {
+            Err(NativeUnavailable::Persistence)
+        });
+        rx
+    }
+}
+
+struct K1Shell {
+    actor: Arc<SessionActor>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+    evidence: std::rc::Rc<std::cell::RefCell<Vec<(bool, u64)>>>,
+    _workspace: tempfile::TempDir,
+    _model_home: tempfile::TempDir,
+}
+
+impl K1Shell {
+    async fn new(base_url: &str, capture: bool) -> Self {
+        let (gateway_tx, mut gateway_rx) = tokio::sync::mpsc::unbounded_channel();
+        let gateway = tokio::task::spawn_local(async move {
+            while let Some(message) = gateway_rx.recv().await {
+                if let xai_acp_lib::AcpClientMessage::SessionNotification(args) = message {
+                    let _ = args.response_tx.send(Ok(()));
+                }
+            }
+        });
+        let (persistence_tx, mut persistence_rx) = tokio::sync::mpsc::unbounded_channel();
+        let persistence = tokio::task::spawn_local(async move {
+            while let Some(message) = persistence_rx.recv().await {
+                if let PersistenceMsg::FlushAndAck { respond_to } = message {
+                    let _ = respond_to.send(Ok(()));
+                }
+            }
+        });
+        let (mut actor, _events) = create_test_actor_with_chat_persistence(
+            0,
+            256_000,
+            85,
+            gateway_tx,
+            persistence_tx,
+            Box::new(K1NativePersistence {
+                ordinary: xai_chat_state::NullChatPersistence,
+                capture,
+            }),
+        )
+        .await;
+        let workspace = tempfile::tempdir().unwrap();
+        actor.hook_resolved_workspace_root = workspace.path().to_string_lossy().into_owned();
+        actor
+            .last_live_orphan_reconcile
+            .set(Some(std::time::Instant::now()));
+        actor.max_retries = 0;
+        actor.transient_retry_enabled = false;
+        actor.mcp_reminder_mode = McpReminderMode::Full;
+        let (manager, model_home) = manager_with_entries();
+        let mut entry = entry_with_search_flag("test", false);
+        entry.info.api_backend = ApiBackend::Messages;
+        entry.info.context_window = std::num::NonZeroU64::new(256_000).unwrap();
+        entry.api_base_url = Some(base_url.into());
+        entry.api_key = Some("test-key".into());
+        manager.insert_test_entry("test", entry);
+        manager.set_current_model_id(acp::ModelId::new("test"));
+        actor.models_manager = manager;
+        actor.memory.flush_config.enabled = false;
+        actor.memory.dream_config.enabled = false;
+        actor.memory.save_on_end = false;
+        let agent = {
+            let old = actor.agent.borrow();
+            let mut policy = old.compaction_policy().clone();
+            policy.two_pass_enabled = false;
+            policy.remote_compaction_v2 = false;
+            xai_grok_agent::Agent::new(
+                old.definition().clone(),
+                old.prompt_context().clone(),
+                old.system_prompt().to_string(),
+                old.tool_bridge().clone(),
+                old.reminder_policy().clone(),
+                policy,
+                vec![],
+                false,
+            )
+        };
+        actor.agent.replace(agent);
+        let mut config = actor.chat_state_handle.get_sampling_config().await.unwrap();
+        config.base_url = base_url.into();
+        config.model = "test".into();
+        config.api_backend = ApiBackend::Messages;
+        config.max_completion_tokens = Some(4096);
+        config.max_retries = Some(0);
+        actor.chat_state_handle.update_sampling_config(config);
+        let mut credentials = actor.chat_state_handle.get_credentials().await;
+        credentials.api_key = Some("test-key".into());
+        actor.chat_state_handle.update_credentials(credentials);
+        let (events, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        actor.sampler_handle = xai_grok_sampler::SamplerActor::spawn(
+            k1_shell_config(base_url),
+            xai_grok_sampler::RetryPolicy {
+                max_retries: 0,
+                ..Default::default()
+            },
+            events,
+        );
+        actor
+            .workspace_ops
+            .bind_local_session(
+                &actor.session_id_string(),
+                actor.tool_context.cwd.as_path().to_path_buf(),
+                actor.tool_context.hunk_tracker_handle.clone(),
+                actor.agent.borrow().tool_bridge().toolset(),
+                None,
+            )
+            .unwrap();
+        let actor = Arc::new(actor);
+        let drainer = actor.clone();
+        let evidence = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed = evidence.clone();
+        let sampler = tokio::task::spawn_local(async move {
+            while let Some(event) = event_rx.recv().await {
+                if let xai_grok_sampler::SamplingEvent::NativeAttemptEvidence { evidence, .. } =
+                    &event
+                {
+                    observed.borrow_mut().push(match evidence {
+                        NativeEvidenceEvent::Attempt(attempt) => (false, attempt.http_dispatches),
+                        NativeEvidenceEvent::End => (true, 0),
+                    });
+                }
+                drainer.handle_sampling_event(event).await;
+            }
+        });
+        Self {
+            actor,
+            tasks: vec![gateway, persistence, sampler],
+            evidence,
+            _workspace: workspace,
+            _model_home: model_home,
+        }
+    }
+
+    async fn finish(self) {
+        assert_eq!(self.actor.sampler_handle.active_count().await, 0);
+        for task in self.tasks {
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+        }
+    }
+}
+
+fn k1_shell_config(base_url: &str) -> SamplerConfig {
+    SamplerConfig {
+        base_url: base_url.into(),
+        model: "test".into(),
+        api_key: Some("test-key".into()),
+        api_backend: ApiBackend::Messages,
+        max_completion_tokens: Some(4096),
+        max_retries: Some(0),
+        ..Default::default()
+    }
+}
+
+async fn k1_shell_http() -> (
+    String,
+    Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = bodies.clone();
+    let router = axum::Router::new().route(
+        "/v1/messages",
+        axum::routing::post(move |body: axum::body::Bytes| {
+            let captured = captured.clone();
+            async move {
+                let value: Value = serde_json::from_slice(&body).unwrap();
+                captured.lock().unwrap().push(body.to_vec());
+                let (content_type, response) = if value.get("stream") == Some(&Value::Bool(true)) {
+                    (
+                        "text/event-stream",
+                        k0_frames(
+                            vec![json!({"type":"text","text":"K1 complete"})],
+                            "end_turn",
+                        )
+                        .into_iter()
+                        .map(|event| format!("data: {event}\n\n"))
+                        .collect::<String>(),
+                    )
+                } else {
+                    (
+                        "application/json",
+                        json!({"id":"msg_k1","type":"message","role":"assistant","model":"test",
+                    "content":[{"type":"text","text":"K1 complete"}],"stop_reason":"end_turn",
+                    "stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":3}})
+                        .to_string(),
+                    )
+                };
+                axum::response::Response::builder()
+                    .header("content-type", content_type)
+                    .body(axum::body::Body::from(response))
+                    .unwrap()
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    (url, bodies, server)
+}
+async fn k1_shell_actor_case(
+    base_url: &str,
+    bodies: &Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+    capture: bool,
+    case: &str,
+) {
+    let shell = K1Shell::new(base_url, capture).await;
+    shell
+        .actor
+        .chat_state_handle
+        .push_user_message(ConversationItem::user("K1 bound shell request"));
+    let before = bodies.lock().unwrap().len();
+    let builds = std::cell::Cell::new(0usize);
+    let expected = std::cell::RefCell::new(Vec::new());
+    let mut prepare = |request: &mut ConversationRequest,
+                       binding: &xai_chat_state::RequestTransportBinding| {
+        builds.set(builds.get() + 1);
+        assert_eq!(binding.config.base_url, base_url);
+        assert_eq!(binding.config.api_backend, ApiBackend::Messages);
+        let client = SamplingClient::new(k1_shell_config(&binding.config.base_url)).unwrap();
+        *request = k1_prepare(
+            &client,
+            request.clone(),
+            &format!("{base_url}/messages"),
+            true,
+        );
+        *expected.borrow_mut() = request.encoded.as_ref().unwrap().as_bytes().to_vec();
+        match case {
+            "valid" | "install-B-retain-A" => {}
+            "missing-plan" => request.native_history.as_mut().unwrap().invalidate_plan(),
+            "stale-request" => request.max_output_tokens = Some(4097),
+            "stale-context" => {
+                let native = request.native_history.as_ref().unwrap();
+                let mut context = native.context().capture().clone();
+                context.history_revision += 1;
+                request.native_history = Some(NativeHistoryRequest::new(
+                    NativeHistoryRequestContext::captured(
+                        NativeHistoryRequirement::Selected,
+                        context,
+                        NativeHistoryWriteAuthority::SendOnly,
+                    ),
+                    native.plan().cloned(),
+                ));
+            }
+            "wrong-banked-body" => {
+                let mut changed = request.clone();
+                changed.max_output_tokens = Some(4098);
+                request.encoded = Some(client.encode_conversation_messages(&changed).unwrap());
+            }
+            _ => unreachable!(),
+        }
+        if case == "install-B-retain-A" {
+            let mut next = binding.config.clone();
+            next.model = "installed-B".into();
+            next.base_url = "http://127.0.0.1:1/not-A".into();
+            shell.actor.chat_state_handle.update_sampling_config(next);
+        }
+        Ok(())
+    };
+    let mut salvage = super::length_salvage::LengthSalvage::new(None);
+    let mut sampling = Default::default();
+    let result = tokio::time::timeout(
+        K0_TIMEOUT,
+        shell
+            .actor
+            .process_conversation_turn_for_native_history_test(
+                "k1-shell-turn",
+                None,
+                None,
+                None,
+                &mut salvage,
+                &mut sampling,
+                &mut prepare,
+            ),
+    )
+    .await
+    .expect("K1 shell turn terminates");
+    assert_eq!(builds.get(), 1, "one real bound build; no fixture rebuild");
+    let success = matches!(case, "valid" | "install-B-retain-A");
+    {
+        let bodies = bodies.lock().unwrap();
+        if success {
+            assert!(
+                matches!(result, Ok(TurnOutcome::Completed { .. })),
+                "K1 shell positive: {:?}",
+                result.err()
+            );
+            assert_eq!(bodies.len(), before + 1);
+            assert_eq!(
+                bodies[before],
+                *expected.borrow(),
+                "K1 exact actual shell HTTP bytes"
+            );
+        } else {
+            assert_eq!(
+                bodies.len(),
+                before,
+                "K1 shell forbidden HTTP: capture={capture}/{case}"
+            );
+            assert!(
+                result.is_err(),
+                "K1 shell typed refusal surfaces through normal completion"
+            );
+        }
+    }
+    let evidence = shell.evidence.borrow();
+    assert_eq!(
+        evidence.iter().filter(|(end, _)| *end).count(),
+        usize::from(capture)
+    );
+    assert_eq!(
+        evidence
+            .iter()
+            .map(|(_, dispatches)| dispatches)
+            .sum::<u64>(),
+        u64::from(capture && success)
+    );
+    println!(
+        "K1_SHELL_CASE actor capture={capture} {case} builds={} http_delta={} ends={}",
+        builds.get(),
+        bodies.lock().unwrap().len() - before,
+        evidence.iter().filter(|(end, _)| *end).count()
+    );
+    drop(evidence);
+    shell.finish().await;
+}
+
+async fn k1_shell_direct_cases(base_url: &str, bodies: &Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
+    let client = SamplingClient::new(k1_shell_config(base_url)).unwrap();
+    for route in ["direct", "collect", "non-streaming", "compact-helper"] {
+        let prepared = k1_prepare(
+            &client,
+            ConversationRequest::from_items(vec![ConversationItem::user("K1 direct shell")]),
+            &format!("{base_url}/messages"),
+            route != "non-streaming",
+        );
+        let expected = prepared
+            .native_history
+            .as_ref()
+            .unwrap()
+            .plan()
+            .unwrap()
+            .carrier()
+            .bytes()
+            .to_vec();
+        for missing in [false, true] {
+            let mut request = prepared.clone();
+            request.encoded = None;
+            if missing {
+                request.native_history.as_mut().unwrap().invalidate_plan();
+            }
+            let before = bodies.lock().unwrap().len();
+            let result: Result<(), String> = tokio::time::timeout(K0_TIMEOUT, async {
+                match route {
+                    "direct" => {
+                        let (mut stream, _) = client.conversation_stream_messages(request).await.map_err(|error| error.to_string())?;
+                        while let Some(event) = stream.next().await { event.map_err(|error| error.to_string())?; }
+                        Ok(())
+                    }
+                    "collect" => client.conversation_collect(request).await.map(|_| ()).map_err(|error| error.to_string()),
+                    "non-streaming" => client.conversation_messages(request).await.map(|_| ()).map_err(|error| error.to_string()),
+                    "compact-helper" => {
+                        let (mut stream, _) = crate::session::helpers::session_compact::send_compact_messages_request(
+                            &client, request, &tokio_util::sync::CancellationToken::new(),
+                        ).await.map_err(|error| format!("{error:?}"))?;
+                        while let Some(event) = stream.next().await { event.map_err(|error| error.to_string())?; }
+                        Ok(())
+                    }
+                    _ => unreachable!(),
+                }
+            }).await.expect("K1 shell direct transport terminates");
+            let bodies = bodies.lock().unwrap();
+            if missing {
+                assert_eq!(
+                    bodies.len(),
+                    before,
+                    "K1 shell direct missing proof refuses {route}"
+                );
+                assert!(result.is_err());
+            } else {
+                assert!(result.is_ok(), "K1 shell {route}: {result:?}");
+                assert_eq!(bodies.len(), before + 1);
+                assert_eq!(bodies[before], expected);
+            }
+            println!(
+                "K1_SHELL_CASE {route} missing={missing} http_delta={}",
+                bodies.len() - before
+            );
+        }
+    }
+}
+
+fn k1_isolated_shell_test() -> bool {
+    const NAME: &str = "session::acp_session::native_messages_replay_tests::messages_replay_plan_checked_on_all_sends";
+    const CHILD: &str = "GROK_TEST_K1_SHELL_CHILD";
+    if std::env::var(CHILD).as_deref() == Ok(NAME) {
+        return false;
+    }
+    let home = tempfile::tempdir().unwrap();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .env(CHILD, NAME)
+        .env("GROK_HOME", home.path())
+        .env_remove("GROK_CONFIG")
+        .env_remove("GROK_CONFIG_PATH")
+        .env_remove("GROK_CAMPAIGNS")
+        .env_remove("GROK_CAMPAIGNS_OVERRIDE")
+        .env_remove("XAI_API_KEY")
+        .env_remove("APEX_LLM_API_KEY")
+        .env_remove("APEX_LLM_PROXY_KEY")
+        .args(["--exact", NAME, "--nocapture"])
+        .stdin(std::process::Stdio::null());
+    xai_tty_utils::detach_std_command(&mut command);
+    let output = command.output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "isolated K1 shell failed: stdout={stdout}; stderr={stderr}"
+    );
+    assert!(stdout.contains("running 1 test") && stdout.contains(&format!("test {NAME} ... ok")));
+    for line in stdout.lines().filter(|line| line.starts_with("K1_")) {
+        println!("{line}");
+    }
+    true
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn messages_replay_plan_checked_on_all_sends() {
+    if k1_isolated_shell_test() {
+        return;
+    }
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (base_url, bodies, server) = k1_shell_http().await;
+            for capture in [false, true] {
+                for case in [
+                    "valid",
+                    "missing-plan",
+                    "stale-request",
+                    "stale-context",
+                    "wrong-banked-body",
+                    "install-B-retain-A",
+                ] {
+                    k1_shell_actor_case(&base_url, &bodies, capture, case).await;
+                }
+            }
+            k1_shell_direct_cases(&base_url, &bodies).await;
+            server.abort();
+            assert!(server.await.unwrap_err().is_cancelled());
+        })
+        .await;
+}
+

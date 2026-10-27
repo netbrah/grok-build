@@ -15,6 +15,27 @@ pub use xai_chat_state::compaction_utils::{
     extract_messages_since_last_user, extract_real_user_queries, is_synthetic_extracted_query,
 };
 
+pub(crate) async fn send_compact_messages_request(
+    client: &OaiCompatClient,
+    request: ConversationRequest,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<
+    (
+        futures_util::stream::BoxStream<
+            'static,
+            xai_grok_sampling_types::error::Result<
+                xai_grok_sampling_types::messages::MessageStreamEvent,
+            >,
+        >,
+        Option<xai_grok_sampling_types::ResponseModelMetadata>,
+    ),
+    CompactFailure,
+> {
+    await_unless_cancelled(cancel, client.conversation_stream_messages(request))
+        .await?
+        .map_err(classify_sampling_error)
+}
+
 /// Short compaction prompt used by the short-prompt harness only.
 /// Frames the call as "summarize for a successor assistant who only sees the user's original query plus this summary.".
 /// Wrapped in `<summary_request>` only; the surrounding `<user_query>` is implicit because we push this as a `ConversationItem::user`.
@@ -785,13 +806,7 @@ pub(crate) async fn generate_session_compact(
                 x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
                 ..Default::default()
             };
-            let stream_result =
-                await_unless_cancelled(cancel, client.conversation_stream_messages(request))
-                    .await?;
-            let mut stream = match stream_result {
-                Ok((s, _metadata)) => s,
-                Err(e) => return Err(classify_sampling_error(e)),
-            };
+            let (mut stream, _metadata) = send_compact_messages_request(&client, request, cancel).await?;
             // Collect the streamed response (Messages API event types)
             let mut timing = StreamTiming::new();
             let mut truncated = false;

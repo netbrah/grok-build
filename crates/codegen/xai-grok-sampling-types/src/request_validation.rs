@@ -134,6 +134,7 @@ pub enum RequestValidationError {
     /// V1: `stream` must be omitted or `true` (PIPE L3937-3938: transport
     /// always requests streaming output; OQ-2 default ruling).
     StreamFieldInvalid { value: bool },
+    NativeHistory { reason: crate::conversation::native_search_history::NativePlanRefusal },
 }
 
 impl fmt::Display for RequestValidationError {
@@ -217,6 +218,9 @@ impl fmt::Display for RequestValidationError {
                 f,
                 "cache_control marker at block index {at} must sit on the last markable block of its block list (non-retryable, local)"
             ),
+            RequestValidationError::NativeHistory { reason } => write!(
+                f, "native history refused: {reason:?} (non-retryable, local)"
+            ),
             RequestValidationError::StreamFieldInvalid { value } => write!(
                 f,
                 "stream must be omitted or true; got {value} (non-retryable, local)"
@@ -226,6 +230,103 @@ impl fmt::Display for RequestValidationError {
 }
 
 impl std::error::Error for RequestValidationError {}
+
+/// Independent request authority survives loss of its optional proof.
+#[derive(Clone)]
+pub struct NativeHistoryRequest {
+    context: crate::conversation::native_search_history::NativeHistoryRequestContext,
+    plan: Option<crate::conversation::native_search_history::NativeHistoryPlan>,
+}
+
+impl NativeHistoryRequest {
+    pub fn new(
+        context: crate::conversation::native_search_history::NativeHistoryRequestContext,
+        plan: Option<crate::conversation::native_search_history::NativeHistoryPlan>,
+    ) -> Self {
+        Self { context, plan }
+    }
+
+    pub fn context(
+        &self,
+    ) -> &crate::conversation::native_search_history::NativeHistoryRequestContext {
+        &self.context
+    }
+
+    pub fn plan(&self) -> Option<&crate::conversation::native_search_history::NativeHistoryPlan> {
+        self.plan.as_ref()
+    }
+
+    pub fn invalidate_plan(&mut self) {
+        self.plan = None;
+    }
+}
+
+impl fmt::Debug for NativeHistoryRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NativeHistoryRequest")
+            .field("requirement", &self.context.requirement())
+            .field("has_plan", &self.plan.is_some())
+            .finish()
+    }
+}
+
+/// Check the outgoing request without deriving authority from its optional proof.
+pub fn check_native_history_request(
+    request: &crate::ConversationRequest,
+    context: &crate::conversation::native_search_history::NativeHistoryRequestContext,
+    plan: Option<&crate::conversation::native_search_history::NativeHistoryPlan>,
+) -> Result<(), crate::conversation::native_search_history::NativePlanRefusal> {
+    use crate::conversation::native_search_history::{NativeHistoryRequirement, NativePlanRefusal};
+    let plan = match (context.requirement(), plan) {
+        (NativeHistoryRequirement::Inactive, None) => return Ok(()),
+        (NativeHistoryRequirement::Inactive, Some(_)) => {
+            return Err(NativePlanRefusal::InactivePlan);
+        }
+        (NativeHistoryRequirement::Selected, None) => return Err(NativePlanRefusal::MissingPlan),
+        (NativeHistoryRequirement::Selected, Some(plan)) => plan,
+    };
+    if context != plan.context()
+        || request.model.as_deref() != Some(context.capture().target.model.as_str())
+        || request.search_admission != Some(context.capture().original_admission)
+    {
+        return Err(NativePlanRefusal::StaleContext);
+    }
+    crate::conversation::native_search_history::native_encoded_len(
+        &request.items,
+        crate::conversation::native_search_history::NATIVE_SNAPSHOT_PAYLOAD_BYTES,
+    )
+    .map_err(|_| NativePlanRefusal::InvalidHistory)?;
+    let actual =
+        serde_json::to_value(&request.items).map_err(|_| NativePlanRefusal::InvalidHistory)?;
+    let expected: serde_json::Value = serde_json::from_slice(plan.post_history_bytes())
+        .map_err(|_| NativePlanRefusal::InvalidHistory)?;
+    if actual != expected {
+        return Err(NativePlanRefusal::InvalidHistory);
+    }
+    Ok(())
+}
+
+/// The final carrier is the built HTTP body; the candidate only detects stale cached pairs.
+pub fn validate_native_messages_send(
+    context: &crate::conversation::native_search_history::NativeHistoryRequestContext,
+    plan: Option<&crate::conversation::native_search_history::NativeHistoryPlan>,
+    actual: &crate::conversation::native_search_history::NativeFinalCarrier,
+    expected: Option<&crate::conversation::native_search_history::NativeFinalCarrier>,
+) -> Result<
+    crate::conversation::native_search_history::NativeHistoryReady,
+    crate::conversation::native_search_history::NativePlanRefusal,
+> {
+    use crate::conversation::native_search_history::{
+        NativeHistoryRequirement, NativePlanRefusal, validate_native_history_plan,
+    };
+    if context.requirement() == NativeHistoryRequirement::Selected
+        && plan.is_some()
+        && expected != Some(actual)
+    {
+        return Err(NativePlanRefusal::FinalCarrierChanged);
+    }
+    validate_native_history_plan(context, plan, actual)
+}
 
 /// The N2 encoded carrier: exactly the bytes that reach transport. Debug is
 /// manual (byte count only) so the body never leaks into logs. REQVALID-1
@@ -552,6 +653,110 @@ mod tests {
     };
     use crate::presence::RequestPresence;
     use xai_token_estimation::{estimate_tokens, IMAGE_TOKEN_ESTIMATE};
+
+    fn k1_context(
+        requirement: crate::conversation::native_search_history::NativeHistoryRequirement,
+    ) -> crate::conversation::native_search_history::NativeHistoryRequestContext {
+        use crate::conversation::native_search_history::*;
+        NativeHistoryRequestContext::captured(
+            requirement,
+            NativeHistoryCapture {
+                history: NativeHistoryBoundary {
+                    items: 0,
+                    digest: "private-history".into(),
+                },
+                history_revision: 1,
+                lineage: NativeLineage {
+                    id: "private-lineage".into(),
+                    source_revision: 1,
+                    source_digest: "private-source".into(),
+                },
+                native_generation: 1,
+                high_water: 1,
+                projection_revision: 1,
+                strict_append_sequence: 1,
+                binding_generation: 1,
+                install_generation: 1,
+                issued_request: "private-request".into(),
+                target: NativeReplayDomain {
+                    backend: crate::ApiBackend::Messages,
+                    dialect: NativeReplayDialect::Messages,
+                    model: "m".into(),
+                    row: "private-row".into(),
+                    provider: "offline".into(),
+                    deployment: "private-deployment".into(),
+                    deployment_revision: "1".into(),
+                    endpoint: "http://127.0.0.1/messages".into(),
+                    principal: "private-principal".into(),
+                },
+                execution: NativeHistoryExecution::Server,
+                original_admission: crate::SearchAdmission {
+                    supports_search_tool: false,
+                    has_searchable_tools: false,
+                },
+                versions: NativeHistoryVersions {
+                    schema: 2,
+                    policy: 1,
+                    projection: 1,
+                    reader: 2,
+                    limits: 1,
+                },
+            },
+            NativeHistoryWriteAuthority::SendOnly,
+        )
+    }
+
+    #[test]
+    fn native_history_holder_keeps_selected_context_and_bounds_debug() {
+        use crate::conversation::native_search_history::NativeHistoryRequirement;
+        let context = k1_context(NativeHistoryRequirement::Selected);
+        let native = NativeHistoryRequest::new(context.clone(), None);
+        assert_eq!(
+            format!("{native:?}"),
+            "NativeHistoryRequest { requirement: Selected, has_plan: false }"
+        );
+        let mut request = ConversationRequest::from_items(vec![ConversationItem::user("hello")]);
+        assert!(request.native_history.is_none());
+        request.native_history = Some(native);
+        request.encoded = Some(
+            validate_and_encode_messages_request(&minimal_request(vec![text_message(
+                MessageRole::User,
+                "hello",
+            )]))
+            .unwrap(),
+        );
+        request.invalidate_encoded();
+        assert!(request.encoded.is_none());
+        assert_eq!(request.native_history.as_ref().unwrap().context(), &context);
+        assert!(request.native_history.as_ref().unwrap().plan().is_none());
+    }
+
+    #[test]
+    fn native_messages_guard_keeps_missing_plan_distinct_from_inactive() {
+        use crate::conversation::native_search_history::*;
+        let encoded = validate_and_encode_messages_request(&minimal_request(vec![text_message(
+            MessageRole::User,
+            "hello",
+        )]))
+        .unwrap();
+        let actual = NativeFinalCarrier::capture(encoded.as_bytes().to_vec().into()).unwrap();
+        let selected = k1_context(NativeHistoryRequirement::Selected);
+        assert_eq!(
+            validate_native_messages_send(&selected, None, &actual, None),
+            Err(NativePlanRefusal::MissingPlan)
+        );
+        let inactive = k1_context(NativeHistoryRequirement::Inactive);
+        assert_eq!(
+            validate_native_messages_send(&inactive, None, &actual, None),
+            Ok(NativeHistoryReady::Inactive)
+        );
+        let error = SamplingError::from(RequestValidationError::NativeHistory {
+            reason: NativePlanRefusal::MissingPlan,
+        });
+        assert!(!error.is_retryable());
+        assert!(!error.is_payload_too_large());
+        assert!(!error.is_auth_error());
+    }
 
     // ------------------------------------------------------------------
     // Fixture helpers
