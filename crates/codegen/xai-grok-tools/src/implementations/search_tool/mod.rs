@@ -202,6 +202,176 @@ pub fn sanitize_description(s: &str) -> String {
         .join(" ")
 }
 
+fn expand_schema_references(schema: &serde_json::Value) -> serde_json::Value {
+    use serde_json::{Map, Value};
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Position {
+        Root,
+        Schema,
+        Names,
+    }
+
+    fn is_data_keyword(key: &str) -> bool {
+        matches!(key, "const" | "enum" | "default" | "examples")
+    }
+
+    fn child_position(key: &str) -> Position {
+        match key {
+            "properties" | "patternProperties" | "$defs" | "definitions" | "dependentSchemas" => {
+                Position::Names
+            }
+            _ => Position::Schema,
+        }
+    }
+
+    fn has_scoped_identifiers(value: &Value, position: Position) -> bool {
+        match value {
+            Value::Object(object) if position == Position::Names => object
+                .values()
+                .any(|value| has_scoped_identifiers(value, Position::Schema)),
+            Value::Object(object) => {
+                (position != Position::Root
+                    && (object.contains_key("$id") || object.contains_key("$anchor")))
+                    || object.iter().any(|(key, value)| {
+                        !is_data_keyword(key) && has_scoped_identifiers(value, child_position(key))
+                    })
+            }
+            Value::Array(array) => array
+                .iter()
+                .any(|value| has_scoped_identifiers(value, Position::Schema)),
+            _ => false,
+        }
+    }
+
+    fn local_pointer(reference: &str) -> Option<String> {
+        let mut encoded = reference.strip_prefix('#')?.bytes();
+        let mut decoded = Vec::new();
+        while let Some(byte) = encoded.next() {
+            decoded.push(if byte == b'%' {
+                let high = (encoded.next()? as char).to_digit(16)?;
+                let low = (encoded.next()? as char).to_digit(16)?;
+                (high * 16 + low) as u8
+            } else {
+                byte
+            });
+        }
+        let pointer = String::from_utf8(decoded).ok()?;
+        if !pointer.is_empty() && !pointer.starts_with('/') {
+            return None;
+        }
+        let mut bytes = pointer.bytes();
+        while let Some(byte) = bytes.next() {
+            if byte == b'~' && !matches!(bytes.next(), Some(b'0' | b'1')) {
+                return None;
+            }
+        }
+        Some(pointer)
+    }
+
+    fn fallback(reference: &Value) -> Value {
+        let text = reference
+            .as_str()
+            .map_or_else(|| reference.to_string(), str::to_owned);
+        serde_json::json!({
+            "description": format!("Schema reference {text} omitted (recursive, unresolved or unsupported).")
+        })
+    }
+
+    struct Expander<'a> {
+        root: &'a Value,
+        scoped: bool,
+        active: Vec<String>,
+        expansions: usize,
+    }
+
+    impl Expander<'_> {
+        fn walk(&mut self, value: &Value, position: Position) -> Value {
+            match value {
+                Value::Object(object) if position == Position::Names => Value::Object(
+                    object
+                        .iter()
+                        .map(|(name, schema)| (name.clone(), self.walk(schema, Position::Schema)))
+                        .collect(),
+                ),
+                Value::Object(object) => {
+                    let target = object
+                        .get("$ref")
+                        .map(|reference| self.expand_reference(reference));
+                    let mut siblings = Map::new();
+                    for (key, value) in object {
+                        if key == "$ref"
+                            || (position == Position::Root
+                                && matches!(key.as_str(), "$defs" | "definitions"))
+                        {
+                            continue;
+                        }
+                        let expanded = if is_data_keyword(key) {
+                            value.clone()
+                        } else {
+                            self.walk(value, child_position(key))
+                        };
+                        siblings.insert(key.clone(), expanded);
+                    }
+                    match target {
+                        Some(target) if !siblings.is_empty() => {
+                            // Preserve validation conjunction for the supported subset, not annotation equivalence.
+                            serde_json::json!({"allOf": [target, Value::Object(siblings)]})
+                        }
+                        Some(target) => target,
+                        None => Value::Object(siblings),
+                    }
+                }
+                Value::Array(array) => Value::Array(
+                    array
+                        .iter()
+                        .map(|value| self.walk(value, Position::Schema))
+                        .collect(),
+                ),
+                _ => value.clone(),
+            }
+        }
+
+        fn expand_reference(&mut self, reference: &Value) -> Value {
+            let Some(pointer) = reference.as_str().and_then(local_pointer) else {
+                return fallback(reference);
+            };
+            if self.active.contains(&pointer) {
+                return fallback(reference);
+            }
+            if self.scoped || self.active.len() >= 32 || self.expansions >= 4096 {
+                return fallback(reference);
+            }
+            let Some(target) = self.root.pointer(&pointer) else {
+                return fallback(reference);
+            };
+            let position = if pointer.is_empty() {
+                Position::Root
+            } else {
+                Position::Schema
+            };
+            self.active.push(pointer);
+            self.expansions += 1;
+            let expanded = self.walk(target, position);
+            self.active.pop();
+            expanded
+        }
+    }
+
+    let mut expanded = Expander {
+        root: schema,
+        scoped: has_scoped_identifiers(schema, Position::Root),
+        active: Vec::new(),
+        expansions: 0,
+    }
+    .walk(schema, Position::Root);
+    if let Value::Object(object) = &mut expanded {
+        object.remove("$defs");
+        object.remove("definitions");
+    }
+    expanded
+}
+
 #[derive(Debug, Default)]
 pub struct SearchTool;
 
@@ -291,7 +461,7 @@ impl xai_tool_runtime::Tool for SearchTool {
                 "tool_name": r.tool_name,
                 "description": truncate_description(&r.description),
                 "score": r.score,
-                "input_schema": r.input_schema,
+                "input_schema": expand_schema_references(&r.input_schema),
             });
             if let Some(group) = groups
                 .iter_mut()
@@ -509,6 +679,426 @@ mod tests {
 
         fn list_server_summaries(&self) -> Vec<ServerSummary> {
             Vec::new()
+        }
+    }
+
+    #[tokio::test]
+    async fn search_tool_expands_local_defs_refs_in_input_schema() {
+        let cluster = serde_json::json!({
+            "description": "Inline creds {host,username,password} or a named cluster.",
+            "oneOf": [
+                {"type": "string"},
+                {
+                    "type": "object",
+                    "properties": {
+                        "host": {"type": "string"},
+                        "username": {"type": "string"},
+                        "password": {"type": "string"}
+                    },
+                    "required": ["host", "username", "password"]
+                }
+            ]
+        });
+        let schema = serde_json::json!({
+            "$defs": {"cluster_ref": cluster},
+            "definitions": {"unused": {"$ref": "#/missing"}},
+            "type": "object",
+            "properties": {
+                "cluster": {"$ref": "#/$defs/cluster_ref"},
+                "command": {"type": "string"}
+            },
+            "required": ["cluster", "command"]
+        });
+        let resources = crate::types::resources::Resources::default().into_shared();
+        resources
+            .lock()
+            .await
+            .insert(ToolIndex(Arc::new(StaticToolIndex {
+                snapshot: SearchSnapshot {
+                    results: vec![ToolSearchResult {
+                        tool_name: "ontap__run_command".into(),
+                        server_name: "ONTAP".into(),
+                        description: "Run an ONTAP command".into(),
+                        score: 1.0,
+                        parameters: vec!["cluster".into(), "command".into()],
+                        input_schema: schema,
+                    }],
+                    total_hidden_tools: 1,
+                    is_ready: true,
+                },
+            })));
+        let mut ctx =
+            xai_tool_runtime::ToolCallContext::new(xai_tool_protocol::ToolCallId::new_v7());
+        ctx.extensions.insert(resources);
+        let output = SearchTool
+            .run(
+                ctx,
+                SearchToolInput {
+                    query: "ontap".into(),
+                    limit: Some(5),
+                },
+            )
+            .await
+            .unwrap();
+        let ToolOutput::SearchTool(output) = output else {
+            panic!("expected search tool output");
+        };
+        assert_eq!(output.result_count, 1);
+        let actual: serde_json::Value = serde_json::from_str(&output.content).unwrap();
+        assert_eq!(
+            actual,
+            serde_json::json!({
+                "results": [{
+                    "server": "ONTAP",
+                    "tools": [{
+                        "tool_name": "ontap__run_command",
+                        "description": "Run an ONTAP command",
+                        "score": 1.0,
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {"cluster": cluster, "command": {"type": "string"}},
+                            "required": ["cluster", "command"]
+                        }
+                    }]
+                }],
+                "total_hidden_tools": 1,
+                "status": "ready",
+                "note": null
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn search_tool_expands_nested_composed_and_repeated_refs() {
+        let number = serde_json::json!({"type": "integer", "minimum": 0});
+        let cases = [
+            (
+                serde_json::json!({
+                    "$id": "urn:root",
+                    "definitions": {"A": {"$ref": "#/definitions/B"}, "B": number},
+                    "const": {"$id": "literal-data", "$anchor": "literal-data"},
+                    "properties": {
+                        "first": {"$ref": "#/definitions/A"},
+                        "second": {"$ref": "#/definitions/A"},
+                        "validation_conjunction": {"$ref": "#/definitions/B", "enum": [1, 2]},
+                        "const": {"$ref": "#/definitions/A"},
+                        "enum": {"$ref": "#/definitions/B"},
+                        "$id": {"$ref": "#/definitions/B"},
+                        "$anchor": {"$ref": "#/definitions/B"}
+                    },
+                    "patternProperties": {"default": {"$ref": "#/definitions/B"}},
+                    "dependentSchemas": {"examples": {"$ref": "#/definitions/B"}},
+                    "anyOf": [{"$ref": "#/definitions/A"}, {"$ref": "#/definitions/B"}],
+                    "items": {"$ref": "#/definitions/B"},
+                    "additionalProperties": {"$ref": "#/definitions/B"}
+                }),
+                serde_json::json!({
+                    "$id": "urn:root",
+                    "const": {"$id": "literal-data", "$anchor": "literal-data"},
+                    "properties": {
+                        "first": number, "second": number,
+                        "validation_conjunction": {"allOf": [number, {"enum": [1, 2]}]},
+                        "const": number, "enum": number, "$id": number, "$anchor": number
+                    },
+                    "patternProperties": {"default": number},
+                    "dependentSchemas": {"examples": number},
+                    "anyOf": [number, number], "items": number, "additionalProperties": number
+                }),
+            ),
+            (
+                serde_json::json!({
+                    "$defs": {
+                        "a/b": {"type": "string"}, "tilde~1": {"type": "boolean"},
+                        "percent%24": {"type": "null"}, "a+b": {"type": "integer"}
+                    },
+                    "properties": {
+                        "slash": {"$ref": "#/%24defs/a~1b"},
+                        "tilde": {"$ref": "#/$defs/tilde~01"},
+                        "percent": {"$ref": "#/$defs/percent%2524"},
+                        "plus": {"$ref": "#/$defs/a+b"},
+                        "source": {"type": "number"},
+                        "arbitrary_pointer": {"$ref": "#/properties/source"},
+                        "array_pointer": {"$ref": "#/allOf/0"}
+                    },
+                    "allOf": [{"type": "object"}]
+                }),
+                serde_json::json!({
+                    "properties": {
+                        "slash": {"type": "string"}, "tilde": {"type": "boolean"},
+                        "percent": {"type": "null"}, "plus": {"type": "integer"},
+                        "source": {"type": "number"}, "arbitrary_pointer": {"type": "number"},
+                        "array_pointer": {"type": "object"}
+                    },
+                    "allOf": [{"type": "object"}]
+                }),
+            ),
+            (
+                serde_json::json!({
+                    "$defs": {"flag": false},
+                    "properties": {
+                        "flag": {"$ref": "#/$defs/flag"},
+                        "nested_maps": {
+                            "$defs": {"const": {"$ref": "#/$defs/flag"}},
+                            "definitions": {"enum": {"$ref": "#/$defs/flag"}}
+                        }
+                    }
+                }),
+                serde_json::json!({"properties": {
+                    "flag": false,
+                    "nested_maps": {"$defs": {"const": false}, "definitions": {"enum": false}}
+                }}),
+            ),
+        ];
+        let resources = crate::types::resources::Resources::default().into_shared();
+        resources
+            .lock()
+            .await
+            .insert(ToolIndex(Arc::new(StaticToolIndex {
+                snapshot: SearchSnapshot {
+                    results: cases
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (schema, _))| ToolSearchResult {
+                            tool_name: format!("schema__case_{i}"),
+                            server_name: "Schemas".into(),
+                            description: "Schema fixture".into(),
+                            score: 1.0,
+                            parameters: vec![],
+                            input_schema: schema.clone(),
+                        })
+                        .collect(),
+                    total_hidden_tools: cases.len(),
+                    is_ready: true,
+                },
+            })));
+        let mut ctx =
+            xai_tool_runtime::ToolCallContext::new(xai_tool_protocol::ToolCallId::new_v7());
+        ctx.extensions.insert(resources);
+        let output = SearchTool
+            .run(
+                ctx,
+                SearchToolInput {
+                    query: "schema".into(),
+                    limit: Some(5),
+                },
+            )
+            .await
+            .unwrap();
+        let ToolOutput::SearchTool(output) = output else {
+            panic!("expected search tool output");
+        };
+        assert_eq!(output.result_count, cases.len());
+        let actual: serde_json::Value = serde_json::from_str(&output.content).unwrap();
+        let tools = actual["results"][0]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), cases.len());
+        for (i, ((_, expected), tool)) in cases.iter().zip(tools).enumerate() {
+            assert_eq!(&tool["input_schema"], expected, "schema case {i}");
+        }
+    }
+
+    #[tokio::test]
+    async fn search_tool_falls_back_for_cycles_unresolved_and_bounds() {
+        let fallback = |reference: &str| {
+            serde_json::json!({
+                "description": format!("Schema reference {reference} omitted (recursive, unresolved or unsupported).")
+            })
+        };
+        let mut cases = vec![
+            (
+                serde_json::json!({"$defs": {"loop": {"$ref": "#/$defs/loop"}}, "$ref": "#/$defs/loop"}),
+                fallback("#/$defs/loop"),
+            ),
+            (
+                serde_json::json!({"$ref": "#/missing", "type": "integer"}),
+                serde_json::json!({"allOf": [fallback("#/missing"), {"type": "integer"}]}),
+            ),
+            (serde_json::json!({"$ref": null}), fallback("null")),
+            (
+                serde_json::json!({
+                    "$defs": {"scoped": {"$id": "nested", "type": "integer"}, "plain": {"type": "string"}},
+                    "properties": {"value": {"$ref": "#/$defs/plain"}}
+                }),
+                serde_json::json!({"properties": {"value": fallback("#/$defs/plain")}}),
+            ),
+            (
+                serde_json::json!({"properties": {
+                    "scoped": {"$anchor": "nested", "type": "string"},
+                    "value": {"$ref": "#/properties/scoped"}
+                }}),
+                serde_json::json!({"properties": {
+                    "scoped": {"$anchor": "nested", "type": "string"},
+                    "value": fallback("#/properties/scoped")
+                }}),
+            ),
+        ];
+        for reference in [
+            "#/missing",
+            "https://example.invalid/schema",
+            "other.json#/value",
+            "#/~2",
+            "#/%GG",
+            "#/%FF",
+        ] {
+            cases.push((serde_json::json!({"$ref": reference}), fallback(reference)));
+        }
+        for count in [32, 33] {
+            let mut definitions = serde_json::Map::new();
+            for i in 0..count {
+                let definition = if i + 1 == count {
+                    serde_json::json!({"type": "string"})
+                } else {
+                    serde_json::json!({"$ref": format!("#/$defs/D{}", i + 1)})
+                };
+                definitions.insert(format!("D{i}"), definition);
+            }
+            let expanded = if count == 32 {
+                serde_json::json!({"type": "string"})
+            } else {
+                fallback("#/$defs/D32")
+            };
+            cases.push((
+                serde_json::json!({
+                    "$defs": definitions,
+                    "properties": {
+                        "chain": {"$ref": "#/$defs/D0"},
+                        "leaf": {"type": "integer"},
+                        "tail": {"$ref": "#/properties/leaf"}
+                    }
+                }),
+                serde_json::json!({"properties": {
+                    "chain": expanded, "leaf": {"type": "integer"}, "tail": {"type": "integer"}
+                }}),
+            ));
+        }
+        let leaf = serde_json::json!({"type": "string"});
+        let repeated = vec![serde_json::json!({"$ref": "#/$defs/leaf"}); 4097];
+        let mut expanded = vec![leaf.clone(); 4096];
+        expanded.push(fallback("#/$defs/leaf"));
+        cases.push((
+            serde_json::json!({
+                "$defs": {"leaf": leaf}, "anyOf": repeated,
+                "properties": {"tail": {"$ref": "#/$defs/leaf"}}
+            }),
+            serde_json::json!({"anyOf": expanded, "properties": {"tail": fallback("#/$defs/leaf")}}),
+        ));
+        let resources = crate::types::resources::Resources::default().into_shared();
+        resources
+            .lock()
+            .await
+            .insert(ToolIndex(Arc::new(StaticToolIndex {
+                snapshot: SearchSnapshot {
+                    results: cases
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (schema, _))| ToolSearchResult {
+                            tool_name: format!("schema__case_{i}"),
+                            server_name: "Schemas".into(),
+                            description: "Schema fixture".into(),
+                            score: 1.0,
+                            parameters: vec![],
+                            input_schema: schema.clone(),
+                        })
+                        .collect(),
+                    total_hidden_tools: cases.len(),
+                    is_ready: true,
+                },
+            })));
+        let mut ctx =
+            xai_tool_runtime::ToolCallContext::new(xai_tool_protocol::ToolCallId::new_v7());
+        ctx.extensions.insert(resources);
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            SearchTool.run(
+                ctx,
+                SearchToolInput {
+                    query: "schema".into(),
+                    limit: Some(5),
+                },
+            ),
+        )
+        .await
+        .expect("bounded schema expansion must return promptly")
+        .unwrap();
+        let ToolOutput::SearchTool(output) = output else {
+            panic!("expected search tool output");
+        };
+        assert_eq!(output.result_count, cases.len());
+        let actual: serde_json::Value = serde_json::from_str(&output.content).unwrap();
+        let tools = actual["results"][0]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), cases.len());
+        for (i, ((_, expected), tool)) in cases.iter().zip(tools).enumerate() {
+            assert_eq!(&tool["input_schema"], expected, "schema case {i}");
+        }
+    }
+
+    #[tokio::test]
+    async fn search_tool_leaves_ref_free_schemas_and_literal_data_unchanged() {
+        let mut deep = serde_json::json!({"type": "string"});
+        for _ in 0..40 {
+            deep = serde_json::json!({"type": "object", "properties": {"child": deep}});
+        }
+        let schemas = [
+            serde_json::json!({
+                "type": "object", "properties": {"query": {"type": "string"}},
+                "required": ["query"], "additionalProperties": false
+            }),
+            serde_json::json!({
+                "const": {"$ref": "x"},
+                "enum": [{"$ref": "y", "$id": "literal"}],
+                "default": {"$ref": "z"},
+                "examples": [{"$ref": "w", "$anchor": "literal"}],
+                "properties": {
+                    "$ref": {"type": "string"},
+                    "const": {"const": {"$ref": "literal"}}
+                }
+            }),
+            deep,
+            serde_json::json!(false),
+        ];
+        let resources = crate::types::resources::Resources::default().into_shared();
+        resources
+            .lock()
+            .await
+            .insert(ToolIndex(Arc::new(StaticToolIndex {
+                snapshot: SearchSnapshot {
+                    results: schemas
+                        .iter()
+                        .enumerate()
+                        .map(|(i, schema)| ToolSearchResult {
+                            tool_name: format!("schema__case_{i}"),
+                            server_name: "Schemas".into(),
+                            description: "Schema fixture".into(),
+                            score: 1.0,
+                            parameters: vec![],
+                            input_schema: schema.clone(),
+                        })
+                        .collect(),
+                    total_hidden_tools: schemas.len(),
+                    is_ready: true,
+                },
+            })));
+        let mut ctx =
+            xai_tool_runtime::ToolCallContext::new(xai_tool_protocol::ToolCallId::new_v7());
+        ctx.extensions.insert(resources);
+        let output = SearchTool
+            .run(
+                ctx,
+                SearchToolInput {
+                    query: "schema".into(),
+                    limit: Some(5),
+                },
+            )
+            .await
+            .unwrap();
+        let ToolOutput::SearchTool(output) = output else {
+            panic!("expected search tool output");
+        };
+        assert_eq!(output.result_count, schemas.len());
+        let actual: serde_json::Value = serde_json::from_str(&output.content).unwrap();
+        let tools = actual["results"][0]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), schemas.len());
+        for (i, (expected, tool)) in schemas.iter().zip(tools).enumerate() {
+            assert_eq!(&tool["input_schema"], expected, "schema case {i}");
         }
     }
 
