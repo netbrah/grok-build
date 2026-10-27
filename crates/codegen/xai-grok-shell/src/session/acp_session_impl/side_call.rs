@@ -1394,7 +1394,7 @@ pub(super) mod tests {
             | "title-Messages/responses-admission-off"
             | "title-Messages/responses-admission-on"
             | "title-Messages/same-bound-row" => Some(
-                r####"{"model":"r12-parent","messages":[{"role":"user","content":[{"type":"text","text":"Find the parent schema"}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search] \"parent schema\""},{"type":"text","text":"[tool_search results] 1 tool"},{"type":"text","text":"[tool_search results] 1 tool"},{"type":"text","text":"Found both schema families"}]},{"role":"user","content":[{"type":"text","text":"Check the second step"}]},{"role":"assistant","content":[{"type":"text","text":"Second step complete"}]},{"role":"user","content":[{"type":"text","text":"Check the third step","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"Third step complete"}]},{"role":"user","content":[{"type":"text","text":"<system-reminder>Generate a session title for the conversation above. It should be a short and distinctive 5-10 word descriptive title capturing what this session is actually about (the main task or topic), based on the WHOLE conversation — not just the first message. Super info dense, no filler. User-role messages wrapped in reminder tags like this one are injected context, not the user.\n\nOutput ONLY the title: plain text, no quotes, no labels, no markdown. Do NOT call any tools — respond with plain text only.</system-reminder>","cache_control":{"type":"ephemeral"}}]}],"max_tokens":512,"system":[{"type":"text","text":"Parent capture system","cache_control":{"type":"ephemeral"}}],"tools":[{"name":"historic__lookup","description":"Frozen historical lookup","input_schema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false},"defer_loading":true}],"stream":true}"####,
+                r####"{"model":"r12-parent","messages":[{"role":"user","content":[{"type":"text","text":"Find the parent schema"}]},{"role":"assistant","content":[{"type":"text","text":"[tool_search] \"parent schema\""},{"type":"text","text":"[tool_search results] 1 tool"},{"type":"text","text":"[tool_search] \"server schema\""},{"type":"text","text":"[tool_search results] 1 tool"},{"type":"text","text":"Found both schema families"}]},{"role":"user","content":[{"type":"text","text":"Check the second step"}]},{"role":"assistant","content":[{"type":"text","text":"Second step complete"}]},{"role":"user","content":[{"type":"text","text":"Check the third step","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"Third step complete"}]},{"role":"user","content":[{"type":"text","text":"<system-reminder>Generate a session title for the conversation above. It should be a short and distinctive 5-10 word descriptive title capturing what this session is actually about (the main task or topic), based on the WHOLE conversation — not just the first message. Super info dense, no filler. User-role messages wrapped in reminder tags like this one are injected context, not the user.\n\nOutput ONLY the title: plain text, no quotes, no labels, no markdown. Do NOT call any tools — respond with plain text only.</system-reminder>","cache_control":{"type":"ephemeral"}}]}],"max_tokens":512,"system":[{"type":"text","text":"Parent capture system","cache_control":{"type":"ephemeral"}}],"stream":true}"####,
             ),
             _ => None,
         };
@@ -2151,5 +2151,201 @@ pub(super) mod tests {
         tokio::task::LocalSet::new()
             .run_until(a3_auxiliary_surface("turn-summary"))
             .await;
+    }
+
+    fn uk0d_title_isolated(name: &str) -> bool {
+        const CHILD: &str = "GROK_TEST_UK0D_TITLE_ISOLATED";
+        if std::env::var(CHILD).as_deref() == Ok(name) {
+            return false;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", home.path())
+            .env("GROK_HOME", home.path().join("grok"))
+            .env("TMPDIR", home.path())
+            .env("RUST_MIN_STACK", "67108864")
+            .env(CHILD, name)
+            .args(["--exact", name, "--nocapture"])
+            .stdin(std::process::Stdio::null());
+        for variable in ["GROK_TOOLS_BUNDLE_RG_PATH", "GROK_SHELL_BUNDLE_RG_PATH"] {
+            if let Some(value) = std::env::var_os(variable) {
+                command.env(variable, value);
+            }
+        }
+        xai_tty_utils::detach_std_command(&mut command);
+        let output = command.output().unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(stdout.matches("running 1 test").count(), 1);
+        for line in stdout
+            .lines()
+            .filter(|line| line.starts_with("UK0D_TITLE_WIRE "))
+        {
+            println!("{line}");
+        }
+        assert!(
+            output.status.success(),
+            "isolated title witness failed: {stderr}"
+        );
+        assert!(stdout.contains(&format!("test {name} ... ok")));
+        true
+    }
+
+    async fn uk0d_title_flush(handle: &crate::session::persistence::PersistenceHandle) {
+        let (respond_to, ack) = tokio::sync::oneshot::channel();
+        handle
+            .tx
+            .send(super::PersistenceMsg::FlushAndAck { respond_to })
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), ack)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn messages_title_refresh_with_discovery_is_tool_free_on_wire() {
+        use crate::session::helpers::session_summary;
+        use crate::session::persistence::{ExplicitSessionOpen, Summary};
+        use crate::session::storage::{JsonlStorageAdapter, StorageAdapter};
+        use xai_grok_sampling_types::{ApiBackend, SearchAdmission};
+        const NAME: &str = "session::acp_session::side_call::tests::messages_title_refresh_with_discovery_is_tool_free_on_wire";
+        if uk0d_title_isolated(NAME) {
+            return;
+        }
+        tokio::task::LocalSet::new().run_until(async {
+            let mut fixture = parent_golden_fixture(ApiBackend::Messages).await;
+            let eligible = fixture.actor.prepare_side_call_tool_specs(&fixture.binding).await;
+            for name in ["alpha__lookup", "zeta__fetch", "z_builtin"] {
+                assert!(eligible.specs.iter().any(|spec| spec.name == name),
+                    "eligible registered candidate is a non-vacuity control: {name}");
+            }
+            let info = fixture.actor.session_info.clone();
+            let directory = crate::session::persistence::session_dir(&info);
+            let persistence = crate::session::persistence::new_with_explicit_dir(
+                &info,
+                directory.clone(),
+                agent_client_protocol::ModelId::new("r12-parent"),
+                xai_grok_sampler::SamplingClient::new(xai_grok_sampler::SamplerConfig::default()).unwrap(),
+                "r12-parent".into(),
+                ExplicitSessionOpen::New { identity: None, next_trace_turn: None },
+            ).await.unwrap();
+            let actor = std::sync::Arc::get_mut(&mut fixture.actor).unwrap();
+            actor.title_refresh_enabled = true;
+            actor.notifications.persistence_tx = persistence.tx.clone();
+            persistence.tx.send(super::PersistenceMsg::ReplaceChatHistory(fixture.history.clone())).unwrap();
+            persistence.tx.send(super::PersistenceMsg::GeneratedTitle("Initial automatic title".into())).unwrap();
+            uk0d_title_flush(&persistence).await;
+            let storage = JsonlStorageAdapter::with_explicit_session_dir(directory.clone());
+            let stored_before = storage.load_session(&info).await.unwrap();
+            assert_eq!(serde_json::to_value(&stored_before.chat_history).unwrap(), serde_json::to_value(&fixture.history).unwrap());
+            assert_eq!(stored_before.summary.display_title(), "Initial automatic title");
+            let history_bytes = std::fs::read(directory.join("chat_history.jsonl")).unwrap();
+            let guard = AuxiliaryGuard::new(fixture.binding.clone());
+
+            fixture.actor.maybe_refresh_title();
+            assert!(fixture.actor.title_refresh_task.borrow().is_some());
+            fixture.actor.abort_title_refresh();
+            tokio::task::yield_now().await;
+            assert!(fixture.actor.title_refresh_task.borrow().is_none());
+            assert_eq!(fixture.actor.next_title_refresh_idx.get(), 0);
+            assert!(fixture.wire.exchanges.borrow().is_empty());
+            assert_eq!(session_summary::load_title_refresh_watermark(&directory), None);
+
+            fixture.actor.maybe_refresh_title();
+            let task_id = fixture.actor.title_refresh_task.borrow().as_ref().unwrap().id();
+            fixture.actor.maybe_refresh_title();
+            assert_eq!(fixture.actor.title_refresh_task.borrow().as_ref().unwrap().id(), task_id);
+            fixture.actor.invalidate_side_calls_for_new_prompt();
+            assert_eq!(fixture.actor.title_refresh_task.borrow().as_ref().unwrap().id(), task_id);
+            let task = fixture.actor.title_refresh_task.borrow_mut().take().unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(60), task).await.unwrap().unwrap();
+            uk0d_title_flush(&persistence).await;
+            let after_refresh: Summary = serde_json::from_slice(&std::fs::read(directory.join("summary.json")).unwrap()).unwrap();
+            let cleaned = session_summary::clean_title_text("Parent capture complete");
+            assert!(!cleaned.is_empty());
+            assert_eq!(after_refresh.display_title(), cleaned);
+            assert!(!after_refresh.title_is_manual);
+            assert_eq!(fixture.actor.next_title_refresh_idx.get(), 1);
+            assert_eq!(session_summary::load_title_refresh_watermark(&directory), Some(1));
+            assert!(fixture.actor.title_refresh_task.borrow().is_none());
+
+            fixture.actor.maybe_refresh_title();
+            let task = fixture.actor.title_refresh_task.borrow_mut().take().unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(10), task).await.unwrap().unwrap();
+            assert_eq!(guard.sends().len(), 1, "a consumed checkpoint cannot resubmit");
+            storage.update_session_title(&info, "Manual retained title".into()).await.unwrap();
+            fixture.actor.on_title_renamed(true);
+            persistence.tx.send(super::PersistenceMsg::RegenerateTitle("Late automatic title".into())).unwrap();
+            uk0d_title_flush(&persistence).await;
+            let manual: Summary = serde_json::from_slice(&std::fs::read(directory.join("summary.json")).unwrap()).unwrap();
+            assert!(manual.title_is_manual);
+            assert_eq!(manual.display_title(), "Manual retained title");
+            assert_eq!(session_summary::load_title_refresh_watermark(&directory), Some(session_summary::TITLE_REFRESH_TURNS.len()));
+            fixture.actor.maybe_refresh_title();
+            assert!(fixture.actor.title_refresh_task.borrow().is_none());
+            assert_eq!(std::fs::read(directory.join("chat_history.jsonl")).unwrap(), history_bytes);
+            assert_eq!(serde_json::to_value(fixture.actor.chat_state_handle.get_conversation().await).unwrap(), serde_json::to_value(&fixture.history).unwrap());
+            assert_eq!(serde_json::to_value(storage.load_session(&info).await.unwrap().chat_history).unwrap(), serde_json::to_value(&fixture.history).unwrap());
+
+
+            let sends = guard.sends();
+            assert_eq!(sends.len(), 1);
+            assert_eq!(sends[0].0, "title");
+            let request = &sends[0].1;
+            assert!(request.tools.is_empty());
+            assert!(request.hosted_tools.is_empty());
+            assert!(request.server_tools.as_ref().is_none_or(Vec::is_empty));
+            assert_eq!(request.search_admission, Some(SearchAdmission {
+                supports_search_tool: true, has_searchable_tools: false,
+            }));
+            assert!(fixture.live_wire.exchanges.borrow().is_empty());
+            let exchanges = fixture.wire.exchanges.borrow();
+            assert_eq!(exchanges.len(), 1);
+            let exchange = &exchanges[0];
+            assert_eq!(exchange.path, "/v1/messages");
+            assert_eq!(exchange.request_id, request.x_grok_req_id);
+            assert!(exchange.request_id.is_some());
+            assert!(exchange.headers.iter().all(|(_, empty)| !empty));
+            assert_eq!(serde_json::from_slice::<serde_json::Value>(&exchange.raw_body).unwrap(), exchange.parsed_body);
+            assert_eq!(exchange.parsed_body["stream"], true);
+            println!("UK0D_TITLE_WIRE {}", serde_json::json!({
+                "path": exchange.path, "request_id": exchange.request_id,
+                "raw_body": String::from_utf8(exchange.raw_body.clone()).unwrap(),
+                "parsed_body": exchange.parsed_body, "response_body": exchange.response_body,
+                "original_selected_specs": request.tools,
+                "original_hosted_empty": request.hosted_tools.is_empty(),
+                "original_server_empty": request.server_tools.as_ref().is_none_or(Vec::is_empty),
+                "original_admission": {"supports_search_tool":true,"has_searchable_tools":false},
+                "input_history": fixture.history, "history_unchanged":true,
+                "persisted_clean_title": after_refresh.display_title(),
+                "persistence_acknowledged":true, "manual_title_preserved":manual.display_title(),
+                "submission_count":exchanges.len(), "replacement_submissions":0,
+                "cancel_preserved_checkpoint":true, "new_prompt_did_not_abort":true
+            }));
+            assert!(exchange.parsed_body.get("tools").is_none(),
+                "UK0D actual title must omit /tools, not emit historical deferred declarations");
+            let blocks: Vec<_> = exchange.parsed_body["messages"].as_array().unwrap().iter()
+                .flat_map(|message| message["content"].as_array().unwrap()).collect();
+            assert!(blocks.iter().all(|block| block["type"] == "text"), "no active Discovery reference or orphan half");
+            let summaries: Vec<_> = blocks.iter().filter_map(|block| block["text"].as_str())
+                .filter(|text| text.starts_with("[tool_search")).collect();
+            assert_eq!(summaries, [
+                "[tool_search] \"parent schema\"", "[tool_search results] 1 tool",
+                "[tool_search] \"server schema\"", "[tool_search results] 1 tool",
+            ]);
+            let violations = xai_grok_sampling_types::conversation::outbound_lint::lint_outbound_request(
+                xai_grok_sampling_types::conversation::projection::Boundary::Vertex,
+                &exchange.parsed_body,
+            );
+            assert!(violations.iter().all(|violation| !matches!(violation.rule, "H-11" | "H-12")), "{violations:?}");
+            parent_golden_record("title-Messages/same-bound-row", serde_json::json!({
+                "frozen": {"raw_body":String::from_utf8(exchange.raw_body.clone()).unwrap(), "parsed_body":exchange.parsed_body}
+            }));
+        }).await;
     }
 }

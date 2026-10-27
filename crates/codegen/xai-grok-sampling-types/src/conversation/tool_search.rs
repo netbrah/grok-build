@@ -7272,24 +7272,23 @@ mod tests {
         );
     }
 
-    /// M-D16, SUPERSEDED in part by apex-waj.36 cut 1: the /messages wire has
-    /// no typed discovery item. Pre-cut it rendered as bounded assistant text
-    /// — and explicitly NOT as a `tool_reference` block (H-11 fires for an
-    /// undeclared tool name) — with the loaded definitions kept OUT of
-    /// `tools[]` because A-24.2's materialisation was ruled "a send-time
-    /// encoder decision (later bead)". That later bead is apex-waj.36: the
-    /// loaded set now RIDES into `tools[]` (A-15/A-23 — the Messages arm
-    /// materialises declarations), and the pair replays as
-    /// tool_use/tool_result — ONLY as far as the request can back it. This
-    /// request declares no tools at all, so there is no `ToolSearch` carrier
-    /// to name on the call half and no tool_use for the answer half to pair
-    /// against: both halves degrade to the bounded text summary (no
-    /// undeclared `tool_use` name, no orphan `tool_result`), while `tools[]`
-    /// carries the materialised loaded set regardless.
+    /// A current client surface materialises loaded definitions (apex-waj.36).
+    /// Without a search carrier, both Discovery halves degrade to bounded text.
+    /// No-current-surface requests instead omit declarations (apex-uk0d).
     #[test]
     fn messages_wire_materialises_the_loaded_set_and_degrades_the_pair_without_a_carrier() {
         let request = ConversationRequest::from_items(history_with_discovery_pair())
-            .with_model("messages-compatible-model");
+            .with_model("messages-compatible-model")
+            .with_tools(vec![crate::conversation::ToolSpec {
+                name: "read_file".into(),
+                description: Some("Read a file".into()),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"]
+                }),
+                exposure: Default::default(),
+            }]);
         let body =
             serde_json::to_value(crate::conversation::build_messages_request(&request)).unwrap();
         let rendered = body.to_string();

@@ -6746,3 +6746,460 @@ fn messages_surviving_duplicate_client_result_rejected() {
         "K0 surviving duplicate client result must fail final pairing"
     );
 }
+
+fn uk0d_server_discovery(names: &[&str]) -> Vec<ConversationItem> {
+    [
+        serde_json::json!({
+            "type": "server_tool_use", "id": "srvtoolu_uk0d",
+            "name": "tool_search_tool_bm25", "input": {"query": "server schema"},
+            "status": "completed"
+        }),
+        serde_json::json!({
+            "type": "tool_search_tool_result", "tool_use_id": "srvtoolu_uk0d",
+            "content": {"type": "tool_search_tool_search_result", "tool_references":
+                names.iter().map(|name| serde_json::json!({
+                    "type": "tool_reference", "tool_name": name
+                })).collect::<Vec<_>>()},
+            "status": "completed"
+        }),
+    ]
+    .into_iter()
+    .map(|raw| ConversationItem::Discovery {
+        item: ToolSearchItem::from_wire(raw).unwrap(),
+    })
+    .collect()
+}
+
+fn uk0d_history(
+    definitions: Vec<serde_json::Value>,
+    server_names: &[&str],
+) -> Vec<ConversationItem> {
+    let (call, output) = d2_client_pair("call_uk0d", definitions);
+    let mut history = vec![
+        ConversationItem::system("UK0D system"),
+        ConversationItem::user("Find records"),
+        ConversationItem::Discovery { item: call },
+        ConversationItem::Discovery { item: output },
+    ];
+    if !server_names.is_empty() {
+        history.extend(uk0d_server_discovery(server_names));
+    }
+    history.extend([
+        ConversationItem::assistant("Discovery complete"),
+        ConversationItem::user("Continue"),
+    ]);
+    history
+}
+
+fn uk0d_definition() -> serde_json::Value {
+    d2_def(
+        "historic__lookup",
+        serde_json::json!({
+            "type": "object", "properties": {
+                "query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1}
+            }, "required": ["query"], "additionalProperties": false
+        }),
+    )
+}
+
+fn uk0d_request(items: Vec<ConversationItem>, tools: Vec<ToolSpec>) -> ConversationRequest {
+    let mut request = ConversationRequest::from_items(items)
+        .with_model("uk0d-generic")
+        .with_req_id("ordinary-request-not-title")
+        .with_conv_id("ordinary-conversation")
+        .with_max_output_tokens(1024)
+        .with_tools(tools);
+    request.cache_ttl = Some("1h".into());
+    request.tool_cache_breakpoint = Some(ToolCacheBreakpoint::Last);
+    request
+}
+
+fn uk0d_encode(request: &ConversationRequest) -> (serde_json::Value, String) {
+    let before = format!("{request:?}");
+    let body = build_messages_request(request);
+    let encoded = crate::request_validation::validate_and_encode_messages_request(&body).unwrap();
+    let repeated = crate::request_validation::validate_and_encode_messages_request(
+        &build_messages_request(request),
+    )
+    .unwrap();
+    assert_eq!(encoded.as_bytes(), repeated.as_bytes());
+    assert_eq!(
+        format!("{request:?}"),
+        before,
+        "encoding must not mutate input IR"
+    );
+    (
+        serde_json::from_slice(encoded.as_bytes()).unwrap(),
+        String::from_utf8(encoded.as_bytes().to_vec()).unwrap(),
+    )
+}
+
+fn uk0d_assert_messages_invariants(body: &serde_json::Value) {
+    let violations = crate::conversation::outbound_lint::lint_outbound_request(
+        crate::conversation::projection::Boundary::Vertex,
+        body,
+    );
+    assert!(
+        violations
+            .iter()
+            .all(|violation| !matches!(violation.rule, "H-11" | "H-12")),
+        "Messages-boundary reference/deferred invariants: {violations:?}"
+    );
+    assert!(body.get("tools").is_none_or(|tools| {
+        let tools = tools.as_array().unwrap();
+        tools.is_empty()
+            || tools
+                .iter()
+                .any(|tool| tool.get("defer_loading") != Some(&serde_json::json!(true)))
+    }));
+}
+
+#[test]
+fn uk0d_no_surface_history_uses_summary_only_replay() {
+    use crate::SearchAdmission;
+    let client = uk0d_history(vec![uk0d_definition()], &[]);
+    let backed = uk0d_history(vec![uk0d_definition()], &["historic__lookup"]);
+    let mut mixed = backed.clone();
+    let at = mixed.len() - 1;
+    mixed.splice(
+        at..at,
+        [
+            ConversationItem::assistant_tool_calls(vec![mk_call("call_uk0d_ordinary")]),
+            ConversationItem::tool_result("call_uk0d_ordinary", "ordinary result survives"),
+        ],
+    );
+    let namespaces = uk0d_history(
+        ["north", "south"]
+            .into_iter()
+            .map(|namespace| {
+                serde_json::json!({
+                    "type": "namespace", "name": namespace,
+                    "tools": [d2_def("lookup", serde_json::json!({
+                        "type": "object", "properties": {"query": {"type": "string"}},
+                        "required": ["query"], "additionalProperties": false
+                    }))]
+                })
+            })
+            .collect(),
+        &["north__lookup", "south__lookup"],
+    );
+    let mut server_only = vec![
+        ConversationItem::system("UK0D system"),
+        ConversationItem::user("Find records"),
+    ];
+    server_only.extend(uk0d_server_discovery(&["historic__lookup"]));
+    server_only.extend([
+        ConversationItem::assistant("Discovery complete"),
+        ConversationItem::user("Continue"),
+    ]);
+    let no_discovery = server_only
+        .iter()
+        .filter(|item| item.discovery().is_none())
+        .cloned()
+        .collect();
+    let mut bounded = client.clone();
+    bounded[2] = ConversationItem::Discovery {
+        item: ToolSearchItem::from_wire(serde_json::json!({
+            "type": "tool_search_call", "id": "tsc_call_uk0d", "call_id": "call_uk0d",
+            "execution": "client", "status": "completed",
+            "arguments": {"query": "long query ".repeat(1000)}
+        }))
+        .unwrap(),
+    };
+    let cases = vec![
+        ("client", client, None),
+        ("server-backed-by-output", backed.clone(), None),
+        ("mixed-with-ordinary-pair", mixed, None),
+        ("qualified-namespaces", namespaces, None),
+        ("server-pair-without-definitions", server_only, None),
+        ("no-discovery", no_discovery, None),
+        ("bounded-query", bounded, None),
+        (
+            "F1-skipped-mcp-member",
+            backed.clone(),
+            Some(vec!["mcp_toolset".into()]),
+        ),
+        (
+            "F1-unknown-member",
+            backed,
+            Some(vec!["unknown_uk0d_member".into()]),
+        ),
+    ];
+    for (case, history, server_tools) in cases {
+        for admission in [
+            None,
+            Some(SearchAdmission {
+                supports_search_tool: false,
+                has_searchable_tools: false,
+            }),
+            Some(SearchAdmission {
+                supports_search_tool: true,
+                has_searchable_tools: false,
+            }),
+        ] {
+            let mut request = uk0d_request(history.clone(), Vec::new());
+            request.search_admission = admission;
+            request.server_tools = server_tools.clone();
+            let (actual, raw) = uk0d_encode(&request);
+            assert!(
+                actual.get("tools").is_none(),
+                "UK0D no current surface must omit /tools: {case}, {admission:?}: {raw}"
+            );
+            let expected_summaries: Vec<_> = history
+                .iter()
+                .filter_map(ConversationItem::discovery)
+                .map(ToolSearchItem::text_summary)
+                .collect();
+            let mut textual = request.clone();
+            textual.items = history
+                .iter()
+                .map(|item| match item {
+                    ConversationItem::Discovery { item } => {
+                        ConversationItem::assistant(item.text_summary())
+                    }
+                    other => other.clone(),
+                })
+                .collect();
+            let (expected, expected_raw) = uk0d_encode(&textual);
+            assert_eq!(
+                actual, expected,
+                "one ordered bounded summary per retained Discovery: {case}"
+            );
+            assert_eq!(raw, expected_raw, "full encoded summary-only body: {case}");
+            let blocks: Vec<_> = actual["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|message| message["content"].as_array().unwrap())
+                .collect();
+            let summaries: Vec<_> = blocks
+                .iter()
+                .filter_map(|block| block["text"].as_str())
+                .filter(|text| text.starts_with("[tool_search"))
+                .collect();
+            assert_eq!(
+                summaries, expected_summaries,
+                "summary order and query survival: {case}"
+            );
+            for block in &blocks {
+                if block["type"] == "tool_use" {
+                    assert_eq!(
+                        block["id"], "call_uk0d_ordinary",
+                        "no active Discovery call: {case}"
+                    );
+                }
+                if block["type"] == "tool_result" {
+                    assert_eq!(
+                        block["tool_use_id"], "call_uk0d_ordinary",
+                        "no active Discovery output: {case}"
+                    );
+                }
+                assert_ne!(block["type"], "tool_reference");
+            }
+            if case == "mixed-with-ordinary-pair" {
+                assert!(blocks.iter().any(
+                    |block| block["type"] == "tool_use" && block["id"] == "call_uk0d_ordinary"
+                ));
+                assert!(blocks.iter().any(|block| block["type"] == "tool_result"
+                    && block["content"] == "ordinary result survives"));
+            }
+            if case == "server-pair-without-definitions" {
+                assert_eq!(
+                    summaries,
+                    [
+                        "[tool_search] \"server schema\"",
+                        "[tool_search results] 1 tool"
+                    ]
+                );
+            }
+            uk0d_assert_messages_invariants(&actual);
+        }
+    }
+}
+
+#[test]
+fn uk0d_tool_bearing_requests_preserve_deferred_contract() {
+    use crate::SearchAdmission;
+    use serde_json::json;
+    let admitted = Some(SearchAdmission {
+        supports_search_tool: true,
+        has_searchable_tools: true,
+    });
+    let unadmitted = Some(SearchAdmission {
+        supports_search_tool: false,
+        has_searchable_tools: true,
+    });
+    let mut withheld_z = d2_tool("base_z");
+    withheld_z.exposure = ToolExposure::Deferred;
+    let mut withheld_a = d2_tool("base_a");
+    withheld_a.exposure = ToolExposure::Deferred;
+    let eager_z = json!({"name":"base_z","description":"the base_z tool","input_schema":{"type":"object","properties":{}}});
+    let eager_a = json!({"name":"base_a","description":"the base_a tool","input_schema":{"type":"object","properties":{}},"cache_control":{"type":"ephemeral"}});
+    let mut cached_z = eager_z.clone();
+    cached_z["cache_control"] = json!({"type":"ephemeral"});
+    let mut deferred_z = eager_z.clone();
+    deferred_z["defer_loading"] = json!(true);
+    let mut deferred_a = eager_a.clone();
+    deferred_a["defer_loading"] = json!(true);
+    let placeholder = json!({
+        "name":"DeferredToolPlaceholder",
+        "description":"Reserved placeholder that keeps deferred tool loading active; never call this tool.",
+        "input_schema":{"type":"object","properties":{}},"defer_loading":true
+    });
+    let historical = json!({
+        "name":"historic__lookup","description":"look things up with historic__lookup",
+        "input_schema":{"type":"object","properties":{
+            "query":{"type":"string"},"limit":{"type":"integer","minimum":1}
+        },"required":["query"],"additionalProperties":false},"defer_loading":true
+    });
+    let bm25 = json!({"type":"tool_search_tool_bm25_20251119","name":"tool_search_tool_bm25"});
+    let web_fetch = json!({"type":"web_fetch_20260309","name":"web_fetch"});
+    let cases = vec![
+        (
+            "admitted-all-deferred",
+            vec![withheld_z.clone(), withheld_a.clone()],
+            admitted,
+            None,
+            vec![
+                deferred_z,
+                deferred_a.clone(),
+                placeholder.clone(),
+                historical.clone(),
+                bm25.clone(),
+            ],
+        ),
+        (
+            "admitted-mixed",
+            vec![d2_tool("base_z"), withheld_a.clone()],
+            admitted,
+            None,
+            vec![
+                eager_z.clone(),
+                deferred_a,
+                placeholder.clone(),
+                historical.clone(),
+                bm25.clone(),
+            ],
+        ),
+        (
+            "false-admission-clients",
+            vec![withheld_z.clone(), withheld_a.clone()],
+            unadmitted,
+            None,
+            vec![eager_z.clone(), eager_a.clone(), historical.clone()],
+        ),
+        (
+            "absent-admission-clients",
+            vec![withheld_z, withheld_a],
+            None,
+            None,
+            vec![eager_z, eager_a, historical.clone()],
+        ),
+        (
+            "carrier-absent-preset",
+            vec![d2_tool("base_z")],
+            admitted,
+            None,
+            vec![
+                cached_z.clone(),
+                placeholder.clone(),
+                historical.clone(),
+                bm25.clone(),
+            ],
+        ),
+        (
+            "server-only",
+            Vec::new(),
+            unadmitted,
+            Some(vec!["web_fetch_20260309".into()]),
+            vec![historical.clone(), web_fetch.clone()],
+        ),
+        (
+            "server-emission-skips",
+            Vec::new(),
+            unadmitted,
+            Some(vec![
+                "unknown_uk0d_member".into(),
+                "mcp_toolset".into(),
+                "web_fetch_20260309".into(),
+            ]),
+            vec![historical.clone(), web_fetch],
+        ),
+        (
+            "preserved-admission-empty-static",
+            Vec::new(),
+            admitted,
+            None,
+            vec![placeholder.clone(), historical.clone(), bm25.clone()],
+        ),
+        (
+            "explicit-bm25-not-duplicated",
+            vec![d2_tool("base_z")],
+            admitted,
+            Some(vec!["tool_search_tool_bm25_20251119".into()]),
+            vec![cached_z, placeholder, historical, bm25],
+        ),
+    ];
+    // These complete expected bodies are independent of the D2 builder.
+    let messages = json!([
+        {"role":"user","content":[{"type":"text","text":"Find records"}]},
+        {"role":"assistant","content":[
+            {"type":"text","text":"[tool_search] \"shipping ETA by order ID\""},
+            {"type":"text","text":"[tool_search results] 1 tool"},
+            {"type":"tool_use","id":"srvtoolu_uk0d","name":"tool_search_tool_bm25","input":{"query":"server schema"}}
+        ]},
+        {"role":"user","content":[{"type":"tool_result","tool_use_id":"srvtoolu_uk0d",
+            "content":[{"type":"tool_reference","tool_name":"historic__lookup"}],"cache_control":{"type":"ephemeral"}}]},
+        {"role":"assistant","content":[{"type":"text","text":"Discovery complete"}]},
+        {"role":"user","content":[{"type":"text","text":"Continue","cache_control":{"type":"ephemeral"}}]}
+    ]);
+    for (case, tools, admission, server_tools, expected_tools) in cases {
+        let mut request = uk0d_request(
+            uk0d_history(vec![uk0d_definition()], &["historic__lookup"]),
+            tools,
+        );
+        request.search_admission = admission;
+        request.server_tools = server_tools;
+        let (actual, raw) = uk0d_encode(&request);
+        let expected = json!({
+            "model":"uk0d-generic", "messages":messages, "max_tokens":1024,
+            "system":[{"type":"text","text":"UK0D system","cache_control":{"type":"ephemeral","ttl":"1h"}}],
+            "tools":expected_tools
+        });
+        assert_eq!(
+            actual, expected,
+            "UK0D full tool-bearing parent body: {case}"
+        );
+        let expected: crate::messages::MessagesRequest = serde_json::from_value(expected).unwrap();
+        assert_eq!(
+            raw,
+            serde_json::to_string(&expected).unwrap(),
+            "encoded parent bytes: {case}"
+        );
+        assert_eq!(request.search_admission, admission);
+        uk0d_assert_messages_invariants(&actual);
+    }
+    let request = uk0d_request(
+        vec![
+            ConversationItem::system("UK0D system"),
+            ConversationItem::user("Find records"),
+            ConversationItem::assistant("Discovery complete"),
+            ConversationItem::user("Continue"),
+        ],
+        Vec::new(),
+    );
+    let (actual, raw) = uk0d_encode(&request);
+    let expected = json!({
+        "model":"uk0d-generic", "max_tokens":1024,
+        "system":[{"type":"text","text":"UK0D system","cache_control":{"type":"ephemeral","ttl":"1h"}}],
+        "messages":[
+            {"role":"user","content":[{"type":"text","text":"Find records","cache_control":{"type":"ephemeral"}}]},
+            {"role":"assistant","content":[{"type":"text","text":"Discovery complete"}]},
+            {"role":"user","content":[{"type":"text","text":"Continue","cache_control":{"type":"ephemeral"}}]}
+        ]
+    });
+    assert_eq!(actual, expected, "no-Discovery title stays byte-identical");
+    let expected: crate::messages::MessagesRequest = serde_json::from_value(expected).unwrap();
+    assert_eq!(raw, serde_json::to_string(&expected).unwrap());
+    uk0d_assert_messages_invariants(&actual);
+}

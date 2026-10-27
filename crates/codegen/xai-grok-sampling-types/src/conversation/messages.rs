@@ -908,7 +908,55 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
     // // cannot be fail-closed-checked here. Cut 2 replaces the warn below
     // // with the real check; until then it fires whenever materialisation
     // // actually appends.
-    let (d2_materialised, d2_declared, d2_deferred) = {
+    let emitted_server_tools = {
+        let mut emitted = Vec::new();
+        // Canonical dated type strings (the config layer resolved family
+        // names + soft-refused unknown slugs).
+        if let Some(ref members) = req.server_tools {
+            for t in members {
+                match crate::messages::server_tool_from_type(t) {
+                    Some(mut member) => {
+                        // mcp_toolset: the producer fills the required
+                        // mcp_server_name from the row's pairing key. The
+                        // config layer HARD-refuses pairing violations,
+                        // so the None arm is a defensive backstop, never
+                        // a panic (SDD §3.5, FIX-PASS R4/R5).
+                        if let crate::messages::ToolServer::McpToolset {
+                            ref mut mcp_server_name,
+                            ..
+                        } = member
+                        {
+                            match req.mcp_toolset_server.clone() {
+                                Some(name) => *mcp_server_name = name,
+                                None => {
+                                    tracing::warn!(
+                                        "mcp_toolset without mcp_toolset_server \
+                                         (config-layer hard-refusal backstop); \
+                                         skipping member"
+                                    );
+                                    continue;
+                                }
+                            }
+                        }
+                        emitted.push(ToolParam::Server(member));
+                    }
+                    None => tracing::warn!(
+                        type = %t,
+                        "unknown server-tool type string (config-layer \
+                         validated); skipping"
+                    ),
+                }
+            }
+        }
+        emitted
+    };
+    // History must not create a tool surface for a deliberately tool-free request.
+    let no_current_tool_surface = req.tools.is_empty()
+        && emitted_server_tools.is_empty()
+        && !req.search_admission.is_some_and(SearchAdmission::admitted);
+    let (d2_materialised, d2_declared, d2_deferred) = if no_current_tool_surface {
+        (Vec::new(), Vec::new(), Vec::new())
+    } else {
         let discovery = tool_search::discovery_items(&items);
         let loaded = tool_search::loaded_tool_set(discovery.iter().map(|(_, item)| *item));
         let mut declared: Vec<String> = req.tools.iter().map(|t| t.name.clone()).collect();
@@ -1253,6 +1301,13 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 flush_user(&mut pending_user, &mut messages);
                 pending_user_cm = false;
                 pending_user_class = None;
+                if no_current_tool_surface {
+                    pending_assistant.push(ContentBlock::Text {
+                        text: item.text_summary(),
+                        cache_control: None,
+                    });
+                    continue;
+                }
                 match item.kind() {
                     tool_search::ToolSearchKind::ServerToolUse
                     | tool_search::ToolSearchKind::Call => {
@@ -1659,44 +1714,7 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
                 d2_materialised.len()
             );
         }
-        // Canonical dated type strings (the config layer resolved family
-        // names + soft-refused unknown slugs).
-        if let Some(ref members) = req.server_tools {
-            for t in members {
-                match crate::messages::server_tool_from_type(t) {
-                    Some(mut member) => {
-                        // mcp_toolset: the producer fills the required
-                        // mcp_server_name from the row's pairing key. The
-                        // config layer HARD-refuses pairing violations,
-                        // so the None arm is a defensive backstop, never
-                        // a panic (SDD §3.5, FIX-PASS R4/R5).
-                        if let crate::messages::ToolServer::McpToolset {
-                            ref mut mcp_server_name,
-                            ..
-                        } = member
-                        {
-                            match req.mcp_toolset_server.clone() {
-                                Some(name) => *mcp_server_name = name,
-                                None => {
-                                    tracing::warn!(
-                                        "mcp_toolset without mcp_toolset_server \
-                                         (config-layer hard-refusal backstop); \
-                                         skipping member"
-                                    );
-                                    continue;
-                                }
-                            }
-                        }
-                        mapped.push(ToolParam::Server(member));
-                    }
-                    None => tracing::warn!(
-                        type = %t,
-                        "unknown server-tool type string (config-layer \
-                         validated); skipping"
-                    ),
-                }
-            }
-        }
+        mapped.extend(emitted_server_tools);
         // apex-nfdb (MSGVENDORDECL-1): the provider-executed search trigger, derived
         // from admission (the fold mirrors the Responses twin,
         // `conversation/responses.rs:814`); a non-admitted row emits nothing here.
