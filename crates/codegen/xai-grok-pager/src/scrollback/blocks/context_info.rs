@@ -23,6 +23,8 @@ pub struct ContextInfoBlock {
     pub snapshot: ContextInfo,
     /// Active model name at the time of capture (display-only).
     pub model: String,
+    /// Declaration diagnostics are separate from the context-window snapshot.
+    pub last_bound: Option<xai_grok_shell::session::LastBoundProjectionReport>,
 }
 
 /// Shape of the categorical bar: how the 100 cells are laid out. Both shapes hold the same 100 cells, so the visual
@@ -205,7 +207,16 @@ impl ContextInfoBlock {
         Self {
             snapshot,
             model: model.into(),
+            last_bound: None,
         }
+    }
+
+    pub fn with_last_bound(
+        mut self,
+        last_bound: Option<xai_grok_shell::session::LastBoundProjectionReport>,
+    ) -> Self {
+        self.last_bound = last_bound;
+        self
     }
 
     /// Build the styled lines for an arbitrary content width.
@@ -389,6 +400,103 @@ impl ContextInfoBlock {
             lines.extend(layout.render(row, bar, total, label_style, muted));
         }
         lines.push(Line::from(""));
+
+        if let Some(report) = &self.last_bound {
+            use xai_grok_shell::session::{
+                LAST_BOUND_SCHEMA_VERSION, LastBoundOrigin, LastBoundState,
+            };
+            const LAST_BOUND_NAMES_DISPLAY_CAP: usize = 12;
+            if report.schema_version != LAST_BOUND_SCHEMA_VERSION {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "Last bound request: unsupported report version {}",
+                        report.schema_version
+                    ),
+                    muted,
+                )));
+            } else {
+                let state = report.state;
+                let caption = match state {
+                    LastBoundState::NotCaptured => "Last bound request: not captured".to_owned(),
+                    LastBoundState::LastBound => format!(
+                        "Last bound request: {} declarations",
+                        report.counts.retained
+                    ),
+                    LastBoundState::StaleCapturedRow => {
+                        let model = report
+                            .bound_model
+                            .as_deref()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("not captured");
+                        let binding =
+                            match report.bound_backend.as_deref().filter(|s| !s.is_empty()) {
+                                Some(backend) => format!("{model} · {backend}"),
+                                None => model.to_owned(),
+                            };
+                        format!(
+                            "Last bound request: stale (captured against {binding}) · not the current row"
+                        )
+                    }
+                    LastBoundState::Unrecognized => {
+                        "Last bound request: reported by shell (unrecognized state)".to_owned()
+                    }
+                };
+                lines.push(Line::from(Span::styled(caption, muted)));
+                if state != LastBoundState::NotCaptured {
+                    if state != LastBoundState::Unrecognized {
+                        let origin = match report.origin {
+                            LastBoundOrigin::Main => "main",
+                            LastBoundOrigin::Rebuilt => "rebuilt child",
+                            LastBoundOrigin::Fork => "fork",
+                            LastBoundOrigin::Unrecognized => "not captured",
+                        };
+                        let admission = match report.admitted {
+                            Some(true) => "on",
+                            Some(false) => "off",
+                            None => "not captured",
+                        };
+                        let backend = report
+                            .bound_backend
+                            .as_deref()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("not captured");
+                        lines.push(Line::from(Span::styled(
+                            format!(
+                                "origin: {origin} · native search: {admission} · backend: {backend}"
+                            ),
+                            muted,
+                        )));
+                    }
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "selected {} · removed {} · retained {}",
+                            report.counts.selected, report.counts.removed, report.counts.retained
+                        ),
+                        muted,
+                    )));
+                    let shown = report.view.names.len().min(LAST_BOUND_NAMES_DISPLAY_CAP);
+                    // Keep the name column within the selected bar layout, including its indent.
+                    let name_width = bar.row_len.saturating_mul(2).saturating_sub(3);
+                    for name in report.view.names.iter().take(LAST_BOUND_NAMES_DISPLAY_CAP) {
+                        let name = crate::render::line_utils::truncate_str(name, name_width);
+                        lines.push(Line::from(Span::styled(format!("  {name}"), muted)));
+                    }
+                    let more =
+                        u64::from(report.view.omitted) + (report.view.names.len() - shown) as u64;
+                    if more > 0 {
+                        lines.push(Line::from(Span::styled(format!("  +{more} more"), muted)));
+                    }
+                    if let Some(vendor) = report.vendor_entries
+                        && state != LastBoundState::Unrecognized
+                    {
+                        lines.push(Line::from(Span::styled(
+                            format!("vendor/native entries: {vendor}"),
+                            muted,
+                        )));
+                    }
+                }
+            }
+        }
 
         // `threshold_tokens` uses `div_ceil` rather than truncating integer division. Without `div_ceil`, tiny totals
         // could produce `remaining == 0` while `usage_pct < threshold_percent`. That would show `~0 tokens remaining` for
@@ -970,10 +1078,14 @@ mod tests {
             (l.starts_with('\u{25C6}') || l.starts_with('\u{25C8}') || l.starts_with('\u{25C7}'))
                 && l.contains(" tokens ")
         };
+        // Labels may contain parentheses; alignment concerns the numeric columns.
         let cols = |needle: &str| -> Vec<usize> {
             all.lines()
                 .filter(is_row)
-                .filter_map(|l| l.find(needle))
+                .filter_map(|l| {
+                    let numeric = l.find(" tokens ")?;
+                    l[numeric..].find(needle).map(|offset| numeric + offset)
+                })
                 .collect()
         };
         for needle in [" tokens ", ")"] {
@@ -1302,6 +1414,7 @@ mod tests {
                     xai_grok_shell::util::config::DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT,
                 ..ContextInfo::default()
             },
+            last_bound: None,
         }
     }
 
@@ -1566,5 +1679,343 @@ Turns: 0 · Tool calls: 0 · Compactions:
                 GOLDEN_FALLBACK_80,
             ),
         ]);
+    }
+
+    fn ctx_u3_report() -> xai_grok_shell::session::LastBoundProjectionReport {
+        use xai_grok_shell::session::{
+            LastBoundCounts, LastBoundOrigin, LastBoundProjectionReport, LastBoundState,
+            LastBoundView,
+        };
+        LastBoundProjectionReport {
+            schema_version: 1,
+            state: LastBoundState::LastBound,
+            origin: LastBoundOrigin::Main,
+            bound_model: Some("capture-model".into()),
+            bound_backend: Some("Responses".into()),
+            admitted: Some(true),
+            counts: LastBoundCounts {
+                selected: 9,
+                removed: 2,
+                retained: 7,
+            },
+            view: LastBoundView {
+                names: vec!["keep_one".into(), "keep_two".into()],
+                omitted: 5,
+            },
+            vendor_entries: Some(3),
+        }
+    }
+
+    fn ctx_u3_section(block: &ContextInfoBlock) -> Vec<String> {
+        let text = all_text(&block.lines_for_width(&test_theme(), 80));
+        let rows: Vec<_> = text.lines().map(str::to_owned).collect();
+        let start = rows
+            .iter()
+            .position(|line| line.starts_with("Last bound request:"))
+            .expect("CTX-U3 Some report must render a last-bound section");
+        let end = rows
+            .iter()
+            .position(|line| line.starts_with("Auto-compact"))
+            .expect("the original auto-compact row remains");
+        assert!(start < end);
+        let legacy: String = rows[..start]
+            .iter()
+            .chain(&rows[end..])
+            .flat_map(|line| [line.as_str(), "\n"])
+            .collect();
+        assert_eq!(
+            legacy, GOLDEN_WIDE_80,
+            "CTX-U3 prepared inventory and legacy output stay original"
+        );
+        assert_eq!(
+            serde_json::to_value(&block.snapshot).unwrap(),
+            serde_json::to_value(snapshot()).unwrap()
+        );
+        rows[start..end].to_vec()
+    }
+
+    fn ctx_u3_bound_details() -> Vec<String> {
+        [
+            "selected 9 · removed 2 · retained 7",
+            "  keep_one",
+            "  keep_two",
+            "  +5 more",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    }
+
+    #[test]
+    fn ctx_u3_last_bound_state_and_version_rendering() {
+        use xai_grok_shell::session::{LastBoundOrigin, LastBoundProjectionReport, LastBoundState};
+        for (origin, admitted, backend, scope) in [
+            (
+                LastBoundOrigin::Main,
+                Some(true),
+                Some("Responses"),
+                "origin: main · native search: on · backend: Responses",
+            ),
+            (
+                LastBoundOrigin::Rebuilt,
+                Some(false),
+                Some(""),
+                "origin: rebuilt child · native search: off · backend: not captured",
+            ),
+            (
+                LastBoundOrigin::Fork,
+                None,
+                None,
+                "origin: fork · native search: not captured · backend: not captured",
+            ),
+            (
+                LastBoundOrigin::Unrecognized,
+                None,
+                None,
+                "origin: not captured · native search: not captured · backend: not captured",
+            ),
+        ] {
+            let report = LastBoundProjectionReport {
+                origin,
+                admitted,
+                bound_backend: backend.map(str::to_owned),
+                ..ctx_u3_report()
+            };
+            let block = ContextInfoBlock::new(snapshot(), "grok-4").with_last_bound(Some(report));
+            let mut expected = vec![
+                "Last bound request: 7 declarations".to_owned(),
+                scope.to_owned(),
+            ];
+            expected.extend(ctx_u3_bound_details());
+            expected.push("vendor/native entries: 3".into());
+            assert_eq!(
+                ctx_u3_section(&block),
+                expected,
+                "CTX-U3 supported details are truthful"
+            );
+        }
+        let mut stale = ctx_u3_report();
+        stale.state = LastBoundState::StaleCapturedRow;
+        let block = ContextInfoBlock::new(snapshot(), "grok-4").with_last_bound(Some(stale));
+        let mut expected = vec![
+            "Last bound request: stale (captured against capture-model · Responses) · not the current row".to_owned(),
+            "origin: main · native search: on · backend: Responses".to_owned(),
+        ];
+        expected.extend(ctx_u3_bound_details());
+        expected.push("vendor/native entries: 3".into());
+        assert_eq!(
+            ctx_u3_section(&block),
+            expected,
+            "CTX-U3 stale keeps captured identity"
+        );
+
+        let mut absent = ctx_u3_report();
+        absent.state = LastBoundState::NotCaptured;
+        let block = ContextInfoBlock::new(snapshot(), "grok-4").with_last_bound(Some(absent));
+        assert_eq!(
+            ctx_u3_section(&block),
+            ["Last bound request: not captured"],
+            "CTX-U3 NotCaptured suppresses nonzero counts and every detail"
+        );
+        let mut unknown = ctx_u3_report();
+        unknown.state = LastBoundState::Unrecognized;
+        let block = ContextInfoBlock::new(snapshot(), "grok-4").with_last_bound(Some(unknown));
+        let mut expected =
+            vec!["Last bound request: reported by shell (unrecognized state)".to_owned()];
+        expected.extend(ctx_u3_bound_details());
+        assert_eq!(
+            ctx_u3_section(&block),
+            expected,
+            "CTX-U3 unknown state uses only v1 counts and view"
+        );
+        let mut no_vendor = ctx_u3_report();
+        no_vendor.vendor_entries = None;
+        let block = ContextInfoBlock::new(snapshot(), "grok-4").with_last_bound(Some(no_vendor));
+        assert!(
+            !ctx_u3_section(&block)
+                .iter()
+                .any(|line| line.contains("vendor"))
+        );
+        let mut zero_vendor = ctx_u3_report();
+        zero_vendor.vendor_entries = Some(0);
+        let block = ContextInfoBlock::new(snapshot(), "grok-4").with_last_bound(Some(zero_vendor));
+        assert!(
+            ctx_u3_section(&block)
+                .iter()
+                .any(|line| line == "vendor/native entries: 0")
+        );
+
+        let mut omitted = serde_json::to_value(ctx_u3_report()).unwrap();
+        omitted.as_object_mut().unwrap().remove("origin");
+        let omitted: LastBoundProjectionReport = serde_json::from_value(omitted).unwrap();
+        assert_eq!(omitted.origin, LastBoundOrigin::Main);
+        let block = ContextInfoBlock::new(snapshot(), "grok-4").with_last_bound(Some(omitted));
+        assert!(ctx_u3_section(&block)[1].starts_with("origin: main ·"));
+        let mut versions = Vec::new();
+        for version in [0, 2, 255] {
+            let mut report = ctx_u3_report();
+            report.schema_version = version;
+            let block = ContextInfoBlock::new(snapshot(), "grok-4").with_last_bound(Some(report));
+            let expected = vec![format!(
+                "Last bound request: unsupported report version {version}"
+            )];
+            let correct = ctx_u3_section(&block) == expected;
+            eprintln!("CTX_U3_VERSION {version} {correct}");
+            versions.push((version, correct));
+        }
+        assert!(
+            versions.iter().all(|(_, correct)| *correct),
+            "CTX-U3 unsupported versions never expose v1 details: {versions:?}"
+        );
+    }
+
+    fn ctx_u3_name_lines(text: &str) -> Vec<String> {
+        text.lines()
+            .filter(|line| line.starts_with("  ") && !line.starts_with("  +"))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn ctx_u3_names_cap_wrap_and_budget() {
+        use xai_grok_shell::session::LastBoundView;
+        let long = format!("界界{}", "x".repeat(120));
+        let mut names = vec![
+            "zeta".to_owned(),
+            "alpha".to_owned(),
+            "zeta".to_owned(),
+            long.clone(),
+        ];
+        names.extend((4..16).map(|i| format!("item_{i:02}")));
+        let mut report = ctx_u3_report();
+        report.counts.selected = 21;
+        report.counts.retained = 19;
+        report.view = LastBoundView { names, omitted: 3 };
+        report.vendor_entries = None;
+        for (width, name_width) in [(40, 17), (100, 37)] {
+            let expected: Vec<_> = report
+                .view
+                .names
+                .iter()
+                .take(12)
+                .map(|name| {
+                    format!(
+                        "  {}",
+                        crate::render::line_utils::truncate_str(name, name_width)
+                    )
+                })
+                .collect();
+            let block =
+                ContextInfoBlock::new(snapshot(), "grok-4").with_last_bound(Some(report.clone()));
+            let output = block.output(&BlockContext {
+                mode: crate::scrollback::types::DisplayMode::Expanded,
+                is_running: false,
+                width,
+                raw: false,
+                max_lines: None,
+                appearance: AppearanceConfig::default(),
+                is_selected: false,
+                cwd: None,
+            });
+            assert!(
+                output
+                    .lines
+                    .iter()
+                    .all(|line| line.content.width() <= usize::from(width)),
+                "CTX-U3 real output is width bounded"
+            );
+            let text = ctx_u0_output(&block, width, None);
+            assert_eq!(
+                ctx_u3_name_lines(&text),
+                expected,
+                "CTX-U3 cap, order, duplicates and truncation through output at {width}"
+            );
+            assert!(
+                text.contains("  +7 more"),
+                "CTX-U3 cap omissions are added to supplied omissions"
+            );
+            assert!(!text.contains(&long));
+            for hidden in ["item_12", "item_13", "item_14", "item_15"] {
+                assert!(
+                    !text.contains(hidden),
+                    "CTX-U3 names beyond cap stay omitted"
+                );
+            }
+            let theme = test_theme();
+            let modal = all_text(&block.lines_for_width(&theme, width));
+            let logical = all_text(&block.build_lines(&theme, BarLayout::for_width(width)));
+            assert_eq!(
+                ctx_u3_name_lines(&modal),
+                expected,
+                "CTX-U3 modal name cap and order"
+            );
+            assert_eq!(
+                ctx_u3_name_lines(&logical),
+                expected,
+                "CTX-U3 logical name cap and order"
+            );
+            assert!(modal.contains("  +7 more"));
+            assert_eq!(
+                ctx_u0_output(&block, width, Some(6)),
+                GOLDEN_WIDE_BUDGET6,
+                "CTX-U3 preserves the legacy budget prefix at {width}"
+            );
+            let mut missing = ctx_u3_report();
+            missing.view = LastBoundView {
+                names: vec![],
+                omitted: 7,
+            };
+            let block = ContextInfoBlock::new(snapshot(), "grok-4").with_last_bound(Some(missing));
+            assert!(
+                ctx_u0_output(&block, width, None).contains("  +7 more"),
+                "CTX-U3 empty name vector still reports omissions"
+            );
+            assert!(all_text(&block.lines_for_width(&theme, width)).contains("  +7 more"));
+        }
+    }
+
+    #[test]
+    fn ctx_u3_supplied_state_not_model_cursor() {
+        use xai_grok_shell::session::LastBoundState;
+        let mut checks = Vec::new();
+        for (case, state, bound_model) in [
+            (
+                "last-bound-different-model",
+                LastBoundState::LastBound,
+                "other-model",
+            ),
+            (
+                "stale-matching-model",
+                LastBoundState::StaleCapturedRow,
+                "grok-4",
+            ),
+        ] {
+            let mut report = ctx_u3_report();
+            report.state = state;
+            report.bound_model = Some(bound_model.into());
+            let block =
+                ContextInfoBlock::new(snapshot(), "grok-4").with_last_bound(Some(report.clone()));
+            let first = ctx_u3_section(&block);
+            assert_eq!(
+                ctx_u3_section(&block),
+                first,
+                "CTX-U3 redraw keeps supplied state"
+            );
+            assert_eq!(block.last_bound.as_ref(), Some(&report));
+            let correct = match state {
+                LastBoundState::LastBound => first[0] == "Last bound request: 7 declarations",
+                LastBoundState::StaleCapturedRow => {
+                    first[0]
+                        == "Last bound request: stale (captured against grok-4 · Responses) · not the current row"
+                }
+                _ => unreachable!(),
+            };
+            eprintln!("CTX_U3_SUPPLIED_STATE {case} {correct}");
+            checks.push((case, correct));
+        }
+        assert!(
+            checks.iter().all(|(_, correct)| *correct),
+            "CTX-U3 supplied state wins in both contradictory model pairs: {checks:?}"
+        );
     }
 }

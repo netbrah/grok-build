@@ -57,7 +57,7 @@ async fn usage_categories_include_skills_and_mcp_with_counts() {
             assert_eq!(skills.detail.as_deref(), Some("2 skills"));
             assert!(skills.tokens > 0);
             let mcp = &rows[1];
-            assert_eq!(mcp.label, "MCP servers");
+            assert_eq!(mcp.label, "MCP servers (full-list estimate)");
             assert_eq!(mcp.detail.as_deref(), Some("1 server"));
             assert!(mcp.tokens > 0);
             let info = actor.build_session_info().await;
@@ -279,6 +279,80 @@ async fn mcp_snapshot_matches_full_mode_injected_reminder() {
                 .and_then(|s| s.strip_suffix("\n</system-reminder>"))
                 .unwrap_or_else(|| panic!("unexpected wrapper: {injected}"));
             assert_eq!(body, snapshot.text);
+        })
+        .await;
+}
+
+// Frozen from the actual Full-mode injector before the U5 label edit.
+const MCP_FULL_REMINDER_BEFORE_U5: &str = r#"<system-reminder>
+Connected MCP servers:
+- demo (2 tools): A demo server.
+
+To use MCP tools, you MUST call `` first to retrieve the tool's input schema before calling ``. NEVER guess parameter names — always use the exact schema returned by ``.
+</system-reminder>"#;
+
+#[tokio::test(flavor = "current_thread")]
+async fn ctx_u5_full_list_estimate_preserves_announcement() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (gateway_tx, _) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            actor.mcp_reminder_mode = McpReminderMode::Full;
+            install_mcp_servers(&actor);
+            let snapshot = actor
+                .mcp_announcement_snapshot()
+                .await
+                .expect("servers installed");
+            assert_eq!(snapshot.server_count, 1);
+            assert_eq!(
+                snapshot.accounting_scope,
+                "full-list estimate; not exact persisted Delta history or next-request bytes"
+            );
+            let before_len = actor.chat_state_handle.get_conversation().await.len();
+            actor
+                .mcp_reminder_dirty
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            actor.maybe_inject_mcp_reminder().await;
+            let conversation = actor.chat_state_handle.get_conversation().await;
+            assert_eq!(
+                conversation.len(),
+                before_len + 1,
+                "CTX-U5 actual Full-mode reminder is appended"
+            );
+            let injected = conversation
+                .last()
+                .expect("reminder injected")
+                .text_content();
+            assert_eq!(
+                injected, MCP_FULL_REMINDER_BEFORE_U5,
+                "CTX-U5 full injected reminder bytes remain unchanged"
+            );
+            let body = injected
+                .strip_prefix("<system-reminder>\n")
+                .and_then(|s| s.strip_suffix("\n</system-reminder>"))
+                .expect("complete reminder wrapper");
+            assert_eq!(
+                body, snapshot.text,
+                "CTX-U5 snapshot matches the actual Full-mode body"
+            );
+            let info = actor.build_session_info().await;
+            let mcp = info
+                .context
+                .usage_categories
+                .iter()
+                .find(|row| row.detail.as_deref() == Some("1 server"))
+                .expect("MCP category carries its server count");
+            assert_eq!(
+                mcp.tokens,
+                xai_token_estimation::estimate_tokens(&snapshot.text)
+            );
+            assert_eq!(mcp.detail.as_deref(), Some("1 server"));
+            assert_eq!(
+                mcp.label, "MCP servers (full-list estimate)",
+                "CTX-U5 MCP row uses the full-list estimate label"
+            );
         })
         .await;
 }

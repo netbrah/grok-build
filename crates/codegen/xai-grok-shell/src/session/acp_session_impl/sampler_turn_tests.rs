@@ -9266,3 +9266,502 @@ async fn u7_authority_matrix(
     );
     assert_eq!(reread.active, checkpoint.active);
 }
+
+fn ctx_u2_expected_report(
+    summary: &super::super::context_snapshot::LastBoundProjectionSummary,
+    origin: crate::session::LastBoundOrigin,
+    view: crate::session::LastBoundView,
+) -> crate::session::LastBoundProjectionReport {
+    use crate::session::{
+        LAST_BOUND_SCHEMA_VERSION, LastBoundCounts, LastBoundProjectionReport, LastBoundState,
+    };
+    LastBoundProjectionReport {
+        schema_version: LAST_BOUND_SCHEMA_VERSION,
+        state: LastBoundState::LastBound,
+        origin,
+        bound_model: Some(summary.model.clone()),
+        bound_backend: Some(format!("{:?}", summary.backend)),
+        admitted: summary
+            .admission
+            .map(xai_grok_sampling_types::SearchAdmission::admitted),
+        counts: LastBoundCounts {
+            selected: u32::try_from(summary.selected_functions).unwrap(),
+            removed: u32::try_from(summary.removed_functions).unwrap(),
+            retained: u32::try_from(summary.retained_functions).unwrap(),
+        },
+        view,
+        vendor_entries: summary.vendor_entries.map(|n| u32::try_from(n).unwrap()),
+    }
+}
+
+async fn ctx_u2_seeded_info(
+    fixture: &ParentGoldenFixture,
+    summary: super::super::context_snapshot::LastBoundProjectionSummary,
+) -> crate::session::SessionInfoData {
+    let slot = fixture.actor.last_bound_projection_slot().await;
+    *slot.0.lock() = Some(summary.clone());
+    let info = fixture.actor.build_session_info().await;
+    assert_eq!(
+        *slot.0.lock(),
+        Some(summary),
+        "CTX-U2 mapper does not rewrite the captured slot"
+    );
+    info
+}
+
+#[derive(Clone, Default)]
+struct CtxU2WarningWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for CtxU2WarningWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+async fn ctx_u2_check_actual_bound_report(
+    surface: super::super::context_snapshot::BoundProjectionSurface,
+    origin: crate::session::LastBoundOrigin,
+) {
+    use crate::session::LastBoundView;
+    let fixture = a6_bound_fixture(surface).await;
+    let slot = fixture.actor.last_bound_projection_slot().await;
+    let summary = slot.0.lock().clone().unwrap();
+    let backend_search = fixture.actor.backend_search_active();
+    let prepared: Vec<_> = fixture
+        .actor
+        .prepare_tool_definitions_inner()
+        .await
+        .into_iter()
+        .filter(|definition| !backend_search || definition.function.name != "web_search")
+        .collect();
+    let expected = ctx_u2_expected_report(
+        &summary,
+        origin,
+        LastBoundView {
+            names: summary
+                .declaration_view
+                .split_terminator('\n')
+                .map(str::to_owned)
+                .collect(),
+            omitted: 0,
+        },
+    );
+    assert_eq!(
+        expected.counts.removed, 2,
+        "real A6 cutover removed the bridge pair"
+    );
+    assert_eq!(expected.vendor_entries, None);
+    let _outer = super::SessionActor::a3_trace_outer(None);
+    let info = fixture.actor.build_session_info().await;
+    assert!(
+        super::SessionActor::a3_take_outer_builds().is_empty(),
+        "CTX-U2 session-info read never builds a request"
+    );
+    assert_eq!(
+        fixture.wire.exchanges.borrow().len(),
+        1,
+        "CTX-U2 display never sends another request"
+    );
+    assert_eq!(
+        (
+            info.context.tool_definitions_count,
+            info.context.tool_definitions_tokens
+        ),
+        (
+            prepared.len() as u64,
+            xai_chat_state::estimate_tool_definitions_tokens(&prepared)
+        ),
+        "CTX-U2 prepared inventory remains separate from captured declarations"
+    );
+    assert_eq!(
+        info.last_bound,
+        Some(expected),
+        "CTX-U2 maps the actual {surface:?} capture"
+    );
+    assert_eq!(*slot.0.lock(), Some(summary));
+}
+
+async fn ctx_u2_check_seeded_view_edges() {
+    use super::super::context_snapshot::BoundProjectionSurface;
+    use crate::session::{LastBoundOrigin, LastBoundView};
+    let fixture = a6_bound_fixture(BoundProjectionSurface::Main).await;
+    let slot = fixture.actor.last_bound_projection_slot().await;
+    let original = slot.0.lock().clone().unwrap();
+    let context = serde_json::to_value(fixture.actor.build_session_info().await.context).unwrap();
+    // Seeded malformed/edge records exercise only the mapper, not publication.
+    for (case, text, retained, names, omitted) in [
+        (
+            "order-duplicates-CR",
+            "zeta\nalpha\nalpha\nname\r\n",
+            4,
+            vec!["zeta", "alpha", "alpha", "name\r"],
+            0,
+        ),
+        ("empty", "", 0, vec![], 0),
+        ("missing-terminal-LF", "alpha", 1, vec![], 1),
+        (
+            "embedded-LF-ambiguous",
+            "first\nsplit\nother\n",
+            2,
+            vec![],
+            2,
+        ),
+        ("empty-name", "\n", 1, vec![""], 0),
+    ] {
+        let mut seeded = original.clone();
+        seeded.selected_functions = retained + 2;
+        seeded.removed_functions = 2;
+        seeded.retained_functions = retained;
+        seeded.declaration_view = text.into();
+        seeded.declaration_view_truncated = false;
+        seeded.vendor_entries = Some(3);
+        let expected = ctx_u2_expected_report(
+            &seeded,
+            LastBoundOrigin::Main,
+            LastBoundView {
+                names: names.into_iter().map(str::to_owned).collect(),
+                omitted,
+            },
+        );
+        let info = ctx_u2_seeded_info(&fixture, seeded).await;
+        assert_eq!(
+            info.last_bound,
+            Some(expected),
+            "CTX-U2 seeded view edge {case}"
+        );
+        assert_eq!(
+            serde_json::to_value(info.context).unwrap(),
+            context,
+            "CTX-U2 seeded view never changes ContextInfo"
+        );
+    }
+    for admission in [
+        None,
+        Some(xai_grok_sampling_types::SearchAdmission {
+            supports_search_tool: false,
+            has_searchable_tools: true,
+        }),
+        Some(xai_grok_sampling_types::SearchAdmission {
+            supports_search_tool: true,
+            has_searchable_tools: true,
+        }),
+    ] {
+        let mut seeded = original.clone();
+        seeded.admission = admission;
+        let expected = ctx_u2_expected_report(
+            &seeded,
+            LastBoundOrigin::Main,
+            LastBoundView {
+                names: original
+                    .declaration_view
+                    .split_terminator('\n')
+                    .map(str::to_owned)
+                    .collect(),
+                omitted: 0,
+            },
+        );
+        let info = ctx_u2_seeded_info(&fixture, seeded).await;
+        assert_eq!(
+            info.last_bound,
+            Some(expected),
+            "CTX-U2 optional admission is not inferred"
+        );
+        assert_eq!(serde_json::to_value(info.context).unwrap(), context);
+    }
+    *slot.0.lock() = Some(original);
+}
+
+async fn ctx_u2_check_seeded_numeric_edges() {
+    use super::super::context_snapshot::BoundProjectionSurface;
+    use crate::session::{LastBoundOrigin, LastBoundView};
+    let fixture = a6_bound_fixture(BoundProjectionSurface::Main).await;
+    let slot = fixture.actor.last_bound_projection_slot().await;
+    let original = slot.0.lock().clone().unwrap();
+    let context = serde_json::to_value(fixture.actor.build_session_info().await.context).unwrap();
+    let mut maximum = original.clone();
+    maximum.selected_functions = u32::MAX as usize;
+    maximum.removed_functions = 0;
+    maximum.retained_functions = u32::MAX as usize;
+    maximum.vendor_entries = Some(u32::MAX as usize);
+    maximum.declaration_view.clear();
+    maximum.declaration_view_truncated = true;
+    let expected = ctx_u2_expected_report(
+        &maximum,
+        LastBoundOrigin::Main,
+        LastBoundView {
+            names: vec![],
+            omitted: u32::MAX,
+        },
+    );
+    let info = ctx_u2_seeded_info(&fixture, maximum).await;
+    assert_eq!(
+        info.last_bound,
+        Some(expected),
+        "CTX-U2 u32 boundary stays exact"
+    );
+    assert_eq!(serde_json::to_value(info.context).unwrap(), context);
+
+    let writer = CtxU2WarningWriter::default();
+    let bytes = writer.0.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(move || writer.clone())
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+    let overflow = usize::try_from(u64::from(u32::MAX) + 1).expect("64-bit mapper boundary host");
+    for field in ["selected", "removed", "retained", "vendor"] {
+        let mut seeded = original.clone();
+        match field {
+            "selected" => seeded.selected_functions = overflow,
+            "removed" => seeded.removed_functions = overflow,
+            "retained" => seeded.retained_functions = overflow,
+            "vendor" => seeded.vendor_entries = Some(overflow),
+            _ => unreachable!(),
+        }
+        let info = ctx_u2_seeded_info(&fixture, seeded).await;
+        assert_eq!(
+            info.last_bound, None,
+            "CTX-U2 checked {field} overflow omits only the report"
+        );
+        assert_eq!(
+            serde_json::to_value(info.context).unwrap(),
+            context,
+            "CTX-U2 overflow preserves ContextInfo"
+        );
+    }
+    drop(guard);
+    let warnings = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+    let codes: Vec<_> = warnings
+        .lines()
+        .filter(|line| line.contains("context_report_unrepresentable"))
+        .collect();
+    assert_eq!(
+        codes.len(),
+        4,
+        "CTX-U2 each overflow emits the static warning code"
+    );
+    assert!(
+        codes
+            .iter()
+            .all(|line| line.ends_with("context_report_unrepresentable")),
+        "CTX-U2 warning contains no captured payload"
+    );
+    *slot.0.lock() = Some(original);
+}
+
+async fn ctx_u2_check_actual_truncated_view() {
+    use crate::session::{LastBoundOrigin, LastBoundView};
+    let mut fixture = a3_main_fixture(false).await;
+    let actor = std::sync::Arc::get_mut(&mut fixture.actor).unwrap();
+    let limit = xai_grok_telemetry::external::truncate::MAX_TOOL_INPUT_JSON_BYTES;
+    actor
+        .agent
+        .borrow()
+        .tool_bridge()
+        .register_mcp_tools(
+            "x".repeat(limit + 20),
+            NativeRegisteredTool {
+                name: "ctx-u2-large",
+                namespace: ToolNamespace::GrokBuild,
+                description: "large declaration label",
+            },
+            Some(native_alpha_schema()),
+        )
+        .unwrap();
+    let mut events = a3_sampler_for_surface(actor, &fixture.binding).await;
+    let drainer = fixture.actor.clone();
+    let _drain = tokio_util::task::AbortOnDropHandle::new(tokio::task::spawn_local(async move {
+        while let Some(event) = events.recv().await {
+            drainer.handle_sampling_event(event).await;
+        }
+    }));
+    let _outer = super::SessionActor::a3_trace_outer(None);
+    a6_run_turn(&fixture.actor).await;
+    assert_eq!(super::SessionActor::a3_take_outer_builds().len(), 1);
+    let slot = fixture.actor.last_bound_projection_slot().await;
+    let summary = slot.0.lock().clone().unwrap();
+    assert!(
+        summary.declaration_view_truncated,
+        "CTX-U2 real publisher bounds an oversized name"
+    );
+    assert!(summary.declaration_view.len() <= limit);
+    let expected = ctx_u2_expected_report(
+        &summary,
+        LastBoundOrigin::Main,
+        LastBoundView {
+            names: vec![],
+            omitted: u32::try_from(summary.retained_functions).unwrap(),
+        },
+    );
+    let info = fixture.actor.build_session_info().await;
+    assert_eq!(
+        info.last_bound,
+        Some(expected),
+        "CTX-U2 truncated boundaries conservatively omit all names"
+    );
+    assert!(super::SessionActor::a3_take_outer_builds().is_empty());
+    assert_eq!(fixture.wire.exchanges.borrow().len(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ctx_u2_session_info_maps_actual_bound_summary() {
+    const NAME: &str =
+        "session::acp_session::sampler_turn::tests::ctx_u2_session_info_maps_actual_bound_summary";
+    if parent_golden_isolated(NAME) {
+        return;
+    }
+    use super::super::context_snapshot::BoundProjectionSurface;
+    use crate::session::{
+        LAST_BOUND_SCHEMA_VERSION, LastBoundOrigin, LastBoundProjectionReport, LastBoundState,
+    };
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let fresh = a3_main_fixture(false).await;
+            let slot = fresh.actor.last_bound_projection_slot().await;
+            assert!(slot.0.lock().is_none());
+            let info = fresh.actor.build_session_info().await;
+            assert_eq!(
+                info.last_bound,
+                Some(LastBoundProjectionReport {
+                    schema_version: LAST_BOUND_SCHEMA_VERSION,
+                    state: LastBoundState::NotCaptured,
+                    ..Default::default()
+                }),
+                "CTX-U2 fresh actor reports v1 NotCaptured"
+            );
+            for (surface, origin) in [
+                (BoundProjectionSurface::Main, LastBoundOrigin::Main),
+                (
+                    BoundProjectionSurface::RebuiltChild,
+                    LastBoundOrigin::Rebuilt,
+                ),
+                (BoundProjectionSurface::Fork, LastBoundOrigin::Fork),
+            ] {
+                ctx_u2_check_actual_bound_report(surface, origin).await;
+            }
+            ctx_u2_check_seeded_view_edges().await;
+            ctx_u2_check_seeded_numeric_edges().await;
+            ctx_u2_check_actual_truncated_view().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ctx_u2_last_bound_staleness_uses_model_and_backend() {
+    const NAME: &str = "session::acp_session::sampler_turn::tests::ctx_u2_last_bound_staleness_uses_model_and_backend";
+    if parent_golden_isolated(NAME) {
+        return;
+    }
+    use super::super::context_snapshot::BoundProjectionSurface;
+    use crate::session::LastBoundState;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let fixture = a6_bound_fixture(BoundProjectionSurface::Main).await;
+            let slot = fixture.actor.last_bound_projection_slot().await;
+            let summary = slot.0.lock().clone().unwrap();
+            let captured = fixture
+                .actor
+                .build_session_info()
+                .await
+                .last_bound
+                .expect("CTX-U2 actual A6 capture reaches the report before drift");
+            assert_eq!(captured.state, LastBoundState::LastBound);
+            let _outer = super::SessionActor::a3_trace_outer(None);
+            for arm in ["model-only", "backend-only"] {
+                let mut next = fixture.binding.clone();
+                match arm {
+                    "model-only" => next.config.model = "r12-live".into(),
+                    "backend-only" => next.config.api_backend = ApiBackend::Messages,
+                    _ => unreachable!(),
+                }
+                fixture
+                    .actor
+                    .chat_state_handle
+                    .install_transport_binding(next)
+                    .await
+                    .unwrap();
+                let stale = fixture.actor.build_session_info().await.last_bound.unwrap();
+                assert_eq!(
+                    stale.state,
+                    LastBoundState::StaleCapturedRow,
+                    "CTX-U2 {arm} drift must be stale"
+                );
+                let mut expected = captured.clone();
+                expected.state = LastBoundState::StaleCapturedRow;
+                assert_eq!(
+                    stale, expected,
+                    "CTX-U2 {arm} drift retains the entire captured report"
+                );
+                assert_eq!(
+                    *slot.0.lock(),
+                    Some(summary.clone()),
+                    "CTX-U2 never stores a stale flag"
+                );
+                fixture
+                    .actor
+                    .chat_state_handle
+                    .install_transport_binding(fixture.binding.clone())
+                    .await
+                    .unwrap();
+                let restored = fixture.actor.build_session_info().await.last_bound.unwrap();
+                assert_eq!(
+                    restored, captured,
+                    "CTX-U2 matching binding restores LastBound after {arm} drift"
+                );
+                assert!(super::SessionActor::a3_take_outer_builds().is_empty());
+                assert_eq!(fixture.wire.exchanges.borrow().len(), 1);
+            }
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ctx_u2_auxiliary_preserves_last_bound_report() {
+    const NAME: &str =
+        "session::acp_session::sampler_turn::tests::ctx_u2_auxiliary_preserves_last_bound_report";
+    if parent_golden_isolated(NAME) {
+        return;
+    }
+    use super::super::context_snapshot::BoundProjectionSurface;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let fixture = a6_bound_fixture(BoundProjectionSurface::Main).await;
+            let report = fixture
+                .actor
+                .build_session_info()
+                .await
+                .last_bound
+                .expect("CTX-U2 actual A6 capture supplies a nonempty report");
+            assert_eq!(report.state, crate::session::LastBoundState::LastBound);
+            let before = serde_json::to_vec(&report).unwrap();
+            assert_eq!(fixture.wire.exchanges.borrow().len(), 1);
+            fixture
+                .actor
+                .handle_side_question("Explain the prior result.")
+                .await
+                .unwrap();
+            let after_side = fixture.actor.build_session_info().await.last_bound.unwrap();
+            assert_eq!(
+                serde_json::to_vec(&after_side).unwrap(),
+                before,
+                "CTX-U2 actual side question preserves report bytes"
+            );
+            assert_eq!(fixture.wire.exchanges.borrow().len(), 2);
+            fixture.actor.handle_recap(false).await;
+            let after_recap = fixture.actor.build_session_info().await.last_bound.unwrap();
+            assert_eq!(
+                serde_json::to_vec(&after_recap).unwrap(),
+                before,
+                "CTX-U2 actual recap preserves report bytes"
+            );
+            assert_eq!(fixture.wire.exchanges.borrow().len(), 3);
+        })
+        .await;
+}

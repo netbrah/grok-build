@@ -437,7 +437,7 @@ impl TokenUsageCategory {
     /// `text` is the full reminder body for the current server set.
     pub fn mcp_servers(text: &str, server_count: usize) -> Self {
         Self {
-            label: "MCP servers".to_string(),
+            label: "MCP servers (full-list estimate)".to_string(),
             tokens: xai_token_estimation::estimate_tokens(text),
             detail: Some(count_detail(server_count as u64, "server")),
         }
@@ -536,6 +536,66 @@ pub struct SessionInfoData {
     #[serde(default)]
     pub turn_index: u64,
     pub context: ContextInfo,
+    /// Absent means no report supplied, not an explicit empty capture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_bound: Option<LastBoundProjectionReport>,
+}
+
+/// Breaking report changes require a new version; additive fields do not.
+pub const LAST_BOUND_SCHEMA_VERSION: u8 = 1;
+
+/// Read-time display of the last bound conversation turn, never stored or model-visible.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LastBoundProjectionReport {
+    pub schema_version: u8,
+    pub state: LastBoundState,
+    pub origin: LastBoundOrigin,
+    pub bound_model: Option<String>,
+    pub bound_backend: Option<String>,
+    pub admitted: Option<bool>,
+    pub counts: LastBoundCounts,
+    pub view: LastBoundView,
+    /// None means vendor entries were not captured, not zero entries.
+    pub vendor_entries: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LastBoundState {
+    #[default]
+    NotCaptured,
+    LastBound,
+    StaleCapturedRow,
+    #[serde(other)]
+    Unrecognized,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LastBoundOrigin {
+    #[default]
+    Main,
+    Rebuilt,
+    Fork,
+    #[serde(other)]
+    Unrecognized,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LastBoundCounts {
+    pub selected: u32,
+    pub removed: u32,
+    pub retained: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LastBoundView {
+    pub names: Vec<String>,
+    /// Retained declaration names not represented in this view.
+    pub omitted: u32,
 }
 
 pub fn model_display_name(
@@ -961,5 +1021,114 @@ mod tests {
         assert_eq!(agents.label, "AGENTS.md");
         assert_eq!(agents.detail.as_deref(), Some("1 file"));
         assert!(agents.tokens > 0);
+    }
+
+    fn ctx_u1_old_body() -> serde_json::Value {
+        let response: SessionInfoResponse = serde_json::from_value(json!({
+            "sessionId": "ctx-u1-session",
+            "cwd": "/ctx-u1",
+            "model": null,
+            "resolvedModelId": null,
+            "modelFingerprint": null,
+            "turns": 0,
+            "context": {"used": 1, "total": 2}
+        }))
+        .unwrap();
+        assert_eq!(response.data.model, None);
+        assert_eq!(response.data.context.used, 1);
+        assert_eq!(response.data.context.total, 2);
+        serde_json::to_value(response).unwrap()
+    }
+
+    fn ctx_u1_report_body() -> serde_json::Value {
+        json!({
+            "schemaVersion": 1,
+            "state": "last-bound",
+            "origin": "fork",
+            "boundModel": "ctx-bound-model",
+            "boundBackend": "Responses",
+            "admitted": true,
+            "counts": {"selected": 9, "removed": 2, "retained": 7},
+            "view": {"names": ["echo", "add", "echo"], "omitted": 4},
+            "vendorEntries": 2
+        })
+    }
+
+    #[test]
+    fn ctx_u1_last_bound_optional_and_wire_key() {
+        let old = ctx_u1_old_body();
+        assert!(old.get("lastBound").is_none(), "old body omits lastBound");
+        let mut null = old.clone();
+        null["lastBound"] = serde_json::Value::Null;
+        let decoded: SessionInfoResponse = serde_json::from_value(null).unwrap();
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap(),
+            old,
+            "None is omitted"
+        );
+
+        let mut supplied = old.clone();
+        supplied["lastBound"] = ctx_u1_report_body();
+        let decoded: SessionInfoResponse = serde_json::from_value(supplied.clone()).unwrap();
+        let encoded = serde_json::to_value(decoded).unwrap();
+        assert_eq!(
+            encoded, supplied,
+            "CTX-U1 supplied lastBound survives typed round trip"
+        );
+        assert!(encoded.get("lastBoundReport").is_none());
+        assert_eq!(encoded["context"], old["context"]);
+
+        let mut additive = supplied.clone();
+        additive["lastBound"]["futureDetail"] = json!({"ignored": true});
+        let decoded: SessionInfoResponse = serde_json::from_value(additive).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), supplied);
+    }
+
+    #[test]
+    fn ctx_u1_last_bound_enum_and_version_skew() {
+        let mut body = ctx_u1_old_body();
+        body["lastBound"] = ctx_u1_report_body();
+        for version in [0, 1, 2, 255] {
+            let mut supplied = body.clone();
+            supplied["lastBound"]["schemaVersion"] = json!(version);
+            let decoded: SessionInfoResponse = serde_json::from_value(supplied.clone()).unwrap();
+            assert_eq!(
+                serde_json::to_value(decoded).unwrap(),
+                supplied,
+                "CTX-U1 schema version {version} round-trips without normalization"
+            );
+        }
+        for field in ["state", "origin"] {
+            let mut supplied = body.clone();
+            supplied["lastBound"][field] = json!("future-string-variant");
+            let decoded: SessionInfoResponse = serde_json::from_value(supplied.clone())
+                .unwrap_or_else(|error| {
+                    panic!("CTX-U1 unknown {field} string must decode: {error}")
+                });
+            supplied["lastBound"][field] = json!("unrecognized");
+            assert_eq!(serde_json::to_value(decoded).unwrap(), supplied);
+            for wrong in [json!(7), json!(false), json!([]), json!({}), json!(null)] {
+                let mut supplied = body.clone();
+                supplied["lastBound"][field] = wrong;
+                assert!(
+                    serde_json::from_value::<SessionInfoResponse>(supplied).is_err(),
+                    "CTX-U1 wrong-typed {field} must fail"
+                );
+            }
+        }
+        let mut omitted = body.clone();
+        omitted["lastBound"]
+            .as_object_mut()
+            .unwrap()
+            .remove("origin");
+        let decoded: SessionInfoResponse = serde_json::from_value(omitted).unwrap();
+        body["lastBound"]["origin"] = json!("main");
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap(),
+            body,
+            "omitted origin is Main"
+        );
+        let explicit: SessionInfoResponse = serde_json::from_value(body.clone()).unwrap();
+        assert_eq!(serde_json::to_value(explicit).unwrap(), body);
     }
 }

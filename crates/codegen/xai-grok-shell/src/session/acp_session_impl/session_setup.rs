@@ -676,6 +676,78 @@ impl SessionActor {
         let api_backend = config.as_ref().map(|c| format!("{:?}", c.api_backend));
         let agent_name = self.agent.borrow().definition().name.clone();
         let conversation_id = None;
+        use super::context_snapshot::BoundProjectionSurface;
+        use crate::session::{
+            LAST_BOUND_SCHEMA_VERSION, LastBoundCounts, LastBoundOrigin, LastBoundProjectionReport,
+            LastBoundState, LastBoundView,
+        };
+        let slot = self.last_bound_projection_slot().await;
+        let captured = { slot.0.lock().clone() };
+        let last_bound = match captured {
+            None => Some(LastBoundProjectionReport {
+                schema_version: LAST_BOUND_SCHEMA_VERSION,
+                state: LastBoundState::NotCaptured,
+                ..Default::default()
+            }),
+            Some(summary) => {
+                let report = (|| {
+                    let counts = LastBoundCounts {
+                        selected: u32::try_from(summary.selected_functions).ok()?,
+                        removed: u32::try_from(summary.removed_functions).ok()?,
+                        retained: u32::try_from(summary.retained_functions).ok()?,
+                    };
+                    let vendor_entries =
+                        summary.vendor_entries.map(u32::try_from).transpose().ok()?;
+                    let names = if summary.declaration_view_truncated {
+                        None
+                    } else if summary.declaration_view.is_empty() && summary.retained_functions == 0
+                    {
+                        Some(Vec::new())
+                    } else {
+                        summary
+                            .declaration_view
+                            .strip_suffix('\n')
+                            .map(|text| text.split('\n').map(str::to_owned).collect::<Vec<_>>())
+                            .filter(|names| names.len() == summary.retained_functions)
+                    };
+                    let view = match names {
+                        Some(names) => LastBoundView { names, omitted: 0 },
+                        None => LastBoundView {
+                            names: Vec::new(),
+                            omitted: counts.retained,
+                        },
+                    };
+                    let state = if config.as_ref().is_some_and(|current| {
+                        current.model == summary.model && current.api_backend == summary.backend
+                    }) {
+                        LastBoundState::LastBound
+                    } else {
+                        LastBoundState::StaleCapturedRow
+                    };
+                    Some(LastBoundProjectionReport {
+                        schema_version: LAST_BOUND_SCHEMA_VERSION,
+                        state,
+                        origin: match summary.surface {
+                            BoundProjectionSurface::Main => LastBoundOrigin::Main,
+                            BoundProjectionSurface::RebuiltChild => LastBoundOrigin::Rebuilt,
+                            BoundProjectionSurface::Fork => LastBoundOrigin::Fork,
+                        },
+                        bound_model: Some(summary.model),
+                        bound_backend: Some(format!("{:?}", summary.backend)),
+                        admitted: summary
+                            .admission
+                            .map(xai_grok_sampling_types::SearchAdmission::admitted),
+                        counts,
+                        view,
+                        vendor_entries,
+                    })
+                })();
+                if report.is_none() {
+                    tracing::warn!("context_report_unrepresentable");
+                }
+                report
+            }
+        };
         SessionInfoData {
             model,
             model_display_name: None,
@@ -703,6 +775,7 @@ impl SessionActor {
                 auto_compact_threshold_percent: self.compaction.threshold_percent.get(),
                 usage_categories,
             },
+            last_bound,
         }
     }
     /// Build the `/context` usage rows for the skills listing, the workflow listing, the MCP server listing, and AGENTS.md.

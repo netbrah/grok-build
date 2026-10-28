@@ -1447,6 +1447,7 @@ fn context_info_response() -> xai_grok_shell::session::SessionInfoResponse {
             turns: 0,
             turn_index: 0,
             context: ContextInfo::default(),
+            last_bound: None,
         },
     }
 }
@@ -1781,4 +1782,299 @@ fn fetch_failures_surface_in_open_modal() {
     let state = usage_modal_state(&app);
     assert_eq!(state.session_error.as_deref(), Some("info boom"));
     assert_eq!(state.context_error.as_deref(), Some("ctx boom"));
+}
+
+fn ctx_u4_response(retained: u32) -> xai_grok_shell::session::SessionInfoResponse {
+    use xai_grok_shell::session::{
+        ContextInfo, LastBoundCounts, LastBoundOrigin, LastBoundProjectionReport, LastBoundState,
+        LastBoundView, TokenUsageCategory,
+    };
+    assert!(retained > 0);
+    let mut info = context_info_response();
+    info.data.model = Some("grok-4".into());
+    info.data.context = ContextInfo {
+        used: 4_567,
+        total: 100_000,
+        system_prompt_tokens: 101,
+        tool_definitions_count: 31,
+        tool_definitions_tokens: 211,
+        compaction_count: 2,
+        turn_count: 9,
+        tool_call_count: 13,
+        message_count: 17,
+        message_tokens: 4_100,
+        free_tokens: 95_433,
+        usage_pct: 5,
+        auto_compact_threshold_percent: 85,
+        usage_categories: vec![TokenUsageCategory {
+            label: "Fixture listing".into(),
+            tokens: 29,
+            detail: Some("4 entries".into()),
+        }],
+    };
+    info.data.last_bound = Some(LastBoundProjectionReport {
+        schema_version: 1,
+        state: LastBoundState::LastBound,
+        origin: LastBoundOrigin::Fork,
+        bound_model: Some("captured-row".into()),
+        bound_backend: Some("Responses".into()),
+        admitted: Some(true),
+        counts: LastBoundCounts {
+            selected: retained + 2,
+            removed: 2,
+            retained,
+        },
+        view: LastBoundView {
+            names: vec!["ctx_tool".into()],
+            omitted: retained - 1,
+        },
+        vendor_entries: Some(1),
+    });
+    info
+}
+
+fn ctx_u4_complete(
+    app: &mut AppView,
+    info: xai_grok_shell::session::SessionInfoResponse,
+    session_id: &str,
+    nonce: u64,
+) {
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::ContextInfoComplete {
+            agent_id: AgentId(0),
+            session_id: session_id.to_owned().into(),
+            info: Box::new(info),
+            nonce,
+        }),
+        app,
+    );
+    assert!(effects.is_empty());
+}
+
+fn ctx_u4_output(block: &crate::scrollback::blocks::ContextInfoBlock) -> String {
+    use crate::scrollback::block::BlockContent;
+    let output = block.output(&crate::scrollback::types::BlockContext {
+        mode: crate::scrollback::types::DisplayMode::Expanded,
+        is_running: false,
+        width: 80,
+        raw: false,
+        max_lines: None,
+        appearance: crate::appearance::AppearanceConfig::default(),
+        is_selected: false,
+        cwd: None,
+    });
+    output
+        .lines
+        .iter()
+        .flat_map(|line| {
+            line.content
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .chain(["\n"])
+        })
+        .collect()
+}
+
+fn ctx_u4_assert_mirror(app: &AppView, expected: &xai_grok_shell::session::ContextInfo) {
+    let actual = app.agents[&AgentId(0)]
+        .context_state
+        .as_ref()
+        .expect("context mirror populated");
+    assert_eq!(
+        serde_json::to_value(actual).unwrap(),
+        serde_json::to_value(expected).unwrap(),
+        "CTX-U4 mirror keeps the complete original ContextInfo"
+    );
+    assert_eq!(
+        actual.tool_definitions_count,
+        expected.tool_definitions_count
+    );
+    assert_eq!(actual.used, expected.used);
+    assert_eq!(actual.total, expected.total);
+}
+
+fn ctx_u4_modal_value(app: &AppView) -> serde_json::Value {
+    let state = usage_modal_state(app);
+    serde_json::json!({
+        "window": format!("{:?}", state.window),
+        "tab": state.active_tab.index(), "scroll": state.scroll, "nonce": state.fetch_nonce,
+        "ctx": {
+            "sessionId": state.ctx.session_id, "usageVisible": state.ctx.usage_visible,
+            "chatKind": state.ctx.chat_kind, "redirect": state.ctx.billing_redirect_url,
+            "tier": state.ctx.subscription_tier,
+        },
+        "context": state.context.as_ref().map(|block| serde_json::json!({
+            "snapshot": block.snapshot, "model": block.model, "lastBound": block.last_bound,
+        })),
+        "contextError": state.context_error,
+        "sessionFields": format!("{:?}", state.session_fields),
+        "sessionError": state.session_error, "sessionUsage": state.session_usage_text,
+        "billingLoading": state.billing_loading, "billingError": state.billing_error,
+        "copyHits": format!("{:?}", state.copy_hits), "hoveredCopy": state.hovered_copy_line,
+    })
+}
+
+fn ctx_u4_scrollback_value(app: &AppView) -> String {
+    format!(
+        "{:?}",
+        app.agents[&AgentId(0)]
+            .scrollback
+            .iter_entries()
+            .collect::<Vec<_>>()
+    )
+}
+
+#[test]
+fn ctx_u4_report_reaches_modal_and_minimal() {
+    for surface in ["modal", "minimal"] {
+        let mut app = test_app_with_agent();
+        if surface == "minimal" {
+            app.screen_mode = crate::app::ScreenMode::Minimal;
+        } else {
+            dispatch(Action::ShowContextInfo, &mut app);
+        }
+        let nonce = current_usage_nonce(&app);
+        let before = agent_scrollback_len(&app);
+        let info = ctx_u4_response(7);
+        let expected_context = info.data.context.clone();
+        let expected_report = info.data.last_bound.clone();
+        ctx_u4_complete(&mut app, info, "test-session", nonce);
+        if surface == "modal" {
+            assert_eq!(agent_scrollback_len(&app), before);
+            let block = usage_modal_state(&app)
+                .context
+                .as_ref()
+                .expect("modal context populated");
+            let lines = block.lines_for_width(&crate::theme::Theme::current(), 80);
+            let text: String = lines
+                .iter()
+                .flat_map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .chain(["\n"])
+                })
+                .collect();
+            assert!(
+                text.contains("Last bound request: 7 declarations"),
+                "CTX-U4 report reaches real modal render"
+            );
+            assert_eq!(block.last_bound, expected_report);
+        } else {
+            assert_eq!(agent_scrollback_len(&app), before + 1);
+            let (_, entry) = app.agents[&AgentId(0)]
+                .scrollback
+                .iter_entries()
+                .last()
+                .unwrap();
+            let crate::scrollback::block::RenderBlock::ContextInfo(block) = &entry.block else {
+                panic!("expected the actual produced ContextInfo block");
+            };
+            assert!(
+                ctx_u4_output(block).contains("Last bound request: 7 declarations"),
+                "CTX-U4 report reaches real minimal render"
+            );
+            assert_eq!(block.last_bound, expected_report);
+        }
+        ctx_u4_assert_mirror(&app, &expected_context);
+    }
+}
+
+#[test]
+fn ctx_u4_report_keeps_guards_and_context_mirror() {
+    let mut app = test_app_with_agent();
+    assert!(!app.screen_mode.is_minimal());
+    app.agents
+        .get_mut(&AgentId(0))
+        .unwrap()
+        .scrollback
+        .push_block(crate::scrollback::block::RenderBlock::system(
+            "CTX-U4 original scrollback",
+        ));
+    dispatch(Action::ShowContextInfo, &mut app);
+    let nonce = current_usage_nonce(&app);
+    let old = ctx_u4_response(3);
+    let old_context = old.data.context.clone();
+    let old_report = old.data.last_bound.clone();
+    ctx_u4_complete(&mut app, old, "test-session", nonce);
+    assert_eq!(
+        usage_modal_state(&app).context.as_ref().unwrap().last_bound,
+        old_report,
+        "CTX-U4 guard fixture starts with an actual populated modal report"
+    );
+    ctx_u4_assert_mirror(&app, &old_context);
+    {
+        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        let Some(crate::views::modal::ActiveModal::UsageInfo { state }) =
+            agent.active_modal.as_mut()
+        else {
+            panic!("usage modal open");
+        };
+        state.context_error = Some("preserve old context error".into());
+        state.session_usage_text = Some("preserve usage text".into());
+        state.billing_error = Some("preserve billing error".into());
+        state.scroll = 3;
+        state.window.close_hovered = true;
+    }
+    let before_modal = ctx_u4_modal_value(&app);
+    let before_scroll = ctx_u4_scrollback_value(&app);
+    let mut incoming = ctx_u4_response(11);
+    incoming.data.context.tool_definitions_count = 61;
+    incoming.data.context.used = 9_876;
+    incoming.data.context.free_tokens = 90_124;
+    incoming.data.context.usage_pct = 10;
+    incoming.data.context.message_tokens = 8_000;
+    assert_ne!(
+        incoming.data.context.tool_definitions_count,
+        u64::from(incoming.data.last_bound.as_ref().unwrap().counts.retained)
+    );
+    ctx_u4_complete(
+        &mut app,
+        incoming.clone(),
+        "test-session",
+        nonce.wrapping_add(1),
+    );
+    assert_eq!(
+        ctx_u4_modal_value(&app),
+        before_modal,
+        "CTX-U4 stale nonce keeps populated modal unchanged"
+    );
+    ctx_u4_assert_mirror(&app, &old_context);
+    assert_eq!(
+        ctx_u4_scrollback_value(&app),
+        before_scroll,
+        "CTX-U4 stale nonce preserves every scrollback entry"
+    );
+    let mut wrong_session = incoming.clone();
+    wrong_session.session_id = "previous-session".into();
+    ctx_u4_complete(&mut app, wrong_session, "previous-session", nonce);
+    assert_eq!(
+        ctx_u4_modal_value(&app),
+        before_modal,
+        "CTX-U4 wrong session keeps populated modal unchanged"
+    );
+    ctx_u4_assert_mirror(&app, &old_context);
+    assert_eq!(ctx_u4_scrollback_value(&app), before_scroll);
+
+    ctx_u4_complete(&mut app, incoming.clone(), "test-session", nonce);
+    ctx_u4_assert_mirror(&app, &incoming.data.context);
+    assert_eq!(
+        usage_modal_state(&app).context.as_ref().unwrap().last_bound,
+        incoming.data.last_bound
+    );
+    assert!(usage_modal_state(&app).context_error.is_none());
+    assert_eq!(ctx_u4_scrollback_value(&app), before_scroll);
+    app.agents.get_mut(&AgentId(0)).unwrap().active_modal = None;
+    let mut closed = ctx_u4_response(13);
+    closed.data.context.tool_definitions_count = 73;
+    let expected_closed = closed.data.context.clone();
+    ctx_u4_complete(&mut app, closed, "test-session", nonce.wrapping_add(2));
+    assert!(app.agents[&AgentId(0)].active_modal.is_none());
+    ctx_u4_assert_mirror(&app, &expected_closed);
+    assert_eq!(
+        ctx_u4_scrollback_value(&app),
+        before_scroll,
+        "CTX-U4 closed full modal drops display but preserves original mirror behavior"
+    );
 }

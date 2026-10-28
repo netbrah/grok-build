@@ -652,16 +652,18 @@ pub(super) fn handle_context_info_complete(
         }
         let model = info.data.model.as_deref().unwrap_or("unknown").to_string();
         let snapshot = info.data.context;
+        let last_bound = info.data.last_bound;
         agent.apply_full_context_info(snapshot.clone());
         if let Some(state) = usage_modal_state_mut(agent) {
-            state.context = Some(crate::scrollback::blocks::ContextInfoBlock::new(
-                snapshot, model,
-            ));
+            state.context = Some(
+                crate::scrollback::blocks::ContextInfoBlock::new(snapshot, model)
+                    .with_last_bound(last_bound),
+            );
             state.context_error = None;
         } else if minimal {
             push_and_page_flip(
                 &mut agent.scrollback,
-                crate::scrollback::block::RenderBlock::context_info(snapshot, model),
+                crate::scrollback::block::RenderBlock::context_info(snapshot, model, last_bound),
             );
         }
         // Full mode with the modal closed: the result arrived after dismissal, so drop it
