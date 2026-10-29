@@ -169,7 +169,7 @@ pub fn build_generate_content_request(req: &ConversationRequest) -> GenerateCont
                     if let ContentPart::Image { url } = img {
                         match function_response_media(url) {
                             Ok(part) => media.push(part),
-                            Err(text) => fallbacks.push(text),
+                            Err(text) => fallbacks.push(Part::text(text)),
                         }
                     }
                 }
@@ -676,22 +676,22 @@ fn image_part_or_fallback(url: &str) -> Part {
 }
 
 /// Tool-produced media for `functionResponse.parts`. `Err` carries the
-/// degraded text part to send as a sibling instead: a nested `fileData`
+/// degraded text to send as a sibling text part instead: a nested `fileData`
 /// requires a MIME type, so an `http(s)` URL with no recognisable image
 /// extension and any malformed reference fall back to text.
-fn function_response_media(url: &str) -> Result<FunctionResponsePart, Part> {
+fn function_response_media(url: &str) -> Result<FunctionResponsePart, String> {
     if let Some(rest) = url.strip_prefix("data:") {
         return split_data_url(rest)
             .map(|(mime_type, data)| FunctionResponsePart::inline_data(mime_type, data))
-            .ok_or_else(|| Part::text(format!("[invalid image: {url}]")));
+            .ok_or_else(|| format!("[invalid image: {url}]"));
     }
     if url.starts_with("http://") || url.starts_with("https://") {
         return match image_mime_from_url(url) {
             Some(mime) => Ok(FunctionResponsePart::file_data(Some(mime.to_owned()), url)),
-            None => Err(Part::text(format!("[image: {url}]"))),
+            None => Err(format!("[image: {url}]")),
         };
     }
-    Err(Part::text(format!("[invalid image: {url}]")))
+    Err(format!("[invalid image: {url}]"))
 }
 
 fn split_data_url(rest: &str) -> Option<(&str, &str)> {
