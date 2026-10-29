@@ -360,17 +360,25 @@ pub fn stream_generate_content<'a>(
             // `candidatesTokenCount` excludes thoughts; the port's
             // completion_tokens is the full generated count (Responses parity).
             let completion = u.candidates_token_count.saturating_add(u.thoughts_token_count);
+            // A proxy that drops `promptTokenCount` still reports the total:
+            // recover the prompt from it. Cached tokens are a subset of the
+            // prompt by definition; a count above it is a reporting quirk.
+            let prompt = if u.prompt_token_count > 0 {
+                u.prompt_token_count
+            } else {
+                u.total_token_count.saturating_sub(completion)
+            };
             let total = if u.total_token_count > 0 {
                 u.total_token_count
             } else {
-                u.prompt_token_count.saturating_add(completion)
+                prompt.saturating_add(completion)
             };
             TokenUsage {
-                prompt_tokens: u.prompt_token_count,
+                prompt_tokens: prompt,
                 completion_tokens: completion,
                 total_tokens: total,
                 reasoning_tokens: u.thoughts_token_count,
-                cached_prompt_tokens: u.cached_content_token_count,
+                cached_prompt_tokens: u.cached_content_token_count.min(prompt),
                 cache_creation_prompt_tokens: 0,
                 cache_creation_5m_input_tokens: 0,
                 cache_creation_1h_input_tokens: 0,

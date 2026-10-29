@@ -449,6 +449,25 @@ async fn usage_is_cumulative_last_wins_and_counts_thoughts_in_completion() {
 }
 
 #[tokio::test]
+async fn usage_recovers_prompt_from_total_and_clamps_cached_to_prompt() {
+    let mut c = chunk(vec![Part::text("x")], Some(FinishReason::Stop));
+    c.usage_metadata = Some(UsageMetadata {
+        prompt_token_count: 0,
+        candidates_token_count: 20,
+        total_token_count: 150,
+        thoughts_token_count: 30,
+        cached_content_token_count: 500,
+        tool_use_prompt_token_count: 0,
+    });
+    let events = run(vec![c]).await;
+    let u = completed(&events).usage.clone().unwrap();
+    assert_eq!(u.prompt_tokens, 100, "total − candidates − thoughts");
+    assert_eq!(u.completion_tokens, 50);
+    assert_eq!(u.total_tokens, 150);
+    assert_eq!(u.cached_prompt_tokens, 100, "cached is a subset of prompt");
+}
+
+#[tokio::test]
 async fn model_metadata_is_forwarded_after_stream_started() {
     let raw = stream::iter(vec![Ok(chunk(
         vec![Part::text("a")],

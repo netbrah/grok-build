@@ -241,7 +241,7 @@ context_window = 1048576
 supports_reasoning_effort = true
 ```
 
-Grok posts to `{base_url}/models/{model}:streamGenerateContent?alt=sse` and sends the key on Google's `x-goog-api-key` header. The model's thought summaries stream as reasoning, and the opaque `thoughtSignature` Gemini attaches to its function calls is stored with the turn and replayed on the following requests, so multi-step tool use keeps its reasoning context. Only the signature is replayed, never the thought text: the signature is the model's full reasoning state, and resending summaries would cost input tokens and change the cached prefix. A signature minted by a different model is not replayed (`gemini-3.5-flash` and the dated `gemini-3.5-flash-001` the service reports count as the same model; `-lite` or another vendor do not).
+Grok posts to `{base_url}/models/{model}:streamGenerateContent?alt=sse` and sends the key on Google's `x-goog-api-key` header. The model's thought summaries stream as reasoning, and the opaque `thoughtSignature` Gemini attaches to its function calls is stored with the turn and replayed on the following requests, so multi-step tool use keeps its reasoning context. Only the signature is replayed, never the thought text: the signature is the model's full reasoning state, and resending summaries would cost input tokens and change the cached prefix. A signature minted by a different model is not replayed (`gemini-3.5-flash` and the dated `gemini-3.5-flash-001` the service reports count as the same model; `-lite` or another vendor do not). Function-call ids are echoed back on the matching `functionResponse` on Gemini 3+ — the model issues them and pairs results by them — and a string or number `const` in a tool's parameter schema is sent as a single-value `enum`, the form Gemini's schema subset honours.
 
 #### Thinking and sampling on Gemini 3+
 
@@ -287,6 +287,8 @@ base_url = "https://us-central1-aiplatform.googleapis.com/v1"
 api_backend = "generate_content"
 env_key = "VERTEX_ACCESS_TOKEN"
 ```
+
+Keep the resource-path form of `model` on Vertex: it is how the harness tells the two wires apart. Historical function calls that carry no signature (a conversation started on another backend, for instance) are sent with Google's `skip_thought_signature_validator` placeholder on the public API, which Vertex rejects, so a Vertex resource path sends them unsigned instead.
 
 `api_backend = "generate_content"` is opt-in: Gemini models reached through an OpenAI-compatible gateway keep using `chat_completions` or `responses`.
 
