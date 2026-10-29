@@ -68,6 +68,11 @@
           "const": "messages",
           "description": "Use the Anthropic Messages API (/v1/messages)",
           "type": "string"
+        },
+        {
+          "const": "generate_content",
+          "description": "Use the Google Gemini `generateContent` API natively (`models/{model}:streamGenerateContent?alt=sse` under the configured `base_url`; the Gemini Developer API and Vertex AI share the shape). Opt-in only: no slug inference routes here, so existing Gemini rows served through OpenAI-compatible proxies keep their wire.",
+          "type": "string"
         }
       ]
     },

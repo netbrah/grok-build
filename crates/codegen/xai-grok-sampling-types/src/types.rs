@@ -1020,11 +1020,7 @@ pub enum ApiBackend {
     Responses,
     /// Use the Anthropic Messages API (/v1/messages)
     Messages,
-    /// Use the Google Gemini `generateContent` API natively
-    /// (`models/{model}:streamGenerateContent?alt=sse` under the configured
-    /// `base_url`; Gemini Developer API and Vertex AI share the shape).
-    /// Opt-in only: no slug inference routes here, so existing Gemini rows
-    /// served through OpenAI-compatible proxies keep their wire.
+    /// Use the Google Gemini `generateContent` API natively (`models/{model}:streamGenerateContent?alt=sse` under the configured `base_url`; the Gemini Developer API and Vertex AI share the shape). Opt-in only: no slug inference routes here, so existing Gemini rows served through OpenAI-compatible proxies keep their wire.
     GenerateContent,
 }
 

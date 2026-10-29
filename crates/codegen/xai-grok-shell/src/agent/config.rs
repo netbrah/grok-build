@@ -5489,7 +5489,10 @@ impl ConfigModelOverride {
         if let Some(v) = self.supports_reasoning_effort {
             entry.info.supports_reasoning_effort = v;
         } else if !entry.info.supports_reasoning_effort
-            && matches!(entry.info.api_backend, ApiBackend::Messages)
+            && matches!(
+                entry.info.api_backend,
+                ApiBackend::Messages | ApiBackend::GenerateContent
+            )
         {
             entry.info.supports_reasoning_effort = true;
         }
