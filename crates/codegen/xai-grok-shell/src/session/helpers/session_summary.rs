@@ -123,8 +123,8 @@ pub(crate) fn title_fallback_from_user_text(user_message: &str) -> String {
     }
 }
 
-/// Build the first-prompt session-title request: one forced `session_title` tool call over the
-/// stripped user query, capped at 100 output tokens.
+/// Build the first-prompt session-title request: a `session_title` tool call over the stripped
+/// user query, capped at 100 output tokens. The forced choice is per-wire, not one choice for all.
 /// Extracted from [`generate_session_summary`] (behavior-identical move, TDD-81 RED seam) so the
 /// side-call request can be asserted per backend; `backend` is the wire the request will ride.
 pub(crate) fn build_title_request(
@@ -133,10 +133,13 @@ pub(crate) fn build_title_request(
     backend: ApiBackend,
 ) -> ConversationRequest {
     let clean_message = title_source_text(user_message);
-    let tool_choice = if backend == ApiBackend::Responses {
-        ConversationToolChoice::Required
-    } else {
-        ConversationToolChoice::Function("session_title".to_owned())
+    // The deployment rejects both forced choices on the Messages wire (`type "tool" and "any" are
+    // not supported for this model`), so Messages asks with `auto` and reads the title from the
+    // answer; every other wire keeps the forced choice that its own API accepts.
+    let tool_choice = match backend {
+        ApiBackend::Messages => ConversationToolChoice::Auto,
+        ApiBackend::Responses => ConversationToolChoice::Required,
+        ApiBackend::ChatCompletions => ConversationToolChoice::Function("session_title".to_owned()),
     };
     let request = ConversationRequest::from_items(vec![
         ConversationItem::system(
@@ -187,15 +190,32 @@ pub async fn generate_session_summary(
     model: &str,
 ) -> String {
     let clean_message = title_source_text(&user_message);
+    // `ApiBackend` is not `Copy` and `build_title_request` takes it by value, so the one fact this
+    // repair needs is hoisted before the request is built.
+    let messages_wire = client.api_backend() == ApiBackend::Messages;
     let request = build_title_request(&user_message, model, client.api_backend());
 
     match client.conversation_collect(request).await {
         Ok(response) => {
+            // A Messages answer may only deliver its title through the tool the request
+            // declared, so a call named anything else takes the unknown-tool path below.
             if let Some(a) = response.assistant()
                 && let Some(tool_call) = a.tool_calls.first()
+                && (!messages_wire || tool_call.name == "session_title")
                 && let Ok(result) = serde_json::from_str::<SessionTitle>(&tool_call.arguments)
             {
                 return result.session_title;
+            }
+            // An unforced Messages request may legally be answered in plain text, and that text is
+            // the model's title, so it goes through the same cleaner as every other title. The
+            // structured result above keeps precedence, and `tool_calls.is_empty()` holds a mixed
+            // answer to that path; every other wire keeps its tool-only parsing.
+            if let Some(a) = response.assistant()
+                && messages_wire
+                && a.tool_calls.is_empty()
+                && let Some(title) = title_from_plain_text(&a.content)
+            {
+                return title;
             }
             tracing::debug!(
                 model = %model,
@@ -211,6 +231,13 @@ pub async fn generate_session_summary(
         }
     }
     title_fallback_from_user_text(&clean_message)
+}
+
+/// The model's plain-text title once [`clean_title_text`] has run, or `None` when nothing usable
+/// survives cleaning, so an empty or error-shaped answer can never become a generated title.
+fn title_from_plain_text(raw: &str) -> Option<String> {
+    let cleaned = clean_title_text(raw);
+    (!cleaned.is_empty()).then_some(cleaned)
 }
 
 /// Instruction turn appended to a conversation snapshot to refresh the auto title.
@@ -425,8 +452,8 @@ mod tests {
     #[test]
     fn title_request_responses_wire_tool_choice_is_not_chat_style_function() {
         use super::build_title_request;
-        use crate::sampling::rs;
         use crate::sampling::ApiBackend;
+        use crate::sampling::rs;
 
         let req = build_title_request("build a mario game", "test-model", ApiBackend::Responses);
         let wire = rs::CreateResponse::from(&req);
@@ -437,14 +464,15 @@ mod tests {
         );
     }
 
-    /// Positive control: the chat-completions and messages wires keep the forced-function choice.
-    /// Guards against over-suppression of `Function` when the responses arm is fixed.
+    /// Positive control: the chat-completions wire keeps the forced-function choice.
+    /// Guards against over-suppression of `Function` when the other arms change. The Messages wire
+    /// is no longer asserted here: its rejected forced `tool` choice is what I-37 removes, and its
+    /// `auto` expectation is pinned at the real send boundary by
+    /// `tests/title_side_request.rs::title_side_request_messages_auto_at_real_send`.
     #[test]
-    fn title_request_chat_and_messages_wires_keep_forced_function() {
+    fn title_request_chat_wire_keeps_forced_function() {
         use super::build_title_request;
-        use crate::sampling::build_messages_request;
         use crate::sampling::{ApiBackend, ChatCompletionRequest, ToolChoice};
-        use xai_grok_sampling_types::messages::ToolChoiceParam;
 
         let chat_wire = ChatCompletionRequest::from(build_title_request(
             "build a mario game",
@@ -458,20 +486,6 @@ mod tests {
             },
             "chat-completions wire must keep the forced-function tool_choice; got {:?}",
             chat_wire.tool_choice
-        );
-
-        let messages_wire = build_messages_request(&build_title_request(
-            "build a mario game",
-            "test-model",
-            ApiBackend::Messages,
-        ));
-        assert!(
-            match messages_wire.tool_choice() {
-                Some(ToolChoiceParam::Tool { name, .. }) => name == "session_title",
-                _ => false,
-            },
-            "messages wire must keep the forced tool tool_choice; got {:?}",
-            messages_wire.tool_choice()
         );
     }
 
