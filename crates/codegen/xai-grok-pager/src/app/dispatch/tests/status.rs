@@ -2078,3 +2078,370 @@ fn ctx_u4_report_keeps_guards_and_context_mirror() {
         "CTX-U4 closed full modal drops display but preserves original mirror behavior"
     );
 }
+
+const GOLDEN_WIDE_80: &str = r#"Context
+
+36.7k / 1.0m tokens (3.67%)
+grok-4
+
+◆ ◆ ◆ ◆ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+
+◆ System prompt        1.2k tokens   (0.1%)
+◆ Messages            29.9k tokens   (3.0%)
+◆ Reasoning/overhead   5.6k tokens   (0.6%)
+◇ Free                 963k tokens    (96%)
+
+◈ Tool definitions     5.6k tokens   (0.6%) · 12 tools
+
+Auto-compact at 85% · ~813k tokens remaining
+
+Turns: 5 · Tool calls: 12 · Compactions: 0
+"#;
+
+const GOLDEN_NARROW_40: &str = r#"Context
+
+36.7k / 1.0m tokens (3.67%)
+grok-4
+
+◆ ◆ ◆ ◆ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+
+◆ System prompt
+ 1.2k tokens   (0.1%)
+◆ Messages
+ 29.9k tokens   (3.0%)
+◆ Reasoning/overhead
+ 5.6k tokens   (0.6%)
+◇ Free
+ 963k tokens   (96%)
+
+◈ Tool definitions
+ 5.6k tokens   (0.6%) · 12 tools
+
+Auto-compact at 85% · ~813k tokens
+remaining
+
+Turns: 5 · Tool calls: 12 · Compactions:
+0
+"#;
+
+const GOLDEN_WIDE_BUDGET6: &str = r#"Context
+
+36.7k / 1.0m tokens (3.67%)
+grok-4
+ …
+"#;
+
+const GOLDEN_FALLBACK_80: &str = r#"Context
+
+0 / 0 tokens (0.00%)
+unknown
+
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+
+◆ System prompt     0 tokens   (-)
+◆ Messages          0 tokens   (-)
+◇ Free              0 tokens   (-)
+
+◈ Tool definitions  0 tokens   (-) · 0 tools
+
+Turns: 0 · Tool calls: 0 · Compactions: 0
+"#;
+
+const GOLDEN_FALLBACK_NARROW_40: &str = r#"Context
+
+0 / 0 tokens (0.00%)
+unknown
+
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇ ◇
+
+◆ System prompt
+ 0 tokens   (-)
+◆ Messages
+ 0 tokens   (-)
+◇ Free
+ 0 tokens   (-)
+
+◈ Tool definitions
+ 0 tokens   (-) · 0 tools
+
+Turns: 0 · Tool calls: 0 · Compactions:
+0
+"#;
+
+const OLD_SHAPE_BODY: &str = r#"{"result":{"sessionId":"ctx-u0-session","cwd":"/ctx-u0","model":"grok-4","resolvedModelId":null,"modelFingerprint":null,"showModelFingerprint":false,"turns":5,"turnIndex":4,"context":{"used":36700,"total":1000000,"systemPromptTokens":1200,"toolDefinitionsCount":12,"toolDefinitionsTokens":5600,"compactionCount":0,"turnCount":5,"toolCallCount":12,"messageCount":8,"messageTokens":29900,"freeTokens":963300,"usagePct":4,"autoCompactThresholdPercent":85}}}"#;
+
+const FALLBACK_BODY: &str = r#"{"result":{"sessionId":"ctx-u0-session","cwd":"/ctx-u0","model":null,"resolvedModelId":null,"modelFingerprint":null,"showModelFingerprint":false,"turns":0,"turnIndex":0,"context":{"used":0,"total":0,"systemPromptTokens":0,"toolDefinitionsCount":0,"toolDefinitionsTokens":0,"compactionCount":0,"turnCount":0,"toolCallCount":0,"messageCount":0,"messageTokens":0,"freeTokens":0,"usagePct":0,"autoCompactThresholdPercent":85}}}"#;
+
+fn ctx_u6_decode(body: &str) -> xai_grok_shell::session::SessionInfoResponse {
+    let envelope: xai_grok_shell::session::ExtMethodResult<
+        xai_grok_shell::session::SessionInfoResponse,
+    > = serde_json::from_str(body).expect("CTX-U6 typed pager DTO decode");
+    assert!(envelope.error.is_none());
+    envelope.result.expect("CTX-U6 result body")
+}
+
+fn ctx_u6_body_with_report(schema_version: u8, state: &str) -> String {
+    let mut envelope: serde_json::Value = serde_json::from_str(OLD_SHAPE_BODY).unwrap();
+    envelope["result"]["lastBound"] = serde_json::json!({
+        "schemaVersion": schema_version,
+        "state": state,
+        "origin": "main",
+        "boundModel": "capture-model",
+        "boundBackend": "Responses",
+        "admitted": true,
+        "counts": { "selected": 9, "removed": 2, "retained": 7 },
+        "view": { "names": ["keep_one", "keep_two"], "omitted": 5 },
+        "vendorEntries": 3
+    });
+    serde_json::to_string(&envelope).unwrap()
+}
+
+fn ctx_u6_block_output(
+    block: &crate::scrollback::blocks::ContextInfoBlock,
+    width: u16,
+    max_lines: Option<u16>,
+) -> String {
+    use crate::scrollback::block::BlockContent;
+    let output = block.output(&crate::scrollback::types::BlockContext {
+        mode: crate::scrollback::types::DisplayMode::Expanded,
+        is_running: false,
+        width,
+        raw: false,
+        max_lines,
+        appearance: crate::appearance::AppearanceConfig::default(),
+        is_selected: false,
+        cwd: None,
+    });
+    output
+        .lines
+        .iter()
+        .flat_map(|line| {
+            line.content
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .chain(["\n"])
+        })
+        .collect()
+}
+
+fn ctx_u6_render(body: &str, surface: &str, width: u16, max_lines: Option<u16>) -> String {
+    let mut app = test_app_with_agent();
+    if surface == "minimal" {
+        app.screen_mode = crate::app::ScreenMode::Minimal;
+    } else {
+        assert_eq!(surface, "modal");
+        assert!(max_lines.is_none());
+        dispatch(Action::ShowContextInfo, &mut app);
+    }
+    let nonce = current_usage_nonce(&app);
+    ctx_u4_complete(&mut app, ctx_u6_decode(body), "test-session", nonce);
+    if surface == "minimal" {
+        let (_, entry) = app.agents[&AgentId(0)]
+            .scrollback
+            .iter_entries()
+            .last()
+            .expect("CTX-U6 minimal block produced");
+        let crate::scrollback::block::RenderBlock::ContextInfo(block) = &entry.block else {
+            panic!("CTX-U6 expected ContextInfo block");
+        };
+        ctx_u6_block_output(block, width, max_lines)
+    } else {
+        let block = usage_modal_state(&app)
+            .context
+            .as_ref()
+            .expect("CTX-U6 modal block produced");
+        block
+            .lines_for_width(&crate::theme::Theme::current(), width)
+            .iter()
+            .flat_map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .chain(["\n"])
+            })
+            .collect()
+    }
+}
+
+fn ctx_u6_assert_cells(cells: &[(&str, String, &str)]) {
+    for (label, actual, expected) in cells {
+        eprintln!(
+            "CTX_U6_CELL {label} {}",
+            if actual == expected { "EQUAL" } else { "FAIL" }
+        );
+    }
+    let actual: Vec<_> = cells
+        .iter()
+        .map(|(label, actual, _)| (*label, actual.as_str()))
+        .collect();
+    let expected: Vec<_> = cells
+        .iter()
+        .map(|(label, _, expected)| (*label, *expected))
+        .collect();
+    assert_eq!(actual, expected, "CTX-U6 decoded whole-output goldens");
+}
+
+fn ctx_u6_section_and_legacy(text: &str) -> (Vec<String>, String) {
+    let rows: Vec<_> = text.lines().map(str::to_owned).collect();
+    let start = rows
+        .iter()
+        .position(|line| line.starts_with("Last bound request:"))
+        .expect("CTX-U6 report section");
+    let end = rows
+        .iter()
+        .position(|line| line.starts_with("Auto-compact"))
+        .expect("CTX-U6 legacy auto-compact row");
+    assert!(start < end);
+    let legacy = rows[..start]
+        .iter()
+        .chain(&rows[end..])
+        .flat_map(|line| [line.as_str(), "\n"])
+        .collect();
+    (rows[start..end].to_vec(), legacy)
+}
+
+#[test]
+fn ctx_u6_decoded_bodies_reach_both_render_paths() {
+    let populated = ctx_u6_decode(OLD_SHAPE_BODY);
+    assert_eq!(populated.data.model.as_deref(), Some("grok-4"));
+    assert!(populated.data.last_bound.is_none());
+    let fallback = ctx_u6_decode(FALLBACK_BODY);
+    assert!(fallback.data.model.is_none());
+    assert!(fallback.data.model_display_name.is_none());
+    assert!(fallback.data.last_bound.is_none());
+
+    ctx_u6_assert_cells(&[
+        (
+            "OLD_MINIMAL_80",
+            ctx_u6_render(OLD_SHAPE_BODY, "minimal", 80, None),
+            GOLDEN_WIDE_80,
+        ),
+        (
+            "OLD_MINIMAL_40",
+            ctx_u6_render(OLD_SHAPE_BODY, "minimal", 40, None),
+            GOLDEN_NARROW_40,
+        ),
+        (
+            "OLD_MODAL_80",
+            ctx_u6_render(OLD_SHAPE_BODY, "modal", 80, None),
+            GOLDEN_WIDE_80,
+        ),
+        (
+            "FALLBACK_MINIMAL_80",
+            ctx_u6_render(FALLBACK_BODY, "minimal", 80, None),
+            GOLDEN_FALLBACK_80,
+        ),
+        (
+            "FALLBACK_MINIMAL_40",
+            ctx_u6_render(FALLBACK_BODY, "minimal", 40, None),
+            GOLDEN_FALLBACK_NARROW_40,
+        ),
+        (
+            "FALLBACK_MODAL_80",
+            ctx_u6_render(FALLBACK_BODY, "modal", 80, None),
+            GOLDEN_FALLBACK_80,
+        ),
+    ]);
+    assert_eq!(
+        ctx_u6_render(OLD_SHAPE_BODY, "minimal", 80, Some(6)),
+        GOLDEN_WIDE_BUDGET6,
+        "CTX-U6 keeps the independent width-80 budget-six output control"
+    );
+
+    let new_shape_body = ctx_u6_body_with_report(1, "last-bound");
+    let new_shape = ctx_u6_decode(&new_shape_body);
+    assert_eq!(
+        new_shape.data.last_bound.as_ref().unwrap().counts.retained,
+        7
+    );
+    for surface in ["minimal", "modal"] {
+        let (section, legacy) =
+            ctx_u6_section_and_legacy(&ctx_u6_render(&new_shape_body, surface, 80, None));
+        assert_eq!(legacy, GOLDEN_WIDE_80, "CTX-U6 v1 keeps legacy lines");
+        assert_eq!(
+            section,
+            [
+                "Last bound request: 7 declarations",
+                "origin: main · native search: on · backend: Responses",
+                "selected 9 · removed 2 · retained 7",
+                "  keep_one",
+                "  keep_two",
+                "  +5 more",
+                "vendor/native entries: 3",
+            ],
+            "CTX-U6 supported v1 section through {surface}"
+        );
+    }
+
+    let version_two_body = ctx_u6_body_with_report(2, "last-bound");
+    for surface in ["minimal", "modal"] {
+        let (section, legacy) =
+            ctx_u6_section_and_legacy(&ctx_u6_render(&version_two_body, surface, 80, None));
+        assert_eq!(legacy, GOLDEN_WIDE_80, "CTX-U6 v2 keeps legacy lines");
+        assert_eq!(
+            section,
+            ["Last bound request: unsupported report version 2"],
+            "CTX-U6 v2 adds one logical width-wrapped caption under normal wrapping, never universal old_line_count+1 through {surface}"
+        );
+    }
+}
+
+#[test]
+fn ctx_u6_unknown_state_is_tolerated_from_pager() {
+    use xai_grok_shell::session::{ExtMethodResult, LastBoundState, SessionInfoResponse};
+
+    let unknown_state_body = ctx_u6_body_with_report(1, "future_state");
+    let envelope: ExtMethodResult<SessionInfoResponse> = serde_json::from_str(&unknown_state_body)
+        .unwrap_or_else(|error| {
+            panic!("CTX-U6 unknown string state must decode at the pager DTO boundary: {error}")
+        });
+    let decoded = envelope.result.expect("CTX-U6 unknown-state result body");
+    assert_eq!(
+        decoded.data.last_bound.as_ref().unwrap().state,
+        LastBoundState::Unrecognized,
+        "CTX-U6 unknown string state decodes at the pager DTO boundary"
+    );
+    for surface in ["minimal", "modal"] {
+        let (section, legacy) =
+            ctx_u6_section_and_legacy(&ctx_u6_render(&unknown_state_body, surface, 80, None));
+        assert_eq!(legacy, GOLDEN_WIDE_80);
+        assert_eq!(
+            section,
+            [
+                "Last bound request: reported by shell (unrecognized state)",
+                "selected 9 · removed 2 · retained 7",
+                "  keep_one",
+                "  keep_two",
+                "  +5 more",
+            ],
+            "CTX-U6 unknown state uses only the approved safe subset through {surface}"
+        );
+    }
+}

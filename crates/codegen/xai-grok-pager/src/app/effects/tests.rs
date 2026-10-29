@@ -2710,3 +2710,53 @@ fn upload_trace_request_without_intent_keeps_legacy_wire_shape() {
             r#"{"sessionId":"sess-1"}"#
         );
 }
+
+const FALLBACK_BODY: &str = r#"{"result":{"sessionId":"ctx-u0-session","cwd":"/ctx-u0","model":null,"resolvedModelId":null,"modelFingerprint":null,"showModelFingerprint":false,"turns":0,"turnIndex":0,"context":{"used":0,"total":0,"systemPromptTokens":0,"toolDefinitionsCount":0,"toolDefinitionsTokens":0,"compactionCount":0,"turnCount":0,"toolCallCount":0,"messageCount":0,"messageTokens":0,"freeTokens":0,"usagePct":0,"autoCompactThresholdPercent":85}}}"#;
+
+#[test]
+fn ctx_u6_fallback_body_round_trips_shell_shape() {
+    use xai_grok_shell::session::{ContextInfo, ExtMethodResult, SessionInfoData, SessionInfoResponse};
+
+    let envelope: ExtMethodResult<SessionInfoResponse> =
+        serde_json::from_str(FALLBACK_BODY).expect("CTX-U6 typed fallback decode");
+    assert!(envelope.error.is_none());
+    let actual = envelope.result.expect("CTX-U6 fallback result");
+    let expected_data = SessionInfoData {
+        agent_name: None,
+        model: None,
+        model_display_name: None,
+        resolved_model_id: None,
+        model_fingerprint: None,
+        show_model_fingerprint: false,
+        api_backend: None,
+        conversation_id: None,
+        turns: 0,
+        turn_index: 0,
+        context: ContextInfo {
+            auto_compact_threshold_percent:
+                xai_grok_shell::util::config::DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT,
+            ..ContextInfo::default()
+        },
+        last_bound: None,
+    };
+    let expected = SessionInfoResponse {
+        session_id: "ctx-u0-session".into(),
+        cwd: "/ctx-u0".into(),
+        data: expected_data,
+    };
+    assert!(actual.data.model.is_none());
+    assert!(actual.data.model_display_name.is_none());
+    assert_eq!(
+        serde_json::to_value(&actual).unwrap(),
+        serde_json::to_value(&expected).unwrap(),
+        "CTX-U6 fallback is the initializer-shaped shell response"
+    );
+    let serialized = serde_json::to_string(&ExtMethodResult::success(
+        serde_json::to_value(expected).unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(
+        serialized, FALLBACK_BODY,
+        "CTX-U6 shell serializer round-trip preserves the frozen initializer body"
+    );
+}
