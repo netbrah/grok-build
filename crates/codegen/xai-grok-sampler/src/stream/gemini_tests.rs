@@ -116,9 +116,15 @@ async fn text_stream_concatenates_deltas_and_completes_with_stop() {
     let a = resp.assistant().expect("assistant item");
     assert_eq!(&*a.content, "Hello world");
     assert_eq!(a.model_id.as_deref(), Some("gemini-2.5-pro-preview-06-05"));
-    assert!(reasoning_of(resp).is_none(), "no thoughts, no signature ⇒ no reasoning item");
+    assert!(
+        reasoning_of(resp).is_none(),
+        "no thoughts, no signature ⇒ no reasoning item"
+    );
     let u = resp.usage.as_ref().unwrap();
-    assert_eq!((u.prompt_tokens, u.completion_tokens, u.total_tokens), (10, 5, 15));
+    assert_eq!(
+        (u.prompt_tokens, u.completion_tokens, u.total_tokens),
+        (10, 5, 15)
+    );
 }
 
 #[tokio::test]
@@ -162,7 +168,10 @@ async fn thoughts_stream_on_reasoning_channel_and_signature_lands_on_reasoning_i
     assert_eq!(r.encrypted_content.as_deref(), Some("SIG_TEXT"));
     let rs::SummaryPart::SummaryText(t) = &r.summary[0];
     assert_eq!(t.text, "Let me think harder.");
-    assert_eq!(resp.message_chunks_emitted, 1, "thoughts are not message chunks");
+    assert_eq!(
+        resp.message_chunks_emitted, 1,
+        "thoughts are not message chunks"
+    );
 }
 
 #[tokio::test]
@@ -414,7 +423,11 @@ async fn idle_timeout_fails_the_stream() {
     .await;
     match events.last() {
         Some(SamplingEvent::Failed { error, .. }) => {
-            assert!(error.message.to_lowercase().contains("idle"), "{}", error.message);
+            assert!(
+                error.message.to_lowercase().contains("idle"),
+                "{}",
+                error.message
+            );
         }
         other => panic!("expected Failed, got {other:?}"),
     }
@@ -437,7 +450,11 @@ async fn usage_is_cumulative_last_wins_and_counts_thoughts_in_completion() {
 
 #[tokio::test]
 async fn model_metadata_is_forwarded_after_stream_started() {
-    let raw = stream::iter(vec![Ok(chunk(vec![Part::text("a")], Some(FinishReason::Stop)))]).boxed();
+    let raw = stream::iter(vec![Ok(chunk(
+        vec![Part::text("a")],
+        Some(FinishReason::Stop),
+    ))])
+    .boxed();
     let md = ResponseModelMetadata {
         context_window: Some(1_000_000),
         ..Default::default()
@@ -482,5 +499,8 @@ fn heartbeat_classification() {
         }),
         ..Default::default()
     };
-    assert!(matches!(generate_content_chunk_class(&blocked), ItemClass::End));
+    assert!(matches!(
+        generate_content_chunk_class(&blocked),
+        ItemClass::End
+    ));
 }

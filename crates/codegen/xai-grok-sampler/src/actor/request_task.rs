@@ -1040,10 +1040,7 @@ async fn run_one_attempt(
             AttemptReport { outcome, evidence }
         }
         ApiBackend::GenerateContent => {
-            let (raw, metadata) = match client
-                .conversation_stream_generate_content(request)
-                .await
-            {
+            let (raw, metadata) = match client.conversation_stream_generate_content(request).await {
                 Ok(pair) => pair,
                 Err(e) => return AttemptOutcome::InitFailed { error: e }.into(),
             };

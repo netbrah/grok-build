@@ -31,10 +31,9 @@ use xai_grok_sampling_types::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ConversationRequest,
     ConversationResponse, CreateResponseWrapper, DEFAULT_EXACT_REPETITION_MIN_TOKENS,
     DOOM_LOOP_CHECK_HEADER, EXACT_REPETITION_CHECK_HEADER, GenerateContentRequestWrapper,
-    MessagesRequestWrapper, ReasoningEffort,
-    ResponseModelMetadata, Result, SamplingError, SentCredential,
-    build_generate_content_request, build_messages_request,
-    is_check_event, messages, rs,
+    MessagesRequestWrapper, ReasoningEffort, ResponseModelMetadata, Result, SamplingError,
+    SentCredential, build_generate_content_request, build_messages_request, is_check_event,
+    messages, rs,
 };
 use xai_grok_sampling_types::gemini::GenerateContentResponse;
 use xai_grok_sampling_types::request_validation::{
@@ -4401,7 +4400,8 @@ impl SamplingClient {
         // Gemini is exempt: an omitted `maxOutputTokens` means the model's
         // own ceiling, and the service rejects a value above it, so the
         // Responses-shaped floor would turn into a 400 on smaller models.
-        if request.max_output_tokens.is_none() && self.api_backend() != ApiBackend::GenerateContent {
+        if request.max_output_tokens.is_none() && self.api_backend() != ApiBackend::GenerateContent
+        {
             let model = request.model.as_deref().unwrap_or_default();
             request.max_output_tokens =
                 Some(xai_grok_sampling_types::responses_budget_fallback(model));
@@ -4786,7 +4786,8 @@ impl SamplingClient {
         self.apply_conversation_defaults(&mut request)?;
 
         let trace = request.trace.take();
-        let mut wrapper = GenerateContentRequestWrapper::new(build_generate_content_request(&request));
+        let mut wrapper =
+            GenerateContentRequestWrapper::new(build_generate_content_request(&request));
         wrapper.x_grok_conv_id = request.x_grok_conv_id.clone();
         wrapper.x_grok_req_id = request.x_grok_req_id.clone();
         wrapper.x_grok_session_id = request.x_grok_session_id.clone();
