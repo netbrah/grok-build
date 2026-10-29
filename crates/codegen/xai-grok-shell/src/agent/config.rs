@@ -5076,7 +5076,7 @@ pub struct ModelEntryConfig {
     /// If not set, falls back to XAI_API_KEY.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env_key: Option<EnvKeys>,
-    /// Values: "chat_completions" (default), "responses"
+    /// Values: "chat_completions" (default), "responses", "messages", "generate_content"
     #[serde(default)]
     pub api_backend: ApiBackend,
     #[serde(default, skip_serializing_if = "Option::is_none")]

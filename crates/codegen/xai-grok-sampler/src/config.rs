@@ -18,12 +18,12 @@ use crate::retry::{DEFAULT_MAX_RETRIES, RATE_LIMIT_RETRY_THRESHOLD};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthScheme {
+    /// `Authorization: Bearer <token>` (default; also Vertex AI with an OAuth access token).
     #[default]
     Bearer,
     /// `x-api-key: <key>` (Anthropic Messages API).
     XApiKey,
-    /// `x-goog-api-key: <key>` (Google Gemini API). Vertex AI deployments keep
-    /// [`AuthScheme::Bearer`] with an OAuth access token.
+    /// `x-goog-api-key: <key>` (Google Gemini Developer API).
     XGoogApiKey,
 }
 

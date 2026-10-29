@@ -67,17 +67,18 @@ default = "grok-4.5"
 
 ## Supported API Backends
 
-Grok supports three API backends. Set `api_backend` in your `[model.*]` config to choose which protocol the model uses:
+Grok supports four API backends. Set `api_backend` in your `[model.*]` config to choose which protocol the model uses:
 
 | Value | API | Default |
 |-------|-----|---------|
 | `"chat_completions"` | OpenAI Chat Completions (`/v1/chat/completions`) | Yes |
 | `"responses"` | OpenAI Responses (`/v1/responses`) | |
 | `"messages"` | Anthropic Messages (`/v1/messages`) | |
+| `"generate_content"` | Google Gemini `generateContent` (`/models/{model}:streamGenerateContent`) | |
 
 When you omit `api_backend`, Grok uses `chat_completions`.
 
-To send provider-specific authentication or version headers -- for example, Anthropic's `x-api-key` -- use the `extra_headers` field described below. Grok sends those headers verbatim with every request to the endpoint.
+To send provider-specific authentication or version headers -- for example, Anthropic's `x-api-key` -- use the `extra_headers` field described below. Grok sends those headers verbatim with every request to the endpoint. Alternatively, set `auth_scheme` (`"bearer"`, `"x_api_key"`, or `"x_goog_api_key"`) to have Grok send the model's `api_key`/`env_key` on the provider's native header.
 
 ---
 

@@ -6367,6 +6367,11 @@ mod tests {
         include!("client_raw_input_replay_tests.rs");
     }
 
+    #[cfg(test)]
+    mod generate_content_tests {
+        include!("client_generate_content_tests.rs");
+    }
+
     use serial_test::serial;
 
     use super::*;
