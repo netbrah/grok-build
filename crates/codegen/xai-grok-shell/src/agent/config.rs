@@ -250,7 +250,7 @@ pub struct EndpointsConfig {
     /// `[model.<id>]` config > donor (baked keys) > these defaults > built-in defaults.
     /// TOML-only (no env-var overrides): these bind to the ACTIVE endpoint's provider,
     /// unlike the infrastructure URLs above.
-    /// Backend wire for hydrated models: "chat_completions" | "responses" | "messages" | "generate_content".
+    /// Backend wire for hydrated models: "chat_completions" | "responses" | "messages".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_api_backend: Option<ApiBackend>,
     /// Env var name(s) for the provider key: string or array in config.toml.
@@ -5079,8 +5079,6 @@ pub struct ModelEntryConfig {
     /// Values: "chat_completions" (default), "responses", "messages", "generate_content"
     #[serde(default)]
     pub api_backend: ApiBackend,
-    /// How the resolved key is sent: "bearer" (default), "x_api_key" (Anthropic),
-    /// "x_goog_api_key" (Gemini API; Vertex AI keeps "bearer" with an OAuth token).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_scheme: Option<AuthScheme>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
