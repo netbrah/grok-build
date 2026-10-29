@@ -866,8 +866,10 @@ pub(super) fn discovery_tier(
     {
         return DiscoveryTier::Refuse;
     }
-    if target.backend == ApiBackend::ChatCompletions
-        || !target.admission.admitted()
+    if matches!(
+        target.backend,
+        ApiBackend::ChatCompletions | ApiBackend::GenerateContent
+    ) || !target.admission.admitted()
         || (target.backend == ApiBackend::Responses && target.boundary == Boundary::Vertex)
         || (target.backend == ApiBackend::Messages && target.boundary != Boundary::Vertex)
     {

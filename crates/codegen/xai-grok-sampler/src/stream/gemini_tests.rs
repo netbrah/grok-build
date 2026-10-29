@@ -407,8 +407,32 @@ async fn model_metadata_is_forwarded_after_stream_started() {
 
 #[test]
 fn heartbeat_classification() {
-    assert!(!chunk_has_meaningful_content(&GenerateContentResponse::default()));
-    assert!(!chunk_has_meaningful_content(&chunk(vec![], None)));
-    assert!(chunk_has_meaningful_content(&chunk(vec![Part::text("a")], None)));
-    assert!(chunk_has_meaningful_content(&chunk(vec![], Some(FinishReason::Stop))));
+    use crate::span_timing::ItemClass;
+    use crate::stream_classify::generate_content_chunk_class;
+
+    // Liveness-only frames must not release the first-content hold.
+    assert!(matches!(
+        generate_content_chunk_class(&GenerateContentResponse::default()),
+        ItemClass::Other
+    ));
+    assert!(matches!(
+        generate_content_chunk_class(&chunk(vec![], None)),
+        ItemClass::Other
+    ));
+    assert!(matches!(
+        generate_content_chunk_class(&chunk(vec![Part::text("a")], None)),
+        ItemClass::Content
+    ));
+    assert!(matches!(
+        generate_content_chunk_class(&chunk(vec![], Some(FinishReason::Stop))),
+        ItemClass::End
+    ));
+    let blocked = GenerateContentResponse {
+        prompt_feedback: Some(PromptFeedback {
+            block_reason: Some("SAFETY".into()),
+            block_reason_message: None,
+        }),
+        ..Default::default()
+    };
+    assert!(matches!(generate_content_chunk_class(&blocked), ItemClass::End));
 }

@@ -4324,7 +4324,11 @@ impl SamplingClient {
         // for claude-opus-5 is exactly 4,096 and is consumed 100% by
         // default-on reasoning (text_tokens 0). No budget after the model
         // default: the alias-aware R5 table row, else the 64K floor.
-        if request.max_output_tokens.is_none() {
+        //
+        // Gemini is exempt: an omitted `maxOutputTokens` means the model's
+        // own ceiling, and the service rejects a value above it, so the
+        // Responses-shaped floor would turn into a 400 on smaller models.
+        if request.max_output_tokens.is_none() && self.api_backend() != ApiBackend::GenerateContent {
             let model = request.model.as_deref().unwrap_or_default();
             request.max_output_tokens =
                 Some(xai_grok_sampling_types::responses_budget_fallback(model));
@@ -4683,10 +4687,19 @@ impl SamplingClient {
     /// `{base}/models/{model}:streamGenerateContent?alt=sse` — the Gemini API
     /// shape when `base_url` ends at the API version (e.g.
     /// `https://generativelanguage.googleapis.com/v1beta`), and the Vertex AI
-    /// shape when it ends at `.../publishers/google`. `alt=sse` selects the
-    /// SSE framing; without it the service streams a JSON array.
+    /// shape when it ends at `.../publishers/google`. A model containing `/`
+    /// is already a resource path (`projects/P/locations/L/publishers/google/
+    /// models/M`, `publishers/google/models/M`, `endpoints/E`, …) and is
+    /// appended verbatim. `alt=sse` selects the SSE framing; without it the
+    /// service streams a JSON array.
     fn generate_content_stream_url(&self, model: &str) -> String {
-        with_alt_sse(self.endpoint(&format!("models/{model}:streamGenerateContent")))
+        let model = model.trim_matches('/');
+        let resource = if model.contains('/') {
+            model.to_owned()
+        } else {
+            format!("models/{model}")
+        };
+        with_alt_sse(self.endpoint(&format!("{resource}:streamGenerateContent")))
     }
 
     /// Send a conversation request using the Google Gemini `streamGenerateContent` API.
@@ -6930,6 +6943,7 @@ mod tests {
                 ApiBackend::ChatCompletions => "/v1/chat/completions",
                 ApiBackend::Responses => "/v1/responses",
                 ApiBackend::Messages => "/v1/messages",
+                ApiBackend::GenerateContent => unreachable!("no V3n5Path maps to GenerateContent"),
             }
         }
 
@@ -7238,6 +7252,7 @@ mod tests {
                 }),
                 ApiBackend::Responses => response,
                 ApiBackend::Messages => message,
+                ApiBackend::GenerateContent => unreachable!("no V3n5Path maps to GenerateContent"),
             };
             return ("application/json", body.to_string());
         }
@@ -7285,6 +7300,7 @@ mod tests {
                         serde_json::json!({"type":"message_stop"}),
                     ]
                 }
+                ApiBackend::GenerateContent => unreachable!("no V3n5Path maps to GenerateContent"),
             }
         };
         let mut body = String::new();

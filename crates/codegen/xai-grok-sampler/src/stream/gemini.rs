@@ -44,18 +44,6 @@ use crate::events::{SamplingChannel, SamplingErrorInfo, SamplingEvent};
 use crate::metrics::InferenceLatencyStats;
 use crate::types::RequestId;
 
-/// Whether a chunk reflects model progress (any candidate part, a terminal
-/// `finishReason`, or a prompt block) rather than a liveness-only frame.
-pub(crate) fn chunk_has_meaningful_content(chunk: &GenerateContentResponse) -> bool {
-    chunk.prompt_feedback.as_ref().is_some_and(|pf| pf.block_reason.is_some())
-        || chunk.candidates.iter().any(|c| {
-            c.finish_reason.is_some()
-                || c.content
-                    .as_ref()
-                    .is_some_and(|content| !content.parts.is_empty())
-        })
-}
-
 /// Locally minted tool-call id for a wire `functionCall` (the wire has none).
 fn mint_call_id() -> String {
     format!("call_{}", uuid::Uuid::new_v4().simple())
