@@ -241,7 +241,42 @@ context_window = 1048576
 supports_reasoning_effort = true
 ```
 
-Grok posts to `{base_url}/models/{model}:streamGenerateContent?alt=sse` and sends the key on Google's `x-goog-api-key` header. The model's thought summaries stream as reasoning, and the opaque `thoughtSignature` Gemini attaches to its function calls is stored with the turn and replayed on the following requests, so multi-step tool use keeps its reasoning context. Reasoning effort maps to `thinkingConfig` (`thinkingLevel` on Gemini 3, a `thinkingBudget` on earlier models).
+Grok posts to `{base_url}/models/{model}:streamGenerateContent?alt=sse` and sends the key on Google's `x-goog-api-key` header. The model's thought summaries stream as reasoning, and the opaque `thoughtSignature` Gemini attaches to its function calls is stored with the turn and replayed on the following requests, so multi-step tool use keeps its reasoning context. Only the signature is replayed, never the thought text: the signature is the model's full reasoning state, and resending summaries would cost input tokens and change the cached prefix. A signature minted by a different model is not replayed (`gemini-3.5-flash` and the dated `gemini-3.5-flash-001` the service reports count as the same model; `-lite` or another vendor do not).
+
+#### Thinking and sampling on Gemini 3+
+
+`reasoning_effort` maps to `thinkingConfig.thinkingLevel`. Thinking cannot be switched off on these models, and `minimal` exists only on the Gemini 3 Flash family:
+
+| `reasoning_effort` | Gemini 3 Flash family | Gemini 3 Pro / 3.1 Pro / Gemini 4 |
+|---|---|---|
+| unset | model default (`high` on Gemini 3, `medium` on Gemini 4) | model default |
+| `none`, `minimal` | `MINIMAL` | `LOW` (clamped) |
+| `low` | `LOW` | `LOW` |
+| `medium` | `MEDIUM` | `MEDIUM` |
+| `high` and above | `HIGH` | `HIGH` |
+
+Models that take a `thinkingBudget` instead (Gemini 2.5 and earlier) are not a target of this backend; a slug the harness cannot place (a gateway alias such as `prod-coder`) is treated as Gemini 3+.
+
+`temperature`, `top_p` and `top_k` are **ignored** on Gemini 3+: Google deprecates the sampling parameters there in favour of model-tuned defaults, and sending them degrades reasoning. `max_completion_tokens` is passed through as `maxOutputTokens` and caps thinking and output *combined*; leave it unset (the model ceiling) or keep it at 32768 or more.
+
+#### Caching
+
+Gemini caches repeated request prefixes automatically (`systemInstruction`, the tool declarations and the unchanged head of the conversation); nothing needs to be configured. Cached tokens are counted inside the prompt tokens and reported separately, so the session's cache-read figure reflects the hit rate.
+
+#### Through a LiteLLM proxy
+
+LiteLLM's Gemini pass-through keeps the native wire and accepts its virtual key on the Google header:
+
+```toml
+[model.gemini-litellm]
+model = "gemini-3.5-flash"
+base_url = "https://litellm.example.com/gemini/v1beta"
+api_backend = "generate_content"
+auth_scheme = "x_goog_api_key"
+env_key = "LITELLM_API_KEY"
+```
+
+Upstream Google errors are relayed unchanged (including the `RESOURCE_EXHAUSTED` 429 and its advised retry delay). A guardrail block, which LiteLLM returns as HTTP 200 with a JSON error body, is surfaced as a stream error rather than an empty response.
 
 For Vertex AI, point `base_url` at the publisher root and give the fully qualified model resource; the default `bearer` scheme carries your OAuth access token:
 
