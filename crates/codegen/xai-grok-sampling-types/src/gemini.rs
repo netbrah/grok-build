@@ -231,7 +231,9 @@ pub struct FunctionCall {
 
 /// The client's answer to a [`FunctionCall`]. `response` MUST be a JSON
 /// object; the documented convention is an `output` key for the result and
-/// an `error` key for failure details.
+/// an `error` key for failure details. `parts` carries media produced by the
+/// tool (multimodal function responses, Gemini 3+): nesting keeps the media
+/// attached to its own response instead of floating as sibling parts.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FunctionResponse {
@@ -239,6 +241,42 @@ pub struct FunctionResponse {
     pub id: Option<String>,
     pub name: String,
     pub response: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<FunctionResponsePart>,
+}
+
+/// Media nested under a [`FunctionResponse`] (`FunctionResponsePart`): the
+/// same `inlineData` / `fileData` payloads as a top-level [`Part`], without
+/// text (a tool's textual output belongs in `response`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FunctionResponsePart {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline_data: Option<Blob>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_data: Option<FileData>,
+}
+
+impl FunctionResponsePart {
+    pub fn inline_data(mime_type: impl Into<String>, data: impl Into<String>) -> Self {
+        Self {
+            inline_data: Some(Blob {
+                mime_type: mime_type.into(),
+                data: data.into(),
+            }),
+            file_data: None,
+        }
+    }
+
+    pub fn file_data(mime_type: Option<String>, file_uri: impl Into<String>) -> Self {
+        Self {
+            inline_data: None,
+            file_data: Some(FileData {
+                mime_type,
+                file_uri: file_uri.into(),
+            }),
+        }
+    }
 }
 
 /// Tool declaration envelope. Only client function declarations are emitted
@@ -473,24 +511,6 @@ pub struct UsageMetadata {
     pub tool_use_prompt_token_count: u32,
 }
 
-/// Error envelope (`{"error": {"code", "message", "status"}}`) returned on
-/// non-2xx responses and, on a streaming route, as the single chunk of an
-/// error stream.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ErrorEnvelope {
-    pub error: ErrorBody,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ErrorBody {
-    #[serde(default)]
-    pub code: Option<i64>,
-    #[serde(default)]
-    pub message: String,
-    #[serde(default)]
-    pub status: Option<String>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,7 +531,8 @@ mod tests {
 
     #[test]
     fn thought_part_and_bare_signature_carrier() {
-        let thought: Part = serde_json::from_value(json!({"text": "plan", "thought": true})).unwrap();
+        let thought: Part =
+            serde_json::from_value(json!({"text": "plan", "thought": true})).unwrap();
         assert!(thought.is_thought());
         assert!(!thought.is_payload_empty());
         let carrier: Part = serde_json::from_value(json!({"thoughtSignature": "sig"})).unwrap();
@@ -567,11 +588,20 @@ mod tests {
         let v = serde_json::to_value(&req).unwrap();
         assert!(v.get("model").is_none());
         assert_eq!(v["systemInstruction"]["parts"][0]["text"], "be brief");
-        assert_eq!(v["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"]["type"], "object");
+        assert_eq!(
+            v["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"]["type"],
+            "object"
+        );
         assert_eq!(v["toolConfig"]["functionCallingConfig"]["mode"], "ANY");
         assert_eq!(v["generationConfig"]["maxOutputTokens"], 10);
-        assert_eq!(v["generationConfig"]["thinkingConfig"]["thinkingLevel"], "HIGH");
-        assert_eq!(v["generationConfig"]["thinkingConfig"]["includeThoughts"], true);
+        assert_eq!(
+            v["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "HIGH"
+        );
+        assert_eq!(
+            v["generationConfig"]["thinkingConfig"]["includeThoughts"],
+            true
+        );
     }
 
     #[test]

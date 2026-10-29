@@ -182,11 +182,14 @@ async fn generate_content_stream_routes_authenticates_projects_and_parses() {
     );
     assert_eq!(contents[1]["role"], "model");
     let model_parts = contents[1]["parts"].as_array().unwrap();
-    assert_eq!(model_parts[0]["thought"], true);
-    assert_eq!(model_parts[0]["text"], "earlier thought");
-    assert_eq!(model_parts[1]["functionCall"]["name"], "lookup");
     assert_eq!(
-        model_parts[1]["thoughtSignature"], "SIG_OLD",
+        model_parts.len(),
+        1,
+        "signature-only replay: the thought summary is not sent back"
+    );
+    assert_eq!(model_parts[0]["functionCall"]["name"], "lookup");
+    assert_eq!(
+        model_parts[0]["thoughtSignature"], "SIG_OLD",
         "the stored thoughtSignature rides the functionCall it was issued on"
     );
     assert_eq!(contents[2]["role"], "user");

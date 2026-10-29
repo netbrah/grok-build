@@ -14,10 +14,7 @@ fn body(req: &ConversationRequest) -> serde_json::Value {
     serde_json::to_value(build_generate_content_request(req)).unwrap()
 }
 
-fn assistant_calls_with_model(
-    calls: &[(&str, &str)],
-    model_id: Option<&str>,
-) -> ConversationItem {
+fn assistant_calls_with_model(calls: &[(&str, &str)], model_id: Option<&str>) -> ConversationItem {
     let ConversationItem::Assistant(mut a) = assistant_with_calls(calls) else {
         unreachable!()
     };
@@ -62,7 +59,10 @@ fn system_items_become_system_instruction_not_contents() {
     assert_eq!(b["contents"].as_array().unwrap().len(), 1);
     assert_eq!(role(&b, 0), "user");
     assert_eq!(parts(&b, 0)[0]["text"], "Hi");
-    assert!(b.get("model").is_none(), "model rides the URL, never the body");
+    assert!(
+        b.get("model").is_none(),
+        "model rides the URL, never the body"
+    );
 }
 
 #[test]
@@ -101,7 +101,10 @@ fn tool_round_trip_has_function_call_then_function_response_in_user_content() {
     assert_eq!(role(&b, 2), "user");
     let resp = &parts(&b, 2)[0]["functionResponse"];
     assert_eq!(resp["name"], "read_file");
-    assert_eq!(resp["response"], serde_json::json!({ "output": "fn main() {}" }));
+    assert_eq!(
+        resp["response"],
+        serde_json::json!({ "output": "fn main() {}" })
+    );
     assert!(resp.get("id").is_none());
 
     assert_eq!(role(&b, 3), "model");
@@ -140,14 +143,11 @@ fn signature_rides_first_function_call_and_others_get_bypass() {
     ]);
     let b = body(&req);
     let p = parts(&b, 1);
-    assert_eq!(p.len(), 3);
-    assert_eq!(p[0]["thought"], true);
-    assert_eq!(p[0]["text"], "thinking about it");
-    assert!(p[0].get("thoughtSignature").is_none());
-    assert_eq!(p[1]["functionCall"]["name"], "a");
-    assert_eq!(p[1]["thoughtSignature"], "SIG_A");
-    assert_eq!(p[2]["functionCall"]["name"], "b");
-    assert_eq!(p[2]["thoughtSignature"], SKIP_THOUGHT_SIGNATURE_VALIDATOR);
+    assert_eq!(p.len(), 2, "thought summary is not replayed: {p:#?}");
+    assert_eq!(p[0]["functionCall"]["name"], "a");
+    assert_eq!(p[0]["thoughtSignature"], "SIG_A");
+    assert_eq!(p[1]["functionCall"]["name"], "b");
+    assert_eq!(p[1]["thoughtSignature"], SKIP_THOUGHT_SIGNATURE_VALIDATOR);
 }
 
 #[test]
@@ -160,10 +160,35 @@ fn signature_rides_last_text_part_when_no_function_calls() {
     ]);
     let b = body(&req);
     let p = parts(&b, 1);
-    assert_eq!(p.len(), 2);
-    assert_eq!(p[0]["thought"], true);
-    assert_eq!(p[1]["text"], "Answer.");
-    assert_eq!(p[1]["thoughtSignature"], "SIG_T");
+    assert_eq!(p.len(), 1);
+    assert_eq!(p[0]["text"], "Answer.");
+    assert_eq!(p[0]["thoughtSignature"], "SIG_T");
+}
+
+#[test]
+fn thought_summaries_are_never_replayed_regardless_of_thinking_replay() {
+    for replay in [None, Some("off")] {
+        let mut req = gemini_request(vec![
+            ConversationItem::user("go"),
+            reasoning_sibling("", "secret", Some("SIG")),
+            ConversationItem::assistant_with_model("Answer.", MODEL),
+            ConversationItem::user("ok"),
+        ]);
+        req.thinking_replay = replay.map(str::to_owned);
+        let b = body(&req);
+        assert!(
+            b["contents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|c| c["parts"].as_array().unwrap())
+                .all(|p| p.get("thought").is_none()),
+            "no thought part may be sent ({replay:?}): {b:#}"
+        );
+        let p = parts(&b, 1);
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0]["thoughtSignature"], "SIG");
+    }
 }
 
 #[test]
@@ -201,8 +226,7 @@ fn r8_suppresses_thoughts_and_signature_from_another_model() {
     assert_eq!(p.len(), 1, "foreign thought dropped: {p:#?}");
     assert_eq!(p[0]["functionCall"]["name"], "a");
     assert_eq!(
-        p[0]["thoughtSignature"],
-        SKIP_THOUGHT_SIGNATURE_VALIDATOR,
+        p[0]["thoughtSignature"], SKIP_THOUGHT_SIGNATURE_VALIDATOR,
         "a foreign signature is replaced by the bypass value"
     );
 }
@@ -217,25 +241,71 @@ fn r8_does_not_suppress_when_owner_has_no_model_id() {
     ]);
     let b = body(&req);
     let p = parts(&b, 1);
-    assert_eq!(p.len(), 2);
-    assert_eq!(p[0]["thought"], true);
-    assert_eq!(p[1]["thoughtSignature"], "SIG");
+    assert_eq!(p.len(), 1);
+    assert_eq!(p[0]["thoughtSignature"], "SIG");
 }
 
 #[test]
-fn thinking_replay_off_drops_thought_text_but_keeps_signature() {
+fn r8_tolerates_canonical_model_version_and_vertex_resource_paths() {
+    // Google reports the dated/versioned `modelVersion`; the row configures
+    // the alias. The signature must survive the round trip.
+    for owner in [
+        "gemini-3-pro-preview",
+        "gemini-3-pro-preview-05-20",
+        "gemini-3-pro",
+        "gemini-3-pro-preview-001",
+        "models/gemini-3-pro-preview",
+        "GEMINI-3-PRO-PREVIEW",
+    ] {
+        let req = gemini_request(vec![
+            ConversationItem::user("go"),
+            reasoning_sibling("", "kept", Some("SIG")),
+            assistant_calls_with_model(&[("call_1", "a")], Some(owner)),
+            ConversationItem::tool_result("call_1", "1"),
+        ]);
+        let b = body(&req);
+        assert_eq!(parts(&b, 1)[0]["thoughtSignature"], "SIG", "owner={owner}");
+    }
+    // Vertex: the configured slug is a resource path, the stream reports
+    // the bare canonical name.
     let mut req = gemini_request(vec![
         ConversationItem::user("go"),
-        reasoning_sibling("", "secret", Some("SIG")),
-        ConversationItem::assistant_with_model("Answer.", MODEL),
-        ConversationItem::user("ok"),
+        reasoning_sibling("", "kept", Some("SIG")),
+        assistant_calls_with_model(&[("call_1", "a")], Some("gemini-3.5-flash-001")),
+        ConversationItem::tool_result("call_1", "1"),
     ]);
-    req.thinking_replay = Some("off".into());
-    let b = body(&req);
-    let p = parts(&b, 1);
-    assert_eq!(p.len(), 1);
-    assert_eq!(p[0]["text"], "Answer.");
-    assert_eq!(p[0]["thoughtSignature"], "SIG");
+    req.model =
+        Some("projects/p/locations/us-central1/publishers/google/models/gemini-3.5-flash".into());
+    assert_eq!(
+        body(&req)["contents"][1]["parts"][0]["thoughtSignature"],
+        "SIG"
+    );
+}
+
+#[test]
+fn same_gemini_model_rejects_variants_and_other_vendors() {
+    assert!(same_gemini_model("gemini-3.5-flash", "gemini-3.5-flash"));
+    assert!(same_gemini_model(
+        "gemini-3.5-flash-preview-09-2025",
+        "gemini-3.5-flash"
+    ));
+    assert!(same_gemini_model(
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-latest"
+    ));
+    assert!(same_gemini_model("gemini-4-argon@001", "gemini-4-argon"));
+    assert!(same_gemini_model("gemini-3-pro-exp", "models/gemini-3-pro"));
+    assert!(!same_gemini_model(
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash"
+    ));
+    assert!(!same_gemini_model(
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-8b"
+    ));
+    assert!(!same_gemini_model("gemini-3-flash", "gemini-3-pro"));
+    assert!(!same_gemini_model("claude-opus-4", "gemini-3-pro"));
+    assert!(!same_gemini_model("", "gemini-3-pro"));
 }
 
 #[test]
@@ -301,7 +371,9 @@ fn orphaned_tool_results_are_cleaned_before_projection() {
 #[test]
 fn images_project_to_inline_data_file_data_or_text_fallback() {
     let req = gemini_request(vec![ConversationItem::user_with_parts(vec![
-        ContentPart::Text { text: "look".into() },
+        ContentPart::Text {
+            text: "look".into(),
+        },
         ContentPart::Image {
             url: "data:image/png;base64,AAAA".into(),
         },
@@ -323,23 +395,101 @@ fn images_project_to_inline_data_file_data_or_text_fallback() {
 }
 
 #[test]
-fn tool_result_images_ride_as_separate_parts_in_the_same_user_content() {
+fn tool_result_images_nest_under_function_response_parts() {
     let req = gemini_request(vec![
         ConversationItem::user("go"),
         assistant_with_calls(&[("call_1", "screenshot")]),
         ConversationItem::tool_result_with_images(
             "call_1",
             "captured",
-            vec![ContentPart::Image {
-                url: "data:image/jpeg;base64,BBBB".into(),
-            }],
+            vec![
+                ContentPart::Image {
+                    url: "data:image/jpeg;base64,BBBB".into(),
+                },
+                ContentPart::Image {
+                    url: "https://example.com/shot.png?v=2".into(),
+                },
+                ContentPart::Image {
+                    url: "https://example.com/opaque".into(),
+                },
+                ContentPart::Image {
+                    url: "file:///tmp/x.png".into(),
+                },
+            ],
         ),
     ]);
     let b = body(&req);
     let p = parts(&b, 2);
-    assert_eq!(p.len(), 2);
-    assert_eq!(p[0]["functionResponse"]["name"], "screenshot");
-    assert_eq!(p[1]["inlineData"]["mimeType"], "image/jpeg");
+    assert_eq!(p.len(), 3, "response + two text fallbacks: {p:#?}");
+    let fr = &p[0]["functionResponse"];
+    assert_eq!(fr["name"], "screenshot");
+    assert_eq!(fr["response"], serde_json::json!({ "output": "captured" }));
+    let nested = fr["parts"].as_array().unwrap();
+    assert_eq!(nested.len(), 2);
+    assert_eq!(nested[0]["inlineData"]["mimeType"], "image/jpeg");
+    assert_eq!(nested[0]["inlineData"]["data"], "BBBB");
+    assert_eq!(
+        nested[1]["fileData"]["fileUri"],
+        "https://example.com/shot.png?v=2"
+    );
+    assert_eq!(nested[1]["fileData"]["mimeType"], "image/png");
+    assert!(p[0].get("inlineData").is_none(), "no sibling media parts");
+    assert_eq!(p[1]["text"], "[image: https://example.com/opaque]");
+    assert_eq!(p[2]["text"], "[invalid image: file:///tmp/x.png]");
+
+    // No media ⇒ `parts` is omitted entirely.
+    let req = gemini_request(vec![
+        ConversationItem::user("go"),
+        assistant_with_calls(&[("call_1", "screenshot")]),
+        ConversationItem::tool_result("call_1", "plain"),
+    ]);
+    let b = body(&req);
+    assert!(parts(&b, 2)[0]["functionResponse"].get("parts").is_none());
+}
+
+#[test]
+fn function_responses_are_hoisted_and_ordered_to_the_call_order() {
+    // Two parallel calls to the same tool whose results arrive reversed,
+    // with a user message interleaved in the same user content.
+    let req = gemini_request(vec![
+        ConversationItem::user("go"),
+        assistant_with_calls(&[
+            ("call_1", "read_file"),
+            ("call_2", "grep"),
+            ("call_3", "read_file"),
+        ]),
+        ConversationItem::user("fyi"),
+        ConversationItem::tool_result("call_3", "third"),
+        ConversationItem::tool_result("call_2", "second"),
+        ConversationItem::tool_result("call_1", "first"),
+    ]);
+    let b = body(&req);
+    let p = parts(&b, 2);
+    assert_eq!(p.len(), 4, "{p:#?}");
+    let outputs: Vec<&str> = p[..3]
+        .iter()
+        .map(|part| {
+            part["functionResponse"]["response"]["output"]
+                .as_str()
+                .unwrap()
+        })
+        .collect();
+    // Positional by name: the 1st `read_file` call takes the 1st stored
+    // `read_file` response (`third`, stored first), the 2nd takes `first`.
+    assert_eq!(outputs, ["third", "second", "first"]);
+    assert_eq!(p[0]["functionResponse"]["name"], "read_file");
+    assert_eq!(p[1]["functionResponse"]["name"], "grep");
+    assert_eq!(p[2]["functionResponse"]["name"], "read_file");
+    assert_eq!(p[3]["text"], "fyi", "text is hoisted behind the responses");
+
+    // A user content with no preceding model calls is left untouched.
+    let req = gemini_request(vec![
+        ConversationItem::user("a"),
+        ConversationItem::user("b"),
+    ]);
+    let b = body(&req);
+    assert_eq!(parts(&b, 0)[0]["text"], "a");
+    assert_eq!(parts(&b, 0)[1]["text"], "b");
 }
 
 #[test]
@@ -359,9 +509,21 @@ fn tools_become_function_declarations_with_json_schema_verbatim() {
 #[test]
 fn tool_choice_maps_to_function_calling_config() {
     let cases = [
-        (ConversationToolChoice::Auto, FunctionCallingMode::Auto, None),
-        (ConversationToolChoice::None, FunctionCallingMode::None, None),
-        (ConversationToolChoice::Required, FunctionCallingMode::Any, None),
+        (
+            ConversationToolChoice::Auto,
+            FunctionCallingMode::Auto,
+            None,
+        ),
+        (
+            ConversationToolChoice::None,
+            FunctionCallingMode::None,
+            None,
+        ),
+        (
+            ConversationToolChoice::Required,
+            FunctionCallingMode::Any,
+            None,
+        ),
         (
             ConversationToolChoice::Function("read_file".into()),
             FunctionCallingMode::Any,
@@ -397,10 +559,14 @@ fn tool_choice_maps_to_function_calling_config() {
 
 #[test]
 fn json_schema_is_native_only_without_tools() {
-    let schema = serde_json::json!({ "type": "object", "properties": { "x": { "type": "string" } } });
+    let schema =
+        serde_json::json!({ "type": "object", "properties": { "x": { "type": "string" } } });
     let req = gemini_request(vec![ConversationItem::user("go")]).with_json_schema(schema.clone());
     let b = body(&req);
-    assert_eq!(b["generationConfig"]["responseMimeType"], "application/json");
+    assert_eq!(
+        b["generationConfig"]["responseMimeType"],
+        "application/json"
+    );
     assert_eq!(b["generationConfig"]["responseJsonSchema"], schema);
 
     let req = req.with_tools(vec![read_tool()]);
@@ -410,7 +576,7 @@ fn json_schema_is_native_only_without_tools() {
 }
 
 #[test]
-fn generation_config_carries_sampling_knobs_and_always_requests_thoughts() {
+fn generation_config_drops_sampling_knobs_on_level_models_and_always_requests_thoughts() {
     let mut req = gemini_request(vec![ConversationItem::user("go")]);
     req.temperature = Some(0.2);
     req.top_p = Some(0.9);
@@ -419,30 +585,96 @@ fn generation_config_carries_sampling_knobs_and_always_requests_thoughts() {
     req.stop_sequences = Some(vec!["END".into()]);
     let b = body(&req);
     let gc = &b["generationConfig"];
-    assert!((gc["temperature"].as_f64().unwrap() - 0.2).abs() < 1e-6);
-    assert!((gc["topP"].as_f64().unwrap() - 0.9).abs() < 1e-6);
-    assert_eq!(gc["topK"], 40);
+    // Gemini 3+: the sampling parameters are deprecated (model-tuned
+    // defaults); sending them degrades reasoning, so they are dropped.
+    assert!(gc.get("temperature").is_none(), "{gc:#}");
+    assert!(gc.get("topP").is_none());
+    assert!(gc.get("topK").is_none());
     assert_eq!(gc["maxOutputTokens"], 1234);
     assert_eq!(gc["stopSequences"], serde_json::json!(["END"]));
     assert_eq!(gc["thinkingConfig"]["includeThoughts"], true);
     assert!(gc["thinkingConfig"].get("thinkingBudget").is_none());
     assert!(gc["thinkingConfig"].get("thinkingLevel").is_none());
+
+    // Budget-controlled generations still honour them.
+    req.model = Some("gemini-2.5-flash".into());
+    let b = body(&req);
+    let gc = &b["generationConfig"];
+    assert!((gc["temperature"].as_f64().unwrap() - 0.2).abs() < 1e-6);
+    assert!((gc["topP"].as_f64().unwrap() - 0.9).abs() < 1e-6);
+    assert_eq!(gc["topK"], 40);
 }
 
 #[test]
-fn reasoning_effort_maps_to_level_on_gemini_3_and_budget_elsewhere() {
+fn reasoning_effort_maps_to_level_on_gemini_3_plus_and_budget_on_older_generations() {
     assert!(is_thinking_level_model("gemini-3-pro-preview"));
     assert!(is_thinking_level_model("gemini-3.1-flash"));
     assert!(is_thinking_level_model("models/gemini-3-flash"));
+    assert!(is_thinking_level_model("gemini-3.5-flash"));
+    assert!(is_thinking_level_model("gemini-4-argon"));
+    assert!(is_thinking_level_model(
+        "projects/p/locations/l/publishers/google/models/gemini-3.5-pro"
+    ));
+    assert!(
+        is_thinking_level_model("litellm-gemini-3.5-flash"),
+        "proxy alias with a marker"
+    );
+    assert!(
+        is_thinking_level_model("unknown-model"),
+        "no marker ⇒ 3.5+ deployment assumed"
+    );
     assert!(!is_thinking_level_model("gemini-2.5-pro"));
     assert!(!is_thinking_level_model("gemini-2.0-flash"));
-    assert!(!is_thinking_level_model("unknown-model"));
+    assert!(!is_thinking_level_model("models/gemini-2.5-flash-lite"));
 
     let level = thinking_config("gemini-3-pro-preview", Some(ReasoningEffort::High));
     assert_eq!(level.thinking_level, Some(ThinkingLevel::High));
     assert_eq!(level.thinking_budget, None);
-    let level = thinking_config("gemini-3-flash", Some(ReasoningEffort::None));
-    assert_eq!(level.thinking_level, Some(ThinkingLevel::Minimal));
+    assert_eq!(level.include_thoughts, Some(true));
+    // MINIMAL exists on Gemini 3 Flash models only; everywhere else the
+    // floor is LOW (thinking cannot be switched off).
+    for flash in [
+        "gemini-3-flash",
+        "gemini-3.5-flash-lite",
+        "models/gemini-3.1-flash",
+    ] {
+        assert_eq!(
+            thinking_config(flash, Some(ReasoningEffort::None)).thinking_level,
+            Some(ThinkingLevel::Minimal),
+            "{flash}"
+        );
+        assert_eq!(
+            thinking_config(flash, Some(ReasoningEffort::Minimal)).thinking_level,
+            Some(ThinkingLevel::Minimal),
+            "{flash}"
+        );
+    }
+    for low_floor in [
+        "gemini-3-pro-preview",
+        "gemini-3.1-pro",
+        "gemini-4-argon",
+        "gemini-4-flash",
+        "prod-coder",
+    ] {
+        assert_eq!(
+            thinking_config(low_floor, Some(ReasoningEffort::None)).thinking_level,
+            Some(ThinkingLevel::Low),
+            "{low_floor}"
+        );
+        assert_eq!(
+            thinking_config(low_floor, Some(ReasoningEffort::Minimal)).thinking_level,
+            Some(ThinkingLevel::Low),
+            "{low_floor}"
+        );
+    }
+    assert_eq!(
+        thinking_config("gemini-4-argon", Some(ReasoningEffort::Medium)).thinking_level,
+        Some(ThinkingLevel::Medium)
+    );
+    // No effort ⇒ no level ⇒ the model's own default depth.
+    let default = thinking_config("gemini-4-argon", None);
+    assert_eq!(default.thinking_level, None);
+    assert_eq!(default.thinking_budget, None);
 
     let budget = thinking_config("gemini-2.5-pro", Some(ReasoningEffort::Medium));
     assert_eq!(budget.thinking_budget, Some(-1), "medium = dynamic");
@@ -533,6 +765,10 @@ fn request_body_round_trips_through_serde() {
     let json = serde_json::to_string(&built).unwrap();
     let back: crate::gemini::GenerateContentRequest = serde_json::from_str(&json).unwrap();
     assert_eq!(back.contents.len(), built.contents.len());
-    assert_eq!(back.contents[1].parts[1].thought_signature.as_deref(), Some("S"));
+    assert_eq!(back.contents[1].parts.len(), 1, "signature-only replay");
+    assert_eq!(
+        back.contents[1].parts[0].thought_signature.as_deref(),
+        Some("S")
+    );
     assert!(back.model.is_empty(), "model is skipped on the wire");
 }

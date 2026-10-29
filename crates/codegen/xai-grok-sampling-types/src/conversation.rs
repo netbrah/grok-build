@@ -15,7 +15,9 @@ pub mod tool_name;
 pub mod tool_search;
 
 pub use chat_completions::{conversation_item_to_chat_message, conversation_to_chat_messages};
-pub use gemini::{build_generate_content_request, is_thinking_level_model, thinking_config};
+pub use gemini::{
+    build_generate_content_request, is_thinking_level_model, same_gemini_model, thinking_config,
+};
 pub use messages::build_messages_request;
 pub use responses::{
     DeclaredToolSurface, SearchAdmission, TOOL_SEARCH_DECLARATION_TYPE, extra_tool_entries,
