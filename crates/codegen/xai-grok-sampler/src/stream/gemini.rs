@@ -24,10 +24,13 @@
 //! A step with parallel function calls carries ONE signature (on the first
 //! call); the projector re-attaches it there on replay.
 //!
-//! Function-call ids: the wire has none (`functionCall.id` is Vertex-only
-//! and optional). Each call gets a locally minted `call_<uuid>` so the
-//! tool-result pairing machinery (orphan cleanup, `tool_call_id` lookup)
-//! works unchanged; the projector never echoes the id to the wire.
+//! Function-call ids: `functionCall.id` is optional on the wire (both the
+//! public API and Vertex define it; Gemini 3+ populates it). A non-empty id
+//! that is unique within the response is kept as the stored call id, so the
+//! projector can echo it back on the matching `functionResponse` as Google
+//! asks; an absent or duplicated id gets a locally minted `call_<uuid>`
+//! instead. Either way the tool-result pairing machinery (orphan cleanup,
+//! `tool_call_id` lookup) works unchanged.
 
 use std::time::{Duration, Instant};
 
@@ -44,9 +47,18 @@ use crate::events::{SamplingChannel, SamplingErrorInfo, SamplingEvent};
 use crate::metrics::InferenceLatencyStats;
 use crate::types::RequestId;
 
-/// Locally minted tool-call id for a wire `functionCall` (the wire has none).
+/// Locally minted tool-call id for a wire `functionCall` without a usable id.
 fn mint_call_id() -> String {
     format!("call_{}", uuid::Uuid::new_v4().simple())
+}
+
+/// The call id to store: the wire's own when it is non-empty and not already
+/// taken by an earlier call of this response, else a minted one.
+fn resolve_call_id(wire_id: Option<String>, taken: &[ToolCall]) -> String {
+    match wire_id {
+        Some(id) if !id.is_empty() && !taken.iter().any(|tc| *tc.id == *id) => id,
+        _ => mint_call_id(),
+    }
 }
 
 /// Transform a raw Gemini `streamGenerateContent` chunk stream into a stream of
@@ -173,7 +185,7 @@ pub fn stream_generate_content<'a>(
                     if call_signature.is_none() {
                         call_signature = signature.clone();
                     }
-                    let id = mint_call_id();
+                    let id = resolve_call_id(call.id, &assistant_tool_calls);
                     let arguments = match call.args {
                         Some(serde_json::Value::Null) | None => "{}".to_owned(),
                         Some(args) => serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_owned()),

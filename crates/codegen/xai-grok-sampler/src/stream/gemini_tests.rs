@@ -215,6 +215,54 @@ async fn function_call_mints_local_id_and_carries_first_call_signature() {
 }
 
 #[tokio::test]
+async fn wire_function_call_id_is_kept_unless_empty_or_duplicated() {
+    fn call_with_id(id: Option<&str>, name: &str) -> Part {
+        Part::function_call(FunctionCall {
+            id: id.map(str::to_owned),
+            name: name.into(),
+            args: Some(serde_json::json!({})),
+        })
+    }
+    let events = run(vec![chunk(
+        vec![
+            call_with_id(Some("function-call-1"), "a"),
+            call_with_id(Some("function-call-1"), "b"),
+            call_with_id(Some(""), "c"),
+            call_with_id(None, "d"),
+        ],
+        Some(FinishReason::Stop),
+    )])
+    .await;
+    let resp = completed(&events);
+    let ids: Vec<&str> = resp
+        .assistant()
+        .unwrap()
+        .tool_calls
+        .iter()
+        .map(|tc| &*tc.id)
+        .collect();
+    assert_eq!(ids[0], "function-call-1", "the wire's own id is stored");
+    assert!(
+        ids[1].starts_with("call_") && ids[2].starts_with("call_") && ids[3].starts_with("call_"),
+        "a duplicated, empty or absent id is replaced by a minted one: {ids:?}"
+    );
+    let unique: std::collections::HashSet<&str> = ids.iter().copied().collect();
+    assert_eq!(unique.len(), 4);
+    let delta_ids: Vec<Option<String>> = events
+        .iter()
+        .filter_map(|e| match e {
+            SamplingEvent::ToolCallDelta { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        delta_ids[0].as_deref(),
+        Some("function-call-1"),
+        "the delta announces the stored id"
+    );
+}
+
+#[tokio::test]
 async fn first_call_signature_wins_over_a_later_text_signature() {
     let events = run(vec![chunk(
         vec![

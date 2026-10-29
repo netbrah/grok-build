@@ -96,7 +96,10 @@ fn tool_round_trip_has_function_call_then_function_response_in_user_content() {
     let call = &parts(&b, 1)[0]["functionCall"];
     assert_eq!(call["name"], "read_file");
     assert_eq!(call["args"], serde_json::json!({}));
-    assert!(call.get("id").is_none(), "ids are local, never echoed");
+    assert_eq!(
+        call["id"], "call_1",
+        "Gemini 3+ pairs responses with calls by id: the stored id is echoed"
+    );
 
     assert_eq!(role(&b, 2), "user");
     let resp = &parts(&b, 2)[0]["functionResponse"];
@@ -105,7 +108,7 @@ fn tool_round_trip_has_function_call_then_function_response_in_user_content() {
         resp["response"],
         serde_json::json!({ "output": "fn main() {}" })
     );
-    assert!(resp.get("id").is_none());
+    assert_eq!(resp["id"], "call_1");
 
     assert_eq!(role(&b, 3), "model");
     assert_eq!(parts(&b, 3)[0]["text"], "Done.");
@@ -211,6 +214,199 @@ fn unsigned_function_calls_always_get_bypass_signature() {
     ]);
     let b = body(&req);
     assert!(parts(&b, 1)[0].get("thoughtSignature").is_none());
+}
+
+#[test]
+fn vertex_resource_slug_leaves_unsigned_calls_without_the_bypass_sentinel() {
+    let vertex = "projects/p/locations/us-central1/publishers/google/models/gemini-3-pro-preview";
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::user("go"),
+        reasoning_sibling("", "", Some("SIG_A")),
+        assistant_calls_with_model(&[("call_1", "a"), ("call_2", "b")], Some(vertex)),
+        ConversationItem::tool_result("call_1", "1"),
+        ConversationItem::tool_result("call_2", "2"),
+        assistant_with_calls(&[("call_3", "c")]),
+        ConversationItem::tool_result("call_3", "3"),
+    ])
+    .with_model(vertex);
+    let b = body(&req);
+    let p = parts(&b, 1);
+    assert_eq!(
+        p[0]["thoughtSignature"], "SIG_A",
+        "a genuine signature still replays"
+    );
+    assert!(
+        p[1].get("thoughtSignature").is_none(),
+        "Vertex rejects the bypass value: {p:#?}"
+    );
+    assert!(parts(&b, 3)[0].get("thoughtSignature").is_none());
+    assert_eq!(
+        parts(&b, 3)[0]["functionCall"]["id"],
+        "call_3",
+        "ids are a Gemini 3+ contract on both surfaces"
+    );
+    // The Developer API `models/` prefix is not a Vertex resource.
+    let req = ConversationRequest::from_items(vec![
+        ConversationItem::user("go"),
+        assistant_with_calls(&[("call_1", "a")]),
+        ConversationItem::tool_result("call_1", "1"),
+    ])
+    .with_model("models/gemini-3-pro-preview");
+    assert_eq!(
+        parts(&body(&req), 1)[0]["thoughtSignature"],
+        SKIP_THOUGHT_SIGNATURE_VALIDATOR
+    );
+}
+
+#[test]
+fn call_ids_are_echoed_normalised_on_gemini_3_plus_and_omitted_before() {
+    let odd_id = "toolu_01AB:cd/ef";
+    let long_id = "x".repeat(80);
+    let items = |model: &str| {
+        vec![
+            ConversationItem::user("go"),
+            assistant_calls_with_model(&[(odd_id, "a"), (&long_id, "b")], Some(model)),
+            ConversationItem::tool_result(odd_id, "1"),
+            ConversationItem::tool_result(&long_id, "2"),
+        ]
+    };
+    let b = body(&ConversationRequest::from_items(items(MODEL)).with_model(MODEL));
+    let calls = parts(&b, 1);
+    let results = parts(&b, 2);
+    assert_eq!(calls[0]["functionCall"]["id"], "toolu_01AB_cd_ef");
+    assert_eq!(results[0]["functionResponse"]["id"], "toolu_01AB_cd_ef");
+    assert_eq!(calls[1]["functionCall"]["id"], "x".repeat(64));
+    assert_eq!(results[1]["functionResponse"]["id"], "x".repeat(64));
+
+    let older = "gemini-2.5-pro";
+    let b = body(&ConversationRequest::from_items(items(older)).with_model(older));
+    assert!(parts(&b, 1)[0]["functionCall"].get("id").is_none());
+    assert!(parts(&b, 2)[0]["functionResponse"].get("id").is_none());
+}
+
+#[test]
+fn media_only_tool_result_gets_a_placeholder_output() {
+    let png = || ContentPart::Image {
+        url: "data:image/png;base64,iVBORw0KGgo=".into(),
+    };
+    let req = gemini_request(vec![
+        ConversationItem::user("look"),
+        assistant_with_calls(&[("call_1", "screenshot"), ("call_2", "screenshot")]),
+        ConversationItem::tool_result_with_images("call_1", "", vec![png()]),
+        ConversationItem::tool_result_with_images("call_2", "captured", vec![png()]),
+    ]);
+    let b = body(&req);
+    let p = parts(&b, 2);
+    assert_eq!(
+        p[0]["functionResponse"]["response"],
+        serde_json::json!({ "output": "(see attached image)" }),
+        "an empty response object says nothing about the attached media"
+    );
+    assert_eq!(
+        p[0]["functionResponse"]["parts"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        p[1]["functionResponse"]["response"],
+        serde_json::json!({ "output": "captured" }),
+        "text wins over the placeholder"
+    );
+    // An empty error stays an error; an empty text-only result stays empty.
+    let req = gemini_request(vec![
+        ConversationItem::user("look"),
+        assistant_with_calls(&[("call_1", "a"), ("call_2", "b")]),
+        ConversationItem::tool_result_error("call_1", ""),
+        ConversationItem::tool_result("call_2", ""),
+    ]);
+    let p = parts(&body(&req), 2).clone();
+    assert_eq!(
+        p[0]["functionResponse"]["response"],
+        serde_json::json!({ "error": "" })
+    );
+    assert_eq!(
+        p[1]["functionResponse"]["response"],
+        serde_json::json!({ "output": "" })
+    );
+}
+
+#[test]
+fn const_becomes_single_value_enum_in_function_declarations() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "kind": { "const": "move" },
+            "count": { "const": 3, "description": "fixed" },
+            "flag": { "const": true },
+            "mode": { "const": "a", "enum": ["a", "b"] },
+            "const": { "type": "string" },
+            "nested": {
+                "anyOf": [
+                    { "const": "x" },
+                    { "type": "array", "items": { "const": 1.5 } }
+                ],
+                "default": { "const": "literal data" },
+                "examples": [{ "const": "literal data" }]
+            }
+        },
+        "$defs": { "Op": { "const": "op" } },
+        "dependencies": { "kind": ["count"] },
+        "required": ["kind"]
+    });
+    let req = gemini_request(vec![ConversationItem::user("go")]).with_tools(vec![ToolSpec {
+        name: "act".into(),
+        description: None,
+        parameters: schema.clone(),
+        exposure: ToolExposure::default(),
+    }]);
+    let b = body(&req);
+    let out = &b["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"];
+    let props = &out["properties"];
+    assert_eq!(props["kind"], serde_json::json!({ "enum": ["move"] }));
+    assert_eq!(
+        props["count"],
+        serde_json::json!({ "enum": [3], "description": "fixed" })
+    );
+    assert_eq!(
+        props["flag"],
+        serde_json::json!({ "const": true }),
+        "only strings and numbers"
+    );
+    assert_eq!(
+        props["mode"],
+        serde_json::json!({ "const": "a", "enum": ["a", "b"] }),
+        "an existing enum is left alone"
+    );
+    assert_eq!(
+        props["const"],
+        serde_json::json!({ "type": "string" }),
+        "a property named `const` is a name-map entry, not a keyword"
+    );
+    assert_eq!(
+        props["nested"]["anyOf"][0],
+        serde_json::json!({ "enum": ["x"] })
+    );
+    assert_eq!(
+        props["nested"]["anyOf"][1]["items"],
+        serde_json::json!({ "enum": [1.5] })
+    );
+    assert_eq!(
+        props["nested"]["default"],
+        serde_json::json!({ "const": "literal data" }),
+        "literal data under `default` / `examples` is not a schema"
+    );
+    assert_eq!(
+        props["nested"]["examples"],
+        serde_json::json!([{ "const": "literal data" }])
+    );
+    assert_eq!(out["$defs"]["Op"], serde_json::json!({ "enum": ["op"] }));
+    assert_eq!(
+        out["dependencies"],
+        serde_json::json!({ "kind": ["count"] })
+    );
+    assert_eq!(out["required"], serde_json::json!(["kind"]));
+    // A schema without `const` is passed through byte-for-byte.
+    let plain = read_tool().parameters;
+    assert_eq!(rewrite_const_as_enum(&plain), plain);
 }
 
 #[test]

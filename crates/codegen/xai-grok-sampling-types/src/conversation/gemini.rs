@@ -18,11 +18,21 @@
 //!    answering a parallel call set must share one content, which the merge
 //!    guarantees by construction. Media a tool produced nests under its own
 //!    `functionResponse.parts` (multimodal function responses, Gemini 3+)
-//!    rather than floating as sibling parts. When a user content answers a
-//!    model content's calls, its `functionResponse` parts are re-ordered to
-//!    the call order (positional matching by name — this fork sends no call
-//!    ids) and hoisted ahead of any text/media (gemini-cli
-//!    `refineToolResponses` parity).
+//!    rather than floating as sibling parts; a result that is only media
+//!    gets the `"(see attached image)"` output placeholder so the response
+//!    object is never empty. When a user content answers a model content's
+//!    calls, its `functionResponse` parts are re-ordered to the call order
+//!    (positional matching by name) and hoisted ahead of any text/media
+//!    (gemini-cli `refineToolResponses` parity).
+//!    Call ids: on Gemini 3+ every `functionCall` / `functionResponse`
+//!    carries the stored call id (normalised to `[A-Za-z0-9_-]`, 64 chars).
+//!    Gemini 3 issues an `id` on its calls and expects it back on the
+//!    matching response ("if populated, the client … return the response
+//!    with the matching id"); a long tool history replayed without ids
+//!    degrades into textual pseudo-calls flagged `MALFORMED_FUNCTION_CALL`.
+//!    Ids the decoder minted locally are sent too — a client-populated,
+//!    consistent correlation key is what the field is for. Older
+//!    generations get no ids (positional pairing only).
 //! 3. Opaque-reasoning replay (the point of the native wire):
 //!    - the `thoughtSignature` (`Reasoning.encrypted_content`) replays on
 //!      the part Gemini issued it on: the FIRST `functionCall` part of the
@@ -33,7 +43,12 @@
 //!      unsigned current-turn call with a 400, previous-turn calls are not
 //!      validated, and over-substituting is the documented, harmless side
 //!      (history migrated from another backend, a signature stripped by the
-//!      switch-time projector, a model that emitted none);
+//!      switch-time projector, a model that emitted none). The bypass value
+//!      is a public Gemini API (`generativelanguage`, and any pass-through
+//!      proxy in front of it such as LiteLLM `/gemini/v1beta`) contract:
+//!      Vertex AI rejects it, so a Vertex resource-path slug
+//!      (`projects/…`, `publishers/…`, `endpoints/…`) leaves unsigned calls
+//!      without a `thoughtSignature` instead;
 //!    - thought summaries (`Reasoning.summary`) are NOT replayed. The
 //!      signature alone carries the model's reasoning state; summaries are
 //!      lossy user-facing text that would only cost input tokens and perturb
@@ -55,7 +70,10 @@
 //!    parity; the model-visible sentinel is deliberate).
 //! 5. `systemInstruction` from every `System` item (concatenated as text
 //!    parts, order kept); tools as `functionDeclarations` carrying the stored
-//!    JSON Schema verbatim via `parametersJsonSchema`; `tool_choice` →
+//!    JSON Schema via `parametersJsonSchema`, verbatim except that a string
+//!    or number `const` becomes a single-value `enum` (Gemini's accepted
+//!    schema subset ignores `const` but honours `enum`; MCP tool schemas
+//!    carry `const` routinely); `tool_choice` →
 //!    `functionCallingConfig`; `thinkingConfig` + the remaining knobs →
 //!    `generationConfig`. On level-controlled models (Gemini 3+, the only
 //!    generation this backend targets) `temperature` / `topP` / `topK` are
@@ -82,6 +100,19 @@ use crate::gemini::{
 const AWAITING_TOOL_RESULT_SENTINEL: &str = "[Awaiting tool result]";
 /// Sentinel user text when the history opens or closes on a plain model content.
 const CONTINUE_SENTINEL: &str = "[Continue]";
+/// `functionResponse.response.output` for a result that is only media.
+const MEDIA_ONLY_OUTPUT: &str = "(see attached image)";
+
+/// Wire-shape decisions that depend on the configured slug (module docs,
+/// steps 2 and 3).
+#[derive(Clone, Copy)]
+struct WirePolicy {
+    /// Gemini 3+: echo the stored call id on `functionCall` / `functionResponse`.
+    echo_call_ids: bool,
+    /// Public API: unsigned `functionCall` parts take the bypass signature.
+    /// Vertex AI rejects the sentinel, so there they stay unsigned.
+    unsigned_call_sentinel: bool,
+}
 
 /// Build the Gemini `generateContent` body for a conversation request.
 /// `model` is copied onto the result for the URL path (never serialized).
@@ -90,6 +121,10 @@ pub fn build_generate_content_request(req: &ConversationRequest) -> GenerateCont
     let model_slug = req.model.as_deref().unwrap_or_default();
     let r8_active = !model_slug.is_empty();
     let level_model = is_thinking_level_model(model_slug);
+    let policy = WirePolicy {
+        echo_call_ids: level_model,
+        unsigned_call_sentinel: !is_vertex_resource(model_slug),
+    };
 
     // Forward-owner lookup: per index, the model_id of the nearest FORWARD
     // Assistant (`None` = none, or one without a model_id). Consumed by a
@@ -115,18 +150,18 @@ pub fn build_generate_content_request(req: &ConversationRequest) -> GenerateCont
     for (idx, item) in items.iter().enumerate() {
         match item {
             ConversationItem::System(s) => {
-                model_buffer.flush(&mut contents);
+                model_buffer.flush(&mut contents, policy);
                 flush_user(&mut pending_user, &mut contents);
                 if !s.content.is_empty() {
                     system_parts.push(Part::text(s.content.as_ref()));
                 }
             }
             ConversationItem::User(u) => {
-                model_buffer.flush(&mut contents);
+                model_buffer.flush(&mut contents, policy);
                 pending_user.extend(content_parts_to_gemini(&u.content));
             }
             ConversationItem::ToolResult(t) => {
-                model_buffer.flush(&mut contents);
+                model_buffer.flush(&mut contents, policy);
                 let name = function_name_for_result(&items, &t.tool_call_id);
                 let mut media: Vec<FunctionResponsePart> = Vec::new();
                 let mut fallbacks: Vec<Part> = Vec::new();
@@ -138,10 +173,19 @@ pub fn build_generate_content_request(req: &ConversationRequest) -> GenerateCont
                         }
                     }
                 }
+                let content: &str =
+                    if !t.is_error && t.content.trim().is_empty() && !media.is_empty() {
+                        MEDIA_ONLY_OUTPUT
+                    } else {
+                        &t.content
+                    };
                 pending_user.push(Part::function_response(FunctionResponse {
-                    id: None,
+                    id: policy
+                        .echo_call_ids
+                        .then(|| wire_call_id(&t.tool_call_id))
+                        .flatten(),
                     name,
-                    response: function_response_payload(&t.content, t.is_error),
+                    response: function_response_payload(content, t.is_error),
                     parts: media,
                 }));
                 pending_user.extend(fallbacks);
@@ -154,7 +198,7 @@ pub fn build_generate_content_request(req: &ConversationRequest) -> GenerateCont
                 }
                 for tc in &a.tool_calls {
                     model_buffer.calls.push(Part::function_call(FunctionCall {
-                        id: None,
+                        id: policy.echo_call_ids.then(|| wire_call_id(&tc.id)).flatten(),
                         name: tc.name.clone(),
                         args: Some(tool_call_args(&tc.arguments, &tc.name)),
                     }));
@@ -203,7 +247,7 @@ pub fn build_generate_content_request(req: &ConversationRequest) -> GenerateCont
             }
         }
     }
-    model_buffer.flush(&mut contents);
+    model_buffer.flush(&mut contents, policy);
     flush_user(&mut pending_user, &mut contents);
 
     repair_head_and_tail(&mut contents);
@@ -223,7 +267,7 @@ pub fn build_generate_content_request(req: &ConversationRequest) -> GenerateCont
                 .map(|t| FunctionDeclaration {
                     name: t.name.clone(),
                     description: t.description.clone(),
-                    parameters_json_schema: Some(t.parameters.clone()),
+                    parameters_json_schema: Some(rewrite_const_as_enum(&t.parameters)),
                     parameters: None,
                 })
                 .collect(),
@@ -322,7 +366,7 @@ impl ModelBuffer<'_> {
         self.text.is_empty() && self.calls.is_empty()
     }
 
-    fn flush(&mut self, contents: &mut Vec<Content>) {
+    fn flush(&mut self, contents: &mut Vec<Content>, policy: WirePolicy) {
         if self.is_empty() {
             // A signature with nothing to ride on cannot be replayed.
             *self = Self::default();
@@ -342,9 +386,11 @@ impl ModelBuffer<'_> {
             };
             parts[target].thought_signature = Some(sig);
         }
-        for part in parts.iter_mut().skip(first_call_at) {
-            if part.function_call.is_some() && part.thought_signature.is_none() {
-                part.thought_signature = Some(SKIP_THOUGHT_SIGNATURE_VALIDATOR.to_owned());
+        if policy.unsigned_call_sentinel {
+            for part in parts.iter_mut().skip(first_call_at) {
+                if part.function_call.is_some() && part.thought_signature.is_none() {
+                    part.thought_signature = Some(SKIP_THOUGHT_SIGNATURE_VALIDATOR.to_owned());
+                }
             }
         }
         contents.push(Content::model(parts));
@@ -354,12 +400,14 @@ impl ModelBuffer<'_> {
 
 /// Close the pending `user` content. When it answers the preceding model
 /// content's function calls, its `functionResponse` parts are hoisted ahead
-/// of any other part and re-ordered to the call order: this fork sends no
-/// `functionCall.id`, so Google pairs responses with calls positionally by
-/// name, and a result stored out of call order (parallel tools finishing in
-/// any order) would otherwise answer the wrong call when names repeat.
-/// Responses for names the model never called keep their relative order
-/// after the matched ones (the orphan cleanup makes that a non-case).
+/// of any other part and re-ordered to the call order. Google pairs a
+/// response with its call by `id` when both carry one (Gemini 3+, module
+/// docs step 2) and positionally by name otherwise, so a result stored out
+/// of call order (parallel tools finishing in any order) would answer the
+/// wrong call when names repeat; keeping the order right on every
+/// generation also keeps the replayed history byte-stable for the implicit
+/// cache. Responses for names the model never called keep their relative
+/// order after the matched ones (the orphan cleanup makes that a non-case).
 fn flush_user(pending: &mut Vec<Part>, contents: &mut Vec<Content>) {
     if pending.is_empty() {
         return;
@@ -466,6 +514,112 @@ fn function_response_payload(content: &str, is_error: bool) -> serde_json::Value
         Some(other) => serde_json::json!({ "output": other }),
         None => serde_json::json!({ "output": content }),
     }
+}
+
+/// Stored call id → wire `functionCall.id` / `functionResponse.id`. Ids the
+/// decoder kept from the wire are already in shape; ids minted locally or
+/// inherited from another backend (`toolu_…`, `call_…`, `fc_…`) are reduced
+/// to the accepted `[A-Za-z0-9_-]` alphabet and 64 characters. `None` when
+/// nothing is left (an unpaired result never reaches here, but an empty id
+/// is a worse failure than a missing one).
+fn wire_call_id(id: &str) -> Option<String> {
+    let normalised: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect();
+    (!normalised.is_empty()).then_some(normalised)
+}
+
+/// Whether the slug is a Vertex AI resource path rather than a public-API
+/// model name (`gemini-3-pro`, `models/gemini-3-pro`). The client appends a
+/// slug containing `/` to the base URL verbatim, so a Vertex row configures
+/// `projects/P/locations/L/publishers/google/models/M`,
+/// `publishers/google/models/M` or `endpoints/E`. A Vertex base URL paired
+/// with a bare slug is not recognised: configure the resource path (the
+/// documented Vertex shape) for the Vertex-specific wire rules to apply.
+fn is_vertex_resource(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    ["projects/", "publishers/", "endpoints/"]
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+const JSON_SCHEMA_SUBSCHEMA_KEYWORDS: &[&str] = &[
+    "additionalProperties",
+    "unevaluatedProperties",
+    "propertyNames",
+    "items",
+    "prefixItems",
+    "additionalItems",
+    "unevaluatedItems",
+    "contains",
+    "allOf",
+    "anyOf",
+    "oneOf",
+    "not",
+    "if",
+    "then",
+    "else",
+    "contentSchema",
+];
+
+const JSON_SCHEMA_NAME_MAP_KEYWORDS: &[&str] = &[
+    "properties",
+    "patternProperties",
+    "$defs",
+    "definitions",
+    "dependentSchemas",
+    "dependencies",
+];
+
+/// Rewrite a string or number `const` into a single-value `enum` wherever a
+/// subschema has no `enum` of its own. Gemini's `parametersJsonSchema`
+/// accepts a JSON Schema subset that ignores `const` but honours `enum`, so
+/// a discriminator such as `{"const": "move"}` would otherwise be dropped
+/// from the declaration. Only keyword positions that hold a schema (or a
+/// name → schema map, or a list of schemas) are descended into: literal
+/// data under `default`, `examples`, `enum` or `const` is never touched.
+pub fn rewrite_const_as_enum(schema: &serde_json::Value) -> serde_json::Value {
+    fn rewrite(schema: &serde_json::Value, is_name_map: bool) -> serde_json::Value {
+        match schema {
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.iter().map(|item| rewrite(item, false)).collect())
+            }
+            serde_json::Value::Object(map) => {
+                let mut result = serde_json::Map::with_capacity(map.len());
+                for (key, value) in map {
+                    let rewritten =
+                        if is_name_map || JSON_SCHEMA_SUBSCHEMA_KEYWORDS.contains(&key.as_str()) {
+                            rewrite(value, false)
+                        } else if JSON_SCHEMA_NAME_MAP_KEYWORDS.contains(&key.as_str()) {
+                            rewrite(value, true)
+                        } else {
+                            value.clone()
+                        };
+                    result.insert(key.clone(), rewritten);
+                }
+                if !is_name_map
+                    && !result.contains_key("enum")
+                    && result
+                        .get("const")
+                        .is_some_and(|v| v.is_string() || v.is_number())
+                    && let Some(value) = result.remove("const")
+                {
+                    result.insert("enum".to_owned(), serde_json::Value::Array(vec![value]));
+                }
+                serde_json::Value::Object(result)
+            }
+            other => other.clone(),
+        }
+    }
+    rewrite(schema, false)
 }
 
 /// `functionCall.args` is a JSON object; a non-object or unparseable stored

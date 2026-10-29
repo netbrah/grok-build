@@ -16,7 +16,8 @@ pub mod tool_search;
 
 pub use chat_completions::{conversation_item_to_chat_message, conversation_to_chat_messages};
 pub use gemini::{
-    build_generate_content_request, is_thinking_level_model, same_gemini_model, thinking_config,
+    build_generate_content_request, is_thinking_level_model, rewrite_const_as_enum,
+    same_gemini_model, thinking_config,
 };
 pub use messages::build_messages_request;
 pub use responses::{
