@@ -2714,6 +2714,9 @@ fn parent_golden_capture_body(
         xai_grok_sampling_types::ApiBackend::Messages => "/v1/messages",
         xai_grok_sampling_types::ApiBackend::Responses => "/v1/responses",
         xai_grok_sampling_types::ApiBackend::ChatCompletions => "/v1/chat/completions",
+        xai_grok_sampling_types::ApiBackend::GenerateContent => {
+            unreachable!("fixture backends are path-only (no GenerateContent row)")
+        }
     };
     assert_eq!(exchange.path, expected_path);
     assert_eq!(exchange.parsed_body["model"], fixture.binding.config.model);
