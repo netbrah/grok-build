@@ -20,7 +20,23 @@ use crate::retry::{DEFAULT_MAX_RETRIES, RATE_LIMIT_RETRY_THRESHOLD};
 pub enum AuthScheme {
     #[default]
     Bearer,
+    /// `x-api-key: <key>` (Anthropic Messages API).
     XApiKey,
+    /// `x-goog-api-key: <key>` (Google Gemini API). Vertex AI deployments keep
+    /// [`AuthScheme::Bearer`] with an OAuth access token.
+    XGoogApiKey,
+}
+
+impl AuthScheme {
+    /// Header the credential rides on when it is sent as a bare key rather than
+    /// a bearer token; `None` for [`AuthScheme::Bearer`].
+    pub fn key_header_name(self) -> Option<&'static str> {
+        match self {
+            Self::Bearer => None,
+            Self::XApiKey => Some("x-api-key"),
+            Self::XGoogApiKey => Some("x-goog-api-key"),
+        }
+    }
 }
 
 /// All knobs that control a single sampling request.

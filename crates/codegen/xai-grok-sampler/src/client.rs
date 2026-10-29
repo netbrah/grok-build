@@ -29,11 +29,13 @@ use xai_grok_sampling_types::error::{
 use xai_grok_sampling_types::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ConversationRequest,
     ConversationResponse, CreateResponseWrapper, DEFAULT_EXACT_REPETITION_MIN_TOKENS,
-    DOOM_LOOP_CHECK_HEADER, EXACT_REPETITION_CHECK_HEADER, MessagesRequestWrapper, ReasoningEffort,
+    DOOM_LOOP_CHECK_HEADER, EXACT_REPETITION_CHECK_HEADER, GenerateContentRequestWrapper,
+    MessagesRequestWrapper, ReasoningEffort,
     ResponseModelMetadata, Result, SamplingError, SentCredential,
-    build_messages_request,
+    build_generate_content_request, build_messages_request,
     is_check_event, messages, rs,
 };
+use xai_grok_sampling_types::gemini::GenerateContentResponse;
 use xai_grok_sampling_types::request_validation::{
     EncodedMessagesRequest, NativeHistoryRequest, RequestValidationError,
     check_native_history_request, validate_native_messages_send,
@@ -50,7 +52,10 @@ use crate::provider::{
     DAnchorState, MultiAgentModeAnchor, ResponsesWireDialect, responses_wire_dialect_for_model_family,
 };
 use crate::span_timing::{ERROR, STATUS_CODE, SUCCESS, StreamSpanTiming};
-use crate::stream_classify::{chat_chunk_class, message_event_class, responses_stream_item_class};
+use crate::stream_classify::{
+    chat_chunk_class, generate_content_chunk_class, message_event_class,
+    responses_stream_item_class,
+};
 use crate::types::ResponsesStreamItem;
 use xai_grok_auth::bearer_suffix;
 
@@ -577,6 +582,35 @@ pub(crate) fn parse_messages_stream_event(
         SamplingError::Serialization(e)
     })?;
     crate::messages_continuation::MessagesStreamFrame::decoded(event, data)
+}
+
+/// Parse one Gemini `streamGenerateContent` SSE `data:` payload. A mid-stream
+/// `{"error": {...}}` envelope (the service's gRPC-status shape) surfaces as a
+/// [`SamplingError::StreamError`] rather than a deserialization failure.
+pub(crate) fn parse_generate_content_chunk(data: &str) -> Result<GenerateContentResponse> {
+    if let Some(stream_error) = try_parse_stream_error(data) {
+        return Err(stream_error);
+    }
+    serde_json::from_str::<GenerateContentResponse>(data).map_err(|e| {
+        tracing::error!(
+            error = %e,
+            raw_data = %SamplingClient::body_preview(data.as_bytes()),
+            "Failed to deserialize GenerateContentResponse from stream"
+        );
+        SamplingError::Serialization(e)
+    })
+}
+
+/// Append the Gemini SSE selector (`alt=sse`) to a request URL that may
+/// already carry configured query parameters.
+pub(crate) fn with_alt_sse(url: String) -> String {
+    if url.contains("alt=sse") {
+        url
+    } else if url.contains('?') {
+        format!("{url}&alt=sse")
+    } else {
+        format!("{url}?alt=sse")
+    }
 }
 
 /// Process-level fallback for the `x-grok-client-identifier` header.
@@ -2156,7 +2190,7 @@ impl SamplingClient {
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         if let Some(ref api_key) = config.api_key {
             match config.auth_scheme {
-                AuthScheme::XApiKey => {
+                AuthScheme::XApiKey | AuthScheme::XGoogApiKey => {
                     let header_value = HeaderValue::from_str(api_key).map_err(|_| {
                         tracing::debug!(
                             api_key = %api_key,
@@ -2166,7 +2200,11 @@ impl SamplingClient {
                             "Invalid api_key: cannot be converted to a valid HTTP header",
                         )
                     })?;
-                    headers.insert(HeaderName::from_static("x-api-key"), header_value);
+                    let name = config
+                        .auth_scheme
+                        .key_header_name()
+                        .expect("key-style scheme has a header name");
+                    headers.insert(HeaderName::from_static(name), header_value);
                 }
                 AuthScheme::Bearer => {
                     let bearer = format!("Bearer {}", api_key);
@@ -2350,11 +2388,17 @@ impl SamplingClient {
             // Sole auth source: without a live bearer, send no credential rather than a stale seed key.
             headers.remove(AUTHORIZATION);
             headers.remove(HeaderName::from_static("x-api-key"));
+            headers.remove(HeaderName::from_static("x-goog-api-key"));
             if let Some(fresh) = resolver.current_bearer() {
                 match self.defaults.auth_scheme {
-                    AuthScheme::XApiKey => {
+                    AuthScheme::XApiKey | AuthScheme::XGoogApiKey => {
+                        let name = self
+                            .defaults
+                            .auth_scheme
+                            .key_header_name()
+                            .expect("key-style scheme has a header name");
                         if let Ok(v) = HeaderValue::from_str(&fresh) {
-                            headers.insert(HeaderName::from_static("x-api-key"), v);
+                            headers.insert(HeaderName::from_static(name), v);
                         }
                     }
                     AuthScheme::Bearer => {
@@ -2419,14 +2463,15 @@ impl SamplingClient {
         }
     }
 
-    /// Tail fragment of the credential in `headers`: `x-api-key` (Messages-API scheme) or `Authorization`.
+    /// Tail fragment of the credential in `headers`: the key header of a key-style scheme
+    /// (`x-api-key` / `x-goog-api-key`) or `Authorization`.
     /// The fragment length is [`crate::attribution::BEARER_SUFFIX_LEN`].
     fn sent_fragment_from_headers(headers: &HeaderMap, scheme: &AuthScheme) -> Option<String> {
-        let raw = match scheme {
-            AuthScheme::XApiKey => headers
-                .get(HeaderName::from_static("x-api-key"))
+        let raw = match scheme.key_header_name() {
+            Some(name) => headers
+                .get(HeaderName::from_static(name))
                 .and_then(|v| v.to_str().ok()),
-            AuthScheme::Bearer => headers
+            None => headers
                 .get(AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.strip_prefix("Bearer ")),
@@ -2465,6 +2510,7 @@ impl SamplingClient {
         let auth_prefix = self.current_sent_bearer_suffix();
         let auth_type = match (&self.defaults.auth_scheme, &auth_prefix) {
             (AuthScheme::XApiKey, Some(_)) => "x-api-key",
+            (AuthScheme::XGoogApiKey, Some(_)) => "x-goog-api-key",
             (AuthScheme::Bearer, Some(_)) => "bearer",
             (_, None) => "none",
         };
@@ -4630,6 +4676,240 @@ impl SamplingClient {
         result
     }
 
+    // =========================================================================
+    // Google Gemini generateContent API
+    // =========================================================================
+
+    /// `{base}/models/{model}:streamGenerateContent?alt=sse` — the Gemini API
+    /// shape when `base_url` ends at the API version (e.g.
+    /// `https://generativelanguage.googleapis.com/v1beta`), and the Vertex AI
+    /// shape when it ends at `.../publishers/google`. `alt=sse` selects the
+    /// SSE framing; without it the service streams a JSON array.
+    fn generate_content_stream_url(&self, model: &str) -> String {
+        with_alt_sse(self.endpoint(&format!("models/{model}:streamGenerateContent")))
+    }
+
+    /// Send a conversation request using the Google Gemini `streamGenerateContent` API.
+    pub async fn conversation_stream_generate_content(
+        &self,
+        mut request: ConversationRequest,
+    ) -> Result<(
+        BoxStream<'static, Result<GenerateContentResponse>>,
+        Option<ResponseModelMetadata>,
+    )> {
+        self.apply_conversation_defaults(&mut request)?;
+
+        let trace = request.trace.take();
+        let mut wrapper = GenerateContentRequestWrapper::new(build_generate_content_request(&request));
+        wrapper.x_grok_conv_id = request.x_grok_conv_id.clone();
+        wrapper.x_grok_req_id = request.x_grok_req_id.clone();
+        wrapper.x_grok_session_id = request.x_grok_session_id.clone();
+        wrapper.x_grok_turn_idx = request.x_grok_turn_idx.clone();
+        wrapper.x_grok_transient_retry = request.x_grok_transient_retry.clone();
+        wrapper.x_grok_agent_id = request.x_grok_agent_id.clone();
+        wrapper.x_grok_deployment_id = request.x_grok_deployment_id.clone();
+        wrapper.x_grok_user_id = request.x_grok_user_id.clone();
+        wrapper.trace = trace;
+
+        self.create_generate_content_stream(wrapper).await
+    }
+
+    /// Create a streaming generation using the Gemini `streamGenerateContent` API.
+    pub async fn create_generate_content_stream(
+        &self,
+        request: GenerateContentRequestWrapper,
+    ) -> Result<(
+        BoxStream<'static, Result<GenerateContentResponse>>,
+        Option<ResponseModelMetadata>,
+    )> {
+        let model = if request.inner.model.is_empty() {
+            self.defaults.model.clone()
+        } else {
+            request.inner.model.clone()
+        };
+        let url = self.generate_content_stream_url(&model);
+        let region = crate::span_timing::stream_span!(
+            "http.create_generate_content_stream",
+            endpoint = %url,
+            model_id = %model,
+        );
+        if region.span().is_disabled() {
+            self.create_generate_content_stream_inner(request, model, url, region)
+                .await
+        } else {
+            let span = region.span().clone();
+            self.create_generate_content_stream_inner(request, model, url, region)
+                .instrument(span)
+                .await
+        }
+    }
+
+    async fn create_generate_content_stream_inner(
+        &self,
+        mut request: GenerateContentRequestWrapper,
+        model_id: String,
+        url: String,
+        region: crate::span_timing::Region,
+    ) -> Result<(
+        BoxStream<'static, Result<GenerateContentResponse>>,
+        Option<ResponseModelMetadata>,
+    )> {
+        let mut span_timing = StreamSpanTiming::start(region);
+
+        // Drop process-local trace data.
+        request.trace.take();
+
+        // The model rides the URL path; `GenerateContentRequest::model` is
+        // `serde(skip)` so the body never carries it.
+        let body = serde_json::to_vec(&request.inner)?;
+
+        tracing::debug!(
+            base_url = %self.base_url,
+            model_id = model_id.as_str(),
+            "Sending Gemini generateContent stream request"
+        );
+
+        let grok_headers = GrokRequestHeaders {
+            conv_id: request.x_grok_conv_id.as_deref().unwrap_or_default(),
+            req_id: request.x_grok_req_id.as_deref().unwrap_or_default(),
+            model_id: &model_id,
+            session_id: request.x_grok_session_id.as_deref().unwrap_or_default(),
+            turn_idx: request.x_grok_turn_idx.as_deref(),
+            transient_retry: request.x_grok_transient_retry.as_deref(),
+            agent_id: request.x_grok_agent_id.as_deref().unwrap_or_default(),
+            deployment_id: request.x_grok_deployment_id.as_deref(),
+            user_id: request.x_grok_user_id.as_deref(),
+        };
+        self.prepare_bearer().await;
+        let SentRequest {
+            builder,
+            sent_bearer,
+        } = self.post(url.as_str());
+        let http_request = grok_headers
+            .apply(builder)
+            .header(ACCEPT, HeaderValue::from_static("text/event-stream"))
+            .body(body);
+
+        let built_request = http_request.build().map_err(|e| {
+            tracing::error!("Failed to build HTTP request: {}", e);
+            SamplingError::Http(e)
+        })?;
+
+        tracing::debug!(
+            url = %built_request.url(),
+            method = %built_request.method(),
+            "Sending generateContent stream request"
+        );
+        Self::log_request_headers(&built_request, "generate_content");
+        let response = self
+            .execute_stream_request(built_request, &mut span_timing)
+            .await?;
+
+        let status = response.status();
+        span_timing
+            .span()
+            .record(STATUS_CODE, status.as_u16() as i64);
+        span_timing.span().record(SUCCESS, status.is_success());
+        if !status.is_success() {
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                span_timing.span().record(ERROR, "unauthorized (401)");
+                self.record_401_attribution(
+                    crate::attribution::SamplingConsumer::GenerateContentStream,
+                    sent_bearer.as_deref(),
+                );
+                let body = response.bytes().await.unwrap_or_default();
+                let server_message = user_facing_api_error_message(status, body.as_ref());
+                return Err(auth_rejected(
+                    format!("Unauthorized (401) from {url}: {server_message}"),
+                    sent_bearer.as_deref(),
+                ));
+            }
+            let model_metadata = extract_model_metadata(response.headers());
+            let retry_after_secs = extract_retry_after(response.headers());
+            let should_retry = extract_should_retry(response.headers());
+            let bytes = response.bytes().await?;
+            let message = user_facing_api_error_message(status, bytes.as_ref());
+            span_timing.span().record(ERROR, message.as_str());
+            tracing::error!(
+                status = %status,
+                error_message = %message,
+                body_preview = %Self::body_preview(bytes.as_ref()),
+                model_id = %model_id,
+                "generateContent API error"
+            );
+            return Err(SamplingError::Api {
+                status,
+                message,
+                model_metadata,
+                retry_after_secs,
+                should_retry,
+                error_code: parse_error_code(bytes.as_ref()),
+            });
+        }
+
+        let model_metadata = extract_model_metadata(response.headers());
+
+        // Strip UTF-8 BOM if present
+        const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
+        let mut is_first = true;
+        let byte_stream = response.bytes_stream().map(move |result| {
+            result.map(|bytes| {
+                if is_first {
+                    is_first = false;
+                    if bytes.starts_with(UTF8_BOM) {
+                        return bytes.slice(UTF8_BOM.len()..);
+                    }
+                }
+                bytes
+            })
+        });
+
+        // Each `data:` line is one complete `GenerateContentResponse` chunk;
+        // the wire has no event names and no `[DONE]` sentinel. Transport
+        // errors terminate the stream after the first error (the
+        // `chat_completion_stream` pattern); blank frames are skipped.
+        let events = byte_stream
+            .eventsource()
+            .scan(false, |had_transport_error, event_res| {
+                if *had_transport_error {
+                    return std::future::ready(None);
+                }
+                let item = match event_res {
+                    Ok(event) => {
+                        let data = event.data.trim();
+                        if data.is_empty() {
+                            None
+                        } else {
+                            if tracing::enabled!(
+                                target: crate::sampling_log::TARGET,
+                                tracing::Level::INFO
+                            ) {
+                                tracing::info!(
+                                    target: crate::sampling_log::TARGET,
+                                    event = "sse_chunk",
+                                    backend = "generate_content",
+                                    data = %Self::body_preview(data.as_bytes()),
+                                );
+                            }
+                            Some(parse_generate_content_chunk(data))
+                        }
+                    }
+                    Err(e) => {
+                        *had_transport_error = true;
+                        Some(Err(SamplingError::EventStreamError(e.to_string())))
+                    }
+                };
+                std::future::ready(Some(item))
+            })
+            .filter_map(std::future::ready)
+            .boxed();
+
+        Ok((
+            span_timing.hold_until_first_content(events, generate_content_chunk_class),
+            model_metadata,
+        ))
+    }
+
     /// Backend-aware streaming call that collects the full response.
     /// Honors the request's [`LengthPolicy`](xai_grok_sampling_types::LengthPolicy) like the actor path.
     /// The default still fails a text-only or empty `Length` stop, so side callers never persist a silently truncated result.
@@ -4686,6 +4966,12 @@ impl SamplingClient {
                 let (frames, meta) = self.conversation_stream_messages_frames_with_history(request, None, native).await?;
                 let raw = frames.map(|result| result.map(|frame| frame.event)).boxed();
                 let events = crate::stream::stream_messages(raw, meta, request_id, idle_timeout);
+                crate::stream::collect_response(events).await
+            }
+            ApiBackend::GenerateContent => {
+                let (raw, meta) = self.conversation_stream_generate_content(request).await?;
+                let events =
+                    crate::stream::stream_generate_content(raw, meta, request_id, idle_timeout);
                 crate::stream::collect_response(events).await
             }
         };
