@@ -588,7 +588,9 @@ pub(crate) fn parse_messages_stream_event(
 /// `{"error": {...}}` envelope (the service's gRPC-status shape) surfaces as a
 /// [`SamplingError::StreamError`] rather than a deserialization failure.
 pub(crate) fn parse_generate_content_chunk(data: &str) -> Result<GenerateContentResponse> {
-    if let Some(stream_error) = try_parse_stream_error(data) {
+    if let Some(stream_error) =
+        try_parse_stream_error(data).or_else(|| generate_content_error_body(data))
+    {
         return Err(stream_error);
     }
     serde_json::from_str::<GenerateContentResponse>(data).map_err(|e| {
@@ -619,44 +621,49 @@ pub(crate) fn decode_generate_content_json_body(
             )))];
         }
     };
-    if let Some(stream_error) = try_parse_stream_error(text) {
-        return vec![Err(stream_error)];
-    }
     if text.starts_with('[') {
-        return match serde_json::from_str::<Vec<GenerateContentResponse>>(text) {
+        return match serde_json::from_str::<Vec<serde_json::Value>>(text) {
             Ok(chunks) if chunks.is_empty() => vec![Err(SamplingError::EventStreamError(
                 "generateContent response body was an empty JSON array".to_owned(),
             ))],
-            Ok(chunks) => chunks.into_iter().map(Ok).collect(),
-            Err(e) => vec![Err(json_body_decode_error(text, e))],
+            Ok(chunks) => chunks
+                .into_iter()
+                .map(|chunk| {
+                    let json = serde_json::to_string(&chunk)?;
+                    parse_generate_content_chunk(&json)
+                })
+                .collect(),
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    raw_data = %SamplingClient::body_preview(bytes),
+                    "Failed to deserialize a generateContent JSON array"
+                );
+                vec![Err(SamplingError::Serialization(e))]
+            }
         };
     }
-    match serde_json::from_str::<GenerateContentResponse>(text) {
-        Ok(chunk) => vec![Ok(chunk)],
-        Err(e) => vec![Err(json_body_decode_error(text, e))],
-    }
+    vec![parse_generate_content_chunk(text)]
 }
 
-/// A JSON body that is neither an error envelope nor a chunk: salvage any
-/// human-readable message (FastAPI `{"detail": ...}`, odd relay shapes) as a
-/// stream error, else report the deserialization failure.
-fn json_body_decode_error(text: &str, e: serde_json::Error) -> SamplingError {
-    tracing::error!(
-        error = %e,
-        raw_data = %SamplingClient::body_preview(text.as_bytes()),
-        "Failed to deserialize a non-SSE generateContent response body"
-    );
-    match xai_grok_sampling_types::provider_error::parse_provider_error_str(text) {
-        Some(parsed) if !parsed.message_is_markup() => SamplingError::StreamError {
-            error_type: parsed
-                .slug()
-                .map(str::to_owned)
-                .unwrap_or_else(|| "unknown".to_owned()),
-            message: parsed.display_message(),
-            code: None,
-        },
-        _ => SamplingError::Serialization(e),
+/// Inspect diagnostic envelopes before permissive response deserialization
+/// can turn a proxy's `{"detail": ...}` into an empty successful chunk.
+fn generate_content_error_body(text: &str) -> Option<SamplingError> {
+    let parsed = xai_grok_sampling_types::provider_error::parse_provider_error_str(text)?;
+    if parsed.message_is_markup() {
+        return None;
     }
+    let error_type = parsed
+        .slug()
+        .map(str::to_owned)
+        .unwrap_or_else(|| "unknown".to_owned());
+    let message = parsed.display_message();
+    tracing::warn!(error_type, message, "generateContent diagnostic envelope");
+    Some(SamplingError::StreamError {
+        error_type,
+        message,
+        code: None,
+    })
 }
 
 /// Whether a response announces itself as an SSE stream. A missing header is

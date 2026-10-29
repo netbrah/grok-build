@@ -278,7 +278,7 @@ auth_scheme = "x_goog_api_key"
 env_key = "LITELLM_API_KEY"
 ```
 
-Upstream Google errors are relayed unchanged (including the `RESOURCE_EXHAUSTED` 429 and its advised retry delay). A guardrail block, which LiteLLM returns as HTTP 200 with a JSON error body, is surfaced as a stream error rather than an empty response.
+Upstream Google errors are relayed unchanged (including the `RESOURCE_EXHAUSTED` 429 and its advised retry delay). A guardrail block, which LiteLLM returns as HTTP 200 with a JSON error body, is surfaced as a stream error rather than an empty response. Buffered JSON responses use the same per-chunk error checks as SSE, including errors inside response arrays.
 
 For Vertex AI, point `base_url` at the publisher root and give the fully qualified model resource; the default `bearer` scheme carries your OAuth access token:
 

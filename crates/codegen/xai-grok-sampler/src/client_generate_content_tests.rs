@@ -447,6 +447,53 @@ async fn generate_content_json_array_body_is_decoded_as_chunks() {
 
 #[tokio::test]
 #[serial]
+async fn generate_content_json_diagnostics_cannot_become_successful_chunks() {
+    for (body, diagnostic) in [
+        (
+            concat!(
+                "[{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"partial\"}]},\"finishReason\":\"STOP\"}]},",
+                "{\"error\":{\"code\":429,\"status\":\"RESOURCE_EXHAUSTED\",\"message\":\"quota limit\"}}]",
+            ),
+            "quota limit",
+        ),
+        (
+            r#"{"detail":"deployment is not available"}"#,
+            "deployment is not available",
+        ),
+    ] {
+        let (addr, rx, server) = spawn_mock_with(GEMINI_ROUTE, 200, "application/json", body).await;
+        let client = gemini_client(format!("http://{addr}/v1beta"), GEMINI_MODEL);
+        let error = client
+            .conversation_collect(plain_request())
+            .await
+            .expect_err("an explicit error must not become a completed or empty response");
+        rx.await.unwrap();
+        server.abort();
+        assert!(error.to_string().contains(diagnostic), "{error}");
+    }
+}
+
+#[test]
+fn generate_content_json_metadata_and_future_fields_remain_valid() {
+    let chunks = decode_generate_content_json_body(
+        br#"[{"modelVersion":"gemini-3.5-flash"},{"usageMetadata":{"promptTokenCount":3}},{"futureMetadata":{"detail":"not an error"}}]"#,
+    );
+    assert_eq!(chunks.len(), 3);
+    assert!(chunks.iter().all(Result::is_ok));
+    assert_eq!(
+        chunks[1]
+            .as_ref()
+            .unwrap()
+            .usage_metadata
+            .as_ref()
+            .unwrap()
+            .prompt_token_count,
+        3
+    );
+}
+
+#[tokio::test]
+#[serial]
 async fn generate_content_429_envelope_carries_status_and_retry_info_delay() {
     // Google's 429 names the RPC status and advises the delay inside the
     // envelope (`google.rpc.RetryInfo`), without a `Retry-After` header.
