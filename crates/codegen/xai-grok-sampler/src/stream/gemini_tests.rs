@@ -44,6 +44,7 @@ fn chunk(parts: Vec<Part>, finish: Option<FinishReason>) -> GenerateContentRespo
             finish_reason: finish,
             finish_message: None,
             index: Some(0),
+            continuation_token: None,
         }],
         prompt_feedback: None,
         usage_metadata: None,
@@ -441,6 +442,18 @@ async fn stream_without_finish_reason_fails_truncated() {
     let events = run(vec![chunk(vec![Part::text("cut")], None)]).await;
     let msg = failed_type(&events);
     assert!(msg.contains("stream_truncated"), "{msg}");
+}
+
+#[tokio::test]
+async fn unfinished_terminal_reasons_cannot_complete_a_turn() {
+    for reason in [
+        FinishReason::Continuation,
+        FinishReason::FinishReasonUnspecified,
+    ] {
+        let events = run(vec![chunk(vec![Part::text("unfinished")], Some(reason))]).await;
+        let message = failed_type(&events);
+        assert!(message.contains("stream_truncated"), "{message}");
+    }
 }
 
 #[tokio::test]

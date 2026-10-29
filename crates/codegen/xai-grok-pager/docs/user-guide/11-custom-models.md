@@ -245,6 +245,8 @@ Grok posts to `{base_url}/models/{model}:streamGenerateContent?alt=sse` and send
 
 New turns use the requested model for replay ownership, so a latest-model or gateway alias keeps its signatures even when `modelVersion` reports a different canonical name. Native call ids are preserved verbatim; ids imported from another model are normalized without collisions, and parallel tool results are ordered by their matching ids.
 
+A native `CONTINUATION` response is resumed with the same request and its opaque `continuationToken`; only the final response completes the turn, and usage includes all continuation requests. A missing terminal, missing continuation token, or repeated token is an error, including during compaction. Arbitrary interrupted streams are not resumed from earlier checkpoints, which could duplicate already-streamed output.
+
 #### Thinking and sampling on Gemini 3+
 
 `reasoning_effort` maps to `thinkingConfig.thinkingLevel`. Thinking cannot be switched off on these models, and `minimal` exists only on the Gemini 3 Flash family:

@@ -35,7 +35,7 @@ use xai_grok_sampling_types::{
     SentCredential, build_generate_content_request, build_messages_request, is_check_event,
     messages, rs,
 };
-use xai_grok_sampling_types::gemini::GenerateContentResponse;
+use xai_grok_sampling_types::gemini::{FinishReason, GenerateContentResponse, UsageMetadata};
 use xai_grok_sampling_types::request_validation::{
     EncodedMessagesRequest, NativeHistoryRequest, RequestValidationError,
     check_native_history_request, validate_native_messages_send,
@@ -664,6 +664,32 @@ fn generate_content_error_body(text: &str) -> Option<SamplingError> {
         message,
         code: None,
     })
+}
+
+fn accumulate_generate_content_usage(
+    previous: &UsageMetadata,
+    current: &UsageMetadata,
+) -> UsageMetadata {
+    UsageMetadata {
+        prompt_token_count: previous
+            .prompt_token_count
+            .saturating_add(current.prompt_token_count),
+        candidates_token_count: previous
+            .candidates_token_count
+            .saturating_add(current.candidates_token_count),
+        total_token_count: previous
+            .total_token_count
+            .saturating_add(current.total_token_count),
+        thoughts_token_count: previous
+            .thoughts_token_count
+            .saturating_add(current.thoughts_token_count),
+        cached_content_token_count: previous
+            .cached_content_token_count
+            .saturating_add(current.cached_content_token_count),
+        tool_use_prompt_token_count: previous
+            .tool_use_prompt_token_count
+            .saturating_add(current.tool_use_prompt_token_count),
+    }
 }
 
 /// Whether a response announces itself as an SSE stream. A missing header is
@@ -4815,10 +4841,110 @@ impl SamplingClient {
         self.create_generate_content_stream(wrapper).await
     }
 
-    /// Create a streaming generation using the Gemini `streamGenerateContent` API.
+    /// Create a complete logical generation, following native `CONTINUATION`
+    /// tokens. Validate the terminal here, including for raw-stream consumers
+    /// such as compaction that do not use the Layer-2 decoder.
     pub async fn create_generate_content_stream(
         &self,
-        request: GenerateContentRequestWrapper,
+        mut request: GenerateContentRequestWrapper,
+    ) -> Result<(
+        BoxStream<'static, Result<GenerateContentResponse>>,
+        Option<ResponseModelMetadata>,
+    )> {
+        request.trace.take();
+        let (first_stream, metadata) = self.create_generate_content_stream_hop(&request).await?;
+        let client = self.clone();
+        let events = async_stream::try_stream! {
+            let mut stream = first_stream;
+            let mut completed_usage = UsageMetadata::default();
+            let mut seen_tokens = std::collections::HashSet::new();
+            if let Some(token) = request.inner.continuation_token.as_ref() {
+                seen_tokens.insert(token.clone());
+            }
+            loop {
+                let mut finish = None;
+                let mut finish_message = None;
+                let mut terminal_token = None;
+                let mut blocked = false;
+                let mut hop_usage = UsageMetadata::default();
+                while let Some(chunk) = stream.next().await {
+                    let mut chunk = chunk?;
+                    blocked |= chunk.prompt_feedback.as_ref().is_some_and(|feedback| {
+                        feedback.block_reason.as_ref().is_some_and(|reason| !reason.is_empty())
+                    });
+                    if let Some(candidate) = chunk.candidates.first_mut() {
+                        match candidate.finish_reason.as_ref() {
+                            Some(FinishReason::FinishReasonUnspecified) => {
+                                candidate.finish_reason = None;
+                                candidate.finish_message = None;
+                            }
+                            Some(FinishReason::Continuation) => {
+                                finish = Some(FinishReason::Continuation);
+                                terminal_token = candidate.continuation_token.clone()
+                                    .filter(|token| !token.is_empty());
+                                candidate.finish_reason = None;
+                                candidate.finish_message = None;
+                            }
+                            Some(reason) => {
+                                finish = Some(reason.clone());
+                                finish_message = candidate.finish_message.clone();
+                            }
+                            None => {}
+                        }
+                    }
+                    if let Some(usage) = chunk.usage_metadata.as_mut() {
+                        // Within a hop usage is cumulative, not a per-chunk delta.
+                        hop_usage = usage.clone();
+                        *usage = accumulate_generate_content_usage(&completed_usage, usage);
+                    }
+                    yield chunk;
+                }
+                if blocked {
+                    break;
+                }
+                let finish = finish.ok_or_else(|| SamplingError::StreamError {
+                    error_type: "stream_truncated".into(),
+                    message: "generateContent stream ended without a finishReason".into(),
+                    code: None,
+                })?;
+                if finish.is_malformed_output() {
+                    let reason = finish.wire_str();
+                    Err::<(), _>(SamplingError::StreamError {
+                        error_type: "malformed_model_output".into(),
+                        message: finish_message
+                            .map(|message| format!("{reason}: {message}"))
+                            .unwrap_or_else(|| format!("model output was rejected by the service ({reason})")),
+                        code: None,
+                    })?;
+                }
+                if finish != FinishReason::Continuation {
+                    break;
+                }
+                let token = terminal_token.ok_or_else(|| SamplingError::StreamError {
+                    error_type: "stream_truncated".into(),
+                    message: "generateContent CONTINUATION did not include a continuationToken".into(),
+                    code: None,
+                })?;
+                if !seen_tokens.insert(token.clone()) {
+                    Err::<(), _>(SamplingError::StreamError {
+                        error_type: "stream_truncated".into(),
+                        message: "generateContent repeated a continuationToken without advancing".into(),
+                        code: None,
+                    })?;
+                }
+                completed_usage = accumulate_generate_content_usage(&completed_usage, &hop_usage);
+                request.inner.continuation_token = Some(token);
+                // Resume only from a terminal checkpoint. Reconnecting to an
+                // earlier mid-stream checkpoint could duplicate visible output.
+                stream = client.create_generate_content_stream_hop(&request).await?.0;
+            }
+        }.boxed();
+        Ok((events, metadata))
+    }
+
+    async fn create_generate_content_stream_hop(
+        &self,
+        request: &GenerateContentRequestWrapper,
     ) -> Result<(
         BoxStream<'static, Result<GenerateContentResponse>>,
         Option<ResponseModelMetadata>,
@@ -4843,7 +4969,7 @@ impl SamplingClient {
 
     async fn create_generate_content_stream_inner(
         &self,
-        mut request: GenerateContentRequestWrapper,
+        request: &GenerateContentRequestWrapper,
         model_id: String,
         url: String,
         region: crate::span_timing::Region,
@@ -4852,9 +4978,6 @@ impl SamplingClient {
         Option<ResponseModelMetadata>,
     )> {
         let mut span_timing = StreamSpanTiming::start(region);
-
-        // Drop process-local trace data.
-        request.trace.take();
 
         // The model rides the URL path; `GenerateContentRequest::model` is
         // `serde(skip)` so the body never carries it.

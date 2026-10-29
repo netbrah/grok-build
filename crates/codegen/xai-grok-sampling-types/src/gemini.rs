@@ -63,6 +63,9 @@ pub struct GenerateContentRequest {
     pub tool_config: Option<ToolConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_config: Option<GenerationConfig>,
+    /// Opaque token from a response that ended with `CONTINUATION`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_token: Option<String>,
 }
 
 impl GenerateContentRequest {
@@ -422,6 +425,8 @@ pub struct Candidate {
     pub finish_message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_token: Option<String>,
 }
 
 /// Why a candidate stopped. Proto enum names on the wire.
@@ -448,6 +453,8 @@ pub enum FinishReason {
     TooManyToolCalls,
     NoImage,
     MalformedResponse,
+    /// The per-request limit was reached, but generation is not complete.
+    Continuation,
     /// Catch-all so a new server-side reason never fails the terminal chunk
     /// parse and discards an already-streamed response. Must stay LAST.
     #[serde(untagged)]
@@ -461,6 +468,16 @@ impl FinishReason {
             Ok(Value::String(s)) => s,
             _ => String::new(),
         }
+    }
+
+    pub fn is_malformed_output(&self) -> bool {
+        matches!(
+            self,
+            Self::MalformedFunctionCall
+                | Self::UnexpectedToolCall
+                | Self::TooManyToolCalls
+                | Self::MalformedResponse
+        )
     }
 
     /// Reasons that mean "output withheld by a content policy".
@@ -553,6 +570,32 @@ mod tests {
     }
 
     #[test]
+    fn continuation_token_round_trips_as_an_opaque_top_level_request_field() {
+        let wire = json!({
+            "candidates": [{
+                "finishReason": "CONTINUATION",
+                "continuationToken": "dG9rZW4tMQ=="
+            }]
+        });
+        let response: GenerateContentResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(
+            response.candidates[0].finish_reason,
+            Some(FinishReason::Continuation)
+        );
+        assert_eq!(serde_json::to_value(&response).unwrap(), wire);
+        let request = GenerateContentRequest {
+            continuation_token: response.candidates[0].continuation_token.clone(),
+            ..Default::default()
+        };
+        let encoded = serde_json::to_value(request).unwrap();
+        assert_eq!(
+            encoded["continuationToken"],
+            wire["candidates"][0]["continuationToken"]
+        );
+        assert!(encoded.get("generationConfig").is_none());
+    }
+
+    #[test]
     fn request_serializes_camel_case_and_skips_model() {
         let req = GenerateContentRequest {
             model: "gemini-3-pro-preview".into(),
@@ -584,6 +627,7 @@ mod tests {
                 }),
                 ..Default::default()
             }),
+            continuation_token: None,
         };
         let v = serde_json::to_value(&req).unwrap();
         assert!(v.get("model").is_none());

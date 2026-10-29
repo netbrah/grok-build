@@ -277,12 +277,18 @@ pub fn stream_generate_content<'a>(
 
         let mut stop_reason = match &final_finish {
             Some(FinishReason::MaxTokens) => Some(StopReason::Length),
-            Some(
-                FinishReason::MalformedFunctionCall
-                | FinishReason::UnexpectedToolCall
-                | FinishReason::TooManyToolCalls
-                | FinishReason::MalformedResponse,
-            ) => {
+            Some(FinishReason::Continuation) => {
+                yield SamplingEvent::Failed {
+                    request_id: request_id.clone(),
+                    error: SamplingErrorInfo::from(&SamplingError::StreamError {
+                        error_type: "stream_truncated".to_owned(),
+                        message: "generation requires a continuation request before completion".to_owned(),
+                        code: None,
+                    }),
+                };
+                return;
+            }
+            Some(reason) if reason.is_malformed_output() => {
                 let reason = final_finish.as_ref().map(FinishReason::wire_str).unwrap_or_default();
                 let message = final_finish_message
                     .clone()
@@ -304,16 +310,18 @@ pub fn stream_generate_content<'a>(
                 Some(StopReason::Stop)
             }
             // Policy reasons (SAFETY, RECITATION, …) are the typed refusal;
-            // OTHER / UNSPECIFIED / NO_IMAGE complete for a reason the
+            // OTHER / NO_IMAGE complete for a reason the
             // transform does not model — the raw value is carried for display
             // and the turn completes as a plain stop.
-            Some(reason) => Some(if reason.is_content_filter() {
-                StopReason::ContentFilter
-            } else {
-                StopReason::Stop
-            }),
-            None if block_reason.is_some() => Some(StopReason::ContentFilter),
-            None => {
+            Some(reason) if *reason != FinishReason::FinishReasonUnspecified => {
+                Some(if reason.is_content_filter() {
+                    StopReason::ContentFilter
+                } else {
+                    StopReason::Stop
+                })
+            }
+            _ if block_reason.is_some() => Some(StopReason::ContentFilter),
+            _ => {
                 // A stream that ends without a terminal finishReason was cut
                 // mid-generation (the wire always closes a candidate).
                 let err = SamplingError::StreamError {

@@ -36,11 +36,12 @@
 //!    consistent correlation key is what the field is for. Older
 //!    generations get no ids (positional pairing only).
 //! 3. Opaque-reasoning replay (the point of the native wire):
-//!    - the `thoughtSignature` (`Reasoning.encrypted_content`) replays on
-//!      the part Gemini issued it on: the FIRST `functionCall` part of the
-//!      step when the step called functions (parallel calls carry one
-//!      signature, on the first), else the LAST text part. Every other
-//!      `functionCall` part of the history that has no genuine signature
+//!    - the step's `thoughtSignature` (`Reasoning.encrypted_content`) replays
+//!      on the FIRST `functionCall` part when the step called functions
+//!      (parallel calls carry one
+//!      signature, on the first), else the LAST accumulated text part. This
+//!      text/function-call projection is not a raw SSE-part archive.
+//!      Every other `functionCall` part of the history that has no genuine signature
 //!      gets [`SKIP_THOUGHT_SIGNATURE_VALIDATOR`]: Gemini 3 rejects an
 //!      unsigned current-turn call with a 400, previous-turn calls are not
 //!      validated, and over-substituting is the documented, harmless side
@@ -228,8 +229,7 @@ pub fn build_generate_content_request(req: &ConversationRequest) -> GenerateCont
                 // Thought summaries are deliberately not replayed (module
                 // docs, step 3): the signature is the whole reasoning state.
                 if let Some(sig) = r.encrypted_content.as_deref().filter(|s| !s.is_empty()) {
-                    // Last-wins within one step; one signature per model step
-                    // is the wire's own shape.
+                    // This storage carrier is per step, not per SSE chunk.
                     model_buffer.signature = Some(sig.to_owned());
                 }
             }
@@ -350,6 +350,7 @@ pub fn build_generate_content_request(req: &ConversationRequest) -> GenerateCont
         tools,
         tool_config,
         generation_config: (!generation_config.is_empty()).then_some(generation_config),
+        continuation_token: None,
     }
 }
 
