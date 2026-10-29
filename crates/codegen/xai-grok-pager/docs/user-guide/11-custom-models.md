@@ -243,6 +243,8 @@ supports_reasoning_effort = true
 
 Grok posts to `{base_url}/models/{model}:streamGenerateContent?alt=sse` and sends the key on Google's `x-goog-api-key` header. The model's thought summaries stream as reasoning, and the opaque `thoughtSignature` Gemini attaches to its function calls is stored with the turn and replayed on the following requests, so multi-step tool use keeps its reasoning context. Only the signature is replayed, never the thought text: the signature is the model's full reasoning state, and resending summaries would cost input tokens and change the cached prefix. A signature minted by a different model is not replayed (`gemini-3.5-flash` and the dated `gemini-3.5-flash-001` the service reports count as the same model; `-lite` or another vendor do not). Function-call ids are echoed back on the matching `functionResponse` on Gemini 3+ — the model issues them and pairs results by them — and a string or number `const` in a tool's parameter schema is sent as a single-value `enum`, the form Gemini's schema subset honours.
 
+New turns use the requested model for replay ownership, so a latest-model or gateway alias keeps its signatures even when `modelVersion` reports a different canonical name. Native call ids are preserved verbatim; ids imported from another model are normalized without collisions, and parallel tool results are ordered by their matching ids.
+
 #### Thinking and sampling on Gemini 3+
 
 `reasoning_effort` maps to `thinkingConfig.thinkingLevel`. Thinking cannot be switched off on these models, and `minimal` exists only on the Gemini 3 Flash family:

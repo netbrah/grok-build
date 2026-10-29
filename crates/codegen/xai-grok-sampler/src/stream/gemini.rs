@@ -67,6 +67,7 @@ fn resolve_call_id(wire_id: Option<String>, taken: &[ToolCall]) -> String {
 pub fn stream_generate_content<'a>(
     raw_stream: BoxStream<'a, Result<GenerateContentResponse, SamplingError>>,
     model_metadata: Option<ResponseModelMetadata>,
+    requested_model: String,
     request_id: RequestId,
     idle_timeout: Duration,
 ) -> impl Stream<Item = SamplingEvent> + Send + 'a {
@@ -77,6 +78,8 @@ pub fn stream_generate_content<'a>(
             ttlb_ms = tracing::field::Empty,
             output_tokens = tracing::field::Empty,
             chunk_count = tracing::field::Empty,
+            requested_model = %requested_model,
+            resolved_model = tracing::field::Empty,
         ));
         let stream_start = Instant::now();
         let mut chunk_timestamps: Vec<Instant> = Vec::new();
@@ -422,16 +425,17 @@ pub fn stream_generate_content<'a>(
         items.push(ConversationItem::Assistant(AssistantItem {
             content: std::sync::Arc::<str>::from(assistant_text),
             tool_calls: assistant_tool_calls,
-            // `modelVersion` is the resolved concrete version (e.g.
-            // `gemini-2.5-pro-preview-06-05`); it keys the projector's R8
-            // identity check against the request slug, so a missing value
-            // must stay `None` rather than inventing one.
-            model_id: final_model,
+            // Replay ownership follows the requested routing identity, not
+            // the service's resolved version of a latest/gateway alias.
+            model_id: Some(requested_model),
             model_fingerprint: None,
             reasoning_effort: None,
         }));
 
         let stream_end = Instant::now();
+        if let Some(model) = final_model {
+            decode_region.span().record("resolved_model", model.as_str());
+        }
         let metrics =
             InferenceLatencyStats::from_timestamps(stream_start, &chunk_timestamps, stream_end);
         decode_region

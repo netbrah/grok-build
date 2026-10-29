@@ -22,10 +22,15 @@ async fn collect(s: impl Stream<Item = SamplingEvent>) -> Vec<SamplingEvent> {
 }
 
 async fn run(chunks: Vec<GenerateContentResponse>) -> Vec<SamplingEvent> {
+    run_for_model(chunks, "gemini-2.5-pro-preview-06-05").await
+}
+
+async fn run_for_model(chunks: Vec<GenerateContentResponse>, model: &str) -> Vec<SamplingEvent> {
     let raw = stream::iter(chunks.into_iter().map(Ok::<_, SamplingError>)).boxed();
     collect(stream_generate_content(
         raw,
         None,
+        model.to_owned(),
         rid(),
         Duration::from_secs(60),
     ))
@@ -85,6 +90,46 @@ fn reasoning_of(resp: &ConversationResponse) -> Option<&rs::ReasoningItem> {
         ConversationItem::Reasoning(r) => Some(&r.item),
         _ => None,
     })
+}
+
+#[tokio::test]
+async fn requested_model_owns_signature_replay_even_when_the_resolved_name_differs() {
+    for model in ["gemini-flash-latest", "prod-coder"] {
+        for resolved in [Some("gemini-3.5-flash"), None] {
+            let mut response_chunk = chunk(
+                vec![call("lookup", serde_json::json!({})).with_thought_signature("SIG_ALIAS")],
+                Some(FinishReason::Stop),
+            );
+            response_chunk.model_version = resolved.map(str::to_owned);
+            let events = run_for_model(vec![response_chunk], model).await;
+            let response = completed(&events);
+            let assistant = response.assistant().unwrap();
+            assert_eq!(assistant.model_id.as_deref(), Some(model));
+
+            let mut items = vec![ConversationItem::user("go")];
+            items.extend(response.items.clone());
+            items.push(ConversationItem::tool_result(
+                assistant.tool_calls[0].id.as_ref(),
+                "result",
+            ));
+            let mut request =
+                xai_grok_sampling_types::ConversationRequest::from_items(items).with_model(model);
+            let projected =
+                xai_grok_sampling_types::conversation::build_generate_content_request(&request);
+            assert_eq!(
+                projected.contents[1].parts[0].thought_signature.as_deref(),
+                Some("SIG_ALIAS")
+            );
+
+            request.model = Some("gemini-4-argon".into());
+            let switched =
+                xai_grok_sampling_types::conversation::build_generate_content_request(&request);
+            assert_eq!(
+                switched.contents[1].parts[0].thought_signature.as_deref(),
+                Some(xai_grok_sampling_types::gemini::SKIP_THOUGHT_SIGNATURE_VALIDATOR)
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -353,7 +398,11 @@ async fn prompt_block_without_candidates_is_a_content_filter_terminal() {
     );
     let a = resp.assistant().unwrap();
     assert!(a.content.is_empty());
-    assert_eq!(a.model_id, None, "no modelVersion ⇒ no invented model id");
+    assert_eq!(
+        a.model_id.as_deref(),
+        Some("gemini-2.5-pro-preview-06-05"),
+        "the requested identity is known even without a provider modelVersion"
+    );
 }
 
 #[tokio::test]
@@ -404,6 +453,7 @@ async fn transport_error_mid_stream_fails() {
     let events = collect(stream_generate_content(
         raw,
         None,
+        "gemini-3.5-flash".into(),
         rid(),
         Duration::from_secs(60),
     ))
@@ -417,6 +467,7 @@ async fn idle_timeout_fails_the_stream() {
     let events = collect(stream_generate_content(
         raw,
         None,
+        "gemini-3.5-flash".into(),
         rid(),
         Duration::from_millis(20),
     ))
@@ -481,6 +532,7 @@ async fn model_metadata_is_forwarded_after_stream_started() {
     let events = collect(stream_generate_content(
         raw,
         Some(md),
+        "gemini-3.5-flash".into(),
         rid(),
         Duration::from_secs(60),
     ))

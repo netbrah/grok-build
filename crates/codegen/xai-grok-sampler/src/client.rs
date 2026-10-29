@@ -4757,6 +4757,13 @@ impl SamplingClient {
     // Google Gemini generateContent API
     // =========================================================================
 
+    pub(crate) fn generate_content_model(&self, model: Option<&str>) -> String {
+        model
+            .filter(|model| !model.is_empty())
+            .unwrap_or(&self.defaults.model)
+            .to_owned()
+    }
+
     /// `{base}/models/{model}:streamGenerateContent?alt=sse` — the Gemini API
     /// shape when `base_url` ends at the API version (e.g.
     /// `https://generativelanguage.googleapis.com/v1beta`), and the Vertex AI
@@ -4809,11 +4816,7 @@ impl SamplingClient {
         BoxStream<'static, Result<GenerateContentResponse>>,
         Option<ResponseModelMetadata>,
     )> {
-        let model = if request.inner.model.is_empty() {
-            self.defaults.model.clone()
-        } else {
-            request.inner.model.clone()
-        };
+        let model = self.generate_content_model(Some(&request.inner.model));
         let url = self.generate_content_stream_url(&model);
         let region = crate::span_timing::stream_span!(
             "http.create_generate_content_stream",
@@ -5086,9 +5089,10 @@ impl SamplingClient {
                 crate::stream::collect_response(events).await
             }
             ApiBackend::GenerateContent => {
+                let model = self.generate_content_model(request.model.as_deref());
                 let (raw, meta) = self.conversation_stream_generate_content(request).await?;
                 let events =
-                    crate::stream::stream_generate_content(raw, meta, request_id, idle_timeout);
+                    crate::stream::stream_generate_content(raw, meta, model, request_id, idle_timeout);
                 crate::stream::collect_response(events).await
             }
         };

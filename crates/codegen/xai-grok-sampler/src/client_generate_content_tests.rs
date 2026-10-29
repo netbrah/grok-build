@@ -307,6 +307,65 @@ fn plain_request() -> ConversationRequest {
 
 #[tokio::test]
 #[serial]
+async fn generate_content_collect_preserves_requested_alias_and_native_call_id() {
+    const RESPONSE: &str = concat!(
+        "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[",
+        "{\"functionCall\":{\"id\":\"native/a\",\"name\":\"lookup\",\"args\":{}},",
+        "\"thoughtSignature\":\"SIG_ALIAS\"}]},\"finishReason\":\"STOP\"}],",
+        "\"modelVersion\":\"gemini-3.5-flash\"}\n\n",
+    );
+    for (configured, requested, expected) in [
+        ("gemini-flash-latest", None, "gemini-flash-latest"),
+        ("unused-default", Some("prod-coder"), "prod-coder"),
+    ] {
+        let (addr, rx, server) = spawn_mock_with(
+            "/v1beta/models/{operation}",
+            200,
+            "text/event-stream",
+            RESPONSE,
+        )
+        .await;
+        let client = gemini_client(format!("http://{addr}/v1beta"), configured);
+        let mut request = plain_request();
+        request.model = requested.map(str::to_owned);
+        let response = client.conversation_collect(request).await.unwrap();
+        let captured = rx.await.unwrap();
+        server.abort();
+        assert_eq!(
+            captured.uri.path(),
+            format!("/v1beta/models/{expected}:streamGenerateContent")
+        );
+        assert_eq!(
+            response.assistant().unwrap().model_id.as_deref(),
+            Some(expected)
+        );
+
+        let mut items = vec![ConversationItem::user("hi")];
+        items.extend(response.items);
+        items.push(ConversationItem::tool_result("native/a", "found"));
+        let replay = build_generate_content_request(
+            &ConversationRequest::from_items(items).with_model(expected),
+        );
+        let call = &replay.contents[1].parts[0];
+        assert_eq!(call.thought_signature.as_deref(), Some("SIG_ALIAS"));
+        assert_eq!(
+            call.function_call.as_ref().unwrap().id.as_deref(),
+            Some("native/a")
+        );
+        assert_eq!(
+            replay.contents[2].parts[0]
+                .function_response
+                .as_ref()
+                .unwrap()
+                .id
+                .as_deref(),
+            Some("native/a")
+        );
+    }
+}
+
+#[tokio::test]
+#[serial]
 async fn generate_content_json_error_relayed_as_200_surfaces_as_a_stream_error() {
     // LiteLLM relays a guardrail block as HTTP 200 with an OpenAI-shaped
     // error envelope. Fed to the SSE decoder it has no `data:` line and

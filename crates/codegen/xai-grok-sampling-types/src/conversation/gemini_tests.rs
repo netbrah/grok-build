@@ -259,7 +259,7 @@ fn vertex_resource_slug_leaves_unsigned_calls_without_the_bypass_sentinel() {
 }
 
 #[test]
-fn call_ids_are_echoed_normalised_on_gemini_3_plus_and_omitted_before() {
+fn native_call_ids_are_preserved_on_gemini_3_plus_and_omitted_before() {
     let odd_id = "toolu_01AB:cd/ef";
     let long_id = "x".repeat(80);
     let items = |model: &str| {
@@ -273,15 +273,75 @@ fn call_ids_are_echoed_normalised_on_gemini_3_plus_and_omitted_before() {
     let b = body(&ConversationRequest::from_items(items(MODEL)).with_model(MODEL));
     let calls = parts(&b, 1);
     let results = parts(&b, 2);
-    assert_eq!(calls[0]["functionCall"]["id"], "toolu_01AB_cd_ef");
-    assert_eq!(results[0]["functionResponse"]["id"], "toolu_01AB_cd_ef");
-    assert_eq!(calls[1]["functionCall"]["id"], "x".repeat(64));
-    assert_eq!(results[1]["functionResponse"]["id"], "x".repeat(64));
+    assert_eq!(calls[0]["functionCall"]["id"], odd_id);
+    assert_eq!(results[0]["functionResponse"]["id"], odd_id);
+    assert_eq!(calls[1]["functionCall"]["id"], long_id);
+    assert_eq!(results[1]["functionResponse"]["id"], long_id);
 
     let older = "gemini-2.5-pro";
     let b = body(&ConversationRequest::from_items(items(older)).with_model(older));
     assert!(parts(&b, 1)[0]["functionCall"].get("id").is_none());
     assert!(parts(&b, 2)[0]["functionResponse"].get("id").is_none());
+}
+
+#[test]
+fn foreign_call_ids_are_normalised_without_collisions_and_results_follow_ids() {
+    let long_prefix = "x".repeat(64);
+    let ids = [
+        "call/a".to_owned(),
+        "call?a".to_owned(),
+        "call_a".to_owned(),
+        "call_a_1".to_owned(),
+        format!("{long_prefix}a"),
+        format!("{long_prefix}b"),
+    ];
+    let calls: Vec<(&str, &str)> = ids.iter().map(|id| (id.as_str(), "lookup")).collect();
+    let mut items = vec![
+        ConversationItem::user("go"),
+        assistant_calls_with_model(&calls, Some("another-provider-model")),
+    ];
+    items.extend(
+        ids.iter()
+            .rev()
+            .map(|id| ConversationItem::tool_result(id.as_str(), id.as_str())),
+    );
+    let b = body(&gemini_request(items));
+    let calls = parts(&b, 1);
+    let results = parts(&b, 2);
+    let mut seen = std::collections::HashSet::new();
+    for (index, original_id) in ids.iter().enumerate() {
+        let wire_id = calls[index]["functionCall"]["id"].as_str().unwrap();
+        assert!(seen.insert(wire_id), "duplicate wire id: {wire_id}");
+        assert!(wire_id.len() <= 64);
+        assert!(
+            wire_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        );
+        assert_eq!(results[index]["functionResponse"]["id"], wire_id);
+        assert_eq!(
+            results[index]["functionResponse"]["response"]["output"],
+            *original_id
+        );
+    }
+    assert_eq!(calls[2]["functionCall"]["id"], "call_a");
+    assert_eq!(calls[3]["functionCall"]["id"], "call_a_1");
+}
+
+#[test]
+fn native_ids_cannot_be_taken_by_normalised_foreign_ids() {
+    let req = gemini_request(vec![
+        ConversationItem::user("go"),
+        assistant_calls_with_model(&[("call/a", "lookup")], Some("foreign")),
+        ConversationItem::tool_result("call/a", "foreign"),
+        assistant_calls_with_model(&[("call_a", "lookup")], Some(MODEL)),
+        ConversationItem::tool_result("call_a", "native"),
+    ]);
+    let b = body(&req);
+    assert_eq!(parts(&b, 1)[0]["functionCall"]["id"], "call_a_1");
+    assert_eq!(parts(&b, 2)[0]["functionResponse"]["id"], "call_a_1");
+    assert_eq!(parts(&b, 3)[0]["functionCall"]["id"], "call_a");
+    assert_eq!(parts(&b, 4)[0]["functionResponse"]["id"], "call_a");
 }
 
 #[test]
@@ -670,9 +730,7 @@ fn function_responses_are_hoisted_and_ordered_to_the_call_order() {
                 .unwrap()
         })
         .collect();
-    // Positional by name: the 1st `read_file` call takes the 1st stored
-    // `read_file` response (`third`, stored first), the 2nd takes `first`.
-    assert_eq!(outputs, ["third", "second", "first"]);
+    assert_eq!(outputs, ["first", "second", "third"]);
     assert_eq!(p[0]["functionResponse"]["name"], "read_file");
     assert_eq!(p[1]["functionResponse"]["name"], "grep");
     assert_eq!(p[2]["functionResponse"]["name"], "read_file");

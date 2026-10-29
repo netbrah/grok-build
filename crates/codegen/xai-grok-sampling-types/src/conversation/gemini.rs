@@ -22,10 +22,12 @@
 //!    gets the `"(see attached image)"` output placeholder so the response
 //!    object is never empty. When a user content answers a model content's
 //!    calls, its `functionResponse` parts are re-ordered to the call order
-//!    (positional matching by name) and hoisted ahead of any text/media
+//!    (matching by id, or by name when ids are absent) and hoisted ahead of any text/media
 //!    (gemini-cli `refineToolResponses` parity).
 //!    Call ids: on Gemini 3+ every `functionCall` / `functionResponse`
-//!    carries the stored call id (normalised to `[A-Za-z0-9_-]`, 64 chars).
+//!    carries the stored call id. Native same-model ids are preserved;
+//!    foreign ids use `[A-Za-z0-9_-]`, at most 64 chars, with collision
+//!    resolution shared by calls and results.
 //!    Gemini 3 issues an `id` on its calls and expects it back on the
 //!    matching response ("if populated, the client … return the response
 //!    with the matching id"); a long tool history replayed without ids
@@ -61,10 +63,10 @@
 //!      model that minted it) — the calls then take the bypass value. The
 //!      comparison is [`same_gemini_model`]: path prefixes and case are
 //!      ignored and a version/date/preview suffix on either side is
-//!      tolerated, because `model_id` is the stream's canonical
-//!      `modelVersion` (`gemini-2.5-flash-preview-05-20`, `-001`, ...) while
-//!      the slug is whatever the row configured (possibly a Vertex resource
-//!      path). An owner with no `model_id`, or no owner, is NOT suppressed.
+//!      tolerated for older histories that stored the stream's canonical
+//!      `modelVersion`. New turns store the requested model for replay
+//!      ownership, so a gateway or latest-model alias does not look like a
+//!      model switch. An owner with no `model_id`, or no owner, is NOT suppressed.
 //! 4. Head/tail repair: a history that opens or closes on a `model` content
 //!    gets a `[Continue]` / `[Awaiting tool result]` user sentinel (Messages
 //!    parity; the model-visible sentinel is deliberate).
@@ -94,6 +96,7 @@ use crate::gemini::{
     FunctionResponse, FunctionResponsePart, GenerateContentRequest, GenerationConfig, Part,
     SKIP_THOUGHT_SIGNATURE_VALIDATOR, ThinkingConfig, ThinkingLevel, Tool, ToolConfig,
 };
+use std::collections::{HashMap, HashSet};
 
 /// Sentinel user text appended when the history closes on a model content
 /// that still awaits a function response.
@@ -124,6 +127,11 @@ pub fn build_generate_content_request(req: &ConversationRequest) -> GenerateCont
     let policy = WirePolicy {
         echo_call_ids: level_model,
         unsigned_call_sentinel: !is_vertex_resource(model_slug),
+    };
+    let call_ids = if policy.echo_call_ids {
+        wire_call_ids(&items, model_slug)
+    } else {
+        HashMap::new()
     };
 
     // Forward-owner lookup: per index, the model_id of the nearest FORWARD
@@ -180,10 +188,7 @@ pub fn build_generate_content_request(req: &ConversationRequest) -> GenerateCont
                         &t.content
                     };
                 pending_user.push(Part::function_response(FunctionResponse {
-                    id: policy
-                        .echo_call_ids
-                        .then(|| wire_call_id(&t.tool_call_id))
-                        .flatten(),
+                    id: call_ids.get(t.tool_call_id.as_str()).cloned(),
                     name,
                     response: function_response_payload(content, t.is_error),
                     parts: media,
@@ -198,7 +203,7 @@ pub fn build_generate_content_request(req: &ConversationRequest) -> GenerateCont
                 }
                 for tc in &a.tool_calls {
                     model_buffer.calls.push(Part::function_call(FunctionCall {
-                        id: policy.echo_call_ids.then(|| wire_call_id(&tc.id)).flatten(),
+                        id: call_ids.get(tc.id.as_ref()).cloned(),
                         name: tc.name.clone(),
                         args: Some(tool_call_args(&tc.arguments, &tc.name)),
                     }));
@@ -413,23 +418,23 @@ fn flush_user(pending: &mut Vec<Part>, contents: &mut Vec<Content>) {
         return;
     }
     let mut parts = std::mem::take(pending);
-    let call_names: Vec<&str> = contents
+    let calls: Vec<&FunctionCall> = contents
         .last()
         .filter(|c| c.is_model())
         .map(|c| {
             c.parts
                 .iter()
-                .filter_map(|p| p.function_call.as_ref().map(|fc| fc.name.as_str()))
+                .filter_map(|p| p.function_call.as_ref())
                 .collect()
         })
         .unwrap_or_default();
     if parts.iter().any(|p| p.function_response.is_some()) {
-        parts = order_function_responses(parts, &call_names);
+        parts = order_function_responses(parts, &calls);
     }
     contents.push(Content::user(parts));
 }
 
-fn order_function_responses(parts: Vec<Part>, call_names: &[&str]) -> Vec<Part> {
+fn order_function_responses(parts: Vec<Part>, calls: &[&FunctionCall]) -> Vec<Part> {
     let mut responses: Vec<Option<Part>> = Vec::new();
     let mut others: Vec<Part> = Vec::new();
     for part in parts {
@@ -440,14 +445,16 @@ fn order_function_responses(parts: Vec<Part>, call_names: &[&str]) -> Vec<Part> 
         }
     }
     let mut ordered: Vec<Part> = Vec::with_capacity(responses.len() + others.len());
-    // Positional matching with multiplicity: the k-th call of a name takes
-    // the k-th stored response of that name.
-    for name in call_names {
+    for call in calls {
         if let Some(slot) = responses.iter_mut().find(|slot| {
             slot.as_ref().is_some_and(|p| {
-                p.function_response
-                    .as_ref()
-                    .is_some_and(|fr| fr.name == *name)
+                p.function_response.as_ref().is_some_and(|fr| {
+                    fr.name == call.name
+                        && match (&call.id, &fr.id) {
+                            (Some(call_id), Some(response_id)) => call_id == response_id,
+                            _ => true,
+                        }
+                })
             })
         }) {
             ordered.extend(slot.take());
@@ -516,12 +523,55 @@ fn function_response_payload(content: &str, is_error: bool) -> serde_json::Value
     }
 }
 
-/// Stored call id → wire `functionCall.id` / `functionResponse.id`. Ids the
-/// decoder kept from the wire are already in shape; ids minted locally or
-/// inherited from another backend (`toolu_…`, `call_…`, `fc_…`) are reduced
-/// to the accepted `[A-Za-z0-9_-]` alphabet and 64 characters. `None` when
-/// nothing is left (an unpaired result never reaches here, but an empty id
-/// is a worse failure than a missing one).
+/// Preserve native ids and assign portable, distinct ids to foreign calls.
+/// Reserving unchanged ids first prevents a normalized id from stealing one.
+fn wire_call_ids<'a>(items: &'a [ConversationItem], model_slug: &str) -> HashMap<&'a str, String> {
+    let calls: Vec<(&str, bool)> = items
+        .iter()
+        .filter_map(|item| match item {
+            ConversationItem::Assistant(a) => Some(a),
+            _ => None,
+        })
+        .flat_map(|a| {
+            let native = a
+                .model_id
+                .as_deref()
+                .is_some_and(|owner| same_gemini_model(owner, model_slug));
+            a.tool_calls
+                .iter()
+                .map(move |call| (call.id.as_ref(), native))
+        })
+        .collect();
+    let mut ids = HashMap::new();
+    let mut used = HashSet::new();
+    for &(id, native) in &calls {
+        if !id.is_empty() && (native || wire_call_id(id).as_deref() == Some(id)) {
+            ids.insert(id, id.to_owned());
+            used.insert(id.to_owned());
+        }
+    }
+    for (id, _) in calls {
+        if ids.contains_key(id) {
+            continue;
+        }
+        let Some(base) = wire_call_id(id) else {
+            continue;
+        };
+        let mut candidate = base.clone();
+        let mut suffix = 1usize;
+        while used.contains(&candidate) {
+            let tail = format!("_{suffix}");
+            candidate = format!("{}{}", &base[..base.len().min(64 - tail.len())], tail);
+            suffix += 1;
+        }
+        used.insert(candidate.clone());
+        ids.insert(id, candidate);
+    }
+    ids
+}
+
+/// Portable form for ids inherited from another model. Native ids need not
+/// satisfy these cross-provider compatibility constraints.
 fn wire_call_id(id: &str) -> Option<String> {
     let normalised: String = id
         .chars()

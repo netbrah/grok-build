@@ -1040,12 +1040,13 @@ async fn run_one_attempt(
             AttemptReport { outcome, evidence }
         }
         ApiBackend::GenerateContent => {
+            let model = client.generate_content_model(request.model.as_deref());
             let (raw, metadata) = match client.conversation_stream_generate_content(request).await {
                 Ok(pair) => pair,
                 Err(e) => return AttemptOutcome::InitFailed { error: e }.into(),
             };
             let (teed, captured) = tee_errors(raw);
-            let l2 = stream_generate_content(teed, metadata, request_id.clone(), idle_timeout);
+            let l2 = stream_generate_content(teed, metadata, model, request_id.clone(), idle_timeout);
             drive_l2(
                 l2,
                 request_id,
