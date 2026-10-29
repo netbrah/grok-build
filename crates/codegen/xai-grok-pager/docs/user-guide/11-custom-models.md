@@ -94,7 +94,7 @@ name = "Display Name"                     # Shown in the model picker
 description = "Model description"          # Optional description
 api_key = "sk-..."                        # API key for this provider (optional)
 env_key = "XAI_API_KEY"                   # Env var holding the API key (optional; string or array)
-api_backend = "chat_completions"          # "chat_completions", "responses", or "messages"
+api_backend = "chat_completions"          # "chat_completions", "responses", "messages", or "generate_content"
 temperature = 0.7                         # Sampling temperature
 top_p = 0.95                              # Nucleus sampling parameter
 max_completion_tokens = 8192              # Maximum tokens per response
@@ -224,6 +224,36 @@ extra_headers = { "x-api-key" = "sk-ant-...", "anthropic-version" = "2023-06-01"
 ```
 
 The `messages` backend uses the Anthropic Messages protocol. Anthropic authenticates with an `x-api-key` header rather than `Authorization: Bearer`, so pass your key through `extra_headers`, which Grok sends verbatim.
+
+### Google (Gemini)
+
+Use Gemini models directly via the native `generateContent` API:
+
+```toml
+[model.gemini-3-pro]
+model = "gemini-3-pro-preview"
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+name = "Gemini 3 Pro"
+api_backend = "generate_content"
+auth_scheme = "x_goog_api_key"
+env_key = "GEMINI_API_KEY"
+context_window = 1048576
+supports_reasoning_effort = true
+```
+
+Grok posts to `{base_url}/models/{model}:streamGenerateContent?alt=sse` and sends the key on Google's `x-goog-api-key` header. The model's thought summaries stream as reasoning, and the opaque `thoughtSignature` Gemini attaches to its function calls is stored with the turn and replayed on the following requests, so multi-step tool use keeps its reasoning context. Reasoning effort maps to `thinkingConfig` (`thinkingLevel` on Gemini 3, a `thinkingBudget` on earlier models).
+
+For Vertex AI, point `base_url` at the publisher root and give the fully qualified model resource; the default `bearer` scheme carries your OAuth access token:
+
+```toml
+[model.gemini-vertex]
+model = "projects/my-project/locations/us-central1/publishers/google/models/gemini-3-pro-preview"
+base_url = "https://us-central1-aiplatform.googleapis.com/v1"
+api_backend = "generate_content"
+env_key = "VERTEX_ACCESS_TOKEN"
+```
+
+`api_backend = "generate_content"` is opt-in: Gemini models reached through an OpenAI-compatible gateway keep using `chat_completions` or `responses`.
 
 ### OpenAI (Chat Completions)
 
