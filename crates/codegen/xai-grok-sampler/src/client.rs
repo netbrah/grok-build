@@ -24,7 +24,8 @@ use serde::Serialize;
 use tracing::Instrument;
 
 use xai_grok_sampling_types::error::{
-    parse_error_code, try_parse_stream_error, user_facing_api_error_message,
+    parse_error_code, parse_error_retry_delay, try_parse_stream_error,
+    user_facing_api_error_message,
 };
 use xai_grok_sampling_types::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ConversationRequest,
@@ -599,6 +600,78 @@ pub(crate) fn parse_generate_content_chunk(data: &str) -> Result<GenerateContent
         );
         SamplingError::Serialization(e)
     })
+}
+
+/// Decode a 2xx Gemini body that did NOT arrive as an event stream into the
+/// chunk sequence the SSE decoder would have produced. Two proxy shapes land
+/// here: a LiteLLM guardrail block, relayed as HTTP 200 with a JSON error
+/// envelope (`{"error": {"type": "content_filter", ...}}`), and a proxy that
+/// dropped `alt=sse` and answered with the unary object or the JSON array of
+/// `GenerateContentResponse` chunks. Fed to `eventsource()` these bodies
+/// carry no `data:` line, so the stream ended as a silent truncation.
+pub(crate) fn decode_generate_content_json_body(
+    bytes: &[u8],
+) -> Vec<Result<GenerateContentResponse>> {
+    let text = match std::str::from_utf8(bytes) {
+        Ok(text) => text.trim_start_matches('\u{feff}').trim(),
+        Err(e) => {
+            return vec![Err(SamplingError::EventStreamError(format!(
+                "non-UTF-8 generateContent response body: {e}"
+            )))];
+        }
+    };
+    if let Some(stream_error) = try_parse_stream_error(text) {
+        return vec![Err(stream_error)];
+    }
+    if text.starts_with('[') {
+        return match serde_json::from_str::<Vec<GenerateContentResponse>>(text) {
+            Ok(chunks) if chunks.is_empty() => vec![Err(SamplingError::EventStreamError(
+                "generateContent response body was an empty JSON array".to_owned(),
+            ))],
+            Ok(chunks) => chunks.into_iter().map(Ok).collect(),
+            Err(e) => vec![Err(json_body_decode_error(text, e))],
+        };
+    }
+    match serde_json::from_str::<GenerateContentResponse>(text) {
+        Ok(chunk) => vec![Ok(chunk)],
+        Err(e) => vec![Err(json_body_decode_error(text, e))],
+    }
+}
+
+/// A JSON body that is neither an error envelope nor a chunk: salvage any
+/// human-readable message (FastAPI `{"detail": ...}`, odd relay shapes) as a
+/// stream error, else report the deserialization failure.
+fn json_body_decode_error(text: &str, e: serde_json::Error) -> SamplingError {
+    tracing::error!(
+        error = %e,
+        raw_data = %SamplingClient::body_preview(text.as_bytes()),
+        "Failed to deserialize a non-SSE generateContent response body"
+    );
+    match xai_grok_sampling_types::provider_error::parse_provider_error_str(text) {
+        Some(parsed) if !parsed.message_is_markup() => SamplingError::StreamError {
+            error_type: parsed
+                .slug()
+                .map(str::to_owned)
+                .unwrap_or_else(|| "unknown".to_owned()),
+            message: parsed.display_message(),
+            code: None,
+        },
+        _ => SamplingError::Serialization(e),
+    }
+}
+
+/// Whether a response announces itself as an SSE stream. A missing header is
+/// treated as a stream (the service always sets it; only a proxy swap of the
+/// body shape is worth buffering for).
+pub(crate) fn is_event_stream_response(headers: &HeaderMap) -> bool {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_none_or(|ct| {
+            ct.trim_start()
+                .to_ascii_lowercase()
+                .starts_with("text/event-stream")
+        })
 }
 
 /// Append the Gemini SSE selector (`alt=sse`) to a request URL that may
@@ -4838,9 +4911,13 @@ impl SamplingClient {
                 ));
             }
             let model_metadata = extract_model_metadata(response.headers());
-            let retry_after_secs = extract_retry_after(response.headers());
             let should_retry = extract_should_retry(response.headers());
+            let header_retry_after = extract_retry_after(response.headers());
             let bytes = response.bytes().await?;
+            // The Gemini 429 advises its delay inside the envelope
+            // (`google.rpc.RetryInfo`), not always in `Retry-After`.
+            let retry_after_secs =
+                header_retry_after.or_else(|| parse_error_retry_delay(bytes.as_ref()));
             let message = user_facing_api_error_message(status, bytes.as_ref());
             span_timing.span().record(ERROR, message.as_str());
             tracing::error!(
@@ -4861,6 +4938,32 @@ impl SamplingClient {
         }
 
         let model_metadata = extract_model_metadata(response.headers());
+
+        if !is_event_stream_response(response.headers()) {
+            // A 2xx whose body is JSON rather than SSE (proxy guardrail block
+            // relayed as 200, or `alt=sse` dropped on the way): buffer it and
+            // feed the decoder the chunks it would have streamed.
+            let content_type = response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_owned();
+            let bytes = response.bytes().await?;
+            tracing::warn!(
+                content_type = %content_type,
+                body_preview = %Self::body_preview(bytes.as_ref()),
+                model_id = %model_id,
+                "generateContent 2xx response is not an event stream; decoding the buffered body"
+            );
+            let events =
+                futures_util::stream::iter(decode_generate_content_json_body(bytes.as_ref()))
+                    .boxed();
+            return Ok((
+                span_timing.hold_until_first_content(events, generate_content_chunk_class),
+                model_metadata,
+            ));
+        }
 
         // Strip UTF-8 BOM if present
         const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];

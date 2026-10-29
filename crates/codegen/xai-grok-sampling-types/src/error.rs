@@ -833,8 +833,9 @@ impl SamplingError {
     }
 
     /// Capacity / overload: HTTP 529, a 5xx whose message clearly says overloaded, or a stream error whose parsed
-    /// `error_type` is a capacity type. Proxies wrap stream overloads in a 500; the capacity types are `overloaded_error` and
-    /// `service_unavailable_error`. Never reachable from a 4xx or a request-shaped stream error, whatever the message text.
+    /// `error_type` is a capacity type. Proxies wrap stream overloads in a 500; the capacity types are `overloaded_error`,
+    /// `service_unavailable_error` and Google's RPC status `UNAVAILABLE` (the Gemini 503 envelope, relayed mid-stream).
+    /// Never reachable from a 4xx or a request-shaped stream error, whatever the message text.
     pub fn is_overloaded(&self) -> bool {
         match self {
             SamplingError::Api {
@@ -848,6 +849,7 @@ impl SamplingError {
             SamplingError::StreamError { error_type, .. } => {
                 error_type.eq_ignore_ascii_case("overloaded_error")
                     || error_type.eq_ignore_ascii_case("service_unavailable_error")
+                    || error_type.eq_ignore_ascii_case("UNAVAILABLE")
             }
             _ => false,
         }
@@ -924,6 +926,9 @@ struct ErrorBody {
     /// Semantic code (e.g. [`INVALID_IMAGE_ERROR_CODE`]), distinct from the `type` slot.
     #[serde(default, deserialize_with = "lenient_code")]
     code: Option<String>,
+    /// Google RPC status name (`RESOURCE_EXHAUSTED`, `UNAVAILABLE`, `INVALID_ARGUMENT`, ...) carried by the Gemini /
+    /// Vertex envelope `{"error": {"code": 429, "message", "status"}}`, which has no `type` slot. Stands in for the type.
+    status: Option<String>,
 }
 
 /// Flat error from the Grok proxy/gateway: `{"code": "...", "error": "..."}`. Flat bodies with a non-string code (e.g.
@@ -961,7 +966,11 @@ struct ParsedError {
 fn try_parse_error(data: &str) -> Option<ParsedError> {
     if let Ok(resp) = serde_json::from_str::<ErrorResponse>(data) {
         return Some(ParsedError {
-            error_type: resp.error.kind.unwrap_or_else(|| "unknown".to_string()),
+            error_type: resp
+                .error
+                .kind
+                .or(resp.error.status)
+                .unwrap_or_else(|| "unknown".to_string()),
             message: resp
                 .error
                 .message
@@ -991,6 +1000,27 @@ pub fn parse_error_code(bytes: &[u8]) -> Option<ApiErrorCode> {
         .ok()
         .and_then(try_parse_error)?
         .code
+}
+
+/// Server-advised retry delay (whole seconds, capped like `Retry-After`) from a Google RPC error envelope:
+/// `error.details[]` carrying a `google.rpc.RetryInfo` with a protobuf-JSON `retryDelay` (`"7s"`, `"0.5s"`). The Gemini
+/// 429 answers this way and does not always set a `Retry-After` header. `None` for every other body.
+pub fn parse_error_retry_delay(bytes: &[u8]) -> Option<u64> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let details = value.get("error")?.get("details")?.as_array()?;
+    let delay = details
+        .iter()
+        .filter(|d| {
+            d.get("@type")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|t| t.ends_with("google.rpc.RetryInfo"))
+        })
+        .find_map(|d| d.get("retryDelay").and_then(serde_json::Value::as_str))?;
+    let secs: f64 = delay.strip_suffix('s')?.trim().parse().ok()?;
+    if !secs.is_finite() || secs < 0.0 {
+        return None;
+    }
+    Some((secs.ceil() as u64).min(120))
 }
 
 /// Max chars of a structured (JSON) error message shown to users.
@@ -1129,6 +1159,73 @@ fn message_looks_overloaded(message: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn google_rpc_status_stands_in_for_the_error_type() {
+        let body = r#"{"error":{"code":429,"message":"You exceeded your current quota.","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"7s"}]}}"#;
+        let Some(SamplingError::StreamError {
+            error_type,
+            message,
+            code,
+        }) = try_parse_stream_error(body)
+        else {
+            panic!("Google envelope must parse as a stream error");
+        };
+        assert_eq!(error_type, "RESOURCE_EXHAUSTED");
+        assert_eq!(message, "You exceeded your current quota.");
+        assert_eq!(code, None, "an integer code is not a semantic code");
+        assert_eq!(
+            user_facing_api_error_message(StatusCode::TOO_MANY_REQUESTS, body.as_bytes()),
+            "RESOURCE_EXHAUSTED: You exceeded your current quota."
+        );
+        // An explicit `type` still wins over `status`.
+        let both = r#"{"error":{"type":"content_filter","status":"INVALID_ARGUMENT","message":"blocked"}}"#;
+        let Some(SamplingError::StreamError { error_type, .. }) = try_parse_stream_error(both)
+        else {
+            panic!()
+        };
+        assert_eq!(error_type, "content_filter");
+    }
+
+    #[test]
+    fn google_unavailable_status_is_capacity() {
+        let err = try_parse_stream_error(
+            r#"{"error":{"code":503,"message":"The model is overloaded. Please try again later.","status":"UNAVAILABLE"}}"#,
+        )
+        .unwrap();
+        assert!(err.is_overloaded());
+        assert!(err.is_retryable());
+        let err = try_parse_stream_error(
+            r#"{"error":{"code":400,"message":"Please use a valid role: user, model.","status":"INVALID_ARGUMENT"}}"#,
+        )
+        .unwrap();
+        assert!(!err.is_overloaded());
+    }
+
+    #[test]
+    fn retry_info_delay_is_read_from_google_error_details() {
+        let body = br#"{"error":{"code":429,"message":"quota","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED"},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"7.250s"}]}}"#;
+        assert_eq!(
+            parse_error_retry_delay(body),
+            Some(8),
+            "fractional seconds round up"
+        );
+        assert_eq!(
+            parse_error_retry_delay(br#"{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"3600s"}]}}"#),
+            Some(120),
+            "capped like Retry-After"
+        );
+        assert_eq!(
+            parse_error_retry_delay(br#"{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","retryDelay":"7s"}]}}"#),
+            None,
+            "only RetryInfo carries a delay"
+        );
+        assert_eq!(
+            parse_error_retry_delay(br#"{"error":{"message":"x","type":"rate_limit_error"}}"#),
+            None
+        );
+        assert_eq!(parse_error_retry_delay(b"<html>"), None);
+    }
 
     #[test]
     fn incomplete_turn_is_nonretryable_under_all_policies() {

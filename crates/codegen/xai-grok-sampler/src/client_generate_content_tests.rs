@@ -79,20 +79,41 @@ async fn spawn_mock(
     oneshot::Receiver<Captured>,
     tokio::task::JoinHandle<()>,
 ) {
+    spawn_mock_with(route, 200, "text/event-stream", SSE_BODY).await
+}
+
+/// [`spawn_mock`] with a caller-chosen status, `content-type` and body: the
+/// proxy shapes (JSON error relayed as 200, `alt=sse` dropped, Google 429
+/// envelope) that the SSE happy path never produces.
+async fn spawn_mock_with(
+    route: &'static str,
+    status: u16,
+    content_type: &'static str,
+    body: &'static str,
+) -> (
+    std::net::SocketAddr,
+    oneshot::Receiver<Captured>,
+    tokio::task::JoinHandle<()>,
+) {
     let (tx, rx) = oneshot::channel();
     let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
     let app = Router::new().route(
         route,
-        post(move |uri: Uri, headers: HeaderMap, body: Bytes| {
+        post(move |uri: Uri, headers: HeaderMap, body_bytes: Bytes| {
             let tx = tx.clone();
             async move {
-                let body = serde_json::from_slice(&body).expect("request body is JSON");
+                let parsed = serde_json::from_slice(&body_bytes).expect("request body is JSON");
                 if let Some(tx) = tx.lock().unwrap().take() {
-                    let _ = tx.send(Captured { uri, headers, body });
+                    let _ = tx.send(Captured {
+                        uri,
+                        headers,
+                        body: parsed,
+                    });
                 }
                 axum::response::Response::builder()
-                    .header("content-type", "text/event-stream")
-                    .body(axum::body::Body::from(SSE_BODY))
+                    .status(status)
+                    .header("content-type", content_type)
+                    .body(axum::body::Body::from(body))
                     .unwrap()
             }
         }),
@@ -163,7 +184,10 @@ async fn generate_content_stream_routes_authenticates_projects_and_parses() {
             .map(|v| v.to_str().unwrap().to_owned())
     };
     assert_eq!(header("x-goog-api-key").as_deref(), Some("test-key"));
-    assert!(header("authorization").is_none(), "no bearer on the Gemini wire");
+    assert!(
+        header("authorization").is_none(),
+        "no bearer on the Gemini wire"
+    );
     assert!(header("x-api-key").is_none(), "no Anthropic key header");
     assert!(header("anthropic-version").is_none());
     assert_eq!(header("accept").as_deref(), Some("text/event-stream"));
@@ -172,7 +196,10 @@ async fn generate_content_stream_routes_authenticates_projects_and_parses() {
 
     // Body: the projection, with the prior step's opaque reasoning replayed.
     let body = &captured.body;
-    assert!(body.get("model").is_none(), "model rides the URL, never the body");
+    assert!(
+        body.get("model").is_none(),
+        "model rides the URL, never the body"
+    );
     assert_eq!(body["systemInstruction"]["parts"][0]["text"], "Be terse.");
     let contents = body["contents"].as_array().unwrap();
     assert_eq!(
@@ -203,7 +230,10 @@ async fn generate_content_stream_routes_authenticates_projects_and_parses() {
         serde_json::json!({ "output": "result-a" })
     );
     assert_eq!(user_parts[1]["text"], "and now?");
-    assert_eq!(body["tools"][0]["functionDeclarations"][0]["name"], "lookup");
+    assert_eq!(
+        body["tools"][0]["functionDeclarations"][0]["name"],
+        "lookup"
+    );
     let generation = &body["generationConfig"];
     assert_eq!(generation["thinkingConfig"]["includeThoughts"], true);
     assert_eq!(generation["thinkingConfig"]["thinkingLevel"], "LOW");
@@ -227,7 +257,10 @@ async fn generate_content_stream_routes_authenticates_projects_and_parses() {
         "the new signature survives parsing so the next turn can replay it"
     );
     let usage = chunks[1].usage_metadata.as_ref().unwrap();
-    assert_eq!((usage.prompt_token_count, usage.thoughts_token_count), (10, 5));
+    assert_eq!(
+        (usage.prompt_token_count, usage.thoughts_token_count),
+        (10, 5)
+    );
 }
 
 #[tokio::test]
@@ -261,4 +294,137 @@ async fn generate_content_stream_appends_resource_path_models_verbatim() {
     assert_eq!(captured.uri.query(), Some("alt=sse"));
     assert_eq!(captured.body["contents"][0]["parts"][0]["text"], "hi");
     assert_eq!(chunks.len(), 2);
+}
+
+const GEMINI_ROUTE: &str = "/v1beta/models/gemini-3-pro-preview:streamGenerateContent";
+
+fn plain_request() -> ConversationRequest {
+    ConversationRequest {
+        items: vec![ConversationItem::user("hi")],
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn generate_content_json_error_relayed_as_200_surfaces_as_a_stream_error() {
+    // LiteLLM relays a guardrail block as HTTP 200 with an OpenAI-shaped
+    // error envelope. Fed to the SSE decoder it has no `data:` line and
+    // the stream used to end as a silent truncation.
+    let (addr, rx, server) = spawn_mock_with(
+        GEMINI_ROUTE,
+        200,
+        "application/json",
+        r#"{"error":{"message":"Violated guardrail policy","type":"content_filter","guardrail_name":"pii","model":"gemini-3-pro-preview"}}"#,
+    )
+    .await;
+    let client = gemini_client(format!("http://{addr}/v1beta"), GEMINI_MODEL);
+    let (mut stream, _) = client
+        .conversation_stream_generate_content(plain_request())
+        .await
+        .expect("a 200 opens the stream");
+    let first = stream.next().await.expect("one item");
+    assert!(stream.next().await.is_none(), "the error ends the stream");
+    rx.await.expect("mock captured the request");
+    server.abort();
+
+    match first {
+        Err(SamplingError::StreamError {
+            error_type,
+            message,
+            ..
+        }) => {
+            assert_eq!(error_type, "content_filter");
+            assert_eq!(message, "Violated guardrail policy");
+        }
+        other => panic!("expected a StreamError, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn generate_content_json_array_body_is_decoded_as_chunks() {
+    // A proxy that drops `alt=sse` answers with the unary JSON array form of
+    // `streamGenerateContent`; the chunks are the same objects.
+    let (addr, rx, server) = spawn_mock_with(
+        GEMINI_ROUTE,
+        200,
+        "application/json; charset=UTF-8",
+        concat!(
+            "[{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hel\"}]},\"index\":0}],\"modelVersion\":\"gemini-3-pro-preview\"},",
+            "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"lo\"}]},\"finishReason\":\"STOP\",\"index\":0}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":2,\"totalTokenCount\":5}}]",
+        ),
+    )
+    .await;
+    let client = gemini_client(format!("http://{addr}/v1beta"), GEMINI_MODEL);
+    let (stream, _) = client
+        .conversation_stream_generate_content(plain_request())
+        .await
+        .expect("stream request succeeds");
+    let chunks = drain(stream).await;
+    rx.await.expect("mock captured the request");
+    server.abort();
+
+    assert_eq!(chunks.len(), 2);
+    let text: String = chunks
+        .iter()
+        .flat_map(|c| c.candidates[0].content.as_ref().unwrap().parts.iter())
+        .filter_map(|p| p.text.clone())
+        .collect();
+    assert_eq!(text, "Hello");
+    assert_eq!(
+        chunks[1].candidates[0].finish_reason,
+        Some(FinishReason::Stop)
+    );
+    assert_eq!(
+        chunks[1]
+            .usage_metadata
+            .as_ref()
+            .unwrap()
+            .prompt_token_count,
+        3
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn generate_content_429_envelope_carries_status_and_retry_info_delay() {
+    // Google's 429 names the RPC status and advises the delay inside the
+    // envelope (`google.rpc.RetryInfo`), without a `Retry-After` header.
+    let (addr, rx, server) = spawn_mock_with(
+        GEMINI_ROUTE,
+        429,
+        "application/json; charset=UTF-8",
+        r#"{"error":{"code":429,"message":"You exceeded your current quota.","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED","domain":"googleapis.com"},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"7s"}]}}"#,
+    )
+    .await;
+    let client = gemini_client(format!("http://{addr}/v1beta"), GEMINI_MODEL);
+    let err = client
+        .conversation_stream_generate_content(plain_request())
+        .await
+        .err()
+        .expect("a 429 fails the request");
+    rx.await.expect("mock captured the request");
+    server.abort();
+
+    match err {
+        SamplingError::Api {
+            status,
+            message,
+            retry_after_secs,
+            ..
+        } => {
+            assert_eq!(status, reqwest::StatusCode::TOO_MANY_REQUESTS);
+            assert_eq!(
+                message,
+                "RESOURCE_EXHAUSTED: You exceeded your current quota."
+            );
+            assert_eq!(
+                retry_after_secs,
+                Some(7),
+                "RetryInfo stands in for Retry-After"
+            );
+        }
+        other => panic!("expected an Api error, got {other:?}"),
+    }
 }
