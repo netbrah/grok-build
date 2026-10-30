@@ -67,17 +67,18 @@ default = "grok-4.5"
 
 ## Supported API Backends
 
-Grok supports three API backends. Set `api_backend` in your `[model.*]` config to choose which protocol the model uses:
+Grok supports four API backends. Set `api_backend` in your `[model.*]` config to choose which protocol the model uses:
 
 | Value | API | Default |
 |-------|-----|---------|
 | `"chat_completions"` | OpenAI Chat Completions (`/v1/chat/completions`) | Yes |
 | `"responses"` | OpenAI Responses (`/v1/responses`) | |
 | `"messages"` | Anthropic Messages (`/v1/messages`) | |
+| `"generate_content"` | Google Gemini `generateContent` (`/models/{model}:streamGenerateContent`) | |
 
 When you omit `api_backend`, Grok uses `chat_completions`.
 
-To send provider-specific authentication or version headers -- for example, Anthropic's `x-api-key` -- use the `extra_headers` field described below. Grok sends those headers verbatim with every request to the endpoint.
+To send provider-specific authentication or version headers -- for example, Anthropic's `x-api-key` -- use the `extra_headers` field described below. Grok sends those headers verbatim with every request to the endpoint. Alternatively, set `auth_scheme` (`"bearer"`, `"x_api_key"`, or `"x_goog_api_key"`) to have Grok send the model's `api_key`/`env_key` on the provider's native header.
 
 ---
 
@@ -93,7 +94,7 @@ name = "Display Name"                     # Shown in the model picker
 description = "Model description"          # Optional description
 api_key = "sk-..."                        # API key for this provider (optional)
 env_key = "XAI_API_KEY"                   # Env var holding the API key (optional; string or array)
-api_backend = "chat_completions"          # "chat_completions", "responses", or "messages"
+api_backend = "chat_completions"          # "chat_completions", "responses", "messages", or "generate_content"
 temperature = 0.7                         # Sampling temperature
 top_p = 0.95                              # Nucleus sampling parameter
 max_completion_tokens = 8192              # Maximum tokens per response
@@ -223,6 +224,77 @@ extra_headers = { "x-api-key" = "sk-ant-...", "anthropic-version" = "2023-06-01"
 ```
 
 The `messages` backend uses the Anthropic Messages protocol. Anthropic authenticates with an `x-api-key` header rather than `Authorization: Bearer`, so pass your key through `extra_headers`, which Grok sends verbatim.
+
+### Google (Gemini)
+
+Use Gemini models directly via the native `generateContent` API:
+
+```toml
+[model.gemini-3-pro]
+model = "gemini-3-pro-preview"
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+name = "Gemini 3 Pro"
+api_backend = "generate_content"
+auth_scheme = "x_goog_api_key"
+env_key = "GEMINI_API_KEY"
+context_window = 1048576
+supports_reasoning_effort = true
+```
+
+Grok posts to `{base_url}/models/{model}:streamGenerateContent?alt=sse` and sends the key on Google's `x-goog-api-key` header. The model's thought summaries stream as reasoning, and the opaque `thoughtSignature` Gemini attaches to its function calls is stored with the turn and replayed on the following requests, so multi-step tool use keeps its reasoning context. Only the signature is replayed, never the thought text: the signature is the model's full reasoning state, and resending summaries would cost input tokens and change the cached prefix. A signature minted by a different model is not replayed (`gemini-3.5-flash` and the dated `gemini-3.5-flash-001` the service reports count as the same model; `-lite` or another vendor do not). Function-call ids are echoed back on the matching `functionResponse` on Gemini 3+ — the model issues them and pairs results by them — and a string or number `const` in a tool's parameter schema is sent as a single-value `enum`, the form Gemini's schema subset honours.
+
+New turns use the requested model for replay ownership, so a latest-model or gateway alias keeps its signatures even when `modelVersion` reports a different canonical name. Native call ids are preserved verbatim; ids imported from another model are normalized without collisions, and parallel tool results are ordered by their matching ids.
+
+A native `CONTINUATION` response is resumed with the same request and its opaque `continuationToken`; only the final response completes the turn, and usage includes all continuation requests. A missing terminal, missing continuation token, or repeated token is an error, including during compaction. Arbitrary interrupted streams are not resumed from earlier checkpoints, which could duplicate already-streamed output.
+
+#### Thinking and sampling on Gemini 3+
+
+`reasoning_effort` maps to `thinkingConfig.thinkingLevel`. Thinking cannot be switched off on these models, and `minimal` exists only on the Gemini 3 Flash family:
+
+| `reasoning_effort` | Gemini 3 Flash family | Gemini 3 Pro / 3.1 Pro / Gemini 4 |
+|---|---|---|
+| unset | model default (`high` on Gemini 3, `medium` on Gemini 4) | model default |
+| `none`, `minimal` | `MINIMAL` | `LOW` (clamped) |
+| `low` | `LOW` | `LOW` |
+| `medium` | `MEDIUM` | `MEDIUM` |
+| `high` and above | `HIGH` | `HIGH` |
+
+Models that take a `thinkingBudget` instead (Gemini 2.5 and earlier) are not a target of this backend; a slug the harness cannot place (a gateway alias such as `prod-coder`) is treated as Gemini 3+.
+
+`temperature`, `top_p` and `top_k` are **ignored** on Gemini 3+: Google deprecates the sampling parameters there in favour of model-tuned defaults, and sending them degrades reasoning. `max_completion_tokens` is passed through as `maxOutputTokens` and caps thinking and output *combined*; leave it unset (the model ceiling) or keep it at 32768 or more.
+
+#### Caching
+
+Gemini caches repeated request prefixes automatically (`systemInstruction`, the tool declarations and the unchanged head of the conversation); nothing needs to be configured. Cached tokens are counted inside the prompt tokens and reported separately, so the session's cache-read figure reflects the hit rate.
+
+#### Through a LiteLLM proxy
+
+LiteLLM's Gemini pass-through keeps the native wire and accepts its virtual key on the Google header:
+
+```toml
+[model.gemini-litellm]
+model = "gemini-3.5-flash"
+base_url = "https://litellm.example.com/gemini/v1beta"
+api_backend = "generate_content"
+auth_scheme = "x_goog_api_key"
+env_key = "LITELLM_API_KEY"
+```
+
+Upstream Google errors are relayed unchanged (including the `RESOURCE_EXHAUSTED` 429 and its advised retry delay). A guardrail block, which LiteLLM returns as HTTP 200 with a JSON error body, is surfaced as a stream error rather than an empty response. Buffered JSON responses use the same per-chunk error checks as SSE, including errors inside response arrays.
+
+For Vertex AI, point `base_url` at the publisher root and give the fully qualified model resource; the default `bearer` scheme carries your OAuth access token:
+
+```toml
+[model.gemini-vertex]
+model = "projects/my-project/locations/us-central1/publishers/google/models/gemini-3-pro-preview"
+base_url = "https://us-central1-aiplatform.googleapis.com/v1"
+api_backend = "generate_content"
+env_key = "VERTEX_ACCESS_TOKEN"
+```
+
+Keep the resource-path form of `model` on Vertex: it is how the harness tells the two wires apart. Historical function calls that carry no signature (a conversation started on another backend, for instance) are sent with Google's `skip_thought_signature_validator` placeholder on the public API, which Vertex rejects, so a Vertex resource path sends them unsigned instead.
+
+`api_backend = "generate_content"` is opt-in: Gemini models reached through an OpenAI-compatible gateway keep using `chat_completions` or `responses`.
 
 ### OpenAI (Chat Completions)
 

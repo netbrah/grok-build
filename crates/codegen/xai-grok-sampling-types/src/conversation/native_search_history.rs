@@ -2752,7 +2752,7 @@ impl NativeLoweredHistory {
             crate::ApiBackend::Responses => serde_json::to_value(
                 async_openai::types::responses::CreateResponse::from(request),
             ),
-            crate::ApiBackend::ChatCompletions => {
+            crate::ApiBackend::ChatCompletions | crate::ApiBackend::GenerateContent => {
                 return Err(NativePlanRefusal::InvalidQualification);
             }
         }
@@ -2764,7 +2764,7 @@ impl NativeLoweredHistory {
         let (conversation, instructions) = match backend {
             crate::ApiBackend::Messages => ("messages", "system"),
             crate::ApiBackend::Responses => ("input", "instructions"),
-            crate::ApiBackend::ChatCompletions => {
+            crate::ApiBackend::ChatCompletions | crate::ApiBackend::GenerateContent => {
                 return Err(NativePlanRefusal::InvalidQualification);
             }
         };

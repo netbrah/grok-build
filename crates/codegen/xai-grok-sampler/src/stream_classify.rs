@@ -233,3 +233,27 @@ pub(crate) fn message_event_class(event: &messages::MessageStreamEvent) -> ItemC
         ItemClass::Other
     }
 }
+
+/// Gemini `streamGenerateContent`: a chunk with any candidate part is content;
+/// one carrying only a terminal `finishReason` (or a prompt block) is the end.
+pub(crate) fn generate_content_chunk_class(
+    chunk: &xai_grok_sampling_types::gemini::GenerateContentResponse,
+) -> ItemClass {
+    let has_parts = chunk.candidates.iter().any(|c| {
+        c.content
+            .as_ref()
+            .is_some_and(|content| !content.parts.is_empty())
+    });
+    if has_parts {
+        ItemClass::Content
+    } else if chunk.candidates.iter().any(|c| c.finish_reason.is_some())
+        || chunk
+            .prompt_feedback
+            .as_ref()
+            .is_some_and(|pf| pf.block_reason.is_some())
+    {
+        ItemClass::End
+    } else {
+        ItemClass::Other
+    }
+}

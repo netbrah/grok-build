@@ -4,6 +4,7 @@
 //! Each backend owns its own wire conversion in a sibling module.
 
 mod chat_completions;
+mod gemini;
 mod messages;
 pub mod native_search_history;
 pub mod outbound_lint;
@@ -14,6 +15,10 @@ pub mod tool_name;
 pub mod tool_search;
 
 pub use chat_completions::{conversation_item_to_chat_message, conversation_to_chat_messages};
+pub use gemini::{
+    build_generate_content_request, is_thinking_level_model, rewrite_const_as_enum,
+    same_gemini_model, thinking_config,
+};
 pub use messages::build_messages_request;
 pub use responses::{
     DeclaredToolSurface, SearchAdmission, TOOL_SEARCH_DECLARATION_TYPE, extra_tool_entries,
@@ -3398,6 +3403,10 @@ mod responses_tests;
 mod messages_tests;
 
 #[cfg(test)]
+#[path = "conversation/gemini_tests.rs"]
+mod gemini_tests;
+
+#[cfg(test)]
 #[path = "conversation/projection_tests.rs"]
 mod projection_tests;
 
@@ -3735,6 +3744,7 @@ mod tests {
             crate::ApiBackend::ChatCompletions,
             crate::ApiBackend::Responses,
             crate::ApiBackend::Messages,
+            crate::ApiBackend::GenerateContent,
         ] {
             let on_wire = match backend {
                 crate::ApiBackend::Responses => {
@@ -3754,6 +3764,13 @@ mod tests {
                     let mapped = super::messages::build_messages_request(&request());
                     serde_json::to_value(&mapped)
                         .expect("messages request serializes")
+                        .get("prompt_cache_key")
+                        .is_some()
+                }
+                crate::ApiBackend::GenerateContent => {
+                    let mapped = build_generate_content_request(&request());
+                    serde_json::to_value(&mapped)
+                        .expect("generateContent request serializes")
                         .get("prompt_cache_key")
                         .is_some()
                 }

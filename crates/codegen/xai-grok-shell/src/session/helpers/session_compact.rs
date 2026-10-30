@@ -879,6 +879,105 @@ pub(crate) async fn generate_session_compact(
                 itl_max_ms: timing.itl_max_ms(),
             }
         }
+        ApiBackend::GenerateContent => {
+            // Gemini streams complete `GenerateContentResponse` chunks; the
+            // summary is the concatenation of non-thought text parts.
+            let request = ConversationRequest {
+                items: chat_history,
+                // Prefix-cache alignment (see doc comment).
+                tools,
+                hosted_tools,
+                tool_choice: Some(conversation_tool_choice),
+                model: Some(sampling_config.model.to_owned()),
+                temperature: Some(1.0),
+                x_grok_conv_id: Some(session_id.to_string()),
+                x_grok_req_id: Some(format!("xai-compact-{}", uuid::Uuid::new_v4())),
+                x_grok_session_id: Some(session_id.to_string()),
+                x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
+                ..Default::default()
+            };
+            let (mut stream, _metadata) = await_unless_cancelled(
+                cancel,
+                client.conversation_stream_generate_content(request),
+            )
+            .await?
+            .map_err(classify_sampling_error)?;
+            let mut timing = StreamTiming::new();
+            let mut truncated = false;
+            let mut stop_reason: Option<String> = None;
+            let mut content = String::new();
+            let mut last_progress_at = std::time::Instant::now();
+            loop {
+                let idle_remaining = idle_timeout.saturating_sub(last_progress_at.elapsed());
+                let chunk_result = match next_stream_step(&mut stream, idle_remaining, cancel)
+                    .await?
+                {
+                    StreamStep::Item(item) => item,
+                    StreamStep::Ended => break,
+                    StreamStep::IdleTimeout => {
+                        return Err(CompactFailure::Transient(
+                            acp::Error::internal_error().data(format!(
+                                "{COMPACT_FAILED_PREFIX}stream idle timeout after {idle_timeout:?} ({} chars received)",
+                                content.chars().count()
+                            )),
+                        ));
+                    }
+                };
+                // Wall-clock backstop (0 disables it): cut a runaway, including a reasoning spiral that token limits miss, and let it retry
+                if wall_clock_budget_secs > 0 && timing.elapsed_secs() >= wall_clock_budget_secs {
+                    return Err(CompactFailure::Transient(
+                        acp::Error::internal_error().data(format!(
+                            "{COMPACT_FAILED_PREFIX}exceeded wall-clock budget {wall_clock_budget_secs}s (runaway generation)"
+                        )),
+                    ));
+                }
+                match chunk_result {
+                    Ok(chunk) => {
+                        // The wire has no ping frame: every chunk is progress.
+                        last_progress_at = std::time::Instant::now();
+                        for candidate in chunk.candidates {
+                            if let Some(candidate_content) = candidate.content {
+                                for part in candidate_content.parts {
+                                    if part.is_thought() {
+                                        continue;
+                                    }
+                                    if let Some(text) = part.text
+                                        && !text.is_empty()
+                                    {
+                                        timing.record_delta();
+                                        content.push_str(&text);
+                                    }
+                                }
+                            }
+                            if let Some(reason) = candidate.finish_reason {
+                                truncated = matches!(
+                                    reason,
+                                    xai_grok_sampling_types::gemini::FinishReason::MaxTokens
+                                );
+                                stop_reason = Some(reason.wire_str());
+                            }
+                        }
+                        if stop_reason.is_none()
+                            && let Some(blocked) = chunk
+                                .prompt_feedback
+                                .and_then(|feedback| feedback.block_reason)
+                        {
+                            stop_reason = Some(format!("BLOCKED_{blocked}"));
+                        }
+                    }
+                    Err(e) => return Err(classify_sampling_error(e)),
+                }
+            }
+            CompactOutput {
+                content,
+                stop_reason,
+                truncated,
+                ttft_ms: timing.ttft_ms(),
+                stream_ms: timing.stream_ms(),
+                delta_count: timing.count,
+                itl_max_ms: timing.itl_max_ms(),
+            }
+        }
     };
 
     if output.content.is_empty() {

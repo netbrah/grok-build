@@ -33,7 +33,7 @@ use crate::retry::{
     self as retry_mod, RetryDecision, classify_error, clone_error, resolve_max_retries,
 };
 use crate::stream::responses::stream_responses_tracked;
-use crate::stream::{stream_chat_completions, stream_messages};
+use crate::stream::{stream_chat_completions, stream_generate_content, stream_messages};
 use crate::types::RequestId;
 
 /// Default per-chunk idle timeout when neither config nor caller supplies one.
@@ -1038,6 +1038,28 @@ async fn run_one_attempt(
                 native_mint_tag,
             );
             AttemptReport { outcome, evidence }
+        }
+        ApiBackend::GenerateContent => {
+            let model = client.generate_content_model(request.model.as_deref());
+            let (raw, metadata) = match client.conversation_stream_generate_content(request).await {
+                Ok(pair) => pair,
+                Err(e) => return AttemptOutcome::InitFailed { error: e }.into(),
+            };
+            let (teed, captured) = tee_errors(raw);
+            let l2 = stream_generate_content(teed, metadata, model, request_id.clone(), idle_timeout);
+            drive_l2(
+                l2,
+                request_id,
+                event_tx,
+                cancel_token,
+                captured,
+                None,
+                FailedResponseCapture::default(),
+                output_observed,
+                length_policy,
+            )
+            .await
+            .into()
         }
     }
 }
